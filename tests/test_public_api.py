@@ -1,4 +1,5 @@
 from experiment_control.backends.base import BackendRegistry
+from experiment_control.backends.sensecore import digest_pinned_image, scheduler_job_name
 from experiment_control.preflight import PreflightCheck, PreflightReport
 from experiment_control.identity import IdentityReport
 from experiment_control.project import ProjectRegistry, SourceBundle
@@ -22,4 +23,17 @@ def test_package_public_primitives_have_no_host_dependency(tmp_path):
         "ambiguous": False,
         "scheduler_job_ids": [],
         "remote_manifest_exists": None,
+        "remote_manifest_matches": None,
     }
+
+
+def test_sensecore_attempt_and_image_identities_are_deterministic():
+    digest = "sha256:" + "d" * 64
+    assert scheduler_job_name("run", "attempt-003") == "run--attempt-003"
+    assert scheduler_job_name("r" * 80, "attempt-003") == scheduler_job_name(
+        "r" * 80, "attempt-003"
+    )
+    assert len(scheduler_job_name("r" * 80, "attempt-003")) <= 63
+    assert digest_pinned_image("registry.example/ns/image:source-abc", digest) == (
+        f"registry.example/ns/image@{digest}"
+    )

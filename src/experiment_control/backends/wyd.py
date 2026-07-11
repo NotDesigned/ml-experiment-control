@@ -170,6 +170,28 @@ class WydSlurmBackend:
             check=check,
         )
 
+    def _remote_query(self, alias: str, command: str, *, operation: str):
+        """Run a read-only query and reject unavailable remote evidence."""
+        result = self.remote_exec(alias, command, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"{operation} failed; remote scheduler/storage evidence is unavailable"
+            )
+        return result
+
+    def _remote_predicate(
+        self, alias: str, command: str, *, operation: str
+    ) -> bool:
+        """Return a remote predicate, distinguishing false from transport failure."""
+        result = self.remote_exec(alias, command, check=False)
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        raise RuntimeError(
+            f"{operation} failed; remote scheduler/storage evidence is unavailable"
+        )
+
     def validate(self, run: dict[str, Any]) -> None:
         backend, storage = run["backend"], run["storage"]
         required = {
@@ -179,8 +201,33 @@ class WydSlurmBackend:
         missing = sorted(key for key in required if not backend.get(key))
         if missing:
             raise ValueError(f"run {run['run_id']} backend is missing: {missing}")
-        if not re.fullmatch(r"gpu:[A-Za-z0-9_-]+:[1-9][0-9]*", str(backend["gres"])):
+        gres_match = re.fullmatch(
+            r"gpu:[A-Za-z0-9_-]+:([1-9][0-9]*)", str(backend["gres"])
+        )
+        if not gres_match:
             raise ValueError(f"run {run['run_id']} has invalid Slurm gres: {backend['gres']!r}")
+        resources = run.get("resources", {})
+        declared_gpus = resources.get("gpus", 1)
+        declared_nodes = resources.get("nodes", 1)
+        if (
+            isinstance(declared_gpus, bool)
+            or not isinstance(declared_gpus, int)
+            or declared_gpus < 1
+        ):
+            raise ValueError(f"run {run['run_id']} resources.gpus must be a positive integer")
+        if declared_gpus != int(gres_match.group(1)):
+            raise ValueError(
+                f"run {run['run_id']} resources.gpus={declared_gpus} does not match "
+                f"backend.gres={backend['gres']!r}"
+            )
+        if (
+            isinstance(declared_nodes, bool)
+            or not isinstance(declared_nodes, int)
+            or declared_nodes != 1
+        ):
+            raise ValueError(
+                f"run {run['run_id']} Slurm backend currently requires resources.nodes=1"
+            )
         if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", str(run["image_id"])):
             raise ValueError(f"run {run['run_id']} Slurm image_id must be a SIF sha256 digest")
         for field in ("partition", "account", "qos"):
@@ -271,23 +318,36 @@ class WydSlurmBackend:
         backend = run["backend"]
         token = str(intent["submission_token"])
         expected_name = scheduler_job_name(str(run["run_id"]), attempt_id)
-        queue = self.remote_exec(
-            backend["ssh_alias"], "squeue -u $(id -un) -h -o '%i|%j|%k'", check=False
+        queue = self._remote_query(
+            backend["ssh_alias"], "squeue -u $(id -un) -h -o '%i|%j|%k'",
+            operation="Slurm queue identity query",
         )
         matches: set[str] = set()
         for line in queue.stdout.splitlines():
+            if not line.strip():
+                continue
             fields = line.split("|", 2)
-            if len(fields) == 3 and (fields[1] == expected_name or fields[2] == token):
+            if len(fields) != 3:
+                raise RuntimeError("Slurm queue identity query returned malformed evidence")
+            if fields[1] == expected_name or fields[2] == token:
+                if not fields[0].isdigit():
+                    raise RuntimeError("Slurm queue identity query returned an invalid job ID")
                 matches.add(fields[0])
-        accounting = self.remote_exec(
+        accounting = self._remote_query(
             backend["ssh_alias"],
             "sacct -S now-30days -u $(id -un) -X -n -P -o JobIDRaw,JobName",
-            check=False,
+            operation="Slurm accounting identity query",
         )
-        matches.update(
-            line.split("|", 1)[0] for line in accounting.stdout.splitlines()
-            if line.endswith(f"|{expected_name}") and line.split("|", 1)[0].isdigit()
-        )
+        for line in accounting.stdout.splitlines():
+            if not line.strip():
+                continue
+            fields = line.split("|")
+            if len(fields) != 2:
+                raise RuntimeError("Slurm accounting identity query returned malformed evidence")
+            if fields[1] == expected_name:
+                if not fields[0].isdigit():
+                    raise RuntimeError("Slurm accounting identity query returned an invalid job ID")
+                matches.add(fields[0])
         return sorted(matches, key=lambda value: (len(value), value))
 
     def recover_submission(self, run, intent, attempt_id) -> str | None:
@@ -303,16 +363,35 @@ class WydSlurmBackend:
         matches = self._matching_jobs(
             run, {"submission_token": token}, attempt_id
         )
-        manifest = self.remote_exec(
+        manifest_exists = self._remote_predicate(
             run["backend"]["ssh_alias"],
             f"test -e {shlex.quote(str(run['storage']['run_dir']))}/manifest.yaml",
-            check=False,
+            operation="remote manifest identity probe",
         )
+        manifest_matches: bool | None = None
+        if manifest_exists:
+            local_manifest = self.s.local_run_dir(campaign, run) / "manifest.yaml"
+            if local_manifest.is_file():
+                expected_sha = hashlib.sha256(local_manifest.read_bytes()).hexdigest()
+                remote_manifest = f"{str(run['storage']['run_dir'])}/manifest.yaml"
+                digest = self._remote_query(
+                    run["backend"]["ssh_alias"],
+                    f"{shlex.join(['sha256sum', '--', remote_manifest])} | "
+                    "awk '{print $1}'",
+                    operation="remote manifest digest probe",
+                )
+                fields = digest.stdout.strip().splitlines()
+                if len(fields) != 1 or not re.fullmatch(r"[0-9a-fA-F]{64}", fields[0]):
+                    raise RuntimeError(
+                        "remote manifest digest probe returned malformed evidence"
+                    )
+                manifest_matches = fields[0].lower() == expected_sha
         return IdentityReport(
-            available=not matches and manifest.returncode != 0,
+            available=not matches and not manifest_exists,
             ambiguous=len(matches) > 1,
             scheduler_job_ids=tuple(matches),
-            remote_manifest_exists=manifest.returncode == 0,
+            remote_manifest_exists=manifest_exists,
+            remote_manifest_matches=manifest_matches,
         )
 
     def verify_assets(self, run, probes) -> dict[str, Any]:
@@ -320,7 +399,11 @@ class WydSlurmBackend:
         alias = str(run["backend"]["ssh_alias"])
         for probe in probes:
             predicate = "-s" if probe.file else "-d"
-            if self.remote_exec(alias, shlex.join(["test", predicate, probe.path]), check=False).returncode:
+            exists = self._remote_predicate(
+                alias, shlex.join(["test", predicate, probe.path]),
+                operation=f"required asset probe for {probe.path}",
+            )
+            if not exists:
                 missing.append({**probe.requirement.__dict__, "path": probe.path})
         return {"missing": missing, "verification": "remote-ssh", "verified_on": alias}
 
@@ -334,9 +417,10 @@ class WydSlurmBackend:
             backend["ssh_alias"],
             shlex.join(["mkdir", "-p", backend["source_dir"], str(Path(run["storage"]["run_dir"]).parent)]),
         )
-        staged = self.remote_exec(
-            backend["ssh_alias"], f"test -f {shlex.quote(source_marker)}", check=False
-        ).returncode == 0
+        staged = self._remote_predicate(
+            backend["ssh_alias"], f"test -f {shlex.quote(source_marker)}",
+            operation="staged source marker probe",
+        )
         if not staged:
             transport = self.ssh_transport()
             command = [self.rsync_bin, "-a", "--delete", "-e", transport]
@@ -353,11 +437,11 @@ class WydSlurmBackend:
         expected_image = str(run["image_id"])
         expected_sha = expected_image.removeprefix("sha256:")
         marker = f"{backend['sif_path']}.sha256-{expected_sha}.verified"
-        valid = self.remote_exec(
+        valid = self._remote_predicate(
             backend["ssh_alias"],
             f"test -s {shlex.quote(backend['sif_path'])} -a -f {shlex.quote(marker)}",
-            check=False,
-        ).returncode == 0
+            operation="verified SIF marker probe",
+        )
         if not valid:
             verify = self.remote_exec(
                 backend["ssh_alias"],
@@ -372,12 +456,12 @@ class WydSlurmBackend:
             if relative.is_absolute() or ".." in relative.parts:
                 raise ValueError(f"required source path must be relative: {required_path}")
             staged_path = str(Path(backend["source_dir"]) / relative)
-            result = self.remote_exec(
+            exists = self._remote_predicate(
                 backend["ssh_alias"],
                 shlex.join(["test", "-s", staged_path]),
-                check=False,
+                operation=f"required staged source probe for {required_path}",
             )
-            if result.returncode != 0:
+            if not exists:
                 raise RuntimeError(
                     f"staged source is missing required project path: {required_path}"
                 )
@@ -432,6 +516,10 @@ class WydSlurmBackend:
             check=False,
         )
         if claim.returncode != 0:
+            if claim.returncode != 1:
+                raise RuntimeError(
+                    "remote submission claim failed; scheduler/storage state is unknown"
+                )
             raise FileExistsError(
                 "remote submission claim already exists; reconcile before retrying"
             )
@@ -451,15 +539,17 @@ class WydSlurmBackend:
     def status(self, campaign, run) -> dict[str, Any]:
         record = self.s.backend_record(campaign, run)
         backend, job_id = run["backend"], str(record["backend_job_id"])
-        result = self.remote_exec(
+        result = self._remote_query(
             backend["ssh_alias"],
             f"sacct -j {shlex.quote(job_id)} -X -n -P -o JobID,JobName,Partition,State,Elapsed,ExitCode",
-            check=False,
+            operation=f"Slurm accounting status query for job {job_id}",
         )
         lines = [line for line in result.stdout.splitlines() if line.strip()]
         if not lines:
-            queue = self.remote_exec(
-                backend["ssh_alias"], f"squeue -j {shlex.quote(job_id)} -h -o '%i|%j|%P|%T|%M|0:0'", check=False
+            queue = self._remote_query(
+                backend["ssh_alias"],
+                f"squeue -j {shlex.quote(job_id)} -h -o '%i|%j|%P|%T|%M|0:0'",
+                operation=f"Slurm queue status query for job {job_id}",
             )
             lines = [line for line in queue.stdout.splitlines() if line.strip()]
         status = parse_accounting("\n".join(lines), job_id=job_id, run_id=run["run_id"], partition=backend["partition"])
@@ -486,16 +576,18 @@ class WydSlurmBackend:
         self.s.run_command(
             [self.rsync_bin, "-a", "--delete", "-e", transport,
              "--include=*/", "--include=manifest.yaml", "--include=status.json",
-             "--include=backend.json", "--include=train_metrics.jsonl",
-             "--include=metrics.jsonl", "--exclude=*",
+             "--include=backend.json", "--include=events.jsonl",
+             "--include=train_metrics.jsonl", "--include=metrics.jsonl",
+             "--include=all_generated_*.jsonl",
+             "--include=all_token_reconstructed_*.jsonl", "--exclude=*",
              f"{backend['ssh_alias']}:{run['storage']['run_dir']}/", f"{mirror}/"]
         )
         summary = self.s.summarize_run(campaign, mirror)
         run_dir = str(run["storage"]["run_dir"])
-        checkpoint_probe = self.remote_exec(
+        checkpoint_probe = self._remote_query(
             backend["ssh_alias"],
             checkpoint_probe_command(run_dir),
-            check=False,
+            operation="completed checkpoint probe",
         )
         selected = select_latest_checkpoint_name(checkpoint_probe.stdout.splitlines())
         if selected:
@@ -537,6 +629,10 @@ class WydSlurmBackend:
                 log_probe_command(paths, tail=tail),
                 check=False,
             )
+            if result.returncode not in {0, 1}:
+                raise RuntimeError(
+                    f"{stream} log probe failed; remote storage evidence is unavailable"
+                )
             normalized = [
                 redact_line(line) for line in result.stdout.replace("\r", "\n").splitlines()
                 if line.strip()

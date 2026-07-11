@@ -14,6 +14,7 @@ class IdentityReport:
     ambiguous: bool
     scheduler_job_ids: tuple[str, ...] = ()
     remote_manifest_exists: bool | None = None
+    remote_manifest_matches: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)

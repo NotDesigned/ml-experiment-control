@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -13,6 +14,30 @@ from typing import Any
 from .services import BackendServices
 from ..preflight import PreflightCheck, PreflightReport
 from ..identity import IdentityReport
+
+
+def scheduler_job_name(base_name: str, attempt_id: str) -> str:
+    """Return a deterministic attempt-qualified SenseCore resource name."""
+    raw = f"{base_name}--{attempt_id}"
+    if len(raw) <= 63:
+        return raw
+    digest = hashlib.sha256(raw.encode()).hexdigest()[:10]
+    return f"{raw[:51]}--{digest}"
+
+
+def digest_pinned_image(image_tag: str, image_id: str) -> str:
+    """Resolve an authored registry tag to the manifest's immutable digest."""
+    if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", image_id):
+        raise ValueError("SenseCore image_id must be a registry sha256 digest")
+    if "@" in image_tag:
+        raise ValueError("SenseCore backend.image must retain the authored immutable tag")
+    leaf = image_tag.rsplit("/", 1)[-1]
+    if ":" not in leaf:
+        raise ValueError("SenseCore backend.image must include an immutable source-qualified tag")
+    repository, tag = image_tag.rsplit(":", 1)
+    if not repository or not tag or tag in {"latest", "runtime", "seed"}:
+        raise ValueError("SenseCore backend.image must include an immutable source-qualified tag")
+    return f"{repository}@{image_id}"
 
 
 def normalize_state(raw_state: str, *, cancellation_requested: bool = False) -> str:
@@ -60,10 +85,10 @@ class SenseCoreBackend:
             raise ValueError("SenseCore runs for this account must use spot quota")
         if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", str(run["image_id"])):
             raise ValueError(f"run {run['run_id']} SenseCore image_id must be a registry digest")
-        image = str(backend["image"])
-        tag = image.rsplit(":", 1)[-1]
-        if tag in {"latest", "runtime", "seed"} or ":" not in image:
-            raise ValueError(f"run {run['run_id']} SenseCore image must use an immutable source-qualified tag")
+        try:
+            digest_pinned_image(str(backend["image"]), str(run["image_id"]))
+        except ValueError as error:
+            raise ValueError(f"run {run['run_id']} {error}") from error
         mount_path = Path(str(backend["storage_mount"]).rsplit(":", 1)[-1])
         if not mount_path.is_absolute():
             raise ValueError(f"run {run['run_id']} SenseCore storage mount path must be absolute")
@@ -78,7 +103,7 @@ class SenseCoreBackend:
     def environment(self, campaign, run, source_id, attempt_id) -> dict[str, str]:
         backend = run["backend"]
         return {
-            "BACKEND_JOB_ID": str(backend["job_name"]),
+            "BACKEND_JOB_ID": scheduler_job_name(str(backend["job_name"]), attempt_id),
             "QUOTA_TYPE": str(backend["quota_type"]),
             "RESOURCE_SPEC": str(backend["worker_spec"]),
         }
@@ -116,18 +141,31 @@ class SenseCoreBackend:
         return PreflightReport(self.kind, scope, tuple(checks))
 
     def submission_request(self, campaign, run, attempt_id) -> dict[str, Any]:
-        return {"scheduler_name": str(run["backend"]["job_name"])}
+        backend = run["backend"]
+        return {
+            "scheduler_name": scheduler_job_name(str(backend["job_name"]), attempt_id),
+            "image_tag": str(backend["image"]),
+            "image_digest": str(run["image_id"]),
+            "image_reference": digest_pinned_image(
+                str(backend["image"]), str(run["image_id"])
+            ),
+        }
 
     def recover_submission(self, run, intent, attempt_id) -> str | None:
-        matches = self.find(run)
+        expected = scheduler_job_name(str(run["backend"]["job_name"]), attempt_id)
+        requested = str(intent.get("scheduler_name") or expected)
+        if requested != expected:
+            raise RuntimeError("SenseCore submission intent has a conflicting scheduler name")
+        matches = self.find(run, expected)
         if len(matches) > 1:
             raise RuntimeError(
                 f"ambiguous scheduler identity: {len(matches)} jobs match this attempt"
             )
-        return str(run["backend"]["job_name"]) if matches else None
+        return expected if matches else None
 
     def identity(self, campaign, run, attempt_id) -> IdentityReport:
-        matches = self.find(run)
+        resource_name = scheduler_job_name(str(run["backend"]["job_name"]), attempt_id)
+        matches = self.find(run, resource_name)
         return IdentityReport(
             available=not matches,
             ambiguous=len(matches) > 1,
@@ -145,43 +183,77 @@ class SenseCoreBackend:
         sco = shlex.join(["env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
                           "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY", *arguments])
         sanitizer = shlex.join([sys.executable, "-m", "experiment_control.safe_sco", mode])
-        return ["bash", "-o", "pipefail", "-c", f"{sco} | {sanitizer}"]
+        return ["bash", "-o", "pipefail", "-c", f"{sco} 2>&1 | {sanitizer}"]
 
-    def describe(self, run: dict[str, Any]) -> dict[str, Any]:
+    def describe(
+        self, run: dict[str, Any], resource_name: str | None = None
+    ) -> dict[str, Any]:
         backend = run["backend"]
+        exact_name = str(resource_name or backend["job_name"])
         result = self.s.run_command(
-            self.safe_command([self.sco_bin(run), "acp", "jobs", "describe", backend["job_name"],
+            self.safe_command([self.sco_bin(run), "acp", "jobs", "describe", exact_name,
                                "--workspace-name", backend["workspace"], "-o", "json"], "job-summary"),
             check=False,
         )
         if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or "sanitized SenseCore describe failed")
+            raise RuntimeError(
+                self._redact_error(result.stderr)
+                or "sanitized SenseCore describe failed"
+            )
         payload = json.loads(result.stdout)
         if not isinstance(payload, dict):
             raise ValueError("SenseCore describe sanitizer returned a non-object")
         return payload
 
-    def find(self, run: dict[str, Any]) -> list[dict[str, Any]]:
+    def find(
+        self, run: dict[str, Any], resource_name: str | None = None
+    ) -> list[dict[str, Any]]:
         backend = run["backend"]
+        exact_name = str(resource_name or backend["job_name"])
         result = self.s.run_command(
             self.safe_command([self.sco_bin(run), "acp", "jobs", "list", "--workspace-name", backend["workspace"],
-                               "--name", backend["job_name"], "--page-size", "5", "-o", "json"], "job-list"),
+                               "--name", exact_name, "--page-size", "5", "-o", "json"], "job-list"),
             check=False,
         )
         if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or "sanitized SenseCore list failed")
+            raise RuntimeError(
+                self._redact_error(result.stderr)
+                or "sanitized SenseCore list failed"
+            )
         payload = json.loads(result.stdout)
         if not isinstance(payload, list):
             raise ValueError("SenseCore list sanitizer returned a non-list")
-        return [item for item in payload if item.get("name") == backend["job_name"]]
+        return [item for item in payload if item.get("name") == exact_name]
 
     def stage(self, campaign, run, source_id, source_bundle) -> bool:
         # SenseCore consumes an immutable registry image; no controller-side
         # source upload is required for this backend.
         return True
 
+    def _create_command(self, manifest: dict[str, Any]) -> list[str]:
+        backend = manifest["backend"]
+        resource_name = scheduler_job_name(
+            str(backend["job_name"]), str(manifest["attempt_id"])
+        )
+        return [
+            "env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
+            "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY",
+            self.sco_bin(manifest), "acp", "jobs", "create",
+            "--workspace-name", backend["workspace"],
+            "--aec2-name", backend["aec2"], "--name", resource_name,
+            "--job-name", backend["display_name"],
+            "--container-image-url", digest_pinned_image(
+                str(backend["image"]), str(manifest["image_id"])
+            ),
+            "--training-framework", "pytorch", "--worker-spec", backend["worker_spec"],
+            "--worker-nodes", str(backend.get("worker_nodes", 1)),
+            "--priority", str(backend.get("priority", "NORMAL")),
+            "--quota-type", backend["quota_type"], "--storage-mount", backend["storage_mount"],
+            "--wait", "--command", shlex.join(manifest["command"]),
+        ]
+
     def render(self, manifest) -> str:
-        return shlex.join(manifest["command"])
+        return shlex.join(self._create_command(manifest))
 
     def _redact_error(self, text: str) -> str:
         result = self.s.run_command(
@@ -192,35 +264,36 @@ class SenseCoreBackend:
 
     def submit(self, campaign, run, manifest, *, dry_run: bool) -> str:
         backend = run["backend"]
+        if str(manifest.get("image_id")) != str(run.get("image_id")):
+            raise ValueError("SenseCore frozen manifest image_id conflicts with the run")
+        resource_name = scheduler_job_name(
+            str(backend["job_name"]), str(manifest["attempt_id"])
+        )
+        create = self._create_command(manifest)
         if dry_run:
             return "DRY_RUN"
-        if self.find(run):
-            raise FileExistsError(f"SenseCore job already exists: {backend['job_name']}")
-        create = [
-            "env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
-            "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY",
-            self.sco_bin(run), "acp", "jobs", "create", "--workspace-name", backend["workspace"],
-            "--aec2-name", backend["aec2"], "--name", backend["job_name"],
-            "--job-name", backend["display_name"], "--container-image-url", backend["image"],
-            "--training-framework", "pytorch", "--worker-spec", backend["worker_spec"],
-            "--worker-nodes", str(backend.get("worker_nodes", 1)),
-            "--priority", str(backend.get("priority", "NORMAL")),
-            "--quota-type", backend["quota_type"], "--storage-mount", backend["storage_mount"],
-            "--wait", "--command", shlex.join(manifest["command"]),
-        ]
+        if self.find(run, resource_name):
+            raise FileExistsError(f"SenseCore job already exists: {resource_name}")
         result = self.s.run_command(create, check=False)
         if result.returncode != 0:
             raise RuntimeError(self._redact_error(result.stderr) or "SenseCore create failed")
-        summary = self.describe(run)
-        if summary.get("name") != backend["job_name"]:
+        summary = self.describe(run, resource_name)
+        if summary.get("name") != resource_name:
             raise RuntimeError("SenseCore accepted create but exact job was not observable")
-        return backend["job_name"]
+        return resource_name
 
     def status(self, campaign, run) -> dict[str, Any]:
         record = self.s.backend_record(campaign, run)
-        summary = self.describe(run)
-        marker = self.s.local_run_dir(campaign, run) / "cancel_requested.json"
-        state = normalize_state(str(summary.get("state", "")), cancellation_requested=marker.is_file())
+        resource_name = str(record["backend_job_id"])
+        summary = self.describe(run, resource_name)
+        if summary.get("name") != resource_name:
+            raise RuntimeError("SenseCore exact job describe returned a conflicting resource")
+        state = normalize_state(
+            str(summary.get("state", "")),
+            cancellation_requested=self._cancellation_requested(
+                campaign, run, resource_name
+            ),
+        )
         return {
             "run_id": run["run_id"], "backend": "sensecore",
             "backend_job_id": record["backend_job_id"],
@@ -228,6 +301,29 @@ class SenseCoreBackend:
             "raw_state": summary.get("state"), "pool": summary.get("pool"), "spec": summary.get("spec"),
             "failure_class": "preemption" if state == "PREEMPTED" else None,
         }
+
+    def _cancellation_requested(
+        self, campaign: dict[str, Any], run: dict[str, Any], resource_name: str
+    ) -> bool:
+        """Match attempt-local or legacy run-level cancellation evidence exactly."""
+        local_dir = self.s.local_run_dir(campaign, run)
+        markers = [local_dir / "cancel_requested.json"]
+        if local_dir.parent.name == "attempts":
+            markers.append(local_dir.parent.parent / "cancel_requested.json")
+        for marker in markers:
+            if not marker.is_file():
+                continue
+            try:
+                payload = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise RuntimeError(
+                    "SenseCore cancellation evidence is unreadable"
+                ) from error
+            if not isinstance(payload, dict) or not payload.get("backend_job_id"):
+                raise RuntimeError("SenseCore cancellation evidence is malformed")
+            if str(payload["backend_job_id"]) == resource_name:
+                return True
+        return False
 
     def cancel(self, campaign, run) -> dict[str, Any]:
         current = self.status(campaign, run)
@@ -239,10 +335,11 @@ class SenseCoreBackend:
             "requested_at": self.s.utc_now(),
         })
         backend = run["backend"]
+        resource_name = str(current["backend_job_id"])
         result = self.s.run_command(
             ["env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
              "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY",
-             self.sco_bin(run), "acp", "jobs", "stop", backend["job_name"], "--workspace-name", backend["workspace"]],
+             self.sco_bin(run), "acp", "jobs", "stop", resource_name, "--workspace-name", backend["workspace"]],
             check=False,
         )
         if result.returncode != 0:
@@ -268,11 +365,15 @@ class SenseCoreBackend:
         return result
 
     def logs(self, campaign, run, *, tail: int) -> dict[str, Any]:
+        if not 1 <= tail <= 10000:
+            raise ValueError("tail must be between 1 and 10000")
         backend = run["backend"]
+        record = self.s.backend_record(campaign, run)
+        resource_name = str(record["backend_job_id"])
         result = self.s.run_command(
             ["timeout", "20s", "env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
              "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY", self.sco_bin(run), "acp", "jobs",
-             "stream-logs", backend["job_name"], "--workspace-name", backend["workspace"]],
+             "stream-logs", resource_name, "--workspace-name", backend["workspace"]],
             check=False,
         )
         redacted = self._redact_error(result.stdout + "\n" + result.stderr)
@@ -282,6 +383,6 @@ class SenseCoreBackend:
         )
         return {
             "run_id": run["run_id"], "backend": "sensecore",
-            "backend_job_id": backend["job_name"], "tail": tail,
+            "backend_job_id": resource_name, "tail": tail,
             "lines": lines, "expired": expired, "stream_exit_code": result.returncode,
         }
