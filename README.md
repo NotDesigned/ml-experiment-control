@@ -38,6 +38,7 @@ The package has no runtime dependencies outside the Python standard library.
 from experiment_control.backends import build_registry
 from experiment_control.backends.services import BackendServices
 from experiment_control.preflight import PreflightCheck, PreflightReport
+from experiment_control.identity import IdentityReport
 from experiment_control.project import (
     AssetProbe,
     AssetRequirement,
@@ -59,8 +60,8 @@ independent from the host's manifest implementation.
 Each backend implements:
 
 ```text
-validate -> preflight -> stage -> render -> submit
-                              -> status/logs/collect/cancel
+validate -> preflight -> identity -> stage -> render -> submit
+                                          -> status/logs/collect/cancel
 ```
 
 `preflight` returns a credential-free `PreflightReport`. SenseCore checks the
@@ -68,6 +69,19 @@ SCO executable and a sanitized exact-name workspace query. WYD scopes checks
 to the operation: observation needs only SSH/Slurm control access, staging adds
 rsync and storage, and submission adds live partition/GRES, account/QOS,
 Apptainer, and mount validation.
+
+`identity(campaign, run, attempt_id)` returns a typed, sanitized, read-only
+`IdentityReport` containing `available`, `ambiguous`, `scheduler_job_ids`, and
+`remote_manifest_exists` when the backend can inspect persistent storage.
+Recovery fails closed when more than one scheduler job matches one attempt; it
+never selects one arbitrarily.
+Campaign generation and local event reconciliation remain host responsibilities
+because this package does not own YAML or run manifests.
+
+WYD submission also acquires an attempt-qualified directory claim on persistent
+storage before copying the manifest or invoking `sbatch`. The claim is not
+removed automatically: a controller crash therefore fails closed for manual
+reconciliation instead of permitting a second scheduler mutation.
 
 Credentials remain in native providers:
 
@@ -89,6 +103,19 @@ ELF's implementation lives outside this package at
 `scripts/experiment_projects/elf.py`, demonstrating that the installed package
 does not import ELF modules.
 
+Asset discovery follows the same boundary. A project adapter returns semantic
+requirements and maps them to backend-verifiable filesystem probes:
+
+```python
+requirements = adapter.plan_assets(config_path, overrides)
+probes = adapter.asset_probes(requirements, runtime_environment)
+report = backend.verify_assets(run, probes)
+```
+
+`AssetRequirement.identity` is the immutable model, dataset, or file identity;
+`AssetProbe.path` is its backend-visible representation. Backends never need to
+know model or dataset names.
+
 ## Tool overrides
 
 The backends recognize these non-secret environment variables:
@@ -109,6 +136,7 @@ Registry publication remains a host workflow; ELF's helper additionally uses
   workspace responses.
 - SenseCore JSON is piped through the packaged sanitizer before parsing.
 - Preflight failure is fail-closed before remote stage or scheduler submit.
+- Consumed or ambiguous scheduler identities are rejected before submission.
 - Completed checkpoints require a matching payload, step, and byte-count marker.
 - Scheduler state, model progress, and scientific conclusions remain separate.
 - Source, image, config, storage, and scheduler identities remain the host

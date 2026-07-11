@@ -12,6 +12,7 @@ from typing import Any
 
 from .services import BackendServices
 from ..preflight import PreflightCheck, PreflightReport
+from ..identity import IdentityReport
 
 
 def normalize_state(raw_state: str, *, cancellation_requested: bool = False) -> str:
@@ -118,7 +119,20 @@ class SenseCoreBackend:
         return {"scheduler_name": str(run["backend"]["job_name"])}
 
     def recover_submission(self, run, intent, attempt_id) -> str | None:
-        return str(run["backend"]["job_name"]) if self.find(run) else None
+        matches = self.find(run)
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"ambiguous scheduler identity: {len(matches)} jobs match this attempt"
+            )
+        return str(run["backend"]["job_name"]) if matches else None
+
+    def identity(self, campaign, run, attempt_id) -> IdentityReport:
+        matches = self.find(run)
+        return IdentityReport(
+            available=not matches,
+            ambiguous=len(matches) > 1,
+            scheduler_job_ids=tuple(str(item["name"]) for item in matches),
+        )
 
     def verify_assets(self, run, probes) -> dict[str, Any]:
         return {

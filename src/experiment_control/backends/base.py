@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from ..preflight import PreflightReport
+from ..identity import IdentityReport
 from ..project import AssetProbe, SourceBundle
 
 
@@ -22,6 +23,9 @@ class Backend(Protocol):
     def recover_submission(
         self, run: dict[str, Any], intent: dict[str, Any], attempt_id: str
     ) -> str | None: ...
+    def identity(
+        self, campaign: dict[str, Any], run: dict[str, Any], attempt_id: str
+    ) -> IdentityReport: ...
     def verify_assets(self, run: dict[str, Any], probes: list[AssetProbe]) -> dict[str, Any]: ...
     def stage(
         self, campaign: dict[str, Any], run: dict[str, Any], source_id: str,

@@ -14,6 +14,7 @@ from .services import BackendServices
 from ..preflight import PreflightCheck, PreflightReport
 from ..safe_sco import redact_line
 from ..checkpoints import select_latest_checkpoint_name
+from ..identity import IdentityReport
 
 
 SLURM_STATES = {
@@ -248,29 +249,53 @@ class WydSlurmBackend:
     def submission_request(self, campaign, run, attempt_id) -> dict[str, Any]:
         return {"scheduler_name": scheduler_job_name(str(run["run_id"]), attempt_id)}
 
-    def recover_submission(self, run, intent, attempt_id) -> str | None:
+    def _matching_jobs(self, run, intent, attempt_id) -> list[str]:
         backend = run["backend"]
         token = str(intent["submission_token"])
         expected_name = scheduler_job_name(str(run["run_id"]), attempt_id)
-        result = self.remote_exec(
+        queue = self.remote_exec(
             backend["ssh_alias"], "squeue -u $(id -un) -h -o '%i|%j|%k'", check=False
         )
-        matches = []
-        for line in result.stdout.splitlines():
+        matches: set[str] = set()
+        for line in queue.stdout.splitlines():
             fields = line.split("|", 2)
             if len(fields) == 3 and (fields[1] == expected_name or fields[2] == token):
-                matches.append(fields[0])
-        if not matches:
-            accounting = self.remote_exec(
-                backend["ssh_alias"],
-                "sacct -S now-7days -u $(id -un) -X -n -P -o JobIDRaw,JobName",
-                check=False,
+                matches.add(fields[0])
+        accounting = self.remote_exec(
+            backend["ssh_alias"],
+            "sacct -S now-30days -u $(id -un) -X -n -P -o JobIDRaw,JobName",
+            check=False,
+        )
+        matches.update(
+            line.split("|", 1)[0] for line in accounting.stdout.splitlines()
+            if line.endswith(f"|{expected_name}") and line.split("|", 1)[0].isdigit()
+        )
+        return sorted(matches, key=lambda value: (len(value), value))
+
+    def recover_submission(self, run, intent, attempt_id) -> str | None:
+        matches = self._matching_jobs(run, intent, attempt_id)
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"ambiguous scheduler identity: {len(matches)} jobs match this attempt"
             )
-            matches = [
-                line.split("|", 1)[0] for line in accounting.stdout.splitlines()
-                if line.endswith(f"|{expected_name}") and line.split("|", 1)[0].isdigit()
-            ]
-        return matches[0] if len(matches) == 1 else None
+        return matches[0] if matches else None
+
+    def identity(self, campaign, run, attempt_id) -> IdentityReport:
+        token = f"{campaign['campaign']}/{run['run_id']}/{attempt_id}"
+        matches = self._matching_jobs(
+            run, {"submission_token": token}, attempt_id
+        )
+        manifest = self.remote_exec(
+            run["backend"]["ssh_alias"],
+            f"test -e {shlex.quote(str(run['storage']['run_dir']))}/manifest.yaml",
+            check=False,
+        )
+        return IdentityReport(
+            available=not matches and manifest.returncode != 0,
+            ambiguous=len(matches) > 1,
+            scheduler_job_ids=tuple(matches),
+            remote_manifest_exists=manifest.returncode == 0,
+        )
 
     def verify_assets(self, run, probes) -> dict[str, Any]:
         missing = []
@@ -367,7 +392,17 @@ class WydSlurmBackend:
         backend = run["backend"]
         self.validate_live(run)
         remote_script = f"{run['storage']['run_dir']}/controller-{manifest['attempt_id']}.sbatch"
-        self.remote_exec(backend["ssh_alias"], shlex.join(["mkdir", "-p", run["storage"]["run_dir"]]))
+        claim_dir = f"{run['storage']['run_dir']}/.submission-{manifest['attempt_id']}"
+        claim = self.remote_exec(
+            backend["ssh_alias"],
+            f"{shlex.join(['mkdir', '-p', run['storage']['run_dir']])} && "
+            f"{shlex.join(['mkdir', claim_dir])}",
+            check=False,
+        )
+        if claim.returncode != 0:
+            raise FileExistsError(
+                "remote submission claim already exists; reconcile before retrying"
+            )
         transport = self.ssh_transport()
         self.s.run_command([
             self.rsync_bin, "-a", "-e", transport,
