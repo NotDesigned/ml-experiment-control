@@ -1,0 +1,64 @@
+"""Injectable command execution used by scheduler adapters."""
+
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol, Sequence
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    """Portable, immutable result returned by a command runner."""
+
+    args: tuple[str, ...]
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+
+    def check_returncode(self) -> None:
+        """Raise the same error callers expect from ``subprocess.run``."""
+        if self.returncode:
+            raise subprocess.CalledProcessError(
+                self.returncode, list(self.args), output=self.stdout, stderr=self.stderr
+            )
+
+
+class CommandRunner(Protocol):
+    """Boundary for external commands and hermetic test fakes."""
+
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        check: bool = True,
+        input_text: str | None = None,
+    ) -> CommandResult: ...
+
+
+class SubprocessRunner:
+    """Production runner with shell expansion deliberately disabled."""
+
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        check: bool = True,
+        input_text: str | None = None,
+    ) -> CommandResult:
+        completed = subprocess.run(
+            list(command), cwd=cwd, check=False, input=input_text,
+            text=True, capture_output=True,
+        )
+        result = CommandResult(
+            args=tuple(str(arg) for arg in command),
+            returncode=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+        )
+        if check:
+            result.check_returncode()
+        return result
