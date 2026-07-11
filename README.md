@@ -11,6 +11,11 @@ commands, metric semantics, campaign files, credentials, or model assets. A
 host repository supplies those through a project adapter and injected backend
 services.
 
+For the host-side autonomous research loop, command order, mutation boundaries,
+and evidence report contract, see
+[`docs/agent_research_guide.md`](../../docs/agent_research_guide.md). This README
+documents the reusable package boundary rather than a project experiment plan.
+
 ## Install
 
 From the ELF repository:
