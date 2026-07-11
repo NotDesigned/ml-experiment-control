@@ -15,7 +15,7 @@ from ..preflight import PreflightCheck, PreflightReport
 
 
 def normalize_state(raw_state: str, *, cancellation_requested: bool = False) -> str:
-    raw = raw_state.upper()
+    raw = str(raw_state or "").upper()
     if cancellation_requested and raw in {"SUSPENDING", "SUSPENDED", "DELETING", "DELETED"}:
         return "CANCELLED"
     if raw in {"WAITING", "INIT", "QUEUEING", "PENDING", "CREATING"}:
@@ -84,6 +84,8 @@ class SenseCoreBackend:
 
     def preflight(self, run: dict[str, Any], *, scope: str) -> PreflightReport:
         """Check the SCO executable and sanitized workspace access."""
+        if scope not in {"stage", "submit", "observe"}:
+            raise ValueError(f"unsupported preflight scope: {scope}")
         sco = self.sco_bin(run)
         version = self.s.run_command(
             ["env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
@@ -126,10 +128,10 @@ class SenseCoreBackend:
         }
 
     def safe_command(self, arguments: list[str], mode: str) -> list[str]:
-        safe_script = Path(__file__).resolve().parents[1] / "safe_sco.py"
         sco = shlex.join(["env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
                           "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY", *arguments])
-        return ["bash", "-o", "pipefail", "-c", f"{sco} | {shlex.join([sys.executable, str(safe_script), mode])}"]
+        sanitizer = shlex.join([sys.executable, "-m", "experiment_control.safe_sco", mode])
+        return ["bash", "-o", "pipefail", "-c", f"{sco} | {sanitizer}"]
 
     def describe(self, run: dict[str, Any]) -> dict[str, Any]:
         backend = run["backend"]
@@ -153,8 +155,6 @@ class SenseCoreBackend:
             check=False,
         )
         if result.returncode != 0:
-            if not result.stdout.strip() and result.stderr.strip() == "safe_sco: input was not valid JSON; raw response suppressed":
-                return []
             raise RuntimeError(result.stderr.strip() or "sanitized SenseCore list failed")
         payload = json.loads(result.stdout)
         if not isinstance(payload, list):
@@ -162,14 +162,16 @@ class SenseCoreBackend:
         return [item for item in payload if item.get("name") == backend["job_name"]]
 
     def stage(self, campaign, run, source_id, source_bundle) -> bool:
-        return False
+        # SenseCore consumes an immutable registry image; no controller-side
+        # source upload is required for this backend.
+        return True
 
     def render(self, manifest) -> str:
         return shlex.join(manifest["command"])
 
     def _redact_error(self, text: str) -> str:
         result = self.s.run_command(
-            [sys.executable, str(Path(__file__).resolve().parents[1] / "safe_sco.py"), "redact-lines"],
+            [sys.executable, "-m", "experiment_control.safe_sco", "redact-lines"],
             input_text=text, check=False,
         )
         return result.stdout.strip()
@@ -215,16 +217,13 @@ class SenseCoreBackend:
 
     def cancel(self, campaign, run) -> dict[str, Any]:
         current = self.status(campaign, run)
+        if current["state"] in {"SUCCEEDED", "FAILED", "PREEMPTED", "CANCELLED"}:
+            return current
         marker = self.s.local_run_dir(campaign, run) / "cancel_requested.json"
         self.s.atomic_write(marker, {
             "run_id": run["run_id"], "backend_job_id": current["backend_job_id"],
             "requested_at": self.s.utc_now(),
         })
-        if current.get("raw_state") in {"SUSPENDING", "SUSPENDED", "DELETING", "DELETED"}:
-            current["state"] = "CANCELLED"
-            return current
-        if current["state"] in {"SUCCEEDED", "FAILED", "PREEMPTED", "CANCELLED"}:
-            return current
         backend = run["backend"]
         result = self.s.run_command(
             ["env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
@@ -240,10 +239,19 @@ class SenseCoreBackend:
         snapshot = self.logs(campaign, run, tail=200)
         lines = snapshot["lines"]
         metrics = [metric for line in lines if (metric := self.s.parse_metric(campaign, line))]
+        checkpoints = [
+            checkpoint for line in lines
+            if (checkpoint := self.s.parse_checkpoint(campaign, line))
+        ]
         metric_lines = [line for line in lines if "Step " in line or "gPPL:" in line or ("plan" in line.lower() and "ppl" in line.lower())]
-        return {"run_id": run["run_id"], "backend": "sensecore", "model_observed": bool(metrics),
-                "latest_metric": metrics[-1] if metrics else None, "metric_log_lines": metric_lines[-20:],
-                "live_logs_expired": snapshot["expired"]}
+        result = {"run_id": run["run_id"], "backend": "sensecore", "model_observed": bool(metrics),
+                  "latest_metric": metrics[-1] if metrics else None, "metric_log_lines": metric_lines[-20:],
+                  "live_logs_expired": snapshot["expired"]}
+        if checkpoints:
+            latest = max(checkpoints, key=lambda item: int(item["step"]))
+            result["latest_completed_checkpoint"] = latest["path"]
+            result["latest_completed_checkpoint_step"] = latest["step"]
+        return result
 
     def logs(self, campaign, run, *, tail: int) -> dict[str, Any]:
         backend = run["backend"]

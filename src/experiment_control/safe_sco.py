@@ -12,13 +12,7 @@ import argparse
 import json
 import re
 import sys
-from pathlib import Path
 from typing import Any, TextIO
-
-if __package__ in {None, ""}:
-    package_src = Path(__file__).resolve().parents[1]
-    if str(package_src) not in sys.path:
-        sys.path.insert(0, str(package_src))
 
 from experiment_control.backends.sensecore import normalize_state
 

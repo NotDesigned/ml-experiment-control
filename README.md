@@ -59,9 +59,10 @@ validate -> preflight -> stage -> render -> submit
 ```
 
 `preflight` returns a credential-free `PreflightReport`. SenseCore checks the
-SCO executable and a sanitized exact-name workspace query. WYD checks SSH,
-rsync, the live Slurm partition/GRES and account/QOS association, Apptainer,
-and the declared mount root.
+SCO executable and a sanitized exact-name workspace query. WYD scopes checks
+to the operation: observation needs only SSH/Slurm control access, staging adds
+rsync and storage, and submission adds live partition/GRES, account/QOS,
+Apptainer, and mount validation.
 
 Credentials remain in native providers:
 
@@ -75,10 +76,9 @@ training commands.
 ## Project integration
 
 A training repository implements `ProjectAdapter` to define config resolution,
-the launch command/environment, assets, metric parsing, summaries, and source
-staging policy. The controller composes one `ProjectAdapter` with one compute
-backend. This is the only intended connection between scientific code and the
-package.
+the launch command/environment, assets, metric and checkpoint-log parsing,
+summaries, and source staging policy. The controller composes one
+`ProjectAdapter` with one compute backend.
 
 ELF's implementation lives outside this package at
 `scripts/experiment_projects/elf.py`, demonstrating that the installed package
@@ -104,6 +104,7 @@ Registry publication remains a host workflow; ELF's helper additionally uses
   workspace responses.
 - SenseCore JSON is piped through the packaged sanitizer before parsing.
 - Preflight failure is fail-closed before remote stage or scheduler submit.
+- Completed checkpoints require a matching payload, step, and byte-count marker.
 - Scheduler state, model progress, and scientific conclusions remain separate.
 - Source, image, config, storage, and scheduler identities remain the host
   manifest's responsibility.

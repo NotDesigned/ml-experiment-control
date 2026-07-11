@@ -49,16 +49,21 @@ class SubprocessRunner:
         check: bool = True,
         input_text: str | None = None,
     ) -> CommandResult:
-        completed = subprocess.run(
-            list(command), cwd=cwd, check=False, input=input_text,
-            text=True, capture_output=True,
-        )
-        result = CommandResult(
-            args=tuple(str(arg) for arg in command),
-            returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-        )
+        arguments = tuple(str(arg) for arg in command)
+        try:
+            completed = subprocess.run(
+                list(command), cwd=cwd, check=False, input=input_text,
+                text=True, capture_output=True,
+            )
+            result = CommandResult(
+                args=arguments, returncode=completed.returncode,
+                stdout=completed.stdout, stderr=completed.stderr,
+            )
+        except OSError as error:
+            result = CommandResult(
+                args=arguments, returncode=127,
+                stderr=f"command execution failed: {type(error).__name__}",
+            )
         if check:
             result.check_returncode()
         return result

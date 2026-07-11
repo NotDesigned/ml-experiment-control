@@ -16,5 +16,6 @@ class BackendServices:
     backend_record: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
     summarize_run: Callable[[dict[str, Any], Path], dict[str, Any]]
     parse_metric: Callable[[dict[str, Any], str], dict[str, Any] | None]
+    parse_checkpoint: Callable[[dict[str, Any], str], dict[str, Any] | None]
     atomic_write: Callable[..., None]
     utc_now: Callable[[], str]

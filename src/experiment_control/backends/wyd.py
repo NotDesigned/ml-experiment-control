@@ -13,6 +13,7 @@ from typing import Any
 from .services import BackendServices
 from ..preflight import PreflightCheck, PreflightReport
 from ..safe_sco import redact_line
+from ..checkpoints import select_latest_checkpoint_name
 
 
 SLURM_STATES = {
@@ -37,6 +38,21 @@ def scheduler_job_name(run_id: str, attempt_id: str) -> str:
     return f"{raw[:113]}--{hashlib.sha256(raw.encode()).hexdigest()[:12]}"
 
 
+def checkpoint_probe_command(run_dir: str) -> str:
+    """Build a remote read-only probe that validates marker step and payload size."""
+    code = (
+        "import glob,json,os,re,sys; root=sys.argv[1]; "
+        "markers=glob.glob(os.path.join(root,'checkpoint_*.complete')); "
+        "\nfor marker in markers:\n"
+        " payload=marker[:-9]; match=re.fullmatch(r'checkpoint_(\\d+)',os.path.basename(payload));\n"
+        " if not match or not os.path.isfile(payload): continue\n"
+        " try: metadata=json.load(open(marker,encoding='utf-8'))\n"
+        " except (OSError,ValueError): continue\n"
+        " if metadata.get('step')==int(match.group(1)) and metadata.get('bytes')==os.path.getsize(payload): print(os.path.basename(payload))"
+    )
+    return shlex.join(["python3", "-c", code, run_dir])
+
+
 def render_job(manifest: dict[str, Any]) -> str:
     backend, resources = manifest["backend"], manifest.get("resources", {})
     run_dir, source_dir, sif_path = (
@@ -47,9 +63,9 @@ def render_job(manifest: dict[str, Any]) -> str:
     cache = str(backend.get("apptainer_cache_dir", f"{project_root}/apptainer/cache"))
     temp = str(backend.get("apptainer_tmp_dir", f"{project_root}/apptainer/tmp"))
     command = shlex.join(manifest["command"])
-    execution = manifest.get("execution", {})
-    container_path = str(execution.get("source_mount", "/workspace"))
-    workdir = str(execution.get("workdir", container_path))
+    execution = manifest["execution"]
+    container_path = str(execution["source_mount"])
+    workdir = str(execution["workdir"])
     comment = shlex.quote(f"{manifest.get('campaign', 'campaign')}/{manifest['run_id']}/{manifest['attempt_id']}")
     job_name = scheduler_job_name(str(manifest["run_id"]), str(manifest["attempt_id"]))
     return f"""#!/usr/bin/env bash
@@ -173,11 +189,13 @@ class WydSlurmBackend:
 
     def preflight(self, run: dict[str, Any], *, scope: str) -> PreflightReport:
         """Check local transport tools plus live Slurm/storage compatibility."""
+        if scope not in {"stage", "submit", "observe"}:
+            raise ValueError(f"unsupported preflight scope: {scope}")
         checks: list[PreflightCheck] = []
-        for name, command in (
-            ("ssh-cli", [self.ssh_bin, "-V"]),
-            ("rsync-cli", [self.rsync_bin, "--version"]),
-        ):
+        tool_commands = [("ssh-cli", [self.ssh_bin, "-V"])]
+        if scope == "stage":
+            tool_commands.append(("rsync-cli", [self.rsync_bin, "--version"]))
+        for name, command in tool_commands:
             result = self.s.run_command(command, check=False)
             checks.append(PreflightCheck(
                 name, "tool", "PASS" if result.returncode == 0 else "FAIL",
@@ -186,7 +204,10 @@ class WydSlurmBackend:
         if any(check.status == "FAIL" for check in checks):
             return PreflightReport(self.kind, scope, tuple(checks))
         try:
-            live = self.validate_live(run)
+            live = (
+                self.validate_live(run) if scope == "submit"
+                else self.validate_control(run)
+            )
         except subprocess.CalledProcessError:
             checks.append(PreflightCheck(
                 "slurm-access", "transport", "FAIL",
@@ -201,21 +222,27 @@ class WydSlurmBackend:
             ))
         else:
             checks.append(PreflightCheck(
-                "slurm-access", "resource", "PASS",
-                f"partition {live['partition']} exposes the requested GPU type",
+                "slurm-access", "resource" if scope == "submit" else "authorization", "PASS",
+                f"partition {live['partition']} exposes the requested GPU type"
+                if scope == "submit" else "Slurm control query is permitted",
             ))
-            backend = run["backend"]
-            storage = self.remote_exec(
-                backend["ssh_alias"],
-                f"command -v apptainer >/dev/null && test -d {shlex.quote(str(backend['mount_root']))}",
-                check=False,
-            )
-            checks.append(PreflightCheck(
-                "runtime-storage", "storage",
-                "PASS" if storage.returncode == 0 else "FAIL",
-                "Apptainer and mount root are available" if storage.returncode == 0
-                else "Apptainer or mount root is unavailable",
-            ))
+            if scope in {"stage", "submit"}:
+                backend = run["backend"]
+                storage = self.remote_exec(
+                    backend["ssh_alias"],
+                    (
+                        "command -v apptainer >/dev/null && " if scope == "submit" else ""
+                    ) + f"test -d {shlex.quote(str(backend['mount_root']))}",
+                    check=False,
+                )
+                checks.append(PreflightCheck(
+                    "runtime-storage", "storage",
+                    "PASS" if storage.returncode == 0 else "FAIL",
+                    ("Apptainer and mount root are available" if scope == "submit"
+                     else "mount root is available") if storage.returncode == 0
+                    else ("Apptainer or mount root is unavailable" if scope == "submit"
+                          else "mount root is unavailable"),
+                ))
         return PreflightReport(self.kind, scope, tuple(checks))
 
     def submission_request(self, campaign, run, attempt_id) -> dict[str, Any]:
@@ -323,6 +350,13 @@ class WydSlurmBackend:
             raise RuntimeError(f"Slurm association does not expose account={backend['account']} qos={backend['qos']}")
         return {"partition": partition, "availability": fields[1], "gres": fields[3]}
 
+    def validate_control(self, run: dict[str, Any]) -> dict[str, str]:
+        """Verify SSH and a minimal user-scoped Slurm control query."""
+        result = self.remote_exec(
+            run["backend"]["ssh_alias"], "squeue -u $(id -un) -h -o '%i'"
+        )
+        return {"query": "squeue", "output": "nonempty" if result.stdout.strip() else "empty"}
+
     def submit(self, campaign, run, manifest, *, dry_run: bool) -> str:
         local_dir = self.s.local_run_dir(campaign, run)
         script_path = local_dir / "attempts" / manifest["attempt_id"] / "job.sbatch"
@@ -335,6 +369,11 @@ class WydSlurmBackend:
         remote_script = f"{run['storage']['run_dir']}/controller-{manifest['attempt_id']}.sbatch"
         self.remote_exec(backend["ssh_alias"], shlex.join(["mkdir", "-p", run["storage"]["run_dir"]]))
         transport = self.ssh_transport()
+        self.s.run_command([
+            self.rsync_bin, "-a", "-e", transport,
+            str(local_dir / "manifest.yaml"),
+            f"{backend['ssh_alias']}:{run['storage']['run_dir']}/manifest.yaml",
+        ])
         self.s.run_command([self.rsync_bin, "-a", "-e", transport, str(script_path), f"{backend['ssh_alias']}:{remote_script}"])
         result = self.remote_exec(backend["ssh_alias"], f"sbatch --parsable {shlex.quote(remote_script)}")
         job_id = result.stdout.strip().split(";", 1)[0]
@@ -385,6 +424,17 @@ class WydSlurmBackend:
              f"{backend['ssh_alias']}:{run['storage']['run_dir']}/", f"{mirror}/"]
         )
         summary = self.s.summarize_run(campaign, mirror)
+        run_dir = str(run["storage"]["run_dir"])
+        checkpoint_probe = self.remote_exec(
+            backend["ssh_alias"],
+            checkpoint_probe_command(run_dir),
+            check=False,
+        )
+        selected = select_latest_checkpoint_name(checkpoint_probe.stdout.splitlines())
+        if selected:
+            name, step = selected
+            summary["latest_completed_checkpoint"] = f"{run_dir}/{name}"
+            summary["latest_completed_checkpoint_step"] = step
         summary["collected_from"] = run["storage"]["run_dir"]
         summary["run_dir"] = run["storage"]["run_dir"]
         return summary
