@@ -75,6 +75,16 @@ class SenseCoreBackend:
             or os.environ.get("EXPERIMENTCTL_SCO_BIN", "sco")
         )
 
+    @staticmethod
+    def create_timeout_seconds() -> int:
+        """Bound ambiguous create waits so the durable outbox can reconcile."""
+        raw = os.environ.get("EXPERIMENTCTL_SCO_CREATE_TIMEOUT_SECONDS", "120")
+        if not raw.isdigit() or not 10 <= int(raw) <= 600:
+            raise ValueError(
+                "EXPERIMENTCTL_SCO_CREATE_TIMEOUT_SECONDS must be an integer from 10 to 600"
+            )
+        return int(raw)
+
     def validate(self, run: dict[str, Any]) -> None:
         backend = run["backend"]
         required = {"workspace", "aec2", "worker_spec", "image", "storage_mount", "quota_type", "job_name"}
@@ -183,7 +193,13 @@ class SenseCoreBackend:
         sco = shlex.join(["env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
                           "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY", *arguments])
         sanitizer = shlex.join([sys.executable, "-m", "experiment_control.safe_sco", mode])
-        return ["bash", "-o", "pipefail", "-c", f"{sco} 2>&1 | {sanitizer}"]
+        redactor = shlex.join([
+            sys.executable, "-m", "experiment_control.safe_sco", "redact-lines"
+        ])
+        return [
+            "bash", "-o", "pipefail", "-c",
+            f"{sco} 2> >({redactor} >&2) | {sanitizer}",
+        ]
 
     def describe(
         self, run: dict[str, Any], resource_name: str | None = None
@@ -236,6 +252,7 @@ class SenseCoreBackend:
             str(backend["job_name"]), str(manifest["attempt_id"])
         )
         return [
+            "timeout", f"{self.create_timeout_seconds()}s",
             "env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
             "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY",
             self.sco_bin(manifest), "acp", "jobs", "create",
@@ -358,6 +375,8 @@ class SenseCoreBackend:
         result = {"run_id": run["run_id"], "backend": "sensecore", "model_observed": bool(metrics),
                   "latest_metric": metrics[-1] if metrics else None, "metric_log_lines": metric_lines[-20:],
                   "live_logs_expired": snapshot["expired"]}
+        if snapshot["expired"]:
+            result["evidence_unavailable_reason"] = "live_logs_expired"
         if checkpoints:
             latest = max(checkpoints, key=lambda item: int(item["step"]))
             result["latest_completed_checkpoint"] = latest["path"]

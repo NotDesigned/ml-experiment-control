@@ -71,10 +71,16 @@ def redact_line(line: str) -> str:
     return SECRET_ASSIGNMENT_RE.sub(r"\1<redacted>", line)
 
 
-def read_json(stream: TextIO) -> Any:
+def read_json(stream: TextIO, *, empty_list: bool = False) -> Any:
     """Read JSON without echoing malformed or potentially sensitive input."""
+    raw = stream.read()
+    # SCO v1.2 prints this exact success sentinel to stdout even with
+    # ``-o json`` when an exact-name list has no matches. Accept only the
+    # observed fixed phrase; every other non-JSON response still fails closed.
+    if empty_list and raw.strip().casefold() in {"", "no jobs found"}:
+        return []
     try:
-        return json.load(stream)
+        return json.loads(raw)
     except Exception:
         raise SystemExit("safe_sco: input was not valid JSON; raw response suppressed")
 
@@ -110,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(redact_line(line))
         return 0
 
-    payload = read_json(sys.stdin)
+    payload = read_json(sys.stdin, empty_list=args.mode == "job-list")
     if args.mode == "job-summary":
         if not isinstance(payload, dict):
             raise SystemExit("safe_sco: expected one JSON job object")

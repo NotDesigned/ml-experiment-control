@@ -50,6 +50,13 @@ from experiment_control.runner import CommandResult, CommandRunner, SubprocessRu
 from experiment_control.states import FailureClass, classify_failure
 ```
 
+`build_registry` requires one host-provided `BackendServices` instance:
+
+```python
+services = BackendServices(...)
+registry = build_registry(services)
+```
+
 `BackendServices` is the narrow host boundary. The host injects command
 execution, run-directory lookup, backend-record lookup, project metric parsing
 and summarization, atomic JSON writing, and UTC time. This keeps the package
@@ -144,6 +151,7 @@ The backends recognize these non-secret environment variables:
 
 ```text
 EXPERIMENTCTL_SCO_BIN
+EXPERIMENTCTL_SCO_CREATE_TIMEOUT_SECONDS
 EXPERIMENTCTL_SSH_BIN
 EXPERIMENTCTL_RSYNC_BIN
 ```

@@ -33,6 +33,7 @@ def classify_failure(text: str = "") -> FailureClass:
     ))
     if any(token in haystack for token in (
         "tls", "eof", "502", "connection reset", "expired log",
+        "live_logs_expired",
     )) or (timeout and transport_timeout_context):
         return FailureClass.TRANSPORT
     if (
