@@ -73,6 +73,9 @@ Apptainer, and mount validation.
 `identity(campaign, run, attempt_id)` returns a typed, sanitized, read-only
 `IdentityReport` containing `available`, `ambiguous`, `scheduler_job_ids`, and
 `remote_manifest_exists` when the backend can inspect persistent storage.
+WYD additionally reports `remote_manifest_matches`; a host may claim an
+existing run directory only when this digest-backed ownership evidence is
+true.
 Recovery fails closed when more than one scheduler job matches one attempt; it
 never selects one arbitrarily.
 Campaign generation and local event reconciliation remain host responsibilities
@@ -84,6 +87,11 @@ attempt and run directories. It does not use remote globs. Returned tails are
 bounded and redacted, and `collect()` includes the same sanitized excerpts as
 `process_evidence` so failures before the training runtime writes metrics remain
 diagnosable by a host controller.
+
+SenseCore creates and observes an exact attempt-qualified resource name. The
+authored image tag remains provenance, while submission is pinned to the
+manifest's `repository@sha256:...` digest. Status, logs, and cancellation use
+the recorded exact resource rather than a prefix search.
 
 WYD submission also acquires an attempt-qualified directory claim on persistent
 storage before copying the manifest or invoking `sbatch`. The claim is not
