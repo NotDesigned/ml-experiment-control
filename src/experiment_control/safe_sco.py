@@ -91,11 +91,44 @@ def write_json(value: Any, stream: TextIO) -> None:
     stream.write("\n")
 
 
+def worker_list(text: str) -> list[dict[str, Any]]:
+    """Parse the fixed SCO v1.2 worker table without emitting IP columns."""
+    rows = [line.strip() for line in text.splitlines() if line.strip().startswith("|")]
+    if not rows:
+        return []
+    header = [cell.strip() for cell in rows[0].strip("|").split("|")]
+    expected = ["WORKER_NAME", "RESOURCE", "HOST_IP", "POD_IP", "PHASE"]
+    if header != expected:
+        raise SystemExit("safe_sco: unexpected worker table schema; raw response suppressed")
+    workers: list[dict[str, Any]] = []
+    for line in rows[1:]:
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) != len(expected):
+            raise SystemExit("safe_sco: malformed worker table; raw response suppressed")
+        worker_name, resource, host_ip, pod_ip, phase = cells
+        # The RESOURCE column can wrap onto continuation rows. They contain no
+        # worker identity, phase, or address and do not represent new workers.
+        if not worker_name:
+            if resource and not host_ip and not pod_ip and not phase:
+                continue
+            raise SystemExit("safe_sco: malformed worker continuation; raw response suppressed")
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", worker_name):
+            raise SystemExit("safe_sco: unsafe worker identity; raw response suppressed")
+        workers.append({
+            "worker_name": worker_name,
+            "phase": redact_line(phase),
+        })
+    return workers
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "mode",
-        choices=("job-summary", "job-list", "redact-lines", "normalize-state"),
+        choices=(
+            "job-summary", "job-list", "worker-list", "redact-lines",
+            "normalize-state",
+        ),
     )
     parser.add_argument("value", nargs="?")
     return parser
@@ -114,6 +147,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "redact-lines":
         for line in sys.stdin:
             sys.stdout.write(redact_line(line))
+        return 0
+    if args.mode == "worker-list":
+        write_json(worker_list(sys.stdin.read()), sys.stdout)
         return 0
 
     payload = read_json(sys.stdin, empty_list=args.mode == "job-list")

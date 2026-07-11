@@ -99,6 +99,9 @@ SenseCore creates and observes an exact attempt-qualified resource name. The
 authored image tag remains provenance, while submission is pinned to the
 manifest's `repository@sha256:...` digest. Status, logs, and cancellation use
 the recorded exact resource rather than a prefix search.
+Collection also sanitizes the exact worker table, discards host and pod IPs,
+and normalizes `Pending`, `Running`, and terminal phases separately from model
+progress.
 
 WYD submission also acquires an attempt-qualified directory claim on persistent
 storage before copying the manifest or invoking `sbatch`. The claim is not

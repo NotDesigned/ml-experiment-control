@@ -394,11 +394,57 @@ class SenseCoreBackend:
                   "live_logs_expired": snapshot["expired"]}
         if snapshot["expired"]:
             result["evidence_unavailable_reason"] = "live_logs_expired"
+        try:
+            worker = self.workers(campaign, run)
+        except (RuntimeError, ValueError):
+            worker = {
+                "worker_state": "UNKNOWN", "worker_phases": [],
+                "worker_evidence_available": False,
+            }
+        result.update(worker)
         if checkpoints:
             latest = max(checkpoints, key=lambda item: int(item["step"]))
             result["latest_completed_checkpoint"] = latest["path"]
             result["latest_completed_checkpoint_step"] = latest["step"]
         return result
+
+    def workers(self, campaign, run) -> dict[str, Any]:
+        """Return sanitized worker-allocation evidence for the exact job."""
+        backend = run["backend"]
+        record = self.s.backend_record(campaign, run)
+        resource_name = str(record["backend_job_id"])
+        result = self.s.run_command(
+            self.safe_command([
+                self.sco_bin(run), "acp", "jobs", "get-workers", resource_name,
+                "--workspace-name", backend["workspace"],
+            ], "worker-list"),
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                self._redact_error(result.stderr)
+                or "sanitized SenseCore worker query failed"
+            )
+        payload = json.loads(result.stdout)
+        if not isinstance(payload, list):
+            raise ValueError("SenseCore worker sanitizer returned a non-list")
+        phases = [str(item.get("phase", "")) for item in payload if isinstance(item, dict)]
+        normalized = {phase.casefold() for phase in phases}
+        if normalized & {"running", "ready"}:
+            state = "ALLOCATED"
+        elif normalized & {"pending", "creating", "starting"}:
+            state = "PENDING"
+        elif normalized and normalized <= {
+            "deleted", "succeeded", "failed", "stopped", "completed"
+        }:
+            state = "RELEASED"
+        else:
+            state = "UNKNOWN"
+        return {
+            "worker_state": state,
+            "worker_phases": phases,
+            "worker_evidence_available": True,
+        }
 
     def logs(self, campaign, run, *, tail: int) -> dict[str, Any]:
         if not 1 <= tail <= 10000:
