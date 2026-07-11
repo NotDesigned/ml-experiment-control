@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 
 
 class FailureClass(str, Enum):
+    NONE = "none"
     TRANSPORT = "transport"
     SCHEDULER = "scheduler"
     PREEMPTION = "preemption"
@@ -23,10 +25,25 @@ def classify_failure(text: str = "") -> FailureClass:
         return FailureClass.PREEMPTION
     if "node failure" in haystack or "boot failure" in haystack:
         return FailureClass.SCHEDULER
-    if "out of memory" in haystack or "cuda oom" in haystack or "timed out" in haystack:
-        return FailureClass.RESOURCE
-    if any(token in haystack for token in ("tls", "eof", "502", "connection reset", "expired log")):
+    timeout = "timed out" in haystack or bool(re.search(r"\btimeout\b", haystack))
+    transport_timeout_context = any(token in haystack for token in (
+        "connection", "connect to host", "banner exchange", "ssh", "tls",
+        "clienthello", "handshake", "proxy", "dial tcp", "i/o", "read timeout",
+        "request timeout", "client.timeout", "context deadline exceeded",
+    ))
+    if any(token in haystack for token in (
+        "tls", "eof", "502", "connection reset", "expired log",
+    )) or (timeout and transport_timeout_context):
         return FailureClass.TRANSPORT
+    if (
+        "out of memory" in haystack
+        or "cuda oom" in haystack
+        or timeout
+        or "time limit" in haystack
+        or "wall-time" in haystack
+        or "wall time" in haystack
+    ):
+        return FailureClass.RESOURCE
     if any(token in haystack for token in (
         "missing cache", "no such file", "invalid config", "not mounted",
         "modulenotfounderror", "no module named", "importerror",
