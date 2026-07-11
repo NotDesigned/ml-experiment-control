@@ -54,6 +54,22 @@ def checkpoint_probe_command(run_dir: str) -> str:
     return shlex.join(["python3", "-c", code, run_dir])
 
 
+def log_probe_command(paths: list[str], *, tail: int) -> str:
+    """Build a bounded probe that reads the first existing exact log path."""
+    if not 1 <= tail <= 10000:
+        raise ValueError("tail must be between 1 and 10000")
+    if not paths:
+        raise ValueError("at least one log path is required")
+    candidates = " ".join(shlex.quote(path) for path in paths)
+    return (
+        f"for path in {candidates}; do "
+        "if test -f \"$path\"; then "
+        "printf '%s\\n' \"$path\"; "
+        f"tail -n {tail} -- \"$path\"; exit 0; "
+        "fi; done; exit 1"
+    )
+
+
 def render_job(manifest: dict[str, Any]) -> str:
     backend, resources = manifest["backend"], manifest.get("resources", {})
     run_dir, source_dir, sif_path = (
@@ -123,7 +139,9 @@ def parse_accounting(output: str, *, job_id: str, run_id: str, partition: str) -
 
 class WydSlurmBackend:
     kind = "slurm"
-    ssh_control_path = "/tmp/experimentctl-%C"
+    # Keep multiplexing within one controller process, but never share the
+    # socket startup/ownership lifecycle with a concurrent controller.
+    ssh_control_path = f"/tmp/experimentctl-{os.getuid()}-{os.getpid()}-%C"
 
     def __init__(self, services: BackendServices):
         self.s = services
@@ -349,6 +367,20 @@ class WydSlurmBackend:
             if expected_image.startswith("sha256:") and actual_sha != expected_sha:
                 raise ValueError(f"SIF checksum mismatch: expected {expected_image}, got sha256:{actual_sha}")
             self.remote_exec(backend["ssh_alias"], shlex.join(["touch", marker]))
+        for required_path in source_bundle.required_paths:
+            relative = Path(required_path)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError(f"required source path must be relative: {required_path}")
+            staged_path = str(Path(backend["source_dir"]) / relative)
+            result = self.remote_exec(
+                backend["ssh_alias"],
+                shlex.join(["test", "-s", staged_path]),
+                check=False,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"staged source is missing required project path: {required_path}"
+                )
         return True
 
     def render(self, manifest: dict[str, Any]) -> str:
@@ -472,27 +504,51 @@ class WydSlurmBackend:
             summary["latest_completed_checkpoint_step"] = step
         summary["collected_from"] = run["storage"]["run_dir"]
         summary["run_dir"] = run["storage"]["run_dir"]
+        diagnostics = self.logs(campaign, run, tail=80)
+        summary["process_evidence"] = {
+            "observed": bool(diagnostics["stdout"] or diagnostics["stderr"]),
+            "sources": diagnostics["sources"],
+            "stdout_tail": diagnostics["stdout"],
+            "stderr_tail": diagnostics["stderr"],
+        }
         return summary
 
     def logs(self, campaign, run, *, tail: int) -> dict[str, Any]:
+        if not 1 <= tail <= 10000:
+            raise ValueError("tail must be between 1 and 10000")
         record = self.s.backend_record(campaign, run)
         attempt_id = str(record["attempt_id"])
+        job_id = str(record["backend_job_id"])
+        if not re.fullmatch(r"[0-9]+", job_id):
+            raise ValueError("Slurm backend job ID must be numeric")
+        run_dir = str(run["storage"]["run_dir"])
         attempt_dir = f"{run['storage']['run_dir']}/attempts/{attempt_id}"
         streams: dict[str, list[str]] = {}
-        for stream in ("stdout", "stderr"):
-            path = f"{attempt_dir}/{stream}.log"
+        sources: dict[str, str | None] = {}
+        for stream, suffix in (("stdout", "out"), ("stderr", "err")):
+            paths = [
+                f"{attempt_dir}/{stream}.log",
+                f"{run_dir}/{stream}.log",
+                f"{attempt_dir}/slurm-{job_id}.{suffix}",
+                f"{run_dir}/slurm-{job_id}.{suffix}",
+            ]
             result = self.remote_exec(
                 run["backend"]["ssh_alias"],
-                f"test -f {shlex.quote(path)} && tail -n {tail} {shlex.quote(path)}",
+                log_probe_command(paths, tail=tail),
                 check=False,
             )
             normalized = [
                 redact_line(line) for line in result.stdout.replace("\r", "\n").splitlines()
                 if line.strip()
             ]
-            streams[stream] = normalized[-tail:]
+            if result.returncode == 0 and normalized:
+                sources[stream] = normalized[0]
+                streams[stream] = normalized[1:][-tail:]
+            else:
+                sources[stream] = None
+                streams[stream] = []
         return {
             "run_id": run["run_id"], "backend": "slurm",
             "backend_job_id": record["backend_job_id"], "attempt_id": attempt_id,
-            "tail": tail, **streams,
+            "tail": tail, "sources": sources, **streams,
         }

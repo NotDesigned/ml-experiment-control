@@ -27,7 +27,10 @@ def classify_failure(text: str = "") -> FailureClass:
         return FailureClass.RESOURCE
     if any(token in haystack for token in ("tls", "eof", "502", "connection reset", "expired log")):
         return FailureClass.TRANSPORT
-    if any(token in haystack for token in ("missing cache", "no such file", "invalid config", "not mounted")):
+    if any(token in haystack for token in (
+        "missing cache", "no such file", "invalid config", "not mounted",
+        "modulenotfounderror", "no module named", "importerror",
+    )):
         return FailureClass.CONFIGURATION
     if any(token in haystack for token in ("nan", "diverg", "collapse")):
         return FailureClass.MODEL

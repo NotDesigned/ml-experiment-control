@@ -78,6 +78,13 @@ never selects one arbitrarily.
 Campaign generation and local event reconciliation remain host responsibilities
 because this package does not own YAML or run manifests.
 
+WYD log observation checks exact, attempt-qualified canonical `stdout.log` and
+`stderr.log` paths first, then exact `slurm-<job-id>.out/.err` paths in the
+attempt and run directories. It does not use remote globs. Returned tails are
+bounded and redacted, and `collect()` includes the same sanitized excerpts as
+`process_evidence` so failures before the training runtime writes metrics remain
+diagnosable by a host controller.
+
 WYD submission also acquires an attempt-qualified directory claim on persistent
 storage before copying the manifest or invoking `sbatch`. The claim is not
 removed automatically: a controller crash therefore fails closed for manual
@@ -116,6 +123,13 @@ report = backend.verify_assets(run, probes)
 `AssetProbe.path` is its backend-visible representation. Backends never need to
 know model or dataset names.
 
+A project's `SourceBundle.required_paths` may declare relative files that must
+exist in the staged source tree. WYD verifies those paths after transfer. The
+project launcher remains responsible for importing its runtime dependencies as
+its first container-side action; some login nodes cannot mount SIF images
+without an allocation, so the backend does not pretend to run a container
+preflight there.
+
 ## Tool overrides
 
 The backends recognize these non-secret environment variables:
@@ -125,6 +139,10 @@ EXPERIMENTCTL_SCO_BIN
 EXPERIMENTCTL_SSH_BIN
 EXPERIMENTCTL_RSYNC_BIN
 ```
+
+Each controller process uses its own SSH multiplexing socket. Parallel agents
+therefore reuse connections within their own workflow without racing over one
+global `/tmp` control socket.
 
 Registry publication remains a host workflow; ELF's helper additionally uses
 `EXPERIMENTCTL_DOCKER_BIN`, `EXPERIMENTCTL_CRANE_BIN`, and

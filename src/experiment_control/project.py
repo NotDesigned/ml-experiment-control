@@ -33,6 +33,7 @@ class SourceBundle:
     excludes: tuple[str, ...] = ()
     container_path: str = "/workspace"
     identity_command: tuple[str, ...] = ()
+    required_paths: tuple[str, ...] = ()
 
 
 class ProjectAdapter(Protocol):
