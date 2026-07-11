@@ -16,8 +16,21 @@ from ..preflight import PreflightCheck, PreflightReport
 from ..identity import IdentityReport
 
 
+SENSECORE_BASE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+SENSECORE_ATTEMPT_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
+
+
 def scheduler_job_name(base_name: str, attempt_id: str) -> str:
     """Return a deterministic attempt-qualified SenseCore resource name."""
+    if not SENSECORE_BASE_NAME_RE.fullmatch(base_name):
+        raise ValueError(
+            "SenseCore base job name must start with a lowercase letter and use only "
+            "lowercase letters, digits, and hyphens"
+        )
+    if not SENSECORE_ATTEMPT_NAME_RE.fullmatch(attempt_id):
+        raise ValueError(
+            "SenseCore attempt ID must use lowercase letters, digits, and internal hyphens"
+        )
     raw = f"{base_name}--{attempt_id}"
     if len(raw) <= 63:
         return raw
@@ -91,6 +104,10 @@ class SenseCoreBackend:
         missing = sorted(key for key in required if not backend.get(key))
         if missing:
             raise ValueError(f"run {run['run_id']} backend is missing: {missing}")
+        try:
+            scheduler_job_name(str(backend["job_name"]), "attempt-001")
+        except ValueError as error:
+            raise ValueError(f"run {run['run_id']} {error}") from error
         if backend["quota_type"] != "spot":
             raise ValueError("SenseCore runs for this account must use spot quota")
         if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", str(run["image_id"])):
