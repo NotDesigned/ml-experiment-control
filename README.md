@@ -11,23 +11,21 @@ commands, metric semantics, campaign files, credentials, or model assets. A
 host repository supplies those through a project adapter and injected backend
 services.
 
-For the host-side autonomous research loop, command order, mutation boundaries,
-and evidence report contract, see
-[`docs/agent_research_guide.md`](../../docs/agent_research_guide.md). This README
-documents the reusable package boundary rather than a project experiment plan.
-
 ## Install
 
-From the ELF repository:
+From GitHub:
 
 ```bash
-python -m pip install -e packages/experiment-control
+python -m pip install \
+  "ml-experiment-control @ git+https://github.com/NotDesigned/ml-experiment-control.git"
 ```
 
-For an isolated build/install check:
+For local development:
 
 ```bash
-python -m pip wheel --no-deps packages/experiment-control
+git clone https://github.com/NotDesigned/ml-experiment-control.git
+python -m pip install -e ml-experiment-control
+python -m pytest ml-experiment-control/tests
 ```
 
 The package has no runtime dependencies outside the Python standard library.
@@ -124,9 +122,21 @@ the launch command/environment, assets, metric and checkpoint-log parsing,
 summaries, and source staging policy. The controller composes one
 `ProjectAdapter` with one compute backend.
 
-ELF's implementation lives outside this package at
-`scripts/experiment_projects/elf.py`, demonstrating that the installed package
-does not import ELF modules.
+Copy [`examples/minimal_project_adapter.py`](examples/minimal_project_adapter.py)
+into the training repository and replace its JSON config, command, metric,
+checkpoint, asset, and summary conventions. The adapter deliberately stays in
+the training repository: this package must never import model code.
+
+Start with these methods in order:
+
+1. `validate_run`, `resolve_config`, and `command` freeze what will run.
+2. `environment` and `operational_overrides` map controller-owned output paths.
+3. `source_bundle`, `plan_assets`, and `asset_probes` define immutable inputs.
+4. `parse_metric`, `parse_checkpoint`, and `summarize` define durable evidence.
+
+The example is executable and covered by the package test suite. It is a
+contract template, not a universal training launcher; backend scheduling and
+project semantics remain intentionally separate.
 
 Asset discovery follows the same boundary. A project adapter returns semantic
 requirements and maps them to backend-verifiable filesystem probes:
@@ -163,9 +173,8 @@ Each controller process uses its own SSH multiplexing socket. Parallel agents
 therefore reuse connections within their own workflow without racing over one
 global `/tmp` control socket.
 
-Registry publication remains a host workflow; ELF's helper additionally uses
-`EXPERIMENTCTL_DOCKER_BIN`, `EXPERIMENTCTL_CRANE_BIN`, and
-`EXPERIMENTCTL_SKOPEO_BIN`.
+Registry publication remains a host workflow. A host may define its own Docker,
+Crane, or Skopeo executable overrides without adding them to this package.
 
 ## Safety properties
 
