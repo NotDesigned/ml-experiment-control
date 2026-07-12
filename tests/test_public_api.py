@@ -5,6 +5,7 @@ from experiment_control.identity import IdentityReport
 from experiment_control.project import ProjectRegistry, SourceBundle
 from experiment_control.runner import CommandResult
 from experiment_control.states import FailureClass
+import pytest
 
 
 def test_package_public_primitives_have_no_host_dependency(tmp_path):
@@ -37,3 +38,18 @@ def test_sensecore_attempt_and_image_identities_are_deterministic():
     assert digest_pinned_image("registry.example/ns/image:source-abc", digest) == (
         f"registry.example/ns/image@{digest}"
     )
+
+
+def test_preflight_report_serialization_and_fail_closed_requirement():
+    report = PreflightReport(
+        "fake", "submit", (
+            PreflightCheck("tool", "tool", "PASS"),
+            PreflightCheck("access", "authorization", "FAIL", "login required"),
+        ),
+    )
+    assert report.ready is False
+    assert report.to_dict()["checks"][0] == {
+        "name": "tool", "category": "tool", "status": "PASS",
+    }
+    with pytest.raises(RuntimeError, match="access"):
+        report.require_ready()

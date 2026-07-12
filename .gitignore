@@ -1,6 +1,9 @@
 /build/
 /dist/
 /.pytest_cache/
+.coverage
+coverage.json
+htmlcov/
 *.egg-info/
 __pycache__/
 **/__pycache__/

@@ -122,7 +122,7 @@ def worker_list(text: str) -> list[dict[str, Any]]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(prog="experiment-safe-sco", description=__doc__)
     parser.add_argument(
         "mode",
         choices=(

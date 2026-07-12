@@ -27,14 +27,16 @@ def test_minimal_adapter_covers_config_command_metrics_and_assets(tmp_path):
         "python", "train.py", "--config", str(config), "--override", "steps=20"
     ]
     requirement = adapter.plan_assets(str(config), [])[0]
-    assert adapter.asset_probes([requirement], {"DATA_ROOT": "/data/project"})[0].path == (
-        "/data/project/tiny"
-    )
+    data_root = tmp_path / "project-data"
+    assert adapter.asset_probes(
+        [requirement], {"DATA_ROOT": str(data_root)},
+    )[0].path == str(data_root / "tiny")
     assert adapter.parse_metric("step=10 val_loss=1.25") == {
         "step": 10, "val_loss": 1.25,
     }
-    assert adapter.parse_checkpoint("checkpoint=/data/ckpt step=10 bytes=42") == {
-        "path": "/data/ckpt", "step": 10, "bytes": 42,
+    checkpoint = tmp_path / "checkpoint"
+    assert adapter.parse_checkpoint(f"checkpoint={checkpoint} step=10 bytes=42") == {
+        "path": str(checkpoint), "step": 10, "bytes": 42,
     }
     assert ProjectRegistry(adapter).get("minimal") is adapter
 

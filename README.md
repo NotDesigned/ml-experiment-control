@@ -27,8 +27,8 @@ For local development:
 
 ```bash
 git clone https://github.com/NotDesigned/ml-experiment-control.git
-python -m pip install -e ml-experiment-control
-python -m pytest ml-experiment-control/tests
+python -m pip install -e 'ml-experiment-control[dev]'
+python ml-experiment-control/tools/coverage_gate.py
 ```
 
 The only runtime dependency outside the Python standard library is PyYAML,
@@ -125,6 +125,14 @@ Credentials remain in native providers:
 Never pass credentials through campaign YAML, manifests, backend reports, or
 training commands.
 
+## CLI reference
+
+The package exposes one deliberately narrow command, `experiment-safe-sco`,
+for sanitizing SCO responses before a controller parses them. It is not an
+experiment lifecycle CLI. Its complete generated option reference is in
+[`docs/cli_reference.md`](docs/cli_reference.md); the runtime parser is the
+single source of truth and CI rejects stale generated help.
+
 ## Project integration
 
 A training repository implements `ProjectAdapter` to define config resolution,
@@ -197,3 +205,17 @@ Crane, or Skopeo executable overrides without adding them to this package.
 - Scheduler state, model progress, and scientific conclusions remain separate.
 - Source, image, config, storage, and scheduler identities remain the host
   manifest's responsibility.
+
+## Development verification
+
+```bash
+python -m pip install -e '.[dev]'
+python tools/coverage_gate.py
+python tools/generate_cli_reference.py --check
+python -m compileall -q src tests tools examples
+python -m pip wheel --no-deps --wheel-dir dist .
+```
+
+The repository enforces at least 90% line coverage and 80% branch coverage as
+independent gates. Testing policy and CI details are documented in
+[`docs/development.md`](docs/development.md).

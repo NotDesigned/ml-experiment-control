@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import json
+import io
 import subprocess
 import sys
+
+import pytest
+
+from experiment_control import safe_sco
 
 
 def run_safe(
@@ -136,3 +141,72 @@ def test_normalize_state_covers_scheduler_terminals() -> None:
         result = run_safe("normalize-state", value=raw)
         assert result.returncode == 0
         assert result.stdout.strip() == expected
+
+
+def direct_main(monkeypatch, mode: str, payload: str = "", value: str | None = None):
+    stdin = io.StringIO(payload)
+    stdout = io.StringIO()
+    monkeypatch.setattr(safe_sco.sys, "stdin", stdin)
+    monkeypatch.setattr(safe_sco.sys, "stdout", stdout)
+    argv = [mode] + ([value] if value is not None else [])
+    code = safe_sco.main(argv)
+    return code, stdout.getvalue()
+
+
+def test_direct_safe_sco_modes_cover_in_process_cli_contract(monkeypatch):
+    code, output = direct_main(monkeypatch, "normalize-state", value="RUNNING")
+    assert code == 0 and output.strip() == "RUNNING"
+
+    code, output = direct_main(monkeypatch, "redact-lines", "token=secret\nplain\n")
+    assert code == 0 and "secret" not in output and "plain" in output
+
+    table = "| WORKER_NAME | RESOURCE | HOST_IP | POD_IP | PHASE |\n| w-0 | gpu | 1 | 2 | Running |\n"
+    code, output = direct_main(monkeypatch, "worker-list", table)
+    assert code == 0 and json.loads(output) == [{"phase": "Running", "worker_name": "w-0"}]
+
+    code, output = direct_main(monkeypatch, "job-summary", '{"name":"job","state":"FAILED"}')
+    assert code == 0 and json.loads(output)["normalized_state"] == "FAILED"
+
+    code, output = direct_main(monkeypatch, "job-list", '[{"name":"job"},null]')
+    assert code == 0 and [item["name"] for item in json.loads(output)] == ["job"]
+
+
+def test_direct_safe_sco_rejects_invalid_cli_payloads(monkeypatch):
+    with pytest.raises(SystemExit) as missing:
+        direct_main(monkeypatch, "normalize-state")
+    assert missing.value.code == 2
+    with pytest.raises(SystemExit, match="expected one JSON job object"):
+        direct_main(monkeypatch, "job-summary", "[]")
+    with pytest.raises(SystemExit, match="expected a JSON job array"):
+        direct_main(monkeypatch, "job-list", "{}")
+    with pytest.raises(SystemExit, match="raw response suppressed"):
+        safe_sco.read_json(io.StringIO("secret=not-json"))
+
+
+def test_safe_sco_helpers_fail_closed_on_malformed_worker_tables():
+    assert safe_sco.safe_text(3) == 3
+    assert safe_sco.worker_list("no table") == []
+    with pytest.raises(SystemExit, match="malformed worker table"):
+        safe_sco.worker_list(
+            "| WORKER_NAME | RESOURCE | HOST_IP | POD_IP | PHASE |\n| too | few | cells |\n"
+        )
+    with pytest.raises(SystemExit, match="malformed worker continuation"):
+        safe_sco.worker_list(
+            "| WORKER_NAME | RESOURCE | HOST_IP | POD_IP | PHASE |\n"
+            "| | gpu | address | | |\n"
+        )
+    with pytest.raises(SystemExit, match="unsafe worker identity"):
+        safe_sco.worker_list(
+            "| WORKER_NAME | RESOURCE | HOST_IP | POD_IP | PHASE |\n"
+            "| unsafe/name | gpu | | | Running |\n"
+        )
+
+
+def test_job_summary_tolerates_non_mapping_optional_sections():
+    summary = safe_sco.job_summary({
+        "name": "job", "roles": ["bad"], "resource_pool": "bad",
+        "mount": ["bad"],
+    })
+    assert summary["pool"] is None
+    assert summary["spec"] is None
+    assert summary["mounts"] == []

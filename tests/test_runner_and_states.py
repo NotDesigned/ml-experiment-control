@@ -33,6 +33,9 @@ def test_failure_classifier_does_not_hide_resource_or_model_failures():
     assert classify_failure("loss became NaN") is FailureClass.MODEL
     assert classify_failure("TLS EOF") is FailureClass.TRANSPORT
     assert classify_failure('{"live_logs_expired": true}') is FailureClass.TRANSPORT
+    assert classify_failure("worker was preempted") is FailureClass.PREEMPTION
+    assert classify_failure("node failure") is FailureClass.SCHEDULER
+    assert classify_failure("required metric is missing") is FailureClass.EVALUATION
     assert (
         classify_failure("ModuleNotFoundError: No module named 'pkg'")
         is FailureClass.CONFIGURATION

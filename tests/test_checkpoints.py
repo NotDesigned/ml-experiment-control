@@ -32,3 +32,14 @@ def test_remote_checkpoint_names_are_filtered_and_ordered():
     assert select_latest_checkpoint_name(
         ["checkpoint_9", "noise", "checkpoint_100", "checkpoint_bad"]
     ) == ("checkpoint_100", 100)
+
+
+def test_checkpoint_discovery_ignores_missing_malformed_and_non_object_markers(tmp_path):
+    (tmp_path / "checkpoint_1.complete").write_text("{}")
+    write_checkpoint(tmp_path, 2)
+    (tmp_path / "checkpoint_2.complete").write_text("not-json")
+    write_checkpoint(tmp_path, 3)
+    (tmp_path / "checkpoint_3.complete").write_text("[]")
+
+    assert discover_latest_completed_checkpoint(tmp_path) is None
+    assert select_latest_checkpoint_name(["noise", "checkpoint_bad"]) is None

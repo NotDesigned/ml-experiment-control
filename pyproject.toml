@@ -12,6 +12,9 @@ license = {text = "MIT"}
 authors = [{name = "ml-experiment-control contributors"}]
 dependencies = ["PyYAML>=6.0"]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov>=6.0"]
+
 [project.urls]
 Repository = "https://github.com/NotDesigned/ml-experiment-control"
 Issues = "https://github.com/NotDesigned/ml-experiment-control/issues"
@@ -21,3 +24,15 @@ experiment-safe-sco = "experiment_control.safe_sco:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["experiment_control"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+precision = 1
