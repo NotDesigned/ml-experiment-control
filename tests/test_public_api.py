@@ -64,6 +64,8 @@ def test_project_registry_rejects_unknown_project():
 def test_downstream_identity_helpers_are_exported_from_package_root():
     assert experiment_control.validate_identity is not None
     assert experiment_control.require_immutable is not None
+    assert experiment_control.append_event is not None
+    assert experiment_control.atomic_write is not None
     assert experiment_control.sanitize_command is not None
     assert experiment_control.utc_now is not None
     assert not any(name.startswith("_") for name in experiment_control.__all__)

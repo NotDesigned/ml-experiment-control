@@ -14,9 +14,10 @@ integration points are:
   `experiment_control.backends.services.BackendServices` for backend composition;
 - `Backend`, `ProjectAdapter`, `BackendRegistry`, and `ProjectRegistry` for typed
   host dispatch;
-- `ExperimentStateStore`, `LifecycleStatus`, `RunState`, `sanitize_command`,
-  `utc_now`, `validate_identity`, and `require_immutable` for durable state and
-  validated identity construction;
+- `ExperimentStateStore`, `LifecycleStatus`, `RunState`, `append_event`,
+  `atomic_write`, `sanitize_command`, `utc_now`, `validate_identity`, and
+  `require_immutable` for durable state, durable file updates, and validated
+  identity construction;
 - `CommandResult`, `CommandRunner`, and `SubprocessRunner` for injected command
   execution;
 - `PreflightCheck`, `PreflightReport`, `IdentityReport`, asset/source types,

@@ -61,6 +61,8 @@ from experiment_control.states import FailureClass, classify_failure
 from experiment_control.manifest import (
     ExperimentStateStore,
     RunState,
+    append_event,
+    atomic_write,
     require_immutable,
     sanitize_command,
     utc_now,
