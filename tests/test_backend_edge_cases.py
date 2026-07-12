@@ -55,8 +55,9 @@ def test_scheduler_normalizers_cover_every_semantic_state():
     assert normalize_slurm_state("future") == "UNKNOWN"
 
 
-def test_backend_registry_builds_both_injected_adapters(tmp_path):
+def test_backend_registry_builds_all_injected_adapters(tmp_path):
     registry = build_registry(services(tmp_path, QueueRunner([])))
+    assert registry.get("local").kind == "local"
     assert registry.get("sensecore").kind == "sensecore"
     assert registry.get("slurm").kind == "slurm"
 

@@ -16,6 +16,7 @@ as scenario coverage.
 | Scheduler identity | available, one exact match, unrelated evidence, ambiguous matches, malformed or unavailable evidence |
 | Preflight | missing local tool, authentication/query failure, resource and storage failure, ready path for observe/stage/submit |
 | Observation | active and terminal status, bounded/redacted logs, expired logs, worker evidence, metric and checkpoint presence or absence |
+| Local execution | real process success and failure, durable recovery identity, PID/start-time matching, log collection, exact process-group cancellation |
 | Immutable storage | canonical create, atomic replacement failure, legacy observation, attempt isolation, root-mirror repair and drift rejection |
 
 The backend unit tests use injected command runners and intentionally do not

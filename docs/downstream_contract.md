@@ -12,6 +12,8 @@ integration points are:
 
 - `experiment_control.backends.build_registry` and
   `experiment_control.backends.services.BackendServices` for backend composition;
+- the registered `local`, `sensecore`, and `slurm` backend kinds, with `local`
+  available as the runnable Linux development and smoke-test backend;
 - `Backend`, `ProjectAdapter`, `BackendRegistry`, and `ProjectRegistry` for typed
   host dispatch;
 - `ExperimentStateStore`, `LifecycleStatus`, `RunState`, `append_event`,

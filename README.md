@@ -1,9 +1,10 @@
 # ML Experiment Control
 
-`ml-experiment-control` is a small Python package for controlling durable ML
-experiments without coupling scheduler code to a particular training
-repository. It currently provides SenseCore/SCO and WYD Slurm/Apptainer
-backends, durable Run/Attempt state and mutation outboxes, sanitized readiness
+`ml-experiment-control` is a small Python package for building durable ML
+experiment controllers without coupling scheduler code to a particular
+training repository. It provides a Linux local-process backend for development,
+SenseCore/SCO and WYD Slurm/Apptainer backends, durable Run/Attempt state and
+mutation outboxes, sanitized readiness
 checks, command-runner injection, normalized failure states, and the
 `ProjectAdapter` protocol used by a host repository.
 
@@ -14,6 +15,15 @@ commands, metric semantics, campaign authoring, credentials, or model assets.
 A host repository supplies those through a project adapter and injected
 backend services.
 
+## Audience
+
+This README is for maintainers integrating the package into a host controller
+or training repository. It explains the architecture boundary, public API, and
+smallest runnable integration. Researchers operating a concrete system should
+use that host's documentation instead; ELF is the reference downstream host.
+Package contributors should use [`docs/development.md`](docs/development.md)
+for environment setup, tests, coverage, Rust checks, and release builds.
+
 ## Install
 
 Add the package to another uv-managed project directly from GitHub:
@@ -23,24 +33,36 @@ uv add \
   "ml-experiment-control @ git+https://github.com/NotDesigned/ml-experiment-control.git"
 ```
 
-For local development:
-
-```bash
-git clone https://github.com/NotDesigned/ml-experiment-control.git
-cd ml-experiment-control
-uv sync --locked
-uv run python tools/coverage_gate.py
-```
-
-`uv sync` creates the local `.venv`, installs the package in editable mode, and
-includes the default `dev` dependency group. `uv.lock` is committed so local
-development and CI resolve the same dependency versions. Use `uv add <package>`
-for runtime dependencies and `uv add --dev <package>` for development tools.
-Building from source also requires Rust 1.85 or newer; maturin compiles and
-installs the `experiment-safe-sco` sanitizer binary into the environment.
-
 The only runtime dependency outside the Python standard library is PyYAML,
 used for canonical Run/Attempt manifest files.
+
+## Minimal local integration
+
+`LocalBackend` is a real asynchronous backend for Linux development and smoke
+tests. It creates an attempt-qualified process group, persists PID plus process
+start-time identity, captures redacted logs, records exit status, supports
+recovery, and cancels only the exact recorded process group.
+
+After cloning the repository and following the development setup, run:
+
+```bash
+uv run python examples/local_smoke.py
+```
+
+The complete, copyable integration is
+[`examples/local_smoke.py`](examples/local_smoke.py). Its essential composition
+boundary is:
+
+```python
+services = BackendServices(...)
+backend = build_registry(services).get("local")
+backend.preflight(run, scope="submit").require_ready()
+job_id = backend.submit(campaign, run, manifest, dry_run=False)
+```
+
+The host still owns campaign parsing, the immutable manifest, and persistence
+of the returned `job_id`. Local execution is not a substitute for live
+SenseCore or Slurm integration tests.
 
 ## Public API
 
@@ -105,6 +127,11 @@ SCO executable and a sanitized exact-name workspace query. WYD scopes checks
 to the operation: observation needs only SSH/Slurm control access, staging adds
 rsync and storage, and submission adds live partition/GRES, account/QOS,
 Apptainer, and mount validation.
+
+Local execution checks the work directory, writable run storage, and Linux
+`/proc` process identity. It launches a detached attempt process group through
+a package worker and persists enough identity to reject PID reuse during status
+or cancellation.
 
 `identity(campaign, run, attempt_id)` returns a typed, sanitized, read-only
 `IdentityReport` containing `available`, `ambiguous`, `scheduler_job_ids`, and
@@ -229,20 +256,3 @@ Crane, or Skopeo executable overrides without adding them to this package.
 - Scheduler state, model progress, and scientific conclusions remain separate.
 - Source, image, config, storage, and scheduler identities remain the host
   manifest's responsibility.
-
-## Development verification
-
-```bash
-uv sync --locked
-cargo fmt --manifest-path rust/Cargo.toml -- --check
-cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
-cargo test --locked --manifest-path rust/Cargo.toml
-uv run python tools/coverage_gate.py
-uv run python tools/generate_cli_reference.py --check
-uv run python -m compileall -q src tests tools examples
-uv build
-```
-
-The repository enforces 100% line coverage and 100% branch coverage as
-independent gates. Testing policy and CI details are documented in
-[`docs/development.md`](docs/development.md).

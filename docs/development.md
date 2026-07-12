@@ -7,6 +7,21 @@ command runners and may not contact live schedulers. Project-specific commands,
 paths, metrics, and assets belong in host-owned `ProjectAdapter` tests; only a
 backend's own protocol vocabulary belongs in backend-specific tests.
 
+## Setup
+
+Python dependencies are managed by uv and locked in `uv.lock`:
+
+```bash
+git clone https://github.com/NotDesigned/ml-experiment-control.git
+cd ml-experiment-control
+uv sync --locked
+```
+
+`uv sync` creates `.venv`, installs the package in editable mode, and includes
+the default `dev` dependency group. Use `uv add <package>` for runtime
+dependencies and `uv add --dev <package>` for development tools. Building the
+packaged sanitizer requires Rust 1.85 or newer.
+
 ## CLI documentation
 
 The Rust binary in `rust/src/main.rs` is the single source of truth for the
@@ -56,3 +71,17 @@ CI first runs `uv sync --locked`, then checks generated CLI documentation,
 Python compilation, and distribution construction with `uv build` on every
 push and pull request. Update dependencies with `uv add` or `uv remove` and
 commit both `pyproject.toml` and `uv.lock`.
+
+## Full verification
+
+```bash
+uv sync --locked
+cargo fmt --manifest-path rust/Cargo.toml -- --check
+cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
+cargo test --locked --manifest-path rust/Cargo.toml
+uv run python tools/coverage_gate.py
+uv run python tools/generate_cli_reference.py --check
+uv run python -m compileall -q src tests tools examples
+uv run python examples/local_smoke.py
+uv build
+```

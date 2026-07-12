@@ -46,3 +46,13 @@ def test_empty_modules_and_current_generated_cli_reference(tmp_path):
         min_line=100, min_branch=100,
     ) == 0
     assert cli_docs_main(["--check"]) == 0
+
+
+def test_readme_targets_integrators_and_development_commands_stay_in_development_docs():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    development = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
+    assert "## Audience" in readme
+    assert "examples/local_smoke.py" in readme
+    for command in ("cargo clippy", "tools/coverage_gate.py", "uv build"):
+        assert command not in readme
+        assert command in development
