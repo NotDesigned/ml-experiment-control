@@ -35,6 +35,7 @@ class CommandRunner(Protocol):
         cwd: Path | None = None,
         check: bool = True,
         input_text: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> CommandResult: ...
 
 
@@ -48,12 +49,15 @@ class SubprocessRunner:
         cwd: Path | None = None,
         check: bool = True,
         input_text: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> CommandResult:
+        if timeout_seconds is not None and timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than zero")
         arguments = tuple(str(arg) for arg in command)
         try:
             completed = subprocess.run(
                 list(command), cwd=cwd, check=False, input=input_text,
-                text=True, capture_output=True,
+                text=True, capture_output=True, timeout=timeout_seconds,
             )
             result = CommandResult(
                 args=arguments, returncode=completed.returncode,

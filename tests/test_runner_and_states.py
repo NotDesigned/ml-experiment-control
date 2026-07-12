@@ -1,3 +1,6 @@
+import subprocess
+import sys
+
 import pytest
 
 from experiment_control.backends.wyd import normalize_state
@@ -18,6 +21,19 @@ def test_missing_executable_is_a_structured_command_failure():
     )
     assert result.returncode == 127
     assert "FileNotFoundError" in result.stderr
+
+
+def test_subprocess_runner_enforces_hard_timeout():
+    with pytest.raises(subprocess.TimeoutExpired):
+        SubprocessRunner().run(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            timeout_seconds=0.05,
+        )
+
+
+def test_subprocess_runner_rejects_nonpositive_timeout():
+    with pytest.raises(ValueError, match="greater than zero"):
+        SubprocessRunner().run([sys.executable, "-c", "pass"], timeout_seconds=0)
 
 
 def test_slurm_success_requires_zero_exit():
