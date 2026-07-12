@@ -13,8 +13,8 @@ backend's own protocol vocabulary belongs in backend-specific tests.
 the package's only CLI. Generate and check its reference with:
 
 ```bash
-python tools/generate_cli_reference.py
-python tools/generate_cli_reference.py --check
+uv run python tools/generate_cli_reference.py
+uv run python tools/generate_cli_reference.py --check
 ```
 
 The CLI remains intentionally narrow: it sanitizes SCO output and normalizes
@@ -23,18 +23,20 @@ states. Experiment lifecycle control is a Python API, not a hidden command tree.
 ## Tests and coverage
 
 ```bash
-python tools/coverage_gate.py
+uv run python tools/coverage_gate.py
 ```
 
 The gate runs the full suite and checks repository-wide dimensions separately:
 
-- line coverage: at least 90%;
-- branch coverage: at least 80%.
+- line coverage: at least 95%;
+- branch coverage: at least 85%.
 
 Coverage is a regression floor, not a correctness proof. Prefer simplifying
 unreachable branches and testing meaningful identity, recovery, redaction,
 atomicity, and fail-closed behavior. Do not add live scheduler calls or generic
 tests coupled to a private cluster merely to increase coverage.
 
-CI also checks generated CLI documentation, Python compilation, and wheel
-construction on every push and pull request.
+CI first runs `uv sync --locked`, then checks generated CLI documentation,
+Python compilation, and distribution construction with `uv build` on every
+push and pull request. Update dependencies with `uv add` or `uv remove` and
+commit both `pyproject.toml` and `uv.lock`.

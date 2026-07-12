@@ -16,10 +16,10 @@ backend services.
 
 ## Install
 
-From GitHub:
+Add the package to another uv-managed project directly from GitHub:
 
 ```bash
-python -m pip install \
+uv add \
   "ml-experiment-control @ git+https://github.com/NotDesigned/ml-experiment-control.git"
 ```
 
@@ -27,9 +27,15 @@ For local development:
 
 ```bash
 git clone https://github.com/NotDesigned/ml-experiment-control.git
-python -m pip install -e 'ml-experiment-control[dev]'
-python ml-experiment-control/tools/coverage_gate.py
+cd ml-experiment-control
+uv sync --locked
+uv run python tools/coverage_gate.py
 ```
+
+`uv sync` creates the local `.venv`, installs the package in editable mode, and
+includes the default `dev` dependency group. `uv.lock` is committed so local
+development and CI resolve the same dependency versions. Use `uv add <package>`
+for runtime dependencies and `uv add --dev <package>` for development tools.
 
 The only runtime dependency outside the Python standard library is PyYAML,
 used for canonical Run/Attempt manifest files.
@@ -209,13 +215,13 @@ Crane, or Skopeo executable overrides without adding them to this package.
 ## Development verification
 
 ```bash
-python -m pip install -e '.[dev]'
-python tools/coverage_gate.py
-python tools/generate_cli_reference.py --check
-python -m compileall -q src tests tools examples
-python -m pip wheel --no-deps --wheel-dir dist .
+uv sync --locked
+uv run python tools/coverage_gate.py
+uv run python tools/generate_cli_reference.py --check
+uv run python -m compileall -q src tests tools examples
+uv build
 ```
 
-The repository enforces at least 90% line coverage and 80% branch coverage as
+The repository enforces at least 95% line coverage and 85% branch coverage as
 independent gates. Testing policy and CI details are documented in
 [`docs/development.md`](docs/development.md).

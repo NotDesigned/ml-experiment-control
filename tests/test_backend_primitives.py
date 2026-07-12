@@ -1,3 +1,5 @@
+import pytest
+
 from experiment_control.backends.base import BackendRegistry
 from experiment_control.backends.wyd import (
     checkpoint_probe_command,
@@ -19,12 +21,8 @@ def test_slurm_accounting_contract_normalizes_exit_code():
 
 def test_backend_registry_rejects_unknown_kind():
     registry = BackendRegistry()
-    try:
+    with pytest.raises(ValueError, match="unsupported"):
         registry.get("other")
-    except ValueError as error:
-        assert "unsupported" in str(error)
-    else:
-        raise AssertionError("unknown backend was accepted")
 
 
 def test_attempt_qualified_slurm_name_is_bounded_and_deterministic():

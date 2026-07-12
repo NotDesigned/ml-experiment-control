@@ -12,7 +12,7 @@ license = {text = "MIT"}
 authors = [{name = "ml-experiment-control contributors"}]
 dependencies = ["PyYAML>=6.0"]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = ["pytest>=8.0", "pytest-cov>=6.0"]
 
 [project.urls]

@@ -53,3 +53,8 @@ def test_preflight_report_serialization_and_fail_closed_requirement():
     }
     with pytest.raises(RuntimeError, match="access"):
         report.require_ready()
+
+
+def test_project_registry_rejects_unknown_project():
+    with pytest.raises(ValueError, match="unsupported experiment project"):
+        ProjectRegistry().get("missing")

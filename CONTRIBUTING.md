@@ -3,15 +3,19 @@
 Install the package and development dependencies, then run the repository gates:
 
 ```bash
-python -m pip install -e '.[dev]'
-python tools/coverage_gate.py
-python tools/generate_cli_reference.py --check
-python -m compileall -q src tests tools examples
-python -m pip wheel --no-deps --wheel-dir dist .
+uv sync --locked
+uv run python tools/coverage_gate.py
+uv run python tools/generate_cli_reference.py --check
+uv run python -m compileall -q src tests tools examples
+uv build
 ```
 
+Add runtime dependencies with `uv add <package>` and development dependencies
+with `uv add --dev <package>`. Commit the resulting `pyproject.toml` and
+`uv.lock` changes together.
+
 The coverage gate checks repository-wide line and branch coverage independently:
-at least 90% line coverage and 80% branch coverage. See
+at least 95% line coverage and 85% branch coverage. See
 [`docs/development.md`](docs/development.md) for the testing and generated CLI
 documentation policy.
 
