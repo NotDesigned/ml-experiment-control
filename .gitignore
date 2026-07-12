@@ -2,6 +2,7 @@
 /dist/
 /.pytest_cache/
 /.venv/
+/rust/target/
 .coverage
 coverage.json
 htmlcov/

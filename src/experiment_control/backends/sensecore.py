@@ -7,7 +7,6 @@ import json
 import os
 import re
 import shlex
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +86,11 @@ class SenseCoreBackend:
             run.get("backend", {}).get("sco_bin")
             or os.environ.get("EXPERIMENTCTL_SCO_BIN", "sco")
         )
+
+    @staticmethod
+    def safe_sco_bin() -> str:
+        """Resolve the packaged Rust sanitizer executable."""
+        return os.environ.get("EXPERIMENTCTL_SAFE_SCO_BIN", "experiment-safe-sco")
 
     @staticmethod
     def create_timeout_seconds() -> int:
@@ -209,10 +213,8 @@ class SenseCoreBackend:
     def safe_command(self, arguments: list[str], mode: str) -> list[str]:
         sco = shlex.join(["env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
                           "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY", *arguments])
-        sanitizer = shlex.join([sys.executable, "-m", "experiment_control.safe_sco", mode])
-        redactor = shlex.join([
-            sys.executable, "-m", "experiment_control.safe_sco", "redact-lines"
-        ])
+        sanitizer = shlex.join([self.safe_sco_bin(), mode])
+        redactor = shlex.join([self.safe_sco_bin(), "redact-lines"])
         return [
             "bash", "-o", "pipefail", "-c",
             f"{sco} 2> >({redactor} >&2) | {sanitizer}",
@@ -291,7 +293,7 @@ class SenseCoreBackend:
 
     def _redact_error(self, text: str) -> str:
         result = self.s.run_command(
-            [sys.executable, "-m", "experiment_control.safe_sco", "redact-lines"],
+            [self.safe_sco_bin(), "redact-lines"],
             input_text=text, check=False,
         )
         return result.stdout.strip()

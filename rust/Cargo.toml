@@ -1,0 +1,21 @@
+[package]
+name = "experiment-safe-sco"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Fail-closed sanitizer for SenseCore SCO output"
+repository = "https://github.com/NotDesigned/ml-experiment-control"
+
+[[bin]]
+name = "experiment-safe-sco"
+path = "src/main.rs"
+
+[dependencies]
+regex = "1.12"
+serde_json = "1.0"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

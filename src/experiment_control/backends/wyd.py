@@ -12,7 +12,7 @@ from typing import Any
 
 from .services import BackendServices
 from ..preflight import PreflightCheck, PreflightReport
-from ..safe_sco import redact_line
+from ..redaction import redact_line
 from ..checkpoints import select_latest_checkpoint_name
 from ..identity import IdentityReport
 

@@ -9,8 +9,8 @@ backend's own protocol vocabulary belongs in backend-specific tests.
 
 ## CLI documentation
 
-`experiment_control.safe_sco.build_parser()` is the single source of truth for
-the package's only CLI. Generate and check its reference with:
+The Rust binary in `rust/src/main.rs` is the single source of truth for the
+package's only CLI. Generate and check its reference with:
 
 ```bash
 uv run python tools/generate_cli_reference.py
@@ -19,6 +19,14 @@ uv run python tools/generate_cli_reference.py --check
 
 The CLI remains intentionally narrow: it sanitizes SCO output and normalizes
 states. Experiment lifecycle control is a Python API, not a hidden command tree.
+
+Run the Rust-specific checks before the Python suite:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml -- --check
+cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
+cargo test --locked --manifest-path rust/Cargo.toml
+```
 
 ## Tests and coverage
 

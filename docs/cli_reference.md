@@ -7,18 +7,19 @@ does not submit, cancel, or otherwise control experiments; controllers consume
 the Python backend API for those operations.
 
 ```text
-usage: experiment-safe-sco [-h]
-                           {job-summary,job-list,worker-list,redact-lines,normalize-state}
-                           [value]
+Sanitize SCO output and normalize SenseCore scheduler states.
+Only explicitly allowlisted job fields are emitted. Error and log text can be
+passed through redact-lines without exposing the raw response to a controller.
 
-Sanitize SCO output and normalize SenseCore scheduler states. Only explicitly
-allowlisted job fields are emitted. Error and log text can be passed through
-``redact-lines`` without first exposing the raw response to the controller.
+Usage: experiment-safe-sco <MODE> [VALUE]
 
-positional arguments:
-  {job-summary,job-list,worker-list,redact-lines,normalize-state}
-  value
+Modes:
+job-summary     Sanitize one JSON job object
+job-list        Sanitize a JSON job array
+worker-list     Sanitize the SCO worker table
+redact-lines    Redact credential forms in text
+normalize-state Normalize a SenseCore state value
 
-options:
-  -h, --help            show this help message and exit
+Options:
+-h, --help      Print help
 ```

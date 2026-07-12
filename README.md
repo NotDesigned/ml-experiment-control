@@ -36,6 +36,8 @@ uv run python tools/coverage_gate.py
 includes the default `dev` dependency group. `uv.lock` is committed so local
 development and CI resolve the same dependency versions. Use `uv add <package>`
 for runtime dependencies and `uv add --dev <package>` for development tools.
+Building from source also requires Rust 1.85 or newer; maturin compiles and
+installs the `experiment-safe-sco` sanitizer binary into the environment.
 
 The only runtime dependency outside the Python standard library is PyYAML,
 used for canonical Run/Attempt manifest files.
@@ -133,9 +135,10 @@ training commands.
 
 ## CLI reference
 
-The package exposes one deliberately narrow command, `experiment-safe-sco`,
-for sanitizing SCO responses before a controller parses them. It is not an
-experiment lifecycle CLI. Its complete generated option reference is in
+The package exposes one deliberately narrow Rust command, `experiment-safe-sco`,
+for sanitizing SCO responses before a controller parses them. The binary is
+installed by the package wheel and is not an experiment lifecycle CLI. Its
+complete generated option reference is in
 [`docs/cli_reference.md`](docs/cli_reference.md); the runtime parser is the
 single source of truth and CI rejects stale generated help.
 
@@ -189,6 +192,7 @@ The backends recognize these non-secret environment variables:
 ```text
 EXPERIMENTCTL_SCO_BIN
 EXPERIMENTCTL_SCO_CREATE_TIMEOUT_SECONDS
+EXPERIMENTCTL_SAFE_SCO_BIN
 EXPERIMENTCTL_SSH_BIN
 EXPERIMENTCTL_RSYNC_BIN
 ```
@@ -216,6 +220,9 @@ Crane, or Skopeo executable overrides without adding them to this package.
 
 ```bash
 uv sync --locked
+cargo fmt --manifest-path rust/Cargo.toml -- --check
+cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
+cargo test --locked --manifest-path rust/Cargo.toml
 uv run python tools/coverage_gate.py
 uv run python tools/generate_cli_reference.py --check
 uv run python -m compileall -q src tests tools examples
