@@ -205,12 +205,6 @@ def _validate_identity(label: str, value: str) -> None:
         )
 
 
-def _require_immutable(label: str, value: str) -> None:
-    """Reject missing, mutable, or placeholder source/image identities."""
-    if not value or value.lower() in {"unknown", "latest", "runtime", "seed"}:
-        raise ValueError(f"{label} must be an immutable, non-placeholder identity")
-
-
 def _sanitize_mapping(value: Any, key: str = "") -> Any:
     """Return a JSON-safe submission request with secret-bearing values removed."""
     if SECRET_KEY_RE.search(key):
