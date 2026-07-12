@@ -28,8 +28,8 @@ uv run python tools/coverage_gate.py
 
 The gate runs the full suite and checks repository-wide dimensions separately:
 
-- line coverage: at least 95%;
-- branch coverage: at least 85%.
+- line coverage: 100%;
+- branch coverage: at least 95%.
 
 Coverage is a regression floor, not a correctness proof. Prefer simplifying
 unreachable branches and testing meaningful identity, recovery, redaction,

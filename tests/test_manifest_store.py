@@ -2,11 +2,13 @@ import json
 
 import pytest
 
+import experiment_control.manifest as manifest_module
 from experiment_control.manifest import (
     ExperimentStateStore,
     RunState,
     append_event_once,
     atomic_create,
+    atomic_write,
     sanitize_command,
 )
 from experiment_control.run_manifest import build_run_manifest, comparable_manifest
@@ -424,3 +426,106 @@ def test_research_contract_is_part_of_run_identity(tmp_path):
     assert comparable_manifest({"resolved_config": "legacy"}) == {
         "resolved_config": "legacy"
     }
+
+
+def test_atomic_write_removes_temporary_file_when_publication_fails(
+    tmp_path, monkeypatch,
+):
+    target = tmp_path / "status.json"
+    temporary = None
+
+    def fail_replace(source, destination):
+        nonlocal temporary
+        temporary = source
+        raise OSError("simulated rename failure")
+
+    monkeypatch.setattr(manifest_module.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="rename failure"):
+        atomic_write(target, {"state": "RUNNING"})
+    assert temporary is not None
+    assert not manifest_module.os.path.exists(temporary)
+    assert not target.exists()
+
+
+def test_submission_request_preserves_json_primitives(tmp_path):
+    store = prepare_store(tmp_path)
+    intent = store.begin_submission(
+        project="project", run_id="run-s0", attempt_id="attempt-001",
+        backend="test-backend",
+        request={"none": None, "flag": True, "count": 3, "ratio": 0.5},
+    )
+    assert intent["request"] == {
+        "none": None, "flag": True, "count": 3, "ratio": 0.5,
+    }
+
+
+def test_snapshot_repairs_missing_canonical_records_and_skips_missing_root(tmp_path):
+    store = prepare_store(tmp_path)
+    store.attempt_backend_path("attempt-001").unlink()
+    store.attempt_status_path("attempt-001").unlink()
+    store.backend_path.unlink()
+    store.create_attempt(attempt_manifest(store))
+
+    store.initialize_attempt_records("attempt-002")
+
+    assert not store.attempt_backend_path("attempt-001").exists()
+    repaired = json.loads(store.attempt_status_path("attempt-001").read_text())
+    assert repaired["attempt_id"] == "attempt-001"
+
+
+def test_explicit_attempt_load_falls_back_to_matching_root_records(tmp_path):
+    store = prepare_store(tmp_path)
+    expected_backend = store.load_backend()
+    expected_status = store.load_status_payload()
+    store.attempt_backend_path("attempt-001").unlink()
+    store.attempt_status_path("attempt-001").unlink()
+    assert store.load_backend("attempt-001") == expected_backend
+    assert store.load_status_payload("attempt-001") == expected_status
+
+
+def test_reinitializing_attempt_reuses_existing_derived_records(tmp_path):
+    store = prepare_store(tmp_path)
+    before = store.read_status("attempt-001")
+    after = store.initialize_attempt_records("attempt-001")
+    assert after == before
+
+
+def test_manifest_publication_recovers_when_concurrent_writer_wins(
+    tmp_path, monkeypatch,
+):
+    store = ExperimentStateStore(tmp_path)
+    candidate = run_manifest(tmp_path)
+    original_create = manifest_module.atomic_create
+    calls = 0
+
+    def concurrent_create(path, payload, **kwargs):
+        nonlocal calls
+        calls += 1
+        original_create(path, payload, **kwargs)
+        raise FileExistsError(path)
+
+    monkeypatch.setattr(manifest_module, "atomic_create", concurrent_create)
+    assert store.ensure_manifest(candidate) == candidate
+    assert calls == 1
+
+
+def test_submission_publication_recovers_when_concurrent_writer_wins(
+    tmp_path, monkeypatch,
+):
+    store = prepare_store(tmp_path)
+    original_create = manifest_module.atomic_create
+    calls = 0
+
+    def concurrent_create(path, payload, **kwargs):
+        nonlocal calls
+        calls += 1
+        original_create(path, payload, **kwargs)
+        raise FileExistsError(path)
+
+    monkeypatch.setattr(manifest_module, "atomic_create", concurrent_create)
+    intent = store.begin_submission(
+        project="project", run_id="run-s0", attempt_id="attempt-001",
+        backend="test-backend", request={"argv": ["submit"]},
+    )
+    assert intent["state"] == "SUBMITTING"
+    assert calls == 1

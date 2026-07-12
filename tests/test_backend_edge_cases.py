@@ -302,3 +302,263 @@ def test_slurm_preflight_classifies_remote_failures(tmp_path, monkeypatch, scope
     report = backend.preflight(slurm_run(), scope=scope)
     assert report.ready is False
     assert report.checks[-1].category == category
+
+
+def test_sensecore_validation_wraps_scheduler_and_image_identity_errors(tmp_path):
+    backend = SenseCoreBackend(services(tmp_path, QueueRunner([])))
+    invalid_name = sensecore_run()
+    invalid_name["backend"]["job_name"] = "Invalid/Name"
+    with pytest.raises(ValueError, match="SenseCore base job name"):
+        backend.validate(invalid_name)
+
+    invalid_image = sensecore_run()
+    invalid_image["backend"]["image"] = "registry.example/project/image:latest"
+    with pytest.raises(ValueError, match="immutable source-qualified tag"):
+        backend.validate(invalid_image)
+
+
+@pytest.mark.parametrize(("payload", "expected"), [("[]", None), (
+    '[{"name":"sensecore-run--attempt-001"}]',
+    "sensecore-run--attempt-001",
+)])
+def test_sensecore_recovery_distinguishes_absent_and_exact_job(tmp_path, payload, expected):
+    backend = SenseCoreBackend(services(
+        tmp_path, QueueRunner([CommandResult(("find",), 0, payload)]),
+    ))
+    assert backend.recover_submission(sensecore_run(), {}, "attempt-001") == expected
+
+
+def test_sensecore_status_rejects_conflicting_exact_resource(tmp_path):
+    resource = "sensecore-run--attempt-001"
+    backend = SenseCoreBackend(services(
+        tmp_path,
+        QueueRunner([CommandResult(("describe",), 0, '{"name":"other"}')]),
+        record={"attempt_id": "attempt-001", "backend_job_id": resource},
+    ))
+    with pytest.raises(RuntimeError, match="conflicting resource"):
+        backend.status({}, sensecore_run())
+
+
+def test_sensecore_cancellation_reads_legacy_root_marker_for_attempt_dir(tmp_path):
+    attempt_dir = tmp_path / "attempts" / "attempt-001"
+    attempt_dir.mkdir(parents=True)
+    resource = "sensecore-run--attempt-001"
+    (tmp_path / "cancel_requested.json").write_text(
+        json.dumps({"backend_job_id": resource}), encoding="utf-8",
+    )
+    backend = SenseCoreBackend(services(attempt_dir, QueueRunner([])))
+    assert backend._cancellation_requested({}, sensecore_run(), resource) is True
+
+
+def test_sensecore_cancel_and_worker_failures_remain_sanitized(tmp_path, monkeypatch):
+    resource = "sensecore-run--attempt-001"
+    runner = QueueRunner([
+        CommandResult(("stop",), 1, stderr="raw secret"),
+        CommandResult(("redact",), 0, stdout="sanitized stop failure"),
+    ])
+    backend = SenseCoreBackend(services(tmp_path, runner))
+    monkeypatch.setattr(backend, "status", lambda *args: {
+        "state": "RUNNING", "backend_job_id": resource,
+    })
+    with pytest.raises(RuntimeError, match="sanitized stop failure"):
+        backend.cancel({}, sensecore_run())
+
+    worker = SenseCoreBackend(services(
+        tmp_path,
+        QueueRunner([
+            CommandResult(("workers",), 1, stderr="raw secret"),
+            CommandResult(("redact",), 0, stdout="sanitized worker failure"),
+        ]),
+        record={"attempt_id": "attempt-001", "backend_job_id": resource},
+    ))
+    with pytest.raises(RuntimeError, match="sanitized worker failure"):
+        worker.workers({}, sensecore_run())
+
+
+def test_slurm_recovery_handles_blank_evidence_and_one_exact_match(tmp_path):
+    expected_name = "backend-run--attempt-001"
+    backend = WydSlurmBackend(services(tmp_path, QueueRunner([
+        CommandResult(("squeue",), 0, f"\n123|{expected_name}|token\n\n"),
+        CommandResult(("sacct",), 0, "\n\n"),
+    ])))
+    assert backend.recover_submission(
+        slurm_run(), {"submission_token": "token"}, "attempt-001",
+    ) == "123"
+
+
+@pytest.mark.parametrize(
+    ("queue", "accounting", "error"),
+    [
+        ("malformed\n", None, "queue identity query returned malformed"),
+        ("job|backend-run--attempt-001|token\n", None, "invalid job ID"),
+        ("", "malformed\n", "accounting identity query returned malformed"),
+        ("", "job|backend-run--attempt-001\n", "invalid job ID"),
+    ],
+)
+def test_slurm_recovery_rejects_malformed_scheduler_evidence(
+    tmp_path, queue, accounting, error,
+):
+    results = [CommandResult(("squeue",), 0, queue)]
+    if accounting is not None:
+        results.append(CommandResult(("sacct",), 0, accounting))
+    backend = WydSlurmBackend(services(tmp_path, QueueRunner(results)))
+    with pytest.raises(RuntimeError, match=error):
+        backend.recover_submission(
+            slurm_run(), {"submission_token": "token"}, "attempt-001",
+        )
+
+
+def test_slurm_identity_rejects_malformed_remote_manifest_digest(tmp_path):
+    (tmp_path / "manifest.yaml").write_text("run_id: backend-run\n", encoding="utf-8")
+    backend = WydSlurmBackend(services(tmp_path, QueueRunner([
+        CommandResult(("squeue",), 0, ""),
+        CommandResult(("sacct",), 0, ""),
+        CommandResult(("manifest",), 0, ""),
+        CommandResult(("digest",), 0, "not-a-digest\n"),
+    ])))
+    with pytest.raises(RuntimeError, match="digest probe returned malformed"):
+        backend.identity({"campaign": "test"}, slurm_run(), "attempt-001")
+
+
+def test_slurm_stage_rejects_source_image_and_required_path_drift(tmp_path):
+    run = slurm_run()
+    backend = WydSlurmBackend(services(tmp_path, QueueRunner([])))
+    with pytest.raises(ValueError, match="source_dir must end"):
+        backend.stage({}, run, "different-source", SourceBundle(tmp_path))
+
+    mismatch = WydSlurmBackend(services(tmp_path, QueueRunner([
+        CommandResult(("mkdir",), 0),
+        CommandResult(("source-marker",), 0),
+        CommandResult(("sif-marker",), 1),
+        CommandResult(("sha256",), 0, f"{'0' * 64}  image.sif\n"),
+    ])))
+    with pytest.raises(ValueError, match="SIF checksum mismatch"):
+        mismatch.stage({}, run, "source-fixed", SourceBundle(tmp_path))
+
+    unsafe = WydSlurmBackend(services(tmp_path, QueueRunner([
+        CommandResult(("mkdir",), 0),
+        CommandResult(("source-marker",), 0),
+        CommandResult(("sif-marker",), 0),
+    ])))
+    with pytest.raises(ValueError, match="required source path must be relative"):
+        unsafe.stage(
+            {}, run, "source-fixed",
+            SourceBundle(tmp_path, required_paths=("../train.py",)),
+        )
+
+    missing = WydSlurmBackend(services(tmp_path, QueueRunner([
+        CommandResult(("mkdir",), 0),
+        CommandResult(("source-marker",), 0),
+        CommandResult(("sif-marker",), 0),
+        CommandResult(("required-path",), 1),
+    ])))
+    with pytest.raises(RuntimeError, match="missing required project path"):
+        missing.stage(
+            {}, run, "source-fixed",
+            SourceBundle(tmp_path, required_paths=("train.py",)),
+        )
+
+
+@pytest.mark.parametrize(
+    ("output", "error"),
+    [
+        ("other|up|3-00:00:00|gpu:accelerator:8\n", "not currently visible"),
+        ("accelerator|down|3-00:00:00|gpu:accelerator:8\n", "not currently usable"),
+        (
+            "accelerator|up|3-00:00:00|gpu:accelerator:8\n"
+            "user|other||other|other\n",
+            "association does not expose",
+        ),
+    ],
+)
+def test_slurm_live_validation_reports_specific_resource_drift(tmp_path, output, error):
+    backend = WydSlurmBackend(services(
+        tmp_path, QueueRunner([CommandResult(("live",), 0, output)]),
+    ))
+    with pytest.raises(RuntimeError, match=error):
+        backend.validate_live(slurm_run())
+
+
+def slurm_attempt_manifest(run):
+    return {
+        **run,
+        "campaign": "backend-test",
+        "attempt_id": "attempt-001",
+        "command": ["python", "train.py"],
+        "execution": {"source_mount": "/app", "workdir": "/app"},
+    }
+
+
+def test_slurm_submit_dry_run_claim_failure_and_bad_scheduler_response(tmp_path):
+    run = slurm_run()
+    manifest = slurm_attempt_manifest(run)
+    dry_run = WydSlurmBackend(services(tmp_path, QueueRunner([])))
+    assert dry_run.submit({}, run, manifest, dry_run=True) == "DRY_RUN"
+
+    live = (
+        "accelerator|up|3-00:00:00|gpu:accelerator:8\n"
+        "user|lab||normal|normal\n"
+    )
+    claim_failure = WydSlurmBackend(services(tmp_path / "claim", QueueRunner([
+        CommandResult(("live",), 0, live),
+        CommandResult(("claim",), 2, stderr="transport failure"),
+    ])))
+    with pytest.raises(RuntimeError, match="scheduler/storage state is unknown"):
+        claim_failure.submit({}, run, manifest, dry_run=False)
+
+    bad_response = WydSlurmBackend(services(tmp_path / "response", QueueRunner([
+        CommandResult(("live",), 0, live),
+        CommandResult(("claim",), 0),
+        CommandResult(("manifest-rsync",), 0),
+        CommandResult(("script-rsync",), 0),
+        CommandResult(("sbatch",), 0, "not-a-job-id\n"),
+    ])))
+    with pytest.raises(ValueError, match="unexpected sbatch response"):
+        bad_response.submit({}, run, manifest, dry_run=False)
+
+
+def test_slurm_status_falls_back_to_queue_when_accounting_is_delayed(tmp_path):
+    backend = WydSlurmBackend(services(tmp_path, QueueRunner([
+        CommandResult(("sacct",), 0, ""),
+        CommandResult(
+            ("squeue",), 0,
+            "1234|backend-run|accelerator|RUNNING|00:01:00|0:0\n",
+        ),
+    ])))
+    assert backend.status({}, slurm_run())["state"] == "RUNNING"
+
+
+def test_slurm_cancel_short_circuits_terminal_and_rechecks_active_job(tmp_path, monkeypatch):
+    backend = WydSlurmBackend(services(tmp_path, QueueRunner([])))
+    terminal = {"state": "SUCCEEDED", "backend_job_id": "1234"}
+    monkeypatch.setattr(backend, "status", lambda *args: terminal)
+    assert backend.cancel({}, slurm_run()) == terminal
+
+    statuses = iter([
+        {"state": "RUNNING", "backend_job_id": "1234"},
+        {"state": "CANCELLED", "backend_job_id": "1234"},
+    ])
+    commands = []
+    monkeypatch.setattr(backend, "status", lambda *args: next(statuses))
+    monkeypatch.setattr(
+        backend, "remote_exec",
+        lambda alias, command, **kwargs: commands.append((alias, command)),
+    )
+    assert backend.cancel({}, slurm_run())["state"] == "CANCELLED"
+    assert commands == [("test-login", "scancel 1234")]
+
+
+def test_slurm_logs_reject_bad_job_identity_and_remote_probe_failure(tmp_path):
+    bad_identity = WydSlurmBackend(services(
+        tmp_path, QueueRunner([]),
+        record={"attempt_id": "attempt-001", "backend_job_id": "not-numeric"},
+    ))
+    with pytest.raises(ValueError, match="job ID must be numeric"):
+        bad_identity.logs({}, slurm_run(), tail=10)
+
+    failed_probe = WydSlurmBackend(services(
+        tmp_path,
+        QueueRunner([CommandResult(("stdout",), 2, stderr="storage unavailable")]),
+    ))
+    with pytest.raises(RuntimeError, match="log probe failed"):
+        failed_probe.logs({}, slurm_run(), tail=10)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import io
+import runpy
 import subprocess
 import sys
 
@@ -186,6 +187,8 @@ def test_direct_safe_sco_rejects_invalid_cli_payloads(monkeypatch):
 def test_safe_sco_helpers_fail_closed_on_malformed_worker_tables():
     assert safe_sco.safe_text(3) == 3
     assert safe_sco.worker_list("no table") == []
+    with pytest.raises(SystemExit, match="unexpected worker table schema"):
+        safe_sco.worker_list("| NAME | TOKEN |\n| worker | secret |\n")
     with pytest.raises(SystemExit, match="malformed worker table"):
         safe_sco.worker_list(
             "| WORKER_NAME | RESOURCE | HOST_IP | POD_IP | PHASE |\n| too | few | cells |\n"
@@ -210,3 +213,20 @@ def test_job_summary_tolerates_non_mapping_optional_sections():
     assert summary["pool"] is None
     assert summary["spec"] is None
     assert summary["mounts"] == []
+
+
+def test_direct_empty_job_list_and_valid_worker_continuation():
+    assert safe_sco.read_json(io.StringIO("No jobs found\n"), empty_list=True) == []
+    workers = safe_sco.worker_list(
+        "| WORKER_NAME | RESOURCE | HOST_IP | POD_IP | PHASE |\n"
+        "| worker-0 | 4 GPUs | | | Running |\n"
+        "| | 56 CPUs | | | |\n"
+    )
+    assert workers == [{"worker_name": "worker-0", "phase": "Running"}]
+
+
+def test_module_entrypoint_delegates_to_main(monkeypatch):
+    monkeypatch.setattr(sys, "argv", [safe_sco.__file__, "normalize-state", "RUNNING"])
+    with pytest.raises(SystemExit) as completed:
+        runpy.run_path(safe_sco.__file__, run_name="__main__")
+    assert completed.value.code == 0

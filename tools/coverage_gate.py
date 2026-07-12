@@ -13,8 +13,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "coverage.json"
-DEFAULT_MIN_LINE = 95.0
-DEFAULT_MIN_BRANCH = 85.0
+DEFAULT_MIN_LINE = 100.0
+DEFAULT_MIN_BRANCH = 95.0
 
 
 def coverage_percentages(payload: dict[str, Any]) -> tuple[float, float]:
