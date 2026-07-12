@@ -3,13 +3,16 @@
 `ml-experiment-control` is a small Python package for controlling durable ML
 experiments without coupling scheduler code to a particular training
 repository. It currently provides SenseCore/SCO and WYD Slurm/Apptainer
-backends, sanitized readiness checks, command-runner injection, normalized
-failure states, and the `ProjectAdapter` protocol used by a host repository.
+backends, durable Run/Attempt state and mutation outboxes, sanitized readiness
+checks, command-runner injection, normalized failure states, and the
+`ProjectAdapter` protocol used by a host repository.
 
-The package deliberately does **not** own scientific configuration, training
-commands, metric semantics, campaign files, credentials, or model assets. A
-host repository supplies those through a project adapter and injected backend
-services.
+The package owns the platform-neutral Run/Attempt manifest constructor,
+`ExperimentStateStore`, atomic lifecycle events, and submission/cancel
+outboxes. It deliberately does **not** own scientific configuration, training
+commands, metric semantics, campaign authoring, credentials, or model assets.
+A host repository supplies those through a project adapter and injected
+backend services.
 
 ## Install
 
@@ -28,7 +31,8 @@ python -m pip install -e ml-experiment-control
 python -m pytest ml-experiment-control/tests
 ```
 
-The package has no runtime dependencies outside the Python standard library.
+The only runtime dependency outside the Python standard library is PyYAML,
+used for canonical Run/Attempt manifest files.
 
 ## Public API
 
@@ -46,6 +50,9 @@ from experiment_control.project import (
 )
 from experiment_control.runner import CommandResult, CommandRunner, SubprocessRunner
 from experiment_control.states import FailureClass, classify_failure
+from experiment_control.manifest import ExperimentStateStore, RunState
+from experiment_control.outbox import execute_cancel_outbox
+from experiment_control.run_manifest import build_run_manifest
 ```
 
 `build_registry` requires one host-provided `BackendServices` instance:
@@ -83,8 +90,9 @@ existing run directory only when this digest-backed ownership evidence is
 true.
 Recovery fails closed when more than one scheduler job matches one attempt; it
 never selects one arbitrarily.
-Campaign generation and local event reconciliation remain host responsibilities
-because this package does not own YAML or run manifests.
+Campaign generation and scientific config resolution remain host
+responsibilities. The package owns immutable Run/Attempt publication and local
+event/outbox reconciliation once the host has resolved those inputs.
 
 WYD log observation checks exact, attempt-qualified canonical `stdout.log` and
 `stderr.log` paths first, then exact `slurm-<job-id>.out/.err` paths in the

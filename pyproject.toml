@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "ml-experiment-control contributors"}]
-dependencies = []
+dependencies = ["PyYAML>=6.0"]
 
 [project.urls]
 Repository = "https://github.com/NotDesigned/ml-experiment-control"
