@@ -1,3 +1,4 @@
+import experiment_control
 from experiment_control.backends.base import BackendRegistry
 from experiment_control.backends.sensecore import digest_pinned_image, scheduler_job_name
 from experiment_control.preflight import PreflightCheck, PreflightReport
@@ -58,3 +59,11 @@ def test_preflight_report_serialization_and_fail_closed_requirement():
 def test_project_registry_rejects_unknown_project():
     with pytest.raises(ValueError, match="unsupported experiment project"):
         ProjectRegistry().get("missing")
+
+
+def test_downstream_identity_helpers_are_exported_from_package_root():
+    assert experiment_control.validate_identity is not None
+    assert experiment_control.require_immutable is not None
+    assert experiment_control.sanitize_command is not None
+    assert experiment_control.utc_now is not None
+    assert not any(name.startswith("_") for name in experiment_control.__all__)

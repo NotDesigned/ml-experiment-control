@@ -29,3 +29,7 @@ Backend tests use injected command runners and must not access a live scheduler.
 Keep project-specific configuration, launch commands, metrics, and assets in a
 host-owned `ProjectAdapter`; use `examples/minimal_project_adapter.py` as the
 contract checklist.
+
+When changing public imports or `experiment-safe-sco`, update
+[`docs/downstream_contract.md`](docs/downstream_contract.md) and validate the
+candidate package against ELF before its commit pin is advanced.

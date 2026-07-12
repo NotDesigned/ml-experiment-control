@@ -9,7 +9,9 @@ from experiment_control.manifest import (
     append_event_once,
     atomic_create,
     atomic_write,
+    require_immutable,
     sanitize_command,
+    validate_identity,
 )
 from experiment_control.run_manifest import build_run_manifest, comparable_manifest
 
@@ -457,6 +459,17 @@ def test_submission_request_preserves_json_primitives(tmp_path):
     assert intent["request"] == {
         "none": None, "flag": True, "count": 3, "ratio": 0.5,
     }
+
+
+def test_public_identity_helpers_reject_unsafe_or_mutable_values():
+    validate_identity("run_id", "run-safe_1")
+    with pytest.raises(ValueError, match="run_id=.*invalid"):
+        validate_identity("run_id", "../unsafe")
+
+    require_immutable("source_id", "source-deadbeef")
+    for value in ("", "unknown", "latest", "runtime", "seed"):
+        with pytest.raises(ValueError, match="immutable, non-placeholder"):
+            require_immutable("source_id", value)
 
 
 def test_snapshot_repairs_missing_canonical_records_and_skips_missing_root(tmp_path):

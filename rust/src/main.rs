@@ -3,7 +3,7 @@ use serde_json::{Map, Value, json};
 use std::env;
 use std::io::{self, Read};
 use std::process::ExitCode;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 const HELP: &str = "Sanitize SCO output and normalize SenseCore scheduler states.\n\
 Only explicitly allowlisted job fields are emitted. Error and log text can be\n\
@@ -18,51 +18,33 @@ Modes:\n\
 Options:\n\
   -h, --help      Print help";
 
-fn secret_assignment_re() -> &'static Regex {
-    static VALUE: OnceLock<Regex> = OnceLock::new();
-    VALUE.get_or_init(|| {
-        Regex::new(
-            r#"(?i)(\b(?:secret|token|password|passwd|credential|access[_-]?key(?:[_-]?(?:id|secret))?|api[_-]?key|proxy|authorization|cookie)[\w.-]*\b[\s"']*[=:][\s"']*)([^\s,;"']+)"#,
-        )
-        .expect("secret assignment regex is valid")
-    })
-}
-
-fn bearer_re() -> &'static Regex {
-    static VALUE: OnceLock<Regex> = OnceLock::new();
-    VALUE.get_or_init(|| {
-        Regex::new(r"(?i)(\b(?:authorization\s*:\s*)?bearer\s+)[^\s,;]+")
-            .expect("bearer regex is valid")
-    })
-}
-
-fn url_userinfo_re() -> &'static Regex {
-    static VALUE: OnceLock<Regex> = OnceLock::new();
-    VALUE.get_or_init(|| {
-        Regex::new(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@").expect("URL userinfo regex is valid")
-    })
-}
-
-fn sensitive_query_re() -> &'static Regex {
-    static VALUE: OnceLock<Regex> = OnceLock::new();
-    VALUE.get_or_init(|| {
-        Regex::new(
-            r"(?i)([?&](?:access[_-]?key(?:[_-]?(?:id|secret))?|api[_-]?key|secret|token|signature)=)[^&#\s]+",
-        )
-        .expect("sensitive query regex is valid")
-    })
-}
-
-fn worker_name_re() -> &'static Regex {
-    static VALUE: OnceLock<Regex> = OnceLock::new();
-    VALUE.get_or_init(|| Regex::new(r"^[A-Za-z0-9._-]+$").expect("worker regex is valid"))
-}
+static SECRET_ASSIGNMENT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)(\b(?:secret|token|password|passwd|credential|access[_-]?key(?:[_-]?(?:id|secret))?|api[_-]?key|proxy|authorization|cookie)[\w.-]*\b[\s"']*[=:][\s"']*)([^\s,;"']+)"#,
+    )
+    .expect("secret assignment regex is valid")
+});
+static BEARER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(\b(?:authorization\s*:\s*)?bearer\s+)[^\s,;]+")
+        .expect("bearer regex is valid")
+});
+static URL_USERINFO_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@").expect("URL userinfo regex is valid")
+});
+static SENSITIVE_QUERY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)([?&](?:access[_-]?key(?:[_-]?(?:id|secret))?|api[_-]?key|secret|token|signature)=)[^&#\s]+",
+    )
+    .expect("sensitive query regex is valid")
+});
+static WORKER_NAME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._-]+$").expect("worker regex is valid"));
 
 fn redact_line(input: &str) -> String {
-    let value = url_userinfo_re().replace_all(input, "$1<redacted>@");
-    let value = bearer_re().replace_all(&value, "$1<redacted>");
-    let value = sensitive_query_re().replace_all(&value, "$1<redacted>");
-    secret_assignment_re()
+    let value = URL_USERINFO_RE.replace_all(input, "$1<redacted>@");
+    let value = BEARER_RE.replace_all(&value, "$1<redacted>");
+    let value = SENSITIVE_QUERY_RE.replace_all(&value, "$1<redacted>");
+    SECRET_ASSIGNMENT_RE
         .replace_all(&value, "$1<redacted>")
         .into_owned()
 }
@@ -155,7 +137,7 @@ fn worker_list(input: &str) -> Result<Value, &'static str> {
             }
             return Err("safe_sco: malformed worker continuation; raw response suppressed");
         }
-        if !worker_name_re().is_match(worker_name) {
+        if !WORKER_NAME_RE.is_match(worker_name) {
             return Err("safe_sco: unsafe worker identity; raw response suppressed");
         }
         workers.push(json!({

@@ -58,7 +58,14 @@ from experiment_control.project import (
 )
 from experiment_control.runner import CommandResult, CommandRunner, SubprocessRunner
 from experiment_control.states import FailureClass, classify_failure
-from experiment_control.manifest import ExperimentStateStore, RunState
+from experiment_control.manifest import (
+    ExperimentStateStore,
+    RunState,
+    require_immutable,
+    sanitize_command,
+    utc_now,
+    validate_identity,
+)
 from experiment_control.outbox import execute_cancel_outbox
 from experiment_control.run_manifest import build_run_manifest
 ```
@@ -76,6 +83,11 @@ and summarization, atomic JSON writing, and UTC time. This keeps the package
 independent from the host's campaign format, scientific config, and metric
 semantics; package-owned manifest and outbox primitives remain usable without
 backend services.
+
+The supported Python symbols, Rust CLI boundary, private-name policy, and
+consumer upgrade checklist are defined in
+[`docs/downstream_contract.md`](docs/downstream_contract.md). Imports whose
+names begin with `_` are implementation details and are not downstream APIs.
 
 ## Backend lifecycle
 

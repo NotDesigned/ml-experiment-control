@@ -44,6 +44,10 @@ unreachable branches and testing meaningful identity, recovery, redaction,
 atomicity, and fail-closed behavior. Do not add live scheduler calls or generic
 tests coupled to a private cluster merely to increase coverage.
 
+Changes to exported Python symbols or the Rust CLI must also update
+[`downstream_contract.md`](downstream_contract.md) and be validated against the
+ELF integration tests before a downstream commit pin advances.
+
 CI first runs `uv sync --locked`, then checks generated CLI documentation,
 Python compilation, and distribution construction with `uv build` on every
 push and pull request. Update dependencies with `uv add` or `uv remove` and

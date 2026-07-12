@@ -1,0 +1,54 @@
+# Downstream Integration Contract
+
+`ml-experiment-control` is consumed by host repositories such as ELF. This
+document defines the supported integration surface; internal module contents
+are not implicitly downstream APIs.
+
+## Supported Python surface
+
+The package root exports the stable primitives in `experiment_control.__all__`.
+Hosts may also import those same names from their defining modules. The primary
+integration points are:
+
+- `experiment_control.backends.build_registry` and
+  `experiment_control.backends.services.BackendServices` for backend composition;
+- `Backend`, `ProjectAdapter`, `BackendRegistry`, and `ProjectRegistry` for typed
+  host dispatch;
+- `ExperimentStateStore`, `LifecycleStatus`, `RunState`, `sanitize_command`,
+  `utc_now`, `validate_identity`, and `require_immutable` for durable state and
+  validated identity construction;
+- `CommandResult`, `CommandRunner`, and `SubprocessRunner` for injected command
+  execution;
+- `PreflightCheck`, `PreflightReport`, `IdentityReport`, asset/source types,
+  checkpoint discovery, manifest construction, and cancel-outbox functions
+  exported from the package root.
+
+Names beginning with `_` are private. A host must not import them, even when a
+commit pin makes the current implementation appear stable. Module constants or
+classes omitted from both `experiment_control.__all__` and the README Public API
+section are likewise not compatibility promises.
+
+## Sanitizer CLI
+
+`experiment-safe-sco` is a packaged Rust executable installed into the Python
+environment's `PATH`. Hosts must invoke the executable directly. The historical
+`python -m experiment_control.safe_sco` entrypoint is not part of the supported
+surface.
+
+The generated [`cli_reference.md`](cli_reference.md) is the command contract.
+Sanitizer failures never echo raw input.
+
+## Consumer upgrade procedure
+
+Consumers should pin an immutable package commit. Before updating that pin:
+
+1. install the candidate package, including its platform wheel or Rust build;
+2. run the host's registry, project-adapter, state-store, and CLI integration tests;
+3. remove imports absent from the supported surface instead of requesting
+   compatibility for unused implementation details;
+4. update consumer documentation when module ownership or invocation changes;
+5. update the commit pin only after both package and host tests pass.
+
+ELF is the reference downstream consumer. Its integration tests should exercise
+the public imports and direct `experiment-safe-sco` invocation against the
+candidate package before advancing `requirements.txt`.

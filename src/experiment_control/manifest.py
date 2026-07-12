@@ -8,7 +8,7 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -66,26 +66,6 @@ class LifecycleStatus:
         return {key: value for key, value in payload.items() if value is not None}
 
 
-@dataclass(frozen=True)
-class SubmissionIntent:
-    """Durable scheduler submission outbox record for one attempt."""
-
-    project: str
-    run_id: str
-    attempt_id: str
-    backend: str
-    request: dict[str, Any]
-    state: str = "SUBMITTING"
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    )
-    backend_job_id: str | None = None
-    reconciled_at: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {key: value for key, value in asdict(self).items() if value is not None}
-
-
 def utc_now() -> str:
     """Return the current UTC timestamp in RFC 3339 form with a ``Z`` suffix."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -119,22 +99,18 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
-def _write_payload(handle: Any, payload: Any, *, yaml_format: bool) -> None:
-    if yaml_format:
-        yaml.safe_dump(payload, handle, sort_keys=False, allow_unicode=True)
-    else:
-        json.dump(payload, handle, ensure_ascii=False, sort_keys=True, allow_nan=False)
-        handle.write("\n")
-    handle.flush()
-    os.fsync(handle.fileno())
-
-
 def _durable_temp(path: Path, payload: Any, *, yaml_format: bool) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     suffix = ".yaml" if yaml_format else ".json"
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=suffix, dir=path.parent)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        _write_payload(handle, payload, yaml_format=yaml_format)
+        if yaml_format:
+            yaml.safe_dump(payload, handle, sort_keys=False, allow_unicode=True)
+        else:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True, allow_nan=False)
+            handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     return temp_name
 
 
@@ -197,12 +173,18 @@ def append_event_once(path: Path, event: dict[str, Any], event_id: str) -> bool:
         return True
 
 
-def _validate_identity(label: str, value: str) -> None:
+def validate_identity(label: str, value: str) -> None:
     """Require a scheduler/filesystem-safe run or attempt identity."""
     if not IDENTITY_RE.fullmatch(value):
         raise ValueError(
             f"{label}={value!r} is invalid; use 1-128 letters, digits, '.', '_' or '-'"
         )
+
+
+def require_immutable(label: str, value: str) -> None:
+    """Reject missing, mutable, or placeholder source/image identities."""
+    if not value or value.lower() in {"unknown", "latest", "runtime", "seed"}:
+        raise ValueError(f"{label} must be an immutable, non-placeholder identity")
 
 
 def _sanitize_mapping(value: Any, key: str = "") -> Any:
@@ -257,7 +239,7 @@ class ExperimentStateStore:
         return self.run_dir / "backend.json"
 
     def attempt_dir(self, attempt_id: str) -> Path:
-        _validate_identity("attempt_id", attempt_id)
+        validate_identity("attempt_id", attempt_id)
         return self.run_dir / "attempts" / attempt_id
 
     def attempt_path(self, attempt_id: str) -> Path:
@@ -420,7 +402,7 @@ class ExperimentStateStore:
     def create_attempt(self, attempt: Mapping[str, Any]) -> Path:
         """Atomically publish one immutable attempt manifest."""
         attempt_id = str(attempt.get("attempt_id", ""))
-        _validate_identity("attempt_id", attempt_id)
+        validate_identity("attempt_id", attempt_id)
         if not self.manifest_path.is_file():
             raise FileNotFoundError("cannot create an attempt before the run manifest")
         manifest = self.load_manifest()
@@ -590,13 +572,15 @@ class ExperimentStateStore:
                 raise ValueError("existing submission intent conflicts in " + ", ".join(conflicts))
             intent = existing
         else:
-            intent = SubmissionIntent(
-                project=project,
-                run_id=run_id,
-                attempt_id=attempt_id,
-                backend=backend,
-                request=sanitized_request,
-            ).to_dict()
+            intent = {
+                "project": project,
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "backend": backend,
+                "request": sanitized_request,
+                "state": "SUBMITTING",
+                "created_at": utc_now(),
+            }
             try:
                 atomic_create(path, intent)
             except FileExistsError:
