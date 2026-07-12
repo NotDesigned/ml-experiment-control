@@ -19,7 +19,8 @@ from .run_manifest import build_run_manifest, comparable_manifest
 
 IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SECRET_KEY_RE = re.compile(
-    r"(?:secret|token|password|credential|access[_-]?key|api[_-]?key|proxy|authorization|cookie)",
+    r"(?:^|[_-])(?:secret|token|password|credential|access[_-]?key|api[_-]?key|"
+    r"proxy|authorization|cookie)(?:$|[_-])",
     re.IGNORECASE,
 )
 URL_USERINFO_RE = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")

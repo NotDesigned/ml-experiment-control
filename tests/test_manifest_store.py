@@ -241,8 +241,10 @@ def test_atomic_create_and_event_idempotency_fail_closed(tmp_path):
 def test_secret_bearing_command_arguments_are_redacted():
     assert sanitize_command([
         "train", "API_TOKEN=secret", "--password", "hidden", "seed=7",
+        "tokenizer_path=tokenizer.model", "train_batch_tokens=65536",
     ]) == [
         "train", "API_TOKEN=<redacted>", "--password", "<redacted>", "seed=7",
+        "tokenizer_path=tokenizer.model", "train_batch_tokens=65536",
     ]
 
 
