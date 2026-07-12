@@ -10,9 +10,25 @@ from experiment_control.states import FailureClass, classify_failure
 
 def test_command_result_preserves_subprocess_failure_contract():
     result = CommandResult(("false",), 7, stderr="failed")
-    with pytest.raises(Exception) as error:
+    with pytest.raises(subprocess.CalledProcessError) as error:
         result.check_returncode()
     assert error.value.returncode == 7
+    assert error.value.stderr == "failed"
+
+
+def test_subprocess_runner_preserves_success_output_and_optional_check(tmp_path):
+    result = SubprocessRunner().run(
+        [sys.executable, "-c", "print(input())"],
+        cwd=tmp_path,
+        input_text="payload",
+    )
+    assert result.returncode == 0
+    assert result.stdout == "payload\n"
+
+    failed = SubprocessRunner().run(
+        [sys.executable, "-c", "raise SystemExit(4)"], check=False,
+    )
+    assert failed.returncode == 4
 
 
 def test_missing_executable_is_a_structured_command_failure():

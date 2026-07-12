@@ -15,7 +15,7 @@ with `uv add --dev <package>`. Commit the resulting `pyproject.toml` and
 `uv.lock` changes together.
 
 The coverage gate checks repository-wide line and branch coverage independently:
-at least 90% line coverage and 80% branch coverage. See
+at least 95% line coverage and 85% branch coverage. See
 [`docs/development.md`](docs/development.md) for the testing and generated CLI
 documentation policy.
 

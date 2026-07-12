@@ -12,27 +12,28 @@ from experiment_control.manifest import (
 from experiment_control.run_manifest import build_run_manifest, comparable_manifest
 
 
-def run_manifest(tmp_path):
-    return build_run_manifest(
-        project="project",
-        run_id="run-s0",
-        created_at="2026-07-12T00:00:00Z",
-        config_path="config.yml",
-        resolved_config={"seed": 7, "resume": "/old/checkpoint"},
-        source_id="source-immutable",
-        runtime_tree_id="runtime-immutable",
-        git_commit="deadbeef",
-        campaign_id="campaign-digest",
-        campaign="campaign",
-        image_id="sha256:" + "a" * 64,
-        run_dir=str(tmp_path),
-        max_infra_retries=1,
-        backend={"kind": "test-backend"},
-        resources={"gpus": 1},
-        storage={"run_dir": str(tmp_path), "checkpoint_dir": str(tmp_path)},
-        command=["python", "train.py"],
-        execution={"source_mount": "/workspace", "workdir": "/workspace"},
-    )
+def run_manifest(tmp_path, **overrides):
+    arguments = {
+        "project": "project",
+        "run_id": "run-s0",
+        "created_at": "2026-07-12T00:00:00Z",
+        "config_path": "config.yml",
+        "resolved_config": {"seed": 7, "resume": "/old/checkpoint"},
+        "source_id": "source-immutable",
+        "runtime_tree_id": "runtime-immutable",
+        "git_commit": "deadbeef",
+        "campaign_id": "campaign-digest",
+        "campaign": "campaign",
+        "image_id": "sha256:" + "a" * 64,
+        "run_dir": str(tmp_path),
+        "max_infra_retries": 1,
+        "backend": {"kind": "test-backend"},
+        "resources": {"gpus": 1},
+        "storage": {"run_dir": str(tmp_path), "checkpoint_dir": str(tmp_path)},
+        "command": ["python", "train.py"],
+        "execution": {"source_mount": "/workspace", "workdir": "/workspace"},
+    }
+    return build_run_manifest(**{**arguments, **overrides})
 
 
 def prepare_store(tmp_path, attempt_id="attempt-001"):
@@ -54,6 +55,25 @@ def prepare_store(tmp_path, attempt_id="attempt-001"):
     })
     store.initialize_attempt_records(attempt_id)
     return store
+
+
+def attempt_manifest(store, attempt_id="attempt-002", **overrides):
+    manifest = store.load_manifest()
+    payload = {
+        "schema_version": 1,
+        "project": manifest["project"],
+        "run_id": manifest["run_id"],
+        "attempt_id": attempt_id,
+        "created_at": "2026-07-12T00:01:00Z",
+        "backend": "test-backend",
+        "backend_job_id": None,
+        "source_id": manifest["source_id"],
+        "image_id": manifest["image_id"],
+        "command": manifest["command"],
+        "resources": manifest["resources"],
+        "resume_from": None,
+    }
+    return {**payload, **overrides}
 
 
 def test_run_manifest_excludes_attempt_resume_from_scientific_identity(tmp_path):
@@ -264,3 +284,143 @@ def test_legacy_manifest_is_observable_but_not_mutable(tmp_path):
     assert store.load_attempt("attempt-001")["attempt_id"] == "attempt-001"
     with pytest.raises(ValueError, match="observation-only"):
         store.ensure_manifest(legacy)
+
+
+def test_manifest_and_attempt_publication_fail_closed_on_identity_drift(tmp_path):
+    store = ExperimentStateStore(tmp_path)
+    with pytest.raises(FileNotFoundError, match="run manifest"):
+        store.load_manifest()
+    with pytest.raises(FileNotFoundError, match="before the run manifest"):
+        store.create_attempt({"attempt_id": "attempt-001"})
+
+    original = store.ensure_manifest(run_manifest(tmp_path))
+    assert store.ensure_manifest({**original, "created_at": "later"}) == original
+    with pytest.raises(ValueError, match="existing run manifest conflicts"):
+        store.ensure_manifest({**original, "source_id": "different-source"})
+    with pytest.raises(ValueError, match="attempt_id=.*invalid"):
+        store.create_attempt(attempt_manifest(store, "../escape"))
+    with pytest.raises(ValueError, match="attempt identity conflicts"):
+        store.create_attempt(attempt_manifest(store, project="other"))
+    with pytest.raises(FileNotFoundError, match="attempt manifest"):
+        store.load_attempt("attempt-missing")
+
+
+def test_state_records_reject_non_objects_and_attempt_identity_drift(tmp_path):
+    store = prepare_store(tmp_path)
+    store.backend_path.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="state record is not an object"):
+        store.load_backend()
+
+    store = prepare_store(tmp_path / "canonical")
+    backend = json.loads(store.attempt_backend_path("attempt-001").read_text())
+    backend["attempt_id"] = "attempt-other"
+    store.attempt_backend_path("attempt-001").write_text(json.dumps(backend))
+    with pytest.raises(ValueError, match="backend record conflicts"):
+        store.load_backend("attempt-001")
+
+    status = json.loads(store.attempt_status_path("attempt-001").read_text())
+    status["attempt_id"] = "attempt-other"
+    store.attempt_status_path("attempt-001").write_text(json.dumps(status))
+    with pytest.raises(ValueError, match="status record conflicts"):
+        store.load_status_payload("attempt-001")
+
+
+def test_root_mirrors_must_select_one_current_attempt(tmp_path):
+    store = prepare_store(tmp_path)
+    backend = json.loads(store.backend_path.read_text())
+    backend["attempt_id"] = "attempt-other"
+    store.backend_path.write_text(json.dumps(backend), encoding="utf-8")
+    with pytest.raises(ValueError, match="root backend/status mirrors disagree"):
+        store.write_status_payload("attempt-001", {"state": "RUNNING"})
+
+
+def test_noncurrent_attempt_updates_do_not_replace_current_root_mirror(tmp_path):
+    store = prepare_store(tmp_path)
+    store.create_attempt(attempt_manifest(store))
+    store.initialize_attempt_records("attempt-002")
+
+    updated = store.write_status_payload("attempt-001", {"state": "FAILED"})
+    assert updated == {"attempt_id": "attempt-001", "state": "FAILED"}
+    assert store.load_status_payload("attempt-001")["state"] == "FAILED"
+    assert store.load_status_payload()["attempt_id"] == "attempt-002"
+    with pytest.raises(ValueError, match="status payload conflicts"):
+        store.write_status_payload(
+            "attempt-001", {"attempt_id": "attempt-002", "state": "FAILED"}
+        )
+
+
+def test_attempt_manifest_without_derived_records_reads_as_created(tmp_path):
+    store = ExperimentStateStore(tmp_path)
+    store.ensure_manifest(run_manifest(tmp_path))
+    store.create_attempt(attempt_manifest(store, "attempt-001"))
+    assert store.read_status("attempt-001").state is RunState.CREATED
+    assert store.load_backend("attempt-001") is None
+
+
+def test_submission_rejects_wrong_identity_unsafe_payload_and_conflicts(tmp_path):
+    store = prepare_store(tmp_path)
+    with pytest.raises(ValueError, match="submission identity conflicts"):
+        store.begin_submission(
+            project="other", run_id="run-s0", attempt_id="attempt-001",
+            backend="test-backend", request={},
+        )
+    with pytest.raises(TypeError, match="cannot serialize submission request"):
+        store.begin_submission(
+            project="project", run_id="run-s0", attempt_id="attempt-001",
+            backend="test-backend", request={"opaque": object()},
+        )
+
+    store.begin_submission(
+        project="project", run_id="run-s0", attempt_id="attempt-001",
+        backend="test-backend", request={"argv": ["submit", "one"]},
+    )
+    with pytest.raises(ValueError, match="existing submission intent conflicts in request"):
+        store.begin_submission(
+            project="project", run_id="run-s0", attempt_id="attempt-001",
+            backend="test-backend", request={"argv": ["submit", "two"]},
+        )
+
+
+def test_reconcile_requires_an_intent_and_nonempty_scheduler_identity(tmp_path):
+    store = prepare_store(tmp_path)
+    kwargs = {
+        "project": "project", "run_id": "run-s0", "attempt_id": "attempt-001",
+    }
+    with pytest.raises(ValueError, match="backend_job_id must not be empty"):
+        store.reconcile_submission(**kwargs, backend_job_id="")
+    with pytest.raises(FileNotFoundError, match="before submission intent"):
+        store.reconcile_submission(**kwargs, backend_job_id="job-1")
+
+
+def test_transition_without_id_appends_redacted_event_and_exit_code(tmp_path):
+    store = prepare_store(tmp_path)
+    status = store.transition(
+        project="project", run_id="run-s0", attempt_id="attempt-001",
+        state=RunState.FAILED, event="worker_failed",
+        payload={"api_token": "secret", "reason": "model"}, exit_code=9,
+    )
+    assert status.exit_code == 9
+    event = json.loads(store.events_path.read_text().splitlines()[-1])
+    assert event["event"] == "worker_failed"
+    assert event["payload"] == {"api_token": "<redacted>", "reason": "model"}
+    assert "event_id" not in event
+
+
+def test_event_idempotency_ignores_interrupted_invalid_json_line(tmp_path):
+    events = tmp_path / "events.jsonl"
+    events.write_text('{"event_id": "interrupted"\n', encoding="utf-8")
+    assert append_event_once(events, {"event": "created"}, "event-1") is True
+    assert json.loads(events.read_text().splitlines()[-1])["event_id"] == "event-1"
+
+
+def test_research_contract_is_part_of_run_identity(tmp_path):
+    manifest = run_manifest(
+        tmp_path,
+        research_contract={"metric": "loss", "direction": "minimize"},
+        research_role="baseline",
+    )
+    assert manifest["research_contract"]["metric"] == "loss"
+    assert manifest["research_role"] == "baseline"
+    assert comparable_manifest({"resolved_config": "legacy"}) == {
+        "resolved_config": "legacy"
+    }
