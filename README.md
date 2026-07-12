@@ -243,6 +243,6 @@ uv run python -m compileall -q src tests tools examples
 uv build
 ```
 
-The repository enforces 100% line coverage and at least 95% branch coverage as
+The repository enforces 100% line coverage and 100% branch coverage as
 independent gates. Testing policy and CI details are documented in
 [`docs/development.md`](docs/development.md).

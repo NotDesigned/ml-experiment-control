@@ -121,8 +121,7 @@ def atomic_write(path: Path, payload: Any, *, yaml_format: bool = False) -> None
         os.replace(temp_name, path)
         _fsync_dir(path.parent)
     finally:
-        if os.path.exists(temp_name):
-            os.unlink(temp_name)
+        Path(temp_name).unlink(missing_ok=True)
 
 
 def atomic_create(path: Path, payload: Any, *, yaml_format: bool = False) -> None:
@@ -134,8 +133,7 @@ def atomic_create(path: Path, payload: Any, *, yaml_format: bool = False) -> Non
         os.link(temp_name, path)
         _fsync_dir(path.parent)
     finally:
-        if os.path.exists(temp_name):
-            os.unlink(temp_name)
+        Path(temp_name).unlink(missing_ok=True)
 
 
 def append_event(path: Path, event: dict[str, Any]) -> None:

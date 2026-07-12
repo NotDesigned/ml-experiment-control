@@ -132,6 +132,46 @@ def test_submission_outbox_is_idempotent_redacted_and_reconciled(tmp_path):
     assert reconciled["state"] == "SUBMITTED"
     assert store.read_status().state is RunState.QUEUED
     assert store.load_backend()["backend_job_id"] == "job-123"
+    assert store.begin_submission(
+        project="project",
+        run_id="run-s0",
+        attempt_id="attempt-001",
+        backend="test-backend",
+        request=request,
+    )["state"] == "SUBMITTED"
+    assert store.read_status().state is RunState.QUEUED
+
+
+def test_complete_successful_lifecycle_preserves_status_and_event_order(tmp_path):
+    store = prepare_store(tmp_path)
+    identity = {
+        "project": "project", "run_id": "run-s0", "attempt_id": "attempt-001",
+    }
+    assert store.read_status().state is RunState.CREATED
+    store.begin_submission(
+        **identity, backend="test-backend", request={"argv": ["submit"]},
+    )
+    assert store.read_status().state is RunState.SUBMITTING
+    store.reconcile_submission(**identity, backend_job_id="job-123")
+    assert store.read_status().state is RunState.QUEUED
+    store.transition(
+        **identity, state=RunState.RUNNING, event="worker_started",
+    )
+    final = store.transition(
+        **identity, state=RunState.SUCCEEDED, event="worker_succeeded", exit_code=0,
+    )
+
+    assert final.state is RunState.SUCCEEDED
+    assert final.exit_code == 0
+    assert store.load_backend()["backend_job_id"] == "job-123"
+    events = [json.loads(line) for line in store.events_path.read_text().splitlines()]
+    assert [event["event"] for event in events] == [
+        "attempt_created",
+        "submission_intent_created",
+        "submission_reconciled",
+        "worker_started",
+        "worker_succeeded",
+    ]
 
 
 def test_repeating_submission_intent_repairs_derived_state_after_crash(tmp_path):

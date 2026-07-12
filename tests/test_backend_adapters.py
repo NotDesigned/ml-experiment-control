@@ -48,6 +48,15 @@ def test_sensecore_preflight_fails_closed_on_malformed_sanitized_response(tmp_pa
     assert report.ready is False
 
 
+def test_sensecore_preflight_stops_when_cli_is_unavailable(tmp_path):
+    fake = QueueRunner([CommandResult(("sco-version",), 127)])
+    report = SenseCoreBackend(services(tmp_path, fake)).preflight(
+        sensecore_run(), scope="observe"
+    )
+    assert report.ready is False
+    assert [check.name for check in report.checks] == ["sco-cli"]
+
+
 def test_sensecore_identity_reports_consumed_exact_attempt_name(tmp_path):
     fake = QueueRunner([
         CommandResult(
@@ -264,6 +273,26 @@ def test_slurm_identity_reports_remote_manifest_digest_match(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("manifest_returncode", "expected_available", "expected_exists"),
+    [(1, True, False), (0, False, True)],
+)
+def test_slurm_identity_handles_absent_remote_or_local_manifest(
+    tmp_path, manifest_returncode, expected_available, expected_exists,
+):
+    fake = QueueRunner([
+        CommandResult(("squeue",), 0, ""),
+        CommandResult(("sacct",), 0, ""),
+        CommandResult(("manifest",), manifest_returncode),
+    ])
+    report = WydSlurmBackend(services(tmp_path, fake)).identity(
+        {"campaign": "backend-test"}, slurm_run(), "attempt-002"
+    )
+    assert report.available is expected_available
+    assert report.remote_manifest_exists is expected_exists
+    assert report.remote_manifest_matches is None
+
+
+@pytest.mark.parametrize(
     "results",
     [
         [CommandResult(("squeue",), 255, stderr="ssh unavailable")],
@@ -303,6 +332,19 @@ def test_slurm_asset_probe_distinguishes_missing_from_transport_failure(tmp_path
     ))
     with pytest.raises(RuntimeError, match="evidence is unavailable"):
         failed.verify_assets(slurm_run(), [probe])
+
+    checkpoint_probe = AssetProbe(
+        AssetRequirement("checkpoint", "checkpoint-id", "resume"),
+        "/shared/checkpoint",
+    )
+    present = WydSlurmBackend(services(
+        tmp_path,
+        QueueRunner([
+            CommandResult(("dataset",), 0),
+            CommandResult(("checkpoint",), 0),
+        ]),
+    )).verify_assets(slurm_run(), [probe, checkpoint_probe])
+    assert present["missing"] == []
 
 
 @pytest.mark.parametrize(

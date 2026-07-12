@@ -14,6 +14,7 @@ def test_package_public_primitives_have_no_host_dependency(tmp_path):
         "fake", "submit", (PreflightCheck("tool", "tool", "PASS"),)
     )
     assert report.ready is True
+    assert report.require_ready() is None
     assert BackendRegistry().kinds == frozenset()
     assert ProjectRegistry().names == frozenset()
     assert SourceBundle(tmp_path).container_path == "/workspace"

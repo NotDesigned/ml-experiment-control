@@ -37,12 +37,16 @@ uv run python tools/coverage_gate.py
 The gate runs the full suite and checks repository-wide dimensions separately:
 
 - line coverage: 100%;
-- branch coverage: at least 95%.
+- branch coverage: 100%.
 
 Coverage is a regression floor, not a correctness proof. Prefer simplifying
 unreachable branches and testing meaningful identity, recovery, redaction,
 atomicity, and fail-closed behavior. Do not add live scheduler calls or generic
 tests coupled to a private cluster merely to increase coverage.
+
+Branch coverage measures control-flow graph edges, not every possible path
+combination. The semantic lifecycle and recovery scenarios tracked as flow
+coverage are documented in [`flow_coverage.md`](flow_coverage.md).
 
 Changes to exported Python symbols or the Rust CLI must also update
 [`downstream_contract.md`](downstream_contract.md) and be validated against the

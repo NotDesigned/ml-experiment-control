@@ -10,7 +10,12 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
-from coverage_gate import check_report, coverage_percentages  # noqa: E402
+from coverage_gate import (  # noqa: E402
+    DEFAULT_MIN_BRANCH,
+    DEFAULT_MIN_LINE,
+    check_report,
+    coverage_percentages,
+)
 from generate_cli_reference import main as cli_docs_main  # noqa: E402
 
 
@@ -35,6 +40,7 @@ def test_coverage_dimensions_are_independent_and_fail_closed(tmp_path, capsys):
 
 
 def test_empty_modules_and_current_generated_cli_reference(tmp_path):
+    assert (DEFAULT_MIN_LINE, DEFAULT_MIN_BRANCH) == (100.0, 100.0)
     assert check_report(
         report(tmp_path, lines=(0, 0), branches=(0, 0)),
         min_line=100, min_branch=100,

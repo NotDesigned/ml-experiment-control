@@ -64,7 +64,9 @@ def test_backend_registry_builds_both_injected_adapters(tmp_path):
 def test_sensecore_validate_and_environment_boundaries(tmp_path, monkeypatch):
     backend = SenseCoreBackend(services(tmp_path, QueueRunner([])))
     valid = sensecore_run()
-    valid["storage"] = {"run_dir": "/shared/run", "data_root": "/shared"}
+    valid["storage"] = {
+        "run_dir": "/shared/run", "data_root": "/shared", "description": "test",
+    }
     valid["backend"]["storage_mount"] = "volume:/shared"
     backend.validate(valid)
     assert backend.environment({}, valid, "source", "attempt-002")["BACKEND_JOB_ID"].endswith(
@@ -206,6 +208,18 @@ def test_sensecore_collects_metrics_checkpoints_and_worker_fallback(tmp_path, mo
     assert result["latest_completed_checkpoint_step"] == 2
     assert result["worker_state"] == "UNKNOWN"
     assert result["evidence_unavailable_reason"] == "live_logs_expired"
+
+    monkeypatch.setattr(backend, "logs", lambda *args, **kwargs: {
+        "lines": ["quiet worker"], "expired": False,
+    })
+    monkeypatch.setattr(backend, "workers", lambda *args: {
+        "worker_state": "RUNNING", "worker_evidence_available": True,
+    })
+    quiet = backend.collect({}, {"run_id": "run"})
+    assert quiet["latest_metric"] is None
+    assert quiet["worker_state"] == "RUNNING"
+    assert "evidence_unavailable_reason" not in quiet
+    assert "latest_completed_checkpoint" not in quiet
 
 
 def test_sensecore_worker_unknown_and_log_tail_bounds(tmp_path):
@@ -378,8 +392,11 @@ def test_sensecore_cancel_and_worker_failures_remain_sanitized(tmp_path, monkeyp
 def test_slurm_recovery_handles_blank_evidence_and_one_exact_match(tmp_path):
     expected_name = "backend-run--attempt-001"
     backend = WydSlurmBackend(services(tmp_path, QueueRunner([
-        CommandResult(("squeue",), 0, f"\n123|{expected_name}|token\n\n"),
-        CommandResult(("sacct",), 0, "\n\n"),
+        CommandResult(
+            ("squeue",), 0,
+            f"\n999|unrelated-job|other-token\n123|{expected_name}|token\n\n",
+        ),
+        CommandResult(("sacct",), 0, "\n998|unrelated-job\n\n"),
     ])))
     assert backend.recover_submission(
         slurm_run(), {"submission_token": "token"}, "attempt-001",
