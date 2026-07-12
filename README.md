@@ -65,7 +65,9 @@ registry = build_registry(services)
 `BackendServices` is the narrow host boundary. The host injects command
 execution, run-directory lookup, backend-record lookup, project metric parsing
 and summarization, atomic JSON writing, and UTC time. This keeps the package
-independent from the host's manifest implementation.
+independent from the host's campaign format, scientific config, and metric
+semantics; package-owned manifest and outbox primitives remain usable without
+backend services.
 
 ## Backend lifecycle
 
