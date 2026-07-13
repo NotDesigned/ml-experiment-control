@@ -141,6 +141,10 @@ class _BackendStatusOptional(TypedDict, total=False):
     raw_state: str | None
     exit_code: int | str | None
     failure_class: str | None
+    reason: str | None
+    detail: JsonObject
+    observed_at: str
+    observation_source: str
     partition: str
     elapsed: str | None
     pool: str | None

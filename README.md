@@ -159,6 +159,12 @@ bounded and redacted, and `collect()` includes the same sanitized excerpts as
 `process_evidence` so failures before the training runtime writes metrics remain
 diagnosable by a host controller.
 
+WYD queue observation also records Slurm's `%R` pending reason in
+`BackendStatus.reason` and `detail.pending_reason`, together with observation
+time and source. For running jobs `%R` is a node list, so it is not reported as
+a pending reason. A client must not infer Resources, Priority, QOS, or
+Dependency when the scheduler did not provide that detail.
+
 SenseCore creates and observes an exact attempt-qualified resource name. The
 authored image tag remains provenance, while submission is pinned to the
 manifest's `repository@sha256:...` digest. Status, logs, and cancellation use

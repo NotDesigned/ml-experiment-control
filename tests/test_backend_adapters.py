@@ -186,6 +186,24 @@ def test_slurm_status_uses_injected_backend_record(tmp_path):
     status = WydSlurmBackend(services(tmp_path, fake)).status({}, slurm_run())
     assert status["state"] == "SUCCEEDED"
     assert status["backend_job_id"] == "1234"
+    assert status["observation_source"] == "sacct"
+    assert status["observed_at"]
+
+
+def test_slurm_status_queries_queue_reason_when_accounting_is_empty(tmp_path):
+    fake = QueueRunner([
+        CommandResult(("sacct",), 0, ""),
+        CommandResult(
+            ("squeue",), 0,
+            "1234|backend-run|accelerator|PENDING|00:00|0:0|Priority\n",
+        ),
+    ])
+    status = WydSlurmBackend(services(tmp_path, fake)).status({}, slurm_run())
+    assert status["state"] == "QUEUED"
+    assert status["reason"] == "Priority"
+    assert status["detail"] == {"pending_reason": "Priority"}
+    assert status["observation_source"] == "squeue"
+    assert "%R" in fake.commands[1][-1]
 
 
 def slurm_manifest(run: dict, attempt_id: str = "attempt-001") -> dict:

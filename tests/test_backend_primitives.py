@@ -19,6 +19,18 @@ def test_slurm_accounting_contract_normalizes_exit_code():
     assert result["exit_code"] == "1:0"
 
 
+def test_slurm_queue_status_preserves_pending_reason():
+    result = parse_accounting(
+        "42|run|accelerator|PENDING|00:00|0:0|Resources\n",
+        job_id="42",
+        run_id="run",
+        partition="accelerator",
+    )
+    assert result["state"] == "QUEUED"
+    assert result["reason"] == "Resources"
+    assert result["detail"] == {"pending_reason": "Resources"}
+
+
 def test_backend_registry_rejects_unknown_kind():
     registry = BackendRegistry()
     with pytest.raises(ValueError, match="unsupported"):

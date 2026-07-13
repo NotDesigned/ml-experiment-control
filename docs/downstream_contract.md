@@ -40,6 +40,12 @@ type checker can reject missing required identity fields and incompatible
 backend result shapes. Campaign and project summary payloads remain open
 because their scientific fields are owned by the host project.
 
+`BackendStatus` includes optional `reason`, `detail`, `observed_at`, and
+`observation_source` fields. Backends should populate them only from observed
+scheduler evidence. In particular, a WYD `PENDING`/`CONFIGURING` row may expose
+Slurm `%R` as `reason` and `detail.pending_reason`; an allocated node list for a
+running job is not a pending reason.
+
 ## Sanitizer CLI
 
 `experiment-safe-sco` is a packaged Rust executable installed into the Python

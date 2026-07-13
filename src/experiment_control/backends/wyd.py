@@ -139,13 +139,20 @@ def parse_accounting(
             "state": "UNKNOWN", "raw_state": "UNKNOWN", "partition": partition,
             "elapsed": None, "exit_code": None,
         }
-    fields = lines[0].split("|") + [""] * 6
+    fields = lines[0].split("|") + [""] * 7
     raw = fields[3].split()[0].rstrip("+")
+    reason = fields[6].strip() or None
+    if raw not in {"PENDING", "CONFIGURING"}:
+        # squeue's %R becomes a node list after allocation.  BackendStatus.reason
+        # is intentionally reserved for scheduler explanations, not topology.
+        reason = None
     return {
         "run_id": run_id, "backend": "slurm", "backend_job_id": job_id,
         "state": normalize_state(raw, fields[5]), "raw_state": raw,
         "partition": fields[2] or partition, "elapsed": fields[4] or None,
         "exit_code": fields[5] or None,
+        "reason": reason,
+        "detail": {"pending_reason": reason} if reason else {},
     }
 
 
@@ -557,14 +564,18 @@ class WydSlurmBackend:
             operation=f"Slurm accounting status query for job {job_id}",
         )
         lines = [line for line in result.stdout.splitlines() if line.strip()]
+        observation_source = "sacct"
         if not lines:
             queue = self._remote_query(
                 backend["ssh_alias"],
-                f"squeue -j {shlex.quote(job_id)} -h -o '%i|%j|%P|%T|%M|0:0'",
+                f"squeue -j {shlex.quote(job_id)} -h -o '%i|%j|%P|%T|%M|0:0|%R'",
                 operation=f"Slurm queue status query for job {job_id}",
             )
             lines = [line for line in queue.stdout.splitlines() if line.strip()]
+            observation_source = "squeue"
         status = parse_accounting("\n".join(lines), job_id=job_id, run_id=run["run_id"], partition=backend["partition"])
+        status["observed_at"] = self.s.utc_now()
+        status["observation_source"] = observation_source
         raw = status["raw_state"]
         status["failure_class"] = (
             "preemption" if raw == "PREEMPTED" else
