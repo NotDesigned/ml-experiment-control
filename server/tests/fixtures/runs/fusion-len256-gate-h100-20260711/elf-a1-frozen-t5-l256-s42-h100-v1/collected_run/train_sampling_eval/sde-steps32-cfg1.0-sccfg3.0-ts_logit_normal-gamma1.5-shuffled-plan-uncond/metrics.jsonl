@@ -1,0 +1,1 @@
+{"epoch": 0, "step": 2000, "mode": "shuffled_plan_generation", "ppl": 1.2239836426962436, "shuffled_plan_ppl": 1.2239836426962436, "mean_entropy": 0.15985150961205363, "bleu": 0.0, "rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}

@@ -1,0 +1,1 @@
+{"backend": "slurm", "backend_job_id": "1748", "elapsed": "02:03:03", "exit_code": "0:0", "failure_class": null, "partition": "h100", "raw_state": "RUNNING", "run_id": "elf-a1-frozen-t5-l256-s42-h100-v1", "state": "RUNNING", "updated_at": "2026-07-11T14:31:48.755999Z"}

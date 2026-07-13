@@ -1,0 +1,1 @@
+{"epoch": 0, "step": 2000, "mode": "clean_token_reconstruction", "ppl": 45.59850951657963, "token_recon_ppl": 45.59850951657963, "mean_entropy": 2.3172024926170707, "bleu": 0.008877252453176844, "rouge1": 1.0205900162038954, "rouge2": 0.0, "rougeL": 1.0050504931846564}

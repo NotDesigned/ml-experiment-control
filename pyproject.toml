@@ -54,3 +54,6 @@ source = ["experiment_control"]
 show_missing = true
 skip_covered = true
 precision = 1
+
+[tool.uv.workspace]
+members = ["server"]
