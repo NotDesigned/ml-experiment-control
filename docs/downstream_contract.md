@@ -16,6 +16,9 @@ integration points are:
   available as the runnable Linux development and smoke-test backend;
 - `Backend`, `ProjectAdapter`, `BackendRegistry`, and `ProjectRegistry` for typed
   host dispatch;
+- `RunSpec`, `AttemptManifest`, `BackendStatus`, `BackendLogs`,
+  `AssetVerification`, submission/record types, and JSON value aliases for the
+  serialization-compatible host/backend boundary;
 - `ExperimentStateStore`, `LifecycleStatus`, `RunState`, `append_event`,
   `atomic_write`, `sanitize_command`, `utc_now`, `validate_identity`, and
   `require_immutable` for durable state, durable file updates, and validated
@@ -30,6 +33,12 @@ Names beginning with `_` are private. A host must not import them, even when a
 commit pin makes the current implementation appear stable. Module constants or
 classes omitted from both `experiment_control.__all__` and the README Public API
 section are likewise not compatibility promises.
+
+The mapping contracts are `TypedDict` definitions rather than runtime model
+objects: callers continue to persist ordinary JSON/YAML dictionaries, while a
+type checker can reject missing required identity fields and incompatible
+backend result shapes. Campaign and project summary payloads remain open
+because their scientific fields are owned by the host project.
 
 ## Sanitizer CLI
 

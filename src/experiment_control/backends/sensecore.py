@@ -11,6 +11,16 @@ from pathlib import Path
 from typing import Any
 
 from .services import BackendServices
+from ..contracts import (
+    AssetVerification,
+    AttemptManifest,
+    BackendStatus,
+    CollectionResult,
+    LiveBackendLogs,
+    PreflightScope,
+    RunSpec,
+    SubmissionRequest,
+)
 from ..preflight import PreflightCheck, PreflightReport
 from ..identity import IdentityReport
 
@@ -102,7 +112,7 @@ class SenseCoreBackend:
             )
         return int(raw)
 
-    def validate(self, run: dict[str, Any]) -> None:
+    def validate(self, run: RunSpec) -> None:
         backend = run["backend"]
         required = {"workspace", "aec2", "worker_spec", "image", "storage_mount", "quota_type", "job_name"}
         missing = sorted(key for key in required if not backend.get(key))
@@ -139,7 +149,7 @@ class SenseCoreBackend:
             "RESOURCE_SPEC": str(backend["worker_spec"]),
         }
 
-    def preflight(self, run: dict[str, Any], *, scope: str) -> PreflightReport:
+    def preflight(self, run: RunSpec, *, scope: PreflightScope) -> PreflightReport:
         """Check the SCO executable and sanitized workspace access."""
         if scope not in {"stage", "submit", "observe"}:
             raise ValueError(f"unsupported preflight scope: {scope}")
@@ -171,7 +181,7 @@ class SenseCoreBackend:
                 ))
         return PreflightReport(self.kind, scope, tuple(checks))
 
-    def submission_request(self, campaign, run, attempt_id) -> dict[str, Any]:
+    def submission_request(self, campaign, run, attempt_id) -> SubmissionRequest:
         backend = run["backend"]
         return {
             "scheduler_name": scheduler_job_name(str(backend["job_name"]), attempt_id),
@@ -203,7 +213,7 @@ class SenseCoreBackend:
             scheduler_job_ids=tuple(str(item["name"]) for item in matches),
         )
 
-    def verify_assets(self, run, probes) -> dict[str, Any]:
+    def verify_assets(self, run, probes) -> AssetVerification:
         return {
             "missing": None,
             "verification": "requires-running-sensecore-worker",
@@ -288,7 +298,7 @@ class SenseCoreBackend:
             "--wait", "--command", shlex.join(manifest["command"]),
         ]
 
-    def render(self, manifest) -> str:
+    def render(self, manifest: AttemptManifest) -> str:
         return shlex.join(self._create_command(manifest))
 
     def _redact_error(self, text: str) -> str:
@@ -318,7 +328,7 @@ class SenseCoreBackend:
             raise RuntimeError("SenseCore accepted create but exact job was not observable")
         return resource_name
 
-    def status(self, campaign, run) -> dict[str, Any]:
+    def status(self, campaign, run) -> BackendStatus:
         record = self.s.backend_record(campaign, run)
         resource_name = str(record["backend_job_id"])
         summary = self.describe(run, resource_name)
@@ -361,7 +371,7 @@ class SenseCoreBackend:
                 return True
         return False
 
-    def cancel(self, campaign, run) -> dict[str, Any]:
+    def cancel(self, campaign, run) -> BackendStatus:
         current = self.status(campaign, run)
         if current["state"] in {"SUCCEEDED", "FAILED", "PREEMPTED", "CANCELLED"}:
             return current
@@ -382,7 +392,7 @@ class SenseCoreBackend:
             raise RuntimeError(self._redact_error(result.stderr) or "SenseCore stop failed")
         return self.status(campaign, run)
 
-    def collect(self, campaign, run) -> dict[str, Any]:
+    def collect(self, campaign, run) -> CollectionResult:
         snapshot = self.logs(campaign, run, tail=200)
         lines = snapshot["lines"]
         metrics = [metric for line in lines if (metric := self.s.parse_metric(campaign, line))]
@@ -448,7 +458,7 @@ class SenseCoreBackend:
             "worker_evidence_available": True,
         }
 
-    def logs(self, campaign, run, *, tail: int) -> dict[str, Any]:
+    def logs(self, campaign, run, *, tail: int) -> LiveBackendLogs:
         if not 1 <= tail <= 10000:
             raise ValueError("tail must be between 1 and 10000")
         backend = run["backend"]

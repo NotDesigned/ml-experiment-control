@@ -23,6 +23,7 @@ jobs:
       - run: cargo fmt --manifest-path rust/Cargo.toml -- --check
       - run: cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
       - run: cargo test --locked --manifest-path rust/Cargo.toml
+      - run: uv run mypy
       - run: uv run python tools/coverage_gate.py
       - run: uv run python tools/generate_cli_reference.py --check
       - run: uv run python -m compileall -q src tests tools examples

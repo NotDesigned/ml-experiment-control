@@ -19,6 +19,26 @@ from .manifest import (
 )
 from .run_manifest import build_run_manifest, comparable_manifest
 from .outbox import cancel_intent_path, execute_cancel_outbox
+from .contracts import (
+    AssetVerification,
+    AttemptManifest,
+    BackendConfig,
+    BackendLogs,
+    BackendRecord,
+    BackendStatus,
+    Campaign,
+    CollectionResult,
+    JsonObject,
+    JsonValue,
+    LocalBackendConfig,
+    ProjectRun,
+    RunSpec,
+    SenseCoreBackendConfig,
+    SlurmBackendConfig,
+    StorageConfig,
+    SubmissionIntent,
+    SubmissionRequest,
+)
 
 __all__ = [
     "CommandResult",
@@ -47,4 +67,22 @@ __all__ = [
     "comparable_manifest",
     "cancel_intent_path",
     "execute_cancel_outbox",
+    "AssetVerification",
+    "AttemptManifest",
+    "BackendConfig",
+    "BackendLogs",
+    "BackendRecord",
+    "BackendStatus",
+    "Campaign",
+    "CollectionResult",
+    "JsonObject",
+    "JsonValue",
+    "LocalBackendConfig",
+    "ProjectRun",
+    "RunSpec",
+    "SenseCoreBackendConfig",
+    "SlurmBackendConfig",
+    "StorageConfig",
+    "SubmissionIntent",
+    "SubmissionRequest",
 ]

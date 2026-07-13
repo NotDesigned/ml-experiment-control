@@ -46,8 +46,15 @@ cargo test --locked --manifest-path rust/Cargo.toml
 ## Tests and coverage
 
 ```bash
+uv run mypy
 uv run python tools/coverage_gate.py
 ```
+
+Mypy checks the public host/backend contracts in strict mode and verifies that
+every backend registered by `build_registry()` structurally implements the
+shared `Backend` protocol. The checked surface is intentionally expanded in
+stages; untyped backend internals are not evidence that a public boundary is
+safe.
 
 The gate runs the full suite and checks repository-wide dimensions separately:
 
@@ -79,6 +86,7 @@ uv sync --locked
 cargo fmt --manifest-path rust/Cargo.toml -- --check
 cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
 cargo test --locked --manifest-path rust/Cargo.toml
+uv run mypy
 uv run python tools/coverage_gate.py
 uv run python tools/generate_cli_reference.py --check
 uv run python -m compileall -q src tests tools examples

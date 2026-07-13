@@ -11,6 +11,16 @@ from pathlib import Path
 from typing import Any
 
 from .services import BackendServices
+from ..contracts import (
+    AssetVerification,
+    AttemptManifest,
+    BackendStatus,
+    CollectionResult,
+    PreflightScope,
+    RunSpec,
+    StreamBackendLogs,
+    SubmissionRequest,
+)
 from ..preflight import PreflightCheck, PreflightReport
 from ..redaction import redact_line
 from ..checkpoints import select_latest_checkpoint_name
@@ -70,7 +80,7 @@ def log_probe_command(paths: list[str], *, tail: int) -> str:
     )
 
 
-def render_job(manifest: dict[str, Any]) -> str:
+def render_job(manifest: AttemptManifest) -> str:
     backend, resources = manifest["backend"], manifest.get("resources", {})
     run_dir, source_dir, sif_path = (
         manifest["storage"]["run_dir"], backend["source_dir"], backend["sif_path"]
@@ -119,7 +129,9 @@ srun apptainer exec --nv \\
 """
 
 
-def parse_accounting(output: str, *, job_id: str, run_id: str, partition: str) -> dict[str, Any]:
+def parse_accounting(
+    output: str, *, job_id: str, run_id: str, partition: str
+) -> BackendStatus:
     lines = [line for line in output.splitlines() if line.strip()]
     if not lines:
         return {
@@ -192,7 +204,7 @@ class WydSlurmBackend:
             f"{operation} failed; remote scheduler/storage evidence is unavailable"
         )
 
-    def validate(self, run: dict[str, Any]) -> None:
+    def validate(self, run: RunSpec) -> None:
         backend, storage = run["backend"], run["storage"]
         required = {
             "ssh_alias", "partition", "account", "qos", "gres", "time",
@@ -253,7 +265,7 @@ class WydSlurmBackend:
     def environment(self, campaign, run, source_id, attempt_id) -> dict[str, str]:
         return {"QUOTA_TYPE": "normal"}
 
-    def preflight(self, run: dict[str, Any], *, scope: str) -> PreflightReport:
+    def preflight(self, run: RunSpec, *, scope: PreflightScope) -> PreflightReport:
         """Check local transport tools plus live Slurm/storage compatibility."""
         if scope not in {"stage", "submit", "observe"}:
             raise ValueError(f"unsupported preflight scope: {scope}")
@@ -311,7 +323,7 @@ class WydSlurmBackend:
                 ))
         return PreflightReport(self.kind, scope, tuple(checks))
 
-    def submission_request(self, campaign, run, attempt_id) -> dict[str, Any]:
+    def submission_request(self, campaign, run, attempt_id) -> SubmissionRequest:
         return {"scheduler_name": scheduler_job_name(str(run["run_id"]), attempt_id)}
 
     def _matching_jobs(self, run, intent, attempt_id) -> list[str]:
@@ -394,7 +406,7 @@ class WydSlurmBackend:
             remote_manifest_matches=manifest_matches,
         )
 
-    def verify_assets(self, run, probes) -> dict[str, Any]:
+    def verify_assets(self, run, probes) -> AssetVerification:
         missing = []
         alias = str(run["backend"]["ssh_alias"])
         for probe in probes:
@@ -467,7 +479,7 @@ class WydSlurmBackend:
                 )
         return True
 
-    def render(self, manifest: dict[str, Any]) -> str:
+    def render(self, manifest: AttemptManifest) -> str:
         return render_job(manifest)
 
     def validate_live(self, run: dict[str, Any]) -> dict[str, str]:
@@ -536,7 +548,7 @@ class WydSlurmBackend:
             raise ValueError(f"unexpected sbatch response: {result.stdout!r}")
         return job_id
 
-    def status(self, campaign, run) -> dict[str, Any]:
+    def status(self, campaign, run) -> BackendStatus:
         record = self.s.backend_record(campaign, run)
         backend, job_id = run["backend"], str(record["backend_job_id"])
         result = self._remote_query(
@@ -561,14 +573,14 @@ class WydSlurmBackend:
         )
         return status
 
-    def cancel(self, campaign, run) -> dict[str, Any]:
+    def cancel(self, campaign, run) -> BackendStatus:
         current = self.status(campaign, run)
         if current["state"] in {"SUCCEEDED", "FAILED", "PREEMPTED", "CANCELLED"}:
             return current
         self.remote_exec(run["backend"]["ssh_alias"], f"scancel {shlex.quote(str(current['backend_job_id']))}")
         return self.status(campaign, run)
 
-    def collect(self, campaign, run) -> dict[str, Any]:
+    def collect(self, campaign, run) -> CollectionResult:
         backend = run["backend"]
         mirror = self.s.local_run_dir(campaign, run) / "collected_run"
         mirror.mkdir(parents=True, exist_ok=True)
@@ -605,7 +617,7 @@ class WydSlurmBackend:
         }
         return summary
 
-    def logs(self, campaign, run, *, tail: int) -> dict[str, Any]:
+    def logs(self, campaign, run, *, tail: int) -> StreamBackendLogs:
         if not 1 <= tail <= 10000:
             raise ValueError("tail must be between 1 and 10000")
         record = self.s.backend_record(campaign, run)
