@@ -18,10 +18,12 @@ from ..ingest.indexer import RunIndex, index_project
 from ..project_config import load_server_config
 from ..runtime import ExperimentServerRuntime
 from ..schemas import ServerConfig, ResearchProject
+from ..submissions import ExperimentSubmissionService
 from .routes import router
 from .agent_routes import router as agent_router
 from .action_routes import router as action_router
 from .operation_routes import router as operation_router
+from .submission_routes import router as submission_router
 from .sse import EventBroker
 
 def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
@@ -89,6 +91,9 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     )
     app.state.runtime = runtime
     app.state.application = ExperimentServerApplication(runtime)
+    app.state.submission_service = ExperimentSubmissionService(
+        app.state.application, runtime,
+    )
     # Compatibility aliases for extensions and existing integrations. New
     # transport code should enter through app.state.application.
     app.state.config = runtime.config
@@ -112,6 +117,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.include_router(agent_router)
     app.include_router(action_router)
     app.include_router(operation_router)
+    app.include_router(submission_router)
 
     @app.get("/api", include_in_schema=False)
     @app.get("/api/{path:path}", include_in_schema=False)

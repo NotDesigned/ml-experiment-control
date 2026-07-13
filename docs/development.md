@@ -37,6 +37,11 @@ belongs only in `server/api`; `runtime.py` is the composition root;
 boundary. The daemon must not import a model provider or run the client Agent
 loop.
 
+Submission changes must cover the complete safety path in
+`server/tests/test_submissions.py`: authored-but-unmaterialized Run preparation,
+separate authorization/execution, exact backend-job confirmation, idempotent
+preparation, and status-only reconciliation after uncertain execution.
+
 ## CLI documentation
 
 The Rust binary in `rust/src/main.rs` is the single source of truth for the

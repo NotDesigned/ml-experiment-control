@@ -55,6 +55,16 @@ compatibility adapter: command construction and subprocess execution do not
 leak into poll or action services. Projects can migrate to native core
 `ProjectAdapter` composition without changing the HTTP/client boundary.
 
+Experiment submission is a first-class daemon lifecycle. An authored
+materializing Campaign membership does not need a pre-existing Run directory:
+`POST /api/experiments/{project}/{run_id}/submissions/prepare` runs the dry-run,
+freezes the execution identity, and returns the review gates. Scheduler mutation
+still requires separate `/authorize` and `/execute` calls on the returned
+Submission. Execution is `VERIFIED` only after an exact Attempt status query
+confirms the submitted backend job ID. Timeouts, missing IDs, and delayed
+scheduler visibility enter `RECONCILE_REQUIRED`; `/reconcile` performs status
+observation only and never repeats `submit`.
+
 ## Install
 
 Add the package to another uv-managed project directly from GitHub:

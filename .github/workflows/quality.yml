@@ -19,7 +19,7 @@ jobs:
         uses: dtolnay/rust-toolchain@1.85.0
         with:
           components: clippy,rustfmt
-      - run: uv sync --locked
+      - run: uv sync --locked --all-packages
       - run: cargo fmt --manifest-path rust/Cargo.toml -- --check
       - run: cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
       - run: cargo test --locked --manifest-path rust/Cargo.toml
@@ -27,4 +27,7 @@ jobs:
       - run: uv run python tools/coverage_gate.py
       - run: uv run python tools/generate_cli_reference.py --check
       - run: uv run python -m compileall -q src tests tools examples
-      - run: uv build
+      - run: uv run --package ml-experiment-server python -m compileall -q server/src server/tests
+      - run: uv run --package ml-experiment-server pytest server/tests -q
+      - run: uv run --package ml-experiment-server ml-expd --help
+      - run: uv build --all-packages

@@ -11,5 +11,18 @@ Run from the repository root:
 uv run --package ml-experiment-server ml-expd --config server/examples/ml-expd.yaml
 ```
 
+The operator-facing submission lifecycle is:
+
+```text
+POST /api/experiments/{project}/{run_id}/submissions/prepare
+POST /api/submissions/{submission_id}/authorize
+POST /api/submissions/{submission_id}/execute
+POST /api/submissions/{submission_id}/reconcile  # only when uncertain
+```
+
+Preparation is non-mutating and supports authored Runs that have not yet been
+materialized. Execution confirms the exact backend job through `status` before
+reporting `VERIFIED`; reconciliation never resubmits.
+
 The full architecture, configuration, and verification contract is maintained
 in the repository root `README.md` and `docs/development.md`.
