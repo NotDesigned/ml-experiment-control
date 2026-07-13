@@ -403,8 +403,13 @@ def test_action_additional_error_and_verified_success_paths(monkeypatch):
             authorize=lambda *args: raises(RuntimeError("not approved")),
             execute=lambda *args: {"execution": {"status": "VERIFIED"}},
         ),
-        action_store=SimpleNamespace(snapshot=lambda action_id: {"proposal_kind": "OTHER"}),
+        action_store=SimpleNamespace(snapshot=lambda action_id: {
+            "proposal_kind": "OTHER", "scope": {"project": "one"},
+        }),
         index=object(), projects=[SimpleNamespace(project="one"), SimpleNamespace(project="two")],
+    )
+    runtime.project = lambda name: next(
+        project for project in runtime.projects if project.project == name
     )
     app = ExperimentServerApplication(runtime)
     with pytest.raises(ApplicationError) as caught:
@@ -413,7 +418,7 @@ def test_action_additional_error_and_verified_success_paths(monkeypatch):
     monkeypatch.setattr(module, "index_project", lambda index, project: indexed.append(project.project))
     result = app.execute_action("a", "confirm")
     assert result["execution"]["status"] == "VERIFIED"
-    assert indexed == ["one", "two"]
+    assert indexed == ["one"]
     runtime.action_store.snapshot = lambda action_id: raises(FileNotFoundError())
     with pytest.raises(ApplicationError) as caught:
         app.execute_action("missing", "confirm")

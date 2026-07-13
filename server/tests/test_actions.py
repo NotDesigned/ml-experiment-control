@@ -375,10 +375,15 @@ def test_invalid_agent_research_question_becomes_blocked_review_plan(tmp_path):
 
 
 class FakeController:
-    def __init__(self, *, timeout_submit: bool = False, evaluation: bool = False):
+    def __init__(
+        self, *, timeout_submit: bool = False, evaluation: bool = False,
+        status_visible: bool = True, status_job_id: str = "job-123",
+    ):
         self.calls: list[list[str]] = []
         self.timeout_submit = timeout_submit
         self.evaluation = evaluation
+        self.status_visible = status_visible
+        self.status_job_id = status_job_id
 
     def __call__(self, command, *, cwd, timeout):
         self.calls.append(list(command))
@@ -416,6 +421,19 @@ class FakeController:
             return {"returncode": 0, "timeout": False,
                     "payload": [{"run_id": "run-a", "backend_job_id": "job-123"}],
                     "stdout": "", "stderr": ""}
+        if verb == "status":
+            if not self.status_visible:
+                return {"returncode": 0, "timeout": False, "payload": [],
+                        "stdout": "", "stderr": ""}
+            attempt_id = (
+                command[command.index("--attempt-id") + 1]
+                if "--attempt-id" in command else "attempt-001"
+            )
+            return {"returncode": 0, "timeout": False,
+                    "payload": [{
+                        "run_id": "run-a", "attempt_id": attempt_id,
+                        "backend_job_id": self.status_job_id, "state": "QUEUED",
+                    }], "stdout": "", "stderr": ""}
         return {"returncode": 0, "timeout": False, "payload": [{"ready": True}],
                 "stdout": "", "stderr": ""}
 
@@ -558,7 +576,8 @@ def test_submit_plan_gates_and_executes_once(tmp_path):
     service.authorize(plan["action_id"], "budget approved")
     result = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
     assert result["execution"]["status"] == "VERIFIED"
-    assert result["execution"]["result"][0]["backend_job_id"] == "job-123"
+    assert result["execution"]["result"]["submission"]["backend_job_id"] == "job-123"
+    assert result["execution"]["result"]["observation"]["state"] == "QUEUED"
     submit_calls = [item for item in runner.calls if item[3] == "submit" and "--dry-run" not in item]
     assert len(submit_calls) == 1
 
@@ -570,7 +589,7 @@ def test_submit_plan_gates_and_executes_once(tmp_path):
 def test_submit_timeout_requires_reconciliation_and_never_retries(tmp_path):
     project, campaign = controller_project(tmp_path)
     scope = AgentScope(project="demo", scope_type="run", object_id="run-a")
-    runner = FakeController(timeout_submit=True)
+    runner = FakeController(timeout_submit=True, status_visible=False)
     service = ActionService(
         ActionStore(tmp_path / "actions"),
         ActionRuntimeConfig(allow_scheduler_mutations=True), runner,
@@ -584,7 +603,37 @@ def test_submit_timeout_requires_reconciliation_and_never_retries(tmp_path):
     assert result["execution"]["status"] == "RECONCILE_REQUIRED"
     with pytest.raises(ActionError, match="reconcile instead of retrying"):
         service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
+    runner.status_visible = True
+    reconciled = service.reconcile(plan["action_id"])
+    assert reconciled["execution"]["status"] == "VERIFIED"
+    assert reconciled["execution"]["result"]["observation"]["backend_job_id"] == "job-123"
     submit_calls = [item for item in runner.calls if item[3] == "submit" and "--dry-run" not in item]
+    assert len(submit_calls) == 1
+
+
+def test_submit_job_identity_mismatch_requires_status_only_reconciliation(tmp_path):
+    project, campaign = controller_project(tmp_path)
+    scope = AgentScope(project="demo", scope_type="run", object_id="run-a")
+    runner = FakeController(status_job_id="job-other")
+    service = ActionService(
+        ActionStore(tmp_path / "actions"),
+        ActionRuntimeConfig(allow_scheduler_mutations=True), runner,
+        actor_provider=lambda: "trusted:researcher",
+    )
+    plan = service.prepare(scope, project, approved_proposal(
+        "SUBMIT_RUN", submit_draft(campaign), "proposal-job-mismatch",
+    ))
+    service.authorize(plan["action_id"], "approved")
+    uncertain = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
+    assert uncertain["execution"]["status"] == "RECONCILE_REQUIRED"
+    assert "does not match submit result" in uncertain["execution"]["error"]
+
+    runner.status_job_id = "job-123"
+    reconciled = service.reconcile(plan["action_id"])
+    assert reconciled["execution"]["status"] == "VERIFIED"
+    submit_calls = [
+        item for item in runner.calls if item[3] == "submit" and "--dry-run" not in item
+    ]
     assert len(submit_calls) == 1
 
 

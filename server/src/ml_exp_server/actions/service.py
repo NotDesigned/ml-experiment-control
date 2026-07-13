@@ -646,6 +646,14 @@ class ActionService:
             "command_preview": _redact(command),
             "cwd": str(cwd),
         })
+        if actual_verb == "submit":
+            verification = self.controller.build(
+                project, campaign, "status", run_id, attempt_id=attempt_id,
+            )
+            plan.update({
+                "verification_command_preview": _redact(verification.argv),
+                "verification_cwd": str(verification.cwd),
+            })
         return plan
 
     @staticmethod
@@ -807,12 +815,149 @@ class ActionService:
             plan["action_id"], execution, event="execution_verified",
         )
 
+    @staticmethod
+    def _single_status_record(payload: Any) -> dict[str, Any] | None:
+        if isinstance(payload, dict):
+            return payload
+        if (
+            isinstance(payload, list)
+            and len(payload) == 1
+            and isinstance(payload[0], dict)
+        ):
+            return payload[0]
+        return None
+
+    def _verify_submission(
+        self, plan: dict[str, Any], *, expected_job_id: str | None,
+    ) -> tuple[bool, dict[str, Any] | None, dict[str, Any], str]:
+        command = plan.get("verification_command_preview")
+        cwd = plan.get("verification_cwd") or plan.get("cwd")
+        if not isinstance(command, list) or not command or not cwd:
+            return False, None, {}, "submission plan has no immutable status verification command"
+        result = self.controller.execute_command(
+            [str(item) for item in command],
+            cwd=Path(str(cwd)), timeout=self.config.timeout_seconds,
+        )
+        if result.get("timeout"):
+            return False, None, result, "exact Attempt status verification timed out"
+        if result.get("returncode") != 0:
+            detail = str(result.get("stderr") or "status controller failed")[:500]
+            return False, None, result, f"exact Attempt status verification failed: {detail}"
+        observed = self._single_status_record(result.get("payload"))
+        if observed is None:
+            return False, None, result, "status did not return exactly one Attempt record"
+        job_id = str(observed.get("backend_job_id") or "")
+        if not job_id:
+            return False, observed, result, "status did not expose a backend_job_id"
+        if expected_job_id and job_id != expected_job_id:
+            return (
+                False, observed, result,
+                f"status backend_job_id {job_id!r} does not match submit result {expected_job_id!r}",
+            )
+        for key in ("run_id", "attempt_id"):
+            expected = str(plan.get(key) or "")
+            actual = str(observed.get(key) or "")
+            if actual and expected and actual != expected:
+                return (
+                    False, observed, result,
+                    f"status {key} {actual!r} does not match submission {expected!r}",
+                )
+        return True, observed, result, "exact Attempt is visible in backend status"
+
+    def _submission_result(
+        self, plan: dict[str, Any], execution: dict[str, Any],
+        submit_result: dict[str, Any], *, submit_error: str | None = None,
+    ) -> dict[str, Any]:
+        submitted = self._single_status_record(submit_result.get("payload"))
+        expected_job_id = str((submitted or {}).get("backend_job_id") or "") or None
+        verified, observed, verification_result, detail = self._verify_submission(
+            plan, expected_job_id=expected_job_id,
+        )
+        result = {
+            "submission": _redact(submitted),
+            "submission_command": _redact(submit_result),
+            "observation": _redact(observed),
+            "verification_command": _redact(verification_result),
+        }
+        if verified:
+            execution.update({
+                "status": "VERIFIED", "finished_at": utc_now(),
+                "error": None, "result": result,
+            })
+            return self.store.set_execution(
+                plan["action_id"], execution, event="submission_verified",
+            )
+        error = submit_error or (
+            "submit returned without a unique backend_job_id"
+            if expected_job_id is None else detail
+        )
+        if submit_error:
+            error = f"{submit_error}; {detail}"
+        execution.update({
+            "status": "RECONCILE_REQUIRED", "finished_at": utc_now(),
+            "error": error, "result": result,
+        })
+        return self.store.set_execution(
+            plan["action_id"], execution, event="execution_reconcile_required",
+        )
+
+    def reconcile(self, action_id: str) -> dict[str, Any]:
+        """Observe an uncertain submission without ever issuing submit again."""
+        snapshot = self.store.snapshot(action_id)
+        execution = snapshot["execution"]
+        if execution.get("status") == "VERIFIED":
+            return snapshot
+        if snapshot.get("operation") not in {
+            "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION",
+        }:
+            raise ActionError("only submission actions support reconciliation")
+        if execution.get("status") not in {"EXECUTING", "RECONCILE_REQUIRED"}:
+            raise ActionError("submission is not awaiting reconciliation")
+        previous = execution.get("result")
+        previous = previous if isinstance(previous, dict) else {}
+        submitted = previous.get("submission")
+        expected_job_id = (
+            str(submitted.get("backend_job_id") or "")
+            if isinstance(submitted, dict) else ""
+        ) or None
+        verified, observed, verification_result, detail = self._verify_submission(
+            snapshot, expected_job_id=expected_job_id,
+        )
+        result = {
+            **previous,
+            "observation": _redact(observed),
+            "verification_command": _redact(verification_result),
+        }
+        if verified:
+            execution.update({
+                "status": "VERIFIED", "finished_at": utc_now(),
+                "last_reconciled_at": utc_now(), "error": None, "result": result,
+            })
+            return self.store.set_execution(
+                action_id, execution, event="submission_reconciled",
+            )
+        execution.update({
+            "status": "RECONCILE_REQUIRED", "last_reconciled_at": utc_now(),
+            "error": detail, "result": result,
+        })
+        return self.store.set_execution(
+            action_id, execution, event="submission_reconcile_pending",
+        )
+
     def _execute_controller(self, plan: dict[str, Any], execution: dict[str, Any]) -> dict[str, Any]:
         command = [str(item) for item in plan["command_preview"]]
         result = self.controller.execute_command(
             command, cwd=Path(plan["cwd"]), timeout=self.config.timeout_seconds,
         )
+        is_submission = plan["operation"] in {
+            "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION",
+        }
         if result.get("timeout"):
+            if is_submission:
+                return self._submission_result(
+                    plan, execution, result,
+                    submit_error="controller timed out after execution intent",
+                )
             execution.update({
                 "status": "RECONCILE_REQUIRED", "finished_at": utc_now(),
                 "error": "controller timed out after execution intent; inspect status before retry",
@@ -822,24 +967,21 @@ class ActionService:
                 plan["action_id"], execution, event="execution_reconcile_required",
             )
         if result.get("returncode") != 0:
+            if is_submission:
+                detail = str(result.get("stderr") or "controller failed")[:500]
+                return self._submission_result(
+                    plan, execution, result,
+                    submit_error=f"submit controller failed after execution intent: {detail}",
+                )
             execution.update({
                 "status": "FAILED", "finished_at": utc_now(),
                 "error": str(result.get("stderr") or "controller failed")[:1000],
                 "result": _redact(result),
             })
             return self.store.set_execution(plan["action_id"], execution, event="execution_failed")
+        if is_submission:
+            return self._submission_result(plan, execution, result)
         payload = result.get("payload")
-        if plan["operation"] in {"SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION"}:
-            first = payload[0] if isinstance(payload, list) and payload else {}
-            if not isinstance(first, dict) or not first.get("backend_job_id"):
-                execution.update({
-                    "status": "RECONCILE_REQUIRED", "finished_at": utc_now(),
-                    "error": "submit returned without a unique backend_job_id",
-                    "result": _redact(result),
-                })
-                return self.store.set_execution(
-                    plan["action_id"], execution, event="execution_reconcile_required",
-                )
         execution.update({
             "status": "VERIFIED", "finished_at": utc_now(), "result": _redact(payload),
         })

@@ -2125,6 +2125,32 @@ class ExperimentServerApplication:
     def execute_action(self, action_id: str, confirmation: str) -> dict[str, Any]:
         return self._execute_action_local(action_id, confirmation)
 
+    def reconcile_action(self, action_id: str) -> dict[str, Any]:
+        """Resolve an uncertain scheduler submission through exact status only."""
+        try:
+            action = self.runtime.action_store.snapshot(action_id)
+            result = self.runtime.action_service.reconcile(action_id)
+        except FileNotFoundError as exc:
+            raise ApplicationError("action not found", status_code=404,
+                                   code="UNKNOWN_ACTION") from exc
+        except RuntimeError as exc:
+            raise ApplicationError(str(exc), code="ACTION_BLOCKED") from exc
+        self._refresh_action_project(action)
+        return result
+
+    def _refresh_action_project(self, action: dict[str, Any]) -> None:
+        scope = action.get("scope")
+        if not isinstance(scope, dict):
+            return
+        project_name = str(scope.get("project") or "")
+        if not project_name:
+            return
+        try:
+            configured = self.runtime.project(project_name)
+        except KeyError:
+            return
+        index_project(self.runtime.index, configured)
+
     def _execute_action_local(self, action_id: str, confirmation: str) -> dict[str, Any]:
         try:
             action = self.runtime.action_store.snapshot(action_id)
@@ -2153,9 +2179,13 @@ class ExperimentServerApplication:
                                    code="UNKNOWN_ACTION") from exc
         except RuntimeError as exc:
             raise ApplicationError(str(exc), code="ACTION_BLOCKED") from exc
-        if result.get("execution", {}).get("status") == "VERIFIED":
-            for project in self.runtime.projects:
-                index_project(self.runtime.index, project)
+        # Submission may have materialized a durable intent even when its
+        # scheduler confirmation is still uncertain. Refresh this exact
+        # Project immediately instead of waiting for the next collector cycle.
+        if action.get("operation") in {
+            "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION", "CANCEL_RUN",
+        } or result.get("execution", {}).get("status") == "VERIFIED":
+            self._refresh_action_project(action)
         return result
 
     # ------------------------------------------------------------- projects

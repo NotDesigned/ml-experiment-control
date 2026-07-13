@@ -108,6 +108,8 @@ def synthetic_plan(store: ActionStore, proposal: str, *, operation: str = "SUBMI
         "ready": True, "operation": operation, "intent_digest": "sha256:intent",
         "gate_bundle_digest": "sha256:gates", "gate_expires_at": expires,
         "command_preview": ["controller", "submit"], "cwd": ".",
+        "verification_command_preview": ["controller", "status"],
+        "verification_cwd": ".",
     })
     return action_id
 
@@ -149,7 +151,7 @@ def test_action_authorization_and_execution_fail_closed_on_policy_and_tampering(
 
 @pytest.mark.parametrize(("result", "status"), [
     ({"timeout": True, "returncode": None, "stderr": "secret", "payload": None}, "RECONCILE_REQUIRED"),
-    ({"timeout": False, "returncode": 2, "stderr": "failed", "payload": None}, "FAILED"),
+    ({"timeout": False, "returncode": 2, "stderr": "failed", "payload": None}, "RECONCILE_REQUIRED"),
     ({"timeout": False, "returncode": 0, "stderr": "", "payload": []}, "RECONCILE_REQUIRED"),
     ({"timeout": False, "returncode": 0, "stderr": "", "payload": [{"backend_job_id": "job-1"}]}, "VERIFIED"),
 ])

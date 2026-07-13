@@ -74,3 +74,13 @@ async def execute_action(data: ExecuteActionRequest, request: Request):
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
     return result
+
+
+@router.post("/reconcile")
+async def reconcile_action(data: ActionRequest, request: Request):
+    try:
+        return await run_in_threadpool(
+            request.app.state.application.reconcile_action, data.action_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
