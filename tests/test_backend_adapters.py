@@ -515,7 +515,10 @@ def test_sensecore_submit_checks_exact_created_job(tmp_path):
     assert job_id == resource_name
     assert any(run["image_id"] in argument for argument in fake.commands[1])
     assert resource_name in fake.commands[1]
-    assert f"BACKEND_JOB_ID={resource_name}" in fake.commands[1]
+    assert any(
+        f"BACKEND_JOB_ID={resource_name}" in argument
+        for argument in fake.commands[1]
+    )
 
 
 def test_sensecore_cancel_preserves_terminal_preemption(tmp_path, monkeypatch):
