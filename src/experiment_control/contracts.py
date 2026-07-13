@@ -123,10 +123,19 @@ class SubmissionRequest(TypedDict, total=False):
     image_reference: str
 
 
-class SubmissionIntent(SubmissionRequest, total=False):
+class SubmissionIntent(TypedDict, total=False):
+    """Durable outbox record passed back to a backend for submit/recovery."""
+
+    project: str
+    run_id: str
     backend: str
     attempt_id: str
     state: str
+    submission_token: str
+    request: SubmissionRequest
+    backend_job_id: str
+    created_at: str
+    reconciled_at: str
 
 
 class BackendRecord(TypedDict):

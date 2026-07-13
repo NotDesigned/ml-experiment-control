@@ -19,6 +19,9 @@ from experiment_control.manifest import atomic_write
 from experiment_control.project import AssetProbe, AssetRequirement, SourceBundle
 
 
+SUBMISSION_TOKEN = "b" * 32
+
+
 def local_run(tmp_path: Path) -> dict:
     workdir = tmp_path / "work"
     workdir.mkdir()
@@ -54,6 +57,13 @@ def local_backend(tmp_path: Path, run: dict):
     return LocalBackend(services), record
 
 
+def local_intent(backend: LocalBackend, run: dict, attempt_id: str = "attempt-001") -> dict:
+    return {
+        "submission_token": SUBMISSION_TOKEN,
+        "request": backend.submission_request({}, run, attempt_id),
+    }
+
+
 def wait_for_terminal(backend: LocalBackend, run: dict, timeout: float = 5) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -79,13 +89,18 @@ def test_local_backend_runs_collects_and_recovers_a_real_process(tmp_path):
     }
 
     assert backend.identity({}, run, "attempt-001").available is True
-    assert backend.recover_submission(run, {}, "attempt-001") is None
-    job_id = backend.submit({}, run, manifest, dry_run=False)
+    intent = local_intent(backend, run)
+    assert backend.recover_submission(run, intent, "attempt-001") is None
+    job_id = backend.submit({}, run, manifest, dry_run=False, intent=intent)
     record["backend_job_id"] = job_id
     assert backend.identity({}, run, "attempt-001").scheduler_job_ids == (job_id,)
     assert backend.recover_submission(
-        run, backend.submission_request({}, run, "attempt-001"), "attempt-001"
+        run, intent, "attempt-001"
     ) == job_id
+    with pytest.raises(RuntimeError, match="conflicting submission token"):
+        backend.recover_submission(
+            run, {**intent, "submission_token": "c" * 32}, "attempt-001"
+        )
     status = wait_for_terminal(backend, run)
     assert status["state"] == "SUCCEEDED"
     assert status["exit_code"] == 0
@@ -107,7 +122,9 @@ def test_local_backend_cancels_an_exact_process_group(tmp_path):
         "attempt_id": "attempt-001",
         "command": [sys.executable, "-c", "import time; time.sleep(30)"],
     }
-    job_id = backend.submit({}, run, manifest, dry_run=False)
+    job_id = backend.submit(
+        {}, run, manifest, dry_run=False, intent=local_intent(backend, run)
+    )
     record["backend_job_id"] = job_id
     assert backend.status({}, run)["state"] == "RUNNING"
     assert backend.cancel({}, run)["state"] == "CANCELLED"
@@ -128,6 +145,13 @@ def test_local_backend_validation_preflight_assets_stage_and_dry_run(tmp_path):
     assert backend.submit(
         {}, run, {"attempt_id": "attempt-001", "command": ["true"]}, dry_run=True
     ) == "DRY_RUN"
+    bad_intent = local_intent(backend, run)
+    bad_intent["request"]["scheduler_name"] = "wrong"
+    with pytest.raises(RuntimeError, match="conflicting scheduler_name"):
+        backend.submit(
+            {}, run, {"attempt_id": "attempt-001", "command": ["true"]},
+            dry_run=False, intent=bad_intent,
+        )
 
     source = tmp_path / "source"
     source.mkdir()
@@ -206,12 +230,19 @@ def test_local_backend_fails_closed_for_claim_and_record_drift(tmp_path):
         backend.identity({}, run, "attempt-001")
     control.write_text(json.dumps({
         "attempt_id": "attempt-001", "state": "LAUNCHING",
+        "submission_token": SUBMISSION_TOKEN,
     }), encoding="utf-8")
     assert backend.identity({}, run, "attempt-001").available is False
     with pytest.raises(RuntimeError, match="without a process identity"):
-        backend.recover_submission(run, {}, "attempt-001")
+        backend.recover_submission(run, local_intent(backend, run), "attempt-001")
     with pytest.raises(RuntimeError, match="conflicting workdir"):
-        backend.recover_submission(run, {"workdir": "/other"}, "attempt-001")
+        backend.recover_submission(run, {
+            "submission_token": SUBMISSION_TOKEN,
+            "request": {
+                **backend.submission_request({}, run, "attempt-001"),
+                "workdir": "/other",
+            },
+        }, "attempt-001")
 
     control.write_text(json.dumps({
         "attempt_id": "attempt-001", "state": "RUNNING", "backend_job_id": "1:1",
@@ -318,7 +349,7 @@ def test_local_submit_terminates_worker_if_identity_record_cannot_persist(
     with pytest.raises(OSError, match="disk"):
         backend.submit({}, run, {
             "attempt_id": "attempt-001", "command": ["true"],
-        }, dry_run=False)
+        }, dry_run=False, intent=local_intent(backend, run))
     assert terminated[0][0]["backend_job_id"] == "123:456"
     assert terminated[0][1] == 0
 
@@ -343,7 +374,7 @@ def test_local_worker_records_command_start_failure(tmp_path):
     backend, record = local_backend(tmp_path, run)
     job_id = backend.submit({}, run, {
         "attempt_id": "attempt-001", "command": ["/definitely/missing/command"],
-    }, dry_run=False)
+    }, dry_run=False, intent=local_intent(backend, run))
     record["backend_job_id"] = job_id
     status = wait_for_terminal(backend, run)
     assert status["state"] == "FAILED"

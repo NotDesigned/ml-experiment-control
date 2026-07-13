@@ -8,6 +8,7 @@ import json
 import os
 import re
 import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -16,6 +17,7 @@ from typing import Any, Mapping
 
 import yaml
 from .run_manifest import build_run_manifest, comparable_manifest
+from .submission import new_submission_token, validate_submission_token
 
 IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SECRET_KEY_RE = re.compile(
@@ -47,6 +49,60 @@ class RunState(str, Enum):
     PREEMPTED = "PREEMPTED"
     CANCELLED = "CANCELLED"
     UNKNOWN = "UNKNOWN"
+
+
+TERMINAL_RUN_STATES = frozenset({
+    RunState.SUCCEEDED,
+    RunState.FAILED,
+    RunState.PREEMPTED,
+    RunState.CANCELLED,
+})
+
+# Scheduler observation is sampled rather than event-complete: a first poll
+# may see a Run already RUNNING or terminal, and Slurm may requeue a running
+# job. Those legitimate skips/requeues are explicit below. Terminal states are
+# immutable for an Attempt; retrying always creates a new Attempt identity.
+ALLOWED_STATE_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
+    RunState.NOT_SUBMITTED: frozenset({RunState.CREATED}),
+    RunState.CREATED: frozenset({
+        RunState.CREATED, RunState.SUBMITTING, RunState.QUEUED,
+        RunState.STARTING, RunState.RUNNING, RunState.EVALUATING,
+        RunState.SUCCEEDED, RunState.FAILED, RunState.PREEMPTED,
+        RunState.CANCELLED, RunState.UNKNOWN,
+    }),
+    RunState.SUBMITTING: frozenset({
+        RunState.SUBMITTING, RunState.QUEUED, RunState.STARTING,
+        RunState.RUNNING, RunState.EVALUATING, RunState.SUCCEEDED,
+        RunState.FAILED, RunState.PREEMPTED, RunState.CANCELLED,
+        RunState.UNKNOWN,
+    }),
+    RunState.QUEUED: frozenset({
+        RunState.QUEUED, RunState.STARTING, RunState.RUNNING,
+        RunState.EVALUATING, RunState.SUCCEEDED, RunState.FAILED,
+        RunState.PREEMPTED, RunState.CANCELLED, RunState.UNKNOWN,
+    }),
+    RunState.STARTING: frozenset({
+        RunState.STARTING, RunState.QUEUED, RunState.RUNNING,
+        RunState.EVALUATING, RunState.SUCCEEDED, RunState.FAILED,
+        RunState.PREEMPTED, RunState.CANCELLED, RunState.UNKNOWN,
+    }),
+    RunState.RUNNING: frozenset({
+        RunState.QUEUED, RunState.RUNNING, RunState.EVALUATING,
+        RunState.SUCCEEDED, RunState.FAILED, RunState.PREEMPTED,
+        RunState.CANCELLED, RunState.UNKNOWN,
+    }),
+    RunState.EVALUATING: frozenset({
+        RunState.EVALUATING, RunState.SUCCEEDED, RunState.FAILED,
+        RunState.PREEMPTED, RunState.CANCELLED, RunState.UNKNOWN,
+    }),
+    RunState.UNKNOWN: frozenset({
+        RunState.CREATED, RunState.SUBMITTING, RunState.QUEUED,
+        RunState.STARTING, RunState.RUNNING, RunState.EVALUATING,
+        RunState.SUCCEEDED, RunState.FAILED, RunState.PREEMPTED,
+        RunState.CANCELLED, RunState.UNKNOWN,
+    }),
+    **{state: frozenset({state}) for state in TERMINAL_RUN_STATES},
+}
 
 
 @dataclass(frozen=True)
@@ -353,15 +409,19 @@ class ExperimentStateStore:
     def write_status_payload(
         self, attempt_id: str, payload: Mapping[str, Any]
     ) -> dict[str, Any]:
-        """Write canonical attempt status and refresh its root mirror if current."""
+        """Write one transition-validated status and refresh the current mirror."""
         self.load_attempt(attempt_id)
         normalized = dict(payload)
         recorded_attempt = normalized.get("attempt_id")
         if recorded_attempt not in {None, attempt_id}:
             raise ValueError("status payload conflicts with selected attempt")
+        state = self._coerce_state(normalized.get("state"))
         normalized["attempt_id"] = attempt_id
-        atomic_write(self.attempt_status_path(attempt_id), normalized)
-        self._mirror_if_current(attempt_id, self.status_path, normalized)
+        normalized["state"] = state.value
+        with self._status_lock(attempt_id):
+            self._require_allowed_transition(attempt_id, state)
+            atomic_write(self.attempt_status_path(attempt_id), normalized)
+            self._mirror_if_current(attempt_id, self.status_path, normalized)
         return normalized
 
     def load_manifest(self) -> dict[str, Any]:
@@ -529,19 +589,51 @@ class ExperimentStateStore:
         timestamp: str | None = None,
         mirror: bool = True,
     ) -> LifecycleStatus:
-        status = LifecycleStatus(
-            project=project,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            state=state,
-            updated_at=timestamp or utc_now(),
-            exit_code=exit_code,
-        )
-        payload = status.to_dict()
-        atomic_write(self.attempt_status_path(attempt_id), payload)
-        if mirror:
-            self._mirror_if_current(attempt_id, self.status_path, payload)
+        state = self._coerce_state(state)
+        with self._status_lock(attempt_id):
+            self._require_allowed_transition(attempt_id, state)
+            status = LifecycleStatus(
+                project=project,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                state=state,
+                updated_at=timestamp or utc_now(),
+                exit_code=exit_code,
+            )
+            payload = status.to_dict()
+            atomic_write(self.attempt_status_path(attempt_id), payload)
+            if mirror:
+                self._mirror_if_current(attempt_id, self.status_path, payload)
         return status
+
+    @staticmethod
+    def _coerce_state(value: RunState | str | None) -> RunState:
+        if isinstance(value, RunState):
+            return value
+        try:
+            return RunState(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid lifecycle state: {value!r}") from exc
+
+    @contextmanager
+    def _status_lock(self, attempt_id: str):
+        """Serialize check-and-write for one Attempt across controller processes."""
+        lock_path = self.attempt_status_path(attempt_id).with_suffix(".json.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def _require_allowed_transition(self, attempt_id: str, target: RunState) -> None:
+        current = self.read_status(attempt_id).state
+        if target not in ALLOWED_STATE_TRANSITIONS[current]:
+            raise ValueError(
+                "invalid lifecycle transition for attempt "
+                f"{attempt_id}: {current.value} -> {target.value}"
+            )
 
     def begin_submission(
         self,
@@ -568,6 +660,15 @@ class ExperimentStateStore:
             conflicts = [key for key, value in immutable.items() if existing.get(key) != value]
             if conflicts:
                 raise ValueError("existing submission intent conflicts in " + ", ".join(conflicts))
+            token = existing.get("submission_token")
+            if token is None:
+                if existing.get("state") == "SUBMITTING":
+                    raise RuntimeError(
+                        "legacy SUBMITTING intent has no submission_token; "
+                        "automatic scheduler recovery is unsafe"
+                    )
+            else:
+                validate_submission_token(token)
             intent = existing
         else:
             intent = {
@@ -576,6 +677,7 @@ class ExperimentStateStore:
                 "attempt_id": attempt_id,
                 "backend": backend,
                 "request": sanitized_request,
+                "submission_token": new_submission_token(),
                 "state": "SUBMITTING",
                 "created_at": utc_now(),
             }

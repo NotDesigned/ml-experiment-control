@@ -9,12 +9,20 @@ from pathlib import Path
 
 import pytest
 
-from backend_harness import QueueRunner, sensecore_run, services, slurm_run
+from backend_harness import (
+    SUBMISSION_TOKEN,
+    QueueRunner,
+    sensecore_run,
+    services,
+    slurm_run,
+    submission_intent,
+)
 from experiment_control.backends import build_registry
 from experiment_control.backends.sensecore import (
     SenseCoreBackend,
     digest_pinned_image,
     normalize_state as normalize_sensecore_state,
+    submission_resource_name,
 )
 from experiment_control.backends.wyd import (
     WydSlurmBackend,
@@ -70,8 +78,8 @@ def test_sensecore_validate_and_environment_boundaries(tmp_path, monkeypatch):
     }
     valid["backend"]["storage_mount"] = "volume:/shared"
     backend.validate(valid)
-    assert backend.environment({}, valid, "source", "attempt-002")["BACKEND_JOB_ID"].endswith(
-        "attempt-002"
+    assert "BACKEND_JOB_ID" not in backend.environment(
+        {}, valid, "source", "attempt-002"
     )
 
     cases = []
@@ -99,17 +107,30 @@ def test_sensecore_observation_shape_and_recovery_errors(tmp_path):
 
     with pytest.raises(RuntimeError, match="conflicting scheduler name"):
         backend.recover_submission(
-            sensecore_run(), {"scheduler_name": "wrong"}, "attempt-001",
+            sensecore_run(), {
+                "submission_token": SUBMISSION_TOKEN,
+                "request": {"scheduler_name": "wrong"},
+            }, "attempt-001",
         )
 
+    resource_name = submission_resource_name(
+        "sensecore-run", "attempt-001", SUBMISSION_TOKEN
+    )
     ambiguous = SenseCoreBackend(services(tmp_path, QueueRunner([
         CommandResult(("find",), 0, json.dumps([
-            {"name": "sensecore-run--attempt-001"},
-            {"name": "sensecore-run--attempt-001"},
+            {
+                "name": resource_name,
+            },
+            {
+                "name": resource_name,
+            },
         ])),
     ])))
     with pytest.raises(RuntimeError, match="ambiguous"):
-        ambiguous.recover_submission(sensecore_run(), {}, "attempt-001")
+        ambiguous.recover_submission(
+            sensecore_run(), submission_intent(ambiguous, sensecore_run()),
+            "attempt-001",
+        )
 
 
 @pytest.mark.parametrize("method", ["describe", "find", "workers"])
@@ -129,16 +150,26 @@ def test_sensecore_sanitized_queries_reject_wrong_json_shapes(tmp_path, method):
 
 def test_sensecore_submit_fails_closed_for_drift_duplicates_and_create_errors(tmp_path):
     run = sensecore_run()
+    resource_name = submission_resource_name(
+        "sensecore-run", "attempt-001", SUBMISSION_TOKEN
+    )
     manifest = {**run, "attempt_id": "attempt-001", "command": ["python", "train.py"]}
     backend = SenseCoreBackend(services(tmp_path, QueueRunner([])))
     with pytest.raises(ValueError, match="image_id conflicts"):
         backend.submit({}, run, {**manifest, "image_id": "sha256:" + "c" * 64}, dry_run=False)
+    bad_intent = submission_intent(backend, run)
+    bad_intent["request"]["scheduler_name"] = "wrong"
+    with pytest.raises(RuntimeError, match="conflicting scheduler name"):
+        backend.submit({}, run, manifest, dry_run=False, intent=bad_intent)
 
     duplicate = SenseCoreBackend(services(tmp_path, QueueRunner([
-        CommandResult(("find",), 0, '[{"name":"sensecore-run--attempt-001"}]'),
+        CommandResult(("find",), 0, json.dumps([{"name": resource_name}])),
     ])))
     with pytest.raises(FileExistsError):
-        duplicate.submit({}, run, manifest, dry_run=False)
+        duplicate.submit(
+            {}, run, manifest, dry_run=False,
+            intent=submission_intent(duplicate, run),
+        )
 
     failed = SenseCoreBackend(services(tmp_path, QueueRunner([
         CommandResult(("find",), 0, "[]"),
@@ -146,7 +177,10 @@ def test_sensecore_submit_fails_closed_for_drift_duplicates_and_create_errors(tm
         CommandResult(("redact",), 0, "sanitized"),
     ])))
     with pytest.raises(RuntimeError, match="sanitized"):
-        failed.submit({}, run, manifest, dry_run=False)
+        failed.submit(
+            {}, run, manifest, dry_run=False,
+            intent=submission_intent(failed, run),
+        )
 
     conflict = SenseCoreBackend(services(tmp_path, QueueRunner([
         CommandResult(("find",), 0, "[]"),
@@ -154,7 +188,10 @@ def test_sensecore_submit_fails_closed_for_drift_duplicates_and_create_errors(tm
         CommandResult(("describe",), 0, '{"name":"other"}'),
     ])))
     with pytest.raises(RuntimeError, match="not observable"):
-        conflict.submit({}, run, manifest, dry_run=False)
+        conflict.submit(
+            {}, run, manifest, dry_run=False,
+            intent=submission_intent(conflict, run),
+        )
 
 
 def test_sensecore_status_cancel_markers_and_active_cancel(tmp_path, monkeypatch):
@@ -332,15 +369,29 @@ def test_sensecore_validation_wraps_scheduler_and_image_identity_errors(tmp_path
         backend.validate(invalid_image)
 
 
-@pytest.mark.parametrize(("payload", "expected"), [("[]", None), (
-    '[{"name":"sensecore-run--attempt-001"}]',
-    "sensecore-run--attempt-001",
-)])
-def test_sensecore_recovery_distinguishes_absent_and_exact_job(tmp_path, payload, expected):
+@pytest.mark.parametrize(("token", "payload_name", "expected"), [
+    (SUBMISSION_TOKEN, None, None),
+    (SUBMISSION_TOKEN, submission_resource_name(
+        "sensecore-run", "attempt-001", "f" * 32,
+    ), None),
+    (SUBMISSION_TOKEN, submission_resource_name(
+        "sensecore-run", "attempt-001", SUBMISSION_TOKEN,
+    ), submission_resource_name(
+        "sensecore-run", "attempt-001", SUBMISSION_TOKEN,
+    )),
+])
+def test_sensecore_recovery_distinguishes_absent_and_exact_job(
+    tmp_path, token, payload_name, expected,
+):
+    payload = json.dumps([{"name": payload_name}]) if payload_name else "[]"
     backend = SenseCoreBackend(services(
         tmp_path, QueueRunner([CommandResult(("find",), 0, payload)]),
     ))
-    assert backend.recover_submission(sensecore_run(), {}, "attempt-001") == expected
+    assert backend.recover_submission(
+        sensecore_run(), submission_intent(
+            backend, sensecore_run(), token=token,
+        ), "attempt-001"
+    ) == expected
 
 
 def test_sensecore_status_rejects_conflicting_exact_resource(tmp_path):
@@ -395,13 +446,34 @@ def test_slurm_recovery_handles_blank_evidence_and_one_exact_match(tmp_path):
     backend = WydSlurmBackend(services(tmp_path, QueueRunner([
         CommandResult(
             ("squeue",), 0,
-            f"\n999|unrelated-job|other-token\n123|{expected_name}|token\n\n",
+            f"\n999|unrelated-job|other-token\n"
+            f"123|{expected_name}|ml-exp-{SUBMISSION_TOKEN}\n\n",
         ),
-        CommandResult(("sacct",), 0, "\n998|unrelated-job\n\n"),
+        CommandResult(("sacct",), 0, "\n998|unrelated-job|old-marker\n\n"),
     ])))
     assert backend.recover_submission(
-        slurm_run(), {"submission_token": "token"}, "attempt-001",
+        slurm_run(), submission_intent(backend, slurm_run()), "attempt-001",
     ) == "123"
+
+    bad_intent = submission_intent(backend, slurm_run())
+    bad_intent["request"]["scheduler_name"] = "wrong"
+    with pytest.raises(RuntimeError, match="conflicting scheduler name"):
+        backend.recover_submission(slurm_run(), bad_intent, "attempt-001")
+
+
+def test_slurm_recovery_ignores_historical_same_name_with_another_token(tmp_path):
+    expected_name = "backend-run--attempt-001"
+    backend = WydSlurmBackend(services(tmp_path, QueueRunner([
+        CommandResult(("squeue",), 0, ""),
+        CommandResult(
+            ("sacct",), 0,
+            f"1731|{expected_name}|ml-exp-{'f' * 32}\n",
+        ),
+    ])))
+
+    assert backend.recover_submission(
+        slurm_run(), submission_intent(backend, slurm_run()), "attempt-001",
+    ) is None
 
 
 @pytest.mark.parametrize(
@@ -410,7 +482,7 @@ def test_slurm_recovery_handles_blank_evidence_and_one_exact_match(tmp_path):
         ("malformed\n", None, "queue identity query returned malformed"),
         ("job|backend-run--attempt-001|token\n", None, "invalid job ID"),
         ("", "malformed\n", "accounting identity query returned malformed"),
-        ("", "job|backend-run--attempt-001\n", "invalid job ID"),
+        ("", "job|backend-run--attempt-001|marker\n", "invalid job ID"),
     ],
 )
 def test_slurm_recovery_rejects_malformed_scheduler_evidence(
@@ -422,7 +494,7 @@ def test_slurm_recovery_rejects_malformed_scheduler_evidence(
     backend = WydSlurmBackend(services(tmp_path, QueueRunner(results)))
     with pytest.raises(RuntimeError, match=error):
         backend.recover_submission(
-            slurm_run(), {"submission_token": "token"}, "attempt-001",
+            slurm_run(), submission_intent(backend, slurm_run()), "attempt-001",
         )
 
 
@@ -512,6 +584,10 @@ def test_slurm_submit_dry_run_claim_failure_and_bad_scheduler_response(tmp_path)
     manifest = slurm_attempt_manifest(run)
     dry_run = WydSlurmBackend(services(tmp_path, QueueRunner([])))
     assert dry_run.submit({}, run, manifest, dry_run=True) == "DRY_RUN"
+    bad_intent = submission_intent(dry_run, run)
+    bad_intent["request"]["scheduler_name"] = "wrong"
+    with pytest.raises(RuntimeError, match="conflicting scheduler name"):
+        dry_run.submit({}, run, manifest, dry_run=False, intent=bad_intent)
 
     live = (
         "accelerator|up|3-00:00:00|gpu:accelerator:8\n"
@@ -522,7 +598,10 @@ def test_slurm_submit_dry_run_claim_failure_and_bad_scheduler_response(tmp_path)
         CommandResult(("claim",), 2, stderr="transport failure"),
     ])))
     with pytest.raises(RuntimeError, match="scheduler/storage state is unknown"):
-        claim_failure.submit({}, run, manifest, dry_run=False)
+        claim_failure.submit(
+            {}, run, manifest, dry_run=False,
+            intent=submission_intent(claim_failure, run),
+        )
 
     bad_response = WydSlurmBackend(services(tmp_path / "response", QueueRunner([
         CommandResult(("live",), 0, live),
@@ -532,7 +611,10 @@ def test_slurm_submit_dry_run_claim_failure_and_bad_scheduler_response(tmp_path)
         CommandResult(("sbatch",), 0, "not-a-job-id\n"),
     ])))
     with pytest.raises(ValueError, match="unexpected sbatch response"):
-        bad_response.submit({}, run, manifest, dry_run=False)
+        bad_response.submit(
+            {}, run, manifest, dry_run=False,
+            intent=submission_intent(bad_response, run),
+        )
 
 
 def test_slurm_status_falls_back_to_queue_when_accounting_is_delayed(tmp_path):

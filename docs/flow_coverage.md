@@ -10,10 +10,10 @@ as scenario coverage.
 
 | Area | Scenarios exercised |
 | --- | --- |
-| Durable lifecycle | `CREATED -> SUBMITTING -> QUEUED -> RUNNING -> SUCCEEDED`, including status, backend identity, and ordered events |
-| Submission recovery | idempotent replay, crash repair of derived records, concurrent publication, conflicting request or scheduler identity |
+| Durable lifecycle | Transition table enforces `CREATED -> SUBMITTING -> QUEUED -> RUNNING -> SUCCEEDED`; allows late scheduler observations and Slurm requeue, but rejects terminal-state regression |
+| Submission recovery | random durable token publication, idempotent replay, crash repair of derived records, concurrent publication, legacy token absence, conflicting request or scheduler identity |
 | Cancellation outbox | first request, verified replay, terminal reconciliation without a second mutation, uncertain nonterminal state, identity drift |
-| Scheduler identity | available, one exact match, unrelated evidence, ambiguous matches, malformed or unavailable evidence |
+| Scheduler identity | name-and-token exact match, historical same-name rejection, unrelated evidence, ambiguous matches, malformed or unavailable evidence |
 | Preflight | missing local tool, authentication/query failure, resource and storage failure, ready path for observe/stage/submit |
 | Observation | active and terminal status, bounded/redacted logs, expired logs, worker evidence, metric and checkpoint presence or absence |
 | Local execution | real process success and failure, durable recovery identity, PID/start-time matching, log collection, exact process-group cancellation |

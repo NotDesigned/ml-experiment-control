@@ -40,6 +40,22 @@ type checker can reject missing required identity fields and incompatible
 backend result shapes. Campaign and project summary payloads remain open
 because their scientific fields are owned by the host project.
 
+## Submission identity
+
+Hosts must call `ExperimentStateStore.begin_submission(...)` with the selected
+backend's `submission_request(...)` before invoking a non-dry-run `submit`.
+The returned durable `SubmissionIntent` contains the generated
+`submission_token` and must be passed unchanged to both `recover_submission`
+and `submit(..., intent=intent)`. Recovery is attempted first; a returned job
+ID is reconciled without another scheduler mutation. If recovery returns
+`None`, the same intent is used for the first submit and the returned job ID is
+then persisted with `reconcile_submission(...)`.
+
+Backends reject non-dry-run calls without a valid intent. An unreconciled
+legacy submission record without a token cannot be upgraded automatically,
+because no local value can prove ownership of an already-created remote job;
+hosts must stop and reconcile it manually.
+
 `BackendStatus` includes optional `reason`, `detail`, `observed_at`, and
 `observation_source` fields. Backends should populate them only from observed
 scheduler evidence. In particular, a WYD `PENDING`/`CONFIGURING` row may expose

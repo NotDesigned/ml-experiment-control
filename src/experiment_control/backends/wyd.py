@@ -19,12 +19,14 @@ from ..contracts import (
     PreflightScope,
     RunSpec,
     StreamBackendLogs,
+    SubmissionIntent,
     SubmissionRequest,
 )
 from ..preflight import PreflightCheck, PreflightReport
 from ..redaction import redact_line
 from ..checkpoints import select_latest_checkpoint_name
 from ..identity import IdentityReport
+from ..submission import require_submission_intent, submission_marker
 
 
 SLURM_STATES = {
@@ -80,7 +82,9 @@ def log_probe_command(paths: list[str], *, tail: int) -> str:
     )
 
 
-def render_job(manifest: AttemptManifest) -> str:
+def render_job(
+    manifest: AttemptManifest, *, submission_token: str | None = None,
+) -> str:
     backend, resources = manifest["backend"], manifest.get("resources", {})
     run_dir, source_dir, sif_path = (
         manifest["storage"]["run_dir"], backend["source_dir"], backend["sif_path"]
@@ -93,7 +97,9 @@ def render_job(manifest: AttemptManifest) -> str:
     execution = manifest["execution"]
     container_path = str(execution["source_mount"])
     workdir = str(execution["workdir"])
-    comment = shlex.quote(f"{manifest.get('campaign', 'campaign')}/{manifest['run_id']}/{manifest['attempt_id']}")
+    comment = shlex.quote(
+        submission_marker(submission_token) if submission_token else "ml-exp-dry-run"
+    )
     job_name = scheduler_job_name(str(manifest["run_id"]), str(manifest["attempt_id"]))
     return f"""#!/usr/bin/env bash
 #SBATCH --partition={backend['partition']}
@@ -333,40 +339,48 @@ class WydSlurmBackend:
     def submission_request(self, campaign, run, attempt_id) -> SubmissionRequest:
         return {"scheduler_name": scheduler_job_name(str(run["run_id"]), attempt_id)}
 
-    def _matching_jobs(self, run, intent, attempt_id) -> list[str]:
+    def _scheduler_jobs(self, run) -> list[tuple[str, str, str]]:
         backend = run["backend"]
-        token = str(intent["submission_token"])
-        expected_name = scheduler_job_name(str(run["run_id"]), attempt_id)
         queue = self._remote_query(
             backend["ssh_alias"], "squeue -u $(id -un) -h -o '%i|%j|%k'",
             operation="Slurm queue identity query",
         )
-        matches: set[str] = set()
+        rows: list[tuple[str, str, str]] = []
         for line in queue.stdout.splitlines():
             if not line.strip():
                 continue
             fields = line.split("|", 2)
             if len(fields) != 3:
                 raise RuntimeError("Slurm queue identity query returned malformed evidence")
-            if fields[1] == expected_name or fields[2] == token:
-                if not fields[0].isdigit():
-                    raise RuntimeError("Slurm queue identity query returned an invalid job ID")
-                matches.add(fields[0])
+            if not fields[0].isdigit():
+                raise RuntimeError("Slurm queue identity query returned an invalid job ID")
+            rows.append((fields[0], fields[1], fields[2]))
         accounting = self._remote_query(
             backend["ssh_alias"],
-            "sacct -S now-30days -u $(id -un) -X -n -P -o JobIDRaw,JobName",
+            "sacct -S now-30days -u $(id -un) -X -n -P -o JobIDRaw,JobName,Comment",
             operation="Slurm accounting identity query",
         )
         for line in accounting.stdout.splitlines():
             if not line.strip():
                 continue
-            fields = line.split("|")
-            if len(fields) != 2:
+            fields = line.split("|", 2)
+            if len(fields) != 3:
                 raise RuntimeError("Slurm accounting identity query returned malformed evidence")
-            if fields[1] == expected_name:
-                if not fields[0].isdigit():
-                    raise RuntimeError("Slurm accounting identity query returned an invalid job ID")
-                matches.add(fields[0])
+            if not fields[0].isdigit():
+                raise RuntimeError("Slurm accounting identity query returned an invalid job ID")
+            rows.append((fields[0], fields[1], fields[2]))
+        return rows
+
+    def _matching_jobs(self, run, intent, attempt_id) -> list[str]:
+        token, request = require_submission_intent(intent)
+        expected_name = scheduler_job_name(str(run["run_id"]), attempt_id)
+        if request.get("scheduler_name") != expected_name:
+            raise RuntimeError("Slurm submission intent has a conflicting scheduler name")
+        marker = submission_marker(token)
+        matches = {
+            job_id for job_id, job_name, comment in self._scheduler_jobs(run)
+            if job_name == expected_name and comment == marker
+        }
         return sorted(matches, key=lambda value: (len(value), value))
 
     def recover_submission(self, run, intent, attempt_id) -> str | None:
@@ -378,10 +392,11 @@ class WydSlurmBackend:
         return matches[0] if matches else None
 
     def identity(self, campaign, run, attempt_id) -> IdentityReport:
-        token = f"{campaign['campaign']}/{run['run_id']}/{attempt_id}"
-        matches = self._matching_jobs(
-            run, {"submission_token": token}, attempt_id
-        )
+        expected_name = scheduler_job_name(str(run["run_id"]), attempt_id)
+        matches = sorted({
+            job_id for job_id, job_name, _comment in self._scheduler_jobs(run)
+            if job_name == expected_name
+        }, key=lambda value: (len(value), value))
         manifest_exists = self._remote_predicate(
             run["backend"]["ssh_alias"],
             f"test -e {shlex.quote(str(run['storage']['run_dir']))}/manifest.yaml",
@@ -517,13 +532,25 @@ class WydSlurmBackend:
         )
         return {"query": "squeue", "output": "nonempty" if result.stdout.strip() else "empty"}
 
-    def submit(self, campaign, run, manifest, *, dry_run: bool) -> str:
+    def submit(
+        self, campaign, run, manifest, *, dry_run: bool,
+        intent: SubmissionIntent | None = None,
+    ) -> str:
         local_dir = self.s.local_run_dir(campaign, run)
         script_path = local_dir / "attempts" / manifest["attempt_id"] / "job.sbatch"
         script_path.parent.mkdir(parents=True, exist_ok=True)
-        script_path.write_text(self.render(manifest), encoding="utf-8")
         if dry_run:
+            script_path.write_text(self.render(manifest), encoding="utf-8")
             return "DRY_RUN"
+        token, request = require_submission_intent(intent)
+        expected_request = self.submission_request(
+            campaign, run, str(manifest["attempt_id"])
+        )
+        if request.get("scheduler_name") != expected_request["scheduler_name"]:
+            raise RuntimeError("Slurm submission intent has a conflicting scheduler name")
+        script_path.write_text(
+            render_job(manifest, submission_token=token), encoding="utf-8"
+        )
         backend = run["backend"]
         self.validate_live(run)
         remote_script = f"{run['storage']['run_dir']}/controller-{manifest['attempt_id']}.sbatch"

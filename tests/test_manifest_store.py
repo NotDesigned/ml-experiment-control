@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -119,6 +120,7 @@ def test_submission_outbox_is_idempotent_redacted_and_reconciled(tmp_path):
         request=request,
     )
     assert first == second
+    assert re.fullmatch(r"[0-9a-f]{32}", first["submission_token"])
     assert first["request"]["environment"]["API_TOKEN"] == "<redacted>"
     assert first["request"]["callback"] == "https://<redacted>@example.invalid/status"
     assert store.read_status().state is RunState.SUBMITTING
@@ -140,6 +142,43 @@ def test_submission_outbox_is_idempotent_redacted_and_reconciled(tmp_path):
         request=request,
     )["state"] == "SUBMITTED"
     assert store.read_status().state is RunState.QUEUED
+
+
+def test_legacy_unreconciled_submission_without_token_fails_closed(tmp_path):
+    store = prepare_store(tmp_path)
+    kwargs = {
+        "project": "project",
+        "run_id": "run-s0",
+        "attempt_id": "attempt-001",
+        "backend": "test-backend",
+        "request": {"scheduler_name": "run-s0--attempt-001"},
+    }
+    intent = store.begin_submission(**kwargs)
+    legacy = {key: value for key, value in intent.items() if key != "submission_token"}
+    atomic_write(store.submission_path("attempt-001"), legacy)
+
+    with pytest.raises(RuntimeError, match="automatic scheduler recovery is unsafe"):
+        store.begin_submission(**kwargs)
+
+
+def test_legacy_reconciled_submission_without_token_remains_readable(tmp_path):
+    store = prepare_store(tmp_path)
+    kwargs = {
+        "project": "project",
+        "run_id": "run-s0",
+        "attempt_id": "attempt-001",
+        "backend": "test-backend",
+        "request": {"scheduler_name": "run-s0--attempt-001"},
+    }
+    store.begin_submission(**kwargs)
+    reconciled = store.reconcile_submission(
+        project="project", run_id="run-s0", attempt_id="attempt-001",
+        backend_job_id="job-123",
+    )
+    legacy = {key: value for key, value in reconciled.items() if key != "submission_token"}
+    atomic_write(store.submission_path("attempt-001"), legacy)
+
+    assert store.begin_submission(**kwargs)["backend_job_id"] == "job-123"
 
 
 def test_complete_successful_lifecycle_preserves_status_and_event_order(tmp_path):
@@ -233,6 +272,31 @@ def test_transition_event_id_is_idempotent(tmp_path):
     store.transition(**kwargs)
     events = [json.loads(line) for line in store.events_path.read_text().splitlines()]
     assert [event["event"] for event in events].count("worker_observed") == 1
+
+
+def test_state_store_rejects_regressions_and_invalid_status_payloads(tmp_path):
+    store = prepare_store(tmp_path)
+    identity = {
+        "project": "project", "run_id": "run-s0", "attempt_id": "attempt-001",
+    }
+    store.transition(**identity, state=RunState.SUCCEEDED, event="worker_succeeded")
+
+    with pytest.raises(ValueError, match="SUCCEEDED -> RUNNING"):
+        store.transition(**identity, state=RunState.RUNNING, event="stale_worker_poll")
+    with pytest.raises(ValueError, match="SUCCEEDED -> SUBMITTING"):
+        store.write_status_payload("attempt-001", {"state": "SUBMITTING"})
+    with pytest.raises(ValueError, match="invalid lifecycle state"):
+        store.write_status_payload("attempt-001", {"state": "MADE_UP"})
+
+
+def test_state_store_allows_late_observation_and_slurm_requeue(tmp_path):
+    store = prepare_store(tmp_path)
+    identity = {
+        "project": "project", "run_id": "run-s0", "attempt_id": "attempt-001",
+    }
+    store.transition(**identity, state=RunState.RUNNING, event="first_scheduler_poll")
+    store.transition(**identity, state=RunState.QUEUED, event="slurm_requeued")
+    assert store.read_status().state is RunState.QUEUED
 
 
 def test_new_attempt_preserves_old_attempt_state_and_updates_root_mirror(tmp_path):

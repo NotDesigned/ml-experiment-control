@@ -7,6 +7,9 @@ from experiment_control.backends.services import BackendServices
 from experiment_control.runner import CommandResult
 
 
+SUBMISSION_TOKEN = "a" * 32
+
+
 class QueueRunner:
     def __init__(self, results: list[CommandResult]):
         self.results = list(results)
@@ -92,4 +95,11 @@ def sensecore_run() -> dict:
             "quota_type": "spot",
             "storage_mount": "volume/subdir:/shared",
         },
+    }
+
+
+def submission_intent(backend, run: dict, attempt_id: str = "attempt-001", *, token: str = SUBMISSION_TOKEN) -> dict:
+    return {
+        "submission_token": token,
+        "request": backend.submission_request({}, run, attempt_id),
     }

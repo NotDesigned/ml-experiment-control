@@ -19,10 +19,12 @@ from ..contracts import (
     LiveBackendLogs,
     PreflightScope,
     RunSpec,
+    SubmissionIntent,
     SubmissionRequest,
 )
 from ..preflight import PreflightCheck, PreflightReport
 from ..identity import IdentityReport
+from ..submission import require_submission_intent, validate_submission_token
 
 
 SENSECORE_BASE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -45,6 +47,19 @@ def scheduler_job_name(base_name: str, attempt_id: str) -> str:
         return raw
     digest = hashlib.sha256(raw.encode()).hexdigest()[:10]
     return f"{raw[:51]}--{digest}"
+
+
+def submission_resource_name(base_name: str, attempt_id: str, token: str) -> str:
+    """Bind one durable submission token into a unique SCO resource name."""
+    scheduler_job_name(base_name, attempt_id)  # validate both authored parts
+    token = validate_submission_token(token)
+    raw = f"{base_name}--{attempt_id}"
+    if len(raw) + len(token) + 2 <= 63:
+        return f"{raw}--{token}"
+    digest = hashlib.sha256(raw.encode()).hexdigest()[:10]
+    prefix_budget = 63 - len(token) - len(digest) - 4
+    prefix = raw[:prefix_budget].rstrip("-")
+    return f"{prefix}--{digest}--{token}"
 
 
 def digest_pinned_image(image_tag: str, image_id: str) -> str:
@@ -144,7 +159,6 @@ class SenseCoreBackend:
     def environment(self, campaign, run, source_id, attempt_id) -> dict[str, str]:
         backend = run["backend"]
         return {
-            "BACKEND_JOB_ID": scheduler_job_name(str(backend["job_name"]), attempt_id),
             "QUOTA_TYPE": str(backend["quota_type"]),
             "RESOURCE_SPEC": str(backend["worker_spec"]),
         }
@@ -193,10 +207,14 @@ class SenseCoreBackend:
         }
 
     def recover_submission(self, run, intent, attempt_id) -> str | None:
-        expected = scheduler_job_name(str(run["backend"]["job_name"]), attempt_id)
-        requested = str(intent.get("scheduler_name") or expected)
-        if requested != expected:
+        token, request = require_submission_intent(intent)
+        base_name = scheduler_job_name(str(run["backend"]["job_name"]), attempt_id)
+        requested = str(request.get("scheduler_name") or "")
+        if requested != base_name:
             raise RuntimeError("SenseCore submission intent has a conflicting scheduler name")
+        expected = submission_resource_name(
+            str(run["backend"]["job_name"]), attempt_id, token
+        )
         matches = self.find(run, expected)
         if len(matches) > 1:
             raise RuntimeError(
@@ -275,11 +293,23 @@ class SenseCoreBackend:
         # source upload is required for this backend.
         return True
 
-    def _create_command(self, manifest: dict[str, Any]) -> list[str]:
+    def _create_command(
+        self, manifest: dict[str, Any], *, submission_token: str | None = None,
+    ) -> list[str]:
         backend = manifest["backend"]
-        resource_name = scheduler_job_name(
-            str(backend["job_name"]), str(manifest["attempt_id"])
+        resource_name = (
+            submission_resource_name(
+                str(backend["job_name"]), str(manifest["attempt_id"]),
+                submission_token,
+            )
+            if submission_token else scheduler_job_name(
+                str(backend["job_name"]), str(manifest["attempt_id"])
+            )
         )
+        command = [
+            "env", f"BACKEND_JOB_ID={resource_name}",
+            *[str(value) for value in manifest["command"]],
+        ]
         return [
             "timeout", f"{self.create_timeout_seconds()}s",
             "env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
@@ -295,7 +325,7 @@ class SenseCoreBackend:
             "--worker-nodes", str(backend.get("worker_nodes", 1)),
             "--priority", str(backend.get("priority", "NORMAL")),
             "--quota-type", backend["quota_type"], "--storage-mount", backend["storage_mount"],
-            "--wait", "--command", shlex.join(manifest["command"]),
+            "--wait", "--command", shlex.join(command),
         ]
 
     def render(self, manifest: AttemptManifest) -> str:
@@ -308,16 +338,25 @@ class SenseCoreBackend:
         )
         return result.stdout.strip()
 
-    def submit(self, campaign, run, manifest, *, dry_run: bool) -> str:
+    def submit(
+        self, campaign, run, manifest, *, dry_run: bool,
+        intent: SubmissionIntent | None = None,
+    ) -> str:
         backend = run["backend"]
         if str(manifest.get("image_id")) != str(run.get("image_id")):
             raise ValueError("SenseCore frozen manifest image_id conflicts with the run")
-        resource_name = scheduler_job_name(
-            str(backend["job_name"]), str(manifest["attempt_id"])
-        )
-        create = self._create_command(manifest)
         if dry_run:
             return "DRY_RUN"
+        token, request = require_submission_intent(intent)
+        expected_request = self.submission_request(
+            campaign, run, str(manifest["attempt_id"])
+        )
+        if request.get("scheduler_name") != expected_request["scheduler_name"]:
+            raise RuntimeError("SenseCore submission intent has a conflicting scheduler name")
+        resource_name = submission_resource_name(
+            str(backend["job_name"]), str(manifest["attempt_id"]), token
+        )
+        create = self._create_command(manifest, submission_token=token)
         if self.find(run, resource_name):
             raise FileExistsError(f"SenseCore job already exists: {resource_name}")
         result = self.s.run_command(create, check=False)

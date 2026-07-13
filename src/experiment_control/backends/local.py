@@ -21,6 +21,7 @@ from ..contracts import (
     PreflightScope,
     RunSpec,
     StreamBackendLogs,
+    SubmissionIntent,
     SubmissionRequest,
 )
 from ..identity import IdentityReport
@@ -28,6 +29,7 @@ from ..manifest import atomic_create
 from ..preflight import PreflightCheck, PreflightReport
 from ..project import SourceBundle
 from ..redaction import redact_line
+from ..submission import require_submission_intent
 
 
 TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED"})
@@ -134,13 +136,16 @@ class LocalBackend:
         return payload
 
     def recover_submission(self, run, intent, attempt_id) -> str | None:
+        token, request = require_submission_intent(intent)
         expected = self.submission_request({}, run, attempt_id)
         for key in ("scheduler_name", "workdir"):
-            if intent.get(key, expected[key]) != expected[key]:
+            if request.get(key) != expected[key]:
                 raise RuntimeError(f"local submission intent has a conflicting {key}")
         control = self._control(run, attempt_id)
         if control is None:
             return None
+        if control.get("submission_token") != token:
+            raise RuntimeError("local process claim has a conflicting submission token")
         job_id = control.get("backend_job_id")
         if not job_id:
             raise RuntimeError("local submission claim exists without a process identity")
@@ -202,7 +207,10 @@ class LocalBackend:
             raise RuntimeError("local worker started without a verifiable process identity")
         return process.pid, identity[1]
 
-    def submit(self, campaign, run, manifest, *, dry_run: bool) -> str:
+    def submit(
+        self, campaign, run, manifest, *, dry_run: bool,
+        intent: SubmissionIntent | None = None,
+    ) -> str:
         self.validate(run)
         command = [str(value) for value in manifest.get("command", [])]
         if not command:
@@ -210,13 +218,18 @@ class LocalBackend:
         if dry_run:
             return "DRY_RUN"
         attempt_id = str(manifest["attempt_id"])
+        token, request = require_submission_intent(intent)
+        expected_request = self.submission_request(campaign, run, attempt_id)
+        for key in ("scheduler_name", "workdir"):
+            if request.get(key) != expected_request[key]:
+                raise RuntimeError(f"local submission intent has a conflicting {key}")
         attempt_dir = self._attempt_dir(run, attempt_id)
         attempt_dir.mkdir(parents=True, exist_ok=True)
         control_path = self._control_path(run, attempt_id)
-        request = self.submission_request(campaign, run, attempt_id)
         claim = {
             "attempt_id": attempt_id,
-            "scheduler_name": request["scheduler_name"],
+            "scheduler_name": expected_request["scheduler_name"],
+            "submission_token": token,
             "state": "LAUNCHING",
             "created_at": self.s.utc_now(),
         }

@@ -5,11 +5,19 @@ import hashlib
 
 import pytest
 
-from backend_harness import QueueRunner, sensecore_run, services, slurm_run
+from backend_harness import (
+    SUBMISSION_TOKEN,
+    QueueRunner,
+    sensecore_run,
+    services,
+    slurm_run,
+    submission_intent,
+)
 from experiment_control.backends.sensecore import (
     SenseCoreBackend,
     digest_pinned_image,
     scheduler_job_name as sensecore_scheduler_job_name,
+    submission_resource_name,
 )
 from experiment_control.backends.wyd import WydSlurmBackend
 from experiment_control.project import AssetProbe, AssetRequirement
@@ -96,6 +104,10 @@ def test_sensecore_attempt_names_and_digest_references_are_deterministic():
     assert first == "run--attempt-001"
     assert first != sensecore_scheduler_job_name("run", "attempt-002")
     assert len(sensecore_scheduler_job_name("r" * 80, "attempt-001")) <= 63
+    bound = submission_resource_name("run", "attempt-001", SUBMISSION_TOKEN)
+    assert bound == f"run--attempt-001--{SUBMISSION_TOKEN}"
+    assert bound != submission_resource_name("run", "attempt-001", "f" * 32)
+    assert len(submission_resource_name("r" * 80, "attempt-001", SUBMISSION_TOKEN)) <= 63
     digest = "sha256:" + "c" * 64
     assert digest_pinned_image("registry.example/ns/image:tag", digest) == (
         f"registry.example/ns/image@{digest}"
@@ -231,13 +243,17 @@ def test_slurm_submit_claims_identity_and_stages_manifest_before_script(tmp_path
         CommandResult(("script-rsync",), 0),
         CommandResult(("sbatch",), 0, "4321\n"),
     ])
-    job_id = WydSlurmBackend(services(tmp_path, fake)).submit(
-        {"campaign": "backend-test"}, run, manifest, dry_run=False
+    backend = WydSlurmBackend(services(tmp_path, fake))
+    job_id = backend.submit(
+        {"campaign": "backend-test"}, run, manifest, dry_run=False,
+        intent=submission_intent(backend, run),
     )
     assert job_id == "4321"
     assert ".submission-attempt-001" in " ".join(fake.commands[1])
     assert fake.commands[2][-1].endswith("/manifest.yaml")
     assert "controller-attempt-001.sbatch" in fake.commands[3][-1]
+    script = (tmp_path / "attempts" / "attempt-001" / "job.sbatch").read_text()
+    assert f"#SBATCH --comment=ml-exp-{SUBMISSION_TOKEN}" in script
 
 
 def test_slurm_submit_claim_blocks_duplicate_scheduler_mutation(tmp_path):
@@ -252,23 +268,30 @@ def test_slurm_submit_claim_blocks_duplicate_scheduler_mutation(tmp_path):
         CommandResult(("claim",), 1, "", "already exists"),
     ])
     with pytest.raises(FileExistsError, match="submission claim"):
-        WydSlurmBackend(services(tmp_path, fake)).submit(
-            {"campaign": "backend-test"}, run, manifest, dry_run=False
+        backend = WydSlurmBackend(services(tmp_path, fake))
+        backend.submit(
+            {"campaign": "backend-test"}, run, manifest, dry_run=False,
+            intent=submission_intent(backend, run),
         )
     assert len(fake.commands) == 2
 
 
 def test_slurm_recovery_rejects_multiple_matching_jobs(tmp_path):
     fake = QueueRunner([
-        CommandResult(("squeue",), 0, "1732|backend-run--attempt-001|token\n"),
+        CommandResult(
+            ("squeue",), 0,
+            f"1732|backend-run--attempt-001|ml-exp-{SUBMISSION_TOKEN}\n",
+        ),
         CommandResult(
             ("sacct",), 0,
-            "1731|backend-run--attempt-001\n1732|backend-run--attempt-001\n",
+            f"1731|backend-run--attempt-001|ml-exp-{SUBMISSION_TOKEN}\n"
+            f"1732|backend-run--attempt-001|ml-exp-{SUBMISSION_TOKEN}\n",
         ),
     ])
+    backend = WydSlurmBackend(services(tmp_path, fake))
     with pytest.raises(RuntimeError, match="2 jobs match"):
-        WydSlurmBackend(services(tmp_path, fake)).recover_submission(
-            slurm_run(), {"submission_token": "token"}, "attempt-001"
+        backend.recover_submission(
+            slurm_run(), submission_intent(backend, slurm_run()), "attempt-001"
         )
 
 
@@ -469,22 +492,30 @@ def test_sensecore_logs_classify_expired_stream(tmp_path):
 
 def test_sensecore_submit_checks_exact_created_job(tmp_path):
     run = sensecore_run()
+    resource_name = submission_resource_name(
+        "sensecore-run", "attempt-001", SUBMISSION_TOKEN
+    )
     fake = QueueRunner([
         CommandResult(("safe-list",), 0, "[]\n"),
         CommandResult(("sco-create",), 0, ""),
         CommandResult(("safe-describe",), 0, json.dumps({
-            "name": "sensecore-run--attempt-001",
+            "name": resource_name,
+            "display_name": "render test",
             "state": "WAITING",
             "normalized_state": "QUEUED",
         })),
     ])
-    job_id = SenseCoreBackend(services(tmp_path, fake)).submit(
+    backend = SenseCoreBackend(services(tmp_path, fake))
+    job_id = backend.submit(
         {}, run,
         {**run, "attempt_id": "attempt-001", "command": ["python", "train.py"]},
         dry_run=False,
+        intent=submission_intent(backend, run),
     )
-    assert job_id == "sensecore-run--attempt-001"
+    assert job_id == resource_name
     assert any(run["image_id"] in argument for argument in fake.commands[1])
+    assert resource_name in fake.commands[1]
+    assert f"BACKEND_JOB_ID={resource_name}" in fake.commands[1]
 
 
 def test_sensecore_cancel_preserves_terminal_preemption(tmp_path, monkeypatch):
