@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Optional
 
@@ -12,11 +11,11 @@ from pydantic import BaseModel, Field
 
 from ..application import ApplicationError
 from ..campaign_lifecycle import campaign_snapshot
-from ..collectord import Collector, load_campaign_contract
+from ..collectord import Collector
 from ..ingest.indexer import RunIndex, index_project
 from ..ingest.runscan import parse_iso_ts, read_jsonl
 from ..schemas import (
-    AgentScopeType,
+    OperationScopeType,
     ProjectLifecycleState,
     ResearchProject,
     RunIndexRow,
@@ -34,11 +33,6 @@ _KEY_METRIC_FIELDS = (
 )
 _KEY_EVAL_FIELDS = ("g_ppl", "oracle_plan_ppl", "shuffled_plan_ppl", "plan_ppl_gap",
                     "token_recon_ppl")
-
-
-class CompleteCampaignRequest(BaseModel):
-    outcome: str = Field(min_length=1, max_length=200)
-    assessment: str = Field(default="", max_length=20000)
 
 
 class ArchiveCampaignRequest(BaseModel):
@@ -78,7 +72,7 @@ def health(request: Request):
         ),
         "collector_requested": request.app.state.collector is not None,
         "collector_error": getattr(request.app.state, "collector_error", None),
-        "science_writes": request.app.state.config.action_runtime.allow_science_writes,
+        "project_writes": request.app.state.config.action_runtime.allow_project_writes,
         "scheduler_mutations": request.app.state.config.action_runtime.allow_scheduler_mutations,
     }
 
@@ -159,88 +153,6 @@ def project_lifecycle_unregister_all(data: ProjectLifecycleRequest, request: Req
     return request.app.state.application.project_unregister_all(reason=data.reason)
 
 
-def _campaign_file(project: ResearchProject, name: str) -> Optional[Path]:
-    base = project.base_dir or Path(".")
-    for campaign in project.campaigns:
-        if campaign.name == name and campaign.file:
-            path = Path(campaign.file)
-            return path if path.is_absolute() else (base / path).resolve()
-    return None
-
-
-def _contract_view(
-    rows: list[RunIndexRow], authored_contract: Optional[dict[str, Any]],
-) -> dict[str, Any]:
-    """Prefer immutable run contracts and identify authored-file drift."""
-    frozen = [row.research_contract for row in rows if row.research_contract]
-    unique_frozen = {
-        json.dumps(item, sort_keys=True, separators=(",", ":")): item
-        for item in frozen
-    }
-    warnings: list[str] = []
-    if len(unique_frozen) > 1:
-        warnings.append("runs in this campaign contain different frozen research contracts")
-    if frozen and len(frozen) != len(rows):
-        warnings.append("some runs have no frozen research contract")
-    if unique_frozen:
-        contract = next(iter(unique_frozen.values()))
-        authored_match = (
-            None if authored_contract is None
-            else json.dumps(contract, sort_keys=True) == json.dumps(authored_contract, sort_keys=True)
-        )
-        if authored_match is False:
-            warnings.append("authored campaign contract differs from frozen run contract")
-        return {
-            "contract": contract,
-            "contract_source": "frozen_manifest",
-            "authored_contract_match": authored_match,
-            "contract_warnings": warnings,
-        }
-    if authored_contract is not None:
-        return {
-            "contract": authored_contract,
-            "contract_source": "authored_campaign_reference",
-            "authored_contract_match": None,
-            "contract_warnings": [
-                "runs do not contain a frozen contract; authored contract is reference only"
-            ],
-        }
-    return {
-        "contract": None,
-        "contract_source": None,
-        "authored_contract_match": None,
-        "contract_warnings": warnings,
-    }
-
-
-def _match_check(
-    rows: list[RunIndexRow], contract_view: dict[str, Any],
-) -> dict[str, Any]:
-    contract = contract_view["contract"]
-    if not isinstance(contract, dict):
-        return {"status": "NO_CONTRACT", "comparable": None,
-                "missing_roles": [], "mismatches": []}
-    if contract_view["contract_source"] != "frozen_manifest":
-        return {"status": "UNVERIFIED_CONTRACT", "comparable": None,
-                "missing_roles": [], "mismatches": []}
-    required = [str(role) for role in contract.get("required_roles", [])]
-    observed = {row.role for row in rows if row.role}
-    missing = [role for role in required if role not in observed]
-    mismatches: list[Any] = []
-    for row in rows:
-        mismatches.extend(row.decision.get("block_mismatches") or [])
-    if missing:
-        status, comparable = "INCOMPLETE", False
-    elif mismatches:
-        status, comparable = "MISMATCHED", False
-    elif not any(row.decision.get("block_outcome") for row in rows):
-        status, comparable = "PENDING", None
-    else:
-        status, comparable = "COMPARABLE", True
-    return {"status": status, "comparable": comparable,
-            "missing_roles": missing, "mismatches": mismatches}
-
-
 def _stale_layers(row: RunIndexRow) -> list[str]:
     layers = row.evidence
     return [name for name, layer in (
@@ -296,7 +208,6 @@ def _role_summaries(rows: list[RunIndexRow], campaign: str | None = None) -> lis
             "role": role,
             "run_id": row.run_id,
             "scheduler_state": row.scheduler_state,
-            "research_outcome": row.decision.get("research_outcome"),
             "stale": bool(_stale_layers(row)),
         })
     return summaries
@@ -334,7 +245,6 @@ def terminal_snapshot(request: Request):
     return snapshot_payload(build_snapshot(
         request.app.state.index,
         request.app.state.projects,
-        request.app.state.agent_store,
     ))
 
 
@@ -352,7 +262,7 @@ def terminal_refresh(data: RefreshRequest, request: Request):
 
 @router.get("/objects")
 def object_show(
-    request: Request, project: str, scope_type: AgentScopeType, object_id: str,
+    request: Request, project: str, scope_type: OperationScopeType, object_id: str,
 ):
     try:
         return request.app.state.application.object_show(project, scope_type, object_id)
@@ -376,24 +286,12 @@ def campaign_lifecycle(project_name: str, campaign_name: str, request: Request):
         raise application_http_error(exc) from exc
 
 
-@router.post("/campaigns/{project_name}/{campaign_name}/complete")
-def propose_campaign_completion(
-    project_name: str, campaign_name: str, data: CompleteCampaignRequest, request: Request,
-):
-    try:
-        return request.app.state.application.propose_campaign_completion(
-            project_name, campaign_name, outcome=data.outcome, assessment=data.assessment,
-        )
-    except ApplicationError as exc:
-        raise application_http_error(exc) from exc
-
-
 @router.post("/campaigns/{project_name}/{campaign_name}/archive")
-def propose_campaign_archive(
+def prepare_campaign_archive(
     project_name: str, campaign_name: str, data: ArchiveCampaignRequest, request: Request,
 ):
     try:
-        return request.app.state.application.propose_campaign_archive(
+        return request.app.state.application.prepare_campaign_archive(
             project_name, campaign_name, reason=data.reason,
         )
     except ApplicationError as exc:
@@ -414,21 +312,12 @@ def project_overview(project_name: str, request: Request):
             row for row in rows
             if any(_belongs_to_campaign(row, name) for name in campaign_names)
         ]
-        machine = {"block_outcome": None, "block_action": None}
-        for row in hyp_rows:
-            if row.decision.get("block_outcome"):
-                machine = {"block_outcome": row.decision.get("block_outcome"),
-                           "block_action": row.decision.get("block_action")}
-                break
         research_questions.append({
             "id": research_question.id,
             "title": research_question.title,
             "status": research_question.status,
             "summary": research_question.summary,
             "links": research_question.links.model_dump(mode="json"),
-            "latest_assessment": research_question.assessments[-1]
-            if research_question.assessments else None,
-            "machine_reference": machine,
             "roles": _role_summaries(hyp_rows),
         })
 
@@ -490,19 +379,6 @@ def research_question_detail(project_name: str, research_question_id: str, reque
     linked = set(research_question.links.campaigns)
     for campaign in (item for item in project.campaigns if item.name in linked):
         campaign_rows = [r for r in rows if _belongs_to_campaign(r, campaign.name)]
-        comparison_rows = []
-        for row in campaign_rows:
-            membership = _campaign_membership(row, campaign.name)
-            comparison_rows.append(row.model_copy(update={
-                "role": membership.role
-                if membership and membership.role else row.role,
-            }))
-        authored_contract = None
-        campaign_path = _campaign_file(project, campaign.name)
-        if campaign_path is not None:
-            authored_contract = load_campaign_contract(campaign_path)
-        contract_view = _contract_view(campaign_rows, authored_contract)
-
         roles = []
         for row in sorted(campaign_rows, key=lambda r: (r.role or "~", r.run_id)):
             membership = _campaign_membership(row, campaign.name)
@@ -520,9 +396,6 @@ def research_question_detail(project_name: str, research_question_id: str, reque
                 "key_metrics": metrics,
                 "eval_variants": row.eval_variants,
                 "canonical_eval_variant_id": row.canonical_eval_variant_id,
-                "research_outcome": row.decision.get("research_outcome"),
-                "research_action": row.decision.get("research_action"),
-                "research_checks": row.decision.get("research_checks") or [],
                 "checkpoint": row.checkpoint,
                 "artifacts": row.artifacts,
                 "decision": {k: row.decision.get(k) for k in ("action", "reason", "failure_class")
@@ -542,9 +415,7 @@ def research_question_detail(project_name: str, research_question_id: str, reque
                  for item in campaign.current_revision.memberships]
                 if campaign.current_revision else []
             ),
-            **contract_view,
             "roles": roles,
-            "match_check": _match_check(comparison_rows, contract_view),
         })
 
     timeline.sort(key=lambda item: item["ts"] or 0)
@@ -555,7 +426,6 @@ def research_question_detail(project_name: str, research_question_id: str, reque
         "summary": research_question.summary,
         "notes": research_question.notes,
         "links": research_question.links.model_dump(mode="json"),
-        "assessments": research_question.assessments,
         "campaigns": campaigns,
         "decision_timeline": timeline,
     }
@@ -667,7 +537,7 @@ def attempt_retry(
     project_name: str, attempt_id: str, data: AttemptRetryRequest, request: Request,
 ):
     try:
-        return request.app.state.application.propose_attempt_retry(
+        return request.app.state.application.prepare_attempt_retry(
             project_name, attempt_id, new_attempt_id=data.new_attempt_id,
             max_gpu_hours=data.max_gpu_hours, reason=data.reason,
         )
@@ -680,7 +550,7 @@ def attempt_cancel(
     project_name: str, attempt_id: str, data: AttemptCancelRequest, request: Request,
 ):
     try:
-        return request.app.state.application.propose_attempt_cancel(
+        return request.app.state.application.prepare_attempt_cancel(
             project_name, attempt_id, reason=data.reason,
         )
     except ApplicationError as exc:

@@ -324,11 +324,20 @@ def _scan_attempts(run_dir: Path) -> list[AttemptSummary]:
             backend=backend.get("backend") or status.get("backend")
             or ("local-cuda" if submission.get("gpu") is not None else None),
             backend_job_id=backend.get("backend_job_id") or status.get("backend_job_id"),
-            decision=_load_json(attempt_dir / "decision.json"),
+            decision=_observation_decision(_load_json(attempt_dir / "decision.json")),
             has_submission=(attempt_dir / "submission.json").is_file()
             or (attempt_dir / "job.sbatch").is_file(),
         ))
     return summaries
+
+
+def _observation_decision(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep operational decision metadata, not a hypothesis verdict."""
+    return {
+        key: payload[key]
+        for key in ("action", "reason", "failure_class")
+        if payload.get(key) is not None
+    }
 
 
 def _decision_history(run_dir: Path) -> list[dict[str, Any]]:
@@ -344,9 +353,8 @@ def _decision_history(run_dir: Path) -> list[dict[str, Any]]:
 
     def add(decision: dict[str, Any], *, source: Path, attempt_id: Any = None,
             timestamp: Optional[float] = None, mirror: bool = False) -> None:
-        if not decision or not any(
-            key in decision for key in ("action", "research_action", "block_action")
-        ):
+        decision = _observation_decision(decision)
+        if not decision:
             return
         payload_identity = json.dumps(decision, sort_keys=True, default=str)
         if mirror and payload_identity in seen_payloads:
@@ -367,10 +375,6 @@ def _decision_history(run_dir: Path) -> list[dict[str, Any]]:
             "action": decision.get("action"),
             "reason": decision.get("reason"),
             "failure_class": decision.get("failure_class"),
-            "research_outcome": decision.get("research_outcome"),
-            "research_action": decision.get("research_action"),
-            "block_outcome": decision.get("block_outcome"),
-            "block_action": decision.get("block_action"),
         })
 
     events_path = run_dir / "events.jsonl"
@@ -444,7 +448,7 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
     manifest = _science_manifest(run_dir)
     status = _load_json(run_dir / "status.json")
     collection = _load_json(run_dir / "collection.json")
-    decision = _load_json(run_dir / "decision.json")
+    decision = _observation_decision(_load_json(run_dir / "decision.json"))
     collected_status = _load_json(run_dir / "collected_run" / "status.json")
     run_id = manifest.get("run_id") or status.get("run_id") or run_dir.name
     selected_attempt = preferred_attempt_id(run_dir)

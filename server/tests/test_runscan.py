@@ -225,7 +225,7 @@ def test_scan_tolerates_corrupt_files(tmp_path):
     assert row.evidence.model.detail["step"] == 2  # bad line skipped
 
 
-def test_scan_preserves_frozen_research_completion_evidence(tmp_path):
+def test_scan_preserves_authored_metadata_and_observed_data(tmp_path):
     run_dir = tmp_path / "camp" / "run-a"
     attempt_dir = run_dir / "attempts" / "attempt-001"
     attempt_dir.mkdir(parents=True)
@@ -242,8 +242,6 @@ def test_scan_preserves_frozen_research_completion_evidence(tmp_path):
     decision = {
         "action": "VERIFY_RESULTS",
         "reason": "scheduler succeeded",
-        "research_outcome": "PASS",
-        "research_checks": [{"status": "PASS", "check": "finite train_loss"}],
     }
     (attempt_dir / "decision.json").write_text(json.dumps(decision))
     (run_dir / "decision.json").write_text(json.dumps(decision))
@@ -254,6 +252,5 @@ def test_scan_preserves_frozen_research_completion_evidence(tmp_path):
     assert row.research_contract_source == "manifest"
     assert row.checkpoint["latest_completed_checkpoint_step"] == 100
     assert row.artifacts["train_metrics"]["records"] == 10
-    assert row.decision["research_checks"][0]["status"] == "PASS"
     assert len(row.decision_history) == 1
     assert row.decision_history[0]["attempt_id"] == "attempt-001"

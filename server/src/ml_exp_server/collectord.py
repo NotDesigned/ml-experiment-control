@@ -15,8 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import yaml
-
 from .campaign_lifecycle import campaign_snapshot
 from .controller_gateway import ControllerCall, ProjectControllerGateway
 from .ingest.indexer import RunIndex, index_project
@@ -190,15 +188,3 @@ class Collector:
         self.last_cycle_at = time.time()
         self.index.set_meta("collector_last_cycle_at", str(self.last_cycle_at))
         return calls
-
-
-def load_campaign_contract(campaign_file: Path) -> Optional[dict]:
-    """Read the research_contract block from a campaign YAML, if present."""
-    try:
-        data = yaml.safe_load(campaign_file.read_text())
-    except (OSError, yaml.YAMLError):
-        return None
-    if isinstance(data, dict):
-        contract = data.get("research_contract")
-        return contract if isinstance(contract, dict) else None
-    return None

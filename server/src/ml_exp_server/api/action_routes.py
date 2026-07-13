@@ -7,16 +7,22 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..application import ApplicationError
-from ..schemas import AgentScopeType
-from .agent_routes import ScopeRequest
+from ..intent_protocol import OperationIntent
+from ..schemas import OperationScopeType
 from .errors import application_http_error
 
 
 router = APIRouter(prefix="/api/actions")
 
 
+class ScopeRequest(BaseModel):
+    project: str = Field(min_length=1, max_length=256)
+    scope_type: OperationScopeType
+    object_id: str = Field(min_length=1, max_length=512)
+
+
 class PrepareActionRequest(ScopeRequest):
-    proposal_id: str = Field(pattern=r"^proposal-[a-f0-9]{12}$")
+    intent: OperationIntent
 
 
 class ActionRequest(BaseModel):
@@ -37,7 +43,7 @@ def action_policy(request: Request):
 
 
 @router.get("")
-def list_actions(request: Request, project: str, scope_type: AgentScopeType,
+def list_actions(request: Request, project: str, scope_type: OperationScopeType,
                  object_id: str):
     try:
         return request.app.state.application.list_actions(project, scope_type, object_id)
@@ -50,7 +56,8 @@ async def prepare_action(data: PrepareActionRequest, request: Request):
     try:
         return await run_in_threadpool(
             request.app.state.application.prepare_action,
-            data.project, data.scope_type, data.object_id, data.proposal_id,
+            data.project, data.scope_type, data.object_id,
+            data.intent.model_dump(mode="json"),
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

@@ -14,7 +14,7 @@ from ml_exp_server.application import (
     compact_evidence,
     structured_failure_summary,
 )
-from ml_exp_server.schemas import AgentScope, AgentScopeType, CampaignRelationship
+from ml_exp_server.schemas import OperationScope, OperationScopeType, CampaignRelationship
 
 
 class Dump:
@@ -25,8 +25,8 @@ class Dump:
         return dict(self.__dict__)
 
 
-def scope(kind=AgentScopeType.RUN, object_id="run-a"):
-    return AgentScope(project="demo", scope_type=kind, object_id=object_id)
+def scope(kind=OperationScopeType.RUN, object_id="run-a"):
+    return OperationScope(project="demo", scope_type=kind, object_id=object_id)
 
 
 def application(**runtime_values):
@@ -80,13 +80,13 @@ def test_structured_failure_fallback_signatures(collection, decision, signature,
 @pytest.mark.parametrize(
     ("kind", "object_id", "code"),
     [
-        (AgentScopeType.PROJECT, "other", "UNKNOWN_PROJECT"),
-        (AgentScopeType.RESEARCH_QUESTION, "missing", "UNKNOWN_RESEARCH_QUESTION"),
-        (AgentScopeType.CAMPAIGN, "missing", "UNKNOWN_CAMPAIGN"),
-        (AgentScopeType.RUN, "missing", "UNKNOWN_RUN"),
-        (AgentScopeType.ATTEMPT, "invalid", "INVALID_ATTEMPT_ID"),
-        (AgentScopeType.ATTEMPT, "missing::a1", "UNKNOWN_RUN"),
-        (AgentScopeType.ATTEMPT, "run-a::missing", "UNKNOWN_ATTEMPT"),
+        (OperationScopeType.PROJECT, "other", "UNKNOWN_PROJECT"),
+        (OperationScopeType.RESEARCH_QUESTION, "missing", "UNKNOWN_RESEARCH_QUESTION"),
+        (OperationScopeType.CAMPAIGN, "missing", "UNKNOWN_CAMPAIGN"),
+        (OperationScopeType.RUN, "missing", "UNKNOWN_RUN"),
+        (OperationScopeType.ATTEMPT, "invalid", "INVALID_ATTEMPT_ID"),
+        (OperationScopeType.ATTEMPT, "missing::a1", "UNKNOWN_RUN"),
+        (OperationScopeType.ATTEMPT, "run-a::missing", "UNKNOWN_ATTEMPT"),
     ],
 )
 def test_resolve_scope_maps_every_missing_identity(kind, object_id, code):
@@ -104,7 +104,7 @@ def test_resolve_scope_maps_every_missing_identity(kind, object_id, code):
 def test_resolve_scope_unknown_project_maps_key_error():
     app = application(project=lambda name: raises(KeyError("unknown demo")))
     with pytest.raises(ApplicationError) as caught:
-        app.resolve_scope("demo", AgentScopeType.PROJECT, "demo")
+        app.resolve_scope("demo", OperationScopeType.PROJECT, "demo")
     assert caught.value.status_code == 404
 
 
@@ -153,32 +153,26 @@ def test_bounded_evidence_all_scope_shapes(monkeypatch):
         project="demo", title="Demo", research_questions=[question], campaigns=[campaign],
     )
     monkeypatch.setattr(module, "campaign_snapshot", lambda *args: {"lifecycle_state": "ACTIVE"})
-    assert app.bounded_evidence(scope(AgentScopeType.PROJECT, "demo"), configured, configured)["runs"]
-    assert app.bounded_evidence(scope(AgentScopeType.RESEARCH_QUESTION, "q1"), configured, question)["runs"]
-    assert app.bounded_evidence(scope(AgentScopeType.CAMPAIGN, "study"), configured, campaign)["runs"]
+    assert app.bounded_evidence(scope(OperationScopeType.PROJECT, "demo"), configured, configured)["runs"]
+    assert app.bounded_evidence(scope(OperationScopeType.RESEARCH_QUESTION, "q1"), configured, question)["runs"]
+    assert app.bounded_evidence(scope(OperationScopeType.CAMPAIGN, "study"), configured, campaign)["runs"]
     assert app.bounded_evidence(scope(), configured, row)["run"]["run_id"] == "run-a"
     attempt = Dump(attempt_id="a1")
     assert app.bounded_evidence(
-        scope(AgentScopeType.ATTEMPT, "run-a::a1"), configured, attempt,
+        scope(OperationScopeType.ATTEMPT, "run-a::a1"), configured, attempt,
     )["attempt"]["attempt_id"] == "a1"
 
 
-def test_snapshot_and_object_show_plain_object():
+def test_object_show_plain_object():
     target = scope()
-    stores = SimpleNamespace(
-        snapshot=lambda value: {"state": "IDLE"},
-    )
-    runtime = SimpleNamespace(
-        agent_store=stores,
-        action_store=SimpleNamespace(list_for_scope=lambda value: [{"action_id": "a"}]),
-    )
-    app = ExperimentServerApplication(runtime)
+    app = ExperimentServerApplication(SimpleNamespace())
     app.bounded_evidence = lambda *args: {"bounded": True}
-    result = app._snapshot(target, object(), object())
-    assert result["actions"][0]["action_id"] == "a"
-    app.resolve_scope = lambda *args: (target, object(), {"raw": "value"})
-    shown = app.object_show("demo", AgentScopeType.RUN, "run-a")
+    app.resolve_scope = lambda *args: (
+        target, SimpleNamespace(base_dir=None, authored_file=None), {"raw": "value"},
+    )
+    shown = app.object_show("demo", OperationScopeType.RUN, "run-a")
     assert shown["object"] == {"raw": "value"}
+    assert shown["evidence_digest"].startswith("sha256:")
 
 
 def test_campaign_list_status_and_status_error(monkeypatch):
@@ -193,40 +187,31 @@ def test_campaign_list_status_and_status_error(monkeypatch):
     assert caught.value.code == "UNKNOWN_CAMPAIGN"
 
 
-def test_campaign_and_object_proposal_validation_errors(monkeypatch):
+def test_campaign_and_object_action_validation_errors(monkeypatch):
     app = application(index=object())
     app._require_operation_available = lambda *args: None
-    target = scope(AgentScopeType.CAMPAIGN, "study")
+    target = scope(OperationScopeType.CAMPAIGN, "study")
     configured = SimpleNamespace()
     app.resolve_scope = lambda *args: (target, configured, object())
 
-    monkeypatch.setattr(module, "campaign_snapshot", lambda *args: {"lifecycle_state": "ACTIVE"})
-    with pytest.raises(ApplicationError, match="not completable"):
-        app.propose_campaign_completion("demo", "study", outcome="SUPPORTED", assessment="x")
-    monkeypatch.setattr(module, "campaign_snapshot", lambda *args: {
-        "lifecycle_state": "COMPLETABLE", "revision_id": "r1",
-        "completion": {"evidence_digest": "d", "membership_run_ids": []},
-    })
-    with pytest.raises(ApplicationError, match="outcome is required"):
-        app.propose_campaign_completion("demo", "study", outcome=" ", assessment="x")
     monkeypatch.setattr(module, "campaign_snapshot", lambda *args: {
         "lifecycle_state": "ARCHIVED",
     })
     with pytest.raises(ApplicationError, match="already archived"):
-        app.propose_campaign_archive("demo", "study", reason="x")
+        app.prepare_campaign_archive("demo", "study", reason="x")
     monkeypatch.setattr(module, "campaign_snapshot", lambda *args: {
         "lifecycle_state": "ACTIVE", "revision_id": "r1",
     })
     with pytest.raises(ApplicationError, match="reason is required"):
-        app.propose_campaign_archive("demo", "study", reason=" ")
+        app.prepare_campaign_archive("demo", "study", reason=" ")
 
     app.resolve_scope = lambda *args: (target, configured, object())
     with pytest.raises(ApplicationError, match="only Run or Attempt"):
-        app.propose_object_archive("demo", AgentScopeType.CAMPAIGN, "study", reason="x")
+        app.prepare_object_archive("demo", OperationScopeType.CAMPAIGN, "study", reason="x")
     run_target = scope()
     app.resolve_scope = lambda *args: (run_target, configured, object())
     with pytest.raises(ApplicationError, match="reason is required"):
-        app.propose_object_archive("demo", AgentScopeType.RUN, "run-a", reason=" ")
+        app.prepare_object_archive("demo", OperationScopeType.RUN, "run-a", reason=" ")
 
 
 def test_mapping_readers_manifest_lookup_and_validation_helpers(tmp_path):
@@ -299,7 +284,7 @@ def test_attempt_local_read_models_cover_files_fallbacks_and_event_dedup(tmp_pat
         artifacts={"fallback": True},
     )
     attempt = SimpleNamespace(attempt_id="a1")
-    target = scope(AgentScopeType.ATTEMPT, "run-a::a1")
+    target = scope(OperationScopeType.ATTEMPT, "run-a::a1")
     app = application()
     app._attempt_context = lambda *args: (target, object(), row, attempt, attempt_dir)
     logs = app.attempt_logs("demo", "run-a::a1", lines=1)
@@ -331,70 +316,41 @@ def test_metric_payload_one_point_missing_key_and_invalid_limit():
         )
 
 
-def test_action_adapter_error_mapping_and_completion_drift(monkeypatch):
-    target = scope(AgentScopeType.CAMPAIGN, "study")
+def test_action_adapter_error_mapping(monkeypatch):
+    target = scope(OperationScopeType.CAMPAIGN, "study")
     configured = object()
-    agent_store = SimpleNamespace(proposal=lambda *args: raises(FileNotFoundError()))
     action_service = SimpleNamespace(
-        prepare=lambda *args: {}, authorize=lambda *args: raises(FileNotFoundError()),
+        prepare=lambda *args: raises(RuntimeError("blocked")),
+        authorize=lambda *args: raises(FileNotFoundError()),
         execute=lambda *args: raises(RuntimeError("blocked")),
     )
     runtime = SimpleNamespace(
-        agent_store=agent_store, action_service=action_service,
-        action_store=SimpleNamespace(snapshot=lambda action_id: {"proposal_kind": "OTHER"}),
+        action_service=action_service,
+        action_store=SimpleNamespace(snapshot=lambda action_id: {"intent_kind": "OTHER"}),
         index=object(), projects=[],
     )
     app = ExperimentServerApplication(runtime)
     app.resolve_scope = lambda *args: (target, configured, object())
+    app.bounded_evidence = lambda *args: {"bounded": True}
+    digest = module.evidence_digest({"bounded": True})
     with pytest.raises(ApplicationError) as caught:
-        app.prepare_action("demo", AgentScopeType.CAMPAIGN, "study", "missing")
-    assert caught.value.code == "UNKNOWN_PROPOSAL"
+        app.prepare_action(
+            "demo", OperationScopeType.CAMPAIGN, "study",
+            {"evidence_digest": digest},
+        )
+    assert caught.value.code == "ACTION_BLOCKED"
+    with pytest.raises(ApplicationError) as caught:
+        app.prepare_action(
+            "demo", OperationScopeType.CAMPAIGN, "study",
+            {"evidence_digest": "sha256:stale"},
+        )
+    assert caught.value.code == "STALE_EVIDENCE"
     with pytest.raises(ApplicationError) as caught:
         app.authorize_action("missing")
     assert caught.value.code == "UNKNOWN_ACTION"
     with pytest.raises(ApplicationError) as caught:
         app.execute_action("a", "confirm")
     assert caught.value.code == "ACTION_BLOCKED"
-
-    runtime.action_store.snapshot = lambda action_id: {
-        "proposal_kind": "COMPLETE_CAMPAIGN",
-        "scope": {"project": "demo", "object_id": "study"},
-        "proposed_content": yaml.safe_dump({"evidence_digest": "old"}),
-    }
-    runtime.project = lambda name: configured
-    monkeypatch.setattr(module, "index_project", lambda *args: None)
-    monkeypatch.setattr(module, "campaign_snapshot", lambda *args: {
-        "lifecycle_state": "COMPLETABLE", "completion": {"evidence_digest": "new"},
-    })
-    with pytest.raises(ApplicationError) as caught:
-        app.execute_action("a", "confirm")
-    assert caught.value.code == "CAMPAIGN_COMPLETION_DRIFT"
-
-
-def test_proposal_lookup_and_decision_store_errors_are_mapped():
-    target = scope()
-    configured = object()
-    resolved = object()
-    store = SimpleNamespace(
-        ensure=lambda *args, **kwargs: None,
-        proposal=lambda *args: raises(FileNotFoundError()),
-    )
-    app = application(agent_store=store)
-    app.resolve_scope = lambda *args: (target, configured, resolved)
-    with pytest.raises(ApplicationError) as caught:
-        app.decide_proposal("demo", AgentScopeType.RUN, "run-a", "missing", "REJECTED")
-    assert caught.value.code == "UNKNOWN_PROPOSAL"
-    with pytest.raises(ApplicationError) as caught:
-        app.proposal_show("demo", AgentScopeType.RUN, "run-a", "missing")
-    assert caught.value.code == "UNKNOWN_PROPOSAL"
-
-    store.proposal = lambda *args: {"evidence_digest": "same"}
-    store.decide_proposal = lambda *args, **kwargs: raises(ValueError("invalid transition"))
-    app.bounded_evidence = lambda *args: {}
-    with pytest.raises(ApplicationError) as caught:
-        app.decide_proposal("demo", AgentScopeType.RUN, "run-a", "p", "REJECTED")
-    assert caught.value.code == "INVALID_PROPOSAL"
-
 
 def test_action_additional_error_and_verified_success_paths(monkeypatch):
     indexed = []
@@ -404,7 +360,7 @@ def test_action_additional_error_and_verified_success_paths(monkeypatch):
             execute=lambda *args: {"execution": {"status": "VERIFIED"}},
         ),
         action_store=SimpleNamespace(snapshot=lambda action_id: {
-            "proposal_kind": "OTHER", "scope": {"project": "one"},
+            "intent_kind": "OTHER", "scope": {"project": "one"},
         }),
         index=object(), projects=[SimpleNamespace(project="one"), SimpleNamespace(project="two")],
     )

@@ -20,7 +20,6 @@ from ..runtime import ExperimentServerRuntime
 from ..schemas import ServerConfig, ResearchProject
 from ..submissions import ExperimentSubmissionService
 from .routes import router
-from .agent_routes import router as agent_router
 from .action_routes import router as action_router
 from .operation_routes import router as operation_router
 from .submission_routes import router as submission_router
@@ -99,7 +98,6 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.state.config = runtime.config
     app.state.index = runtime.index
     app.state.projects = runtime.projects
-    app.state.agent_store = runtime.agent_store
     app.state.action_store = runtime.action_store
     app.state.action_service = runtime.action_service
     app.state.collector = None
@@ -114,7 +112,6 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             config=CollectorConfig(poll_interval_seconds=config.poll_interval_seconds))
 
     app.include_router(router)
-    app.include_router(agent_router)
     app.include_router(action_router)
     app.include_router(operation_router)
     app.include_router(submission_router)

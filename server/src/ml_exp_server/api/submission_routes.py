@@ -16,7 +16,6 @@ router = APIRouter(prefix="/api")
 class PrepareSubmissionRequest(BaseModel):
     max_gpu_hours: float = Field(gt=0)
     reason: str = Field(default="", max_length=4000)
-    approval_note: str = Field(min_length=1, max_length=4000)
 
 
 class AuthorizeSubmissionRequest(BaseModel):
@@ -49,7 +48,6 @@ async def prepare_submission(
             project, run_id,
             max_gpu_hours=data.max_gpu_hours,
             reason=data.reason,
-            approval_note=data.approval_note,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

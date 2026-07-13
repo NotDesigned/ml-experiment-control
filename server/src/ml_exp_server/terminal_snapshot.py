@@ -22,7 +22,6 @@ class Snapshot:
     projects: list[ResearchProject]
     runs: dict[str, list[RunIndexRow]]
     attention: dict[str, list[tuple[str, str, str]]]
-    pending_proposals: dict[str, int]
     historical_failures: dict[str, int] = field(default_factory=dict)
     campaign_statuses: dict[tuple[str, str], dict] = field(default_factory=dict)
     collector_errors: dict[tuple[str, str], str] = field(default_factory=dict)
@@ -48,12 +47,11 @@ def is_current_collector_error(row: RunIndexRow, status: Any) -> bool:
     return scheduler_as_of is None or last_poll_at is None or last_poll_at >= scheduler_as_of
 
 
-def build_snapshot(index: RunIndex, projects: list[ResearchProject], agent_store: Any,
+def build_snapshot(index: RunIndex, projects: list[ResearchProject],
                    *, reindex: bool = False) -> Snapshot:
     """Build the exact terminal view from an already-owned runtime read model."""
     runs: dict[str, list[RunIndexRow]] = {}
     attention: dict[str, list[tuple[str, str, str]]] = {}
-    pending_proposals: dict[str, int] = {}
     historical_failures: dict[str, int] = {}
     campaign_statuses: dict[tuple[str, str], dict] = {}
     collector_errors: dict[tuple[str, str], str] = {}
@@ -116,10 +114,9 @@ def build_snapshot(index: RunIndex, projects: list[ResearchProject], agent_store
             item[1], item[0],
         ))
         attention[project.project] = items
-        pending_proposals[project.project] = agent_store.pending_count(project.project)
     return Snapshot(
         projects=projects, runs=runs, attention=attention,
-        pending_proposals=pending_proposals, historical_failures=historical_failures,
+        historical_failures=historical_failures,
         campaign_statuses=campaign_statuses, collector_errors=collector_errors,
     )
 
@@ -133,7 +130,6 @@ def snapshot_payload(snapshot: Snapshot) -> dict[str, Any]:
             for project, rows in snapshot.runs.items()
         },
         "attention": snapshot.attention,
-        "pending_proposals": snapshot.pending_proposals,
         "historical_failures": snapshot.historical_failures,
         "campaign_statuses": [
             {"project": project, "campaign": campaign, "status": status}
@@ -174,8 +170,6 @@ def snapshot_from_payload(payload: dict[str, Any]) -> Snapshot:
         projects=projects,
         runs=runs,
         attention=attention,
-        pending_proposals={str(key): int(value) for key, value in
-                           (payload.get("pending_proposals") or {}).items()},
         historical_failures={str(key): int(value) for key, value in
                              (payload.get("historical_failures") or {}).items()},
         campaign_statuses=campaign_statuses,

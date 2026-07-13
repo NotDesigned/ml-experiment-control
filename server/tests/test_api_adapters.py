@@ -8,10 +8,10 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from ml_exp_server.api import action_routes, agent_routes, operation_routes
+from ml_exp_server.api import action_routes, operation_routes
 from ml_exp_server.api.sse import EventBroker
 from ml_exp_server.application import ApplicationError
-from ml_exp_server.schemas import AgentScope, AgentScopeType
+from ml_exp_server.schemas import OperationScope, OperationScopeType
 
 
 class FakeApplication:
@@ -49,10 +49,15 @@ def assert_http_error(call):
 def test_action_adapter_maps_application_errors():
     request = request_for(FakeApplication(fail=True))
     scope = {
-        "project": "demo", "scope_type": AgentScopeType.PROJECT, "object_id": "demo",
+        "project": "demo", "scope_type": OperationScopeType.PROJECT, "object_id": "demo",
     }
     prepare = action_routes.PrepareActionRequest(
-        **scope, proposal_id="proposal-012345abcdef",
+        **scope,
+        intent={
+            "kind": "CREATE_RESEARCH_QUESTION_DRAFT",
+            "title": "Question",
+            "draft": "id: Q1\ntitle: Question\n",
+        },
     )
     authorize = action_routes.AuthorizeActionRequest(
         action_id="action-0123456789abcdef", note="ok",
@@ -71,40 +76,11 @@ def test_action_adapter_maps_application_errors():
         assert_http_error(call)
 
 
-def test_agent_adapter_maps_application_errors():
-    request = request_for(FakeApplication(fail=True))
-    common = {
-        "project": "demo", "scope_type": AgentScopeType.PROJECT, "object_id": "demo",
-    }
-    goal = agent_routes.GoalRequest(**common, goal="goal")
-    begin = agent_routes.BeginTurnRequest(**common, message="question")
-    claim = agent_routes.ClaimTurnRequest(**common, client_id="client")
-    next_claim = agent_routes.ClaimNextRequest(client_id="client")
-    result = agent_routes.TurnResultRequest(
-        **common, status="FAILED", client_id="client",
-        evidence_digest="sha256:test", error="offline",
-    )
-    decision = agent_routes.ProposalDecisionRequest(
-        **common, proposal_id="proposal-012345abcdef", decision="APPROVED",
-    )
-    calls = [
-        lambda: agent_routes.agent_snapshot(request, **common),
-        lambda: agent_routes.update_goal(goal, request),
-        lambda: agent_routes.decide_proposal(decision, request),
-        lambda: agent_routes.begin_turn(begin, request),
-        lambda: agent_routes.claim_turn("turn-0123456789abcdef", claim, request),
-        lambda: agent_routes.claim_next_turn(next_claim, request),
-        lambda: agent_routes.complete_turn("turn-0123456789abcdef", result, request),
-    ]
-    for call in calls:
-        assert_http_error(call)
-
-
 def test_operation_adapter_delegates_and_maps_application_errors():
     application = FakeApplication()
     request = request_for(application)
     common = {
-        "project": "demo", "scope_type": AgentScopeType.PROJECT, "object_id": "demo",
+        "project": "demo", "scope_type": OperationScopeType.PROJECT, "object_id": "demo",
     }
     payload = operation_routes.OperationInvokeRequest(
         **common, operation_id="object.archive", parameters={"reason": "done"},

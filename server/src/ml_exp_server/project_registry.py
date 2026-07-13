@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from .storage import atomic_json, read_json
+from .storage import atomic_json, read_json, utc_now
 from .schemas import (
     ProjectLifecycleRecord,
     ProjectLifecycleState,
@@ -26,10 +25,6 @@ REGISTRY_SCHEMA_VERSION = 1
 
 class ProjectRegistryError(ValueError):
     """A requested lifecycle operation is invalid for the current registry."""
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class ProjectRegistry:

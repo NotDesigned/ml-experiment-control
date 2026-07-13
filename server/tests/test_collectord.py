@@ -7,7 +7,6 @@ import pytest
 
 from ml_exp_server.collectord import (
     Collector, CollectorConfig, CollectorLease, ForbiddenVerbError, OBSERVATION_VERBS,
-    load_campaign_contract,
 )
 from ml_exp_server.ingest.indexer import RunIndex, index_project
 from ml_exp_server.schemas import (
@@ -176,12 +175,3 @@ def test_observe_failure_is_preserved_and_skips_decide(tmp_path):
 def sys_python() -> str:
     import sys
     return sys.executable
-
-
-def test_load_campaign_contract(tmp_path):
-    path = tmp_path / "c.yml"
-    path.write_text("research_contract:\n  schema_version: 1\n  question: q\n")
-    assert load_campaign_contract(path)["question"] == "q"
-    path.write_text("campaign: no-contract\n")
-    assert load_campaign_contract(path) is None
-    assert load_campaign_contract(tmp_path / "missing.yml") is None

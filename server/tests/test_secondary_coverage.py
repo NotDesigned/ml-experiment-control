@@ -26,7 +26,6 @@ from ml_exp_server.schemas import (
 def console_config(tmp_path: Path, **updates) -> ServerConfig:
     values = {
         "index_db": str(tmp_path / "index.sqlite"),
-        "agent_root": str(tmp_path / "agents"),
         "action_root": str(tmp_path / "actions"),
         "projects": [],
     }
@@ -99,8 +98,6 @@ def api_request(application=None):
 
 
 def test_route_helpers_and_application_error_mappings(tmp_path):
-    project = ResearchProject(project="demo", title="Demo", run_roots=[], base_dir=tmp_path)
-    assert routes._campaign_file(project, "missing") is None
     with pytest.raises(HTTPException) as missing_run:
         routes._run_or_404(SimpleNamespace(get_run=lambda *a: None), "demo", "missing")
     assert missing_run.value.status_code == 404
@@ -108,10 +105,7 @@ def test_route_helpers_and_application_error_mappings(tmp_path):
     request = api_request()
     calls = [
         lambda: routes.campaign_lifecycle("demo", "study", request),
-        lambda: routes.propose_campaign_completion(
-            "demo", "study", routes.CompleteCampaignRequest(outcome="SUPPORTED"), request,
-        ),
-        lambda: routes.propose_campaign_archive(
+        lambda: routes.prepare_campaign_archive(
             "demo", "study", routes.ArchiveCampaignRequest(reason="done"), request,
         ),
         lambda: routes.run_detail("demo", "run-a", request),

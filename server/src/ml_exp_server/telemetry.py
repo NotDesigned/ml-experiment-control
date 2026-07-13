@@ -30,7 +30,7 @@ BATCH_EXPORT_TIMEOUT_MILLIS = 1_000
 SAFE_SPAN_NAMES = frozenset(
     {
         "research.operation",
-        "research.agent_turn",
+        "research.intent.prepare",
         "research.action.prepare",
         "research.action.authorize",
         "research.action.execute",
@@ -45,7 +45,7 @@ _IDENTITY_ATTRIBUTES = frozenset(
         "research.scope_type",
         "research.object_id",
         "research.operation_id",
-        "research.proposal_id",
+        "research.intent_id",
         "research.action_id",
         "research.run_id",
         "research.attempt_id",

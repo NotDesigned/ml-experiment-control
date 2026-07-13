@@ -34,7 +34,6 @@ def write_project(root: Path, name: str) -> Path:
 def config(tmp_path: Path, projects: list[Path]) -> ServerConfig:
     return ServerConfig(
         index_db=str(tmp_path / "index.sqlite"),
-        agent_root=str(tmp_path / "agents"),
         action_root=str(tmp_path / "actions"),
         projects=[ProjectRef(project_file=str(path)) for path in projects],
         collector_enabled=False,

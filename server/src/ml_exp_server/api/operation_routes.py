@@ -1,4 +1,4 @@
-"""HTTP adapters for the scoped research-operation catalog."""
+"""HTTP adapters for the scoped daemon-operation catalog."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..application import ApplicationError
-from ..schemas import AgentScopeType
+from ..schemas import OperationScopeType
 from .errors import application_http_error
 
 
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/operations")
 
 class OperationInvokeRequest(BaseModel):
     project: str = Field(min_length=1, max_length=256)
-    scope_type: AgentScopeType
+    scope_type: OperationScopeType
     object_id: str = Field(min_length=1, max_length=512)
     operation_id: str = Field(min_length=1, max_length=128)
     parameters: dict[str, Any] = Field(default_factory=dict)
@@ -26,7 +26,7 @@ class OperationInvokeRequest(BaseModel):
 
 @router.get("")
 def operation_availability(
-    request: Request, project: str, scope_type: AgentScopeType, object_id: str,
+    request: Request, project: str, scope_type: OperationScopeType, object_id: str,
 ):
     try:
         return request.app.state.application.operation_availability(

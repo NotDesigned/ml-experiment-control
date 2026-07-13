@@ -13,20 +13,21 @@ from ml_exp_server.actions import service as actions
 from ml_exp_server.actions.service import ActionError, ActionService
 from ml_exp_server.actions.store import ActionStore
 from ml_exp_server.schemas import (
-    ActionRuntimeConfig, AgentScope, AgentScopeType, CampaignRef, CampaignRevision,
+    ActionRuntimeConfig, OperationScope, OperationScopeType, CampaignRef, CampaignRevision,
     ControllerConfig, ResearchProject,
 )
 
 
-def approved(kind: str, payload: dict, proposal_id: str = "proposal-coverage") -> dict:
+def operation_intent(kind: str, payload: dict, idempotency_key: str = "intent-coverage") -> dict:
     return {
-        "proposal_id": proposal_id, "kind": kind, "status": "APPROVED",
+        "idempotency_key": idempotency_key, "kind": kind,
+        "title": f"Prepare {kind}",
         "target": "target", "risk": "risk", "evidence_digest": "sha256:evidence",
         "draft": yaml.safe_dump(payload, sort_keys=False),
     }
 
 
-def campaign_project(tmp_path: Path) -> tuple[ResearchProject, AgentScope]:
+def campaign_project(tmp_path: Path) -> tuple[ResearchProject, OperationScope]:
     revision = CampaignRevision(
         campaign="study", project="demo", revision_id="campaign.revision",
         file=str(tmp_path / "experiments" / "study.yml"), memberships=[],
@@ -35,76 +36,88 @@ def campaign_project(tmp_path: Path) -> tuple[ResearchProject, AgentScope]:
         project="demo", title="Demo", run_roots=[], base_dir=tmp_path,
         campaigns=[CampaignRef(name="study", current_revision=revision)],
     )
-    return project, AgentScope(project="demo", scope_type="campaign", object_id="study")
+    return project, OperationScope(project="demo", scope_type="campaign", object_id="study")
 
 
 def test_action_campaign_lifecycle_records_cover_binding_and_immutability(tmp_path):
-    project, agent_scope = campaign_project(tmp_path)
+    project, operation_scope = campaign_project(tmp_path)
     service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig())
-    completion = {
+    archive_payload = {
         "project": "demo", "campaign": "study", "revision_id": "campaign.revision",
-        "outcome": "SUPPORTED", "assessment": "evidence reviewed",
-        "evidence_digest": "sha256:e", "membership_run_ids": ["run-a"],
+        "reason": "retired",
     }
-    plan = service.prepare(agent_scope, project, approved("COMPLETE_CAMPAIGN", completion))
-    assert plan["ready"] is True and plan["operation"] == "WRITE_CAMPAIGN_COMPLETION"
+    plan = service.prepare(operation_scope, project, operation_intent("ARCHIVE_CAMPAIGN", archive_payload))
+    assert plan["ready"] is True and plan["operation"] == "WRITE_CAMPAIGN_ARCHIVE"
 
     Path(plan["target_path"]).parent.mkdir(parents=True)
     Path(plan["target_path"]).write_text("already: recorded\n")
     blocked = service.prepare(
-        agent_scope, project,
-        approved("COMPLETE_CAMPAIGN", {**completion, "membership_run_ids": []}, "proposal-blocked"),
+        operation_scope, project,
+        operation_intent("ARCHIVE_CAMPAIGN", archive_payload, "intent-blocked"),
     )
     assert blocked["ready"] is False
     assert {gate["name"]: gate["status"] for gate in blocked["gates"]} == {
-        "exact_scope": "PASS", "record_absent": "FAIL", "completion_evidence": "FAIL",
+        "exact_scope": "PASS", "record_absent": "FAIL", "archive_binding": "PASS",
     }
 
-    archive = service.prepare(agent_scope, project, approved(
-        "ARCHIVE_CAMPAIGN",
-        {"project": "demo", "campaign": "study", "revision_id": "campaign.revision", "reason": "done"},
-        "proposal-archive",
-    ))
-    assert archive["operation"] == "WRITE_CAMPAIGN_ARCHIVE"
+
+def test_explicit_idempotency_key_cannot_be_reused_for_different_intent(tmp_path):
+    project, operation_scope = campaign_project(tmp_path)
+    service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig())
+    payload = {
+        "project": "demo", "campaign": "study", "revision_id": "campaign.revision",
+        "reason": "retired",
+    }
+    service.prepare(
+        operation_scope, project,
+        operation_intent("ARCHIVE_CAMPAIGN", payload, "intent-fixed"),
+    )
+    with pytest.raises(ActionError, match="already bound to a different"):
+        service.prepare(
+            operation_scope, project,
+            operation_intent(
+                "ARCHIVE_CAMPAIGN", {**payload, "reason": "different"}, "intent-fixed",
+            ),
+        )
 
 
 @pytest.mark.parametrize(("payload", "scope", "message"), [
     ({"project": "other", "campaign": "study", "revision_id": "campaign.revision"},
-     AgentScope(project="demo", scope_type="campaign", object_id="study"), "project does not match"),
+     OperationScope(project="demo", scope_type="campaign", object_id="study"), "project does not match"),
     ({"project": "demo", "campaign": "study", "revision_id": "campaign.revision"},
-     AgentScope(project="demo", scope_type="campaign", object_id="other"), "exact Campaign scope"),
+     OperationScope(project="demo", scope_type="campaign", object_id="other"), "exact Campaign scope"),
     ({"project": "demo", "campaign": "study", "revision_id": "old"},
-     AgentScope(project="demo", scope_type="campaign", object_id="study"), "current authored revision"),
+     OperationScope(project="demo", scope_type="campaign", object_id="study"), "current authored revision"),
 ])
 def test_action_campaign_record_rejects_stale_or_wrong_binding(tmp_path, payload, scope, message):
     project, _ = campaign_project(tmp_path)
     service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig())
     with pytest.raises(ActionError, match=message):
-        service.prepare(scope, project, approved("COMPLETE_CAMPAIGN", payload))
+        service.prepare(scope, project, operation_intent("ARCHIVE_CAMPAIGN", {**payload, "reason": "done"}))
 
 
 @pytest.mark.parametrize(("kind", "payload", "scope", "message"), [
     ("ARCHIVE_RUN", {"project": "other", "run_id": "run-a"},
-     AgentScope(project="demo", scope_type="run", object_id="run-a"), "project does not match"),
+     OperationScope(project="demo", scope_type="run", object_id="run-a"), "project does not match"),
     ("ARCHIVE_RUN", {"project": "demo", "run_id": "run-a"},
-     AgentScope(project="demo", scope_type="run", object_id="other"), "exact object scope"),
+     OperationScope(project="demo", scope_type="run", object_id="other"), "exact object scope"),
     ("ARCHIVE_ATTEMPT", {"project": "demo", "run_id": "bad/id", "attempt_id": "bad/id"},
-     AgentScope(project="demo", scope_type="attempt", object_id="bad/id::bad/id"), "safe Run/Attempt"),
+     OperationScope(project="demo", scope_type="attempt", object_id="bad/id::bad/id"), "safe Run/Attempt"),
 ])
 def test_action_archive_rejects_wrong_identity(tmp_path, kind, payload, scope, message):
     project = ResearchProject(project="demo", title="Demo", run_roots=[], base_dir=tmp_path)
     with pytest.raises(ActionError, match=message):
         ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig()).prepare(
-            scope, project, approved(kind, payload),
+            scope, project, operation_intent(kind, payload),
         )
 
 
-def synthetic_plan(store: ActionStore, proposal: str, *, operation: str = "SUBMIT_RUN") -> str:
-    agent_scope = AgentScope(project="demo", scope_type="run", object_id="run-a")
-    action_id = store.action_id(agent_scope, proposal)
+def synthetic_plan(store: ActionStore, intent: str, *, operation: str = "SUBMIT_RUN") -> str:
+    operation_scope = OperationScope(project="demo", scope_type="run", object_id="run-a")
+    action_id = store.action_id(operation_scope, intent)
     expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
     store.save_plan({
-        "action_id": action_id, "scope": agent_scope.model_dump(mode="json"),
+        "action_id": action_id, "scope": operation_scope.model_dump(mode="json"),
         "ready": True, "operation": operation, "intent_digest": "sha256:intent",
         "gate_bundle_digest": "sha256:gates", "gate_expires_at": expires,
         "command_preview": ["controller", "submit"], "cwd": ".",
@@ -126,12 +139,12 @@ def test_action_authorization_and_execution_fail_closed_on_policy_and_tampering(
     with pytest.raises(ActionError, match="scheduler mutations are disabled"):
         blocked.execute(action_id, f"EXECUTE {action_id}")
 
-    for proposal, mutation, message in (
+    for intent, mutation, message in (
         ("expired", {"gate_expires_at": "2000-01-01T00:00:00Z"}, "expired"),
         ("intent", {"intent_digest": "sha256:changed"}, "immutable action intent"),
         ("gates", {"gate_bundle_digest": "sha256:changed"}, "gate bundle"),
     ):
-        action_id = synthetic_plan(store, proposal)
+        action_id = synthetic_plan(store, intent)
         service = ActionService(
             store, ActionRuntimeConfig(allow_scheduler_mutations=True), actor_provider=lambda: "tester",
         )
@@ -181,12 +194,12 @@ def test_cancel_preparation_binds_live_backend_job_and_capability(tmp_path):
         "payload": [{"backend_job_id": "job-7", "state": "RUNNING"}],
     }
     service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig(), runner=runner)
-    agent_scope = AgentScope(project="demo", scope_type="attempt", object_id="run-a::attempt-001")
+    operation_scope = OperationScope(project="demo", scope_type="attempt", object_id="run-a::attempt-001")
     payload = {
         "campaign_file": str(campaign), "run_id": "run-a", "attempt_id": "attempt-001",
         "backend_job_id": "job-7",
     }
-    plan = service.prepare(agent_scope, project, approved("CANCEL_RUN", payload))
+    plan = service.prepare(operation_scope, project, operation_intent("CANCEL_RUN", payload))
     assert plan["ready"] is True
     assert {gate["name"]: gate["status"] for gate in plan["gates"]}[
         "backend_job_identity"
@@ -194,7 +207,7 @@ def test_cancel_preparation_binds_live_backend_job_and_capability(tmp_path):
 
     project.controller.capabilities = {}
     blocked = service.prepare(
-        agent_scope, project, approved("CANCEL_RUN", {**payload, "backend_job_id": "wrong"}, "proposal-wrong"),
+        operation_scope, project, operation_intent("CANCEL_RUN", {**payload, "backend_job_id": "wrong"}, "intent-wrong"),
     )
     statuses = {gate["name"]: gate["status"] for gate in blocked["gates"]}
     assert statuses["backend_job_identity"] == "FAIL"
@@ -245,19 +258,19 @@ def test_action_helper_and_prepare_error_branches(tmp_path):
     store = ActionStore(tmp_path / "actions")
     project = ResearchProject(project="demo", title="Demo", run_roots=[], base_dir=tmp_path)
     service = ActionService(store, ActionRuntimeConfig())
-    project_scope = AgentScope(project="demo", scope_type="project", object_id="demo")
-    with pytest.raises(ActionError, match="must be approved"):
+    project_scope = OperationScope(project="demo", scope_type="project", object_id="demo")
+    with pytest.raises(ActionError, match="invalid operation intent"):
         service.prepare(project_scope, project, {"status": "PENDING"})
-    with pytest.raises(ActionError, match="no Phase-3 executor"):
-        service.prepare(project_scope, project, approved("ANALYSIS_ONLY", {}))
+    with pytest.raises(ActionError, match="invalid operation intent"):
+        service.prepare(project_scope, project, operation_intent("ANALYSIS_ONLY", {}))
     with pytest.raises(ActionError, match="safe file identity"):
-        service.prepare(project_scope, project, approved("CREATE_RESEARCH_QUESTION_DRAFT", {"id": "bad/id"}))
+        service.prepare(project_scope, project, operation_intent("CREATE_RESEARCH_QUESTION_DRAFT", {"id": "bad/id"}))
     with pytest.raises(ActionError, match="no research_questions_dir"):
-        service.prepare(project_scope, project, approved("CREATE_RESEARCH_QUESTION_DRAFT", {"id": "Q1"}))
+        service.prepare(project_scope, project, operation_intent("CREATE_RESEARCH_QUESTION_DRAFT", {"id": "Q1"}))
     for payload, message in (
         ({"campaign": "bad/id", "project": "demo", "run_refs": [{}]}, "safe campaign"),
         ({"campaign": "study", "project": "other", "run_refs": [{}]}, "project does not match"),
         ({"campaign": "study", "project": "demo", "runs": []}, "non-empty"),
     ):
         with pytest.raises(ActionError, match=message):
-            service.prepare(project_scope, project, approved("CREATE_CAMPAIGN_DRAFT", payload, "proposal-" + message[:4]))
+            service.prepare(project_scope, project, operation_intent("CREATE_CAMPAIGN_DRAFT", payload, "intent-" + message[:4]))

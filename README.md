@@ -15,8 +15,9 @@ outboxes. It deliberately does **not** own scientific configuration, training
 commands, metric semantics, campaign authoring, credentials, or model assets.
 A host repository supplies those through a project adapter and injected
 backend services. `ml-expd` composes project catalogs, evidence indexing,
-polling, Project lifecycle, Agent-turn/proposal stores, and gated actions into
-one HTTP control-plane process; it does not run a model Agent loop.
+polling, Project lifecycle, immutable operation intents, and gated Actions into
+one HTTP control-plane process. Goals, conversations, model turns, research
+analysis, reports, charts, and hypothesis conclusions belong to the client.
 
 ## Audience
 
@@ -44,10 +45,19 @@ and then at `poll_interval_seconds` (20 seconds by default); `--snapshot` is
 the explicit no-poll mode.
 Use `/api/health` and `/openapi.json` for machine-readable health and API shape.
 
-The daemon host owns controller/backend credentials, science checkouts, and
-state roots. Research Console and other clients only send HTTP commands. Agent
-model calls and code analysis belong in a client process; approved mutations
-are revalidated and executed by the daemon.
+The daemon host owns controller/backend credentials, project checkouts, and
+Action state. Research Console and other clients fetch evidence and submit
+HTTP commands. Their automation loop may analyze evidence and author an
+`OperationIntent`; `ml-expd` only validates and prepares that intent. A
+separate Action authorization is required before the daemon changes project
+files or invokes a scheduler.
+
+The HTTP boundary is deliberately asymmetric:
+
+- the client owns research goals, hypotheses, conversations, analysis, and decisions;
+- the daemon owns Projects, Campaign/Run/Attempt evidence, polling, operation
+  validation, Action authorization, backend execution, and reconciliation;
+- the daemon never converts metrics or evaluation records into a scientific verdict.
 
 Project-specific controllers are currently reached through the declared
 `experimentctl` command behind one `ProjectControllerGateway`. This is a
@@ -99,12 +109,30 @@ boundary is:
 services = BackendServices(...)
 backend = build_registry(services).get("local")
 backend.preflight(run, scope="submit").require_ready()
-job_id = backend.submit(campaign, run, manifest, dry_run=False)
+intent = store.begin_submission(
+    project=project,
+    run_id=run["run_id"],
+    attempt_id=manifest["attempt_id"],
+    backend=backend.kind,
+    request=backend.submission_request(campaign, run, manifest["attempt_id"]),
+)
+job_id = backend.recover_submission(run, intent, manifest["attempt_id"])
+if job_id is None:
+    job_id = backend.submit(
+        campaign, run, manifest, dry_run=False, intent=intent,
+    )
+store.reconcile_submission(
+    project=project,
+    run_id=run["run_id"],
+    attempt_id=manifest["attempt_id"],
+    backend_job_id=job_id,
+)
 ```
 
-The host still owns campaign parsing, the immutable manifest, and persistence
-of the returned `job_id`. Local execution is not a substitute for live
-SenseCore or Slurm integration tests.
+The host still owns campaign parsing and immutable manifest construction.
+`ExperimentStateStore` must persist the submission intent before any non-dry-run
+backend call; direct mutation without that intent is rejected. Local execution
+is not a substitute for live SenseCore or Slurm integration tests.
 
 ## Public API
 
@@ -127,6 +155,7 @@ from experiment_control.contracts import (
     BackendLogs,
     BackendStatus,
     RunSpec,
+    SubmissionIntent,
     SubmissionRequest,
 )
 from experiment_control.manifest import (
@@ -167,8 +196,9 @@ names begin with `_` are implementation details and are not downstream APIs.
 Each backend implements:
 
 ```text
-validate -> preflight -> identity -> stage -> render -> submit
-                                          -> status/logs/collect/cancel
+validate -> preflight -> identity -> stage -> render
+                    -> durable intent -> recover or submit -> reconcile
+                                      -> status/logs/collect/cancel
 ```
 
 `preflight` returns a credential-free `PreflightReport`. SenseCore checks the
@@ -188,8 +218,13 @@ or cancellation.
 WYD additionally reports `remote_manifest_matches`; a host may claim an
 existing run directory only when this digest-backed ownership evidence is
 true.
-Recovery fails closed when more than one scheduler job matches one attempt; it
-never selects one arbitrarily.
+Every new durable intent contains a random 128-bit `submission_token` generated
+before scheduler contact. A non-dry-run backend submission requires that intent.
+WYD writes the token into Slurm `Comment`; SenseCore derives a unique exact
+resource name from it; LocalBackend writes it into its atomic process claim.
+Recovery requires both the expected attempt identity and the exact token.
+Historical jobs with the same human-readable base name are ignored, while
+missing, malformed, or multiply matching token evidence fails closed.
 Campaign generation and scientific config resolution remain host
 responsibilities. The package owns immutable Run/Attempt publication and local
 event/outbox reconciliation once the host has resolved those inputs.
@@ -207,7 +242,8 @@ time and source. For running jobs `%R` is a node list, so it is not reported as
 a pending reason. A client must not infer Resources, Priority, QOS, or
 Dependency when the scheduler did not provide that detail.
 
-SenseCore creates and observes an exact attempt-qualified resource name. The
+SenseCore creates and observes an exact resource name derived from the attempt
+and durable submission token. The
 authored image tag remains provenance, while submission is pinned to the
 manifest's `repository@sha256:...` digest. Status, logs, and cancellation use
 the recorded exact resource rather than a prefix search.
@@ -293,9 +329,9 @@ EXPERIMENTCTL_SSH_BIN
 EXPERIMENTCTL_RSYNC_BIN
 ```
 
-Each controller process uses its own SSH multiplexing socket. Parallel agents
-therefore reuse connections within their own workflow without racing over one
-global `/tmp` control socket.
+Each controller process uses its own SSH multiplexing socket. Parallel
+controller processes therefore reuse connections within their own workflow
+without racing over one global `/tmp` control socket.
 
 Registry publication remains a host workflow. A host may define its own Docker,
 Crane, or Skopeo executable overrides without adding them to this package.
@@ -308,6 +344,7 @@ Crane, or Skopeo executable overrides without adding them to this package.
 - Preflight failure is fail-closed before remote stage or scheduler submit.
 - Consumed or ambiguous scheduler identities are rejected before submission.
 - Completed checkpoints require a matching payload, step, and byte-count marker.
-- Scheduler state, model progress, and scientific conclusions remain separate.
+- Scheduler state, model progress, and evaluation data remain separate; the daemon
+  returns those observations without deriving a scientific conclusion.
 - Source, image, config, storage, and scheduler identities remain the host
   manifest's responsibility.

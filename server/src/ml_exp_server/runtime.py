@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Callable
 
 from .actions import ActionService, ActionStore
-from .agents.store import AgentStore
 from .ingest.indexer import RunIndex
 from .identity import workspace_identity
 from .project_config import load_research_project
@@ -41,7 +40,6 @@ class ExperimentServerRuntime:
     config: ServerConfig
     index: RunIndex
     projects: list[ResearchProject]
-    agent_store: AgentStore
     action_store: ActionStore
     action_service: ActionService
     project_registry: ProjectRegistry
@@ -70,7 +68,6 @@ class ExperimentServerRuntime:
             # intentionally do not seed or mutate the durable registry.
             loaded_projects = list(projects)
 
-        agent_store = AgentStore(config.agent_root_path())
         action_store = ActionStore(config.action_root_path())
         previous_callback = on_index_update
 
@@ -84,7 +81,6 @@ class ExperimentServerRuntime:
             config=config,
             index=run_index,
             projects=loaded_projects,
-            agent_store=agent_store,
             action_store=action_store,
             action_service=ActionService(action_store, config.action_runtime),
             project_registry=project_registry,

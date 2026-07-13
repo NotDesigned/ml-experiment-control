@@ -35,7 +35,8 @@ Daemon modules may depend on the core package, never the reverse. FastAPI
 belongs only in `server/api`; `runtime.py` is the composition root;
 `controller_gateway.py` is the sole legacy `experimentctl` subprocess
 boundary. The daemon must not import a model provider or run the client Agent
-loop.
+loop. It must also not persist client goals, conversations, model turns, or
+derive scientific conclusions from metrics and evaluation records.
 
 Submission changes must cover the complete safety path in
 `server/tests/test_submissions.py`: authored-but-unmaterialized Run preparation,

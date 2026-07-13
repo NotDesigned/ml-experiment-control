@@ -19,8 +19,8 @@ from ml_exp_server.actions.store import ActionStore
 from ml_exp_server.project_config import load_research_project
 from ml_exp_server.schemas import (
     ActionRuntimeConfig,
-    AgentScope,
-    AgentScopeType,
+    OperationScope,
+    OperationScopeType,
     ControllerConfig,
     ServerConfig,
     ProjectRef,
@@ -28,11 +28,11 @@ from ml_exp_server.schemas import (
 )
 
 
-def approved_proposal(kind: str, draft: str, proposal_id: str = "proposal-123456abcdef"):
+def operation_intent(kind: str, draft: str, idempotency_key: str = "intent-123456abcdef"):
     return {
-        "proposal_id": proposal_id,
+        "idempotency_key": idempotency_key,
         "kind": kind,
-        "status": "APPROVED",
+        "title": f"Prepare {kind}",
         "target": "review-target",
         "risk": "review required",
         "draft": draft,
@@ -52,7 +52,7 @@ def test_action_helpers_reject_unsafe_inputs_and_classify_changes(tmp_path):
         "links": ["Q1"], "budget": {"gpu": 1}, "command": ["train"], "title": "new",
     })
     assert {item["category"] for item in changes} == {
-        "SCIENTIFIC", "RESOURCE", "EXECUTION_IDENTITY", "METADATA",
+        "EXPERIMENT_DESIGN", "RESOURCE", "EXECUTION_IDENTITY", "METADATA",
     }
     assert action_service._semantic_changes({"same": 1}, {"same": 1}) == []
     assert action_service._redact({
@@ -96,8 +96,8 @@ def test_reuse_only_campaign_prepares_without_scheduler_budget(tmp_path):
         project="demo", title="Demo", run_roots=[], base_dir=project_root,
         authored_file=project_file,
     )
-    scope = AgentScope(
-        project="demo", scope_type=AgentScopeType.PROJECT, object_id="demo",
+    scope = OperationScope(
+        project="demo", scope_type=OperationScopeType.PROJECT, object_id="demo",
     )
     draft = yaml.safe_dump({
         "schema_version": 1,
@@ -108,9 +108,9 @@ def test_reuse_only_campaign_prepares_without_scheduler_budget(tmp_path):
     })
     service = ActionService(
         ActionStore(tmp_path / "actions"),
-        ActionRuntimeConfig(allow_science_writes=True),
+        ActionRuntimeConfig(allow_project_writes=True),
     )
-    plan = service.prepare(scope, project, approved_proposal(
+    plan = service.prepare(scope, project, operation_intent(
         "CREATE_CAMPAIGN_DRAFT", draft,
     ))
     assert plan["ready"] is True
@@ -141,7 +141,7 @@ def test_campaign_update_targets_catalog_file_and_changes_revision(tmp_path):
     }, sort_keys=False), encoding="utf-8")
     project = load_research_project(project_file)
     original_revision = project.campaigns[0].current_revision.revision_id
-    scope = AgentScope(project="demo", scope_type=AgentScopeType.CAMPAIGN, object_id="study")
+    scope = OperationScope(project="demo", scope_type=OperationScopeType.CAMPAIGN, object_id="study")
     updated = yaml.safe_dump({
         "schema_version": 1, "project": "demo", "campaign": "study",
         "research_contract": {
@@ -155,12 +155,12 @@ def test_campaign_update_targets_catalog_file_and_changes_revision(tmp_path):
     }, sort_keys=False)
     service = ActionService(
         ActionStore(tmp_path / "actions"),
-        ActionRuntimeConfig(allow_science_writes=True),
+        ActionRuntimeConfig(allow_project_writes=True),
         actor_provider=lambda: "trusted:test",
     )
 
     plan = service.prepare(
-        scope, project, approved_proposal("UPDATE_CAMPAIGN_DRAFT", updated),
+        scope, project, operation_intent("UPDATE_CAMPAIGN_DRAFT", updated),
     )
 
     assert plan["ready"] is True
@@ -196,30 +196,29 @@ def test_campaign_prepare_blocks_noncanonical_or_missing_membership_roles(tmp_pa
     })
     service = ActionService(
         ActionStore(tmp_path / "actions"),
-        ActionRuntimeConfig(allow_science_writes=True),
+        ActionRuntimeConfig(allow_project_writes=True),
     )
 
     plan = service.prepare(
-        AgentScope(project="demo", scope_type=AgentScopeType.PROJECT, object_id="demo"),
-        project, approved_proposal("CREATE_CAMPAIGN_DRAFT", draft),
+        OperationScope(project="demo", scope_type=OperationScopeType.PROJECT, object_id="demo"),
+        project, operation_intent("CREATE_CAMPAIGN_DRAFT", draft),
     )
 
     gates = {gate["name"]: gate["status"] for gate in plan["gates"]}
     assert plan["ready"] is False
     assert gates["membership_schema"] == "FAIL"
-    assert gates["required_role_coverage"] == "FAIL"
 
 
 @pytest.mark.parametrize(("kind", "scope_type", "object_id", "attempt_id"), [
-    ("ARCHIVE_RUN", AgentScopeType.RUN, "run-a", None),
-    ("ARCHIVE_ATTEMPT", AgentScopeType.ATTEMPT, "run-a::attempt-001", "attempt-001"),
+    ("ARCHIVE_RUN", OperationScopeType.RUN, "run-a", None),
+    ("ARCHIVE_ATTEMPT", OperationScopeType.ATTEMPT, "run-a::attempt-001", "attempt-001"),
 ])
 def test_run_and_attempt_archives_append_records_without_deleting_evidence(
     tmp_path, kind, scope_type, object_id, attempt_id,
 ):
     project_root = tmp_path / "science"
     project = ResearchProject(project="demo", title="Demo", run_roots=[], base_dir=project_root)
-    scope = AgentScope(project="demo", scope_type=scope_type, object_id=object_id)
+    scope = OperationScope(project="demo", scope_type=scope_type, object_id=object_id)
     payload = {
         "schema_version": 1, "project": "demo", "run_id": "run-a",
         "reason": "superseded evidence", "evidence_digest": "sha256:evidence",
@@ -228,10 +227,10 @@ def test_run_and_attempt_archives_append_records_without_deleting_evidence(
         payload["attempt_id"] = attempt_id
     service = ActionService(
         ActionStore(tmp_path / "actions"),
-        ActionRuntimeConfig(allow_science_writes=True),
+        ActionRuntimeConfig(allow_project_writes=True),
         actor_provider=lambda: "trusted:test",
     )
-    plan = service.prepare(scope, project, approved_proposal(kind, yaml.safe_dump(payload)))
+    plan = service.prepare(scope, project, operation_intent(kind, yaml.safe_dump(payload)))
     assert plan["ready"] is True
     service.authorize(plan["action_id"], "reviewed archive")
     result = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
@@ -248,8 +247,8 @@ def test_research_question_write_requires_bound_second_approval(tmp_path):
         project="demo", title="Demo", run_roots=[],
         research_questions_dir="experiments/research_questions", base_dir=project_root,
     )
-    scope = AgentScope(
-        project="demo", scope_type=AgentScopeType.PROJECT, object_id="demo",
+    scope = OperationScope(
+        project="demo", scope_type=OperationScopeType.PROJECT, object_id="demo",
     )
     draft = yaml.safe_dump({
         "schema_version": 1,
@@ -258,21 +257,20 @@ def test_research_question_write_requires_bound_second_approval(tmp_path):
         "status": "OPEN",
         "summary": "Separate capacity from objective effects",
         "links": {"campaigns": ["h2-control"]},
-        "assessments": [],
     })
     service = ActionService(
         ActionStore(tmp_path / "actions"),
-        ActionRuntimeConfig(allow_science_writes=True),
+        ActionRuntimeConfig(allow_project_writes=True),
         actor_provider=lambda: "trusted:test-researcher",
     )
-    plan = service.prepare(scope, project, approved_proposal(
+    plan = service.prepare(scope, project, operation_intent(
         "CREATE_RESEARCH_QUESTION_DRAFT", draft,
     ))
 
     assert plan["ready"] is True
     assert "h2-control" in plan["diff"]
     assert any(
-        change["category"] == "SCIENTIFIC"
+        change["category"] == "EXPERIMENT_DESIGN"
         for change in plan["semantic_changes"]
     )
     assert plan["execution"]["status"] == "PREPARED"
@@ -303,10 +301,10 @@ def test_minimal_research_question_has_no_campaign_or_falsifiability_gate(tmp_pa
         project="demo", title="Demo", run_roots=[],
         research_questions_dir="experiments/research_questions", base_dir=root,
     )
-    scope = AgentScope(project="demo", scope_type="project", object_id="demo")
+    scope = OperationScope(project="demo", scope_type="project", object_id="demo")
     service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig())
 
-    plan = service.prepare(scope, project, approved_proposal(
+    plan = service.prepare(scope, project, operation_intent(
         "CREATE_RESEARCH_QUESTION_DRAFT",
         yaml.safe_dump({"schema_version": 1, "id": "Q2", "title": "Open note"}),
     ))
@@ -325,18 +323,18 @@ def test_target_change_after_diff_fails_closed(tmp_path):
         project="demo", title="Demo", run_roots=[],
         research_questions_dir="experiments/research_questions", base_dir=root,
     )
-    scope = AgentScope(project="demo", scope_type="project", object_id="demo")
+    scope = OperationScope(project="demo", scope_type="project", object_id="demo")
     draft = yaml.safe_dump({
         "schema_version": 1, "id": "H2", "title": "new",
         "status": "OPEN", "summary": "m",
-        "links": {"campaigns": ["control"]}, "assessments": [],
+        "links": {"campaigns": ["control"]},
     })
     service = ActionService(
         ActionStore(tmp_path / "actions"),
-        ActionRuntimeConfig(allow_science_writes=True),
+        ActionRuntimeConfig(allow_project_writes=True),
         actor_provider=lambda: "trusted:test-researcher",
     )
-    plan = service.prepare(scope, project, approved_proposal(
+    plan = service.prepare(scope, project, operation_intent(
         "CREATE_RESEARCH_QUESTION_DRAFT", draft,
     ))
     service.authorize(plan["action_id"], "reviewed")
@@ -349,21 +347,21 @@ def test_target_change_after_diff_fails_closed(tmp_path):
     assert "concurrent edit" in target.read_text()
 
 
-def test_invalid_agent_research_question_becomes_blocked_review_plan(tmp_path):
+def test_invalid_client_question_definition_becomes_blocked_action_plan(tmp_path):
     root = tmp_path / "science"
     (root / "experiments" / "research_questions").mkdir(parents=True)
     project = ResearchProject(
         project="demo", title="Demo", run_roots=[],
         research_questions_dir="experiments/research_questions", base_dir=root,
     )
-    scope = AgentScope(project="demo", scope_type="project", object_id="demo")
+    scope = OperationScope(project="demo", scope_type="project", object_id="demo")
     draft = yaml.safe_dump({
         "schema_version": 1, "id": "H2", "title": "Structured falsifier",
         "status": "OPEN", "summary": "m", "links": [],
     })
     service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig())
 
-    plan = service.prepare(scope, project, approved_proposal(
+    plan = service.prepare(scope, project, operation_intent(
         "CREATE_RESEARCH_QUESTION_DRAFT", draft,
     ))
 
@@ -475,7 +473,7 @@ def test_attempt_scoped_retry_is_strongly_bound_to_source_attempt(
     tmp_path, draft_updates, error,
 ):
     project, campaign = controller_project(tmp_path)
-    scope = AgentScope(
+    scope = OperationScope(
         project="demo", scope_type="attempt", object_id="run-a::attempt-001",
     )
     payload = {
@@ -489,7 +487,7 @@ def test_attempt_scoped_retry_is_strongly_bound_to_source_attempt(
     )
 
     with pytest.raises(ActionError, match=error):
-        service.prepare(scope, project, approved_proposal(
+        service.prepare(scope, project, operation_intent(
             "RETRY_ATTEMPT", yaml.safe_dump(payload),
         ))
 
@@ -497,7 +495,7 @@ def test_attempt_scoped_retry_is_strongly_bound_to_source_attempt(
 def test_attempt_scoped_cancel_must_target_exact_attempt(tmp_path):
     project, campaign = controller_project(tmp_path)
     project.controller.capabilities["cancel_outbox"] = True
-    scope = AgentScope(
+    scope = OperationScope(
         project="demo", scope_type="attempt", object_id="run-a::attempt-001",
     )
     draft = yaml.safe_dump({
@@ -509,25 +507,25 @@ def test_attempt_scoped_cancel_must_target_exact_attempt(tmp_path):
     )
 
     with pytest.raises(ActionError, match="must target the scoped attempt_id"):
-        service.prepare(scope, project, approved_proposal("CANCEL_RUN", draft))
+        service.prepare(scope, project, operation_intent("CANCEL_RUN", draft))
 
 
-def test_action_prepare_rejects_proposal_kind_outside_exact_scope(tmp_path):
+def test_action_prepare_rejects_intent_kind_outside_exact_scope(tmp_path):
     project, campaign = controller_project(tmp_path)
-    scope = AgentScope(project="demo", scope_type="project", object_id="demo")
+    scope = OperationScope(project="demo", scope_type="project", object_id="demo")
     service = ActionService(
         ActionStore(tmp_path / "actions"), ActionRuntimeConfig(), FakeController(),
     )
 
     with pytest.raises(ActionError, match="SUBMIT_RUN is not valid in project scope"):
-        service.prepare(scope, project, approved_proposal(
+        service.prepare(scope, project, operation_intent(
             "SUBMIT_RUN", submit_draft(campaign),
         ))
 
 
 def test_exactly_bound_attempt_retry_can_prepare_and_execute(tmp_path):
     project, campaign = controller_project(tmp_path)
-    scope = AgentScope(
+    scope = OperationScope(
         project="demo", scope_type="attempt", object_id="run-a::attempt-001",
     )
     draft = yaml.safe_dump({
@@ -542,7 +540,7 @@ def test_exactly_bound_attempt_retry_can_prepare_and_execute(tmp_path):
         actor_provider=lambda: "trusted:pi",
     )
 
-    plan = service.prepare(scope, project, approved_proposal("RETRY_ATTEMPT", draft))
+    plan = service.prepare(scope, project, operation_intent("RETRY_ATTEMPT", draft))
     assert plan["ready"] is True
     assert plan["run_id"] == "run-a"
     assert plan["attempt_id"] == "attempt-002"
@@ -553,14 +551,14 @@ def test_exactly_bound_attempt_retry_can_prepare_and_execute(tmp_path):
 
 def test_submit_plan_gates_and_executes_once(tmp_path):
     project, campaign = controller_project(tmp_path)
-    scope = AgentScope(project="demo", scope_type="run", object_id="run-a")
+    scope = OperationScope(project="demo", scope_type="run", object_id="run-a")
     runner = FakeController()
     service = ActionService(
         ActionStore(tmp_path / "actions"),
         ActionRuntimeConfig(allow_scheduler_mutations=True), runner,
         actor_provider=lambda: "trusted:pi",
     )
-    plan = service.prepare(scope, project, approved_proposal(
+    plan = service.prepare(scope, project, operation_intent(
         "SUBMIT_RUN", submit_draft(campaign),
     ))
 
@@ -588,15 +586,15 @@ def test_submit_plan_gates_and_executes_once(tmp_path):
 
 def test_submit_timeout_requires_reconciliation_and_never_retries(tmp_path):
     project, campaign = controller_project(tmp_path)
-    scope = AgentScope(project="demo", scope_type="run", object_id="run-a")
+    scope = OperationScope(project="demo", scope_type="run", object_id="run-a")
     runner = FakeController(timeout_submit=True, status_visible=False)
     service = ActionService(
         ActionStore(tmp_path / "actions"),
         ActionRuntimeConfig(allow_scheduler_mutations=True), runner,
         actor_provider=lambda: "trusted:researcher",
     )
-    plan = service.prepare(scope, project, approved_proposal(
-        "SUBMIT_RUN", submit_draft(campaign), "proposal-fedcba654321",
+    plan = service.prepare(scope, project, operation_intent(
+        "SUBMIT_RUN", submit_draft(campaign), "intent-fedcba654321",
     ))
     service.authorize(plan["action_id"], "approved")
     result = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
@@ -613,15 +611,15 @@ def test_submit_timeout_requires_reconciliation_and_never_retries(tmp_path):
 
 def test_submit_job_identity_mismatch_requires_status_only_reconciliation(tmp_path):
     project, campaign = controller_project(tmp_path)
-    scope = AgentScope(project="demo", scope_type="run", object_id="run-a")
+    scope = OperationScope(project="demo", scope_type="run", object_id="run-a")
     runner = FakeController(status_job_id="job-other")
     service = ActionService(
         ActionStore(tmp_path / "actions"),
         ActionRuntimeConfig(allow_scheduler_mutations=True), runner,
         actor_provider=lambda: "trusted:researcher",
     )
-    plan = service.prepare(scope, project, approved_proposal(
-        "SUBMIT_RUN", submit_draft(campaign), "proposal-job-mismatch",
+    plan = service.prepare(scope, project, operation_intent(
+        "SUBMIT_RUN", submit_draft(campaign), "intent-job-mismatch",
     ))
     service.authorize(plan["action_id"], "approved")
     uncertain = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
@@ -640,16 +638,16 @@ def test_submit_job_identity_mismatch_requires_status_only_reconciliation(tmp_pa
 def test_incomplete_run_identity_and_undeclared_evaluation_are_blocked(tmp_path):
     project, campaign = controller_project(tmp_path)
     project.controller.capabilities["run_identity_v2"] = False
-    scope = AgentScope(project="demo", scope_type="run", object_id="run-a")
+    scope = OperationScope(project="demo", scope_type="run", object_id="run-a")
     service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig(), FakeController())
-    plan = service.prepare(scope, project, approved_proposal(
-        "SUBMIT_RUN", submit_draft(campaign), "proposal-aaaaaaaaaaaa",
+    plan = service.prepare(scope, project, operation_intent(
+        "SUBMIT_RUN", submit_draft(campaign), "intent-aaaaaaaaaaaa",
     ))
     assert plan["ready"] is False
     assert next(item for item in plan["gates"] if item["name"] == "submit_outbox_capability")["status"] == "FAIL"
 
-    evaluation = service.prepare(scope, project, approved_proposal(
-        "RUN_EVALUATION", submit_draft(campaign), "proposal-bbbbbbbbbbbb",
+    evaluation = service.prepare(scope, project, operation_intent(
+        "RUN_EVALUATION", submit_draft(campaign), "intent-bbbbbbbbbbbb",
     ))
     assert evaluation["ready"] is False
     assert "does not declare an evaluate verb" in evaluation["gates"][-1]["detail"]
@@ -658,14 +656,14 @@ def test_incomplete_run_identity_and_undeclared_evaluation_are_blocked(tmp_path)
 def test_declared_evaluation_is_an_immutable_submit_as_run(tmp_path):
     project, campaign = controller_project(tmp_path)
     project.controller.capabilities["evaluation_as_run"] = True
-    scope = AgentScope(project="demo", scope_type="run", object_id="run-a")
+    scope = OperationScope(project="demo", scope_type="run", object_id="run-a")
     service = ActionService(
         ActionStore(tmp_path / "actions"),
         ActionRuntimeConfig(allow_scheduler_mutations=True),
         FakeController(evaluation=True), actor_provider=lambda: "trusted:pi",
     )
-    plan = service.prepare(scope, project, approved_proposal(
-        "RUN_EVALUATION", submit_draft(campaign), "proposal-cccccccccccc",
+    plan = service.prepare(scope, project, operation_intent(
+        "RUN_EVALUATION", submit_draft(campaign), "intent-cccccccccccc",
     ))
 
     assert plan["ready"] is True
@@ -675,7 +673,7 @@ def test_declared_evaluation_is_an_immutable_submit_as_run(tmp_path):
     assert result["execution"]["status"] == "VERIFIED"
 
 
-def test_action_api_keeps_proposal_approval_and_execution_authorization_separate(tmp_path):
+def test_action_api_prepares_client_intent_without_authorizing_execution(tmp_path):
     root = tmp_path / "science"
     research_questions = root / "experiments" / "research_questions"
     research_questions.mkdir(parents=True)
@@ -688,14 +686,14 @@ def test_action_api_keeps_proposal_approval_and_execution_authorization_separate
     }))
     config = ServerConfig(
         index_db=str(tmp_path / "index.sqlite"),
-        agent_root=str(tmp_path / "agents"),
         action_root=str(tmp_path / "actions"),
         projects=[ProjectRef(project_file=str(root / "experiments" / "research_project.yaml"))],
     )
     with TestClient(create_app(config)) as client:
-        scope = AgentScope(project="demo", scope_type="project", object_id="demo")
-        client.app.state.agent_store.ensure(scope, default_goal="manage research")
-        created = client.app.state.agent_store.add_proposals(scope, [{
+        object_payload = client.get("/api/objects", params={
+            "project": "demo", "scope_type": "project", "object_id": "demo",
+        }).json()
+        intent = {
             "kind": "CREATE_RESEARCH_QUESTION_DRAFT", "title": "H2",
             "target": "project://demo/research_questions/H2",
             "change_summary": "add H2", "resource_estimate": "none",
@@ -703,29 +701,23 @@ def test_action_api_keeps_proposal_approval_and_execution_authorization_separate
             "draft": yaml.safe_dump({
                 "schema_version": 1, "id": "H2", "title": "New",
                 "status": "OPEN", "summary": "m",
-                "links": {"campaigns": ["control"]}, "assessments": [],
+                "links": {"campaigns": ["control"]},
             }),
-        }], evidence_digest="sha256:evidence")
-        proposal_id = created[0]["proposal_id"]
-
-        before = client.post("/api/actions/prepare", json={
-            "project": "demo", "scope_type": "project", "object_id": "demo",
-            "proposal_id": proposal_id,
-        })
-        assert before.status_code == 409
-
-        client.app.state.agent_store.decide_proposal(scope, proposal_id, "APPROVED")
+            "evidence_digest": object_payload["evidence_digest"],
+            "idempotency_key": "intent-create-h2",
+        }
         prepared = client.post("/api/actions/prepare", json={
             "project": "demo", "scope_type": "project", "object_id": "demo",
-            "proposal_id": proposal_id,
+            "intent": intent,
         })
         assert prepared.status_code == 200
         action_id = prepared.json()["action_id"]
+        assert not (research_questions / "H2.yml").exists()
         listed = client.get("/api/actions", params={
             "project": "demo", "scope_type": "project", "object_id": "demo",
         }).json()
         assert [item["action_id"] for item in listed["actions"]] == [action_id]
-        assert listed["policy"]["allow_science_writes"] is False
+        assert listed["policy"]["allow_project_writes"] is False
 
         authorized = client.post("/api/actions/authorize", json={
             "action_id": action_id, "note": "reviewed",
@@ -735,4 +727,4 @@ def test_action_api_keeps_proposal_approval_and_execution_authorization_separate
             "action_id": action_id, "confirmation": f"EXECUTE {action_id}",
         })
         assert execution.status_code == 409
-        assert "science writes are disabled" in execution.json()["detail"]
+        assert "project writes are disabled" in execution.json()["detail"]

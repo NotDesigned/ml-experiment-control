@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from .agents.store import utc_now
 from .campaign_lifecycle import campaign_snapshot
+from .code_identity import project_code_identity
 from .ingest.indexer import index_project
 from .ingest.runscan import (
     evaluation_variants,
@@ -24,25 +23,21 @@ from .ingest.runscan import (
 )
 from .project_registry import ProjectRegistryError
 from .runtime import ExperimentServerRuntime
-from .research_operations import (
+from .operations import (
     GPU_BUDGET,
     OPERATIONS_BY_ID,
-    PROPOSAL_OPERATION_IDS,
     OperationAvailability,
     OperationParameter,
     operations_for_scope,
-    proposal_scope_error,
 )
 from .schemas import (
-    AgentLifecycleState,
-    AgentScope,
-    AgentScopeType,
+    OperationScope,
+    OperationScopeType,
     CampaignRelationship,
     ProjectLifecycleState,
     ProjectRegistrationSource,
     ResearchProject,
 )
-from .source_identity import file_digest, repository_identity
 
 
 class ApplicationError(RuntimeError):
@@ -165,32 +160,32 @@ class ExperimentServerApplication:
     # --------------------------------------------------------------- scopes
 
     def resolve_scope(
-        self, project_name: str, scope_type: AgentScopeType | str, object_id: str,
-    ) -> tuple[AgentScope, ResearchProject, Any]:
+        self, project_name: str, scope_type: OperationScopeType | str, object_id: str,
+    ) -> tuple[OperationScope, ResearchProject, Any]:
         try:
             project = self.runtime.project(project_name)
         except KeyError as exc:
             raise ApplicationError(str(exc).strip("'"), status_code=404,
                                    code="UNKNOWN_PROJECT") from exc
-        kind = AgentScopeType(scope_type)
-        if kind == AgentScopeType.PROJECT:
+        kind = OperationScopeType(scope_type)
+        if kind == OperationScopeType.PROJECT:
             if object_id != project.project:
-                raise ApplicationError("project agent object_id must equal project",
+                raise ApplicationError("project object_id must equal project",
                                        status_code=404, code="UNKNOWN_PROJECT")
             resolved: Any = project
-        elif kind == AgentScopeType.RESEARCH_QUESTION:
+        elif kind == OperationScopeType.RESEARCH_QUESTION:
             resolved = next((item for item in project.research_questions if item.id == object_id), None)
             if resolved is None:
                 raise ApplicationError(f"unknown research_question: {object_id}", status_code=404,
                                        code="UNKNOWN_RESEARCH_QUESTION")
-        elif kind == AgentScopeType.CAMPAIGN:
+        elif kind == OperationScopeType.CAMPAIGN:
             resolved = next((
                 campaign for campaign in project.campaigns if campaign.name == object_id
             ), None)
             if resolved is None:
                 raise ApplicationError(f"unknown campaign: {object_id}", status_code=404,
                                        code="UNKNOWN_CAMPAIGN")
-        elif kind == AgentScopeType.RUN:
+        elif kind == OperationScopeType.RUN:
             resolved = self.runtime.index.get_run(project.project, object_id)
             if resolved is None:
                 raise ApplicationError(f"unknown run: {object_id}", status_code=404,
@@ -208,19 +203,7 @@ class ExperimentServerApplication:
             if resolved is None:
                 raise ApplicationError(f"unknown attempt: {attempt_id}", status_code=404,
                                        code="UNKNOWN_ATTEMPT")
-        return AgentScope(project=project.project, scope_type=kind, object_id=object_id), project, resolved
-
-    @staticmethod
-    def default_goal(scope: AgentScope, resolved: Any) -> str:
-        if scope.scope_type == AgentScopeType.PROJECT:
-            return f"推进项目 {getattr(resolved, 'title', scope.object_id)} 的研究目标并管理证据缺口。"
-        if scope.scope_type == AgentScopeType.RESEARCH_QUESTION:
-            return f"整理研究问题 {scope.object_id} 关联的证据、未决事项和可选下一步。"
-        if scope.scope_type == AgentScopeType.CAMPAIGN:
-            return f"检查 campaign {scope.object_id} 的对照完整性、可比性和证据完成状态。"
-        if scope.scope_type == AgentScopeType.RUN:
-            return f"解释不可变 Run {scope.object_id} 的运行与模型证据，不改写其科学身份。"
-        return f"诊断 Attempt {scope.object_id} 的执行证据和基础设施状态。"
+        return OperationScope(project=project.project, scope_type=kind, object_id=object_id), project, resolved
 
     @staticmethod
     def row_evidence(row: Any) -> dict[str, Any]:
@@ -292,10 +275,10 @@ class ExperimentServerApplication:
             })
         return compact_evidence(contexts)
 
-    def bounded_evidence(self, scope: AgentScope, project: ResearchProject,
+    def bounded_evidence(self, scope: OperationScope, project: ResearchProject,
                          resolved: Any) -> dict[str, Any]:
         index = self.runtime.index
-        if scope.scope_type == AgentScopeType.PROJECT:
+        if scope.scope_type == OperationScopeType.PROJECT:
             rows = index.list_runs(project.project)
             return {
                 "project": project.project, "title": project.title,
@@ -313,7 +296,7 @@ class ExperimentServerApplication:
                     ],
                 } for row in rows],
             }
-        if scope.scope_type == AgentScopeType.RESEARCH_QUESTION:
+        if scope.scope_type == OperationScopeType.RESEARCH_QUESTION:
             names = set(resolved.links.campaigns)
             rows = [
                 row for row in index.list_runs(project.project)
@@ -323,12 +306,12 @@ class ExperimentServerApplication:
             ]
             return {"research_question": resolved.model_dump(mode="json"),
                     "runs": [self.row_evidence(row) for row in rows]}
-        if scope.scope_type == AgentScopeType.CAMPAIGN:
+        if scope.scope_type == OperationScopeType.CAMPAIGN:
             rows = index.list_runs(project.project, campaign=scope.object_id)
             return {"campaign": resolved.model_dump(mode="json"),
                     "lifecycle": campaign_snapshot(index, project, scope.object_id),
                     "runs": [self.row_evidence(row) for row in rows]}
-        if scope.scope_type == AgentScopeType.RUN:
+        if scope.scope_type == OperationScopeType.RUN:
             return {"run": self.row_evidence(resolved),
                     "campaign_contexts": self.campaign_contexts(project, resolved),
                     "attempts": [
@@ -340,26 +323,14 @@ class ExperimentServerApplication:
                 "campaign_contexts": self.campaign_contexts(project, row),
                 "attempt": resolved.model_dump(mode="json")}
 
-    def _snapshot(self, scope: AgentScope, project: ResearchProject,
-                  resolved: Any) -> dict[str, Any]:
-        payload = self.runtime.agent_store.snapshot(scope)
-        payload["actions"] = self.runtime.action_store.list_for_scope(scope)
-        payload["current_evidence_digest"] = evidence_digest(
-            self.bounded_evidence(scope, project, resolved)
-        )
-        payload["evidence_checked_at"] = utc_now()
-        return payload
-
-    # ------------------------------------------------------- research operations
+    # -------------------------------------------------------------- operations
 
     def operation_availability(
-        self, project: str, scope_type: AgentScopeType | str, object_id: str,
+        self, project: str, scope_type: OperationScopeType | str, object_id: str,
     ) -> list[OperationAvailability]:
         """Return deterministic operation eligibility for one exact scope."""
         scope, configured, resolved = self.resolve_scope(project, scope_type, object_id)
-        default_budget = configured.proposal_defaults.get("max_gpu_hours", 1.0)
-        default_budget = float(default_budget) if isinstance(default_budget, (int, float)) \
-            and default_budget > 0 else 1.0
+        default_budget = 1.0
         result: list[OperationAvailability] = []
         for base_operation in operations_for_scope(scope.scope_type):
             parameters = tuple(
@@ -378,12 +349,20 @@ class ExperimentServerApplication:
                 operation=operation, scope=scope,
                 status="BLOCKED" if reasons else "AVAILABLE",
                 reasons=tuple(reasons), expected_effect=operation.expected_effect,
-                metadata={"proposal_kind": operation.proposal_kind},
+                metadata={"intent_kind": (
+                    {
+                        OperationScopeType.CAMPAIGN: "ARCHIVE_CAMPAIGN",
+                        OperationScopeType.RUN: "ARCHIVE_RUN",
+                        OperationScopeType.ATTEMPT: "ARCHIVE_ATTEMPT",
+                    }[scope.scope_type]
+                    if operation.operation_id == "object.archive"
+                    else operation.intent_kind
+                )},
             ))
         return result
 
     def _operation_blockers(
-        self, operation_id: str, scope: AgentScope,
+        self, operation_id: str, scope: OperationScope,
         project: ResearchProject, resolved: Any,
     ) -> list[str]:
         reasons: list[str] = []
@@ -395,28 +374,18 @@ class ExperimentServerApplication:
                 reasons.append("Authored research_project catalog is unavailable")
             if operation_id == "campaign.update" and getattr(resolved, "current_revision", None) is None:
                 reasons.append("Campaign has no resolved current revision")
-            if operation_id == "run.derive" and scope.scope_type == AgentScopeType.RUN:
+            if operation_id == "run.derive" and scope.scope_type == OperationScopeType.RUN:
                 memberships = getattr(resolved, "campaign_memberships", []) or []
                 if not memberships and not getattr(resolved, "campaign", None):
                     reasons.append("Run has no authored Campaign context to derive from")
-        elif operation_id == "campaign.complete":
-            status = campaign_snapshot(self.runtime.index, project, scope.object_id)
-            if status.get("lifecycle_state") != "COMPLETABLE":
-                failed = [
-                    str(gate.get("name") or gate.get("id") or "gate")
-                    for gate in (status.get("completion") or {}).get("gates", [])
-                    if gate.get("status") != "PASS"
-                ]
-                detail = ", ".join(failed) if failed else status.get("lifecycle_state", "UNKNOWN")
-                reasons.append(f"Campaign is not completable; blocked by {detail}")
         elif operation_id == "object.archive":
-            if scope.scope_type == AgentScopeType.CAMPAIGN:
+            if scope.scope_type == OperationScopeType.CAMPAIGN:
                 status = campaign_snapshot(self.runtime.index, project, scope.object_id)
                 if status.get("lifecycle_state") == "ARCHIVED":
                     reasons.append("Campaign is already archived")
             else:
                 root = (project.base_dir or Path(".")) / "experiments" / "archive_records"
-                if scope.scope_type == AgentScopeType.RUN:
+                if scope.scope_type == OperationScopeType.RUN:
                     record = root / "runs" / f"{scope.object_id}.yml"
                 else:
                     run_id, attempt_id = scope.object_id.rsplit("::", 1)
@@ -463,7 +432,7 @@ class ExperimentServerApplication:
                 reasons.append("Project has no controller configuration")
             elif not project.controller.capabilities.get("evaluation_as_run"):
                 reasons.append("Controller does not declare evaluation_as_run")
-            identity = scope.object_id if scope.scope_type == AgentScopeType.ATTEMPT else None
+            identity = scope.object_id if scope.scope_type == OperationScopeType.ATTEMPT else None
             if identity is None:
                 attempt_id = preferred_attempt_id(Path(resolved.run_dir))
                 if attempt_id:
@@ -478,7 +447,7 @@ class ExperimentServerApplication:
 
     def _require_operation_available(
         self, operation_id: str, project: str,
-        scope_type: AgentScopeType | str, object_id: str,
+        scope_type: OperationScopeType | str, object_id: str,
     ) -> None:
         availability = next((item for item in self.operation_availability(
             project, scope_type, object_id,
@@ -489,16 +458,10 @@ class ExperimentServerApplication:
 
     def invoke_direct_operation(
         self, operation_id: str, project: str,
-        scope_type: AgentScopeType | str, object_id: str,
+        scope_type: OperationScopeType | str, object_id: str,
         parameters: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Create a catalogued direct proposal for one exact scope.
-
-        Agent-backed operations intentionally remain Agent turns.  This method
-        is the transport-neutral home for the small set of direct proposal
-        operations, so HTTP and terminal clients cannot drift in how they
-        bind object identities or apply availability gates.
-        """
+        """Prepare a catalogued direct Action for one exact scope."""
         parameters = parameters or {}
         scope, configured, _ = self.resolve_scope(project, scope_type, object_id)
         self._require_operation_available(operation_id, project, scope.scope_type, object_id)
@@ -506,9 +469,8 @@ class ExperimentServerApplication:
         budget = 0.0
         if operation_id in {"run.submit", "attempt.retry"}:
             budget_value = parameters.get("max_gpu_hours")
-            default_budget = configured.proposal_defaults.get("max_gpu_hours", 1.0)
             try:
-                budget = float(default_budget if budget_value is None else budget_value)
+                budget = float(1.0 if budget_value is None else budget_value)
             except (TypeError, ValueError) as exc:
                 raise ApplicationError(
                     "max_gpu_hours must be a number", code="INVALID_OPERATION",
@@ -516,21 +478,19 @@ class ExperimentServerApplication:
             if budget <= 0:
                 raise ApplicationError("max_gpu_hours must be positive", code="INVALID_OPERATION")
 
-        if operation_id == "campaign.complete":
-            return self.propose_campaign_completion(
-                project, object_id,
-                outcome=str(parameters.get("outcome") or "INCONCLUSIVE"),
-                assessment=str(parameters.get("assessment") or ""),
-            )
         if operation_id == "object.archive":
-            return self.propose_object_archive(project, scope.scope_type, object_id, reason=reason)
+            if scope.scope_type == OperationScopeType.CAMPAIGN:
+                return self.prepare_campaign_archive(project, object_id, reason=reason)
+            return self.prepare_object_archive(
+                project, scope.scope_type, object_id, reason=reason,
+            )
         if operation_id == "run.submit":
-            return self.propose_run_submit(
+            return self.prepare_run_submit(
                 project, object_id, max_gpu_hours=budget,
-                reason=reason or "Requested from the scoped research operation catalog",
+                reason=reason or "Requested from the scoped operation catalog",
             )
         if operation_id == "attempt.retry":
-            return self.propose_attempt_retry(
+            return self.prepare_attempt_retry(
                 project, object_id,
                 new_attempt_id=(
                     str(parameters["new_attempt_id"])
@@ -539,254 +499,29 @@ class ExperimentServerApplication:
                 max_gpu_hours=budget, reason=reason,
             )
         if operation_id == "attempt.cancel":
-            return self.propose_attempt_cancel(project, object_id, reason=reason)
+            return self.prepare_attempt_cancel(project, object_id, reason=reason)
         raise ApplicationError(
-            f"operation {operation_id} is not a direct proposal operation",
+            f"operation {operation_id} requires a client-authored intent",
             code="INVALID_OPERATION",
         )
 
-    # --------------------------------------------------------------- agents
-
-    def agent_snapshot(self, project: str, scope_type: AgentScopeType | str,
-                       object_id: str) -> dict[str, Any]:
-        scope, configured, resolved = self.resolve_scope(project, scope_type, object_id)
-        self.runtime.agent_store.ensure(
-            scope, default_goal=self.default_goal(scope, resolved)
-        )
-        return self._snapshot(scope, configured, resolved)
-
-    def update_agent_goal(self, project: str, scope_type: AgentScopeType | str,
-                          object_id: str, goal: str) -> dict[str, Any]:
-        scope, configured, resolved = self.resolve_scope(project, scope_type, object_id)
-        self.runtime.agent_store.ensure(scope, default_goal=self.default_goal(scope, resolved))
-        self.runtime.agent_store.set_goal(scope, goal)
-        return self._snapshot(scope, configured, resolved)
-
-    def decide_proposal(self, project: str, scope_type: AgentScopeType | str,
-                        object_id: str, proposal_id: str, decision: str,
-                        note: str = "") -> dict[str, Any]:
-        scope, configured, resolved = self.resolve_scope(project, scope_type, object_id)
-        store = self.runtime.agent_store
-        store.ensure(scope, default_goal=self.default_goal(scope, resolved))
-        try:
-            proposal = store.proposal(scope, proposal_id)
-        except FileNotFoundError as exc:
-            raise ApplicationError("unknown proposal", status_code=404,
-                                   code="UNKNOWN_PROPOSAL") from exc
-        current = evidence_digest(self.bounded_evidence(scope, configured, resolved))
-        if decision == "APPROVED" and proposal.get("evidence_digest") != current:
-            raise ApplicationError(
-                "outdated proposal cannot be approved; regenerate it from current evidence",
-                code="OUTDATED_PROPOSAL",
-            )
-        try:
-            approval = store.decide_proposal(scope, proposal_id, decision, note=note)
-        except ValueError as exc:
-            raise ApplicationError(str(exc), code="INVALID_PROPOSAL") from exc
-        snapshot = store.snapshot(scope)
-        if not any(item.get("status") == "PENDING" for item in snapshot["proposals"]):
-            store.set_state(scope, AgentLifecycleState.IDLE)
-        return {"approval": approval, "agent": self._snapshot(scope, configured, resolved)}
-
-    def proposal_show(self, project: str, scope_type: AgentScopeType | str,
-                      object_id: str, proposal_id: str) -> dict[str, Any]:
-        scope, _, _ = self.resolve_scope(project, scope_type, object_id)
-        try:
-            return self.runtime.agent_store.proposal(scope, proposal_id)
-        except FileNotFoundError as exc:
-            raise ApplicationError("unknown proposal", status_code=404,
-                                   code="UNKNOWN_PROPOSAL") from exc
-
-    def begin_agent_turn(
-        self, project: str, scope_type: AgentScopeType | str, object_id: str,
-        message: str, *, enforce_operation_availability: bool = False,
-    ) -> dict[str, Any]:
-        """Persist a request for an external Agent client; never invoke a model."""
-        scope, configured, resolved = self.resolve_scope(project, scope_type, object_id)
-        store = self.runtime.agent_store
-        snapshot = store.ensure(scope, default_goal=self.default_goal(scope, resolved))
-        request = store.create_turn_request(
-            scope, message=message,
-            enforce_operation_availability=enforce_operation_availability,
-        )
-        store.append_message(scope, role="user", content=message)
-        store.set_state(scope, AgentLifecycleState.ANALYZING,
-                        current_task="等待 Agent client 领取并分析")
-        return {"turn": request, "agent": self._snapshot(scope, configured, resolved)}
-
-    def claim_agent_turn(
-        self, project: str, scope_type: AgentScopeType | str, object_id: str,
-        request_id: str, *, client_id: str, provider: str,
-    ) -> dict[str, Any]:
-        """Bind current evidence to one queued turn and return structured context."""
-        scope, configured, resolved = self.resolve_scope(project, scope_type, object_id)
-        store = self.runtime.agent_store
-        snapshot = store.ensure(scope, default_goal=self.default_goal(scope, resolved))
-        try:
-            record = store.turn_request(scope, request_id)
-        except (FileNotFoundError, ValueError) as exc:
-            raise ApplicationError("unknown Agent turn", status_code=404,
-                                   code="UNKNOWN_AGENT_TURN") from exc
-        if record.get("status") != "PENDING":
-            raise ApplicationError("Agent turn is not pending", code="AGENT_TURN_NOT_PENDING")
-        previous_provider = snapshot.get("conversation_provider")
-        if provider and previous_provider != provider:
-            snapshot = store.begin_provider_epoch(
-                scope, provider, preserve_messages=True,
-            )
-            if previous_provider is not None:
-                store.append_message(scope, role="user", content=str(record["message"]))
-                snapshot = store.snapshot(scope)
-        evidence = self.bounded_evidence(scope, configured, resolved)
-        digest = evidence_digest(evidence)
-        captured = utc_now()
-        record = store.set_turn_request(
-            scope, request_id, status="RUNNING", evidence_digest=digest,
-            evidence_captured_at=captured, client_id=client_id,
-        )
-        base_dir = Path(configured.base_dir or ".").expanduser().resolve()
-        project_file = Path(configured.authored_file).resolve() \
-            if configured.authored_file else None
-        try:
-            project_file_relative = str(project_file.relative_to(base_dir)) \
-                if project_file else ""
-        except ValueError:
-            project_file_relative = ""
-        return {
-            "turn": record,
-            "agent_id": snapshot["agent_id"],
-            "session_id": snapshot.get("thread_id"),
-            "goal": snapshot["goal"],
-            "scope": scope.model_dump(mode="json"),
-            "message": record["message"],
-            "evidence": compact_evidence(evidence),
-            "evidence_digest": digest,
-            "evidence_captured_at": captured,
-            "project_context": {
-                "workspace_root": str(base_dir),
-                "project_file": str(project_file or ""),
-                "project_file_relative": project_file_relative,
-                "project_file_digest": file_digest(project_file) \
-                    if project_file and project_file.is_file() else "",
-                "source_identity": repository_identity(base_dir),
-                "proposal_defaults": configured.proposal_defaults,
-                "agent_guidance": configured.agent_guidance,
-            },
-            "operations": [asdict(item) for item in self.operation_availability(
-                scope.project, scope.scope_type, scope.object_id,
-            )],
-        }
-
-    def claim_next_agent_turn(
-        self, *, client_id: str, provider: str, project: str | None = None,
-    ) -> dict[str, Any] | None:
-        for record in self.runtime.agent_store.pending_turn_requests(project):
-            scope = AgentScope.model_validate(record["scope"])
-            try:
-                return self.claim_agent_turn(
-                    scope.project, scope.scope_type, scope.object_id,
-                    str(record["request_id"]), client_id=client_id, provider=provider,
-                )
-            except ApplicationError as exc:
-                if exc.code != "AGENT_TURN_NOT_PENDING":
-                    raise
-        return None
-
-    def complete_agent_turn(
-        self, project: str, scope_type: AgentScopeType | str, object_id: str,
-        request_id: str, *, status: str, session_id: str | None,
-        message: str = "", proposals: list[dict[str, Any]] | None = None,
-        evidence_digest_value: str, client_id: str, error: str = "",
-    ) -> dict[str, Any]:
-        """Validate client output against server-owned scope and evidence, then persist it."""
-        scope, configured, resolved = self.resolve_scope(project, scope_type, object_id)
-        store = self.runtime.agent_store
-        try:
-            record = store.turn_request(scope, request_id)
-        except (FileNotFoundError, ValueError) as exc:
-            raise ApplicationError("unknown Agent turn", status_code=404,
-                                   code="UNKNOWN_AGENT_TURN") from exc
-        if record.get("status") != "RUNNING":
-            raise ApplicationError("Agent turn is not running", code="AGENT_TURN_NOT_RUNNING")
-        if record.get("client_id") != client_id:
-            raise ApplicationError(
-                "Agent turn is owned by a different client", code="AGENT_TURN_OWNER_MISMATCH",
-            )
-        if status == "FAILED":
-            safe_error = (error or "Agent client failed")[:500]
-            store.set_turn_request(scope, request_id, status="FAILED", error=safe_error)
-            store.set_state(scope, AgentLifecycleState.FAILED, last_error=safe_error)
-            return {"turn": store.turn_request(scope, request_id),
-                    "agent": self._snapshot(scope, configured, resolved)}
-        expected_digest = str(record.get("evidence_digest") or "")
-        current_digest = evidence_digest(self.bounded_evidence(scope, configured, resolved))
-        if evidence_digest_value != expected_digest or current_digest != expected_digest:
-            store.set_turn_request(
-                scope, request_id, status="FAILED", error="evidence changed during Agent turn",
-            )
-            store.set_state(scope, AgentLifecycleState.FAILED,
-                            last_error="evidence changed during Agent turn")
-            raise ApplicationError(
-                "Agent result is stale; evidence changed during analysis",
-                code="STALE_AGENT_RESULT",
-            )
-        availability_by_id = {
-            item.operation.operation_id: item for item in self.operation_availability(
-                scope.project, scope.scope_type, scope.object_id,
-            )
-        }
-        accepted_proposals = []
-        rejected_proposals = []
-        for proposal in proposals or []:
-            kind = str(proposal.get("kind") or "")
-            error = proposal_scope_error(kind, scope.scope_type)
-            operation_id = PROPOSAL_OPERATION_IDS.get(kind)
-            availability = availability_by_id.get(operation_id) if operation_id else None
-            if (bool(record.get("enforce_operation_availability")) and error is None
-                    and availability is not None and not availability.available):
-                error = f"proposal kind {kind} is currently blocked: " + \
-                    "; ".join(availability.reasons)
-            if error:
-                rejected_proposals.append(error)
-            else:
-                accepted_proposals.append(proposal)
-        assistant_message = message
-        if rejected_proposals:
-            assistant_message += (
-                "\n\nDaemon scope policy rejected proposal output:\n- "
-                + "\n- ".join(rejected_proposals)
-            )
-        store.append_message(scope, role="assistant", content=assistant_message,
-                             thread_id=session_id, evidence_digest=expected_digest,
-                             evidence_captured_at=record.get("evidence_captured_at"))
-        created = store.add_proposals(
-            scope, accepted_proposals, evidence_digest=expected_digest,
-        )
-        store.set_state(scope, AgentLifecycleState.WAITING_FOR_APPROVAL
-                        if created else AgentLifecycleState.IDLE)
-        response = self._snapshot(scope, configured, resolved)
-        response["created_proposals"] = created
-        store.set_turn_request(
-            scope, request_id, status="COMPLETED",
-            result={"created_proposal_ids": [item["proposal_id"] for item in created]},
-        )
-        response["turn"] = store.turn_request(scope, request_id)
-        return response
-
     # ------------------------------------------------------------- read model
 
-    def object_show(self, project: str, scope_type: AgentScopeType | str,
+    def object_show(self, project: str, scope_type: OperationScopeType | str,
                     object_id: str) -> dict[str, Any]:
         """Return one of the five canonical objects plus its bounded evidence."""
         scope, configured, resolved = self.resolve_scope(project, scope_type, object_id)
         if hasattr(resolved, "model_dump"):
-            scientific_object = resolved.model_dump(mode="json")
+            object_payload = resolved.model_dump(mode="json")
         else:
-            scientific_object = compact_evidence(resolved)
+            object_payload = compact_evidence(resolved)
+        bounded = self.bounded_evidence(scope, configured, resolved)
         return {
             "scope": scope.model_dump(mode="json"),
-            "object": scientific_object,
-            "evidence": self.bounded_evidence(scope, configured, resolved),
+            "object": object_payload,
+            "evidence": bounded,
+            "evidence_digest": evidence_digest(bounded),
+            "code_identity": project_code_identity(configured),
         }
 
     def campaign_list(self, project: str) -> dict[str, Any]:
@@ -807,58 +542,22 @@ class ExperimentServerApplication:
             raise ApplicationError(str(exc).strip("'"), status_code=404,
                                    code="UNKNOWN_CAMPAIGN") from exc
 
-    def propose_campaign_completion(
-        self, project: str, campaign: str, *, outcome: str, assessment: str,
+    def _prepare_action_intent(
+        self, scope: OperationScope, project: ResearchProject, intent: dict[str, Any],
     ) -> dict[str, Any]:
-        self._require_operation_available(
-            "campaign.complete", project, AgentScopeType.CAMPAIGN, campaign,
-        )
-        scope, configured, resolved = self.resolve_scope(
-            project, AgentScopeType.CAMPAIGN, campaign,
-        )
-        status = campaign_snapshot(self.runtime.index, configured, campaign)
-        if status["lifecycle_state"] != "COMPLETABLE":
-            raise ApplicationError(
-                f"Campaign is not completable: {status['lifecycle_state']}",
-                code="CAMPAIGN_NOT_COMPLETABLE",
-            )
-        if not outcome.strip():
-            raise ApplicationError("outcome is required", status_code=422,
-                                   code="INVALID_CAMPAIGN_OUTCOME")
-        draft = yaml.safe_dump({
-            "schema_version": 1,
-            "project": project,
-            "campaign": campaign,
-            "revision_id": status["revision_id"],
-            "evidence_digest": status["completion"]["evidence_digest"],
-            "membership_run_ids": status["completion"]["membership_run_ids"],
-            "outcome": outcome.strip(),
-            "assessment": assessment.strip(),
-        }, allow_unicode=True, sort_keys=False)
-        store = self.runtime.agent_store
-        store.ensure(scope, default_goal=self.default_goal(scope, resolved))
-        digest = evidence_digest(self.bounded_evidence(scope, configured, resolved))
-        created = store.add_proposals(scope, [{
-            "kind": "COMPLETE_CAMPAIGN",
-            "title": f"Complete Campaign {campaign}",
-            "target": f"campaign://{project}/{campaign}@{status['revision_id']}",
-            "change_summary": "freeze an evidence-bound Campaign completion record",
-            "resource_estimate": "none",
-            "rationale": "all Campaign completion gates currently pass",
-            "risk": "scientific conclusion becomes an immutable reviewed record",
-            "draft": draft,
-        }], evidence_digest=digest)
-        store.set_state(scope, AgentLifecycleState.WAITING_FOR_APPROVAL)
-        return {"proposal": created[0], "campaign": status}
+        try:
+            return self.runtime.action_service.prepare(scope, project, intent)
+        except (RuntimeError, ValueError) as exc:
+            raise ApplicationError(str(exc), code="ACTION_BLOCKED") from exc
 
-    def propose_campaign_archive(
+    def prepare_campaign_archive(
         self, project: str, campaign: str, *, reason: str,
     ) -> dict[str, Any]:
         self._require_operation_available(
-            "object.archive", project, AgentScopeType.CAMPAIGN, campaign,
+            "object.archive", project, OperationScopeType.CAMPAIGN, campaign,
         )
         scope, configured, resolved = self.resolve_scope(
-            project, AgentScopeType.CAMPAIGN, campaign,
+            project, OperationScopeType.CAMPAIGN, campaign,
         )
         status = campaign_snapshot(self.runtime.index, configured, campaign)
         if status["lifecycle_state"] == "ARCHIVED":
@@ -875,10 +574,8 @@ class ExperimentServerApplication:
             "reason": reason.strip(),
             "prior_lifecycle_state": status["lifecycle_state"],
         }, allow_unicode=True, sort_keys=False)
-        store = self.runtime.agent_store
-        store.ensure(scope, default_goal=self.default_goal(scope, resolved))
         digest = evidence_digest(self.bounded_evidence(scope, configured, resolved))
-        created = store.add_proposals(scope, [{
+        action = self._prepare_action_intent(scope, configured, {
             "kind": "ARCHIVE_CAMPAIGN",
             "title": f"Archive Campaign {campaign}",
             "target": f"campaign://{project}/{campaign}@{status['revision_id']}",
@@ -887,22 +584,22 @@ class ExperimentServerApplication:
             "rationale": reason.strip(),
             "risk": "the Campaign revision will leave active research views",
             "draft": draft,
-        }], evidence_digest=digest)
-        store.set_state(scope, AgentLifecycleState.WAITING_FOR_APPROVAL)
-        return {"proposal": created[0], "campaign": status}
+            "evidence_digest": digest,
+        })
+        return {"action": action, "campaign": status}
 
-    def propose_object_archive(
-        self, project: str, scope_type: AgentScopeType | str, object_id: str, *, reason: str,
+    def prepare_object_archive(
+        self, project: str, scope_type: OperationScopeType | str, object_id: str, *, reason: str,
     ) -> dict[str, Any]:
         self._require_operation_available("object.archive", project, scope_type, object_id)
         scope, configured, resolved = self.resolve_scope(project, scope_type, object_id)
-        if scope.scope_type not in {AgentScopeType.RUN, AgentScopeType.ATTEMPT}:
+        if scope.scope_type not in {OperationScopeType.RUN, OperationScopeType.ATTEMPT}:
             raise ApplicationError("only Run or Attempt records can be archived here",
                                    code="INVALID_ARCHIVE_SCOPE")
         if not reason.strip():
             raise ApplicationError("archive reason is required", status_code=422,
                                    code="INVALID_ARCHIVE_REASON")
-        if scope.scope_type == AgentScopeType.ATTEMPT:
+        if scope.scope_type == OperationScopeType.ATTEMPT:
             run_id, attempt_id = object_id.rsplit("::", 1)
             kind = "ARCHIVE_ATTEMPT"
             target = f"attempt://{project}/{run_id}::{attempt_id}"
@@ -917,9 +614,7 @@ class ExperimentServerApplication:
         }
         if attempt_id is not None:
             payload["attempt_id"] = attempt_id
-        store = self.runtime.agent_store
-        store.ensure(scope, default_goal=self.default_goal(scope, resolved))
-        created = store.add_proposals(scope, [{
+        action = self._prepare_action_intent(scope, configured, {
             "kind": kind,
             "title": f"Archive {scope.scope_type.value} record {object_id}",
             "target": target,
@@ -928,13 +623,13 @@ class ExperimentServerApplication:
             "rationale": reason.strip(),
             "risk": "object is hidden from default active workflows but immutable evidence remains",
             "draft": yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
-        }], evidence_digest=digest)
-        store.set_state(scope, AgentLifecycleState.WAITING_FOR_APPROVAL)
-        return {"proposal": created[0]}
+            "evidence_digest": digest,
+        })
+        return {"action": action}
 
     def _attempt_context(self, project: str, identity: str):
         scope, configured, attempt = self.resolve_scope(
-            project, AgentScopeType.ATTEMPT, identity,
+            project, OperationScopeType.ATTEMPT, identity,
         )
         run_id, attempt_id = identity.rsplit("::", 1)
         row = self.runtime.index.get_run(project, run_id)
@@ -985,7 +680,7 @@ class ExperimentServerApplication:
             gate["dimension"] = (
                 "identity" if gate_id in identity_gate_ids else
                 "execution" if gate_id in execution_gate_ids else
-                "scientific_evidence"
+                "evidence"
             )
 
         def summarize(selected: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1013,7 +708,7 @@ class ExperimentServerApplication:
             result = "PASS"
         dimensions = {
             name: summarize([gate for gate in gates if gate["dimension"] == name])
-            for name in ("execution", "identity", "scientific_evidence")
+            for name in ("execution", "identity", "evidence")
         }
         return {
             "schema_version": 1,
@@ -1023,7 +718,7 @@ class ExperimentServerApplication:
             "exit_code": 0 if result == "PASS" else 3,
             "execution_evidence_result": dimensions["execution"]["result"],
             "identity_result": dimensions["identity"]["result"],
-            "scientific_evidence_result": dimensions["scientific_evidence"]["result"],
+            "evidence_result": dimensions["evidence"]["result"],
             "dimensions": dimensions,
             "summary": counts,
             "gates": gates,
@@ -1062,7 +757,7 @@ class ExperimentServerApplication:
 
     def run_attempts(self, project: str, run_id: str) -> dict[str, Any]:
         """List exact Attempt identities without expanding collected evidence."""
-        _, _, row = self.resolve_scope(project, AgentScopeType.RUN, run_id)
+        _, _, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)
         current = preferred_attempt_id(Path(row.run_dir))
         attempts = [{
             "identity": f"{row.run_id}::{item.attempt_id}",
@@ -1109,28 +804,6 @@ class ExperimentServerApplication:
             attempt_manifest_path and attempt_manifest_path.name == "attempt.json"
             and (run_dir / "manifest.json").is_file()
         )
-        contract = run_manifest.get("research_contract")
-        contract_source: dict[str, Any] = {"kind": "run_manifest"}
-        if not isinstance(contract, dict):
-            candidates = []
-            configured_project = self.runtime.project(project)
-            for binding in row.campaign_memberships:
-                ref = next(
-                    (item for item in configured_project.campaigns
-                     if item.name == binding.campaign), None,
-                )
-                revision = ref.current_revision if ref else None
-                if revision and isinstance(revision.research_contract, dict):
-                    candidates.append((binding, revision))
-            if len(candidates) == 1:
-                binding, revision = candidates[0]
-                contract = revision.research_contract
-                contract_source = {
-                    "kind": "current_campaign_revision",
-                    "campaign": binding.campaign,
-                    "revision_id": revision.revision_id,
-                    "frozen_in_run": False,
-                }
         identity_payload = dict(attempt_manifest)
         if harness_layout and identity_payload.get("project") is None:
             # The harness freezes project identity in the parent Run manifest;
@@ -1364,11 +1037,6 @@ class ExperimentServerApplication:
         local_checkpoints = sorted(
             path.name for path in (attempt_dir / "collected_run").glob("checkpoint*")
         )
-        checkpoint_policy = contract.get("checkpoint") if isinstance(contract, dict) else None
-        checkpoint_required = (
-            isinstance(checkpoint_policy, dict)
-            and checkpoint_policy.get("required_on_success") is True
-        )
         if checkpoint and checkpoint_step is not None:
             gates.append(self._gate(
                 "attempt.checkpoint_evidence", "PASS",
@@ -1376,17 +1044,10 @@ class ExperimentServerApplication:
                 {"path": checkpoint, "step": checkpoint_step,
                  "local_entries": local_checkpoints[:20]},
             ))
-        elif checkpoint_required:
+        else:
             gates.append(self._gate(
                 "attempt.checkpoint_evidence", "UNKNOWN",
                 "completed checkpoint path or step is missing",
-                {"path": checkpoint, "step": checkpoint_step,
-                 "local_entries": local_checkpoints[:20]},
-            ))
-        else:
-            gates.append(self._gate(
-                "attempt.checkpoint_evidence", "PASS",
-                "a completed checkpoint is not required by the applicable research contract",
                 {"path": checkpoint, "step": checkpoint_step,
                  "local_entries": local_checkpoints[:20]},
             ))
@@ -1423,156 +1084,11 @@ class ExperimentServerApplication:
         gates.append(self._gate(
             "attempt.evidence_conflicts",
             "BLOCKED" if evidence_conflicts else "PASS",
-            "scientific evidence contains conflicting values" if evidence_conflicts
-            else "no scientific evidence conflicts are recorded",
+            "evidence contains conflicting values" if evidence_conflicts
+            else "no evidence conflicts are recorded",
             {"count": len(evidence_conflicts), "conflicts": evidence_conflicts[:50]},
         ))
 
-        if not isinstance(contract, dict):
-            gates.append(self._gate(
-                "attempt.scientific_contract", "UNKNOWN",
-                "Run has no frozen research_contract",
-            ))
-        else:
-            required = contract.get("required_metrics")
-            required = required if isinstance(required, dict) else {}
-            required_names = set(required.get("common") or [])
-            by_role = required.get("by_role")
-            if isinstance(by_role, dict) and row.role:
-                required_names.update(by_role.get(row.role) or [])
-            available_names = set(records[-1]) if records else set()
-            metric_values: dict[str, list[Any]] = {}
-            if records:
-                for key, value in records[-1].items():
-                    metric_values.setdefault(key, []).append(value)
-            variants, _ = evaluation_variants(
-                run_dir, attempt_id=attempt_id, exact_attempt=True,
-            )
-            for variant in variants:
-                latest = variant.get("latest")
-                if isinstance(latest, dict):
-                    available_names.update(latest)
-                    for key, value in latest.items():
-                        metric_values.setdefault(key, []).append(value)
-            missing_metrics = sorted(required_names - available_names)
-
-            terminal_results: list[dict[str, Any]] = []
-            terminal_failures: list[dict[str, Any]] = []
-            unresolved_checks: list[dict[str, Any]] = []
-            operators = {
-                "lt": lambda left, right: left < right,
-                "le": lambda left, right: left <= right,
-                "lte": lambda left, right: left <= right,
-                "gt": lambda left, right: left > right,
-                "ge": lambda left, right: left >= right,
-                "gte": lambda left, right: left >= right,
-                "eq": lambda left, right: left == right,
-            }
-
-            def unique_metric(name: Any) -> tuple[Any, str | None]:
-                values = metric_values.get(str(name), [])
-                unique = []
-                for value in values:
-                    if value not in unique:
-                        unique.append(value)
-                if not unique:
-                    return None, "missing"
-                if len(unique) > 1:
-                    return None, "ambiguous_across_eval_variants"
-                return unique[0], None
-
-            for index, check in enumerate(contract.get("terminal_checks") or []):
-                if not isinstance(check, dict):
-                    unresolved_checks.append({"index": index, "reason": "invalid_check"})
-                    continue
-                roles = check.get("roles")
-                if isinstance(roles, list) and row.role not in roles:
-                    continue
-                op = check.get("op")
-                if op not in {*operators, "finite", "nonfinite"}:
-                    unresolved_checks.append({"index": index, "reason": "unsupported_op", "op": op})
-                    continue
-                left_name = check.get("left") or check.get("metric")
-                left, left_error = unique_metric(left_name)
-                if op in {"finite", "nonfinite"}:
-                    if left_error:
-                        unresolved_checks.append({
-                            "index": index, "left": left_name, "reason": left_error,
-                        })
-                        continue
-                    try:
-                        is_finite = isinstance(left, (int, float)) and math.isfinite(float(left))
-                    except (TypeError, ValueError):
-                        is_finite = False
-                    passed = is_finite if op == "finite" else not is_finite
-                    result = {"index": index, "op": op, "left": left,
-                              "right": None, "passed": passed}
-                    terminal_results.append(result)
-                    if not passed:
-                        terminal_failures.append(result)
-                    continue
-                if check.get("right") is not None:
-                    right, right_error = unique_metric(check.get("right"))
-                else:
-                    right, right_error = check.get("value"), None
-                if left_error or right_error or right is None:
-                    unresolved_checks.append({
-                        "index": index, "left": left_name, "right": check.get("right"),
-                        "reason": left_error or right_error or "missing_threshold",
-                    })
-                    continue
-                try:
-                    passed = bool(operators[op](left, right))
-                except TypeError:
-                    unresolved_checks.append({"index": index, "reason": "non_comparable_values"})
-                    continue
-                result = {"index": index, "op": op, "left": left, "right": right,
-                          "passed": passed}
-                terminal_results.append(result)
-                if not passed:
-                    terminal_failures.append(result)
-
-            required_artifacts = contract.get("required_artifacts")
-            required_artifacts = required_artifacts if isinstance(required_artifacts, dict) else {}
-            common_artifacts = required_artifacts.get("common")
-            common_artifacts = common_artifacts if isinstance(common_artifacts, dict) else {}
-            missing_artifacts: list[dict[str, Any]] = []
-            artifact_payload = artifacts if isinstance(artifacts, dict) else {}
-            for name, rule in common_artifacts.items():
-                observed = artifact_payload.get(name)
-                observed = observed if isinstance(observed, dict) else {}
-                rule = rule if isinstance(rule, dict) else {}
-                for key, threshold_key in (
-                    ("records", "min_records"),
-                    ("nonempty_records", "min_nonempty_records"),
-                ):
-                    minimum = rule.get(threshold_key)
-                    if isinstance(minimum, (int, float)) and (observed.get(key) or 0) < minimum:
-                        missing_artifacts.append({
-                            "artifact": name, "field": key,
-                            "required": minimum, "observed": observed.get(key) or 0,
-                        })
-            if terminal_failures:
-                contract_status = "BLOCKED"
-            elif missing_metrics or missing_artifacts or unresolved_checks:
-                contract_status = "UNKNOWN"
-            else:
-                contract_status = "PASS"
-            gates.append(self._gate(
-                "attempt.scientific_contract", contract_status,
-                "required scientific evidence is present" if contract_status == "PASS"
-                else "required scientific evidence is incomplete",
-                {
-                    "required_metrics": sorted(required_names),
-                    "missing_metrics": missing_metrics,
-                    "missing_artifacts": missing_artifacts,
-                    "terminal_checks_declared": len(contract.get("terminal_checks") or []),
-                    "terminal_results": terminal_results,
-                    "terminal_failures": terminal_failures,
-                    "unresolved_checks": unresolved_checks,
-                    "contract_source": contract_source,
-                },
-            ))
         return gates
 
     def attempt_validate(self, project: str, identity: str) -> dict[str, Any]:
@@ -1585,7 +1101,7 @@ class ExperimentServerApplication:
         )
 
     def run_validate(self, project: str, run_id: str) -> dict[str, Any]:
-        _, _, row = self.resolve_scope(project, AgentScopeType.RUN, run_id)
+        _, _, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)
         run_dir = Path(row.run_dir)
         manifest, manifest_path = self._manifest_at(
             run_dir, ("manifest.yaml", "collected_run/manifest.yaml", "control_manifest.yaml"),
@@ -1843,16 +1359,16 @@ class ExperimentServerApplication:
             path = Path(project.base_dir or ".") / path
         return path.resolve()
 
-    def propose_run_submit(self, project: str, run_id: str, *,
+    def prepare_run_submit(self, project: str, run_id: str, *,
                            max_gpu_hours: float, reason: str = "") -> dict[str, Any]:
-        """Create a reviewable first-submission proposal for an authored Run."""
+        """Prepare a reviewable first-submission Action for an authored Run."""
         self._require_operation_available(
-            "run.submit", project, AgentScopeType.RUN, run_id,
+            "run.submit", project, OperationScopeType.RUN, run_id,
         )
         if max_gpu_hours <= 0:
             raise ApplicationError("max_gpu_hours must be positive", status_code=422,
                                    code="INVALID_GPU_BUDGET")
-        scope, configured, row = self.resolve_scope(project, AgentScopeType.RUN, run_id)
+        scope, configured, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)
         if configured.controller is None:
             raise ApplicationError("project has no controller configuration",
                                    code="CONTROLLER_UNAVAILABLE")
@@ -1882,10 +1398,8 @@ class ExperimentServerApplication:
             "campaign_file": str(campaign), "run_id": row.run_id,
             "attempt_id": attempt_id, "max_gpu_hours": max_gpu_hours,
         }, sort_keys=False)
-        store = self.runtime.agent_store
-        store.ensure(scope, default_goal=self.default_goal(scope, row))
         digest = evidence_digest(self.bounded_evidence(scope, configured, row))
-        created = store.add_proposals(scope, [{
+        action = self._prepare_action_intent(scope, configured, {
             "kind": "SUBMIT_RUN",
             "title": f"Launch {row.run_id} as {attempt_id}",
             "target": f"run://{configured.project}/{row.run_id}",
@@ -1894,14 +1408,11 @@ class ExperimentServerApplication:
             "rationale": "materialize an authored Campaign membership",
             "risk": "scheduler mutation; approval and prepared gates are required before execution",
             "draft": draft,
-        }], evidence_digest=digest)
-        store.set_state(scope, AgentLifecycleState.WAITING_FOR_APPROVAL)
-        return {
-            "proposal": created[0], "created_proposals": created,
-            "agent": self._snapshot(scope, configured, row),
-        }
+            "evidence_digest": digest,
+        })
+        return {"action": action}
 
-    def propose_attempt_retry(self, project: str, identity: str, *,
+    def prepare_attempt_retry(self, project: str, identity: str, *,
                               new_attempt_id: str | None,
                               max_gpu_hours: float, reason: str) -> dict[str, Any]:
         if max_gpu_hours <= 0:
@@ -1927,7 +1438,7 @@ class ExperimentServerApplication:
                 code="ATTEMPT_RETRY_BUDGET_EXHAUSTED",
             )
         self._require_operation_available(
-            "attempt.retry", project, AgentScopeType.ATTEMPT, identity,
+            "attempt.retry", project, OperationScopeType.ATTEMPT, identity,
         )
         existing = {item.attempt_id for item in row.attempts}
         if new_attempt_id is None:
@@ -1946,7 +1457,7 @@ class ExperimentServerApplication:
             "source_attempt_id": attempt.attempt_id,
             "attempt_id": new_attempt_id, "max_gpu_hours": max_gpu_hours,
         }, sort_keys=False)
-        return self._create_attempt_proposal(
+        return self._prepare_attempt_action(
             scope, configured, row, attempt, kind="RETRY_ATTEMPT", draft=draft,
             title=f"Retry {row.run_id} from {attempt.attempt_id} as {new_attempt_id}",
             change_summary=reason or "retry failed attempt with a new attempt identity",
@@ -1954,7 +1465,7 @@ class ExperimentServerApplication:
             risk="scheduler mutation; review checkpoint and failure classification before approval",
         )
 
-    def propose_attempt_cancel(self, project: str, identity: str, *,
+    def prepare_attempt_cancel(self, project: str, identity: str, *,
                                reason: str) -> dict[str, Any]:
         scope, configured, row, attempt, _ = self._attempt_context(project, identity)
         if (attempt.state or "").upper() not in {
@@ -1968,7 +1479,7 @@ class ExperimentServerApplication:
             raise ApplicationError("attempt has no backend_job_id",
                                    code="BACKEND_JOB_ID_MISSING")
         self._require_operation_available(
-            "attempt.cancel", project, AgentScopeType.ATTEMPT, identity,
+            "attempt.cancel", project, OperationScopeType.ATTEMPT, identity,
         )
         campaign = self._campaign_file(configured, row.campaign)
         draft = yaml.safe_dump({
@@ -1976,42 +1487,38 @@ class ExperimentServerApplication:
             "attempt_id": attempt.attempt_id,
             "backend_job_id": attempt.backend_job_id,
         }, sort_keys=False)
-        return self._create_attempt_proposal(
+        return self._prepare_attempt_action(
             scope, configured, row, attempt, kind="CANCEL_RUN", draft=draft,
             title=f"Cancel {row.run_id} {attempt.attempt_id}",
             change_summary=reason or "cancel the exact observed backend job",
             resource_estimate="none", risk="scheduler cancellation",
         )
 
-    def _create_attempt_proposal(
-        self, scope: AgentScope, configured: ResearchProject, row: Any, attempt: Any,
+    def _prepare_attempt_action(
+        self, scope: OperationScope, configured: ResearchProject, row: Any, attempt: Any,
         *, kind: str, draft: str, title: str, change_summary: str,
         resource_estimate: str, risk: str,
     ) -> dict[str, Any]:
-        store = self.runtime.agent_store
-        store.ensure(scope, default_goal=self.default_goal(scope, attempt))
         digest = evidence_digest(self.bounded_evidence(scope, configured, attempt))
-        created = store.add_proposals(scope, [{
+        action = self._prepare_action_intent(scope, configured, {
             "kind": kind, "title": title,
             "target": f"attempt://{configured.project}/{scope.object_id}",
             "change_summary": change_summary,
             "resource_estimate": resource_estimate,
             "rationale": f"operate on immutable attempt evidence for {row.run_id}",
-            "risk": risk, "draft": draft,
-        }], evidence_digest=digest)
-        store.set_state(scope, AgentLifecycleState.WAITING_FOR_APPROVAL)
-        return {"proposal": created[0],
-                "agent": self._snapshot(scope, configured, attempt)}
+            "risk": risk, "draft": draft, "evidence_digest": digest,
+        })
+        return {"action": action}
 
     def run_detail(self, project: str, run_id: str) -> dict[str, Any]:
-        _, _, row = self.resolve_scope(project, AgentScopeType.RUN, run_id)
+        _, _, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)
         payload = row.model_dump()
         payload["is_terminal"] = row.is_terminal
         return payload
 
     def run_metrics(self, project: str, run_id: str, *, keys: str | None = None,
                     max_points: int = 2000) -> dict[str, Any]:
-        _, _, row = self.resolve_scope(project, AgentScopeType.RUN, run_id)
+        _, _, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)
         records, source, source_attempt_id = train_metric_records(Path(row.run_dir))
         return self._metric_payload(
             records, keys=keys, max_points=max_points, source=source,
@@ -2055,12 +1562,12 @@ class ExperimentServerApplication:
         }
 
     def run_eval(self, project: str, run_id: str) -> dict[str, Any]:
-        _, _, row = self.resolve_scope(project, AgentScopeType.RUN, run_id)
+        _, _, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)
         variants, source_attempt_id = evaluation_variants(Path(row.run_dir))
         return {"source_attempt_id": source_attempt_id, "variants": variants}
 
     def run_events(self, project: str, run_id: str) -> dict[str, Any]:
-        _, _, row = self.resolve_scope(project, AgentScopeType.RUN, run_id)
+        _, _, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)
         events = read_jsonl(Path(row.run_dir) / "events.jsonl")
         for event in events:
             event["ts"] = parse_iso_ts(event.get("timestamp"))
@@ -2068,47 +1575,24 @@ class ExperimentServerApplication:
 
     # --------------------------------------------------------------- actions
 
-    def list_actions(self, project: str, scope_type: AgentScopeType | str,
+    def list_actions(self, project: str, scope_type: OperationScopeType | str,
                      object_id: str) -> dict[str, Any]:
         scope, _, _ = self.resolve_scope(project, scope_type, object_id)
         return {"actions": self.runtime.action_store.list_for_scope(scope),
                 "policy": self.runtime.config.action_runtime.model_dump()}
 
-    def prepare_action(self, project: str, scope_type: AgentScopeType | str,
-                       object_id: str, proposal_id: str) -> dict[str, Any]:
-        return self._prepare_action_local(project, scope_type, object_id, proposal_id)
-
-    def _prepare_action_local(self, project: str, scope_type: AgentScopeType | str,
-                              object_id: str, proposal_id: str) -> dict[str, Any]:
-        scope, configured, _ = self.resolve_scope(project, scope_type, object_id)
-        try:
-            proposal = self.runtime.agent_store.proposal(scope, proposal_id)
-            if proposal.get("kind") in {"COMPLETE_CAMPAIGN", "ARCHIVE_CAMPAIGN"}:
-                payload = yaml.safe_load(str(proposal.get("draft") or ""))
-                payload = payload if isinstance(payload, dict) else {}
-                status = campaign_snapshot(self.runtime.index, configured, object_id)
-                if payload.get("revision_id") != status.get("revision_id"):
-                    raise ApplicationError(
-                        "Campaign revision changed after proposal approval",
-                        code="OUTDATED_CAMPAIGN_REVISION",
-                    )
-                if proposal.get("kind") == "COMPLETE_CAMPAIGN" and (
-                    status.get("lifecycle_state") != "COMPLETABLE"
-                    or payload.get("evidence_digest")
-                    != status.get("completion", {}).get("evidence_digest")
-                ):
-                    raise ApplicationError(
-                        "Campaign completion evidence changed or no longer passes",
-                        code="OUTDATED_CAMPAIGN_COMPLETION",
-                    )
-            return self.runtime.action_service.prepare(scope, configured, proposal)
-        except ApplicationError:
-            raise
-        except FileNotFoundError as exc:
-            raise ApplicationError("proposal not found", status_code=404,
-                                   code="UNKNOWN_PROPOSAL") from exc
-        except (RuntimeError, ValueError) as exc:
-            raise ApplicationError(str(exc), code="ACTION_BLOCKED") from exc
+    def prepare_action(self, project: str, scope_type: OperationScopeType | str,
+                       object_id: str, intent: dict[str, Any]) -> dict[str, Any]:
+        scope, configured, resolved = self.resolve_scope(project, scope_type, object_id)
+        current_digest = evidence_digest(
+            self.bounded_evidence(scope, configured, resolved)
+        )
+        if intent.get("evidence_digest") != current_digest:
+            raise ApplicationError(
+                "intent evidence digest does not match current bounded evidence",
+                code="STALE_EVIDENCE",
+            )
+        return self._prepare_action_intent(scope, configured, intent)
 
     def authorize_action(self, action_id: str, note: str = "") -> dict[str, Any]:
         return self._authorize_action_local(action_id, note)
@@ -2154,23 +1638,6 @@ class ExperimentServerApplication:
     def _execute_action_local(self, action_id: str, confirmation: str) -> dict[str, Any]:
         try:
             action = self.runtime.action_store.snapshot(action_id)
-            if action.get("proposal_kind") == "COMPLETE_CAMPAIGN":
-                scope = action.get("scope") or {}
-                configured = self.runtime.project(str(scope.get("project") or ""))
-                index_project(self.runtime.index, configured)
-                status = campaign_snapshot(
-                    self.runtime.index, configured, str(scope.get("object_id") or ""),
-                )
-                payload = yaml.safe_load(str(action.get("proposed_content") or ""))
-                payload = payload if isinstance(payload, dict) else {}
-                if status.get("lifecycle_state") != "COMPLETABLE" or (
-                    payload.get("evidence_digest")
-                    != status.get("completion", {}).get("evidence_digest")
-                ):
-                    raise ApplicationError(
-                        "Campaign evidence changed after authorization; prepare a fresh completion",
-                        code="CAMPAIGN_COMPLETION_DRIFT",
-                    )
             result = self.runtime.action_service.execute(action_id, confirmation)
         except ApplicationError:
             raise

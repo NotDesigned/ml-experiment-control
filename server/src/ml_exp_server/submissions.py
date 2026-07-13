@@ -1,13 +1,10 @@
-"""First-class experiment submission lifecycle over durable actions.
-
-The generic proposal/action machinery remains the mutation safety substrate.
-This service presents the smaller Run -> Submission interface that operator
-clients need, without exposing Agent-store choreography as the public model.
-"""
+"""First-class experiment submission lifecycle over durable Actions."""
 
 from __future__ import annotations
 
+import hashlib
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,13 +12,28 @@ import yaml
 
 from .application import ApplicationError, ExperimentServerApplication, evidence_digest
 from .runtime import ExperimentServerRuntime
-from .schemas import AgentLifecycleState, AgentScope, AgentScopeType
+from .schemas import OperationScope, OperationScopeType
 
 
 _SUBMISSION_OPERATIONS = {"SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION"}
 _ACTIVE_EXECUTION_STATES = {
     "PREPARED", "AUTHORIZED", "EXECUTING", "RECONCILE_REQUIRED", "VERIFIED",
 }
+
+
+def _reusable(view: dict[str, Any]) -> bool:
+    if view.get("status") not in _ACTIVE_EXECUTION_STATES:
+        return False
+    if view.get("status") not in {"PREPARED", "AUTHORIZED"}:
+        return True
+    value = view.get("gate_expires_at")
+    if not isinstance(value, str):
+        return False
+    try:
+        expires_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) < expires_at
 
 
 class ExperimentSubmissionService:
@@ -93,8 +105,8 @@ class ExperimentSubmissionService:
     def list(self, project: str, run_id: str) -> dict[str, Any]:
         # Authored Runs are submit candidates before a run directory exists,
         # so listing submissions must not require RunIndex resolution.
-        scope = AgentScope(
-            project=project, scope_type=AgentScopeType.RUN, object_id=run_id,
+        scope = OperationScope(
+            project=project, scope_type=OperationScopeType.RUN, object_id=run_id,
         )
         actions = [
             action for action in self.runtime.action_store.list_for_scope(scope)
@@ -108,18 +120,13 @@ class ExperimentSubmissionService:
 
     def prepare_first_attempt(
         self, project: str, run_id: str, *, max_gpu_hours: float,
-        reason: str, approval_note: str,
+        reason: str,
     ) -> dict[str, Any]:
-        """Prepare and approve a first-Attempt intent without scheduling it."""
-        if not approval_note.strip():
-            raise ApplicationError(
-                "approval_note is required to prepare a submission",
-                status_code=422, code="APPROVAL_NOTE_REQUIRED",
-            )
+        """Prepare a first-Attempt intent without authorizing or scheduling it."""
         with self._prepare_lock:
             existing = self.list(project, run_id)["submissions"]
             for view in reversed(existing):
-                if view["status"] not in _ACTIVE_EXECUTION_STATES:
+                if not _reusable(view):
                     continue
                 existing_budget = view["preflight_summary"].get("max_gpu_hours")
                 if existing_budget is not None and float(existing_budget) != max_gpu_hours:
@@ -183,8 +190,8 @@ class ExperimentSubmissionService:
             else:
                 existing_attempts = []
             attempt_id = existing_attempts[-1] if existing_attempts else "attempt-001"
-            scope = AgentScope(
-                project=project, scope_type=AgentScopeType.RUN, object_id=run_id,
+            scope = OperationScope(
+                project=project, scope_type=OperationScopeType.RUN, object_id=run_id,
             )
             draft = yaml.safe_dump({
                 "campaign_file": str(campaign),
@@ -192,17 +199,13 @@ class ExperimentSubmissionService:
                 "attempt_id": attempt_id,
                 "max_gpu_hours": max_gpu_hours,
             }, sort_keys=False)
-            store = self.runtime.agent_store
-            store.ensure(
-                scope, default_goal=f"Submit authored experiment {run_id} safely",
-            )
             digest = evidence_digest({
                 "project": project,
                 "run_id": run_id,
                 "campaign_revision": revision.model_dump(mode="json"),
                 "indexed_run": row.model_dump(mode="json") if row is not None else None,
             })
-            proposal = store.add_proposals(scope, [{
+            action = self.runtime.action_service.prepare(scope, configured, {
                 "kind": "SUBMIT_RUN",
                 "title": f"Launch {run_id} as {attempt_id}",
                 "target": f"run://{project}/{run_id}",
@@ -211,15 +214,11 @@ class ExperimentSubmissionService:
                 "rationale": "materialize one authored Campaign membership",
                 "risk": "scheduler mutation requires separate authorization and execution",
                 "draft": draft,
-            }], evidence_digest=digest)[0]
-            store.set_state(scope, AgentLifecycleState.WAITING_FOR_APPROVAL)
-            store.decide_proposal(
-                scope, str(proposal["proposal_id"]), "APPROVED", note=approval_note,
-            )
-            store.set_state(scope, AgentLifecycleState.IDLE)
-            action = self.runtime.action_service.prepare(
-                scope, configured, store.proposal(scope, str(proposal["proposal_id"])),
-            )
+                "evidence_digest": digest,
+                "idempotency_key": "submission-" + hashlib.sha256(
+                    f"{project}:{run_id}:{attempt_id}:{len(existing) + 1}".encode()
+                ).hexdigest()[:20],
+            })
             return self._view(action)
 
     def authorize(self, submission_id: str, note: str) -> dict[str, Any]:

@@ -218,7 +218,7 @@ def test_server_config(tmp_path):
     cfg.write_text(textwrap.dedent(f"""\
         schema_version: 1
         index_db: {tmp_path}/index.sqlite
-        agent_root: {tmp_path}/agents
+        action_root: {tmp_path}/actions
         poll_interval_seconds: 60
         projects:
           - project_file: {tmp_path}/experiments/research_project.yaml
@@ -226,7 +226,7 @@ def test_server_config(tmp_path):
     config = load_server_config(cfg)
     assert config.poll_interval_seconds == 60
     assert config.index_db_path().name == "index.sqlite"
-    assert config.agent_root_path() == tmp_path / "agents"
+    assert config.action_root_path() == tmp_path / "actions"
 
 
 def test_server_config_defaults_to_twenty_second_polling(tmp_path):

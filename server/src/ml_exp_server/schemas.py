@@ -1,8 +1,8 @@
 """Pydantic models shared by ingest, API, and collector.
 
 Canonical state lives in run-directory files (manifest.yaml, status.json,
-collection.json, decision.json, events.jsonl) plus project-side YAML
-(research_project.yaml, research_questions/*.yml). Everything here is a read model.
+collection.json, decision.json, events.jsonl) plus project-side YAML. Everything
+here is either a read model or a transport-neutral operation contract.
 """
 
 from __future__ import annotations
@@ -25,26 +25,14 @@ RUN_STATES = {
 TERMINAL_RUN_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 
-class AgentScopeType(str, Enum):
+class OperationScopeType(str, Enum):
+    """Object namespaces accepted by daemon read and mutation operations."""
+
     PROJECT = "project"
     RESEARCH_QUESTION = "research_question"
     CAMPAIGN = "campaign"
     RUN = "run"
     ATTEMPT = "attempt"
-
-
-class AgentLifecycleState(str, Enum):
-    IDLE = "IDLE"
-    PLANNING = "PLANNING"
-    ANALYZING = "ANALYZING"
-    IMPLEMENTING = "IMPLEMENTING"
-    VALIDATING = "VALIDATING"
-    WAITING_FOR_EVIDENCE = "WAITING_FOR_EVIDENCE"
-    WAITING_FOR_APPROVAL = "WAITING_FOR_APPROVAL"
-    MONITORING = "MONITORING"
-    BLOCKED = "BLOCKED"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
 
 
 class ProjectLifecycleState(str, Enum):
@@ -86,8 +74,10 @@ class CampaignRelationship(str, Enum):
     DUPLICATE_RUN_ID = "DUPLICATE_RUN_ID"
 
 
-class AgentScope(BaseModel):
-    scope_type: AgentScopeType
+class OperationScope(BaseModel):
+    """Exact daemon object targeted by an immutable operation intent."""
+
+    scope_type: OperationScopeType
     project: str
     object_id: str
 
@@ -100,9 +90,11 @@ class TelemetryConfig(BaseModel):
 
 
 class ActionRuntimeConfig(BaseModel):
-    """Phase-3 mutation boundary; both switches default closed."""
+    """Mutation boundary; both switches default closed."""
 
-    allow_science_writes: bool = False
+    model_config = ConfigDict(extra="forbid")
+
+    allow_project_writes: bool = False
     allow_scheduler_mutations: bool = False
     timeout_seconds: int = 300
     gate_ttl_seconds: int = 1800
@@ -187,7 +179,6 @@ class ResearchQuestion(BaseModel):
     summary: str = ""
     notes: list[str] = Field(default_factory=list)
     links: ResearchLinks = Field(default_factory=ResearchLinks)
-    assessments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ControllerConfig(BaseModel):
@@ -211,8 +202,6 @@ class ResearchProject(BaseModel):
     controller: Optional[ControllerConfig] = None
     campaigns: list[CampaignRef] = Field(default_factory=list)
     research_questions_dir: Optional[str] = None
-    proposal_defaults: dict[str, Any] = Field(default_factory=dict)
-    agent_guidance: list[str] = Field(default_factory=list)
     # Resolved at load time; not part of the on-disk schema.
     base_dir: Optional[Path] = None
     authored_file: Optional[Path] = Field(default=None, exclude=True)
@@ -243,9 +232,10 @@ class ProjectLifecycleRecord(BaseModel):
 class ServerConfig(BaseModel):
     """Top-level daemon workspace configuration."""
 
+    model_config = ConfigDict(extra="forbid")
+
     schema_version: int = SCHEMA_VERSION
     index_db: str = "~/.local/state/ml-expd/index.sqlite"
-    agent_root: str = "~/.local/state/ml-expd/agents"
     action_root: str = "~/.local/state/ml-expd/actions"
     # The lifecycle registry is workspace-owned. When omitted it is derived
     # from index_db so independent daemon workspaces stay isolated.
@@ -260,9 +250,6 @@ class ServerConfig(BaseModel):
 
     def index_db_path(self) -> Path:
         return Path(self.index_db).expanduser()
-
-    def agent_root_path(self) -> Path:
-        return Path(self.agent_root).expanduser()
 
     def action_root_path(self) -> Path:
         return Path(self.action_root).expanduser()

@@ -1,4 +1,4 @@
-"""Prepare reviewable Phase-3 plans and execute them behind a second approval."""
+"""Prepare immutable Action plans and execute them after explicit authorization."""
 
 from __future__ import annotations
 
@@ -18,19 +18,20 @@ from uuid import uuid4
 import yaml
 from pydantic import ValidationError
 
-from ..agents.store import utc_now
 from ..campaign_lifecycle import campaign_record_path
 from ..controller_gateway import CommandRunner, ProjectControllerGateway, redact as _redact
+from ..intent_protocol import OperationIntent
 from ..project_config import load_research_question
-from ..research_operations import proposal_scope_error
+from ..operations import intent_scope_error
 from ..schemas import (
     ActionRuntimeConfig,
-    AgentScope,
-    AgentScopeType,
+    OperationScope,
+    OperationScopeType,
     ResearchQuestion,
     ResearchProject,
 )
-from .store import ActionStore, atomic_json
+from ..storage import atomic_json, utc_now
+from .store import ActionStore
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -94,8 +95,8 @@ def _semantic_changes(before: Any, after: Any, prefix: str = "") -> list[dict[st
     if before == after:
         return []
     root = prefix.split(".", 1)[0]
-    if root in {"links", "assessments", "research_contract", "runs", "resolved_config"}:
-        category = "SCIENTIFIC"
+    if root in {"links", "research_contract", "runs", "resolved_config"}:
+        category = "EXPERIMENT_DESIGN"
     elif root in {"budget", "resources", "backend"}:
         category = "RESOURCE"
     elif root in {"storage", "command", "assets", "checkpoint", "resume_policy"}:
@@ -129,31 +130,51 @@ class ActionService:
     def _local_actor() -> str:
         return f"local-process-owner:uid={os.getuid()}:{getpass.getuser()}@{socket.gethostname()}"
 
-    def prepare(self, scope: AgentScope, project: ResearchProject,
-                proposal: dict[str, Any]) -> dict[str, Any]:
-        if proposal.get("status") != "APPROVED":
-            raise ActionError("Phase-2 proposal must be approved before plan preparation")
-        scope_error = proposal_scope_error(str(proposal.get("kind") or ""), scope.scope_type)
+    def prepare(self, scope: OperationScope, project: ResearchProject,
+                intent: OperationIntent | dict[str, Any]) -> dict[str, Any]:
+        """Validate a client intent and materialize a read-only Action plan.
+
+        Preparation is idempotent and never authorizes execution.  When the
+        client omits an idempotency key, the canonical intent content becomes
+        the key so transport retries resolve to the same Action.
+        """
+        if not isinstance(intent, OperationIntent):
+            try:
+                intent = OperationIntent.model_validate(intent)
+            except ValidationError as exc:
+                raise ActionError(f"invalid operation intent: {exc}") from exc
+        payload = intent.model_dump(mode="json")
+        scope_error = intent_scope_error(str(payload["kind"]), scope.scope_type)
         if scope_error:
             raise ActionError(scope_error)
-        action_id = self.store.action_id(scope, str(proposal["proposal_id"]))
+        intent_key = payload.pop("idempotency_key") or self._intent_key(scope, payload)
+        request_digest = self._request_digest(scope, payload)
+        payload["intent_id"] = intent_key
+        action_id = self.store.action_id(scope, intent_key)
         try:
-            return self.store.snapshot(action_id)
+            existing = self.store.snapshot(action_id)
         except FileNotFoundError:
             pass
-        kind = str(proposal.get("kind"))
-        if kind == "CREATE_RESEARCH_QUESTION_DRAFT":
-            plan = self._prepare_research_question(action_id, scope, project, proposal)
-        elif kind in {"CREATE_CAMPAIGN_DRAFT", "UPDATE_CAMPAIGN_DRAFT", "DERIVE_RUN_DRAFT"}:
-            plan = self._prepare_campaign(action_id, scope, project, proposal)
-        elif kind in {"COMPLETE_CAMPAIGN", "ARCHIVE_CAMPAIGN"}:
-            plan = self._prepare_campaign_record(action_id, scope, project, proposal)
-        elif kind in {"SUBMIT_RUN", "RETRY_ATTEMPT", "CANCEL_RUN", "RUN_EVALUATION"}:
-            plan = self._prepare_controller(action_id, scope, project, proposal)
-        elif kind in {"ARCHIVE_RUN", "ARCHIVE_ATTEMPT"}:
-            plan = self._prepare_object_archive(action_id, scope, project, proposal)
         else:
-            raise ActionError(f"proposal kind {kind!r} has no Phase-3 executor")
+            if existing.get("request_digest") != request_digest:
+                raise ActionError(
+                    "idempotency_key is already bound to a different operation intent"
+                )
+            return existing
+        kind = str(payload["kind"])
+        if kind == "CREATE_RESEARCH_QUESTION_DRAFT":
+            plan = self._prepare_research_question(action_id, scope, project, payload)
+        elif kind in {"CREATE_CAMPAIGN_DRAFT", "UPDATE_CAMPAIGN_DRAFT", "DERIVE_RUN_DRAFT"}:
+            plan = self._prepare_campaign(action_id, scope, project, payload)
+        elif kind == "ARCHIVE_CAMPAIGN":
+            plan = self._prepare_campaign_record(action_id, scope, project, payload)
+        elif kind in {"SUBMIT_RUN", "RETRY_ATTEMPT", "CANCEL_RUN", "RUN_EVALUATION"}:
+            plan = self._prepare_controller(action_id, scope, project, payload)
+        elif kind in {"ARCHIVE_RUN", "ARCHIVE_ATTEMPT"}:
+            plan = self._prepare_object_archive(action_id, scope, project, payload)
+        else:
+            raise ActionError(f"intent kind {kind!r} has no executor")
+        plan["request_digest"] = request_digest
         canonical_gates = json.dumps(plan.get("gates", []), sort_keys=True, separators=(",", ":"))
         plan["gate_bundle_digest"] = _sha256(canonical_gates.encode("utf-8"))
         expires = datetime.now(timezone.utc) + timedelta(seconds=self.config.gate_ttl_seconds)
@@ -165,24 +186,36 @@ class ActionService:
         plan["intent_digest"] = _sha256(canonical_intent.encode("utf-8"))
         return self.store.save_plan(plan)
 
-    def _base_plan(self, action_id: str, scope: AgentScope,
-                   proposal: dict[str, Any], operation: str) -> dict[str, Any]:
+    @staticmethod
+    def _intent_key(scope: OperationScope, payload: dict[str, Any]) -> str:
+        return "intent-" + ActionService._request_digest(scope, payload).split(":", 1)[1][:20]
+
+    @staticmethod
+    def _request_digest(scope: OperationScope, payload: dict[str, Any]) -> str:
+        canonical = json.dumps(
+            {"scope": scope.model_dump(mode="json"), "intent": payload},
+            sort_keys=True, separators=(",", ":"), default=str,
+        )
+        return _sha256(canonical.encode("utf-8"))
+
+    def _base_plan(self, action_id: str, scope: OperationScope,
+                   intent: dict[str, Any], operation: str) -> dict[str, Any]:
         return {
             "action_id": action_id,
-            "proposal_id": proposal["proposal_id"],
-            "proposal_kind": proposal["kind"],
+            "intent_id": intent["intent_id"],
+            "intent_kind": intent["kind"],
             "scope": scope.model_dump(mode="json"),
             "operation": operation,
-            "target": proposal.get("target", ""),
-            "risk": proposal.get("risk", ""),
-            "evidence_digest": proposal.get("evidence_digest", ""),
+            "target": intent.get("target", ""),
+            "risk": intent.get("risk", ""),
+            "evidence_digest": intent.get("evidence_digest", ""),
             "created_at": utc_now(),
         }
 
-    def _prepare_research_question(self, action_id: str, scope: AgentScope,
+    def _prepare_research_question(self, action_id: str, scope: OperationScope,
                             project: ResearchProject,
-                            proposal: dict[str, Any]) -> dict[str, Any]:
-        payload = _parse_mapping(str(proposal.get("draft", "")))
+                            intent: dict[str, Any]) -> dict[str, Any]:
+        payload = _parse_mapping(str(intent.get("draft", "")))
         research_question_id = str(payload.get("id") or "")
         if not _SAFE_ID.fullmatch(research_question_id):
             raise ActionError("research_question id is not a safe file identity")
@@ -207,7 +240,7 @@ class ActionService:
                   "research_question YAML validates against schema v1" if research_question else schema_error),
             _gate("safe_target", _inside(target, root), str(target)),
         ]
-        plan = self._base_plan(action_id, scope, proposal, "WRITE_RESEARCH_QUESTION")
+        plan = self._base_plan(action_id, scope, intent, "WRITE_RESEARCH_QUESTION")
         plan.update({
             "target_path": str(target), "expected_sha256": _file_sha(target),
             "proposed_content": proposed, "diff": _unified_diff(target, proposed),
@@ -217,15 +250,15 @@ class ActionService:
         })
         return plan
 
-    def _prepare_campaign(self, action_id: str, scope: AgentScope,
+    def _prepare_campaign(self, action_id: str, scope: OperationScope,
                           project: ResearchProject,
-                          proposal: dict[str, Any]) -> dict[str, Any]:
-        payload = _parse_mapping(str(proposal.get("draft", "")))
+                          intent: dict[str, Any]) -> dict[str, Any]:
+        payload = _parse_mapping(str(intent.get("draft", "")))
         campaign_id = str(payload.get("campaign") or "")
         if not _SAFE_ID.fullmatch(campaign_id):
             raise ActionError("campaign draft requires a safe campaign identity")
         if payload.get("project") != project.project:
-            raise ActionError("campaign project does not match Agent scope")
+            raise ActionError("campaign project does not match operation scope")
         runs = payload.get("runs", [])
         run_refs = payload.get("run_refs", [])
         if not isinstance(runs, list) or not isinstance(run_refs, list) or not (runs or run_refs):
@@ -236,8 +269,8 @@ class ActionService:
             len(run_ids) == len(entries) == len(set(run_ids))
             and all(_SAFE_ID.fullmatch(item) for item in run_ids)
         )
-        proposal_kind = str(proposal.get("kind") or "")
-        is_update = proposal_kind == "UPDATE_CAMPAIGN_DRAFT"
+        intent_kind = str(intent.get("kind") or "")
+        is_update = intent_kind == "UPDATE_CAMPAIGN_DRAFT"
         root = (project.base_dir or Path(".")) / "experiments" / "campaigns"
         reference = next((item for item in project.campaigns if item.name == campaign_id), None)
         if is_update and reference is not None and reference.current_revision is not None:
@@ -245,31 +278,14 @@ class ActionService:
         else:
             target = root.resolve() / f"{campaign_id}.yml"
         if is_update and (
-            scope.scope_type != AgentScopeType.CAMPAIGN or scope.object_id != campaign_id
+            scope.scope_type != OperationScopeType.CAMPAIGN or scope.object_id != campaign_id
         ):
             raise ActionError("Campaign update must use the exact existing Campaign scope")
         proposed = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
         current_payload = _parse_mapping(target.read_text(encoding="utf-8")) if target.is_file() else {}
-        contract = payload.get("research_contract") or {}
-        required_roles = contract.get("required_roles", []) \
-            if isinstance(contract, dict) else []
-
-        def declared_role(item):
-            if not isinstance(item, dict):
-                return None
-            template = item.get("template")
-            return item.get("research_role") or (
-                template.get("research_role") if isinstance(template, dict) else None
-            )
-
-        declared_roles = [declared_role(item) for item in entries]
         canonical_memberships = all(
             isinstance(item, dict) and "role" not in item and "membership" not in item
             for item in entries
-        )
-        role_coverage = not required_roles or (
-            all(isinstance(role, str) and role for role in declared_roles)
-            and set(map(str, required_roles)).issubset(set(declared_roles))
         )
         gates = [
             _gate("schema", payload.get("schema_version") == 1,
@@ -280,17 +296,13 @@ class ActionService:
                   "update requires an existing Campaign; create requires a new identity"),
             _gate("immutable_run_ids", unique,
                   "all run_id values are safe and unique"),
-            _gate("research_contract", isinstance(payload.get("research_contract"), dict),
-                  "research_contract is required"),
             _gate("membership_schema", canonical_memberships,
                   "membership fields are top-level and use research_role, not role"),
-            _gate("required_role_coverage", role_coverage,
-                  "every membership declares research_role and all required_roles are covered"),
             _gate("resource_budget", not runs or bool(
                 payload.get("budget") or payload.get("defaults", {}).get("resources")
             ), "campaign materialization declares a budget or default resources"),
         ]
-        plan = self._base_plan(action_id, scope, proposal, "WRITE_CAMPAIGN")
+        plan = self._base_plan(action_id, scope, intent, "WRITE_CAMPAIGN")
         plan.update({
             "target_path": str(target), "expected_sha256": _file_sha(target),
             "proposed_content": proposed, "diff": _unified_diff(target, proposed),
@@ -328,49 +340,39 @@ class ActionService:
                 ]
         return plan
 
-    def _prepare_campaign_record(self, action_id: str, scope: AgentScope,
+    def _prepare_campaign_record(self, action_id: str, scope: OperationScope,
                                  project: ResearchProject,
-                                 proposal: dict[str, Any]) -> dict[str, Any]:
-        payload = _parse_mapping(str(proposal.get("draft", "")))
-        kind = str(proposal.get("kind"))
+                                 intent: dict[str, Any]) -> dict[str, Any]:
+        payload = _parse_mapping(str(intent.get("draft", "")))
+        kind = str(intent.get("kind"))
         campaign = str(payload.get("campaign") or "")
         revision_id = str(payload.get("revision_id") or "")
         if payload.get("project") != project.project:
-            raise ActionError("Campaign record project does not match Agent scope")
-        if scope.scope_type != AgentScopeType.CAMPAIGN or scope.object_id != campaign:
+            raise ActionError("Campaign record project does not match operation scope")
+        if scope.scope_type != OperationScopeType.CAMPAIGN or scope.object_id != campaign:
             raise ActionError("Campaign record must be prepared in its exact Campaign scope")
         reference = next((item for item in project.campaigns if item.name == campaign), None)
         current = reference.current_revision if reference else None
         if current is None or current.revision_id != revision_id:
             raise ActionError("Campaign record revision is not the current authored revision")
-        record_kind = "completion" if kind == "COMPLETE_CAMPAIGN" else "archive"
-        target = campaign_record_path(project, campaign, revision_id, record_kind)
+        if kind != "ARCHIVE_CAMPAIGN":
+            raise ActionError("only Campaign archive records are supported")
+        target = campaign_record_path(project, campaign, revision_id, "archive")
         record = {
             **payload,
             "schema_version": 1,
             "recorded_at": utc_now(),
-            "record_kind": record_kind,
+            "record_kind": "archive",
         }
         proposed = yaml.safe_dump(record, allow_unicode=True, sort_keys=False)
-        operation = (
-            "WRITE_CAMPAIGN_COMPLETION" if record_kind == "completion"
-            else "WRITE_CAMPAIGN_ARCHIVE"
-        )
         gates = [
             _gate("exact_scope", True, f"{project.project}/{campaign}@{revision_id}"),
             _gate("record_absent", not target.exists(),
                   "Campaign lifecycle record is immutable and does not already exist"),
-            _gate(
-                "completion_evidence" if record_kind == "completion" else "archive_binding",
-                record_kind != "completion" or bool(
-                    payload.get("evidence_digest") and payload.get("membership_run_ids")
-                ),
-                "completion binds evidence digest and exact membership run IDs"
-                if record_kind == "completion"
-                else "archive binds the exact Campaign revision and explicit reason",
-            ),
+            _gate("archive_binding", bool(payload.get("reason")),
+                  "archive binds the exact Campaign revision and explicit reason"),
         ]
-        plan = self._base_plan(action_id, scope, proposal, operation)
+        plan = self._base_plan(action_id, scope, intent, "WRITE_CAMPAIGN_ARCHIVE")
         plan.update({
             "target_path": str(target),
             "expected_sha256": _file_sha(target),
@@ -381,17 +383,17 @@ class ActionService:
         })
         return plan
 
-    def _prepare_object_archive(self, action_id: str, scope: AgentScope,
+    def _prepare_object_archive(self, action_id: str, scope: OperationScope,
                                 project: ResearchProject,
-                                proposal: dict[str, Any]) -> dict[str, Any]:
-        payload = _parse_mapping(str(proposal.get("draft", "")))
-        kind = str(proposal.get("kind"))
+                                intent: dict[str, Any]) -> dict[str, Any]:
+        payload = _parse_mapping(str(intent.get("draft", "")))
+        kind = str(intent.get("kind"))
         run_id = str(payload.get("run_id") or "")
         attempt_id = str(payload.get("attempt_id") or "")
-        expected_scope = AgentScopeType.RUN if kind == "ARCHIVE_RUN" else AgentScopeType.ATTEMPT
+        expected_scope = OperationScopeType.RUN if kind == "ARCHIVE_RUN" else OperationScopeType.ATTEMPT
         expected_object = run_id if kind == "ARCHIVE_RUN" else f"{run_id}::{attempt_id}"
         if payload.get("project") != project.project:
-            raise ActionError("archive record project does not match Agent scope")
+            raise ActionError("archive record project does not match operation scope")
         if scope.scope_type != expected_scope or scope.object_id != expected_object:
             raise ActionError("archive record must be prepared in its exact object scope")
         if not _SAFE_ID.fullmatch(run_id) or (
@@ -416,7 +418,7 @@ class ActionService:
                   "archive reason is required"),
         ]
         operation = "WRITE_RUN_ARCHIVE" if kind == "ARCHIVE_RUN" else "WRITE_ATTEMPT_ARCHIVE"
-        plan = self._base_plan(action_id, scope, proposal, operation)
+        plan = self._base_plan(action_id, scope, intent, operation)
         plan.update({
             "target_path": str(target), "expected_sha256": _file_sha(target),
             "proposed_content": proposed, "gates": gates,
@@ -435,12 +437,12 @@ class ActionService:
         )[:500]
         return _gate(name, passed, detail), result
 
-    def _prepare_controller(self, action_id: str, scope: AgentScope,
+    def _prepare_controller(self, action_id: str, scope: OperationScope,
                             project: ResearchProject,
-                            proposal: dict[str, Any]) -> dict[str, Any]:
+                            intent: dict[str, Any]) -> dict[str, Any]:
         if project.controller is None:
             raise ActionError("project has no controller configuration")
-        spec = _parse_mapping(str(proposal.get("draft", "")))
+        spec = _parse_mapping(str(intent.get("draft", "")))
         campaign_value = str(spec.get("campaign_file") or "")
         run_id = str(spec.get("run_id") or "")
         attempt_id = str(spec.get("attempt_id") or "attempt-001")
@@ -454,12 +456,12 @@ class ActionService:
         experiments = base / "experiments"
         if not campaign.is_file() or not _inside(campaign, experiments):
             raise ActionError("campaign_file must exist under the project's experiments directory")
-        kind = str(proposal["kind"])
+        kind = str(intent["kind"])
         operation = {
             "SUBMIT_RUN": "SUBMIT_RUN", "RETRY_ATTEMPT": "RETRY_ATTEMPT",
             "CANCEL_RUN": "CANCEL_RUN", "RUN_EVALUATION": "RUN_EVALUATION",
         }[kind]
-        if scope.scope_type == AgentScopeType.ATTEMPT:
+        if scope.scope_type == OperationScopeType.ATTEMPT:
             source_run_id, source_attempt_id = scope.object_id.rsplit("::", 1)
             if run_id != source_run_id:
                 raise ActionError(
@@ -478,12 +480,12 @@ class ActionService:
                     )
                 if operation == "RETRY_ATTEMPT" and attempt_id == source_attempt_id:
                     raise ActionError("retry must allocate a new attempt_id")
-        plan = self._base_plan(action_id, scope, proposal, operation)
+        plan = self._base_plan(action_id, scope, intent, operation)
         preflight_summary: dict[str, Any] = {}
         gates = [
             _gate("safe_target", True, f"{campaign} :: {run_id} :: {attempt_id}"),
-            _gate("evidence_reference", bool(proposal.get("evidence_digest")),
-                  "proposal is bound to an evidence digest"),
+            _gate("evidence_reference", bool(intent.get("evidence_digest")),
+                  "intent is bound to an evidence digest"),
         ]
         if operation == "RUN_EVALUATION" and not project.controller.capabilities.get("evaluation_as_run"):
             gates.append(_gate("controller_capability", False,
@@ -681,6 +683,11 @@ class ActionService:
         execution = snapshot["execution"]
         if not snapshot.get("ready") or execution.get("status") != "PREPARED":
             raise ActionError("only a ready PREPARED action can be execution-authorized")
+        expires_at = datetime.fromisoformat(
+            str(snapshot["gate_expires_at"]).replace("Z", "+00:00")
+        )
+        if datetime.now(timezone.utc) >= expires_at:
+            raise ActionError("gate bundle has expired; prepare a fresh intent")
         actor = self.actor_provider().strip()
         if not actor:
             raise ActionError("server could not establish a trusted actor identity")
@@ -714,14 +721,13 @@ class ActionService:
         if execution.get("authorized_gate_bundle_digest") != snapshot.get("gate_bundle_digest"):
             raise ActionError("authorization does not match the gate bundle")
         operation = str(snapshot["operation"])
-        science_write = operation in {
-            "WRITE_RESEARCH_QUESTION", "WRITE_CAMPAIGN",
-            "WRITE_CAMPAIGN_COMPLETION", "WRITE_CAMPAIGN_ARCHIVE",
+        project_write = operation in {
+            "WRITE_RESEARCH_QUESTION", "WRITE_CAMPAIGN", "WRITE_CAMPAIGN_ARCHIVE",
             "WRITE_RUN_ARCHIVE", "WRITE_ATTEMPT_ARCHIVE",
         }
-        if science_write and not self.config.allow_science_writes:
-            raise ActionError("science writes are disabled by daemon policy")
-        if not science_write and not self.config.allow_scheduler_mutations:
+        if project_write and not self.config.allow_project_writes:
+            raise ActionError("project writes are disabled by daemon policy")
+        if not project_write and not self.config.allow_scheduler_mutations:
             raise ActionError("scheduler mutations are disabled by daemon policy")
         try:
             self.store.claim_execution(action_id)
@@ -729,7 +735,7 @@ class ActionService:
             raise ActionError(str(exc)) from exc
         execution.update({"status": "EXECUTING", "started_at": utc_now(), "error": None})
         self.store.set_execution(action_id, execution, event="execution_started")
-        if science_write:
+        if project_write:
             return self._execute_write(snapshot, execution)
         return self._execute_controller(snapshot, execution)
 

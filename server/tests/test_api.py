@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 import ml_exp_server.api.app as api_app
 from ml_exp_server.api.app import create_app
-from ml_exp_server.api.routes import _attention, _contract_view, _match_check
+from ml_exp_server.api.routes import _attention
 from ml_exp_server.schemas import RunIndexRow
 from ml_exp_server.schemas import ServerConfig, ProjectRef
 from tests.conftest import FIXTURES
@@ -51,7 +51,6 @@ def client(tmp_path):
     """))
     config = ServerConfig(
         index_db=str(tmp_path / "index.sqlite"),
-        agent_root=str(tmp_path / "agents"),
         action_root=str(tmp_path / "actions"),
         # Fixture records have no controller. This test exercises explicit
         # snapshot mode; server defaults are covered separately below.
@@ -87,9 +86,9 @@ def test_tui_session_endpoints_are_server_owned(client):
     })
     assert operations.status_code == 200
     assert operations.json()
-    assert {item["operation"]["operation_id"] for item in operations.json()} >= {
-        "research.recommend", "campaign.create",
-    }
+    operation_ids = {item["operation"]["operation_id"] for item in operations.json()}
+    assert "campaign.create" in operation_ids
+    assert "research.recommend" not in operation_ids
 
     bundle = client.get(f"/api/attempts/elf/{A1}::attempt-001/bundle")
     assert bundle.status_code == 200
@@ -108,26 +107,22 @@ def test_overview_contains_research_question_and_attention(client):
     kinds = {item["kind"] for item in payload["attention"]}
     assert "stale_evidence" in kinds
     assert payload["collector"]["enabled"] is False
-    assert payload["campaigns"][0]["lifecycle_state"] == "INVALID"
+    assert payload["campaigns"][0]["lifecycle_state"] == "ACTIVE"
 
 
 def test_campaign_lifecycle_endpoint(client):
     campaign = "fusion-len256-gate-h100-20260711"
     payload = client.get(f"/api/campaigns/elf/{campaign}").json()
     assert payload["campaign"] == campaign
-    assert payload["lifecycle_state"] == "INVALID"
-    assert payload["validation"]["status"] == "FAIL"
-    assert next(gate for gate in payload["validation"]["gates"]
-                if gate["name"] == "research_contract")["status"] == "FAIL"
-    assert payload["completion"]["ready"] is False
+    assert payload["lifecycle_state"] == "ACTIVE"
+    assert payload["validation"]["status"] == "PASS"
+    assert "completion" not in payload
+    assert payload["runs"][0]["latest_metrics"]["step"] == 3700
 
 
 def test_research_question_detail_matrix(client):
     payload = client.get("/api/research-questions/elf/H1").json()
     campaign = payload["campaigns"][0]
-    assert campaign["contract"] is None  # h100 campaign has no inline contract
-    assert campaign["contract_source"] is None
-    assert campaign["match_check"]["status"] == "NO_CONTRACT"
     role = next(r for r in campaign["roles"] if r["role"] == "a1")
     assert role["role_note"] == "frozen Sentence-T5"
     assert role["evidence"]["worker"]["stale"] is True
@@ -215,7 +210,6 @@ def test_404s(client):
 def test_api_404_contract_is_machine_readable(tmp_path):
     config = ServerConfig(
         index_db=str(tmp_path / "empty-index.sqlite"),
-        agent_root=str(tmp_path / "agents"),
         action_root=str(tmp_path / "actions"),
         projects=[],
     )
@@ -254,56 +248,6 @@ def test_second_server_reports_collector_lease_loss(tmp_path):
     assert payload["requested"] is True
     assert payload["owner"] is False
     assert "owns this workspace collector" in payload["last_error"]
-
-
-def test_frozen_contract_wins_and_match_check_stays_pending_without_block_decision():
-    contract = {"schema_version": 1, "question": "frozen", "required_roles": ["a0"]}
-    row = RunIndexRow(
-        project="elf", run_id="run-a", run_dir="/tmp/run-a", role="a0",
-        research_contract=contract, research_contract_source="manifest",
-    )
-
-    view = _contract_view([row], {**contract, "question": "edited"})
-    match = _match_check([row], view)
-
-    assert view["contract"]["question"] == "frozen"
-    assert view["contract_source"] == "frozen_manifest"
-    assert view["authored_contract_match"] is False
-    assert match["status"] == "PENDING"
-    assert match["comparable"] is None
-
-
-def test_contract_view_and_match_check_cover_scientific_gate_outcomes():
-    contract = {"required_roles": ["a0", "a1"]}
-    a0 = RunIndexRow(
-        project="elf", run_id="run-a0", run_dir="/tmp/a0", role="a0",
-        research_contract=contract,
-    )
-    missing_contract = RunIndexRow(
-        project="elf", run_id="run-a1", run_dir="/tmp/a1", role="a1",
-    )
-    conflicting = RunIndexRow(
-        project="elf", run_id="run-other", run_dir="/tmp/other", role="a1",
-        research_contract={"required_roles": ["a0"]},
-    )
-    view = _contract_view([a0, missing_contract, conflicting], None)
-    assert any("different frozen" in item for item in view["contract_warnings"])
-    assert any("no frozen" in item for item in view["contract_warnings"])
-
-    authored = _contract_view([], contract)
-    assert authored["contract_source"] == "authored_campaign_reference"
-    assert _match_check([], authored)["status"] == "UNVERIFIED_CONTRACT"
-
-    frozen = _contract_view([a0], contract)
-    assert _match_check([a0], frozen)["status"] == "INCOMPLETE"
-    mismatched = a0.model_copy(update={
-        "role": "a1", "decision": {"block_mismatches": [{"field": "seed"}]},
-    })
-    assert _match_check([a0, mismatched], frozen)["status"] == "MISMATCHED"
-    decided = mismatched.model_copy(update={
-        "decision": {"block_outcome": "PASS", "block_mismatches": []},
-    })
-    assert _match_check([a0, decided], frozen)["status"] == "COMPARABLE"
 
 
 def test_attention_includes_failed_runs_and_collector_errors():

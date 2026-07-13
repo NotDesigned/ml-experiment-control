@@ -82,7 +82,7 @@ def test_safe_attributes_strictly_filters_content_and_invalid_values():
             "research.duration_ms": 3.5,
             "prompt": "system prompt",
             "research.prompt": "secret",
-            "draft": "proposal body",
+            "draft": "intent body",
             "evidence": "metric records",
             "note": "authorization note",
             "api_key": "sk-secret",
@@ -116,7 +116,7 @@ def test_injected_provider_records_only_safe_metadata_and_exception_class():
 
     with pytest.raises(RuntimeError, match="sensitive value"):
         with telemetry.span(
-            "research.agent_turn",
+            "research.intent.prepare",
             {
                 "research.project": "elf",
                 "research.operation_id": "research.recommend",
@@ -128,7 +128,7 @@ def test_injected_provider_records_only_safe_metadata_and_exception_class():
             raise RuntimeError("sensitive value")
 
     name, kwargs, span = provider.tracer.started[0]
-    assert name == "research.agent_turn"
+    assert name == "research.intent.prepare"
     assert kwargs == {
         "attributes": {
             "research.project": "elf",
@@ -322,7 +322,7 @@ def test_default_endpoint_and_missing_collector_do_not_block_or_leak(caplog):
     start = time.monotonic()
     with caplog.at_level(logging.WARNING):
         with telemetry.span(
-            "research.agent_turn",
+            "research.intent.prepare",
             {
                 "research.project": "elf",
                 "prompt": "SENSITIVE_PROMPT_VALUE",

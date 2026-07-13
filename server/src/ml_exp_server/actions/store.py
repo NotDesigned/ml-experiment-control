@@ -8,29 +8,8 @@ import os
 import threading
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
-
-from ..agents.store import utc_now
-from ..schemas import AgentScope
-
-
-def atomic_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
-
-
-def read_json(path: Path, default: Any) -> Any:
-    if not path.is_file():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return default
+from ..schemas import OperationScope
+from ..storage import atomic_json, read_json, utc_now
 
 
 class ActionStore:
@@ -40,8 +19,8 @@ class ActionStore:
         self._lock = threading.RLock()
 
     @staticmethod
-    def action_id(scope: AgentScope, proposal_id: str) -> str:
-        raw = f"{scope.project}:{scope.scope_type.value}:{scope.object_id}:{proposal_id}"
+    def action_id(scope: OperationScope, intent_key: str) -> str:
+        raw = f"{scope.project}:{scope.scope_type.value}:{scope.object_id}:{intent_key}"
         return "action-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
     def directory(self, action_id: str) -> Path:
@@ -171,7 +150,7 @@ class ActionStore:
                     journal.append(item)
         return {**plan, "execution": self.execution(action_id), "journal": journal}
 
-    def list_for_scope(self, scope: AgentScope) -> list[dict[str, Any]]:
+    def list_for_scope(self, scope: OperationScope) -> list[dict[str, Any]]:
         items = []
         for path in sorted(self.root.glob("action-*/plan.json")):
             payload = read_json(path, {})

@@ -99,7 +99,6 @@ def _app(tmp_path):
     project = load_research_project(project_file)
     config = ServerConfig(
         index_db=str(tmp_path / "index.sqlite"),
-        agent_root=str(tmp_path / "agents"),
         action_root=str(tmp_path / "actions"),
         collector_enabled=False,
         action_runtime=ActionRuntimeConfig(allow_scheduler_mutations=True),
@@ -124,7 +123,6 @@ def test_unmaterialized_experiment_has_first_class_submission_lifecycle(tmp_path
             json={
                 "max_gpu_hours": 2,
                 "reason": "run the authored candidate",
-                "approval_note": "reviewed campaign and budget",
             },
         )
         assert prepared.status_code == 200
@@ -138,14 +136,13 @@ def test_unmaterialized_experiment_has_first_class_submission_lifecycle(tmp_path
             "/api/experiments/demo/run-a/submissions/prepare",
             json={
                 "max_gpu_hours": 2,
-                "approval_note": "same reviewed intent",
             },
         ).json()
         assert repeated["submission_id"] == submission["submission_id"]
         assert repeated["reused"] is True
         conflict = client.post(
             "/api/experiments/demo/run-a/submissions/prepare",
-            json={"max_gpu_hours": 3, "approval_note": "changed budget"},
+            json={"max_gpu_hours": 3},
         )
         assert conflict.status_code == 409
         assert conflict.headers["X-ML-Expd-Error-Code"] == "SUBMISSION_INTENT_EXISTS"
@@ -177,7 +174,7 @@ def test_uncertain_submission_reconciles_by_status_without_resubmitting(tmp_path
     with TestClient(app) as client:
         prepared = client.post(
             "/api/experiments/demo/run-a/submissions/prepare",
-            json={"max_gpu_hours": 2, "approval_note": "reviewed"},
+            json={"max_gpu_hours": 2},
         ).json()
         client.post(
             f"/api/submissions/{prepared['submission_id']}/authorize",
