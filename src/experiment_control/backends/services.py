@@ -4,18 +4,43 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable, Mapping, Protocol, Sequence
 
+from ..contracts import (
+    BackendRecord,
+    Campaign,
+    CheckpointRecord,
+    JsonValue,
+    MetricRecord,
+    RunSpec,
+    RunSummary,
+)
 from ..runner import CommandResult
+
+
+class RunCommand(Protocol):
+    def __call__(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        check: bool = True,
+        input_text: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> CommandResult: ...
+
+
+class AtomicWriter(Protocol):
+    def __call__(self, path: Path, payload: Mapping[str, JsonValue]) -> None: ...
 
 
 @dataclass(frozen=True)
 class BackendServices:
-    run_command: Callable[..., CommandResult]
-    local_run_dir: Callable[[dict[str, Any], dict[str, Any]], Path]
-    backend_record: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
-    summarize_run: Callable[[dict[str, Any], Path], dict[str, Any]]
-    parse_metric: Callable[[dict[str, Any], str], dict[str, Any] | None]
-    parse_checkpoint: Callable[[dict[str, Any], str], dict[str, Any] | None]
-    atomic_write: Callable[..., None]
+    run_command: RunCommand
+    local_run_dir: Callable[[Campaign, RunSpec], Path]
+    backend_record: Callable[[Campaign, RunSpec], BackendRecord]
+    summarize_run: Callable[[Campaign, Path], RunSummary]
+    parse_metric: Callable[[Campaign, str], MetricRecord | None]
+    parse_checkpoint: Callable[[Campaign, str], CheckpointRecord | None]
+    atomic_write: AtomicWriter
     utc_now: Callable[[], str]

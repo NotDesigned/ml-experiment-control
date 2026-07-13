@@ -1,9 +1,10 @@
 """Replaceable scheduler adapters and the application composition root."""
 
 from .base import Backend, BackendRegistry
+from .services import BackendServices
 
 
-def build_registry(services) -> BackendRegistry:
+def build_registry(services: BackendServices) -> BackendRegistry:
     """Construct installed backends without leaking them into controller core."""
     from .local import LocalBackend
     from .sensecore import SenseCoreBackend
@@ -14,4 +15,4 @@ def build_registry(services) -> BackendRegistry:
     )
 
 
-__all__ = ["Backend", "BackendRegistry", "build_registry"]
+__all__ = ["Backend", "BackendRegistry", "BackendServices", "build_registry"]

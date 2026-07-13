@@ -80,6 +80,13 @@ from experiment_control.project import (
 )
 from experiment_control.runner import CommandResult, CommandRunner, SubprocessRunner
 from experiment_control.states import FailureClass, classify_failure
+from experiment_control.contracts import (
+    AttemptManifest,
+    BackendLogs,
+    BackendStatus,
+    RunSpec,
+    SubmissionRequest,
+)
 from experiment_control.manifest import (
     ExperimentStateStore,
     RunState,

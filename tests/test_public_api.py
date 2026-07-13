@@ -1,4 +1,5 @@
 import experiment_control
+from experiment_control.contracts import AttemptManifest, BackendStatus, RunSpec
 from experiment_control.backends.base import BackendRegistry
 from experiment_control.backends.sensecore import digest_pinned_image, scheduler_job_name
 from experiment_control.preflight import PreflightCheck, PreflightReport
@@ -28,6 +29,11 @@ def test_package_public_primitives_have_no_host_dependency(tmp_path):
         "remote_manifest_exists": None,
         "remote_manifest_matches": None,
     }
+    assert RunSpec.__required_keys__ == frozenset({"run_id", "backend"})
+    assert AttemptManifest.__required_keys__ == frozenset({"attempt_id", "command"})
+    assert BackendStatus.__required_keys__ == frozenset({
+        "run_id", "backend", "backend_job_id", "state",
+    })
 
 
 def test_sensecore_attempt_and_image_identities_are_deterministic():
@@ -69,4 +75,7 @@ def test_downstream_identity_helpers_are_exported_from_package_root():
     assert experiment_control.atomic_write is not None
     assert experiment_control.sanitize_command is not None
     assert experiment_control.utc_now is not None
+    assert experiment_control.RunSpec is RunSpec
+    assert experiment_control.AttemptManifest is AttemptManifest
+    assert experiment_control.BackendStatus is BackendStatus
     assert not any(name.startswith("_") for name in experiment_control.__all__)

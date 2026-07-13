@@ -13,6 +13,16 @@ from pathlib import Path
 from typing import Any
 
 from .services import BackendServices
+from ..contracts import (
+    AssetVerification,
+    AttemptManifest,
+    BackendStatus,
+    CollectionResult,
+    PreflightScope,
+    RunSpec,
+    StreamBackendLogs,
+    SubmissionRequest,
+)
 from ..identity import IdentityReport
 from ..manifest import atomic_create
 from ..preflight import PreflightCheck, PreflightReport
@@ -68,7 +78,7 @@ class LocalBackend:
             raise RuntimeError(f"local {label} record is malformed")
         return payload
 
-    def validate(self, run: dict[str, Any]) -> None:
+    def validate(self, run: RunSpec) -> None:
         backend = run.get("backend")
         if not isinstance(backend, dict) or not backend.get("workdir"):
             raise ValueError(f"run {run.get('run_id')} local backend requires workdir")
@@ -79,7 +89,7 @@ class LocalBackend:
         if not run_dir.is_absolute():
             raise ValueError("local backend storage.run_dir must be absolute")
 
-    def preflight(self, run: dict[str, Any], *, scope: str) -> PreflightReport:
+    def preflight(self, run: RunSpec, *, scope: PreflightScope) -> PreflightReport:
         if scope not in {"stage", "submit", "observe"}:
             raise ValueError(f"unsupported preflight scope: {scope}")
         self.validate(run)
@@ -111,7 +121,7 @@ class LocalBackend:
     def environment(self, campaign, run, source_id, attempt_id) -> dict[str, str]:
         return {"LOCAL_ATTEMPT_ID": str(attempt_id)}
 
-    def submission_request(self, campaign, run, attempt_id) -> dict[str, Any]:
+    def submission_request(self, campaign, run, attempt_id) -> SubmissionRequest:
         return {
             "scheduler_name": f"local/{run['run_id']}/{attempt_id}",
             "workdir": str(run["backend"]["workdir"]),
@@ -147,7 +157,7 @@ class LocalBackend:
             scheduler_job_ids=(str(job_id),) if job_id else (),
         )
 
-    def verify_assets(self, run, probes) -> dict[str, Any]:
+    def verify_assets(self, run, probes) -> AssetVerification:
         missing = []
         for probe in probes:
             path = Path(probe.path)
@@ -167,7 +177,7 @@ class LocalBackend:
                 raise RuntimeError(f"local source is missing required project path: {required_path}")
         return True
 
-    def render(self, manifest: dict[str, Any]) -> str:
+    def render(self, manifest: AttemptManifest) -> str:
         return shlex.join([str(value) for value in manifest["command"]])
 
     def _launch(
@@ -242,7 +252,7 @@ class LocalBackend:
         identity = _process_identity(pid)
         return bool(identity and identity[0] != "Z" and identity[1] == start_ticks)
 
-    def status(self, campaign, run) -> dict[str, Any]:
+    def status(self, campaign, run) -> BackendStatus:
         record = self.s.backend_record(campaign, run)
         attempt_id = str(record["attempt_id"])
         control = self._control(run, attempt_id)
@@ -288,7 +298,7 @@ class LocalBackend:
         if LocalBackend._alive(control):
             os.killpg(pid, signal.SIGKILL)
 
-    def cancel(self, campaign, run) -> dict[str, Any]:
+    def cancel(self, campaign, run) -> BackendStatus:
         current = self.status(campaign, run)
         if current["state"] in TERMINAL_STATES:
             return current
@@ -307,7 +317,7 @@ class LocalBackend:
         lines = path.read_text(encoding="utf-8", errors="replace").replace("\r", "\n").splitlines()
         return [redact_line(line) for line in lines if line.strip()][-tail:]
 
-    def logs(self, campaign, run, *, tail: int) -> dict[str, Any]:
+    def logs(self, campaign, run, *, tail: int) -> StreamBackendLogs:
         if not 1 <= tail <= 10000:
             raise ValueError("tail must be between 1 and 10000")
         record = self.s.backend_record(campaign, run)
@@ -325,7 +335,7 @@ class LocalBackend:
             "stderr": self._tail(attempt_dir / "stderr.log", tail),
         }
 
-    def collect(self, campaign, run) -> dict[str, Any]:
+    def collect(self, campaign, run) -> CollectionResult:
         run_dir = Path(str(run["storage"]["run_dir"]))
         summary = self.s.summarize_run(campaign, run_dir)
         diagnostics = self.logs(campaign, run, tail=200)

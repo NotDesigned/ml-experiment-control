@@ -13,7 +13,11 @@ authors = [{name = "ml-experiment-control contributors"}]
 dependencies = ["PyYAML>=6.0"]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "pytest-cov>=6.0"]
+dev = [
+    "mypy>=1.15,<2",
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+]
 
 [project.urls]
 Repository = "https://github.com/NotDesigned/ml-experiment-control"
@@ -29,6 +33,18 @@ strip = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = [
+  "src/experiment_control/contracts.py",
+  "src/experiment_control/backends/base.py",
+  "src/experiment_control/backends/services.py",
+  "src/experiment_control/backends/__init__.py",
+  "src/experiment_control/project.py",
+  "examples/local_smoke.py",
+]
 
 [tool.coverage.run]
 branch = true
