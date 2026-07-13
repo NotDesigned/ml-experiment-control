@@ -1,0 +1,1 @@
+{"epoch": 0, "step": 2000, "mode": "generation_refine_decode", "ppl": 1.158490645843981, "g_ppl": 1.158490645843981, "mean_entropy": 0.07448500889586285}

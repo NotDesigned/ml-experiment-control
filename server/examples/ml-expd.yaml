@@ -1,0 +1,15 @@
+schema_version: 1
+index_db: ~/.local/state/ml-expd/index.sqlite
+project_registry_root: ~/.local/state/ml-expd/projects
+agent_root: ~/.local/state/ml-expd/agents
+action_root: ~/.local/state/ml-expd/actions
+action_runtime:
+  allow_science_writes: false
+  allow_scheduler_mutations: false
+  timeout_seconds: 300
+  gate_ttl_seconds: 1800
+telemetry:
+  enabled: false
+collector_enabled: true
+poll_interval_seconds: 20
+projects: []

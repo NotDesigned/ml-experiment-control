@@ -1,28 +1,59 @@
 # ML Experiment Control
 
-`ml-experiment-control` is a small Python package for building durable ML
-experiment controllers without coupling scheduler code to a particular
-training repository. It provides a Linux local-process backend for development,
-SenseCore/SCO and WYD Slurm/Apptainer backends, durable Run/Attempt state and
+This repository contains the `ml-experiment-control` core package and the
+independently runnable `ml-experiment-server` daemon (`ml-expd`). The core
+builds durable ML experiment controllers without coupling scheduler code to a
+particular training repository. It provides a Linux local-process backend for
+development, SenseCore/SCO and WYD Slurm/Apptainer backends, durable Run/Attempt state and
 mutation outboxes, sanitized readiness
 checks, command-runner injection, normalized failure states, and the
 `ProjectAdapter` protocol used by a host repository.
 
-The package owns the platform-neutral Run/Attempt manifest constructor,
+The core package owns the platform-neutral Run/Attempt manifest constructor,
 `ExperimentStateStore`, atomic lifecycle events, and submission/cancel
 outboxes. It deliberately does **not** own scientific configuration, training
 commands, metric semantics, campaign authoring, credentials, or model assets.
 A host repository supplies those through a project adapter and injected
-backend services.
+backend services. `ml-expd` composes project catalogs, evidence indexing,
+polling, Project lifecycle, Agent-turn/proposal stores, and gated actions into
+one HTTP control-plane process; it does not run a model Agent loop.
 
 ## Audience
 
-This README is for maintainers integrating the package into a host controller
-or training repository. It explains the architecture boundary, public API, and
-smallest runnable integration. Researchers operating a concrete system should
-use that host's documentation instead; ELF is the reference downstream host.
+This README is for maintainers integrating the core into a host controller and
+operators running the daemon. It explains the architecture boundary, public
+API, and smallest runnable integration. Research Console is a separate HTTP
+client/TUI and client-side Agent loop; ELF is the reference downstream host.
 Package contributors should use [`docs/development.md`](docs/development.md)
 for environment setup, tests, coverage, Rust checks, and release builds.
+
+## Run the daemon
+
+The daemon is a separate workspace distribution so the core package stays
+small for library consumers:
+
+```bash
+uv sync --locked --all-packages
+uv run --package ml-experiment-server ml-expd \
+  --config server/examples/ml-expd.yaml
+```
+
+`ml-expd` listens on `127.0.0.1:8765` by default, indexes registered Projects
+at startup, and owns one live collector per workspace. It polls immediately
+and then at `poll_interval_seconds` (20 seconds by default); `--snapshot` is
+the explicit no-poll mode.
+Use `/api/health` and `/openapi.json` for machine-readable health and API shape.
+
+The daemon host owns controller/backend credentials, science checkouts, and
+state roots. Research Console and other clients only send HTTP commands. Agent
+model calls and code analysis belong in a client process; approved mutations
+are revalidated and executed by the daemon.
+
+Project-specific controllers are currently reached through the declared
+`experimentctl` command behind one `ProjectControllerGateway`. This is a
+compatibility adapter: command construction and subprocess execution do not
+leak into poll or action services. Projects can migrate to native core
+`ProjectAdapter` composition without changing the HTTP/client boundary.
 
 ## Install
 
@@ -33,8 +64,9 @@ uv add \
   "ml-experiment-control @ git+https://github.com/NotDesigned/ml-experiment-control.git"
 ```
 
-The only runtime dependency outside the Python standard library is PyYAML,
-used for canonical Run/Attempt manifest files.
+The core package's only runtime dependency outside the Python standard library
+is PyYAML, used for canonical Run/Attempt manifest files. The daemon
+distribution adds FastAPI/Uvicorn, Pydantic, and optional OTLP export support.
 
 ## Minimal local integration
 

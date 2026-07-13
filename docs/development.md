@@ -2,7 +2,8 @@
 
 ## Scope
 
-`ml-experiment-control` is a backend library. Backend tests must use injected
+`ml-experiment-control` is the backend core; `server/` is the independently
+runnable HTTP daemon distribution. Backend tests must use injected
 command runners and may not contact live schedulers. Project-specific commands,
 paths, metrics, and assets belong in host-owned `ProjectAdapter` tests; only a
 backend's own protocol vocabulary belongs in backend-specific tests.
@@ -21,6 +22,20 @@ uv sync --locked
 the default `dev` dependency group. Use `uv add <package>` for runtime
 dependencies and `uv add --dev <package>` for development tools. Building the
 packaged sanitizer requires Rust 1.85 or newer.
+
+Install every workspace distribution when changing the daemon:
+
+```bash
+uv sync --locked --all-packages
+uv run --package ml-experiment-server pytest server/tests -q
+uv run --package ml-experiment-server ml-expd --help
+```
+
+Daemon modules may depend on the core package, never the reverse. FastAPI
+belongs only in `server/api`; `runtime.py` is the composition root;
+`controller_gateway.py` is the sole legacy `experimentctl` subprocess
+boundary. The daemon must not import a model provider or run the client Agent
+loop.
 
 ## CLI documentation
 
@@ -90,6 +105,9 @@ uv run mypy
 uv run python tools/coverage_gate.py
 uv run python tools/generate_cli_reference.py --check
 uv run python -m compileall -q src tests tools examples
+uv run --package ml-experiment-server python -m compileall -q server/src server/tests
+uv run --package ml-experiment-server pytest server/tests -q
+uv run --package ml-experiment-server ml-expd --help
 uv run python examples/local_smoke.py
-uv build
+uv build --all-packages
 ```

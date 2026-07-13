@@ -1,0 +1,1 @@
+{"epoch": 0, "step": 2000, "mode": "oracle_plan_generation", "ppl": 1.1506776317844882, "oracle_plan_ppl": 1.1506776317844882, "mean_entropy": 0.040662611718289554, "bleu": 0.0, "rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}

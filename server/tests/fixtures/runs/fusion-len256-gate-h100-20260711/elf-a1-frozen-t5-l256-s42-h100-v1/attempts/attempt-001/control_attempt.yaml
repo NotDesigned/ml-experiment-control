@@ -1,0 +1,202 @@
+schema_version: 1
+campaign: fusion-len256-gate-h100-20260711
+project: elf
+run_id: elf-a1-frozen-t5-l256-s42-h100-v1
+attempt_id: attempt-001
+created_at: '2026-07-11T12:12:58.499166Z'
+source_id: e44db5b272df3b6a196e8f58addc54446003595f
+image_id: sha256:1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4
+config_path: src/configs/training_configs/ablations/owt_elfb/tier0_1_sentence_t5_len256.yml
+config_overrides:
+- epochs=1
+- grad_accum_steps=1
+- save_freq=0.1
+- eval_freq=1
+- num_samples=256
+- reconstruction_num_samples=256
+- train_sampling_eval_freq=2000
+- train_sampling_eval_num_samples=64
+- train_sampling_eval_batch_size=16
+resolved_config:
+  data_path: embedded-language-flows/openwebtext-t5
+  eval_data_path: null
+  max_length: 256
+  max_input_length: null
+  pad_token: pad
+  tokenizer_name: null
+  encoder_model_name: t5-small
+  encoder_checkpoint: null
+  latent_mean: 0.0
+  latent_std: 0.2
+  model: ELF-B
+  bottleneck_dim: 128
+  num_time_tokens: 4
+  num_self_cond_cfg_tokens: 4
+  num_model_mode_tokens: 4
+  attn_dropout: 0.0
+  proj_dropout: 0.0
+  use_sentence_plan: true
+  sentence_encoder_type: sentence_t5
+  sentence_t5_model_name: sentence-transformers/sentence-t5-xl
+  sentence_emb_dim: 768
+  sentence_latent_mean: 0.0
+  sentence_latent_std: 1.0
+  num_plan_tokens: 8
+  plan_adapter_type: slot_mlp
+  plan_slot_dit_depth: 2
+  plan_learned_encoder_norm: true
+  plan_loss_weight: 1.0
+  plan_noise_scale: 1.0
+  plan_time_schedule: aligned
+  plan_time_warp_gamma: 1.0
+  plan_aux_passes: 1
+  plan_aux_token_context: denoiser_z
+  sentence_encoder_grad: none
+  denoiser_p_mean: -1.5
+  denoiser_p_std: 0.8
+  denoiser_noise_scale: 2.0
+  t_eps: 0.05
+  time_schedule: logit_normal
+  decoder_prob: 0.2
+  decoder_noise_scale: 5.0
+  decoder_p_mean: 0.8
+  decoder_p_std: 0.8
+  label_drop_prob: 0.0
+  self_cond_prob: 0.5
+  self_cond_cfg_min: 0.5
+  self_cond_cfg_max: 5.0
+  epochs: 1
+  warmup_epochs: 0.5
+  warmup_steps: -1
+  batch_size: null
+  global_batch_size: 512
+  lr: null
+  blr: 0.001
+  min_lr: 0.0
+  lr_schedule: constant
+  weight_decay: 0.0
+  optimizer: muon
+  adam_b1: 0.9
+  adam_b2: 0.95
+  grad_accum_steps: 1
+  use_bf16: true
+  use_compile: false
+  gradient_checkpointing: false
+  ema_decay1: 0.9999
+  sampling_configs_path: src/configs/sampling_configs/uncond_sampling_configs.yml
+  sampling_configs:
+  - sampling_method: sde
+    num_sampling_steps:
+    - 32
+    cfgs:
+    - 1.0
+    self_cond_cfg_scales:
+    - 3.0
+    time_schedule: logit_normal
+    sde_gamma: 1.5
+  - sampling_method: sde
+    num_sampling_steps:
+    - 64
+    cfgs:
+    - 1.0
+    self_cond_cfg_scales:
+    - 3.0
+    time_schedule: logit_normal
+    sde_gamma: 1.0
+  num_samples: 256
+  online_eval: true
+  eval_ppl_model: gpt2-large
+  eval_ppl_batch_size: 64
+  eval_ppl_max_length: 256
+  reconstruction_eval: true
+  reconstruction_num_samples: 256
+  train_sampling_eval_freq: 2000
+  train_sampling_eval_num_samples: 64
+  train_sampling_eval_batch_size: 16
+  train_sampling_eval_max_configs: 1
+  log_freq: 100
+  eval_freq: 1
+  save_freq: 0.1
+  output_dir: /datapool/liangluocheng/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
+  hf_repo_id: null
+  resume: null
+  warm_start: null
+  warm_start_use_ema: false
+  use_wandb: false
+  wandb_project: elf
+  wandb_entity: null
+  wandb_run_name: tier0_1_owt_elfb_sentence_t5_len256
+  wandb_run_id: null
+  wandb_tag: tier0,owt,elfb,sentence_t5,len256
+  wandb_resume: null
+  seed: 42
+  num_workers: 8
+backend:
+  kind: slurm
+  ssh_alias: wyd-l40s
+  partition: h100
+  account: lab
+  qos: normal
+  gres: gpu:h100:4
+  time: '24:00:00'
+  mount_root: /datapool
+  apptainer_cache_dir: /datapool/liangluocheng/elf/apptainer/cache
+  apptainer_tmp_dir: /datapool/liangluocheng/elf/apptainer/tmp
+  source_dir: /datapool/liangluocheng/elf/sources/e44db5b272df3b6a196e8f58addc54446003595f
+  sif_path: /datapool/liangluocheng/elf/images/1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4.sif
+  data_root: /datapool/liangluocheng
+  project_data_root: /datapool/liangluocheng/elf
+  hf_home: /datapool/liangluocheng/.cache/huggingface
+  hf_datasets_cache: /datapool/liangluocheng/.cache/huggingface/datasets
+resources:
+  gpus: 4
+  cpus: 32
+storage:
+  run_dir: /datapool/liangluocheng/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
+command:
+- env
+- ATTEMPT_ID=attempt-001
+- BACKEND=slurm
+- CHECKPOINT_ROOT=/datapool/liangluocheng/elf/checkpoints
+- DATA_ROOT=/datapool/liangluocheng
+- ELF_B_OWT_CHECKPOINT=/datapool/liangluocheng/elf/checkpoints/ELF-B-owt-torch/checkpoint_95085
+- HF_DATASETS_CACHE=/datapool/liangluocheng/.cache/huggingface/datasets
+- HF_HOME=/datapool/liangluocheng/.cache/huggingface
+- IMAGE_ID=sha256:1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4
+- LOG_FREQ=100
+- NGPU=4
+- NUM_WORKERS=8
+- OUTPUT_DIR=/datapool/liangluocheng/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
+- PROJECT_DATA_ROOT=/datapool/liangluocheng/elf
+- PROJECT_NAME=elf
+- QUOTA_TYPE=normal
+- REQUIRE_OFFLINE_CACHE=1
+- RUN_ID=elf-a1-frozen-t5-l256-s42-h100-v1
+- SAVE_DIR=/datapool/liangluocheng/elf/saved_models
+- SOURCE_ID=e44db5b272df3b6a196e8f58addc54446003595f
+- USE_WANDB=false
+- WANDB_CACHE_DIR=/datapool/liangluocheng/elf/wandb_cache
+- WANDB_DIR=/datapool/liangluocheng/elf/wandb
+- bash
+- scripts/cloud_train.sh
+- src/configs/training_configs/ablations/owt_elfb/tier0_1_sentence_t5_len256.yml
+- --config_override
+- epochs=1
+- --config_override
+- grad_accum_steps=1
+- --config_override
+- save_freq=0.1
+- --config_override
+- eval_freq=1
+- --config_override
+- num_samples=256
+- --config_override
+- reconstruction_num_samples=256
+- --config_override
+- train_sampling_eval_freq=2000
+- --config_override
+- train_sampling_eval_num_samples=64
+- --config_override
+- train_sampling_eval_batch_size=16
+retry:
+  max_infra_retries: 0
