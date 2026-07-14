@@ -1,0 +1,198 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+from fastapi.testclient import TestClient
+
+from ml_exp_server.api.app import create_app
+from ml_exp_server.schemas import ActionRuntimeConfig, ServerConfig
+
+
+def config(tmp_path: Path, *, writes: bool = False) -> ServerConfig:
+    return ServerConfig(
+        index_db=str(tmp_path / "state" / "index.sqlite"),
+        action_root=str(tmp_path / "state" / "actions"),
+        project_registry_root=str(tmp_path / "state" / "projects"),
+        project_import_roots=[str(tmp_path)],
+        action_runtime=ActionRuntimeConfig(allow_project_writes=writes),
+        collector_enabled=False,
+    )
+
+
+def preview(client: TestClient, repository: Path, **extra):
+    return client.post("/api/project-imports/preview", json={
+        "source": {"kind": "daemon_path", "repository_root": str(repository)},
+        **extra,
+    })
+
+
+def test_preview_discovers_minimal_manifest_without_writing(tmp_path):
+    repository = tmp_path / "my-study"
+    (repository / "runs").mkdir(parents=True)
+    controller = repository / "tools" / "experimentctl.py"
+    controller.parent.mkdir()
+    controller.write_text("print('controller')\n", encoding="utf-8")
+
+    with TestClient(create_app(config(tmp_path))) as client:
+        response = preview(client, repository)
+
+    assert response.status_code == 200
+    plan = response.json()
+    assert plan["operation"] == "GENERATE_AND_REGISTER"
+    assert plan["manifest"] == {
+        "schema_version": 1,
+        "project": "my-study",
+        "title": "My Study",
+        "run_roots": ["runs"],
+        "controller": {
+            "python": "python3", "experimentctl": "tools/experimentctl.py",
+            "workdir": ".", "capabilities": {},
+        },
+    }
+    assert plan["confirmation"] == f"IMPORT {plan['import_id']}"
+    assert not (repository / "experiments" / "research_project.yaml").exists()
+
+
+def test_generated_manifest_requires_policy_and_exact_confirmation(tmp_path):
+    repository = tmp_path / "demo"
+    repository.mkdir()
+    with TestClient(create_app(config(tmp_path))) as client:
+        plan = preview(client, repository).json()
+        wrong = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": "IMPORT wrong"},
+        )
+        blocked = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        )
+
+    assert wrong.status_code == 409
+    assert blocked.status_code == 409
+    assert "disabled by daemon policy" in blocked.json()["detail"]
+    assert not (repository / "experiments" / "research_project.yaml").exists()
+
+
+def test_execute_generates_registers_and_indexes_project(tmp_path):
+    repository = tmp_path / "demo"
+    repository.mkdir()
+    with TestClient(create_app(config(tmp_path, writes=True))) as client:
+        plan = preview(client, repository, title="Demo Project").json()
+        response = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        )
+        lifecycle = client.get("/api/project-lifecycle").json()
+
+    assert response.status_code == 200
+    registration = response.json()["registration"]
+    assert registration["project"]["project"] == "demo"
+    assert registration["initial_index"]["status"] == "COMPLETED"
+    manifest = yaml.safe_load(
+        (repository / "experiments" / "research_project.yaml").read_text()
+    )
+    assert manifest["title"] == "Demo Project"
+    assert lifecycle["projects"][0]["project"] == "demo"
+
+
+def test_execute_rejects_manifest_created_after_preview(tmp_path):
+    repository = tmp_path / "demo"
+    repository.mkdir()
+    manifest = repository / "experiments" / "research_project.yaml"
+    with TestClient(create_app(config(tmp_path, writes=True))) as client:
+        plan = preview(client, repository).json()
+        manifest.parent.mkdir()
+        manifest.write_text("schema_version: 1\n", encoding="utf-8")
+        response = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        )
+
+    assert response.status_code == 409
+    assert response.headers["X-ML-Expd-Error-Code"] == "PROJECT_IMPORT_STALE"
+
+
+def test_existing_manifest_preview_registers_without_project_write_policy(tmp_path):
+    repository = tmp_path / "existing"
+    manifest = repository / "experiments" / "research_project.yaml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(yaml.safe_dump({
+        "schema_version": 1, "project": "existing", "title": "Existing",
+        "run_roots": [],
+    }), encoding="utf-8")
+    with TestClient(create_app(config(tmp_path))) as client:
+        plan = preview(client, repository).json()
+        response = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        )
+
+    assert plan["operation"] == "REGISTER_EXISTING"
+    assert response.status_code == 200
+
+
+def test_preview_rejects_ambiguous_or_unsupported_sources(tmp_path):
+    with TestClient(create_app(config(tmp_path))) as client:
+        relative = preview(client, Path("relative"))
+        unsupported = client.post("/api/project-imports/preview", json={
+            "source": {"kind": "git", "repository_root": "https://example/repo"},
+        })
+
+    assert relative.status_code == 409
+    assert unsupported.status_code == 422
+
+
+def test_preview_rejects_paths_outside_allowlist_and_skips_symlink_discovery(tmp_path):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    config_value = config(tmp_path)
+    config_value.project_import_roots = [str(allowed)]
+    repository = allowed / "repo"
+    repository.mkdir()
+    (repository / "runs").symlink_to(outside, target_is_directory=True)
+    controller = outside / "experimentctl.py"
+    controller.write_text("raise SystemExit\n", encoding="utf-8")
+    (repository / "experimentctl.py").symlink_to(controller)
+
+    with TestClient(create_app(config_value)) as client:
+        rejected = preview(client, outside)
+        plan = preview(client, repository).json()
+
+    assert rejected.status_code == 409
+    assert "project_import_roots" in rejected.json()["detail"]
+    assert plan["manifest"]["run_roots"] == []
+    assert "controller" not in plan["manifest"]
+
+
+def test_execute_rolls_forward_after_manifest_and_registry_crash_windows(
+    tmp_path, monkeypatch,
+):
+    repository = tmp_path / "demo"
+    repository.mkdir()
+    with TestClient(create_app(config(tmp_path, writes=True))) as client:
+        service = client.app.state.application.project_import_service
+        plan = service.preview(repository)
+        real_register = service.projects.register
+        calls = 0
+
+        def crash_before_register(path):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("crash after manifest")
+            return real_register(path)
+
+        monkeypatch.setattr(service.projects, "register", crash_before_register)
+        try:
+            service.execute(plan["import_id"], plan["confirmation"])
+        except RuntimeError as exc:
+            assert "crash after manifest" in str(exc)
+        recovered = service.execute(plan["import_id"], plan["confirmation"])
+        repeated = service.execute(plan["import_id"], plan["confirmation"])
+
+    assert recovered == repeated
+    assert recovered["import"]["phase"] == "COMPLETED"
+    assert recovered["import"]["executed"] is True

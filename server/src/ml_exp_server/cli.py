@@ -218,7 +218,7 @@ def _doctor_command(args: argparse.Namespace) -> int:
             ))
         runtime = config.action_runtime
         for flag in (
-            "allow_project_writes", "allow_scheduler_mutations",
+            "allow_project_writes", "allow_source_imports", "allow_scheduler_mutations",
             "allow_observability_mutations", "allow_local_evidence_rebuild",
         ):
             if getattr(runtime, flag):
@@ -228,6 +228,12 @@ def _doctor_command(args: argparse.Namespace) -> int:
                     f"action_runtime.{flag}", None, "disabled (default)",
                     f"set action_runtime.{flag}: true to allow this Action class",
                 ))
+        import_roots = config.project_import_root_paths()
+        checks.append((
+            "project_import_roots", True if import_roots else None,
+            ", ".join(str(item) for item in import_roots) if import_roots else "disabled (default)",
+            None if import_roots else "configure project_import_roots to enable zero-config discovery",
+        ))
 
         store = CredentialStore(Path(config.observability.credential_root))
 

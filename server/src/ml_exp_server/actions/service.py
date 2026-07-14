@@ -145,7 +145,8 @@ class ActionService:
     def __init__(self, store: ActionStore, config: ActionRuntimeConfig,
                  runner: Callable[..., dict[str, Any]] | None = None,
                  actor_provider: Callable[[], str] | None = None,
-                 internal_executor: Callable[[dict[str, Any]], dict[str, Any]] | None = None):
+                 internal_executor: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+                 source_resolver: Callable[[str, str], Path] | None = None):
         self.store = store
         self.config = config
         self.controller = ProjectControllerGateway(runner)
@@ -153,6 +154,7 @@ class ActionService:
         self.project_write_transaction = ProjectWriteTransaction(store)
         self.actor_provider = actor_provider or self._local_actor
         self.internal_executor = internal_executor
+        self.source_resolver = source_resolver
 
     @staticmethod
     def _local_actor() -> str:
@@ -802,9 +804,34 @@ class ActionService:
             })
             return plan
 
+        expected_source_id = str(spec.get("expected_source_id") or "")
+        imported_source_args: list[str] = []
+        if expected_source_id.startswith("source."):
+            capability = bool(project.controller.capabilities.get("daemon_source_revision"))
+            gates.append(_gate(
+                "daemon_source_capability", capability,
+                "controller must declare daemon_source_revision for imported source trees",
+            ))
+            source_root: Path | None = None
+            try:
+                if self.source_resolver is not None:
+                    source_root = self.source_resolver(project.project, expected_source_id)
+            except (OSError, ValueError, json.JSONDecodeError):
+                source_root = None
+            gates.append(_gate(
+                "daemon_source_available", source_root is not None,
+                "daemon-owned immutable source tree must exist and match its metadata",
+            ))
+            if source_root is not None:
+                imported_source_args = [
+                    "--source-root", str(source_root),
+                    "--source-id", expected_source_id,
+                ]
+
         actual_verb = "cancel" if operation == "CANCEL_RUN" else "submit"
         call = self.controller.build(
             project, campaign, actual_verb, run_id, attempt_id=attempt_id,
+            extra=imported_source_args,
         )
         command, cwd = call.argv, call.cwd
         preview_payload: dict[str, Any] | None = None
@@ -824,7 +851,7 @@ class ActionService:
             )
             preview_call = self.controller.build(
                 project, preview_path, "submit", run_id,
-                attempt_id=attempt_id, dry_run=True,
+                attempt_id=attempt_id, dry_run=True, extra=imported_source_args,
             )
             preview_command, preview_cwd = preview_call.argv, preview_call.cwd
             gate, result = self._run_gate("dry_run", preview_command, preview_cwd)
@@ -884,6 +911,12 @@ class ActionService:
                     else "canonical execution manifest identity conflicts with preview",
                 ),
             ])
+            if expected_source_id:
+                gates.append(_gate(
+                    "authored_source_binding",
+                    manifest.get("source_id") == expected_source_id,
+                    f"preview source_id must equal authored source_id {expected_source_id}",
+                ))
             if operation == "RUN_EVALUATION":
                 evaluation = manifest.get("evaluation")
                 evaluation_ready = isinstance(evaluation, dict) and all(
@@ -938,7 +971,7 @@ class ActionService:
             ):
                 check_call = self.controller.build(
                     project, campaign, verb, run_id,
-                    attempt_id=attempt_id, extra=extra,
+                    attempt_id=attempt_id, extra=[*extra, *imported_source_args],
                 )
                 gate, _ = self._run_gate(name, check_call.argv, check_call.cwd)
                 gates.append(gate)

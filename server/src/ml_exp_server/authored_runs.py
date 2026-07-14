@@ -73,6 +73,11 @@ def authored_run_placeholder(
         provenance={
             "authored_only": True,
             "campaign_revision": revision.revision_id,
+            **(
+                {"source_id": revision.source_bindings[run_id],
+                 "source_binding": "campaign_file"}
+                if run_id in revision.source_bindings else {}
+            ),
         },
         warnings=[
             "Run is authored but has not yet been materialized by a controller dry-run"

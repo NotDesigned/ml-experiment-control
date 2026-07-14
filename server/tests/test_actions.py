@@ -499,12 +499,14 @@ class FakeController:
     def __init__(
         self, *, timeout_submit: bool = False, evaluation: bool = False,
         status_visible: bool = True, status_job_id: str = "job-123",
+        source_id: str = "git:abc",
     ):
         self.calls: list[list[str]] = []
         self.timeout_submit = timeout_submit
         self.evaluation = evaluation
         self.status_visible = status_visible
         self.status_job_id = status_job_id
+        self.source_id = source_id
 
     def __call__(self, command, *, cwd, timeout):
         self.calls.append(list(command))
@@ -516,7 +518,7 @@ class FakeController:
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
             manifest = {
                 "identity_version": 2,
-                "run_id": "run-a", "source_id": "git:abc", "image_id": "sha256:image",
+                "run_id": "run-a", "source_id": self.source_id, "image_id": "sha256:image",
                 "backend": {"kind": "slurm", "time": "04:00:00"},
                 "resources": {"gpus": 2, "cpus": 8},
                 "storage": {"run_dir": "/data/project/runs/run-a", "checkpoint_dir": "/data/project/runs/run-a/checkpoints"},
@@ -706,6 +708,81 @@ def test_submit_plan_gates_and_executes_once(tmp_path):
     submit_calls = [item for item in runner.calls if item[3] == "submit" and "--dry-run" not in item]
     assert len(submit_calls) == 1
 
+
+def test_submit_plan_binds_preview_to_authored_source_revision(tmp_path):
+    project, campaign = controller_project(tmp_path)
+    service = ActionService(
+        ActionStore(tmp_path / "actions"), ActionRuntimeConfig(), FakeController(),
+    )
+    scope = OperationScope(project="demo", scope_type="run", object_id="run-a")
+    matching = yaml.safe_load(submit_draft(campaign))
+    matching["expected_source_id"] = "git:abc"
+
+    accepted = service.prepare(
+        scope, project,
+        operation_intent("SUBMIT_RUN", yaml.safe_dump(matching), "intent-source-match"),
+    )
+    gate = next(item for item in accepted["gates"]
+                if item["name"] == "authored_source_binding")
+    assert gate["status"] == "PASS"
+
+    mismatched = {**matching, "expected_source_id": "source." + "a" * 64}
+    blocked = service.prepare(
+        scope, project,
+        operation_intent("SUBMIT_RUN", yaml.safe_dump(mismatched), "intent-source-drift"),
+    )
+    gate = next(item for item in blocked["gates"]
+                if item["name"] == "authored_source_binding")
+    assert gate["status"] == "FAIL"
+    assert blocked["ready"] is False
+
+
+def test_imported_source_tree_is_passed_to_controller_preview_and_checks(tmp_path):
+    project, campaign = controller_project(tmp_path)
+    project.controller.capabilities["daemon_source_revision"] = True
+    source_id = "source." + "a" * 64
+    source_root = tmp_path / "immutable-source" / "tree"
+    source_root.mkdir(parents=True)
+    runner = FakeController(source_id=source_id)
+    service = ActionService(
+        ActionStore(tmp_path / "actions"), ActionRuntimeConfig(), runner,
+        source_resolver=lambda project_id, requested: (
+            source_root if (project_id, requested) == ("demo", source_id) else None
+        ),
+    )
+    draft = yaml.safe_load(submit_draft(campaign))
+    draft["expected_source_id"] = source_id
+
+    plan = service.prepare(
+        OperationScope(project="demo", scope_type="run", object_id="run-a"),
+        project,
+        operation_intent("SUBMIT_RUN", yaml.safe_dump(draft), "intent-imported-source"),
+    )
+
+    gates = {item["name"]: item["status"] for item in plan["gates"]}
+    assert gates["daemon_source_capability"] == "PASS"
+    assert gates["daemon_source_available"] == "PASS"
+    assert gates["authored_source_binding"] == "PASS"
+    assert plan["ready"] is True
+    source_calls = [call for call in runner.calls if "--source-root" in call]
+    assert source_calls
+    assert all(call[call.index("--source-root") + 1] == str(source_root)
+               for call in source_calls)
+    assert all(call[call.index("--source-id") + 1] == source_id
+               for call in source_calls)
+
+    failing = ActionService(
+        ActionStore(tmp_path / "failing-actions"), ActionRuntimeConfig(), runner,
+        source_resolver=lambda *_args: (_ for _ in ()).throw(
+            ValueError("metadata mismatch")
+        ),
+    ).prepare(
+        OperationScope(project="demo", scope_type="run", object_id="run-a"),
+        project,
+        operation_intent("SUBMIT_RUN", yaml.safe_dump(draft), "intent-bad-source-store"),
+    )
+    assert next(item for item in failing["gates"]
+                if item["name"] == "daemon_source_available")["status"] == "FAIL"
 
 def test_submit_plan_blocks_existing_canonical_manifest_that_differs_from_preview(
     tmp_path,

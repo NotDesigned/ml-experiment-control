@@ -175,6 +175,7 @@ def _load_campaign_revision(project: ResearchProject, ref: CampaignRef) -> Campa
     if not authored_runs and not authored_refs:
         raise ConfigError(f"campaign requires runs or run_refs in {path}")
     memberships: list[CampaignRunMembership] = []
+    source_bindings: dict[str, str] = {}
     run_ids: set[str] = set()
     for authored in authored_runs:
         template = authored.get("template") if isinstance(authored, dict) else None
@@ -202,6 +203,13 @@ def _load_campaign_revision(project: ResearchProject, ref: CampaignRef) -> Campa
                 ))
             except ValidationError as exc:
                 raise ConfigError(f"invalid campaign run membership in {path}: {exc}") from exc
+            source_id = value("source_id")
+            if source_id is not None:
+                if not isinstance(source_id, str) or not source_id or "{" in source_id:
+                    raise ConfigError(
+                        f"campaign run source_id must be a concrete string in {path}"
+                    )
+                source_bindings[run_id] = source_id
     for authored in authored_refs:
         if not isinstance(authored, dict):
             raise ConfigError(f"campaign run_refs entries must be mappings in {path}")
@@ -234,6 +242,7 @@ def _load_campaign_revision(project: ResearchProject, ref: CampaignRef) -> Campa
             if isinstance(data.get("research_contract"), dict) else None
         ),
         memberships=memberships,
+        source_bindings=source_bindings,
     )
 
 

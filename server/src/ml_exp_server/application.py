@@ -25,6 +25,8 @@ from .ingest.runscan import (
 )
 from .evidence_conflicts import classify_evidence_conflicts
 from .project_service import ProjectApplicationService
+from .project_imports import ProjectImportService
+from .source_revisions import SourceRevisionService
 from .runtime import ExperimentServerRuntime
 from .outward import attempt_dto, operational_decision, run_dto, sanitized_outward
 from .operations import (
@@ -377,6 +379,17 @@ class ExperimentServerApplication:
         self.runtime = runtime
         self.telemetry = getattr(runtime, "telemetry", Telemetry())
         self.project_service = ProjectApplicationService(runtime)
+        complete_config = callable(
+            getattr(getattr(runtime, "config", None), "project_registry_root_path", None)
+        )
+        self.project_import_service = (
+            ProjectImportService(runtime, self.project_service)
+            if complete_config else None
+        )
+        self.source_revision_service = (
+            SourceRevisionService(runtime)
+            if complete_config else None
+        )
 
     def recover_observability_policies(self) -> None:
         """Idempotently close the VERIFIED-action/target crash window."""
@@ -2068,7 +2081,22 @@ class ExperimentServerApplication:
             "campaign_file": str(campaign), "run_id": row.run_id,
             "attempt_id": attempt_id, "max_gpu_hours": max_gpu_hours,
             "wandb_cloud_sync": wandb_cloud_sync,
+            **(
+                {"expected_source_id": row.provenance["source_id"]}
+                if row.provenance.get("source_binding") == "campaign_file" else {}
+            ),
         }, sort_keys=False)
+        expected_source = (
+            str(row.provenance.get("source_id") or "")
+            if row.provenance.get("source_binding") == "campaign_file" else ""
+        )
+        if expected_source.startswith("source."):
+            if self.source_revision_service is None:
+                raise ApplicationError(
+                    "source revision service is unavailable",
+                    code="SOURCE_IMPORT_BLOCKED",
+                )
+            self.source_revision_service.get(configured.project, expected_source)
         digest = evidence_digest(self.bounded_evidence(scope, configured, row))
         action = self._prepare_action_intent(scope, configured, {
             "kind": "SUBMIT_RUN",
@@ -2430,6 +2458,52 @@ class ExperimentServerApplication:
 
     def project_register(self, project_file: Path) -> dict[str, Any]:
         return self.project_service.register(project_file)
+
+    def project_import_preview(
+        self, repository_root: Path, *, project: str | None = None,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        if self.project_import_service is None:
+            raise ApplicationError(
+                "Project import service is unavailable", code="PROJECT_IMPORT_BLOCKED",
+            )
+        return self.project_import_service.preview(
+            repository_root, project=project, title=title,
+        )
+
+    def project_import_execute(
+        self, import_id: str, confirmation: str,
+    ) -> dict[str, Any]:
+        if self.project_import_service is None:
+            raise ApplicationError(
+                "Project import service is unavailable", code="PROJECT_IMPORT_BLOCKED",
+            )
+        return self.project_import_service.execute(import_id, confirmation)
+
+    def source_revision_preview(
+        self, project: str, proposal: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.source_revision_service is None:
+            raise ApplicationError(
+                "source revision service is unavailable", code="SOURCE_IMPORT_BLOCKED",
+            )
+        return self.source_revision_service.preview(project, proposal)
+
+    def source_revision_execute(
+        self, import_id: str, confirmation: str,
+    ) -> dict[str, Any]:
+        if self.source_revision_service is None:
+            raise ApplicationError(
+                "source revision service is unavailable", code="SOURCE_IMPORT_BLOCKED",
+            )
+        return self.source_revision_service.execute(import_id, confirmation)
+
+    def source_revision_get(self, project: str, source_id: str) -> dict[str, Any]:
+        if self.source_revision_service is None:
+            raise ApplicationError(
+                "source revision service is unavailable", code="SOURCE_IMPORT_BLOCKED",
+            )
+        return self.source_revision_service.get(project, source_id)
 
     def project_lifecycle_transition(
         self, project: str, target: ProjectLifecycleState, *, reason: str = "",

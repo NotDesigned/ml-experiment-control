@@ -285,6 +285,7 @@ class ActionRuntimeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     allow_project_writes: bool = False
+    allow_source_imports: bool = False
     allow_scheduler_mutations: bool = False
     allow_observability_mutations: bool = False
     allow_local_evidence_rebuild: bool = False
@@ -339,6 +340,7 @@ class CampaignRevision(BaseModel):
     file: str
     research_contract: Optional[dict[str, Any]] = None
     memberships: list[CampaignRunMembership] = Field(default_factory=list)
+    source_bindings: dict[str, str] = Field(default_factory=dict)
 
 
 class CampaignRef(BaseModel):
@@ -486,6 +488,9 @@ class ServerConfig(BaseModel):
     # The lifecycle registry is workspace-owned. When omitted it is derived
     # from index_db so independent daemon workspaces stay isolated.
     project_registry_root: Optional[str] = None
+    # Zero-config discovery is an authenticated read oracle over daemon-host
+    # paths, so it is closed unless operators enumerate canonical roots.
+    project_import_roots: list[str] = Field(default_factory=list)
     http_auth: HttpAuthConfig = Field(default_factory=HttpAuthConfig)
     action_runtime: ActionRuntimeConfig = Field(default_factory=ActionRuntimeConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
@@ -507,6 +512,9 @@ class ServerConfig(BaseModel):
             return Path(self.project_registry_root).expanduser()
         index = self.index_db_path()
         return index.with_name(f"{index.stem}.projects")
+
+    def project_import_root_paths(self) -> list[Path]:
+        return [Path(item).expanduser().resolve() for item in self.project_import_roots]
 
     def observability_db_path(self) -> Path:
         index = self.index_db_path()

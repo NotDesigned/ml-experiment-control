@@ -23,6 +23,9 @@ SERVER_CAPABILITIES = (
     "bearer-auth.v1",
     "observability.v1",
     "project-lifecycle.v1",
+    "project-import.v1",
+    "project-source-locator.v1",
+    "source-revision-import.v1",
     "submissions.v1",
     "terminal-snapshot.v1",
     "terminal-snapshot-limits.v1",
@@ -64,6 +67,7 @@ class DaemonHealth(BaseModel):
     collector_error: str | None = None
     project_write_recovery_errors: list[str] = Field(default_factory=list)
     project_writes: bool
+    source_imports: bool
     scheduler_mutations: bool
     observability_mutations: bool
     local_evidence_rebuild: bool

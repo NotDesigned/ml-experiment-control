@@ -94,6 +94,7 @@ def test_load_project_resolves_campaign_revision_and_memberships(tmp_path):
             replicate: 1
           - run_id: treatment-s1
             research_role: treatment
+            source_id: source.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
             included_in_analysis: false
     """)
     campaign_path.write_text(raw)
@@ -117,6 +118,9 @@ def test_load_project_resolves_campaign_revision_and_memberships(tmp_path):
     assert revision.memberships[0].arm == "scratch"
     assert revision.memberships[0].replicate == 1
     assert revision.memberships[1].included_in_analysis is False
+    assert revision.source_bindings == {
+        "treatment-s1": "source." + "a" * 64,
+    }
 
 
 def test_campaign_revision_extracts_concrete_legacy_matrix_memberships(tmp_path):

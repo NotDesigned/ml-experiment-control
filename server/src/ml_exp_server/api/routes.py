@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..application import ApplicationError
 from ..api_contract import DaemonHealth, ProjectRegistrationResponse
@@ -47,8 +47,61 @@ class ProjectLifecycleRequest(BaseModel):
     reason: str = Field(default="", max_length=4000)
 
 
+class DaemonPathProjectSource(BaseModel):
+    """An existing manifest path in the daemon host filesystem namespace."""
+
+    kind: Literal["daemon_path"] = "daemon_path"
+    manifest_path: str = Field(min_length=1, max_length=4096)
+
+
 class ProjectRegisterRequest(BaseModel):
-    project_file: str = Field(min_length=1, max_length=4096)
+    # `project_file` remains a protocol-v1 compatibility field. New clients use
+    # the explicit source locator so a client-local path is never mistaken for
+    # a path on a remote daemon host.
+    project_file: Optional[str] = Field(default=None, min_length=1, max_length=4096)
+    source: Optional[DaemonPathProjectSource] = None
+
+    @model_validator(mode="after")
+    def require_one_source(self) -> "ProjectRegisterRequest":
+        if (self.project_file is None) == (self.source is None):
+            raise ValueError("provide exactly one of project_file or source")
+        return self
+
+    def daemon_manifest_path(self) -> Path:
+        value = self.source.manifest_path if self.source is not None else self.project_file
+        assert value is not None
+        return Path(value)
+
+
+class ProjectImportPreviewRequest(BaseModel):
+    source: dict[str, Any]
+    project: Optional[str] = Field(default=None, max_length=128)
+    title: Optional[str] = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "ProjectImportPreviewRequest":
+        if self.source.get("kind") != "daemon_path":
+            raise ValueError("only daemon_path Project discovery is currently supported")
+        root = self.source.get("repository_root")
+        if not isinstance(root, str) or not root or len(root) > 4096:
+            raise ValueError("source.repository_root must be a non-empty path")
+        return self
+
+    def repository_root(self) -> Path:
+        return Path(str(self.source["repository_root"]))
+
+
+class ProjectImportExecuteRequest(BaseModel):
+    confirmation: str = Field(min_length=1, max_length=256)
+
+
+class SourceRevisionPreviewRequest(BaseModel):
+    project: str = Field(min_length=1, max_length=128)
+    proposal: dict[str, Any]
+
+
+class SourceRevisionExecuteRequest(BaseModel):
+    confirmation: str = Field(min_length=1, max_length=256)
 
 
 class RefreshRequest(BaseModel):
@@ -94,6 +147,7 @@ def health(request: Request) -> DaemonHealth:
             request.app.state.project_write_recovery_errors
         ),
         project_writes=request.app.state.config.action_runtime.allow_project_writes,
+        source_imports=request.app.state.config.action_runtime.allow_source_imports,
         scheduler_mutations=(
             request.app.state.config.action_runtime.allow_scheduler_mutations
         ),
@@ -288,8 +342,60 @@ def project_lifecycle_register(
 ) -> ProjectRegistrationResponse:
     try:
         return ProjectRegistrationResponse.model_validate(
-            request.app.state.application.project_register(Path(data.project_file))
+            request.app.state.application.project_register(data.daemon_manifest_path())
         )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post("/project-imports/preview")
+def project_import_preview(data: ProjectImportPreviewRequest, request: Request):
+    try:
+        return request.app.state.application.project_import_preview(
+            data.repository_root(), project=data.project, title=data.title,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post("/project-imports/{import_id}/execute")
+def project_import_execute(
+    import_id: str, data: ProjectImportExecuteRequest, request: Request,
+):
+    try:
+        return request.app.state.application.project_import_execute(
+            import_id, data.confirmation,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post("/source-revisions/preview")
+def source_revision_preview(data: SourceRevisionPreviewRequest, request: Request):
+    try:
+        return request.app.state.application.source_revision_preview(
+            data.project, data.proposal,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post("/source-revisions/{import_id}/execute")
+def source_revision_execute(
+    import_id: str, data: SourceRevisionExecuteRequest, request: Request,
+):
+    try:
+        return request.app.state.application.source_revision_execute(
+            import_id, data.confirmation,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get("/projects/{project}/source-revisions/{source_id}")
+def source_revision_get(project: str, source_id: str, request: Request):
+    try:
+        return request.app.state.application.source_revision_get(project, source_id)
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 

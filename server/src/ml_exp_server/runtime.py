@@ -24,6 +24,7 @@ from .schemas import (
     ProjectRegistrationSource,
     ResearchProject,
 )
+from .source_revisions import resolve_source_tree
 from .telemetry import Telemetry, initialize_telemetry
 from .observability import WandbServiceManager
 from .observability_store import AttemptRef, ObservabilityStore
@@ -139,6 +140,9 @@ class ExperimentServerRuntime:
                 action_service=ActionService(
                     action_store, config.action_runtime,
                     internal_executor=execute_observability,
+                    source_resolver=lambda project, source_id: resolve_source_tree(
+                        config, project, source_id,
+                    ),
                 ),
                 project_registry=project_registry,
                 telemetry=telemetry,

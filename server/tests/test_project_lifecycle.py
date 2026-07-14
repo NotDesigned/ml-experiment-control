@@ -226,6 +226,32 @@ def test_manual_registration_requires_absolute_daemon_host_path(tmp_path):
     assert "absolute daemon-host path" in response.json()["detail"]
 
 
+def test_manual_registration_accepts_explicit_daemon_path_locator(tmp_path):
+    project_path = write_project(tmp_path, "demo")
+    with TestClient(create_app(config(tmp_path, []))) as client:
+        response = client.post(
+            "/api/project-lifecycle/register",
+            json={"source": {
+                "kind": "daemon_path",
+                "manifest_path": str(project_path),
+            }},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["project"]["project"] == "demo"
+
+
+@pytest.mark.parametrize("payload", [{}, {
+    "project_file": "/one.yml",
+    "source": {"kind": "daemon_path", "manifest_path": "/two.yml"},
+}])
+def test_manual_registration_requires_exactly_one_source(payload, tmp_path):
+    with TestClient(create_app(config(tmp_path, []))) as client:
+        response = client.post("/api/project-lifecycle/register", json=payload)
+
+    assert response.status_code == 422
+
+
 def test_index_failure_is_reported_as_degraded_after_durable_registration(
     monkeypatch, tmp_path,
 ):

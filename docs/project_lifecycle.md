@@ -79,6 +79,28 @@ record but makes it inactive. Neither operation deletes or modifies:
 Project-file writes and scheduler mutations remain governed by the separate
 Action runtime gates. A lifecycle transition does not authorize either.
 
+Zero-config discovery is separately constrained by `project_import_roots`.
+The daemon rejects repositories outside those canonical roots and does not
+follow discovered controller, run-root, or Campaign symlinks. Generated
+manifest imports are persisted as a recoverable four-phase transaction
+(`PREPARED`, `MANIFEST_APPLIED`, `REGISTERED`, `COMPLETED`), so retry after a
+process crash rolls forward and a completed import is idempotent.
+
+Client-authored patches use another two-phase API. Preview validates the exact
+Git base, patch digest, changed-file declaration, protected paths, and Git
+diff without executing Project code. Execution requires
+`action_runtime.allow_source_imports` plus the exact confirmation and creates a
+daemon-owned, read-only, content-addressed source tree. A Campaign may bind a
+new Run by setting its concrete `source_id` to that imported identity; submit
+preflight then requires the controller preview manifest to contain the same
+source identity.
+For an imported `source.*` identity the Project controller must declare the
+`daemon_source_revision` capability and accept `--source-root PATH --source-id
+ID` on dry-run, preflight/assets checks, and submit. The daemon resolves PATH
+from its own content-addressed metadata rather than accepting it from a client
+intent. Controllers without that capability fail closed before scheduler
+authorization.
+
 ## Bootstrap and durability
 
 `ServerConfig.projects` seeds an empty registry for compatibility and initial
