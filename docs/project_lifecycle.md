@@ -86,6 +86,15 @@ manifest imports are persisted as a recoverable four-phase transaction
 (`PREPARED`, `MANIFEST_APPLIED`, `REGISTERED`, `COMPLETED`), so retry after a
 process crash rolls forward and a completed import is idempotent.
 
+The daemon's operating-system sandbox must agree with this policy. When
+`allow_project_writes` is enabled, every configured import root that may
+receive a generated manifest must also be writable by the daemon process. For
+example, a systemd unit using `ProtectSystem=strict` needs a matching
+`ReadWritePaths=/srv/ml-expd/projects` (or the exact configured roots) in
+addition to its state-directory allowance. A filesystem denial is reported as
+a blocked, retryable import while the persisted plan remains `PREPARED`; after
+the service policy is corrected, the same confirmation can be retried safely.
+
 Client-authored patches use another two-phase API. Preview validates the exact
 Git base, patch digest, changed-file declaration, protected paths, and Git
 diff without executing Project code. Execution requires

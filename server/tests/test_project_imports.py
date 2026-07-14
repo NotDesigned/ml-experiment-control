@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from ml_exp_server import project_imports
 from ml_exp_server.api.app import create_app
+from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.schemas import ActionRuntimeConfig, ServerConfig
 
 
@@ -196,3 +200,35 @@ def test_execute_rolls_forward_after_manifest_and_registry_crash_windows(
     assert recovered == repeated
     assert recovered["import"]["phase"] == "COMPLETED"
     assert recovered["import"]["executed"] is True
+
+
+def test_execute_reports_manifest_filesystem_failure_and_remains_retryable(
+    tmp_path, monkeypatch,
+):
+    repository = tmp_path / "demo"
+    repository.mkdir()
+    with TestClient(create_app(config(tmp_path, writes=True))) as client:
+        service = client.app.state.application.project_import_service
+        plan = service.preview(repository)
+        manifest = repository / "experiments" / "research_project.yaml"
+        real_atomic_write = project_imports.atomic_write
+
+        def fail_manifest(path, payload, **kwargs):
+            if path == manifest:
+                raise OSError(30, "Read-only file system")
+            return real_atomic_write(path, payload, **kwargs)
+
+        monkeypatch.setattr(project_imports, "atomic_write", fail_manifest)
+        with pytest.raises(ApplicationError, match="could not be materialized") as caught:
+            service.execute(plan["import_id"], plan["confirmation"])
+        assert caught.value.code == "PROJECT_IMPORT_BLOCKED"
+        stored = json.loads(
+            (service.root / f"{plan['import_id']}.json").read_text(encoding="utf-8")
+        )
+        assert stored["phase"] == "PREPARED"
+        assert not manifest.exists()
+
+        monkeypatch.setattr(project_imports, "atomic_write", real_atomic_write)
+        recovered = service.execute(plan["import_id"], plan["confirmation"])
+
+    assert recovered["import"]["phase"] == "COMPLETED"

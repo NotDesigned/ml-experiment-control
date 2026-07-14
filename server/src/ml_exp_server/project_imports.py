@@ -269,8 +269,14 @@ class ProjectImportService:
                             code="PROJECT_IMPORT_STALE",
                         ) from exc
                 if current is None:
-                    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-                    atomic_write(manifest_path, plan["manifest"], yaml_format=True)
+                    try:
+                        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+                        atomic_write(manifest_path, plan["manifest"], yaml_format=True)
+                    except OSError as exc:
+                        raise ApplicationError(
+                            f"Project manifest could not be materialized: {exc}",
+                            code="PROJECT_IMPORT_BLOCKED",
+                        ) from exc
                 elif current != plan.get("manifest"):
                     raise ApplicationError(
                         "Project manifest changed after import preview; create a fresh preview",
