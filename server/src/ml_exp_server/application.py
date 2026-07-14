@@ -493,6 +493,18 @@ class ExperimentServerApplication:
         parameters = parameters or {}
         scope, configured, _ = self.resolve_scope(project, scope_type, object_id)
         self._require_operation_available(operation_id, project, scope.scope_type, object_id)
+        definition = OPERATIONS_BY_ID.get(operation_id)
+        if definition is None:
+            raise ApplicationError(
+                f"unknown operation {operation_id}", code="INVALID_OPERATION",
+            )
+        allowed_parameters = {item.key for item in definition.parameters}
+        unsupported = sorted(set(parameters) - allowed_parameters)
+        if unsupported:
+            raise ApplicationError(
+                "unsupported operation parameters: " + ", ".join(unsupported),
+                code="INVALID_OPERATION",
+            )
         reason = str(parameters.get("reason") or "")
         budget = 0.0
         if operation_id in {"run.submit", "attempt.retry"}:
@@ -505,16 +517,6 @@ class ExperimentServerApplication:
                 ) from exc
             if budget <= 0:
                 raise ApplicationError("max_gpu_hours must be positive", code="INVALID_OPERATION")
-        cloud_sync = str(parameters.get("wandb_cloud_sync") or "no").lower() == "yes"
-        if cloud_sync:
-            cloud = self.runtime.config.observability.wandb_cloud
-            if (not cloud.enabled or not cloud.default_credential_ref
-                    or not self.runtime.credentials.configured(cloud.default_credential_ref)):
-                raise ApplicationError(
-                    "W&B Cloud sync requires daemon cloud policy and a credential_ref",
-                    code="WANDB_CLOUD_CREDENTIAL_REQUIRED",
-                )
-
         if operation_id == "object.archive":
             if scope.scope_type == OperationScopeType.CAMPAIGN:
                 return self.prepare_campaign_archive(project, object_id, reason=reason)
@@ -525,7 +527,6 @@ class ExperimentServerApplication:
             return self.prepare_run_submit(
                 project, object_id, max_gpu_hours=budget,
                 reason=reason or "Requested from the scoped operation catalog",
-                wandb_cloud_sync=cloud_sync,
             )
         if operation_id == "attempt.retry":
             return self.prepare_attempt_retry(
@@ -535,7 +536,6 @@ class ExperimentServerApplication:
                     if parameters.get("new_attempt_id") else None
                 ),
                 max_gpu_hours=budget, reason=reason,
-                wandb_cloud_sync=cloud_sync,
             )
         if operation_id == "attempt.cancel":
             return self.prepare_attempt_cancel(project, object_id, reason=reason)
@@ -1399,8 +1399,7 @@ class ExperimentServerApplication:
         return path.resolve()
 
     def prepare_run_submit(self, project: str, run_id: str, *,
-                           max_gpu_hours: float, reason: str = "",
-                           wandb_cloud_sync: bool = False) -> dict[str, Any]:
+                           max_gpu_hours: float, reason: str = "") -> dict[str, Any]:
         """Prepare a reviewable first-submission Action for an authored Run."""
         self._require_operation_available(
             "run.submit", project, OperationScopeType.RUN, run_id,
@@ -1437,11 +1436,6 @@ class ExperimentServerApplication:
         draft = yaml.safe_dump({
             "campaign_file": str(campaign), "run_id": row.run_id,
             "attempt_id": attempt_id, "max_gpu_hours": max_gpu_hours,
-            "wandb_cloud_sync": bool(wandb_cloud_sync),
-            "wandb_credential_ref": (
-                self.runtime.config.observability.wandb_cloud.default_credential_ref
-                if wandb_cloud_sync else None
-            ),
         }, sort_keys=False)
         digest = evidence_digest(self.bounded_evidence(scope, configured, row))
         action = self._prepare_action_intent(scope, configured, {
@@ -1459,8 +1453,7 @@ class ExperimentServerApplication:
 
     def prepare_attempt_retry(self, project: str, identity: str, *,
                               new_attempt_id: str | None,
-                              max_gpu_hours: float, reason: str,
-                              wandb_cloud_sync: bool = False) -> dict[str, Any]:
+                              max_gpu_hours: float, reason: str) -> dict[str, Any]:
         if max_gpu_hours <= 0:
             raise ApplicationError("max_gpu_hours must be positive", status_code=422,
                                    code="INVALID_GPU_BUDGET")
@@ -1502,11 +1495,6 @@ class ExperimentServerApplication:
             "campaign_file": str(campaign), "run_id": row.run_id,
             "source_attempt_id": attempt.attempt_id,
             "attempt_id": new_attempt_id, "max_gpu_hours": max_gpu_hours,
-            "wandb_cloud_sync": bool(wandb_cloud_sync),
-            "wandb_credential_ref": (
-                self.runtime.config.observability.wandb_cloud.default_credential_ref
-                if wandb_cloud_sync else None
-            ),
         }, sort_keys=False)
         return self._prepare_attempt_action(
             scope, configured, row, attempt, kind="RETRY_ATTEMPT", draft=draft,

@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field
 
 from ..application import ApplicationError
 from ..campaign_lifecycle import campaign_snapshot
@@ -51,11 +51,6 @@ class RefreshRequest(BaseModel):
     project: Optional[str] = Field(default=None, max_length=256)
 
 
-class WandbCredentialRequest(BaseModel):
-    credential_ref: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
-    api_key: SecretStr = Field(min_length=1, max_length=4096)
-
-
 class AttemptRetryRequest(BaseModel):
     max_gpu_hours: float = Field(gt=0)
     new_attempt_id: Optional[str] = Field(default=None, pattern=r"^attempt-[0-9]{3,}$")
@@ -85,32 +80,14 @@ def health(request: Request):
 
 @router.get("/observability")
 def observability(request: Request):
-    """Return daemon-owned projection status without exposing credentials."""
+    """Return bounded projection status without paths or credential metadata."""
     return {
         "local_wandb": request.app.state.runtime.wandb_service.status(),
         "cloud": {
-            "enabled": request.app.state.config.observability.wandb_cloud.enabled,
-            "credential_ref": request.app.state.config.observability.wandb_cloud.default_credential_ref,
-            "credential_configured": request.app.state.runtime.credentials.configured(
-                request.app.state.config.observability.wandb_cloud.default_credential_ref,
-            ),
+            "publisher_available": False,
+            "state": "UNAVAILABLE",
         },
-        "log_archive_root": request.app.state.config.observability.log_archive_root,
     }
-
-
-@router.post("/observability/wandb-credential")
-def set_wandb_credential(data: WandbCredentialRequest, request: Request):
-    """Store a Cloud key locally; never return or log its value.
-
-    Secret writes are intentionally accepted only by a loopback-bound daemon.
-    Remote deployments must provision the credential file out of band.
-    """
-    host = request.app.state.config.observability.local_wandb.bind_host
-    if host not in {"127.0.0.1", "localhost", "::1"}:
-        raise HTTPException(status_code=403, detail="credential API requires loopback daemon binding")
-    request.app.state.runtime.credentials.put(data.credential_ref, data.api_key.get_secret_value())
-    return {"credential_ref": data.credential_ref, "configured": True}
 
 
 def _state(request: Request) -> tuple[RunIndex, list[ResearchProject], Optional[Collector]]:

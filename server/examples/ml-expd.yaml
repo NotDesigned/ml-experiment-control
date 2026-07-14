@@ -13,13 +13,25 @@ observability:
   log_archive_root: ~/.local/state/ml-expd/logs
   credential_root: ~/.local/state/ml-expd/credentials
   local_wandb:
-    # The daemon remains healthy if Docker/W&B is unavailable.
+    # Disabled by default. When enabled, the foreground command must bind all
+    # three placeholders so daemon ownership, storage, and readiness agree.
     enabled: false
     managed: true
     bind_host: 127.0.0.1
     port: 8080
-    command: [wandb, server, start, --no-daemon, --port, '8080']
+    data_dir: ~/.local/state/ml-expd/wandb
+    command:
+      - docker
+      - run
+      - --rm
+      - -v
+      - "{data_dir}:/vol"
+      - -p
+      - "{bind_host}:{port}:8080"
+      - wandb/local
   wandb_cloud:
+    # Reserved policy only. No cloud publisher exists in this release, so no
+    # cloud-sync operation or credential-write API is exposed.
     enabled: false
     default_credential_ref: wandb-cloud-default
 collector_enabled: true

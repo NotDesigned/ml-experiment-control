@@ -24,7 +24,6 @@ from .schemas import (
 )
 from .telemetry import Telemetry, initialize_telemetry
 from .observability import WandbServiceManager
-from .credentials import CredentialStore
 
 
 def _load_registered_project(record: ProjectLifecycleRecord) -> ResearchProject:
@@ -48,7 +47,6 @@ class ExperimentServerRuntime:
     telemetry: Telemetry
     workspace_id: str
     wandb_service: WandbServiceManager
-    credentials: CredentialStore
 
     @classmethod
     def create(
@@ -82,7 +80,6 @@ class ExperimentServerRuntime:
         run_index.on_update = notify
         telemetry = initialize_telemetry(config.telemetry)
         wandb_service = WandbServiceManager(config.observability.local_wandb)
-        credentials = CredentialStore(Path(config.observability.credential_root))
         return cls(
             config=config,
             index=run_index,
@@ -93,7 +90,6 @@ class ExperimentServerRuntime:
             telemetry=telemetry,
             workspace_id=workspace_identity(config),
             wandb_service=wandb_service,
-            credentials=credentials,
         )
 
     def project(self, project_name: str) -> ResearchProject:

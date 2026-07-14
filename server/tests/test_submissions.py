@@ -149,6 +149,28 @@ def test_authored_unmaterialized_run_is_selectable_from_tui_read_model(tmp_path)
         submit = next(item for item in operations.json()
                       if item["operation"]["operation_id"] == "run.submit")
         assert submit["status"] == "AVAILABLE"
+        # Cloud publication has no publisher implementation.  The daemon's
+        # operation catalog is the TUI contract, so the control must not be
+        # rendered by any client.
+        parameter_keys = {
+            item["key"] for item in submit["operation"]["parameters"]
+        }
+        assert parameter_keys == {"max_gpu_hours"}
+
+        unsupported_cloud = client.post("/api/operations/direct", json={
+            "project": "demo",
+            "scope_type": "run",
+            "object_id": "run-a",
+            "operation_id": "run.submit",
+            "parameters": {
+                "max_gpu_hours": 2,
+                "wandb_cloud_sync": "yes",
+            },
+        })
+        assert unsupported_cloud.status_code == 409
+        assert unsupported_cloud.headers["X-ML-Expd-Error-Code"] == "INVALID_OPERATION"
+        assert "wandb_cloud_sync" in unsupported_cloud.json()["detail"]
+        assert not list((tmp_path / "actions").glob("action-*"))
 
         unknown = client.get("/api/operations", params={
             "project": "demo", "scope_type": "run", "object_id": "missing-run",
