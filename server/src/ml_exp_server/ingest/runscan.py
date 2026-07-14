@@ -148,7 +148,10 @@ def _evaluation_metric_observations(
     ]
     mode = record.get("mode")
     primary = _EVAL_PRIMARY_METRICS_BY_MODE.get(mode)
-    if primary is not None and primary not in record and "ppl" in record:
+    # ``ppl`` is a semantic alias, not a lower-precedence escape hatch.  Keep
+    # both observations when a producer writes both spellings so a disagreeing
+    # pair becomes explicit conflict evidence; equal pairs remain idempotent.
+    if primary is not None and "ppl" in record:
         observations.append((primary, record["ppl"]))
     if mode == "generation_refine_decode" and "mean_entropy" in record:
         observations.append(("generation_mean_entropy", record["mean_entropy"]))
@@ -895,23 +898,37 @@ def train_metric_records(
 def evaluation_variants(
     run_dir: Path, *, attempt_id: Optional[str] = None, exact_attempt: bool = False,
 ) -> tuple[list[dict[str, Any]], Optional[str]]:
-    """Read unique evaluation variants from one coherent evidence source.
+    """Read unique evaluation variants from all applicable Attempt evidence.
 
     Collectors may place variants both directly under collected_run/ and under
     train_sampling_eval/. Duplicate names are merged before checkpoint
     projection so identical observations remain idempotent while conflicting
     cross-source rewrites remain visible.
     Each variant exposes a bounded, whitelisted epoch+step history; arbitrary
-    JSONL fields are never copied into the read model. Evidence is never merged
-    across different Attempts.
+    JSONL fields are never copied into the read model. Exact Attempt roots are
+    merged, while evidence is never merged across different Attempts.
     """
+    selected_attempt = attempt_id or preferred_attempt_id(run_dir)
+    by_name: dict[str, dict[str, Any]] = {}
+    seen_paths: set[Path] = set()
     for source in evidence_sources(
         run_dir, attempt_id=attempt_id, exact_attempt=exact_attempt,
     ):
+        # Run mirrors are applicable only when they bind to the selected
+        # Attempt.  Exact queries already omit mirrors, but retain this guard so
+        # future evidence-root additions cannot accidentally mix Attempts.
+        if (
+            selected_attempt is not None
+            and source.attempt_id is not None
+            and source.attempt_id != selected_attempt
+        ):
+            continue
         candidates = list((source.root / "train_sampling_eval").glob("*/metrics.jsonl"))
         candidates.extend(source.root.glob("*/metrics.jsonl"))
-        by_name: dict[str, dict[str, Any]] = {}
         for path in sorted(set(candidates)):
+            if path in seen_paths:
+                continue
+            seen_paths.add(path)
             records = read_jsonl(path)
             if not records:
                 continue
@@ -920,24 +937,22 @@ def evaluation_variants(
             })
             aggregate["records"].extend(records)
             aggregate["sources"].append(str(path))
-        if by_name:
-            variants = []
-            for name in sorted(by_name):
-                aggregate = by_name[name]
-                history = _evaluation_history(aggregate["records"])
-                bounded_history = history["history"]
-                sources = sorted(set(aggregate["sources"]))
-                variants.append({
-                    "variant": name,
-                    "latest": bounded_history[-1] if bounded_history else {},
-                    "records": len(aggregate["records"]),
-                    "source": sources[0] if len(sources) == 1 else None,
-                    "sources": sources,
-                    "evaluation_family": _evaluation_variant_family(bounded_history),
-                    **history,
-                })
-            return variants, source.attempt_id
-    return [], attempt_id
+    variants = []
+    for name in sorted(by_name):
+        aggregate = by_name[name]
+        history = _evaluation_history(aggregate["records"])
+        bounded_history = history["history"]
+        sources = sorted(set(aggregate["sources"]))
+        variants.append({
+            "variant": name,
+            "latest": bounded_history[-1] if bounded_history else {},
+            "records": len(aggregate["records"]),
+            "source": sources[0] if len(sources) == 1 else None,
+            "sources": sources,
+            "evaluation_family": _evaluation_variant_family(bounded_history),
+            **history,
+        })
+    return variants, selected_attempt
 
 
 def is_run_dir(path: Path) -> bool:

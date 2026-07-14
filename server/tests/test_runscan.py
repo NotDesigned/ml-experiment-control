@@ -329,6 +329,61 @@ def test_duplicate_variant_sources_merge_and_expose_cross_source_conflicts(tmp_p
     assert "conflicting_metrics" not in identical[0]["history"][0]
 
 
+def test_exact_attempt_merges_all_applicable_evidence_roots(tmp_path):
+    run_dir = tmp_path / "multi-root"
+    collected = (
+        run_dir / "attempts" / "attempt-001" / "collected_run" / "oracle"
+    )
+    local = run_dir / "attempts" / "attempt-001" / "oracle"
+    collected.mkdir(parents=True)
+    local.mkdir(parents=True)
+    base = {
+        "epoch": 0, "step": 10, "mode": "oracle_plan_generation",
+        "oracle_plan_ppl": 2.0,
+    }
+    collected_path = collected / "metrics.jsonl"
+    local_path = local / "metrics.jsonl"
+    collected_path.write_text(json.dumps(base) + "\n")
+    local_path.write_text(json.dumps({**base, "oracle_plan_ppl": 9.0}) + "\n")
+
+    variants, bound_attempt = evaluation_variants(
+        run_dir, attempt_id="attempt-001", exact_attempt=True,
+    )
+
+    assert bound_attempt == "attempt-001"
+    assert len(variants) == 1
+    assert variants[0]["sources"] == sorted([
+        str(collected_path), str(local_path),
+    ])
+    assert variants[0]["history"][0]["conflicting_metrics"] == [
+        "oracle_plan_ppl",
+    ]
+
+    local_path.write_text(json.dumps(base) + "\n")
+    identical, _ = evaluation_variants(
+        run_dir, attempt_id="attempt-001", exact_attempt=True,
+    )
+    assert len(identical[0]["sources"]) == 2
+    assert "conflicting_metrics" not in identical[0]["history"][0]
+
+
+def test_explicit_primary_and_generic_alias_must_agree():
+    base = {
+        "epoch": 0, "step": 1, "mode": "oracle_plan_generation",
+        "oracle_plan_ppl": 2.0,
+    }
+
+    identical = runscan._evaluation_history([{**base, "ppl": 2.0}])["history"][0]
+    assert identical["oracle_plan_ppl"] == 2.0
+    assert "conflicting_metrics" not in identical
+
+    disagreement = runscan._evaluation_history([{**base, "ppl": 9.0}])[
+        "history"
+    ][0]
+    assert "oracle_plan_ppl" not in disagreement
+    assert disagreement["conflicting_metrics"] == ["oracle_plan_ppl"]
+
+
 def test_two_structured_sampling_families_require_canonical_declaration(tmp_path):
     run_dir = tmp_path / "families"
     dimensions = [
