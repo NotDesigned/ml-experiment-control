@@ -106,17 +106,22 @@ def structured_failure_summary(
     if str(failure_class or "").strip().lower() in {"", "none", "null"}:
         failure_class = None
 
-    oom = _OOM_RE.search(stderr)
+    oom = _OOM_RE.search(combined)
     if oom:
-        ranks = {int(value) for value in re.findall(r"\[rank(\d+)\].*?OutOfMemoryError", stderr)}
+        ranks = {
+            int(value)
+            for value in re.findall(r"\[rank(\d+)\].*?OutOfMemoryError", combined)
+        }
         world_match = re.search(r"(?:world_size|nproc_per_node)=(\d+)", stdout)
         world_size = int(world_match.group(1)) if world_match else None
         phase = "first_backward" if (
-            "Performing initial training step" in stdout and ".backward()" in stderr
-        ) else ("backward" if ".backward()" in stderr else "unknown")
+            "Performing initial training step" in combined and ".backward()" in combined
+        ) else ("backward" if ".backward()" in combined else "unknown")
         return {
             "failure_signature": "CUDA_OOM",
-            "failure_class": failure_class or "resource",
+            # Concrete process OOM evidence must override a coarse/stale
+            # scheduler or log-transport classification.
+            "failure_class": "resource",
             "phase": phase,
             "requested_bytes": _memory_bytes(oom["requested"], oom["requested_unit"]),
             "free_bytes": _memory_bytes(oom["free"], oom["free_unit"]),
@@ -124,9 +129,11 @@ def structured_failure_summary(
             "allocated_bytes": _memory_bytes(oom["allocated"], oom["allocated_unit"]),
             "rank_count": world_size or len(ranks) or None,
             "observed_oom_rank_count": len(ranks) or None,
-            "source": "collection.process_evidence.stderr_tail",
+            "source": "collection.process_evidence",
         }
     signatures = (
+        ("OutOfMemoryError", "CUDA_OOM", "resource"),
+        ("CUDA out of memory", "CUDA_OOM", "resource"),
         ("ModuleNotFoundError", "MISSING_PYTHON_MODULE", "configuration"),
         ("no kernel image is available", "UNSUPPORTED_CUDA_KERNEL", "configuration"),
         ("TIMEOUT", "TIMEOUT", "timeout"),
@@ -135,7 +142,10 @@ def structured_failure_summary(
         if needle.lower() in combined.lower():
             return {
                 "failure_signature": signature,
-                "failure_class": failure_class or default_class,
+                "failure_class": (
+                    default_class if signature == "CUDA_OOM"
+                    else failure_class or default_class
+                ),
                 "phase": "unknown",
                 "source": "collection.process_evidence",
             }

@@ -442,7 +442,15 @@ class SenseCoreBackend:
         metric_lines = [line for line in lines if "Step " in line or "gPPL:" in line or ("plan" in line.lower() and "ppl" in line.lower())]
         result = {"run_id": run["run_id"], "backend": "sensecore", "model_observed": bool(metrics),
                   "latest_metric": metrics[-1] if metrics else None, "metric_log_lines": metric_lines[-20:],
-                  "live_logs_expired": snapshot["expired"]}
+                  "live_logs_expired": snapshot["expired"],
+                  "process_evidence": {
+                      "observed": bool(lines) and not snapshot["expired"],
+                      "sources": {"combined": "sensecore_stream_logs"},
+                      # SCO exposes one sanitized combined stream rather than
+                      # distinct process stdout/stderr channels.
+                      "stdout_tail": lines,
+                      "stderr_tail": [],
+                  }}
         if snapshot["expired"]:
             result["evidence_unavailable_reason"] = "live_logs_expired"
         try:

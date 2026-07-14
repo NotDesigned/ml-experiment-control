@@ -246,6 +246,10 @@ def test_sensecore_collects_metrics_checkpoints_and_worker_fallback(tmp_path, mo
     assert result["latest_completed_checkpoint_step"] == 2
     assert result["worker_state"] == "UNKNOWN"
     assert result["evidence_unavailable_reason"] == "live_logs_expired"
+    assert result["process_evidence"]["observed"] is False
+    assert result["process_evidence"]["stdout_tail"] == [
+        "Step 2 loss", "checkpoint", "plan ppl",
+    ]
 
     monkeypatch.setattr(backend, "logs", lambda *args, **kwargs: {
         "lines": ["quiet worker"], "expired": False,
@@ -258,6 +262,12 @@ def test_sensecore_collects_metrics_checkpoints_and_worker_fallback(tmp_path, mo
     assert quiet["worker_state"] == "RUNNING"
     assert "evidence_unavailable_reason" not in quiet
     assert "latest_completed_checkpoint" not in quiet
+    assert quiet["process_evidence"] == {
+        "observed": True,
+        "sources": {"combined": "sensecore_stream_logs"},
+        "stdout_tail": ["quiet worker"],
+        "stderr_tail": [],
+    }
 
 
 def test_sensecore_worker_unknown_and_log_tail_bounds(tmp_path):

@@ -65,6 +65,14 @@ def test_failure_classifier_does_not_hide_resource_or_model_failures():
     assert classify_failure("loss became NaN") is FailureClass.MODEL
     assert classify_failure("TLS EOF") is FailureClass.TRANSPORT
     assert classify_failure('{"live_logs_expired": true}') is FailureClass.TRANSPORT
+    assert classify_failure('{"live_logs_expired": false}') is FailureClass.UNKNOWN
+    assert (
+        classify_failure(
+            '502 log stream failed; {"live_logs_expired": true}; '
+            "torch.OutOfMemoryError: CUDA out of memory"
+        )
+        is FailureClass.RESOURCE
+    )
     assert classify_failure("worker was preempted") is FailureClass.PREEMPTION
     assert classify_failure("node failure") is FailureClass.SCHEDULER
     assert classify_failure("required metric is missing") is FailureClass.EVALUATION

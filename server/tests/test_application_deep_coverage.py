@@ -77,6 +77,27 @@ def test_structured_failure_fallback_signatures(collection, decision, signature,
         assert result["failure_class"] == failure_class
 
 
+def test_structured_oom_overrides_transport_and_reads_combined_stream():
+    result = structured_failure_summary(
+        {
+            "failure_class": "transport",
+            "process_evidence": {
+                "stdout_tail": [
+                    "Performing initial training step",
+                    "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate "
+                    "536.00 MiB. GPU 0 has a total capacity of 79.18 GiB of which "
+                    "128.00 MiB is free. Of the allocated memory 76.37 GiB is allocated",
+                ],
+                "stderr_tail": [],
+            },
+        },
+        {"failure_class": "transport"},
+    )
+    assert result["failure_signature"] == "CUDA_OOM"
+    assert result["failure_class"] == "resource"
+    assert result["requested_bytes"] == 536 * 1024 ** 2
+
+
 @pytest.mark.parametrize(
     ("kind", "object_id", "code"),
     [
