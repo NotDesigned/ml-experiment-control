@@ -16,14 +16,17 @@ from ml_exp_server.schemas import (
 )
 
 
-def _project(root: Path, *, require_clean_git: bool = False) -> ResearchProject:
+def _project(
+    root: Path, *, require_clean_git: bool = False,
+    python: str = sys.executable,
+) -> ResearchProject:
     return ResearchProject(
         project="demo",
         title="Demo",
         run_roots=[],
         base_dir=root,
         controller=ControllerConfig(
-            python=sys.executable,
+            python=python,
             experimentctl="unused.py",
             workdir=".",
             execution_bundle=ControllerExecutionBundle(
@@ -41,6 +44,7 @@ def _source_tree(root: Path) -> Path:
     (package / "__main__.py").write_text(
         """\
 import hashlib
+import experiment_control
 import json
 import os
 import sys
@@ -51,6 +55,7 @@ print(json.dumps({
     "value": value,
     "cwd": str(Path.cwd()),
     "snapshot": os.environ["ML_EXPD_CONTROLLER_SNAPSHOT_SHA256"],
+    "experiment_control": experiment_control.__file__,
 }))
 """,
         encoding="utf-8",
@@ -82,6 +87,7 @@ def test_snapshot_executes_private_code_and_reviewed_inputs(tmp_path: Path) -> N
     assert result["returncode"] == 0, result
     assert result["payload"]["value"] == "approved"
     assert result["payload"]["snapshot"] == snapshot["manifest_sha256"]
+    assert "/proc/self/fd/" in result["payload"]["experiment_control"]
     assert result["controller_snapshot_sha256"] == snapshot["manifest_sha256"]
     assert result["payload"]["cwd"] == str(destination)
     assert stat.S_IMODE(destination.stat().st_mode) == 0o700
@@ -167,3 +173,33 @@ def test_execution_bundle_schema_rejects_undeclared_fields() -> None:
         ControllerExecutionBundle.model_validate({
             "entry_module": "demo", "paths": [], "backend_collect": True,
         })
+
+
+def test_snapshot_supplies_daemon_core_to_python_without_it_installed(
+    tmp_path: Path,
+) -> None:
+    python = "/usr/bin/python3"
+    unavailable = subprocess.run(
+        [python, "-I", "-c", "import experiment_control"], check=False,
+        text=True, capture_output=True,
+    )
+    assert unavailable.returncode != 0
+    root = tmp_path / "science"
+    reviewed = _source_tree(root)
+    gateway = ProjectControllerGateway()
+    snapshot = gateway.snapshot_execution_bundle(
+        _project(root, python=python),
+        tmp_path / "actions" / "controller-input",
+        reviewed_inputs={"inputs/value.txt": reviewed},
+    )
+
+    result = gateway.execute_snapshot(
+        snapshot, ["{controller_snapshot}/inputs/value.txt"], timeout=30,
+    )
+
+    assert result["returncode"] == 0, result
+    assert result["payload"]["value"] == "approved"
+    assert "/proc/self/fd/" in result["payload"]["experiment_control"]
+    assert snapshot["manifest"]["trusted_core"]["content_sha256"].startswith(
+        "sha256:"
+    )

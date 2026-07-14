@@ -10,6 +10,7 @@ transport does not leak through the daemon.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -238,6 +239,30 @@ def _snapshot_files(root: Path) -> list[dict[str, Any]]:
     return files
 
 
+def _source_tree_identity(root: Path) -> dict[str, Any]:
+    """Digest trusted source before and after copying it into an Action."""
+    records: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if "__pycache__" in relative.parts or path.suffix in {".pyc", ".pyo"}:
+            continue
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"trusted controller source contains a symlink: {path}")
+        if stat.S_ISDIR(metadata.st_mode):
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"trusted controller source contains a special file: {path}")
+        records.append({
+            "path": relative.as_posix(), "size": metadata.st_size,
+            "sha256": _file_identity(path)["sha256"],
+        })
+    encoded = json.dumps(
+        records, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode("utf-8")
+    return {"files": records, "content_sha256": _sha256_bytes(encoded)}
+
+
 class ProjectControllerGateway:
     """Resolve and invoke the controller declared by one research Project."""
 
@@ -342,7 +367,7 @@ class ProjectControllerGateway:
             "'locations':list(getattr(s,'submodule_search_locations',[]) or [])}))"
         )
         result = subprocess.run(
-            [str(python), "-P", "-c", query, package], check=False,
+            [str(python), "-I", "-c", query, package], check=False,
             text=True, capture_output=True, timeout=30,
         )
         if result.returncode != 0:
@@ -358,6 +383,26 @@ class ProjectControllerGateway:
         if isinstance(origin, str) and origin:
             return Path(origin).resolve(strict=True)
         raise ValueError(f"controller package has no stable source root: {package}")
+
+    @staticmethod
+    def _trusted_core_source() -> tuple[Path, dict[str, Any]]:
+        """Resolve the exact experiment_control imported by this daemon."""
+        spec = importlib.util.find_spec("experiment_control")
+        locations = list(getattr(spec, "submodule_search_locations", []) or [])
+        if len(locations) != 1:
+            raise ValueError("daemon experiment_control source root is unavailable")
+        source = Path(str(locations[0])).resolve(strict=True)
+        identity = _source_tree_identity(source)
+        commit: str | None = None
+        result = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "HEAD"], check=False,
+            text=True, capture_output=True, timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            commit = result.stdout.strip()
+        return source, {
+            "source_realpath": str(source), "git_commit": commit, **identity,
+        }
 
     def snapshot_execution_bundle(
         self, project: ResearchProject, destination: Path,
@@ -400,6 +445,19 @@ class ProjectControllerGateway:
             for relative in bundle.paths:
                 source = _safe_source(workdir, relative)
                 _copy_source(source, temporary / relative)
+            if "experiment_control" in bundle.python_packages:
+                raise ValueError(
+                    "experiment_control is daemon-trusted and must not be project-declared"
+                )
+            trusted_core_source, trusted_core = self._trusted_core_source()
+            _copy_source(
+                trusted_core_source, temporary / "src" / "experiment_control",
+            )
+            if _source_tree_identity(trusted_core_source) != {
+                "files": trusted_core["files"],
+                "content_sha256": trusted_core["content_sha256"],
+            }:
+                raise ValueError("daemon experiment_control changed while snapshotting")
             package_sources: dict[str, str] = {}
             for package in bundle.python_packages:
                 source = self._package_source(python, package)
@@ -440,9 +498,10 @@ class ProjectControllerGateway:
                 "git": git_identity,
                 "reviewed_inputs": sorted(reviewed_inputs),
                 "python_packages": package_sources,
+                "trusted_core": trusted_core,
                 "environment": {
                     "isolated_path": True,
-                    "pythonpath": "{controller_snapshot}/src",
+                    "private_source": "{controller_snapshot}/src",
                 },
                 "files": _snapshot_files(temporary),
             }
@@ -529,9 +588,16 @@ class ProjectControllerGateway:
                 or python_stat.st_ino != manifest["python"]["inode"]
             ):
                 raise ValueError("reviewed controller python inode drifted")
+            private_source = f"/proc/self/fd/{root_fd}/src"
+            bootstrap = (
+                "import runpy,sys;"
+                "p=sys.argv.pop(1);m=sys.argv.pop(1);"
+                "sys.path.insert(0,p);sys.argv[0]=m;"
+                "runpy.run_module(m,run_name='__main__')"
+            )
             command = [
-                f"/proc/self/fd/{python_fd}", "-P", "-m",
-                str(manifest["entry_module"]), *(
+                f"/proc/self/fd/{python_fd}", "-I", "-B", "-c", bootstrap,
+                private_source, str(manifest["entry_module"]), *(
                     str(item).replace(
                         _SNAPSHOT_ROOT_ARGUMENT, f"/proc/self/fd/{root_fd}",
                     )
@@ -542,7 +608,6 @@ class ProjectControllerGateway:
                 "PATH": os.environ.get("PATH", ""),
                 "HOME": os.environ.get("HOME", ""),
                 "LANG": os.environ.get("LANG", "C.UTF-8"),
-                "PYTHONPATH": f"/proc/self/fd/{root_fd}/src",
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "ML_EXPD_CONTROLLER_SNAPSHOT_SHA256": str(
                     snapshot["manifest_sha256"]
