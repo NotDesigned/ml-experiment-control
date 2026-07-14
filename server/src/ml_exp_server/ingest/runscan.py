@@ -76,9 +76,13 @@ def _evaluation_record(record: dict[str, Any]) -> dict[str, Any]:
     projected: dict[str, Any] = {}
     for key in ("epoch", "step"):
         value = record.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool) \
-                and math.isfinite(float(value)):
+        if isinstance(value, int) and not isinstance(value, bool):
             projected[key] = value
+        elif (
+            isinstance(value, float) and math.isfinite(value)
+            and value.is_integer()
+        ):
+            projected[key] = int(value)
     mode = record.get("mode")
     if isinstance(mode, str) and len(mode) <= 128:
         projected["mode"] = mode
@@ -90,9 +94,39 @@ def _evaluation_record(record: dict[str, Any]) -> dict[str, Any]:
     return projected
 
 
+def _evaluation_observation(value: Any) -> tuple[tuple[Any, ...], Any | None]:
+    """Return a comparison token and safe projected value for one raw metric."""
+    if (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    ):
+        return ("number", float(value)), value
+    if isinstance(value, float) and not math.isfinite(value):
+        return ("invalid", "nonfinite", repr(value)), None
+    return ("invalid", type(value).__name__, repr(value)), None
+
+
+def _evaluation_metric_observations(
+    record: dict[str, Any],
+) -> list[tuple[str, Any]]:
+    """Canonicalize literal and semantic aliases without hiding disagreement."""
+    observations = [
+        (key, record[key]) for key in _EVAL_HISTORY_METRIC_KEYS if key in record
+    ]
+    mode = record.get("mode")
+    primary = _EVAL_PRIMARY_METRICS_BY_MODE.get(mode)
+    if primary is not None and primary not in record and "ppl" in record:
+        observations.append((primary, record["ppl"]))
+    if mode == "generation_refine_decode" and "mean_entropy" in record:
+        observations.append(("generation_mean_entropy", record["mean_entropy"]))
+    return observations
+
+
 def _evaluation_history(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build a deterministic history keyed by epoch+step, with a hard cap."""
+    """Build bounded history without treating conflicting rewrites as corrections."""
     by_identity: dict[tuple[Any, Any], dict[str, Any]] = {}
+    observations: dict[tuple[Any, Any], dict[str, tuple[Any, ...]]] = {}
+    conflicts: dict[tuple[Any, Any], set[str]] = {}
     skipped = 0
     for record in records:
         projected = _evaluation_record(record)
@@ -101,8 +135,34 @@ def _evaluation_history(records: list[dict[str, Any]]) -> dict[str, Any]:
             skipped += 1
             continue
         identity = (projected.get("epoch"), step)
-        # A later JSONL line is the correction for an existing checkpoint.
-        by_identity[identity] = projected
+        merged = by_identity.setdefault(identity, {
+            **({"epoch": projected["epoch"]} if "epoch" in projected else {}),
+            "step": step,
+        })
+        seen = observations.setdefault(identity, {})
+        conflict_set = conflicts.setdefault(identity, set())
+
+        if "mode" in record:
+            mode_token = ("mode", type(record["mode"]).__name__, repr(record["mode"]))
+            previous_mode = seen.setdefault("mode", mode_token)
+            if previous_mode != mode_token:
+                conflict_set.add("mode")
+                merged.pop("mode", None)
+            elif "mode" in projected and "mode" not in conflict_set:
+                merged["mode"] = projected["mode"]
+
+        for metric, raw_value in _evaluation_metric_observations(record):
+            token, safe_value = _evaluation_observation(raw_value)
+            previous = seen.setdefault(metric, token)
+            if previous != token:
+                conflict_set.add(metric)
+                merged.pop(metric, None)
+            elif metric not in conflict_set and safe_value is not None:
+                merged[metric] = safe_value
+
+    for identity, conflict_set in conflicts.items():
+        if conflict_set:
+            by_identity[identity]["conflicting_metrics"] = sorted(conflict_set)
     ordered = sorted(
         by_identity.values(),
         key=lambda item: (
@@ -154,20 +214,21 @@ def _evaluation_checkpoint_snapshot(
     candidates: dict[
         str, list[tuple[Any, dict[str, Any], dict[str, Any]]]
     ] = {}
+    conflicting_metrics: set[str] = set()
     for variant in variants:
         for record in variant.get("history") or []:
             if not isinstance(record, dict):
                 continue
             if (record.get("epoch"), record.get("step")) != identity:
                 continue
+            record_conflicts = record.get("conflicting_metrics")
+            if isinstance(record_conflicts, list):
+                conflicting_metrics.update(
+                    str(metric) for metric in record_conflicts
+                    if isinstance(metric, str)
+                )
             mode = record.get("mode")
             primary = _EVAL_PRIMARY_METRICS_BY_MODE.get(mode)
-            if primary is None:
-                inferred = [
-                    metric for metric in _EVAL_REQUIRED_PRIMARY_METRICS
-                    if record.get(metric) is not None
-                ]
-                primary = inferred[0] if len(inferred) == 1 else None
             metric_keys = [primary] if primary is not None else []
             if mode == "generation_refine_decode":
                 if record.get("generation_mean_entropy") is not None:
@@ -175,6 +236,8 @@ def _evaluation_checkpoint_snapshot(
                 elif record.get("mean_entropy") is not None:
                     metric_keys.append("generation_mean_entropy")
             for metric in metric_keys:
+                if "mode" in conflicting_metrics or metric in conflicting_metrics:
+                    continue
                 value = (
                     record.get("mean_entropy")
                     if metric == "generation_mean_entropy"
@@ -186,18 +249,19 @@ def _evaluation_checkpoint_snapshot(
 
     metrics: dict[str, Any] = {}
     metric_sources: dict[str, Any] = {}
-    conflicting_metrics: list[str] = []
     for metric, observations in sorted(candidates.items()):
+        if metric in conflicting_metrics:
+            continue
         values = {float(value) for value, _, _ in observations}
         if len(values) != 1:
-            conflicting_metrics.append(metric)
+            conflicting_metrics.add(metric)
             continue
         value, variant, record = sorted(
             observations, key=lambda item: str(item[1].get("variant") or ""),
         )[0]
         metrics[metric] = value
         source = {
-            "variant": variant.get("variant"),
+            "variant_id": variant.get("variant"),
             "mode": record.get("mode"),
             "epoch": epoch,
             "step": step,
@@ -206,7 +270,7 @@ def _evaluation_checkpoint_snapshot(
             key: value for key, value in source.items() if value is not None
         }
 
-    if (
+    if not conflicting_metrics and (
         isinstance(metrics.get("oracle_plan_ppl"), (int, float))
         and isinstance(metrics.get("shuffled_plan_ppl"), (int, float))
     ):
@@ -224,16 +288,13 @@ def _evaluation_checkpoint_snapshot(
         if metric not in metrics
     ]
     return {
-        "state": "COMPLETE" if not missing and not any(
-            metric in _EVAL_REQUIRED_PRIMARY_METRICS
-            for metric in conflicting_metrics
-        ) else "PARTIAL",
+        "state": "COMPLETE" if not missing and not conflicting_metrics else "PARTIAL",
         **({"epoch": epoch} if epoch is not None else {}),
         "step": step,
         "metrics": metrics,
         "metric_sources": metric_sources,
         "missing_metrics": missing,
-        "conflicting_metrics": conflicting_metrics,
+        "conflicting_metrics": sorted(conflicting_metrics),
     }
 
 
@@ -243,7 +304,9 @@ def evaluation_snapshot(variants: list[dict[str, Any]]) -> dict[str, Any]:
         (record.get("epoch"), record.get("step"))
         for variant in variants
         for record in (variant.get("history") or [])
-        if isinstance(record, dict) and record.get("step") is not None
+        if isinstance(record, dict)
+        and record.get("epoch") is not None
+        and record.get("step") is not None
     }
     ordered = sorted(
         identities,
@@ -608,7 +671,8 @@ def evaluation_variants(
             records = read_jsonl(path)
             if not records:
                 continue
-            latest = _evaluation_record(records[-1])
+            history = _evaluation_history(records)
+            latest = history["history"][-1] if history["history"] else {}
             step = latest.get("step")
             score = float(step) if isinstance(step, (int, float)) else float("-inf")
             current = by_name.get(path.parent.name)
@@ -619,7 +683,7 @@ def evaluation_variants(
                 "latest": latest,
                 "records": len(records),
                 "source": str(path),
-                **_evaluation_history(records),
+                **history,
                 "_score": score,
             }
         if by_name:

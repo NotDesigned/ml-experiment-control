@@ -16,6 +16,7 @@ from .campaign_lifecycle import campaign_snapshot
 from .code_identity import project_code_identity
 from .ingest.indexer import index_project
 from .ingest.runscan import (
+    evaluation_snapshot,
     evaluation_variants,
     parse_iso_ts,
     preferred_attempt_id,
@@ -1918,7 +1919,8 @@ class ExperimentServerApplication:
         )
         return {"project": project, "run_id": row.run_id,
                 "attempt_id": attempt.attempt_id,
-                "source_attempt_id": source_attempt_id, "variants": variants}
+                "source_attempt_id": source_attempt_id, "variants": variants,
+                "evaluation_snapshot": evaluation_snapshot(variants)}
 
     def attempt_events(self, project: str, identity: str) -> dict[str, Any]:
         _, _, row, attempt, attempt_dir = self._attempt_context(project, identity)
@@ -2180,8 +2182,11 @@ class ExperimentServerApplication:
 
     def run_eval(self, project: str, run_id: str) -> dict[str, Any]:
         _, _, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)
-        variants, source_attempt_id = evaluation_variants(Path(row.run_dir))
-        return {"source_attempt_id": source_attempt_id, "variants": variants}
+        return {
+            "source_attempt_id": row.evidence.evaluation.attempt_id,
+            "variants": row.eval_variants,
+            "evaluation_snapshot": row.evaluation_snapshot,
+        }
 
     def run_events(self, project: str, run_id: str) -> dict[str, Any]:
         _, _, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)

@@ -3,6 +3,9 @@
 import json
 from pathlib import Path
 
+import pytest
+
+from ml_exp_server.ingest import runscan
 from ml_exp_server.ingest.runscan import (
     discover_run_dirs, evidence_sources, evaluation_snapshot,
     evaluation_variants, is_run_dir, parse_iso_ts, scan_run_dir,
@@ -256,7 +259,77 @@ def test_evaluation_snapshot_has_no_science_without_any_complete_checkpoint():
     assert snapshot["latest_metric_complete"] is None
 
 
-def test_eval_history_is_bounded_and_deduplicated_by_epoch_step(tmp_path):
+@pytest.mark.parametrize("rewrite", [
+    {"oracle_plan_ppl": 9.0},
+    {"ppl": 9.0},
+    {"oracle_plan_ppl": float("nan")},
+    {"oracle_plan_ppl": "9.0"},
+])
+def test_duplicate_oracle_rewrites_are_conflicts_not_corrections(tmp_path, rewrite):
+    run_dir = tmp_path / "duplicate-conflict"
+    oracle = run_dir / "oracle"
+    oracle.mkdir(parents=True)
+    first = {
+        "epoch": 0, "step": 34000, "mode": "oracle_plan_generation",
+        "oracle_plan_ppl": 2.0,
+    }
+    second = {
+        "epoch": 0, "step": 34000, "mode": "oracle_plan_generation",
+        **rewrite,
+    }
+    (oracle / "metrics.jsonl").write_text(
+        json.dumps(first) + "\n" + json.dumps(second) + "\n", encoding="utf-8",
+    )
+    variants, _ = evaluation_variants(run_dir)
+
+    history = variants[0]["history"][0]
+    assert history["conflicting_metrics"] == ["oracle_plan_ppl"]
+    assert "oracle_plan_ppl" not in history
+    snapshot = evaluation_snapshot(variants)
+    assert snapshot["current"]["state"] == "PARTIAL"
+    assert "oracle_plan_ppl" in snapshot["current"]["conflicting_metrics"]
+    assert "plan_ppl_gap" not in snapshot["current"]["metrics"]
+    assert snapshot["latest_metric_complete"] is None
+
+
+def test_identical_duplicate_records_are_idempotent_and_generic_ppl_is_fallback():
+    variants = []
+    for variant, mode, expected_metric, value in (
+        ("clean", "clean_token_reconstruction", "token_recon_ppl", 40.0),
+        ("generation", "generation_refine_decode", "g_ppl", 1.5),
+        ("oracle", "oracle_plan_generation", "oracle_plan_ppl", 2.0),
+        ("shuffled", "shuffled_plan_generation", "shuffled_plan_ppl", 3.0),
+    ):
+        raw = {"epoch": 0, "step": 1, "mode": mode, "ppl": value}
+        history = runscan._evaluation_history([raw, dict(raw)])
+        record = history["history"][0]
+        assert record[expected_metric] == value
+        assert "conflicting_metrics" not in record
+        variants.append({"variant": variant, "latest": record, "history": [record]})
+
+    snapshot = evaluation_snapshot(variants)
+    assert snapshot["current"]["state"] == "COMPLETE"
+    assert snapshot["current"]["metrics"]["plan_ppl_gap"] == 1.0
+
+
+def test_unknown_mode_cannot_claim_a_named_primary_metric():
+    variants = []
+    for variant, mode, metric in (
+        ("clean", "clean_token_reconstruction", "token_recon_ppl"),
+        ("generation", "generation_refine_decode", "g_ppl"),
+        ("oracle", "not_oracle_plan_generation", "oracle_plan_ppl"),
+        ("shuffled", "shuffled_plan_generation", "shuffled_plan_ppl"),
+    ):
+        record = {"epoch": 0, "step": 1, "mode": mode, metric: 1.0}
+        variants.append({"variant": variant, "latest": record, "history": [record]})
+
+    snapshot = evaluation_snapshot(variants)
+    assert snapshot["current"]["state"] == "PARTIAL"
+    assert snapshot["current"]["missing_metrics"] == ["oracle_plan_ppl"]
+    assert "plan_ppl_gap" not in snapshot["current"]["metrics"]
+
+
+def test_eval_history_is_bounded_and_flags_nonidentical_duplicate_steps(tmp_path):
     root = tmp_path / "bounded" / "variant-a"
     root.mkdir(parents=True)
     records = [
@@ -276,7 +349,9 @@ def test_eval_history_is_bounded_and_deduplicated_by_epoch_step(tmp_path):
     assert item["history_truncated"] is True
     assert item["history_omitted_records"] == 3
     assert item["history"][0]["step"] == 3
-    assert item["history"][-1] == {"epoch": 0, "step": 34, "ppl": 0.34}
+    assert item["history"][-1] == {
+        "epoch": 0, "step": 34, "conflicting_metrics": ["ppl"],
+    }
 
 
 def test_a1_model_layer_goes_stale_much_later(a1_run_dir):

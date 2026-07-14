@@ -233,7 +233,11 @@ def test_run_metrics_reports_missing_keys(client):
     assert len(payload["points"]) == 5
 
 
-def test_run_eval_variants(client):
+def test_run_eval_variants_use_the_indexed_coherent_snapshot(client, monkeypatch):
+    monkeypatch.setattr(
+        "ml_exp_server.application.evaluation_variants",
+        lambda *_args, **_kwargs: pytest.fail("run eval must not rescan live files"),
+    )
     payload = client.get(f"/api/runs/elf/{A1}/eval").json()
     names = [v["variant"] for v in payload["variants"]]
     assert any("oracle-plan" in n for n in names)
@@ -245,6 +249,11 @@ def test_run_eval_variants(client):
     assert oracle["history_limit"] == 32
     assert oracle["history_truncated"] is False
     assert oracle["history_omitted_records"] == 0
+    complete = payload["evaluation_snapshot"]["latest_metric_complete"]
+    assert complete["state"] == "COMPLETE"
+    assert complete["metric_sources"]["oracle_plan_ppl"]["variant_id"] == oracle[
+        "variant"
+    ]
 
 
 def test_run_events_timeline(client):
