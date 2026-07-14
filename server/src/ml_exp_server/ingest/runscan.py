@@ -15,6 +15,7 @@ holds newer science metrics. Never collapse them into one state.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -49,6 +50,68 @@ _EVAL_METRIC_KEYS = (
     "token_recon_ppl", "generation_mean_entropy", "generation_nonempty_fraction",
     "val_bpb",
 )
+
+# Evaluation JSONL may contain arbitrary model outputs in addition to summary
+# metrics.  The read model intentionally projects only this small, stable set
+# and retains at most this many keyed checkpoints per variant.
+_EVAL_HISTORY_LIMIT = 32
+_EVAL_HISTORY_METRIC_KEYS = (
+    "g_ppl", "oracle_plan_ppl", "shuffled_plan_ppl", "plan_ppl_gap",
+    "token_recon_ppl", "ppl", "mean_entropy", "generation_mean_entropy",
+    "generation_nonempty_fraction", "val_bpb", "bleu", "rouge1", "rouge2",
+    "rougeL",
+)
+
+
+def _evaluation_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Return the bounded, non-text projection exposed through read APIs."""
+    projected: dict[str, Any] = {}
+    for key in ("epoch", "step"):
+        value = record.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                and math.isfinite(float(value)):
+            projected[key] = value
+    mode = record.get("mode")
+    if isinstance(mode, str) and len(mode) <= 128:
+        projected["mode"] = mode
+    for key in _EVAL_HISTORY_METRIC_KEYS:
+        value = record.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                and math.isfinite(float(value)):
+            projected[key] = value
+    return projected
+
+
+def _evaluation_history(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build a deterministic history keyed by epoch+step, with a hard cap."""
+    by_identity: dict[tuple[Any, Any], dict[str, Any]] = {}
+    skipped = 0
+    for record in records:
+        projected = _evaluation_record(record)
+        step = projected.get("step")
+        if step is None:
+            skipped += 1
+            continue
+        identity = (projected.get("epoch"), step)
+        # A later JSONL line is the correction for an existing checkpoint.
+        by_identity[identity] = projected
+    ordered = sorted(
+        by_identity.values(),
+        key=lambda item: (
+            float(item.get("epoch", float("-inf"))),
+            float(item["step"]),
+        ),
+    )
+    total = len(ordered)
+    omitted = max(0, total - _EVAL_HISTORY_LIMIT)
+    return {
+        "history": ordered[-_EVAL_HISTORY_LIMIT:],
+        "history_total": total,
+        "history_limit": _EVAL_HISTORY_LIMIT,
+        "history_truncated": omitted > 0,
+        "history_omitted_records": omitted,
+        "history_skipped_records": skipped,
+    }
 
 
 def _canonical_eval_variant_id(
@@ -359,7 +422,9 @@ def evaluation_variants(
 
     Collectors may place variants both directly under collected_run/ and under
     train_sampling_eval/. For duplicate names, the greatest numeric step wins.
-    Evidence is never merged across different Attempts.
+    Each variant exposes a bounded, whitelisted epoch+step history; arbitrary
+    JSONL fields are never copied into the read model. Evidence is never merged
+    across different Attempts.
     """
     for source in evidence_sources(
         run_dir, attempt_id=attempt_id, exact_attempt=exact_attempt,
@@ -371,7 +436,7 @@ def evaluation_variants(
             records = read_jsonl(path)
             if not records:
                 continue
-            latest = records[-1]
+            latest = _evaluation_record(records[-1])
             step = latest.get("step")
             score = float(step) if isinstance(step, (int, float)) else float("-inf")
             current = by_name.get(path.parent.name)
@@ -382,6 +447,7 @@ def evaluation_variants(
                 "latest": latest,
                 "records": len(records),
                 "source": str(path),
+                **_evaluation_history(records),
                 "_score": score,
             }
         if by_name:

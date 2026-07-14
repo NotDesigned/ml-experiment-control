@@ -187,6 +187,11 @@ def test_run_eval_variants(client):
     assert any("shuffled-plan" in n for n in names)
     oracle = next(v for v in payload["variants"] if "oracle-plan" in v["variant"])
     assert oracle["latest"]["step"] == 3700 or oracle["latest"]["step"] >= 2000
+    assert oracle["history"][-1] == oracle["latest"]
+    assert oracle["history_total"] == oracle["records"]
+    assert oracle["history_limit"] == 32
+    assert oracle["history_truncated"] is False
+    assert oracle["history_omitted_records"] == 0
 
 
 def test_run_events_timeline(client):
