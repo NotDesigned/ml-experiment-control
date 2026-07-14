@@ -109,6 +109,8 @@ def test_smoke_run_created_state_not_flagged(smoke_run_dir):
     # CREATED is not an active state: nothing should be marked stale.
     assert not row.evidence.scheduler.stale
     assert not row.evidence.worker.stale
+    # Preparing a Slurm script does not mean the Attempt reached the scheduler.
+    assert row.attempts and not row.attempts[0].has_submission
     # research_role absent and smoke id doesn't match the ablation pattern.
     assert row.provenance["git_commit"]
 

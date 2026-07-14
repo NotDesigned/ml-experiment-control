@@ -11,6 +11,7 @@ from typing import Any
 
 import yaml
 
+from .authored_runs import authored_run_placeholder
 from .campaign_lifecycle import campaign_snapshot
 from .code_identity import project_code_identity
 from .ingest.indexer import index_project
@@ -187,6 +188,8 @@ class ExperimentServerApplication:
                                        code="UNKNOWN_CAMPAIGN")
         elif kind == OperationScopeType.RUN:
             resolved = self.runtime.index.get_run(project.project, object_id)
+            if resolved is None:
+                resolved = authored_run_placeholder(project, object_id)
             if resolved is None:
                 raise ApplicationError(f"unknown run: {object_id}", status_code=404,
                                        code="UNKNOWN_RUN")
@@ -407,8 +410,23 @@ class ExperimentServerApplication:
                 binding for binding in getattr(resolved, "campaign_memberships", []) or []
                 if binding.membership.kind == "materialize"
             ]
-            if not materialized and not getattr(resolved, "campaign", None):
-                reasons.append("Run is not an authored materialized Campaign membership")
+            if len(materialized) != 1:
+                reasons.append(
+                    "Run must have exactly one authored materialized Campaign membership"
+                )
+            else:
+                status = campaign_snapshot(
+                    self.runtime.index, project, materialized[0].campaign,
+                )
+                lifecycle = str(status.get("lifecycle_state") or "UNKNOWN").upper()
+                validation = str(
+                    (status.get("validation") or {}).get("status") or "UNKNOWN"
+                ).upper()
+                if lifecycle != "ACTIVE" or validation != "PASS":
+                    reasons.append(
+                        "Materializing Campaign is not submit-ready: "
+                        f"lifecycle={lifecycle}; validation={validation}"
+                    )
         elif operation_id in {"attempt.retry", "attempt.cancel"}:
             state = str(getattr(resolved, "state", None) or "UNKNOWN").upper()
             decision = getattr(resolved, "decision", {}) or {}

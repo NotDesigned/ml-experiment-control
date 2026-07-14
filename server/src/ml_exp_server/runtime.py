@@ -99,14 +99,21 @@ class ExperimentServerRuntime:
     def project_records(self) -> list[ProjectLifecycleRecord]:
         return self.project_registry.records()
 
+    def _replace_active_project(self, project: ResearchProject) -> None:
+        """Install the latest authored catalog without replacing the shared list."""
+        for index, current in enumerate(self.projects):
+            if current.project == project.project:
+                self.projects[index] = project
+                return
+        self.projects.append(project)
+
     def register_project(
         self, project_file: Path, *,
         source: ProjectRegistrationSource = ProjectRegistrationSource.MANUAL,
     ) -> ResearchProject:
         project = load_research_project(project_file)
         self.project_registry.register(project.project, project_file, source=source)
-        if not any(item.project == project.project for item in self.projects):
-            self.projects.append(project)
+        self._replace_active_project(project)
         return project
 
     def transition_project(
@@ -131,8 +138,7 @@ class ExperimentServerRuntime:
         record = self.project_registry.transition(project_name, target, reason=reason)
         if target == ProjectLifecycleState.ACTIVE:
             assert activated is not None
-            if not any(item.project == project_name for item in self.projects):
-                self.projects.append(activated)
+            self._replace_active_project(activated)
         else:
             self.projects[:] = [item for item in self.projects if item.project != project_name]
         return record

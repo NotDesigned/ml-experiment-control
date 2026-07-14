@@ -7,10 +7,20 @@ from pathlib import Path
 import yaml
 from fastapi.testclient import TestClient
 
+from ml_exp_server.authored_runs import authored_run_placeholder
 from ml_exp_server.actions.service import ActionService
 from ml_exp_server.api.app import create_app
+from ml_exp_server.campaign_lifecycle import campaign_record_path
 from ml_exp_server.project_config import load_research_project
-from ml_exp_server.schemas import ActionRuntimeConfig, ServerConfig
+from ml_exp_server.schemas import (
+    ActionRuntimeConfig,
+    CampaignRef,
+    CampaignRevision,
+    CampaignRunMembership,
+    ResearchProject,
+    RunIndexRow,
+    ServerConfig,
+)
 
 
 class SubmissionController:
@@ -112,6 +122,93 @@ def _app(tmp_path):
         actor_provider=lambda: "trusted:operator",
     )
     return app, runner
+
+
+def test_authored_unmaterialized_run_is_selectable_from_tui_read_model(tmp_path):
+    app, _ = _app(tmp_path)
+    with TestClient(app) as client:
+        assert client.app.state.index.get_run("demo", "run-a") is None
+
+        snapshot = client.get("/api/terminal/snapshot").json()
+        row = next(item for item in snapshot["runs"]["demo"]
+                   if item["run_id"] == "run-a")
+        assert row["scheduler_state"] == "NOT_SUBMITTED"
+        assert row["run_dir"] == ""
+        assert row["provenance"]["authored_only"] is True
+        assert row["campaign_memberships"][0]["membership"]["kind"] == "materialize"
+
+        operations = client.get("/api/operations", params={
+            "project": "demo", "scope_type": "run", "object_id": "run-a",
+        })
+        assert operations.status_code == 200
+        submit = next(item for item in operations.json()
+                      if item["operation"]["operation_id"] == "run.submit")
+        assert submit["status"] == "AVAILABLE"
+
+        unknown = client.get("/api/operations", params={
+            "project": "demo", "scope_type": "run", "object_id": "missing-run",
+        })
+        assert unknown.status_code == 404
+        assert unknown.headers["X-ML-Expd-Error-Code"] == "UNKNOWN_RUN"
+        missing_attempt = client.get("/api/operations", params={
+            "project": "demo", "scope_type": "attempt",
+            "object_id": "run-a::attempt-001",
+        })
+        assert missing_attempt.status_code == 404
+        assert missing_attempt.headers["X-ML-Expd-Error-Code"] == "UNKNOWN_RUN"
+
+        # Durable observed evidence always wins over the authored placeholder.
+        client.app.state.index.upsert_run(RunIndexRow(
+            project="demo", campaign="study", run_id="run-a",
+            run_dir=str(tmp_path / "materialized"), scheduler_state="CREATED",
+            provenance={"observed": True},
+        ))
+        refreshed = client.get("/api/terminal/snapshot").json()
+        rows = [item for item in refreshed["runs"]["demo"]
+                if item["run_id"] == "run-a"]
+        assert len(rows) == 1
+        assert rows[0]["scheduler_state"] == "CREATED"
+        assert rows[0]["provenance"] == {"observed": True}
+
+
+def test_reuse_only_membership_does_not_create_authored_run_placeholder():
+    project = ResearchProject(
+        project="demo", title="Demo", run_roots=[], campaigns=[CampaignRef(
+            name="reuse-study", file="reuse.yml",
+            current_revision=CampaignRevision(
+                campaign="reuse-study", project="demo",
+                revision_id="campaign." + "a" * 64, file="reuse.yml",
+                memberships=[CampaignRunMembership(
+                    run_id="historical-run", kind="reuse",
+                )],
+            ),
+        )],
+    )
+    assert authored_run_placeholder(project, "historical-run") is None
+
+
+def test_archived_authored_run_is_visible_but_submit_is_blocked(tmp_path):
+    app, _ = _app(tmp_path)
+    project = app.state.runtime.project("demo")
+    revision = project.campaigns[0].current_revision
+    assert revision is not None
+    record = campaign_record_path(project, "study", revision.revision_id, "archive")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(yaml.safe_dump({
+        "project": "demo", "campaign": "study",
+        "revision_id": revision.revision_id, "reason": "retired",
+    }))
+
+    with TestClient(app) as client:
+        snapshot = client.get("/api/terminal/snapshot").json()
+        assert any(item["run_id"] == "run-a" for item in snapshot["runs"]["demo"])
+        operations = client.get("/api/operations", params={
+            "project": "demo", "scope_type": "run", "object_id": "run-a",
+        }).json()
+        submit = next(item for item in operations
+                      if item["operation"]["operation_id"] == "run.submit")
+        assert submit["status"] == "BLOCKED"
+        assert any("lifecycle=ARCHIVED" in reason for reason in submit["reasons"])
 
 
 def test_unmaterialized_experiment_has_first_class_submission_lifecycle(tmp_path):

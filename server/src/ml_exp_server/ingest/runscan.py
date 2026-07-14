@@ -325,8 +325,10 @@ def _scan_attempts(run_dir: Path) -> list[AttemptSummary]:
             or ("local-cuda" if submission.get("gpu") is not None else None),
             backend_job_id=backend.get("backend_job_id") or status.get("backend_job_id"),
             decision=_observation_decision(_load_json(attempt_dir / "decision.json")),
-            has_submission=(attempt_dir / "submission.json").is_file()
-            or (attempt_dir / "job.sbatch").is_file(),
+            # ``job.sbatch`` is produced while preparing an Attempt and is
+            # therefore not evidence that the scheduler mutation happened.
+            # Only the durable submission receipt crosses that boundary.
+            has_submission=(attempt_dir / "submission.json").is_file(),
         ))
     return summaries
 

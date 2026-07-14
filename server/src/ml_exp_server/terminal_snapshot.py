@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .authored_runs import authored_run_placeholders
 from .campaign_lifecycle import campaign_snapshot
 from .ingest.indexer import RunIndex, index_project
 from .schemas import ResearchProject, RunIndexRow
@@ -59,6 +60,10 @@ def build_snapshot(index: RunIndex, projects: list[ResearchProject],
         if reindex:
             index_project(index, project)
         rows = index.list_runs(project.project)
+        rows.extend(authored_run_placeholders(
+            project, excluding={row.run_id for row in rows},
+        ))
+        rows.sort(key=lambda row: row.run_id)
         runs[project.project] = rows
         for campaign in project.campaigns:
             campaign_statuses[(project.project, campaign.name)] = campaign_snapshot(
