@@ -14,6 +14,9 @@ _IDENTITY_FIELDS = (
     "project", "run_id", "attempt_id", "epoch", "step",
     "variant_id", "family_id", "metric",
 )
+_SEMANTIC_SLOT_FIELDS = (
+    "project", "run_id", "attempt_id", "epoch", "step", "family_id", "metric",
+)
 _REQUIRED_FIELDS = (
     "project", "run_id", "attempt_id", "epoch", "step", "variant_id",
     "family_id", "metric", "source", "sampling_dimensions",
@@ -142,17 +145,52 @@ def classify_evidence_conflicts(
             blocking.append(dict(raw))
             continue
 
-        exact_conflicts = 0
-        for identity, group in groups.items():
-            if len(group) < 2 or len({_value_token(item["value"]) for item in group}) < 2:
+        slot_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+        for group in groups.values():
+            for source in group:
+                binding = source["binding"]
+                slot_groups.setdefault(
+                    tuple(binding[key] for key in _SEMANTIC_SLOT_FIELDS), [],
+                ).append(source)
+
+        blocking_groups = 0
+        for slot_identity, group in slot_groups.items():
+            variants = {item["binding"]["variant_id"] for item in group}
+            if len(variants) > 1:
+                blocking_groups += 1
+                blocking.append({
+                    "type": "metric_semantic_slot_conflict",
+                    **dict(zip(_SEMANTIC_SLOT_FIELDS, slot_identity)),
+                    "variant_ids": sorted(variants),
+                    "sources": group,
+                })
                 continue
-            exact_conflicts += 1
-            blocking.append({
-                "type": "metric_value_conflict",
-                **dict(zip(_IDENTITY_FIELDS, identity)),
-                "sources": group,
-            })
-        if exact_conflicts == 0:
+            values = {_value_token(item["value"]) for item in group}
+            if len(values) > 1:
+                blocking_groups += 1
+                binding = group[0]["binding"]
+                blocking.append({
+                    "type": "metric_value_conflict",
+                    **{key: binding[key] for key in _IDENTITY_FIELDS},
+                    "sources": group,
+                })
+        if blocking_groups:
+            continue
+
+        cross_family_identity = {
+            tuple(
+                source["binding"][key] for key in (
+                    "project", "run_id", "attempt_id", "epoch", "step", "metric",
+                )
+            )
+            for group in slot_groups.values() for source in group
+        }
+        family_ids = {identity[5] for identity in slot_groups}
+        if (
+            len(slot_groups) > 1
+            and len(cross_family_identity) == 1
+            and len(family_ids) == len(slot_groups)
+        ):
             reclassified.append({
                 "type": "cross_binding_values",
                 "source_conflict_type": raw.get("type"),
@@ -162,4 +200,8 @@ def classify_evidence_conflicts(
                 ],
                 "source_count": len(sources),
             })
+        elif len(slot_groups) > 1:
+            # Multiple non-conflicting exact slots are only safely separable
+            # here when the family binding is the sole semantic difference.
+            blocking.append(dict(raw))
     return blocking, reclassified

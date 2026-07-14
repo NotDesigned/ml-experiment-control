@@ -104,6 +104,48 @@ def test_same_exact_variant_rewrite_remains_blocking_and_keeps_sources():
     }
 
 
+def test_same_exact_variant_same_value_is_idempotent():
+    first = _source(
+        variant_id="steps32-generation", dimensions=DIMENSIONS[32],
+        metric="g_ppl", value=252.0,
+    )
+    second = {
+        **first,
+        "source": "attempts/attempt-001/generation/metrics.jsonl",
+        "binding": dict(first["binding"]),
+    }
+
+    blocking, reclassified = classify_evidence_conflicts(
+        [{"type": "metric_value_conflict", "sources": [first, second]}],
+        project=PROJECT, run_id=RUN_ID, attempt_id=ATTEMPT_ID,
+    )
+
+    assert blocking == []
+    assert reclassified == []
+
+
+@pytest.mark.parametrize("values", [(188.0, 188.0), (188.0, 199.0)])
+def test_same_family_semantic_slot_cannot_have_multiple_variants(values):
+    sources = [
+        _source(
+            variant_id=variant_id, dimensions=DIMENSIONS[32],
+            metric="oracle_plan_ppl", value=value,
+        )
+        for variant_id, value in zip(("oracle-a", "oracle-b"), values)
+    ]
+
+    blocking, reclassified = classify_evidence_conflicts(
+        [{"type": "legacy_flat_metric_conflict", "sources": sources}],
+        project=PROJECT, run_id=RUN_ID, attempt_id=ATTEMPT_ID,
+    )
+
+    assert reclassified == []
+    assert len(blocking) == 1
+    assert blocking[0]["type"] == "metric_semantic_slot_conflict"
+    assert blocking[0]["family_id"] == _family_id(DIMENSIONS[32])
+    assert blocking[0]["variant_ids"] == ["oracle-a", "oracle-b"]
+
+
 def test_incomplete_legacy_conflict_stays_blocking_without_label_guessing():
     raw = "g_ppl has conflicting values in steps32 and steps64"
     blocking, reclassified = classify_evidence_conflicts(
