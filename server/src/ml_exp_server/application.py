@@ -91,10 +91,21 @@ def _memory_bytes(value: str, unit: str) -> int:
     return round(float(value) * factor)
 
 
-def structured_failure_summary(
-    collection: dict[str, Any], decision: dict[str, Any] | None = None,
+def _normalized_failure_class(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    return None if normalized.lower() in {"", "none", "null"} else normalized
+
+
+def _evidence_timestamp(value: Any) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return parse_iso_ts(value)
+
+
+def _raw_process_failure_summary(
+    collection: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Extract stable failure fields from bounded collected process evidence."""
+    """Extract a process signal without deciding whether it is applicable."""
     process = collection.get("process_evidence")
     process = process if isinstance(process, dict) else {}
     stderr_tail = process.get("stderr_tail")
@@ -102,11 +113,7 @@ def structured_failure_summary(
     stderr = "\n".join(str(item) for item in stderr_tail or [])
     stdout = "\n".join(str(item) for item in stdout_tail or [])
     combined = f"{stdout}\n{stderr}"
-    failure_class = collection.get("failure_class")
-    if failure_class is None and isinstance(decision, dict):
-        failure_class = decision.get("failure_class")
-    if str(failure_class or "").strip().lower() in {"", "none", "null"}:
-        failure_class = None
+    failure_class = _normalized_failure_class(collection.get("failure_class"))
 
     oom = _OOM_RE.search(combined)
     if oom:
@@ -159,6 +166,173 @@ def structured_failure_summary(
             "source": "collection.process_evidence",
         }
     return None
+
+
+_FAILED_ATTEMPT_STATES = frozenset({"FAILED", "PREEMPTED"})
+_FAILED_PROCESS_STATES = frozenset({"FAILED", "PREEMPTED"})
+_FAILED_SCHEDULER_STATES = frozenset({
+    "FAILED", "PREEMPTED", "NODE_FAIL", "OUT_OF_MEMORY", "TIMEOUT",
+})
+_FAILED_WORKER_STATES = frozenset({"FAILED", "LOST", "ERROR", "NODE_FAIL"})
+
+
+def attempt_failure_evidence_assessment(
+    collection: dict[str, Any],
+    decision: dict[str, Any] | None = None,
+    *,
+    attempt_id: str,
+    attempt_state: str | None,
+    attempt_started_at: Any,
+    observed_at: Any,
+    decision_observed_at: Any = None,
+) -> dict[str, Any]:
+    """Separate applicable terminal failure evidence from diagnostic signals.
+
+    Failure classification is fail-closed: collected evidence must bind to the
+    exact Attempt, be no older than that Attempt, and the exact Attempt must be
+    in a failed terminal state.  Signals that do not meet all three conditions
+    remain visible as explicitly non-applicable diagnostics.
+    """
+    expected_attempt_id = str(attempt_id)
+    observed_attempt_id = str(collection.get("attempt_id") or "") or None
+    state = str(attempt_state or "UNKNOWN").upper()
+    process_state = str(collection.get("process_state") or "UNKNOWN").upper()
+    scheduler_state = str(collection.get("scheduler_state") or "UNKNOWN").upper()
+    worker_state = str(collection.get("worker_state") or "UNKNOWN").upper()
+    started_ts = _evidence_timestamp(attempt_started_at)
+    observed_ts = _evidence_timestamp(observed_at)
+
+    identity_matches = observed_attempt_id == expected_attempt_id
+    timestamp_known = started_ts is not None and observed_ts is not None
+    fresh = bool(timestamp_known and observed_ts >= started_ts)
+    terminal_failure = state in _FAILED_ATTEMPT_STATES
+
+    if not identity_matches:
+        applicability = "ATTEMPT_MISMATCH"
+        applicability_reason = (
+            f"evidence names {observed_attempt_id or 'no Attempt'} instead of "
+            f"{expected_attempt_id}"
+        )
+    elif not timestamp_known:
+        applicability = "UNKNOWN_APPLICABILITY"
+        applicability_reason = "Attempt start or evidence observation time is unavailable"
+    elif not fresh:
+        applicability = "STALE"
+        applicability_reason = "evidence predates the exact Attempt start"
+    elif not terminal_failure:
+        applicability = "NON_APPLICABLE"
+        applicability_reason = f"exact Attempt state {state} is not a failed terminal state"
+    else:
+        applicability = "APPLICABLE"
+        applicability_reason = "exact, fresh evidence for a failed terminal Attempt"
+
+    failure_summary: dict[str, Any] | None = None
+    diagnostics: list[dict[str, Any]] = []
+    raw_process = _raw_process_failure_summary(collection)
+
+    if process_state in _FAILED_PROCESS_STATES:
+        candidate = raw_process or {
+            "failure_signature": "UNCLASSIFIED_PROCESS_FAILURE",
+            "failure_class": _normalized_failure_class(collection.get("failure_class"))
+            or "unknown",
+            "phase": "unknown",
+            "source": "collection.process_evidence",
+        }
+        candidate = {**candidate, "failure_domain": "process"}
+    elif scheduler_state in _FAILED_SCHEDULER_STATES:
+        candidate = {
+            "failure_signature": "SCHEDULER_TERMINAL_FAILURE",
+            "failure_class": _normalized_failure_class(collection.get("failure_class"))
+            or "scheduler",
+            "failure_domain": "scheduler",
+            "phase": "unknown",
+            "source": "collection.scheduler_state",
+            "scheduler_state": scheduler_state,
+        }
+    elif worker_state in _FAILED_WORKER_STATES:
+        candidate = {
+            "failure_signature": "WORKER_TERMINAL_FAILURE",
+            "failure_class": _normalized_failure_class(collection.get("failure_class"))
+            or "worker",
+            "failure_domain": "worker",
+            "phase": "unknown",
+            "source": "collection.worker_state",
+            "worker_state": worker_state,
+        }
+    else:
+        # A recognizable log signature while the process is still RUNNING is
+        # useful for inspection, but cannot become the Attempt's failure.
+        candidate = ({**raw_process, "failure_domain": "process"}
+                     if raw_process is not None else None)
+
+    if candidate is not None:
+        if applicability == "APPLICABLE" and (
+            process_state in _FAILED_PROCESS_STATES
+            or scheduler_state in _FAILED_SCHEDULER_STATES
+            or worker_state in _FAILED_WORKER_STATES
+        ):
+            failure_summary = {
+                **candidate,
+                "attempt_id": expected_attempt_id,
+                "observed_at": observed_ts,
+                "applicability": "APPLICABLE",
+            }
+        else:
+            diagnostics.append({
+                "kind": "failure_signal",
+                **candidate,
+                "attempt_id": observed_attempt_id,
+                "expected_attempt_id": expected_attempt_id,
+                "attempt_state": state,
+                "observed_at": observed_ts,
+                "applicability": applicability,
+                "reason": applicability_reason,
+            })
+
+    decision_class = (
+        _normalized_failure_class(decision.get("failure_class"))
+        if isinstance(decision, dict) else None
+    )
+    if decision_class is not None and failure_summary is None:
+        diagnostics.append({
+            "kind": "preliminary_failure_classification",
+            "failure_class": decision_class,
+            "source": "decision.failure_class",
+            "attempt_id": expected_attempt_id,
+            "attempt_state": state,
+            "observed_at": _evidence_timestamp(decision_observed_at),
+            "applicability": "NON_APPLICABLE",
+            "reason": (
+                "decision metadata is contextual only and is not exact, fresh, "
+                "terminal failure evidence"
+            ),
+        })
+
+    return {
+        "failure_summary": failure_summary,
+        "diagnostic_evidence": compact_evidence(diagnostics),
+    }
+
+
+def structured_failure_summary(
+    collection: dict[str, Any], decision: dict[str, Any] | None = None, *,
+    attempt_id: str | None = None, attempt_state: str | None = None,
+    attempt_started_at: Any = None, observed_at: Any = None,
+) -> dict[str, Any] | None:
+    """Return only exact, fresh, terminal failure evidence.
+
+    Callers without the Attempt applicability context receive no failure rather
+    than silently promoting historical process text into a current failure.
+    """
+    if attempt_id is None:
+        return None
+    return attempt_failure_evidence_assessment(
+        collection, decision,
+        attempt_id=attempt_id,
+        attempt_state=attempt_state,
+        attempt_started_at=attempt_started_at,
+        observed_at=observed_at,
+    )["failure_summary"]
 
 
 def evidence_digest(payload: dict[str, Any]) -> str:
@@ -338,13 +512,23 @@ class ExperimentServerApplication:
             return {"run": self.row_evidence(resolved),
                     "campaign_contexts": self.campaign_contexts(project, resolved),
                     "attempts": [
-                item.model_dump(mode="json") for item in resolved.attempts
-            ]}
-        run_id, _ = scope.object_id.rsplit("::", 1)
+                        item.model_dump(mode="json") for item in resolved.attempts
+                    ]}
+        run_id, attempt_id = scope.object_id.rsplit("::", 1)
         row = index.get_run(project.project, run_id)
+        attempt_dir = Path(row.run_dir) / "attempts" / attempt_id
+        _, assessment = self._attempt_failure_assessment(row, resolved, attempt_dir)
         return {"run": self.row_evidence(row),
                 "campaign_contexts": self.campaign_contexts(project, row),
-                "attempt": resolved.model_dump(mode="json")}
+                "attempt": resolved.model_dump(mode="json"),
+                "failure_assessment": {
+                    **assessment,
+                    "agent_instruction": (
+                        "Only failure_summary is applicable failure evidence. "
+                        "diagnostic_evidence is explicitly non-applicable and MUST NOT "
+                        "be treated as failure, retry, or classification evidence."
+                    ),
+                }}
 
     # -------------------------------------------------------------- operations
 
@@ -847,6 +1031,68 @@ class ExperimentServerApplication:
         except (OSError, yaml.YAMLError):
             return {}
         return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _path_mtime(path: Path) -> float | None:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return None
+
+    def _attempt_failure_assessment(
+        self, row: Any, attempt: Any, attempt_dir: Path,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        collection_path = attempt_dir / "collection.json"
+        decision_path = attempt_dir / "decision.json"
+        collection = self._read_mapping(collection_path)
+        decision = self._read_mapping(decision_path)
+        if not collection and (attempt_dir / "attempt.json").is_file():
+            attempt_record = self._read_mapping(attempt_dir / "attempt.json")
+            summary = self._read_mapping(attempt_dir / "summary.json")
+            root_status = self._read_mapping(Path(row.run_dir) / "status.json")
+            summary_metrics = summary.get("metrics")
+            collection = {
+                "attempt_id": attempt.attempt_id,
+                "scheduler_state": root_status.get("state"),
+                "worker_state": "LOCAL_GPU",
+                "process_state": attempt_record.get("state"),
+                "model_state": (
+                    "OBSERVED" if isinstance(summary_metrics, dict) and summary_metrics else None
+                ),
+                "evaluation_state": (
+                    "OBSERVED" if isinstance(summary_metrics, dict)
+                    and summary_metrics.get("val_bpb") is not None else None
+                ),
+                "failure_class": attempt_record.get("failure_class"),
+            }
+
+        manifest, _ = self._manifest_at(
+            attempt_dir, ("attempt.yaml", "attempt.json", "control_attempt.yaml"),
+        )
+        status = self._read_mapping(attempt_dir / "status.json")
+        process = collection.get("process_evidence")
+        process = process if isinstance(process, dict) else {}
+        attempt_started_at = (
+            status.get("started_at") or manifest.get("started_at")
+            or manifest.get("created_at")
+        )
+        observed_at = (
+            process.get("observed_at") or collection.get("observed_at")
+            or collection.get("collected_at") or self._path_mtime(collection_path)
+        )
+        decision_observed_at = (
+            decision.get("observed_at") or decision.get("created_at")
+            or self._path_mtime(decision_path)
+        )
+        assessment = attempt_failure_evidence_assessment(
+            collection, decision,
+            attempt_id=attempt.attempt_id,
+            attempt_state=attempt.state,
+            attempt_started_at=attempt_started_at,
+            observed_at=observed_at,
+            decision_observed_at=decision_observed_at,
+        )
+        return collection, assessment
 
     @staticmethod
     def _gate(gate_id: str, status: str, message: str,
@@ -1368,34 +1614,16 @@ class ExperimentServerApplication:
 
     def attempt_show(self, project: str, identity: str) -> dict[str, Any]:
         scope, _, row, attempt, attempt_dir = self._attempt_context(project, identity)
-        collection = self._read_mapping(attempt_dir / "collection.json")
-        decision = self._read_mapping(attempt_dir / "decision.json")
-        if not collection and (attempt_dir / "attempt.json").is_file():
-            attempt_record = self._read_mapping(attempt_dir / "attempt.json")
-            summary = self._read_mapping(attempt_dir / "summary.json")
-            root_status = self._read_mapping(Path(row.run_dir) / "status.json")
-            summary_metrics = summary.get("metrics")
-            collection = {
-                "attempt_id": attempt.attempt_id,
-                "scheduler_state": root_status.get("state"),
-                "worker_state": "LOCAL_GPU",
-                "process_state": attempt_record.get("state"),
-                "model_state": (
-                    "OBSERVED" if isinstance(summary_metrics, dict) and summary_metrics else None
-                ),
-                "evaluation_state": (
-                    "OBSERVED" if isinstance(summary_metrics, dict)
-                    and summary_metrics.get("val_bpb") is not None else None
-                ),
-                "failure_class": attempt_record.get("failure_class"),
-            }
+        collection, assessment = self._attempt_failure_assessment(
+            row, attempt, attempt_dir,
+        )
         return {
             "scope": scope.model_dump(mode="json"),
             "attempt": attempt.model_dump(mode="json"),
             "run_id": row.run_id,
             "run_dir": row.run_dir,
             "attempt_dir": str(attempt_dir),
-            "failure_summary": structured_failure_summary(collection, decision),
+            **assessment,
             "collection": compact_evidence(collection),
         }
 

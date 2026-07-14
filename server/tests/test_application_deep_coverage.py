@@ -11,6 +11,7 @@ import ml_exp_server.application as module
 from ml_exp_server.application import (
     ApplicationError,
     ExperimentServerApplication,
+    attempt_failure_evidence_assessment,
     compact_evidence,
     structured_failure_summary,
 )
@@ -64,12 +65,14 @@ def test_compact_evidence_depth_collection_limit_and_string_limit():
          "TIMEOUT", "timeout"),
         ({"process_state": "FAILED"}, None,
          "UNCLASSIFIED_PROCESS_FAILURE", "unknown"),
-        ({"failure_class": "none"}, {"failure_class": "data"},
-         None, None),
     ],
 )
 def test_structured_failure_fallback_signatures(collection, decision, signature, failure_class):
-    result = structured_failure_summary(collection, decision)
+    collection = {"attempt_id": "a1", "process_state": "FAILED", **collection}
+    result = structured_failure_summary(
+        collection, decision, attempt_id="a1", attempt_state="FAILED",
+        attempt_started_at=100.0, observed_at=101.0,
+    )
     if signature is None:
         assert result is None
     else:
@@ -80,6 +83,8 @@ def test_structured_failure_fallback_signatures(collection, decision, signature,
 def test_structured_oom_overrides_transport_and_reads_combined_stream():
     result = structured_failure_summary(
         {
+            "attempt_id": "a1",
+            "process_state": "FAILED",
             "failure_class": "transport",
             "process_evidence": {
                 "stdout_tail": [
@@ -92,10 +97,97 @@ def test_structured_oom_overrides_transport_and_reads_combined_stream():
             },
         },
         {"failure_class": "transport"},
+        attempt_id="a1", attempt_state="FAILED",
+        attempt_started_at=100.0, observed_at=101.0,
     )
     assert result["failure_signature"] == "CUDA_OOM"
     assert result["failure_class"] == "resource"
     assert result["requested_bytes"] == 536 * 1024 ** 2
+
+
+def test_running_attempt_keeps_unclassified_decision_as_non_applicable_diagnostic():
+    assessment = attempt_failure_evidence_assessment(
+        {
+            "attempt_id": "a1", "scheduler_state": "RUNNING",
+            "worker_state": "ALLOCATED", "process_state": "RUNNING",
+            "model_state": "OBSERVED",
+        },
+        {"action": "OBSERVE", "failure_class": "unknown"},
+        attempt_id="a1", attempt_state="RUNNING",
+        attempt_started_at=100.0, observed_at=110.0,
+        decision_observed_at=111.0,
+    )
+    assert assessment["failure_summary"] is None
+    assert assessment["diagnostic_evidence"] == [{
+        "kind": "preliminary_failure_classification",
+        "failure_class": "unknown",
+        "source": "decision.failure_class",
+        "attempt_id": "a1",
+        "attempt_state": "RUNNING",
+        "observed_at": 111.0,
+        "applicability": "NON_APPLICABLE",
+        "reason": (
+            "decision metadata is contextual only and is not exact, fresh, "
+            "terminal failure evidence"
+        ),
+    }]
+
+
+def test_failure_evidence_requires_exact_fresh_terminal_attempt():
+    collection = {
+        "attempt_id": "a1", "process_state": "FAILED",
+        "process_evidence": {"stderr_tail": ["ModuleNotFoundError: pkg"]},
+    }
+    exact = attempt_failure_evidence_assessment(
+        collection, attempt_id="a1", attempt_state="FAILED",
+        attempt_started_at=100.0, observed_at=101.0,
+    )
+    assert exact["failure_summary"]["failure_signature"] == "MISSING_PYTHON_MODULE"
+    assert exact["failure_summary"]["attempt_id"] == "a1"
+    assert exact["failure_summary"]["applicability"] == "APPLICABLE"
+
+    stale = attempt_failure_evidence_assessment(
+        collection, attempt_id="a1", attempt_state="FAILED",
+        attempt_started_at=100.0, observed_at=99.0,
+    )
+    assert stale["failure_summary"] is None
+    assert stale["diagnostic_evidence"][0]["applicability"] == "STALE"
+
+    mismatch = attempt_failure_evidence_assessment(
+        {**collection, "attempt_id": "old"},
+        attempt_id="a1", attempt_state="FAILED",
+        attempt_started_at=100.0, observed_at=101.0,
+    )
+    assert mismatch["failure_summary"] is None
+    assert mismatch["diagnostic_evidence"][0]["applicability"] == "ATTEMPT_MISMATCH"
+
+    running = attempt_failure_evidence_assessment(
+        collection, attempt_id="a1", attempt_state="RUNNING",
+        attempt_started_at=100.0, observed_at=101.0,
+    )
+    assert running["failure_summary"] is None
+    assert running["diagnostic_evidence"][0]["applicability"] == "NON_APPLICABLE"
+
+
+@pytest.mark.parametrize(
+    ("states", "domain", "source"),
+    [
+        ({"scheduler_state": "FAILED", "process_state": "RUNNING"},
+         "scheduler", "collection.scheduler_state"),
+        ({"worker_state": "LOST", "process_state": "RUNNING"},
+         "worker", "collection.worker_state"),
+    ],
+)
+def test_terminal_infrastructure_causes_are_not_process_failures(states, domain, source):
+    assessment = attempt_failure_evidence_assessment(
+        {"attempt_id": "a1", **states},
+        attempt_id="a1", attempt_state="FAILED",
+        attempt_started_at=100.0, observed_at=101.0,
+    )
+    failure = assessment["failure_summary"]
+    assert failure["failure_domain"] == domain
+    assert failure["source"] == source
+    assert failure["failure_signature"] != "UNCLASSIFIED_PROCESS_FAILURE"
 
 
 @pytest.mark.parametrize(
@@ -164,6 +256,7 @@ def test_bounded_evidence_all_scope_shapes(monkeypatch):
         campaign_memberships=[], scheduler_state="DONE", decision={}, evidence=evidence,
         latest_metrics={}, eval_metrics={}, eval_variants=[], canonical_eval_variant_id=None,
         checkpoint={}, artifacts={}, provenance={}, warnings=[], evidence_conflicts=[], attempts=[],
+        run_dir="/missing",
     )
     index = SimpleNamespace(list_runs=lambda *args, **kwargs: [row], get_run=lambda *args: row)
     app = application(index=index)
@@ -178,7 +271,7 @@ def test_bounded_evidence_all_scope_shapes(monkeypatch):
     assert app.bounded_evidence(scope(OperationScopeType.RESEARCH_QUESTION, "q1"), configured, question)["runs"]
     assert app.bounded_evidence(scope(OperationScopeType.CAMPAIGN, "study"), configured, campaign)["runs"]
     assert app.bounded_evidence(scope(), configured, row)["run"]["run_id"] == "run-a"
-    attempt = Dump(attempt_id="a1")
+    attempt = Dump(attempt_id="a1", state=None)
     assert app.bounded_evidence(
         scope(OperationScopeType.ATTEMPT, "run-a::a1"), configured, attempt,
     )["attempt"]["attempt_id"] == "a1"
@@ -322,6 +415,90 @@ def test_attempt_local_read_models_cover_files_fallbacks_and_event_dedup(tmp_pat
     events = app.attempt_events("demo", "run-a::a1")
     assert [item["event"] for item in events["events"]] == ["started", "done"]
     assert len(events["sources"]) == 2
+
+
+def test_running_attempt_show_and_checkpoint_validation_are_orthogonal(tmp_path):
+    attempt_dir = tmp_path / "attempts/a1"
+    attempt_dir.mkdir(parents=True)
+    (tmp_path / "manifest.yaml").write_text(
+        "project: demo\nrun_id: run-a\ncampaign: c1\n"
+    )
+    (attempt_dir / "attempt.yaml").write_text(
+        "project: demo\nrun_id: run-a\nattempt_id: a1\n"
+        "created_at: '2026-01-01T00:00:00Z'\n"
+    )
+    (attempt_dir / "status.json").write_text(json.dumps({
+        "attempt_id": "a1", "state": "RUNNING",
+    }))
+    (attempt_dir / "collection.json").write_text(json.dumps({
+        "attempt_id": "a1", "scheduler_state": "RUNNING",
+        "worker_state": "ALLOCATED", "process_state": "RUNNING",
+        "model_state": "OBSERVED", "failure_class": None,
+    }))
+    (attempt_dir / "decision.json").write_text(json.dumps({
+        "attempt_id": "a1", "action": "OBSERVE", "failure_class": "unknown",
+        "reason": "run is nonterminal",
+    }))
+    (attempt_dir / "train_metrics.jsonl").write_text(
+        json.dumps({"step": 200, "loss": 3.0}) + "\n"
+        + json.dumps({"step": 400, "loss": 2.5}) + "\n"
+    )
+    row = SimpleNamespace(
+        run_id="run-a", run_dir=str(tmp_path), checkpoint={}, artifacts={},
+    )
+    attempt = Dump(
+        attempt_id="a1", state="RUNNING", backend_job_id=None,
+        decision={"action": "OBSERVE", "failure_class": "unknown"},
+    )
+    target = scope(OperationScopeType.ATTEMPT, "run-a::a1")
+    app = application()
+    app._attempt_context = lambda *args: (target, object(), row, attempt, attempt_dir)
+
+    shown = app.attempt_show("demo", "run-a::a1")
+    assert shown["failure_summary"] is None
+    assert shown["diagnostic_evidence"][0]["applicability"] == "NON_APPLICABLE"
+    assert shown["collection"]["process_state"] == "RUNNING"
+
+    validation = app.attempt_validate("demo", "run-a::a1")
+    checkpoint_gate = next(
+        gate for gate in validation["gates"]
+        if gate["id"] == "attempt.checkpoint_evidence"
+    )
+    assert checkpoint_gate["status"] == "UNKNOWN"
+    assert "missing" in checkpoint_gate["message"]
+
+
+def test_attempt_agent_evidence_marks_diagnostics_non_applicable(tmp_path):
+    attempt_dir = tmp_path / "attempts/a1"
+    attempt_dir.mkdir(parents=True)
+    (attempt_dir / "attempt.yaml").write_text(
+        "attempt_id: a1\ncreated_at: '2026-01-01T00:00:00Z'\n"
+    )
+    (attempt_dir / "collection.json").write_text(json.dumps({
+        "attempt_id": "a1", "scheduler_state": "RUNNING",
+        "process_state": "RUNNING", "model_state": "OBSERVED",
+    }))
+    (attempt_dir / "decision.json").write_text(json.dumps({
+        "failure_class": "unknown", "action": "OBSERVE",
+    }))
+    attempt = Dump(
+        attempt_id="a1", state="RUNNING",
+        decision={"failure_class": "unknown", "action": "OBSERVE"},
+    )
+    row = SimpleNamespace(run_id="run-a", run_dir=str(tmp_path))
+    app = application(index=SimpleNamespace(get_run=lambda *args: row))
+    app.row_evidence = lambda value: {"run_id": value.run_id, "scheduler_state": "RUNNING"}
+    app.campaign_contexts = lambda *args: []
+
+    evidence = app.bounded_evidence(
+        scope(OperationScopeType.ATTEMPT, "run-a::a1"),
+        SimpleNamespace(project="demo"), attempt,
+    )
+    assessment = evidence["failure_assessment"]
+    assert assessment["failure_summary"] is None
+    assert assessment["diagnostic_evidence"][0]["applicability"] == "NON_APPLICABLE"
+    assert "MUST NOT" in assessment["agent_instruction"]
+    assert "retry" in assessment["agent_instruction"]
 
 
 def test_metric_payload_one_point_missing_key_and_invalid_limit():

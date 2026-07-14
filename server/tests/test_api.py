@@ -95,6 +95,14 @@ def test_tui_session_endpoints_are_server_owned(client):
     assert set(bundle.json()) == {
         "show", "validation", "metrics", "checkpoints", "artifacts",
     }
+    show = bundle.json()["show"]
+    assert show["failure_summary"] is None
+    assert isinstance(show["diagnostic_evidence"], list)
+    checkpoint_gate = next(
+        gate for gate in bundle.json()["validation"]["gates"]
+        if gate["id"] == "attempt.checkpoint_evidence"
+    )
+    assert checkpoint_gate["status"] == "UNKNOWN"
 
 
 def test_overview_contains_research_question_and_attention(client):
