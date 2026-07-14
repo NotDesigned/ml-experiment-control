@@ -235,7 +235,7 @@ def test_run_metrics_reports_missing_keys(client):
 
 def test_run_eval_variants_use_the_indexed_coherent_snapshot(client, monkeypatch):
     monkeypatch.setattr(
-        "ml_exp_server.application.evaluation_variants",
+        "ml_exp_server.ingest.runscan.evaluation_variants",
         lambda *_args, **_kwargs: pytest.fail("run eval must not rescan live files"),
     )
     payload = client.get(f"/api/runs/elf/{A1}/eval").json()

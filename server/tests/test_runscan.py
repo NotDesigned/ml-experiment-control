@@ -98,14 +98,17 @@ def test_a1_metrics_and_provenance(a1_run_dir):
     row = scan_run_dir(a1_run_dir, "elf", now=NOW)
     assert row.latest_metrics["step"] == 3700
     assert 0.8 < row.latest_metrics["train_loss"] < 0.9
-    assert row.eval_metrics == {}
+    assert row.eval_metrics["plan_ppl_gap"] == pytest.approx(
+        row.eval_metrics["shuffled_plan_ppl"] - row.eval_metrics["oracle_plan_ppl"]
+    )
+    assert row.evaluation_snapshot["family_state"] == "SINGLE_ELIGIBLE_FAMILY"
     assert row.canonical_eval_variant_id is None
     assert len(row.eval_variants) == 4
     by_name = {item["variant"]: item["latest"] for item in row.eval_variants}
     oracle = next(value for name, value in by_name.items() if "oracle-plan" in name)
     shuffled = next(value for name, value in by_name.items() if "shuffled-plan" in name)
     assert oracle["oracle_plan_ppl"] < shuffled["shuffled_plan_ppl"]
-    assert any("flat eval_metrics suppressed" in warning for warning in row.warnings)
+    assert not any("flat eval_metrics suppressed" in warning for warning in row.warnings)
     assert row.provenance["image_id"].startswith("sha256:")
     assert row.provenance["seed"] == 42
     assert row.provenance["resolved_config_excerpt"]["max_length"] == 256
@@ -132,7 +135,8 @@ def test_declared_canonical_eval_variant_controls_flat_view(tmp_path):
         )
     row = scan_run_dir(run_dir, "elf", now=NOW)
     assert row.canonical_eval_variant_id == "variant-b"
-    assert row.eval_metrics == {"g_ppl": 20.0}
+    assert row.eval_metrics == {}
+    assert row.evaluation_snapshot["family_state"] == "CANONICAL_BINDING_CONFLICT"
     assert len(row.eval_variants) == 2
 
 
@@ -290,6 +294,129 @@ def test_duplicate_oracle_rewrites_are_conflicts_not_corrections(tmp_path, rewri
     assert "oracle_plan_ppl" in snapshot["current"]["conflicting_metrics"]
     assert "plan_ppl_gap" not in snapshot["current"]["metrics"]
     assert snapshot["latest_metric_complete"] is None
+
+
+def test_duplicate_variant_sources_merge_and_expose_cross_source_conflicts(tmp_path):
+    run_dir = tmp_path / "cross-source"
+    root = run_dir / "oracle"
+    nested = run_dir / "train_sampling_eval" / "oracle"
+    root.mkdir(parents=True)
+    nested.mkdir(parents=True)
+    base = {
+        "epoch": 0, "step": 10, "mode": "oracle_plan_generation",
+        "oracle_plan_ppl": 2.0,
+    }
+    (root / "metrics.jsonl").write_text(json.dumps(base) + "\n")
+    (nested / "metrics.jsonl").write_text(
+        json.dumps({**base, "oracle_plan_ppl": 9.0}) + "\n"
+    )
+
+    variants, _ = evaluation_variants(run_dir)
+
+    assert len(variants) == 1
+    assert len(variants[0]["sources"]) == 2
+    assert variants[0]["history"][0]["conflicting_metrics"] == [
+        "oracle_plan_ppl",
+    ]
+    snapshot = evaluation_snapshot(variants)
+    assert snapshot["current"]["state"] == "PARTIAL"
+    assert "oracle_plan_ppl" in snapshot["current"]["conflicting_metrics"]
+    assert "plan_ppl_gap" not in snapshot["current"]["metrics"]
+    assert snapshot["latest_metric_complete"] is None
+
+    (nested / "metrics.jsonl").write_text(json.dumps(base) + "\n")
+    identical, _ = evaluation_variants(run_dir)
+    assert "conflicting_metrics" not in identical[0]["history"][0]
+
+
+def test_two_structured_sampling_families_require_canonical_declaration(tmp_path):
+    run_dir = tmp_path / "families"
+    dimensions = [
+        {
+            "sampling_method": "sde", "num_sampling_steps": 32, "cfg": 1.0,
+            "self_cond_cfg_scale": 3.0, "time_schedule": "logit_normal",
+            "time_warp_gamma": 1.5,
+        },
+        {
+            "sampling_method": "sde", "num_sampling_steps": 64, "cfg": 1.0,
+            "self_cond_cfg_scale": 3.0, "time_schedule": "logit_normal",
+            "time_warp_gamma": 1.0,
+        },
+    ]
+    records = [("clean", "clean_token_reconstruction", "token_recon_ppl", 20.0, None)]
+    for family_index, family in enumerate(dimensions, start=1):
+        records.extend([
+            (f"f{family_index}-generation", "generation_refine_decode", "g_ppl",
+             300.0 - family_index, family),
+            (f"f{family_index}-oracle", "oracle_plan_generation", "oracle_plan_ppl",
+             200.0 - family_index, family),
+            (f"f{family_index}-shuffled", "shuffled_plan_generation",
+             "shuffled_plan_ppl", 210.0 - family_index, family),
+        ])
+    for variant_id, mode, metric, value, family in records:
+        root = run_dir / variant_id
+        root.mkdir(parents=True)
+        record = {"epoch": 1, "step": 38035, "mode": mode, metric: value}
+        if family is not None:
+            record["sampling_config"] = family
+        (root / "metrics.jsonl").write_text(json.dumps(record) + "\n")
+
+    variants, _ = evaluation_variants(run_dir)
+    ambiguous = evaluation_snapshot(variants)
+    assert len(variants) == 7
+    assert len(ambiguous["families"]) == 2
+    assert ambiguous["family_state"] == "CANONICAL_NOT_DECLARED"
+    assert ambiguous["current"]["metrics"] == {}
+    assert ambiguous["latest_metric_complete"] is None
+
+    declared = evaluation_snapshot(variants, {
+        "evaluation": {"canonical_family": dimensions[0]},
+    })
+    assert declared["family_state"] == "DECLARED"
+    assert declared["current"]["state"] == "COMPLETE"
+    assert declared["current"]["metrics"]["plan_ppl_gap"] == pytest.approx(10.0)
+
+    inconsistent = evaluation_snapshot(variants, {
+        "evaluation": {
+            "canonical_family": dimensions[0],
+            "canonical_variant_id": "f2-oracle",
+        },
+    })
+    assert inconsistent["family_state"] == "CANONICAL_BINDING_CONFLICT"
+    assert inconsistent["current"]["metrics"] == {}
+
+
+def test_real_seven_variant_shape_without_structured_identity_fails_closed(tmp_path):
+    run_dir = tmp_path / "real-seven"
+    records = [
+        ("clean", "clean_token_reconstruction", "token_recon_ppl", 20.0),
+        ("f1-generation", "generation_refine_decode", "g_ppl", 297.6),
+        ("f1-oracle", "oracle_plan_generation", "oracle_plan_ppl", 207.6),
+        ("f1-shuffled", "shuffled_plan_generation", "shuffled_plan_ppl", 199.4),
+        ("f2-generation", "generation_refine_decode", "g_ppl", 276.8),
+        ("f2-oracle", "oracle_plan_generation", "oracle_plan_ppl", 191.6),
+        ("f2-shuffled", "shuffled_plan_generation", "shuffled_plan_ppl", 198.7),
+    ]
+    for variant_id, mode, metric, value in records:
+        root = run_dir / variant_id
+        root.mkdir(parents=True)
+        (root / "metrics.jsonl").write_text(json.dumps({
+            "epoch": 1, "step": 38035, "mode": mode, metric: value,
+        }) + "\n")
+
+    variants, _ = evaluation_variants(run_dir)
+    snapshot = evaluation_snapshot(variants)
+
+    assert len(variants) == 7
+    assert snapshot["family_state"] == "UNRESOLVED"
+    assert len(snapshot["unresolved_variant_ids"]) == 6
+    assert snapshot["required_family_dimension_fields"] == [
+        "sampling_method", "num_sampling_steps", "cfg", "self_cond_cfg_scale",
+        "time_schedule", "time_warp_gamma",
+    ]
+    assert snapshot["families"] == []
+    assert snapshot["current"]["metrics"] == {}
+    assert "plan_ppl_gap" not in snapshot["current"]["metrics"]
 
 
 def test_identical_duplicate_records_are_idempotent_and_generic_ppl_is_fallback():

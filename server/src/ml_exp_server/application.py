@@ -17,7 +17,6 @@ from .code_identity import project_code_identity
 from .ingest.indexer import index_project
 from .ingest.runscan import (
     evaluation_snapshot,
-    evaluation_variants,
     parse_iso_ts,
     preferred_attempt_id,
     read_jsonl,
@@ -1914,13 +1913,16 @@ class ExperimentServerApplication:
 
     def attempt_eval(self, project: str, identity: str) -> dict[str, Any]:
         _, _, row, attempt, _ = self._attempt_context(project, identity)
-        variants, source_attempt_id = evaluation_variants(
-            Path(row.run_dir), attempt_id=attempt.attempt_id, exact_attempt=True,
-        )
+        source_attempt_id = row.evidence.evaluation.attempt_id
+        exact = source_attempt_id == attempt.attempt_id
+        variants = row.eval_variants if exact else []
+        snapshot = row.evaluation_snapshot if exact else evaluation_snapshot([])
         return {"project": project, "run_id": row.run_id,
                 "attempt_id": attempt.attempt_id,
                 "source_attempt_id": source_attempt_id, "variants": variants,
-                "evaluation_snapshot": evaluation_snapshot(variants)}
+                "evaluation_snapshot": snapshot,
+                "evidence_status": "INDEXED_EXACT_ATTEMPT" if exact
+                else "EXACT_ATTEMPT_NOT_INDEXED"}
 
     def attempt_events(self, project: str, identity: str) -> dict[str, Any]:
         _, _, row, attempt, attempt_dir = self._attempt_context(project, identity)

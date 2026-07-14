@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 import ml_exp_server.application as module
+import ml_exp_server.ingest.runscan as runscan
 from ml_exp_server.application import (
     ApplicationError,
     ExperimentServerApplication,
@@ -669,6 +670,37 @@ def test_run_agent_evidence_sanitizes_raw_failure_class_and_uses_assessment(tmp_
         "action": "OBSERVE", "reason": "run is nonterminal",
     }
     assert rq["runs"][0]["failure_assessment"]["failure_summary"] is None
+
+
+def test_attempt_eval_uses_indexed_exact_snapshot_without_rescan(tmp_path, monkeypatch):
+    variants = [{"variant": "oracle", "history": []}]
+    snapshot = {"schema_version": 1, "family_state": "UNRESOLVED"}
+    row = SimpleNamespace(
+        run_id="run-a", run_dir=str(tmp_path), eval_variants=variants,
+        evaluation_snapshot=snapshot,
+        evidence=SimpleNamespace(
+            evaluation=SimpleNamespace(attempt_id="a1"),
+        ),
+    )
+    attempt = SimpleNamespace(attempt_id="a1")
+    target = scope(OperationScopeType.ATTEMPT, "run-a::a1")
+    app = application()
+    app._attempt_context = lambda *args: (target, object(), row, attempt, tmp_path)
+    monkeypatch.setattr(
+        runscan, "evaluation_variants",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("rescanned")),
+    )
+
+    payload = app.attempt_eval("demo", "run-a::a1")
+
+    assert payload["variants"] is variants
+    assert payload["evaluation_snapshot"] is snapshot
+    assert payload["evidence_status"] == "INDEXED_EXACT_ATTEMPT"
+
+    row.evidence.evaluation.attempt_id = "other"
+    missing = app.attempt_eval("demo", "run-a::a1")
+    assert missing["variants"] == []
+    assert missing["evidence_status"] == "EXACT_ATTEMPT_NOT_INDEXED"
 
 
 def test_metric_payload_one_point_missing_key_and_invalid_limit():

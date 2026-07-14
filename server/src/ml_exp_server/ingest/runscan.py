@@ -15,6 +15,7 @@ holds newer science metrics. Never collapse them into one state.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -69,6 +70,35 @@ _EVAL_PRIMARY_METRICS_BY_MODE = {
     "shuffled_plan_generation": "shuffled_plan_ppl",
 }
 _EVAL_REQUIRED_PRIMARY_METRICS = tuple(_EVAL_PRIMARY_METRICS_BY_MODE.values())
+_EVAL_FAMILY_DIMENSION_KEYS = (
+    "sampling_method", "num_sampling_steps", "cfg", "self_cond_cfg_scale",
+    "time_schedule", "time_warp_gamma",
+)
+
+
+def _evaluation_family_dimensions(record: dict[str, Any]) -> dict[str, Any] | None:
+    """Read explicit producer-authored sampling identity without parsing labels."""
+    raw = record.get("sampling_config")
+    if not isinstance(raw, dict):
+        raw = record.get("variant_dimensions")
+    if not isinstance(raw, dict):
+        return None
+    dimensions: dict[str, Any] = {}
+    for key in _EVAL_FAMILY_DIMENSION_KEYS:
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            return None
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        dimensions[key] = value
+    return dimensions
+
+
+def _evaluation_family_id(dimensions: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        dimensions, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    )
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _evaluation_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -86,6 +116,9 @@ def _evaluation_record(record: dict[str, Any]) -> dict[str, Any]:
     mode = record.get("mode")
     if isinstance(mode, str) and len(mode) <= 128:
         projected["mode"] = mode
+    dimensions = _evaluation_family_dimensions(record)
+    if dimensions is not None:
+        projected["sampling_dimensions"] = dimensions
     for key in _EVAL_HISTORY_METRIC_KEYS:
         value = record.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool) \
@@ -151,6 +184,20 @@ def _evaluation_history(records: list[dict[str, Any]]) -> dict[str, Any]:
             elif "mode" in projected and "mode" not in conflict_set:
                 merged["mode"] = projected["mode"]
 
+        if "sampling_dimensions" in projected:
+            dimensions_token = (
+                "sampling_dimensions",
+                json.dumps(projected["sampling_dimensions"], sort_keys=True),
+            )
+            previous_dimensions = seen.setdefault(
+                "sampling_dimensions", dimensions_token,
+            )
+            if previous_dimensions != dimensions_token:
+                conflict_set.add("sampling_dimensions")
+                merged.pop("sampling_dimensions", None)
+            elif "sampling_dimensions" not in conflict_set:
+                merged["sampling_dimensions"] = projected["sampling_dimensions"]
+
         for metric, raw_value in _evaluation_metric_observations(record):
             token, safe_value = _evaluation_observation(raw_value)
             previous = seen.setdefault(metric, token)
@@ -179,6 +226,49 @@ def _evaluation_history(records: list[dict[str, Any]]) -> dict[str, Any]:
         "history_truncated": omitted > 0,
         "history_omitted_records": omitted,
         "history_skipped_records": skipped,
+    }
+
+
+def _evaluation_variant_family(history: list[dict[str, Any]]) -> dict[str, Any]:
+    modes = {
+        record.get("mode") for record in history
+        if isinstance(record.get("mode"), str)
+    }
+    if modes and modes <= {"clean_token_reconstruction"}:
+        return {
+            "status": "RESOLVED",
+            "scope": "FAMILY_INDEPENDENT_RECONSTRUCTION",
+        }
+    dimensions = [
+        record.get("sampling_dimensions") for record in history
+        if record.get("mode") in {
+            "generation_refine_decode", "oracle_plan_generation",
+            "shuffled_plan_generation",
+        }
+    ]
+    required = list(_EVAL_FAMILY_DIMENSION_KEYS)
+    if not dimensions or any(not isinstance(item, dict) for item in dimensions):
+        return {
+            "status": "UNRESOLVED",
+            "reason": "sampling family dimensions are not present in evaluation records",
+            "required_producer_fields": required,
+        }
+    identities = {
+        json.dumps(item, sort_keys=True, separators=(",", ":"))
+        for item in dimensions if isinstance(item, dict)
+    }
+    if len(identities) != 1:
+        return {
+            "status": "CONFLICTING",
+            "reason": "one variant contains multiple structured sampling identities",
+            "required_producer_fields": required,
+        }
+    normalized = dict(dimensions[0])
+    return {
+        "status": "RESOLVED",
+        "scope": "SAMPLING_FAMILY",
+        "family_id": _evaluation_family_id(normalized),
+        "dimensions": normalized,
     }
 
 
@@ -298,8 +388,8 @@ def _evaluation_checkpoint_snapshot(
     }
 
 
-def evaluation_snapshot(variants: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build current and most-recent metric-complete checkpoint projections."""
+def _evaluation_checkpoint_series(variants: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build checkpoint projections for one already-resolved family."""
     identities = {
         (record.get("epoch"), record.get("step"))
         for variant in variants
@@ -330,8 +420,160 @@ def evaluation_snapshot(variants: list[dict[str, Any]]) -> dict[str, Any]:
         None,
     )
     return {
+        "required_metrics": list(_EVAL_REQUIRED_PRIMARY_METRICS),
+        "current": current,
+        "latest_metric_complete": latest_complete,
+    }
+
+
+def _contract_evaluation(contract: Optional[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(contract, dict):
+        return {}
+    evaluation = contract.get("evaluation")
+    return evaluation if isinstance(evaluation, dict) else contract
+
+
+def _declared_evaluation_family(
+    variants: list[dict[str, Any]], contract: Optional[dict[str, Any]],
+) -> tuple[str | None, str | None]:
+    """Return a canonical family declaration and any binding error."""
+    configured = _contract_evaluation(contract)
+    direct = configured.get("canonical_family_id")
+    canonical_family = configured.get("canonical_family")
+    if direct is None and isinstance(canonical_family, str):
+        direct = canonical_family
+    if direct is not None and not isinstance(direct, str):
+        return None, "canonical_family_id must be a string"
+    dimensions = configured.get("canonical_family_dimensions")
+    if dimensions is None and isinstance(canonical_family, dict):
+        dimensions = canonical_family
+    dimension_id: str | None = None
+    if dimensions is not None:
+        normalized = _evaluation_family_dimensions({"sampling_config": dimensions})
+        if normalized is None:
+            return None, "canonical_family_dimensions is incomplete or invalid"
+        dimension_id = _evaluation_family_id(normalized)
+    variant_id = (
+        configured.get("canonical_variant_id")
+        or (contract or {}).get("canonical_eval_variant_id")
+    )
+    variant_family: str | None = None
+    if variant_id is not None:
+        if not isinstance(variant_id, str):
+            return None, "canonical variant identity must be a string"
+        matched = next(
+            (item for item in variants if item.get("variant") == variant_id), None,
+        )
+        family = matched.get("evaluation_family") if isinstance(matched, dict) else None
+        if not isinstance(family, dict) or family.get("scope") != "SAMPLING_FAMILY":
+            return None, "canonical variant does not bind to a resolved sampling family"
+        variant_family = str(family.get("family_id"))
+    declared = [item for item in (direct, dimension_id, variant_family) if item]
+    if len(set(declared)) > 1:
+        return None, "canonical family and variant declarations do not bind consistently"
+    return (declared[0] if declared else None), None
+
+
+def evaluation_snapshot(
+    variants: list[dict[str, Any]], contract: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Build family-aware evaluation science without inferring family from labels."""
+    reconstruction = [
+        item for item in variants
+        if (item.get("evaluation_family") or {}).get("scope")
+        == "FAMILY_INDEPENDENT_RECONSTRUCTION"
+    ]
+    sampling = [item for item in variants if item not in reconstruction]
+    resolved: dict[str, list[dict[str, Any]]] = {}
+    unresolved: list[str] = []
+    for item in sampling:
+        family = item.get("evaluation_family")
+        family = family if isinstance(family, dict) else {}
+        family_id = family.get("family_id")
+        if family.get("status") == "RESOLVED" and isinstance(family_id, str):
+            resolved.setdefault(family_id, []).append(item)
+        else:
+            unresolved.append(str(item.get("variant") or "unknown"))
+
+    # A legacy four-slot set is unambiguous without pretending it has a stable
+    # family identity. Multiple observations of any conditioning mode require
+    # explicit producer-authored dimensions and therefore fail closed.
+    legacy_single = False
+    if sampling and not resolved:
+        mode_counts: dict[str, int] = {}
+        for item in sampling:
+            mode = (item.get("latest") or {}).get("mode")
+            if isinstance(mode, str):
+                mode_counts[mode] = mode_counts.get(mode, 0) + 1
+        legacy_single = bool(mode_counts) and all(count == 1 for count in mode_counts.values())
+
+    families: list[dict[str, Any]] = []
+    for family_id, members in sorted(resolved.items()):
+        dimensions = (members[0].get("evaluation_family") or {}).get("dimensions")
+        family_snapshot = _evaluation_checkpoint_series([*reconstruction, *members])
+        families.append({
+            "family_id": family_id,
+            "status": "RESOLVED",
+            "dimensions": dimensions,
+            "variant_ids": [str(item.get("variant")) for item in members],
+            "reconstruction_variant_ids": [
+                str(item.get("variant")) for item in reconstruction
+            ],
+            **family_snapshot,
+        })
+    if legacy_single:
+        families.append({
+            "family_id": None,
+            "status": "UNLABELED_SINGLE_FAMILY",
+            "dimensions": None,
+            "variant_ids": [str(item.get("variant")) for item in sampling],
+            "reconstruction_variant_ids": [
+                str(item.get("variant")) for item in reconstruction
+            ],
+            **_evaluation_checkpoint_series(variants),
+        })
+        unresolved = []
+
+    declared, declaration_error = _declared_evaluation_family(variants, contract)
+    selected: dict[str, Any] | None = None
+    if declaration_error:
+        family_state = "CANONICAL_BINDING_CONFLICT"
+    elif unresolved:
+        family_state = "UNRESOLVED"
+    elif declared is not None:
+        selected = next(
+            (item for item in families if item.get("family_id") == declared), None,
+        )
+        family_state = "DECLARED" if selected is not None else "CANONICAL_NOT_FOUND"
+    elif len(families) == 1:
+        selected = families[0]
+        family_state = "SINGLE_ELIGIBLE_FAMILY"
+    elif len(families) > 1:
+        family_state = "CANONICAL_NOT_DECLARED"
+    else:
+        family_state = "NOT_OBSERVED"
+
+    if selected is None:
+        current = {
+            "state": family_state,
+            "metrics": {}, "metric_sources": {},
+            "missing_metrics": list(_EVAL_REQUIRED_PRIMARY_METRICS),
+            "conflicting_metrics": [],
+        }
+        latest_complete = None
+    else:
+        current = selected["current"]
+        latest_complete = selected["latest_metric_complete"]
+
+    return {
         "schema_version": 1,
         "required_metrics": list(_EVAL_REQUIRED_PRIMARY_METRICS),
+        "family_state": family_state,
+        "required_family_dimension_fields": list(_EVAL_FAMILY_DIMENSION_KEYS),
+        "unresolved_variant_ids": unresolved,
+        "canonical_family_id": selected.get("family_id") if selected else None,
+        "canonical_declaration_error": declaration_error,
+        "families": families,
         "current": current,
         "latest_metric_complete": latest_complete,
     }
@@ -656,7 +898,9 @@ def evaluation_variants(
     """Read unique evaluation variants from one coherent evidence source.
 
     Collectors may place variants both directly under collected_run/ and under
-    train_sampling_eval/. For duplicate names, the greatest numeric step wins.
+    train_sampling_eval/. Duplicate names are merged before checkpoint
+    projection so identical observations remain idempotent while conflicting
+    cross-source rewrites remain visible.
     Each variant exposes a bounded, whitelisted epoch+step history; arbitrary
     JSONL fields are never copied into the read model. Evidence is never merged
     across different Attempts.
@@ -671,27 +915,27 @@ def evaluation_variants(
             records = read_jsonl(path)
             if not records:
                 continue
-            history = _evaluation_history(records)
-            latest = history["history"][-1] if history["history"] else {}
-            step = latest.get("step")
-            score = float(step) if isinstance(step, (int, float)) else float("-inf")
-            current = by_name.get(path.parent.name)
-            if current is not None and score < current["_score"]:
-                continue
-            by_name[path.parent.name] = {
-                "variant": path.parent.name,
-                "latest": latest,
-                "records": len(records),
-                "source": str(path),
-                **history,
-                "_score": score,
-            }
+            aggregate = by_name.setdefault(path.parent.name, {
+                "records": [], "sources": [],
+            })
+            aggregate["records"].extend(records)
+            aggregate["sources"].append(str(path))
         if by_name:
             variants = []
             for name in sorted(by_name):
-                item = by_name[name]
-                item.pop("_score", None)
-                variants.append(item)
+                aggregate = by_name[name]
+                history = _evaluation_history(aggregate["records"])
+                bounded_history = history["history"]
+                sources = sorted(set(aggregate["sources"]))
+                variants.append({
+                    "variant": name,
+                    "latest": bounded_history[-1] if bounded_history else {},
+                    "records": len(aggregate["records"]),
+                    "source": sources[0] if len(sources) == 1 else None,
+                    "sources": sources,
+                    "evaluation_family": _evaluation_variant_family(bounded_history),
+                    **history,
+                })
             return variants, source.attempt_id
     return [], attempt_id
 
@@ -863,12 +1107,17 @@ def _eval_layer(
     best_ts: Optional[float] = None
     layer.attempt_id = attempt_id
     for variant in variants:
-        metrics_path = Path(variant["source"])
-        ts = _mtime(metrics_path)
+        sources = variant.get("sources")
+        source_paths = [Path(item) for item in sources if isinstance(item, str)] \
+            if isinstance(sources, list) else []
+        if not source_paths and isinstance(variant.get("source"), str):
+            source_paths = [Path(variant["source"])]
+        timestamps = [ts for path in source_paths if (ts := _mtime(path)) is not None]
+        ts = max(timestamps) if timestamps else None
         layer.detail[variant["variant"]] = variant["latest"]
         if ts is not None and (best_ts is None or ts > best_ts):
             best_ts = ts
-            layer.source = str(metrics_path)
+            layer.source = str(max(source_paths, key=lambda path: _mtime(path) or 0))
     current = evaluation_snapshot(variants)["current"]
     if current.get("step") is not None:
         layer.state = f"step {current['step']} · {current['state']}"
@@ -1018,8 +1267,11 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
             source=str(run_dir / "collection.json"),
         )
 
+    contract = manifest.get("research_contract")
+    if not isinstance(contract, dict):
+        contract = None
     eval_variants, eval_attempt_id = evaluation_variants(run_dir)
-    eval_snapshot = evaluation_snapshot(eval_variants)
+    eval_snapshot = evaluation_snapshot(eval_variants, contract)
     evidence.evaluation = _eval_layer(eval_variants, eval_attempt_id)
     harness_metrics = status.get("metrics") if isinstance(status.get("metrics"), dict) else {}
     if not harness_metrics and isinstance(attempt_summary.get("metrics"), dict):
@@ -1071,20 +1323,15 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
     if wandb is not None:
         provenance["wandb"] = wandb
 
-    contract = manifest.get("research_contract")
-    if not isinstance(contract, dict):
-        contract = None
     canonical_eval_variant_id = _canonical_eval_variant_id(eval_variants, contract)
     eval_metrics: dict[str, Any] = {}
-    if canonical_eval_variant_id is not None:
-        canonical = next(
-            item for item in eval_variants
-            if item.get("variant") == canonical_eval_variant_id
-        )
-        latest = canonical.get("latest")
-        if isinstance(latest, dict):
+    complete_eval = eval_snapshot.get("latest_metric_complete")
+    if isinstance(complete_eval, dict):
+        complete_metrics = complete_eval.get("metrics")
+        if isinstance(complete_metrics, dict):
             eval_metrics = {
-                key: latest[key] for key in _EVAL_METRIC_KEYS if latest.get(key) is not None
+                key: complete_metrics[key] for key in _EVAL_METRIC_KEYS
+                if complete_metrics.get(key) is not None
             }
     elif not eval_variants and not collection.get("evidence_conflicts"):
         # Legacy collectors sometimes provide one unnamed eval record only.
@@ -1099,10 +1346,13 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
         warning for warning in list(collection.get("warnings") or [])
         if warning not in conflicts
     ]
-    if eval_variants and canonical_eval_variant_id is None:
+    if eval_variants and eval_snapshot.get("family_state") in {
+        "UNRESOLVED", "CANONICAL_NOT_DECLARED", "CANONICAL_BINDING_CONFLICT",
+        "CANONICAL_NOT_FOUND",
+    }:
         warnings.append(
-            "multiple eval variants present; flat eval_metrics suppressed until "
-            "research_contract declares canonical_eval_variant_id"
+            "evaluation families are not canonical; flat eval_metrics suppressed: "
+            f"{eval_snapshot.get('family_state')}"
         )
     checkpoint = {
         key: collection[key] for key in _CHECKPOINT_KEYS
