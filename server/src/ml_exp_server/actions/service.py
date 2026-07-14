@@ -13,7 +13,6 @@ from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
-from uuid import uuid4
 
 import yaml
 from pydantic import ValidationError
@@ -30,10 +29,15 @@ from ..schemas import (
     ResearchQuestion,
     ResearchProject,
 )
-from ..storage import atomic_json, utc_now
+from ..storage import utc_now
 from .errors import ActionError
 from .files import file_sha as _file_sha
 from .policy import ActionExecutionPolicy
+from .project_writes import (
+    ProjectWriteConflict,
+    ProjectWriteError,
+    ProjectWriteTransaction,
+)
 from .store import ActionStore
 
 
@@ -146,6 +150,7 @@ class ActionService:
         self.config = config
         self.controller = ProjectControllerGateway(runner)
         self.execution_policy = ActionExecutionPolicy(config)
+        self.project_write_transaction = ProjectWriteTransaction(store)
         self.actor_provider = actor_provider or self._local_actor
         self.internal_executor = internal_executor
 
@@ -1194,85 +1199,58 @@ class ActionService:
         )
 
     def _execute_write(self, plan: dict[str, Any], execution: dict[str, Any]) -> dict[str, Any]:
-        if plan.get("files"):
-            return self._execute_multi_write(plan, execution)
-        target = Path(plan["target_path"])
-        if _file_sha(target) != plan.get("expected_sha256"):
-            execution.update({
-                "status": "FAILED", "finished_at": utc_now(),
-                "error": "target changed after diff preparation; prepare a new action",
-            })
-            return self.store.set_execution(plan["action_id"], execution, event="execution_failed")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
-        temporary.write_text(plan["proposed_content"], encoding="utf-8")
-        os.replace(temporary, target)
-        if plan["operation"] == "WRITE_RESEARCH_QUESTION":
-            load_research_question(target)
-        execution.update({
-            "status": "VERIFIED", "finished_at": utc_now(),
-            "result": {"target_path": str(target), "sha256": _file_sha(target)},
-        })
-        return self.store.set_execution(plan["action_id"], execution, event="execution_verified")
-
-    def _execute_multi_write(
-        self, plan: dict[str, Any], execution: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Atomically apply a bounded set of files from one reviewed action."""
-        files = plan.get("files") or []
-        if not files or any(
-            _file_sha(Path(item["path"])) != item.get("expected_sha256") for item in files
-        ):
-            execution.update({
-                "status": "FAILED", "finished_at": utc_now(),
-                "error": "one or more targets changed after diff preparation",
-            })
-            return self.store.set_execution(
-                plan["action_id"], execution, event="execution_failed",
-            )
-        originals = {
-            Path(item["path"]): (
-                Path(item["path"]).read_bytes() if Path(item["path"]).is_file() else None
-            )
-            for item in files
-        }
-        temporaries: list[tuple[Path, Path]] = []
         try:
-            for item in files:
-                target = Path(item["path"])
-                target.parent.mkdir(parents=True, exist_ok=True)
-                temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
-                temporary.write_text(item["content"], encoding="utf-8")
-                temporaries.append((temporary, target))
-            for temporary, target in temporaries:
-                os.replace(temporary, target)
-        except Exception as exc:
-            for target, content in originals.items():
-                if content is None:
-                    target.unlink(missing_ok=True)
-                else:
-                    rollback = target.with_name(f".{target.name}.{uuid4().hex}.rollback")
-                    rollback.write_bytes(content)
-                    os.replace(rollback, target)
+            result = self.project_write_transaction.apply(plan)
+            if plan["operation"] == "WRITE_RESEARCH_QUESTION":
+                load_research_question(Path(plan["target_path"]))
+            if not plan.get("files"):
+                only_file = result["files"][0]
+                result = {
+                    "target_path": only_file["path"],
+                    "sha256": only_file["sha256"],
+                }
+        except ProjectWriteError as exc:
             execution.update({
-                "status": "FAILED", "finished_at": utc_now(),
-                "error": f"multi-file write rolled back: {exc}",
+                "status": (
+                    "FAILED"
+                    if isinstance(exc, ProjectWriteConflict) and not exc.partial
+                    else "RECONCILE_REQUIRED"
+                ),
+                "finished_at": utc_now(),
+                "last_reconciled_at": utc_now(),
+                "error": str(exc),
             })
             return self.store.set_execution(
-                plan["action_id"], execution, event="execution_failed",
+                plan["action_id"], execution,
+                event=(
+                    "project_write_failed"
+                    if execution["status"] == "FAILED"
+                    else "project_write_reconcile_required"
+                ),
             )
-        finally:
-            for temporary, _ in temporaries:
-                temporary.unlink(missing_ok=True)
+        except Exception as exc:
+            # The transaction may already be APPLIED when operation-specific
+            # validation or durable transaction metadata fails. Preserve the
+            # exact intent for restart reconciliation instead of reporting a
+            # clean failure after a potentially visible effect.
+            execution.update({
+                "status": "RECONCILE_REQUIRED",
+                "finished_at": utc_now(),
+                "last_reconciled_at": utc_now(),
+                "error": f"{type(exc).__name__}: {exc}"[:1000],
+            })
+            return self.store.set_execution(
+                plan["action_id"], execution,
+                event="project_write_reconcile_required",
+            )
         execution.update({
             "status": "VERIFIED", "finished_at": utc_now(),
-            "result": {"files": [
-                {"path": item["path"], "sha256": _file_sha(Path(item["path"]))}
-                for item in files
-            ]},
+            "last_reconciled_at": execution.get("last_reconciled_at"),
+            "error": None,
+            "result": result,
         })
         return self.store.set_execution(
-            plan["action_id"], execution, event="execution_verified",
+            plan["action_id"], execution, event="project_write_verified",
         )
 
     @staticmethod
@@ -1425,6 +1403,12 @@ class ActionService:
                 action_id, execution,
                 event="local_evidence_rebuild_reconcile_blocked",
             )
+        if snapshot.get("operation") in ActionExecutionPolicy.PROJECT_WRITE_OPERATIONS:
+            if not self.config.allow_project_writes:
+                raise ActionError("project writes are disabled by daemon policy")
+            if execution.get("status") not in {"EXECUTING", "RECONCILE_REQUIRED"}:
+                raise ActionError("project write is not awaiting reconciliation")
+            return self._execute_write(snapshot, execution)
         if snapshot.get("operation") == "OBSERVABILITY_BACKFILL":
             if not self.config.allow_observability_mutations:
                 raise ActionError("observability mutations are disabled by daemon policy")
@@ -1541,3 +1525,30 @@ class ActionService:
             "status": "VERIFIED", "finished_at": utc_now(), "result": _redact(payload),
         })
         return self.store.set_execution(plan["action_id"], execution, event="execution_verified")
+
+    def recover_pending_project_writes(self) -> list[dict[str, Any]]:
+        """Roll forward authorized write transactions after daemon restart."""
+
+        pending = [
+            action for action in self.store.list_all()
+            if (
+                action.get("operation") in ActionExecutionPolicy.PROJECT_WRITE_OPERATIONS
+                and action.get("execution", {}).get("status")
+                in {"EXECUTING", "RECONCILE_REQUIRED"}
+            )
+        ]
+        if not self.config.allow_project_writes:
+            return [{
+                **action,
+                "execution": {
+                    **action["execution"],
+                    "error": (
+                        action["execution"].get("error")
+                        or "startup recovery is blocked because project writes are disabled"
+                    ),
+                },
+            } for action in pending]
+        recovered: list[dict[str, Any]] = []
+        for action in pending:
+            recovered.append(self.reconcile(str(action["action_id"])))
+        return recovered

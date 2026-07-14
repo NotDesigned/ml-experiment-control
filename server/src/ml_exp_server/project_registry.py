@@ -7,7 +7,6 @@ contract.  It intentionally owns no scheduler or repository mutations.
 
 from __future__ import annotations
 
-import json
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,6 +18,7 @@ from .storage import (
     exclusive_file_lock,
     read_json,
     utc_now,
+    _jsonl_mappings,
 )
 from .schemas import (
     ProjectLifecycleRecord,
@@ -73,8 +73,6 @@ class ProjectRegistry:
             payload = snapshot.value
         except StorageError as exc:
             raise ProjectRegistryError(f"invalid project registry: {self.path}") from exc
-        if not isinstance(payload, dict):
-            raise ProjectRegistryError(f"invalid project registry: {self.path}")
         if payload.get("schema_version", REGISTRY_SCHEMA_VERSION) != REGISTRY_SCHEMA_VERSION:
             raise ProjectRegistryError(
                 f"unsupported project registry schema: {payload.get('schema_version')}"
@@ -340,16 +338,8 @@ class ProjectRegistry:
             self._state.repair_journal(snapshot)
             if not self.events_path.is_file():
                 return []
-            items: list[dict] = []
             try:
-                lines = self.events_path.read_text(encoding="utf-8").splitlines()
-            except (OSError, UnicodeDecodeError) as exc:
+                items = _jsonl_mappings(self.events_path)
+            except (OSError, StorageError) as exc:
                 raise ProjectRegistryError("project registry events are unreadable") from exc
-            for line in lines[-limit:]:
-                try:
-                    item = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(item, dict):
-                    items.append(item)
-            return items
+            return items[-limit:]

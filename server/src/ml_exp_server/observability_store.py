@@ -743,6 +743,7 @@ class ObservabilityStore:
         self,
         *,
         attempt: Optional[AttemptRef] = None,
+        project: Optional[str] = None,
         limit: int = 100,
         now: Optional[float] = None,
     ) -> list[TargetStatus]:
@@ -750,12 +751,17 @@ class ObservabilityStore:
         bounded_limit = _bounded_limit(limit)
         timestamp = time.time() if now is None else now
         params: list[Any] = [timestamp]
-        where = ""
+        clauses: list[str] = []
         if attempt is not None:
-            where = (
-                "WHERE t.workspace_id=? AND t.project=? AND t.run_id=? AND t.attempt_id=?"
+            clauses.append(
+                "t.workspace_id=? AND t.project=? AND t.run_id=? AND t.attempt_id=?"
             )
             params.extend(attempt.values())
+        if project is not None:
+            _validate_name(project, "project")
+            clauses.append("t.project=?")
+            params.append(project)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
         params.append(bounded_limit)
         query = f"""
             SELECT t.*, 
@@ -779,6 +785,36 @@ class ObservabilityStore:
         with self._lock:
             rows = self._conn.execute(query, params).fetchall()
         return [_target_status(row) for row in rows]
+
+    def status_count(
+        self, *, attempt: Optional[AttemptRef] = None, project: Optional[str] = None,
+    ) -> int:
+        """Return the exact target count used to mark bounded API pages."""
+
+        params: tuple[Any, ...] = ()
+        clauses: list[str] = []
+        values: list[Any] = []
+        if attempt is not None:
+            clauses.append(
+                "workspace_id=? AND project=? AND run_id=? AND attempt_id=?"
+            )
+            values.extend(attempt.values())
+        if project is not None:
+            _validate_name(project, "project")
+            clauses.append("project=?")
+            values.append(project)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        params = tuple(values)
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT COUNT(*) AS total FROM publication_targets {where}",
+                params,
+            ).fetchone()
+        # SQLite aggregate SELECT always returns exactly one row, including for
+        # an empty table. Treat absence as a broken connection contract rather
+        # than manufacturing a misleading zero.
+        assert row is not None
+        return int(row["total"])
 
     def _finish_lease(
         self,

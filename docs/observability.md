@@ -200,6 +200,11 @@ limit, a record enters a one-hour circuit-breaker cooldown; the publisher then
 reopens it automatically, preserving strict per-Attempt ordering without
 creating a permanent poison-record deadlock.
 
+The publisher thread remains alive after a systemic exception, but the failure
+is not silent: `/api/health` reports its last success, bounded error text, and
+consecutive failure count. Target summaries are bounded to 500 records and
+always include exact total/returned/truncated metadata.
+
 ## Client contract
 
 Clients read observability state but never infer it from `use_wandb`, process

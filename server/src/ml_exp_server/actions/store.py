@@ -16,6 +16,7 @@ from ..storage import (
     DurableSnapshot,
     StorageError,
     TransitionConflict,
+    _jsonl_mappings,
     atomic_json,
     exclusive_file_lock,
     read_json,
@@ -309,16 +310,8 @@ class ActionStore:
             if not plan:
                 raise FileNotFoundError(action_id)
             execution = self._execution_snapshot(action_id, plan).value
-            journal: list[dict[str, Any]] = []
             path = directory / "journal.jsonl"
-            if path.is_file():
-                for line in path.read_text(encoding="utf-8").splitlines()[-100:]:
-                    try:
-                        item = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(item, dict):
-                        journal.append(item)
+            journal = _jsonl_mappings(path)[-100:] if path.is_file() else []
             return {**plan, "execution": execution, "journal": journal}
 
     def list_for_scope(self, scope: OperationScope) -> list[dict[str, Any]]:

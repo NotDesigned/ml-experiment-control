@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ml_exp_server.actions import service as actions
+from ml_exp_server.actions import project_writes, service as actions
 from ml_exp_server.actions.service import ActionError, ActionService
 from ml_exp_server.actions.store import ActionStore
 from ml_exp_server.schemas import (
@@ -544,7 +544,7 @@ def test_local_evidence_uncertain_execution_reconciles_read_only_without_rerun(
     assert calls == 2
 
 
-def test_multi_write_detects_changed_target_and_rolls_back_partial_write(monkeypatch, tmp_path):
+def test_multi_write_detects_changed_target_and_marks_uncertain_effect(monkeypatch, tmp_path):
     store = ActionStore(tmp_path / "actions")
     service = ActionService(store, ActionRuntimeConfig())
     action_id = synthetic_plan(store, "multi", operation="WRITE_CAMPAIGN")
@@ -553,29 +553,22 @@ def test_multi_write_detects_changed_target_and_rolls_back_partial_write(monkeyp
         **store.snapshot(action_id),
         "files": [{"path": str(target), "expected_sha256": "sha256:wrong", "content": "new: true\n"}],
     }
-    result = service._execute_multi_write(plan, plan["execution"])
+    result = service._execute_write(plan, plan["execution"])
     assert result["execution"]["status"] == "FAILED"
-    assert "targets changed" in result["execution"]["error"]
+    assert "target changed outside reviewed intent" in result["execution"]["error"]
 
     action_id = synthetic_plan(store, "rollback", operation="WRITE_CAMPAIGN")
     plan = {
         **store.snapshot(action_id),
         "files": [{"path": str(target), "expected_sha256": None, "content": "new: true\n"}],
     }
-    real_replace = actions.os.replace
-    calls = 0
-
-    def fail_first(source, destination):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise OSError("simulated atomic replace failure")
-        return real_replace(source, destination)
-
-    monkeypatch.setattr(actions.os, "replace", fail_first)
-    result = service._execute_multi_write(plan, plan["execution"])
-    assert result["execution"]["status"] == "FAILED"
-    assert "rolled back" in result["execution"]["error"]
+    monkeypatch.setattr(
+        project_writes, "_atomic_write_text",
+        lambda *args: (_ for _ in ()).throw(OSError("simulated replace failure")),
+    )
+    result = service._execute_write(plan, plan["execution"])
+    assert result["execution"]["status"] == "RECONCILE_REQUIRED"
+    assert "simulated replace failure" in result["execution"]["error"]
     assert not target.exists()
 
 

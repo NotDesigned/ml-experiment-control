@@ -34,6 +34,47 @@ from .submission_routes import router as submission_router
 from .sse import EventBroker
 
 
+def _publisher_loop(app: FastAPI) -> None:
+    while not app.state._stop.is_set():
+        try:
+            app.state.runtime.observability.publish_once(limit_per_target=32)
+        except Exception as exc:
+            # Target-specific errors are retained in the outbox. Systemic loop
+            # errors must additionally be visible through health.
+            app.state.publisher_last_error = f"{type(exc).__name__}: {exc}"[:500]
+            app.state.publisher_consecutive_failures += 1
+        else:
+            app.state.publisher_last_success_at = time.time()
+            app.state.publisher_last_error = None
+            app.state.publisher_consecutive_failures = 0
+        if app.state._stop.wait(2.0):
+            break
+
+
+def _poll_loop(app: FastAPI, collector: Collector) -> None:
+    while not app.state._stop.is_set():
+        app.state.index.set_meta("collector_cycle_started_at", str(time.time()))
+        try:
+            collector.run_cycle()
+            for project in app.state.projects:
+                app.state.runtime.observability.collect_rows(
+                    app.state.index.list_runs(project.project),
+                )
+            app.state.index.set_meta("collector_last_error", "")
+        except Exception as exc:  # keep the loop alive; surface via meta
+            app.state.index.set_meta("collector_last_error", str(exc)[:500])
+        finally:
+            app.state.index.set_meta("collector_cycle_started_at", "")
+        if app.state._stop.wait(collector.config.poll_interval_seconds):
+            break
+
+
+def _start_daemon_thread(*, target, name: str, args: tuple = ()) -> threading.Thread:
+    thread = threading.Thread(target=target, args=args, name=name, daemon=True)
+    thread.start()
+    return thread
+
+
 async def _shutdown(app: FastAPI) -> None:
     stop = getattr(app.state, "_stop", None)
     if stop is not None:
@@ -97,6 +138,10 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
         app.state._stop = threading.Event()
         app.state._poll_thread = None
         app.state._publisher_thread = None
+        app.state.publisher_last_success_at = None
+        app.state.publisher_last_error = None
+        app.state.publisher_consecutive_failures = 0
+        app.state.project_write_recovery_errors = []
         app.state.collector_owner = False
         app.state.workspace_owner = False
         app.state.collector_lease = None
@@ -124,6 +169,17 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             for initializer in tuple(app.state.runtime_initializers):
                 initializer(runtime)
             app.state.application = ExperimentServerApplication(runtime)
+            # Complete any previously authorized project-file transaction
+            # before indexing those files into the server read model.
+            recovered_writes = runtime.action_service.recover_pending_project_writes()
+            app.state.project_write_recovery_errors = [
+                (
+                    f"{item.get('action_id')}: "
+                    f"{item.get('execution', {}).get('error') or 'recovery incomplete'}"
+                )[:500]
+                for item in recovered_writes
+                if item.get("execution", {}).get("status") != "VERIFIED"
+            ][:20]
             app.state.submission_service = ExperimentSubmissionService(
                 app.state.application, runtime,
             )
@@ -161,51 +217,12 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                 app.state.observability = await asyncio.to_thread(
                     app.state.runtime.wandb_service.start,
                 )
-                def publisher_loop() -> None:
-                    while not app.state._stop.is_set():
-                        try:
-                            app.state.runtime.observability.publish_once(
-                                limit_per_target=32,
-                            )
-                        except Exception:
-                            # Target-specific errors are retained in the
-                            # outbox; publisher failure never stops collection.
-                            pass
-                        if app.state._stop.wait(2.0):
-                            break
-
-                publisher_thread = threading.Thread(
-                    target=publisher_loop, name="wandb-publisher", daemon=True,
+                app.state._publisher_thread = _start_daemon_thread(
+                    target=_publisher_loop, args=(app,), name="wandb-publisher",
                 )
-                try:
-                    publisher_thread.start()
-                except BaseException:
-                    raise
-                app.state._publisher_thread = publisher_thread
-
-                def poll_loop() -> None:
-                    while not app.state._stop.is_set():
-                        app.state.index.set_meta("collector_cycle_started_at", str(time.time()))
-                        try:
-                            collector.run_cycle()
-                            for project in app.state.projects:
-                                app.state.runtime.observability.collect_rows(
-                                    app.state.index.list_runs(project.project),
-                                )
-                            app.state.index.set_meta("collector_last_error", "")
-                        except Exception as exc:  # keep the loop alive; surface via meta
-                            app.state.index.set_meta("collector_last_error", str(exc)[:500])
-                        finally:
-                            app.state.index.set_meta("collector_cycle_started_at", "")
-                        if app.state._stop.wait(collector.config.poll_interval_seconds):
-                            break
-
-                thread = threading.Thread(target=poll_loop, name="collectord", daemon=True)
-                try:
-                    thread.start()
-                except BaseException:
-                    raise
-                app.state._poll_thread = thread
+                app.state._poll_thread = _start_daemon_thread(
+                    target=_poll_loop, args=(app, collector), name="collectord",
+                )
             yield
         finally:
             if getattr(app.state, "runtime", None) is None:

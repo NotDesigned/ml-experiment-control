@@ -10,11 +10,23 @@ from pathlib import Path
 import pytest
 
 from ml_exp_server.application import ExperimentServerApplication
-from ml_exp_server.campaign_lifecycle import campaign_record_path, campaign_snapshot
+from ml_exp_server.campaign_lifecycle import (
+    _load_record,
+    campaign_record_path,
+    campaign_snapshot,
+)
 from ml_exp_server.ingest.indexer import RunIndex, index_project
 from ml_exp_server.project_config import load_research_project
 from ml_exp_server.runtime import ExperimentServerRuntime
-from ml_exp_server.schemas import ActionRuntimeConfig, OperationScopeType, ProjectRef, ServerConfig
+from ml_exp_server.schemas import (
+    ActionRuntimeConfig,
+    CampaignRef,
+    CampaignRelationship,
+    OperationScopeType,
+    ProjectRef,
+    ResearchProject,
+    ServerConfig,
+)
 
 
 def _project_file(tmp_path: Path, *, missing_ref: bool = False) -> Path:
@@ -147,3 +159,44 @@ def test_campaign_archive_path_rejects_other_record_kinds(tmp_path):
         campaign_record_path(project, "study", revision, "completion")
     with pytest.raises(ValueError, match="campaign is not a safe"):
         campaign_record_path(project, "../escape", revision, "archive")
+
+    with pytest.raises(ValueError, match="revision_id is not a safe"):
+        campaign_record_path(project, "study", "bad/revision", "archive")
+
+
+def test_campaign_record_loader_ignores_invalid_or_non_mapping_yaml(tmp_path):
+    invalid = tmp_path / "invalid.yml"
+    invalid.write_text("[")
+    assert _load_record(invalid) is None
+    invalid.write_text("- item\n")
+    assert _load_record(invalid) is None
+
+
+def test_campaign_snapshot_rejects_unknown_and_reports_unresolved_revision(tmp_path):
+    project = ResearchProject(
+        project="demo", title="Demo", run_roots=[],
+        campaigns=[CampaignRef(name="unresolved", current_revision=None)],
+    )
+    index = RunIndex(tmp_path / "index.sqlite")
+    with pytest.raises(KeyError, match="unknown campaign"):
+        campaign_snapshot(index, project, "missing")
+    snapshot = campaign_snapshot(index, project, "unresolved")
+    assert snapshot["lifecycle_state"] == "INVALID"
+    index.close()
+
+
+def test_campaign_snapshot_blocks_origin_and_identity_relationship(tmp_path):
+    project = load_research_project(_project_file(tmp_path))
+    index = RunIndex(tmp_path / "index.sqlite")
+    index_project(index, project)
+    row = index.get_run("demo", "control")
+    assert row is not None
+    row.campaign = "other"
+    row.campaign_binding.relationship = CampaignRelationship.PROJECT_MISMATCH
+    index.upsert_run(row)
+
+    snapshot = campaign_snapshot(index, project, "study")
+    gates = {item["name"]: item for item in snapshot["validation"]["gates"]}
+    assert gates["origin:control"]["status"] == "FAIL"
+    assert gates["binding:control"]["status"] == "FAIL"
+    index.close()

@@ -19,6 +19,7 @@ itself has not changed.
 Protocol version 1 currently guarantees these capability families:
 
 - `terminal-snapshot.v1`
+- `terminal-snapshot-limits.v1`
 - `project-lifecycle.v1`
 - `actions.v1`
 - `submissions.v1`
@@ -29,6 +30,21 @@ Adding an optional response field or capability does not require a protocol
 bump. Removing or changing a required field, route meaning, identity rule, or
 mutation lifecycle does. A client pin must pass the real subprocess
 compatibility smoke before its submodule gitlink advances.
+
+Terminal snapshots remain a complete run read model in protocol v1. Their
+`scale` object reports Project and Run counts plus the bounded observability
+target page's `returned`, `total`, `limit`, and `truncated` fields. A client
+must not interpret a 500-target projection as complete when `truncated=true`.
+The same target-page metadata is returned by `/api/observability`.
+Callers that need one Project can pass `project=<id>` to the terminal snapshot;
+the daemon then avoids loading and serializing unrelated Projects and target
+statuses. An unknown filter returns 404 rather than an ambiguous empty view.
+
+Health also reports the daemon-owned publisher loop separately from individual
+outbox targets. `publisher.last_error`, `last_success_at`, and
+`consecutive_failures` expose systemic loop failure; reviewed project writes
+that could not be rolled forward during startup appear in
+`project_write_recovery_errors`.
 
 ## Authentication and binding
 

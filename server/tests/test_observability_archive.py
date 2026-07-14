@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
+import os
+import stat
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,6 +14,10 @@ from ml_exp_server.observability_archive import (
     ArchiveSource,
     ObservabilityArchive,
     SourceCursor,
+    ArchiveRecord,
+    _fsync_directory,
+    _sanitize_url,
+    _validate_record,
     _has_secret_key,
     sanitize_log_text,
 )
@@ -239,3 +248,152 @@ def test_safe_roots_sources_and_cursor_binding(tmp_path: Path):
 )
 def test_sanitize_log_text_common_secret_shapes(raw: str, leak: str):
     assert leak not in sanitize_log_text(raw)
+
+
+def test_archive_source_cursor_and_read_limit_validate_inputs(tmp_path):
+    with pytest.raises(ValueError, match="unsupported observability source kind"):
+        source(tmp_path / "file", "invalid")
+    with pytest.raises(ValueError, match="identity fields"):
+        ArchiveSource("", "demo", "run", "attempt", "name", tmp_path, "log")
+    with pytest.raises(ValueError, match="cursor offsets"):
+        SourceCursor("source", "generation", "file", -1, 0, "anchor")
+    with pytest.raises(ValueError, match="must be positive"):
+        ObservabilityArchive(tmp_path / "archive", max_read_bytes=0)
+
+
+def test_archive_root_chmod_failure_is_nonfatal(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "ml_exp_server.observability_archive.os.chmod",
+        lambda *_args: (_ for _ in ()).throw(OSError("unsupported")),
+    )
+    assert ObservabilityArchive(tmp_path / "archive").archive_root.is_dir()
+
+
+def test_scan_rejects_non_regular_fstat(monkeypatch, tmp_path):
+    path = tmp_path / "source"
+    path.write_text("line\n")
+    real = path.stat()
+    monkeypatch.setattr(
+        "ml_exp_server.observability_archive.os.fstat",
+        lambda _fd: SimpleNamespace(
+            st_mode=stat.S_IFDIR, st_dev=real.st_dev, st_ino=real.st_ino,
+            st_size=real.st_size,
+        ),
+    )
+    with pytest.raises(ValueError, match="regular file"):
+        ObservabilityArchive(tmp_path / "archive").scan(source(path))
+
+
+def test_oversized_record_discard_continues_across_non_newline_chunk(tmp_path):
+    path = tmp_path / "stdout.log"
+    path.write_text("abcdefghijklmno\n")
+    archive = ObservabilityArchive(tmp_path / "archive", max_read_bytes=4)
+    first = archive.scan(source(path))
+    second = archive.scan(source(path), first.cursor)
+    assert second.records == ()
+    assert second.issues[0].reason == "oversized_record"
+
+
+def test_discard_cursor_at_eof_has_no_duplicate_issue(tmp_path):
+    path = tmp_path / "stdout.log"
+    path.write_text("unterminated")
+    archive = ObservabilityArchive(tmp_path / "archive", max_read_bytes=4)
+    cursor = archive.scan(source(path)).cursor
+    while cursor.offset < path.stat().st_size:
+        cursor = archive.scan(source(path), cursor).cursor
+    batch = archive.scan(source(path), cursor)
+    assert batch.records == ()
+    assert batch.issues == ()
+
+
+def test_persist_rejects_bad_key_and_record_symlink(tmp_path):
+    path = tmp_path / "stdout.log"
+    path.write_text("line\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(path)).records[0]
+    with pytest.raises(ValueError, match="invalid archive record key"):
+        archive.persist([replace(record, idempotency_key="bad")])
+
+    persisted = archive.persist([record])[0]
+    persisted.unlink()
+    target = archive.archive_root / "safe-target"
+    target.write_text("outside")
+    persisted.symlink_to(target)
+    with pytest.raises(ValueError, match="symbolic link"):
+        archive.persist([record])
+
+
+def test_archive_load_skips_readable_and_missing_ids_then_rejects_bad_directory(
+    tmp_path,
+):
+    archive = ObservabilityArchive(tmp_path / "archive")
+    missing = "a" * 64
+    assert archive.load(["legacy-source", missing]) == ()
+    directory = archive.archive_root / "bb" / ("b" * 64)
+    directory.parent.mkdir()
+    directory.write_text("not a directory")
+    with pytest.raises(ValueError, match="real directory"):
+        archive.load(["b" * 64])
+
+
+def test_archive_load_rejects_record_symlink_invalid_json_and_identity(tmp_path):
+    path = tmp_path / "stdout.log"
+    path.write_text("line\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(path)).records[0]
+    persisted = archive.persist([record])[0]
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}")
+    persisted.unlink()
+    persisted.symlink_to(outside)
+    with pytest.raises(ValueError, match="regular file"):
+        archive.load([record.source_id])
+
+    persisted.unlink()
+    persisted.write_text("not-json")
+    with pytest.raises(ValueError, match="invalid archived"):
+        archive.load([record.source_id])
+
+    persisted.write_text(json.dumps(record.__dict__))
+    renamed = persisted.with_name("d" * 64 + ".json")
+    persisted.rename(renamed)
+    with pytest.raises(ValueError, match="identity mismatch"):
+        archive.load([record.source_id])
+
+
+def test_safe_child_and_crlf_and_url_sanitization_edges(tmp_path):
+    archive = ObservabilityArchive(tmp_path / "archive")
+    with pytest.raises(ValueError, match="unsafe archive path"):
+        archive._safe_child("../escape")
+
+    path = tmp_path / "stdout.log"
+    path.write_bytes(b"line\r\n")
+    assert archive.scan(source(path)).records[0].payload["text"] == "line"
+    assert _sanitize_url("https://[::1]:9443/path),") == (
+        "https://[::1]:9443/path),"
+    )
+    assert _sanitize_url("http://[bad") == "[REDACTED URL]"
+
+
+def test_validate_record_rejects_every_integrity_violation(tmp_path):
+    path = tmp_path / "stdout.log"
+    path.write_text("line\n")
+    record = ObservabilityArchive(tmp_path / "archive").scan(source(path)).records[0]
+    cases = [
+        (replace(record, payload={"text": "password=secret"}), "unsanitized log"),
+        (replace(record, kind="metrics", payload={"api_key": "secret"}), "secret-like"),
+        (replace(record, kind="metrics", payload={"loss": math.nan}), "non-finite"),
+        (replace(record, payload={"text": "different"}), "payload digest"),
+        (replace(record, idempotency_key="a" * 64), "idempotency key"),
+    ]
+    for invalid, message in cases:
+        with pytest.raises(ValueError, match=message):
+            _validate_record(invalid)
+
+
+def test_fsync_directory_ignores_open_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "ml_exp_server.observability_archive.os.open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unsupported")),
+    )
+    _fsync_directory(tmp_path)

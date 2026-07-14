@@ -269,6 +269,10 @@ def test_status_query_is_bounded_and_does_not_return_payload(tmp_path):
         store.set_target_state(attempt, "local", "PENDING", now=float(index))
     statuses = store.statuses(limit=10_000)
     assert len(statuses) == 500
+    assert store.status_count() == 510
+    assert store.status_count(project="p") == 510
+    assert len(store.statuses(project="p", limit=10)) == 10
+    assert store.status_count(attempt=AttemptRef("w", "p", "run-509", "a1")) == 1
     assert statuses[0].attempt.run_id == "run-509"
     assert not hasattr(statuses[0], "payload")
     with pytest.raises(ValueError, match="positive integer"):

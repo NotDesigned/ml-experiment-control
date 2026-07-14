@@ -25,6 +25,7 @@ SERVER_CAPABILITIES = (
     "project-lifecycle.v1",
     "submissions.v1",
     "terminal-snapshot.v1",
+    "terminal-snapshot-limits.v1",
     "tls-bind.v1",
 )
 
@@ -35,6 +36,14 @@ class ObservabilityHealth(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     state: str = "UNKNOWN"
+
+
+class PublisherLoopHealth(BaseModel):
+    """Non-secret liveness state for the daemon-owned outbox loop."""
+
+    last_success_at: float | None = None
+    last_error: str | None = None
+    consecutive_failures: int = Field(default=0, ge=0)
 
 
 class DaemonHealth(BaseModel):
@@ -53,12 +62,14 @@ class DaemonHealth(BaseModel):
     collector_enabled: bool
     collector_requested: bool
     collector_error: str | None = None
+    project_write_recovery_errors: list[str] = Field(default_factory=list)
     project_writes: bool
     scheduler_mutations: bool
     observability_mutations: bool
     local_evidence_rebuild: bool
     telemetry_enabled: bool
     observability: ObservabilityHealth
+    publisher: PublisherLoopHealth = Field(default_factory=PublisherLoopHealth)
 
 
 class InitialIndexResult(BaseModel):

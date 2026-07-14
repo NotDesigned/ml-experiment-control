@@ -7,7 +7,9 @@ import pytest
 import yaml
 
 from ml_exp_server.application import ExperimentServerApplication
-from ml_exp_server.evidence_conflicts import _family_id, classify_evidence_conflicts
+from ml_exp_server.evidence_conflicts import (
+    _exact_binding, _family_id, classify_evidence_conflicts,
+)
 
 
 PROJECT = "elf"
@@ -148,6 +150,40 @@ def test_same_family_semantic_slot_cannot_have_multiple_variants(values):
 
 def test_incomplete_legacy_conflict_stays_blocking_without_label_guessing():
     raw = "g_ppl has conflicting values in steps32 and steps64"
+    blocking, reclassified = classify_evidence_conflicts(
+        [raw], project=PROJECT, run_id=RUN_ID, attempt_id=ATTEMPT_ID,
+    )
+    assert blocking == [raw]
+    assert reclassified == []
+
+
+def test_exact_binding_rejects_invalid_numeric_slots():
+    binding = dict(_source(
+        variant_id="variant", dimensions=DIMENSIONS[32], metric="g_ppl", value=1,
+    )["binding"])
+    binding["source"] = "metrics.jsonl"
+    binding["step"] = -1
+    assert _exact_binding(binding) is False
+
+
+@pytest.mark.parametrize("sources", [None, [], [{"value": 1}], [{}, {"value": 2}]])
+def test_invalid_conflict_source_collection_stays_blocking(sources):
+    raw = {"type": "invalid", "sources": sources}
+    blocking, reclassified = classify_evidence_conflicts(
+        [raw], project=PROJECT, run_id=RUN_ID, attempt_id=ATTEMPT_ID,
+    )
+    assert blocking == [raw]
+    assert reclassified == []
+
+
+def test_distinct_non_family_semantic_slots_stay_blocking():
+    left = _source(
+        variant_id="first", dimensions=DIMENSIONS[32], metric="g_ppl", value=1,
+    )
+    right = _source(
+        variant_id="second", dimensions=DIMENSIONS[64], metric="other", value=2,
+    )
+    raw = {"type": "different-metrics", "sources": [left, right]}
     blocking, reclassified = classify_evidence_conflicts(
         [raw], project=PROJECT, run_id=RUN_ID, attempt_id=ATTEMPT_ID,
     )

@@ -325,3 +325,89 @@ def test_duplicate_campaigns_materializers_and_projects_are_rejected(tmp_path):
     config = ServerConfig(projects=[ProjectRef(project_file=str(first)), ProjectRef(project_file=str(second))])
     with pytest.raises(ConfigError, match="duplicate project name"):
         load_projects(config)
+
+
+def test_yaml_unhashable_key_is_rejected(tmp_path):
+    path = tmp_path / "bad.yml"
+    path.write_text("? [a, b]\n: value\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="unhashable mapping key"):
+        load_server_config(path)
+
+
+def test_server_config_resolves_relative_project_and_token_paths(tmp_path):
+    path = tmp_path / "console.yml"
+    path.write_text(
+        "schema_version: 1\n"
+        "projects: [{project_file: experiments/project.yml}]\n"
+        "http_auth: {bearer_token_file: secrets/token}\n",
+        encoding="utf-8",
+    )
+    config = load_server_config(path)
+    assert config.projects[0].project_file == str(
+        (tmp_path / "experiments" / "project.yml").resolve()
+    )
+    assert config.http_auth.bearer_token_file == str(
+        (tmp_path / "secrets" / "token").resolve()
+    )
+
+
+def test_missing_campaign_and_invalid_memberships_are_rejected(tmp_path):
+    missing = write_project(
+        tmp_path / "missing",
+        "schema_version: 1\nproject: demo\ntitle: Demo\nrun_roots: []\n"
+        "campaigns: [{name: study, file: experiments/missing.yml}]\n",
+    )
+    with pytest.raises(ConfigError, match="campaign file not found"):
+        load_research_project(missing)
+
+    duplicate = write_project(
+        tmp_path / "duplicate",
+        "schema_version: 1\nproject: demo\ntitle: Demo\nrun_roots: []\n"
+        "campaigns: [{name: study, file: experiments/study.yml}]\n",
+        {"study.yml": (
+            "schema_version: 1\nproject: demo\ncampaign: study\n"
+            "runs: [{run_id: same}, {run_id: same}]\n"
+        )},
+    )
+    with pytest.raises(ConfigError, match="duplicate campaign run_id"):
+        load_research_project(duplicate)
+
+    for kind, entry in (
+        ("runs", "{run_id: 'bad/id'}"),
+        ("run_refs", "{run_id: 'bad/id'}"),
+    ):
+        invalid = write_project(
+            tmp_path / kind,
+            "schema_version: 1\nproject: demo\ntitle: Demo\nrun_roots: []\n"
+            "campaigns: [{name: study, file: experiments/study.yml}]\n",
+            {"study.yml": (
+                "schema_version: 1\nproject: demo\ncampaign: study\n"
+                f"{kind}: [{entry}]\n"
+            )},
+        )
+        with pytest.raises(ConfigError, match="invalid campaign"):
+            load_research_project(invalid)
+
+
+def test_load_projects_accepts_empty_catalog():
+    assert load_projects(ServerConfig(projects=[])) == []
+
+
+def test_absolute_empty_research_question_directory_is_supported(tmp_path):
+    questions = tmp_path / "questions"
+    questions.mkdir()
+    project = write_project(
+        tmp_path,
+        "schema_version: 1\nproject: demo\ntitle: Demo\nrun_roots: []\n"
+        f"research_questions_dir: {questions}\n",
+    )
+    assert load_research_project(project).research_questions == []
+
+
+def test_missing_research_question_directory_is_ignored(tmp_path):
+    project = write_project(
+        tmp_path,
+        "schema_version: 1\nproject: demo\ntitle: Demo\nrun_roots: []\n"
+        "research_questions_dir: missing-questions\n",
+    )
+    assert load_research_project(project).research_questions == []

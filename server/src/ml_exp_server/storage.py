@@ -282,28 +282,25 @@ class DurableJsonState:
                 "durable transition journal is not the immediate predecessor "
                 f"of authoritative state: {self.journal_path}"
             )
-        if last_transition is None or last_transition.get(
-            "transition_id"
-        ) != transition_id:
-            try:
-                append_jsonl(self.journal_path, transition)
-            except OSError as exc:
-                raise StorageError(
-                    f"durable transition journal cannot be repaired: {self.journal_path}"
-                ) from exc
-            repaired = _jsonl_mappings(self.journal_path)
-            repaired_transition = next(
-                (
-                    item for item in reversed(repaired)
-                    if item.get("transition_id")
-                ),
-                None,
+        try:
+            append_jsonl(self.journal_path, transition)
+        except OSError as exc:
+            raise StorageError(
+                f"durable transition journal cannot be repaired: {self.journal_path}"
+            ) from exc
+        repaired = _jsonl_mappings(self.journal_path)
+        repaired_transition = next(
+            (
+                item for item in reversed(repaired)
+                if item.get("transition_id")
+            ),
+            None,
+        )
+        if repaired_transition != transition:
+            raise StorageError(
+                f"durable transition journal repair could not be verified: "
+                f"{self.journal_path}"
             )
-            if repaired_transition != transition:
-                raise StorageError(
-                    f"durable transition journal repair could not be verified: "
-                    f"{self.journal_path}"
-                )
 
     def append_event(
         self, event: dict[str, Any], *, event_id: str | None = None,

@@ -6,7 +6,7 @@ import logging
 import socket
 import sys
 import time
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -18,6 +18,7 @@ from ml_exp_server.telemetry import (
     TelemetrySettings,
     initialize_telemetry,
     safe_attributes,
+    Telemetry,
 )
 
 
@@ -71,6 +72,11 @@ def test_disabled_has_zero_import_and_provider_side_effects(monkeypatch):
         span.set_attribute("draft", "not recorded")
     telemetry.shutdown()
     assert attempted == []
+
+
+def test_owned_provider_without_callable_shutdown_is_safe():
+    telemetry = Telemetry(provider=SimpleNamespace(shutdown=None), _owns_provider=True)
+    telemetry.shutdown()
 
 
 def test_safe_attributes_strictly_filters_content_and_invalid_values():

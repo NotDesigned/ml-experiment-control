@@ -40,6 +40,12 @@ def raises(error):
     raise error
 
 
+def application_error_code(call):
+    with pytest.raises(ApplicationError) as caught:
+        call()
+    return caught.value.code
+
+
 def test_compact_evidence_depth_collection_limit_and_string_limit():
     nested = value = {}
     for _ in range(9):
@@ -53,6 +59,181 @@ def test_compact_evidence_depth_collection_limit_and_string_limit():
     assert payload["items"][-1] == "[5 additional records omitted]"
     assert payload["long"].endswith("…[truncated]")
     assert "[nested evidence omitted]" in str(payload["nested"])
+
+
+@pytest.mark.parametrize(
+    ("relationship", "manifest", "current", "indexed", "expected"),
+    [
+        (
+            CampaignRelationship.MATCHED,
+            {
+                "project": "demo", "run_id": "run-a", "campaign": "study",
+                "source_id": "source-1", "image_id": "image-1",
+                "config_path": "config.yml", "seed": 7,
+            },
+            "attempt-001", ["attempt-001"], "PASS",
+        ),
+        (
+            CampaignRelationship.PROJECT_MISMATCH,
+            {"project": "other", "run_id": "run-a", "campaign": "study"},
+            None, [], "BLOCKED",
+        ),
+        (
+            CampaignRelationship.UNRESOLVED,
+            {
+                "project": "demo", "run_id": "run-a", "campaign": "study",
+                "git_commit": "commit-1", "image_id": "image-1",
+                "config_path": "config.yml", "resolved_config": {"seed": 9},
+            },
+            "attempt-002", ["attempt-001"], "UNKNOWN",
+        ),
+    ],
+)
+def test_run_validate_covers_binding_provenance_and_current_attempt(
+    monkeypatch, tmp_path, relationship, manifest, current, indexed, expected,
+):
+    (tmp_path / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+    attempts = [SimpleNamespace(attempt_id=item) for item in indexed]
+    binding = Dump(relationship=relationship)
+    row = SimpleNamespace(
+        run_id="run-a", run_dir=str(tmp_path), campaign="study",
+        campaign_binding=binding, attempts=attempts,
+    )
+    app = application()
+    app.resolve_scope = lambda *_args: (scope(), SimpleNamespace(), row)
+    app._attempt_validation_gates = lambda *_args, **_kwargs: [
+        app._gate("attempt.extra", "PASS", "checked")
+    ]
+    monkeypatch.setattr(module, "preferred_attempt_id", lambda _path: current)
+
+    payload = app.run_validate("demo", "run-a")
+    gates = {item["id"]: item for item in payload["gates"]}
+
+    assert gates["run.campaign_binding"]["status"] == expected
+    if current in indexed:
+        assert gates["run.current_attempt"]["status"] == "PASS"
+        assert gates["attempt.extra"]["status"] == "PASS"
+    else:
+        assert gates["run.current_attempt"]["status"] == "UNKNOWN"
+
+
+def retry_context(*, state="FAILED", decision=None, attempts=("attempt-001",), job=None):
+    attempt = SimpleNamespace(
+        attempt_id=attempts[0], state=state, decision=decision,
+        backend_job_id=job,
+    )
+    row = SimpleNamespace(
+        run_id="run-a", campaign="study",
+        attempts=[SimpleNamespace(attempt_id=item) for item in attempts],
+    )
+    configured = SimpleNamespace(project="demo")
+    return (
+        scope(OperationScopeType.ATTEMPT, f"run-a::{attempt.attempt_id}"),
+        configured, row, attempt, Path("/attempt"),
+    )
+
+
+def retry_application(context):
+    app = application()
+    app._attempt_context = lambda *_args: context
+    app._require_operation_available = lambda *_args: None
+    app._campaign_file = lambda *_args: Path("/campaign.yml")
+    app._prepare_attempt_action = lambda *_args, **kwargs: {
+        "action": {"kind": kwargs["kind"], "draft": kwargs["draft"]},
+    }
+    return app
+
+
+def test_prepare_attempt_retry_rejects_invalid_budget_before_lookup():
+    app = application()
+    assert application_error_code(lambda: app.prepare_attempt_retry(
+        "demo", "run-a::attempt-001", new_attempt_id=None,
+        max_gpu_hours=0, reason="test",
+    )) == "INVALID_GPU_BUDGET"
+
+
+@pytest.mark.parametrize(("context", "expected"), [
+    (retry_context(state="RUNNING"), "ATTEMPT_NOT_RETRYABLE"),
+    (retry_context(decision={"action": "DO_NOT_RETRY"}), "ATTEMPT_RETRY_FORBIDDEN"),
+    (retry_context(decision={"retries_allowed": 1, "retries_used": 1}),
+     "ATTEMPT_RETRY_BUDGET_EXHAUSTED"),
+])
+def test_prepare_attempt_retry_fail_closed_decisions(context, expected):
+    app = retry_application(context)
+    assert application_error_code(lambda: app.prepare_attempt_retry(
+        "demo", "run-a::attempt-001", new_attempt_id=None,
+        max_gpu_hours=1, reason="test",
+    )) == expected
+
+
+def test_prepare_attempt_retry_generates_valid_identity_and_prepares_action():
+    context = retry_context(
+        decision="legacy", attempts=("attempt-001", "custom", "attempt-009"),
+    )
+    app = retry_application(context)
+
+    result = app.prepare_attempt_retry(
+        "demo", "run-a::attempt-001", new_attempt_id=None,
+        max_gpu_hours=1.5, reason="retry", wandb_cloud_sync=True,
+    )
+
+    draft = yaml.safe_load(result["action"]["draft"])
+    assert result["action"]["kind"] == "RETRY_ATTEMPT"
+    assert draft["attempt_id"] == "attempt-010"
+    assert draft["wandb_cloud_sync"] is True
+
+
+@pytest.mark.parametrize(("new_attempt_id", "expected"), [
+    ("bad", "INVALID_ATTEMPT_ID"),
+    ("attempt-001", "DUPLICATE_ATTEMPT_ID"),
+])
+def test_prepare_attempt_retry_rejects_invalid_or_duplicate_identity(
+    new_attempt_id, expected,
+):
+    app = retry_application(retry_context())
+    assert application_error_code(lambda: app.prepare_attempt_retry(
+        "demo", "run-a::attempt-001", new_attempt_id=new_attempt_id,
+        max_gpu_hours=1, reason="test",
+    )) == expected
+
+
+def test_prepare_attempt_cancel_rejects_state_and_missing_backend_job():
+    stopped = retry_application(retry_context(state="FAILED", job="job-1"))
+    assert application_error_code(lambda: stopped.prepare_attempt_cancel(
+        "demo", "run-a::attempt-001", reason="test",
+    )) == "ATTEMPT_NOT_CANCELLABLE"
+
+    missing = retry_application(retry_context(state="RUNNING", job=None))
+    assert application_error_code(lambda: missing.prepare_attempt_cancel(
+        "demo", "run-a::attempt-001", reason="test",
+    )) == "BACKEND_JOB_ID_MISSING"
+
+
+def test_prepare_attempt_cancel_binds_exact_backend_job():
+    app = retry_application(retry_context(state="RUNNING", job="job-7"))
+    result = app.prepare_attempt_cancel(
+        "demo", "run-a::attempt-001", reason="stop",
+    )
+    draft = yaml.safe_load(result["action"]["draft"])
+    assert result["action"]["kind"] == "CANCEL_RUN"
+    assert draft["backend_job_id"] == "job-7"
+
+
+def test_prepare_attempt_action_binds_bounded_evidence():
+    app = application()
+    app.bounded_evidence = lambda *_args: {"evidence": "exact"}
+    app._prepare_action_intent = lambda _scope, _project, intent: intent
+    context = retry_context()
+    operation_scope, configured, row, attempt, _ = context
+
+    result = app._prepare_attempt_action(
+        operation_scope, configured, row, attempt,
+        kind="RETRY_ATTEMPT", draft="draft", title="Retry",
+        change_summary="retry", resource_estimate="1 GPU-hour", risk="scheduler",
+    )
+
+    assert result["action"]["kind"] == "RETRY_ATTEMPT"
+    assert result["action"]["evidence_digest"].startswith("sha256:")
 
 
 @pytest.mark.parametrize(

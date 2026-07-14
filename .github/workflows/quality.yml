@@ -32,7 +32,10 @@ jobs:
       - run: uv run python tools/generate_cli_reference.py --check
       - run: uv run python -m compileall -q src tests tools examples
       - run: uv run --package ml-experiment-server python -m compileall -q server/src server/tests
-      - run: uv run --package ml-experiment-server pytest server/tests -q
+      - name: Test daemon with independent 100% line and branch gates
+        run: >-
+          uv run --package ml-experiment-server python tools/coverage_gate.py
+          --suite daemon
       - run: uv run --package ml-experiment-server ml-expd --help
       - run: uv build --all-packages
       - name: Test installed wheels and entry points

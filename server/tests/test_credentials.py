@@ -89,3 +89,96 @@ def test_credential_store_rejects_wrong_owner_and_invalid_content(
         store.resolve_wandb_api_key("cloud-primary")
     with pytest.raises(CredentialError, match="invalid shape"):
         store.status("cloud-primary")
+
+
+def test_credential_store_rejects_invalid_secret_shapes_and_length(tmp_path):
+    store = CredentialStore(tmp_path / "credentials")
+    for value in ("", "line-one\nline-two", "nul\0value"):
+        with pytest.raises(CredentialError, match="one non-empty line"):
+            store.set_wandb_api_key("cloud", value)
+    with pytest.raises(CredentialError, match="too long"):
+        store.set_wandb_api_key("cloud", "x" * 4097)
+
+
+def test_credential_store_reports_root_and_file_type_errors(tmp_path):
+    root_file = tmp_path / "root-file"
+    root_file.write_text("not a directory")
+    root_file.chmod(0o600)
+    with pytest.raises(CredentialError, match="not a directory"):
+        CredentialStore(root_file).status("cloud")
+
+    root = tmp_path / "credentials"
+    root.mkdir(mode=0o700)
+    credential_path = root / "cloud.wandb-api-key"
+    credential_path.mkdir()
+    with pytest.raises(CredentialError, match="not a regular file"):
+        CredentialStore(root).status("cloud")
+
+
+def test_credential_store_reports_chmod_failure(monkeypatch, tmp_path):
+    store = CredentialStore(tmp_path / "credentials")
+    monkeypatch.setattr(
+        "ml_exp_server.credentials.os.chmod",
+        lambda *_args: (_ for _ in ()).throw(OSError("denied")),
+    )
+    with pytest.raises(CredentialError, match="cannot secure"):
+        store.set_wandb_api_key("cloud", "secret")
+
+
+def test_credential_store_rejects_file_owner_and_size_directly(monkeypatch, tmp_path):
+    root = tmp_path / "credentials"
+    root.mkdir(mode=0o700)
+    path = root / "cloud.wandb-api-key"
+    path.write_text("x" * 4097)
+    path.chmod(0o600)
+    store = CredentialStore(root)
+    with pytest.raises(CredentialError, match="too long"):
+        store._validate_path(path)
+
+    path.write_text("secret")
+    current_uid = os.getuid()
+    monkeypatch.setattr(
+        "ml_exp_server.credentials.os.getuid", lambda: current_uid + 1,
+    )
+    with pytest.raises(CredentialError, match="file must be owned"):
+        store._validate_path(path)
+
+
+def test_credential_write_failure_removes_temporary(monkeypatch, tmp_path):
+    store = CredentialStore(tmp_path / "credentials")
+    monkeypatch.setattr(
+        "ml_exp_server.credentials.os.replace",
+        lambda *_args: (_ for _ in ()).throw(OSError("disk")),
+    )
+    with pytest.raises(OSError, match="disk"):
+        store.set_wandb_api_key("cloud", "secret")
+    assert list(store.root.glob(".credential-*")) == []
+
+
+def test_credential_write_failure_tolerates_already_removed_temporary(
+    monkeypatch, tmp_path,
+):
+    store = CredentialStore(tmp_path / "credentials")
+
+    def remove_then_fail(source, _destination):
+        os.unlink(source)
+        raise OSError("disk")
+
+    monkeypatch.setattr("ml_exp_server.credentials.os.replace", remove_then_fail)
+    with pytest.raises(OSError, match="disk"):
+        store.set_wandb_api_key("cloud", "secret")
+
+
+def test_credential_resolve_missing_and_unreadable(monkeypatch, tmp_path):
+    store = CredentialStore(tmp_path / "credentials")
+    with pytest.raises(CredentialError, match="not configured"):
+        store.resolve_wandb_api_key("cloud")
+
+    store.set_wandb_api_key("cloud", "secret")
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk")),
+    )
+    with pytest.raises(CredentialError, match="unreadable"):
+        store.resolve_wandb_api_key("cloud")

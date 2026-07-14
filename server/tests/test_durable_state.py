@@ -7,7 +7,12 @@ import json
 import pytest
 
 from ml_exp_server import storage as storage_module
-from ml_exp_server.storage import DurableJsonState, StorageError, TransitionConflict
+from ml_exp_server.storage import (
+    DurableJsonState,
+    DurableSnapshot,
+    StorageError,
+    TransitionConflict,
+)
 
 
 def test_transition_is_cas_versioned_and_repairs_a_missing_journal(tmp_path):
@@ -217,3 +222,169 @@ def test_journal_divergence_and_missing_history_fail_closed(tmp_path):
     journal.unlink()
     with pytest.raises(StorageError, match="history is missing"):
         state.repair_journal(snapshot)
+
+
+def test_jsonl_tail_normalization_handles_empty_complete_and_short_reads(
+    monkeypatch, tmp_path,
+):
+    empty = tmp_path / "empty.jsonl"
+    empty.touch()
+    storage_module._normalize_jsonl_tail(empty)
+    assert empty.read_bytes() == b""
+
+    complete = tmp_path / "complete.jsonl"
+    complete.write_text('{"event":"complete"}', encoding="utf-8")
+    storage_module._normalize_jsonl_tail(complete)
+    assert complete.read_bytes().endswith(b"\n")
+
+    short = tmp_path / "short.jsonl"
+    short.write_text('{"event":"complete"}', encoding="utf-8")
+    real_read = storage_module.os.read
+    reads = 0
+
+    def interrupted_read(descriptor, size):
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return real_read(descriptor, min(size, 1))
+        return b""
+
+    monkeypatch.setattr(storage_module.os, "read", interrupted_read)
+    storage_module._normalize_jsonl_tail(short)
+    assert short.read_bytes() == b""
+
+
+def test_jsonl_complete_corruption_and_transition_identity_fail_closed(tmp_path):
+    journal = tmp_path / "events.jsonl"
+    journal.write_text("[]\n", encoding="utf-8")
+    with pytest.raises(StorageError, match="record must be a mapping"):
+        storage_module._jsonl_mappings(journal)
+
+    for record, message in (
+        ({"transition_id": "", "revision": 1}, "identity is invalid"),
+        ({"transition_id": "same", "revision": True}, "revision is not contiguous"),
+    ):
+        journal.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        with pytest.raises(StorageError, match=message):
+            storage_module._jsonl_mappings(journal)
+
+    journal.write_text(
+        json.dumps({"transition_id": "same", "revision": 1}) + "\n" +
+        json.dumps({"transition_id": "same", "revision": 2}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(StorageError, match="identity is duplicated"):
+        storage_module._jsonl_mappings(journal)
+
+
+@pytest.mark.parametrize(("payload", "message"), [
+    ([], "state must be a mapping"),
+    ({"_durability": []}, "metadata is invalid"),
+    ({"_durability": {"revision": 1, "last_transition": []}}, "last transition is invalid"),
+    ({"_durability": {
+        "revision": 1,
+        "last_transition": {"transition_id": "", "revision": 1},
+    }}, "transition identity is invalid"),
+])
+def test_durable_snapshot_rejects_structural_corruption(tmp_path, payload, message):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(StorageError, match=message):
+        DurableJsonState(path, tmp_path / "events.jsonl").snapshot({})
+
+
+def test_repair_rejects_invalid_transition_and_non_predecessor(tmp_path):
+    state = DurableJsonState(tmp_path / "state.json", tmp_path / "events.jsonl")
+    with pytest.raises(StorageError, match="transition identity is invalid"):
+        state.repair_journal(DurableSnapshot(
+            value={}, revision=1,
+            last_transition={"transition_id": "", "revision": 1},
+        ))
+
+    state.journal_path.write_text(
+        json.dumps({"transition_id": "one", "revision": 1}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(StorageError, match="not the immediate predecessor"):
+        state.repair_journal(DurableSnapshot(
+            value={}, revision=3,
+            last_transition={"transition_id": "three", "revision": 3},
+        ))
+
+
+def test_repair_wraps_append_failure_and_verifies_written_transition(
+    monkeypatch, tmp_path,
+):
+    state = DurableJsonState(tmp_path / "state.json", tmp_path / "events.jsonl")
+    snapshot = DurableSnapshot(
+        value={}, revision=1,
+        last_transition={"transition_id": "one", "revision": 1},
+    )
+    monkeypatch.setattr(
+        storage_module,
+        "append_jsonl",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk")),
+    )
+    with pytest.raises(StorageError, match="cannot be repaired"):
+        state.repair_journal(snapshot)
+
+    monkeypatch.setattr(storage_module, "append_jsonl", lambda *_args, **_kwargs: None)
+    with pytest.raises(StorageError, match="repair could not be verified"):
+        state.repair_journal(snapshot)
+
+
+def test_plain_event_is_idempotent_and_wraps_or_detects_append_failure(
+    monkeypatch, tmp_path,
+):
+    state = DurableJsonState(tmp_path / "state.json", tmp_path / "events.jsonl")
+    first = state.append_event({"event": "one"}, event_id="event-1")
+    assert state.append_event({"event": "ignored"}, event_id="event-1") == first
+
+    monkeypatch.setattr(
+        storage_module,
+        "append_jsonl",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk")),
+    )
+    with pytest.raises(StorageError, match="cannot append an event"):
+        state.append_event({"event": "two"}, event_id="event-2")
+
+    monkeypatch.setattr(storage_module, "append_jsonl", lambda *_args, **_kwargs: None)
+    with pytest.raises(StorageError, match="event cannot be verified"):
+        state.append_event({"event": "two"}, event_id="event-2")
+
+
+def test_commit_wraps_state_write_and_marks_unverified_journal_pending(
+    monkeypatch, tmp_path,
+):
+    state = DurableJsonState(tmp_path / "state.json", tmp_path / "events.jsonl")
+    monkeypatch.setattr(
+        storage_module,
+        "atomic_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk")),
+    )
+    with pytest.raises(StorageError, match="state cannot be committed"):
+        state.commit({}, event={"event": "one"})
+
+    monkeypatch.undo()
+    monkeypatch.setattr(storage_module, "_jsonl_mappings", lambda _path: [])
+    committed = state.commit({}, event={"event": "one"})
+    assert committed.journal_pending is True
+
+
+def test_atomic_json_closes_descriptor_when_encoding_fails(tmp_path):
+    target = tmp_path / "state.json"
+    with pytest.raises(TypeError):
+        storage_module.atomic_json(target, {"invalid": object()})
+    assert not list(tmp_path.glob(".state.json.*.tmp"))
+
+
+def test_jsonl_read_error_is_reported(monkeypatch, tmp_path):
+    journal = tmp_path / "events.jsonl"
+    journal.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        storage_module.Path,
+        "read_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk")),
+    )
+    with pytest.raises(StorageError, match="journal is unreadable"):
+        storage_module._jsonl_mappings(journal)

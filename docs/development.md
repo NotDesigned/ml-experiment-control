@@ -55,6 +55,17 @@ first and safely truncates only a crash-incomplete JSONL tail. Complete records
 must be mappings and transition revisions must be contiguous; corruption fails
 closed. New stores must not invent a separate lock/atomic-write/journal protocol.
 
+Reviewed project-file Actions use a durable write-ahead transaction because a
+set of filesystem paths cannot be replaced atomically. The transaction binds
+every path to its reviewed old and new digest before the first effect. Restart
+recovery may only roll that exact content forward; an unrelated edit fails
+closed and is surfaced in daemon health. Every replacement fsyncs the file and
+parent directory before the Action can become `VERIFIED`.
+
+Runtime construction registers cleanup as each SQLite/telemetry/service
+resource is acquired. Constructor failure unwinds those resources, and normal
+shutdown attempts every close operation even if an earlier one fails.
+
 Submission changes must cover the complete safety path in
 `server/tests/test_submissions.py`: authored-but-unmaterialized Run preparation,
 separate authorization/execution, exact backend-job confirmation, idempotent
@@ -86,6 +97,7 @@ cargo test --locked --manifest-path rust/Cargo.toml
 ```bash
 uv run mypy
 uv run python tools/coverage_gate.py
+uv run --package ml-experiment-server python tools/coverage_gate.py --suite daemon
 ```
 
 Mypy checks the public host/backend contracts in strict mode and verifies that
@@ -94,7 +106,8 @@ shared `Backend` protocol. The checked surface is intentionally expanded in
 stages; untyped backend internals are not evidence that a public boundary is
 safe.
 
-The gate runs the full suite and checks repository-wide dimensions separately:
+Both core and daemon gates run their full suites and check repository-wide
+dimensions separately:
 
 - line coverage: 100%;
 - branch coverage: 100%.

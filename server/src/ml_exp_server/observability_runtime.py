@@ -248,8 +248,8 @@ class ObservabilityCoordinator:
             reference = self.local.publisher_credential_ref
         else:
             reference = self.cloud.default_credential_ref
-        if reference is None:
-            return False
+        # ``_target_requested`` requires the corresponding credential reference.
+        assert reference is not None
         try:
             return bool(self._credential_provider(reference))
         except Exception:
@@ -312,10 +312,9 @@ class ObservabilityCoordinator:
         seen: set[tuple[str, Path]] = set()
 
         def add(attempt_id: str, path: Path, kind: str) -> None:
-            try:
-                relative = path.relative_to(root)
-            except ValueError:
-                return
+            # Every caller discovers ``path`` by walking ``root`` or one of its
+            # descendants, so escaping the run root is not a valid state.
+            relative = path.relative_to(root)
             key = (attempt_id, path)
             if key in seen or not path.is_file() or path.is_symlink():
                 return

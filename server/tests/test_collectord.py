@@ -1,6 +1,7 @@
 """Collector safety boundary: observation verbs only, terminal runs skipped."""
 
 import os
+import errno
 import textwrap
 from pathlib import Path
 
@@ -144,6 +145,53 @@ def test_collector_lease_allows_exactly_one_owner(tmp_path):
     second.release()
 
 
+def test_collector_lease_is_idempotent_and_release_without_owner(tmp_path):
+    lease = CollectorLease(tmp_path / "index.sqlite")
+    lease.release()
+    assert lease.acquire() is True
+    assert lease.acquire() is True
+    lease.release()
+
+
+@pytest.mark.parametrize(("error_number", "expected"), [
+    (errno.EACCES, False),
+    (errno.EAGAIN, False),
+    (errno.EIO, None),
+])
+def test_collector_lease_maps_flock_os_errors(
+    monkeypatch, tmp_path, error_number, expected,
+):
+    import fcntl
+
+    lease = CollectorLease(tmp_path / "index.sqlite")
+    monkeypatch.setattr(
+        fcntl, "flock",
+        lambda *_args: (_ for _ in ()).throw(OSError(error_number, "lock")),
+    )
+    if expected is False:
+        assert lease.acquire() is False
+    else:
+        with pytest.raises(OSError) as caught:
+            lease.acquire()
+        assert caught.value.errno == error_number
+
+
+def test_collector_lease_rejects_zero_length_write_and_preserves_primary_error(
+    monkeypatch, tmp_path,
+):
+    lease = CollectorLease(tmp_path / "index.sqlite")
+    real_close = os.close
+    monkeypatch.setattr(os, "write", lambda *_args: 0)
+
+    def close(fd):
+        real_close(fd)
+        raise OSError("close")
+
+    monkeypatch.setattr(os, "close", close)
+    with pytest.raises(OSError, match="could not write workspace lease metadata"):
+        lease.acquire()
+
+
 def test_lease_metadata_write_failure_releases_fd_for_retry(monkeypatch, tmp_path):
     lease = CollectorLease(tmp_path / "index.sqlite")
     real_ftruncate = os.ftruncate
@@ -159,6 +207,40 @@ def test_lease_metadata_write_failure_releases_fd_for_retry(monkeypatch, tmp_pat
     monkeypatch.setattr(os, "ftruncate", real_ftruncate)
     assert lease.acquire() is True
     lease.release()
+
+
+def test_campaign_catalog_handles_empty_relative_absolute_and_missing_entries(
+    tmp_path,
+):
+    relative = tmp_path / "relative.yml"
+    absolute = tmp_path / "absolute.yml"
+    relative.write_text("campaign: relative\n")
+    absolute.write_text("campaign: absolute\n")
+    project = ResearchProject(
+        project="demo", title="Demo", run_roots=[], base_dir=tmp_path,
+        campaigns=[
+            CampaignRef(name="empty", file=None),
+            CampaignRef(name="relative", file="relative.yml"),
+            CampaignRef(name="absolute", file=str(absolute)),
+            CampaignRef(name="missing", file="missing.yml"),
+        ],
+    )
+    value = Collector(RunIndex(tmp_path / "index.sqlite"), [project])
+    assert value._campaign_files(project) == {
+        "relative": relative.resolve(), "absolute": absolute,
+    }
+    project.campaigns = []
+    assert value._campaign_files(project) == {}
+
+
+def test_dry_run_cycle_and_inactive_campaign_skip(monkeypatch, collector):
+    calls = collector.run_cycle()
+    assert [call.verb for call in calls] == ["observe", "decide"]
+    monkeypatch.setattr(
+        "ml_exp_server.collectord.campaign_snapshot",
+        lambda *_args: {"lifecycle_state": "COMPLETED"},
+    )
+    assert collector.plan_cycle() == []
 
 
 def test_observe_failure_is_preserved_and_skips_decide(tmp_path):

@@ -79,6 +79,17 @@ def test_terminal_snapshot_is_server_read_model(client):
     assert payload["runs"]["elf"][0]["run_id"] == A1
     assert payload["campaign_statuses"]
     assert "loaded_at" in payload
+    assert payload["scale"]["projects"] == 1
+    assert payload["scale"]["runs"] == len(payload["runs"]["elf"])
+    assert payload["scale"]["target_statuses"] == {
+        "returned": 0, "total": 0, "limit": 500, "truncated": False,
+    }
+    filtered = client.get("/api/terminal/snapshot", params={"project": "elf"})
+    assert filtered.status_code == 200
+    assert filtered.json()["scale"]["project_filter"] == "elf"
+    assert client.get(
+        "/api/terminal/snapshot", params={"project": "missing"},
+    ).status_code == 404
 
 
 def test_tui_session_endpoints_are_server_owned(client):

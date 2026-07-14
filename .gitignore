@@ -5,6 +5,7 @@
 /rust/target/
 .coverage
 coverage.json
+server-coverage.json
 htmlcov/
 *.egg-info/
 __pycache__/

@@ -240,9 +240,9 @@ class ObservabilityArchive:
         """
         paths: list[Path] = []
         for record in records:
-            _validate_record(record)
             if not re.fullmatch(r"[0-9a-f]{64}", record.idempotency_key):
                 raise ValueError("invalid archive record key")
+            _validate_record(record)
             directory = self._safe_child(record.source_id[:2], record.source_id)
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             _fsync_directory(directory.parent)

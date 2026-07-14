@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from experiment_control import runner as core_runner
 
 from ml_exp_server.api.app import create_app
+from ml_exp_server.actions import project_writes
 from ml_exp_server.actions import service as action_service
 from ml_exp_server.actions.service import ActionError, ActionService
 from ml_exp_server.actions.store import ActionStore
@@ -122,6 +123,128 @@ def test_reuse_only_campaign_prepares_without_scheduler_budget(tmp_path):
     reloaded = load_research_project(project_file)
     assert [item.name for item in reloaded.campaigns] == ["reuse-baseline"]
     assert reloaded.campaigns[0].current_revision is not None
+
+
+def test_multi_file_project_write_rolls_forward_after_interrupted_replace(
+    tmp_path, monkeypatch,
+):
+    project_root = tmp_path / "science"
+    (project_root / "experiments" / "campaigns").mkdir(parents=True)
+    project_file = project_root / "experiments" / "research_project.yaml"
+    project_file.write_text(
+        "schema_version: 1\nproject: demo\ntitle: Demo\nrun_roots: []\ncampaigns: []\n",
+        encoding="utf-8",
+    )
+    project = ResearchProject(
+        project="demo", title="Demo", run_roots=[], base_dir=project_root,
+        authored_file=project_file,
+    )
+    scope = OperationScope(
+        project="demo", scope_type=OperationScopeType.PROJECT, object_id="demo",
+    )
+    draft = yaml.safe_dump({
+        "schema_version": 1,
+        "project": "demo",
+        "campaign": "recoverable-study",
+        "research_contract": {"required_roles": ["baseline"]},
+        "run_refs": [{"run_id": "existing-run", "research_role": "baseline"}],
+    })
+    store = ActionStore(tmp_path / "actions")
+    service = ActionService(
+        store, ActionRuntimeConfig(allow_project_writes=True),
+        actor_provider=lambda: "trusted:test",
+    )
+    plan = service.prepare(scope, project, operation_intent(
+        "CREATE_CAMPAIGN_DRAFT", draft,
+    ))
+    service.authorize(plan["action_id"], "reviewed")
+
+    real_write = project_writes._atomic_write_text
+    calls = 0
+
+    def interrupt_second_replace(target, content):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected interruption")
+        real_write(target, content)
+
+    monkeypatch.setattr(project_writes, "_atomic_write_text", interrupt_second_replace)
+    interrupted = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
+
+    assert interrupted["execution"]["status"] == "RECONCILE_REQUIRED"
+    assert Path(plan["files"][0]["path"]).is_file()
+    assert yaml.safe_load(project_file.read_text())["campaigns"] == []
+    transaction = json.loads((
+        store.directory(plan["action_id"]) / "write_transaction.json"
+    ).read_text())
+    assert transaction["phase"] == "APPLYING"
+    assert transaction["intent_digest"] == plan["intent_digest"]
+
+    monkeypatch.setattr(project_writes, "_atomic_write_text", real_write)
+    recovered = ActionService(
+        store, ActionRuntimeConfig(allow_project_writes=True),
+        actor_provider=lambda: "trusted:test",
+    ).reconcile(plan["action_id"])
+
+    assert recovered["execution"]["status"] == "VERIFIED"
+    assert [item["name"] for item in yaml.safe_load(
+        project_file.read_text(encoding="utf-8"),
+    )["campaigns"]] == ["recoverable-study"]
+
+
+def test_project_write_recovers_effect_to_state_crash_window(tmp_path, monkeypatch):
+    root = tmp_path / "science"
+    (root / "experiments" / "research_questions").mkdir(parents=True)
+    project = ResearchProject(
+        project="demo", title="Demo", run_roots=[],
+        research_questions_dir="experiments/research_questions", base_dir=root,
+    )
+    scope = OperationScope(project="demo", scope_type="project", object_id="demo")
+    store = ActionStore(tmp_path / "actions")
+    service = ActionService(
+        store, ActionRuntimeConfig(allow_project_writes=True),
+        actor_provider=lambda: "trusted:test",
+    )
+    plan = service.prepare(scope, project, operation_intent(
+        "CREATE_RESEARCH_QUESTION_DRAFT",
+        yaml.safe_dump({"schema_version": 1, "id": "Q1", "title": "Recover me"}),
+    ))
+    service.authorize(plan["action_id"], "reviewed")
+    real_set_execution = store.set_execution
+
+    def interrupt_verified_state(action_id, payload, *, event, expected_status=None):
+        if event == "project_write_verified":
+            raise OSError("injected crash before execution state commit")
+        return real_set_execution(
+            action_id, payload, event=event, expected_status=expected_status,
+        )
+
+    monkeypatch.setattr(store, "set_execution", interrupt_verified_state)
+    with pytest.raises(OSError, match="injected crash"):
+        service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
+
+    target = Path(plan["target_path"])
+    assert target.is_file()
+    assert store.execution(plan["action_id"])["status"] == "EXECUTING"
+    transaction = json.loads((
+        store.directory(plan["action_id"]) / "write_transaction.json"
+    ).read_text())
+    assert transaction["phase"] == "APPLIED"
+
+    monkeypatch.setattr(store, "set_execution", real_set_execution)
+    blocked = ActionService(
+        store, ActionRuntimeConfig(allow_project_writes=False),
+    ).recover_pending_project_writes()
+    assert blocked[0]["execution"]["status"] == "EXECUTING"
+    assert "project writes are disabled" in blocked[0]["execution"]["error"]
+    recovered = ActionService(
+        store, ActionRuntimeConfig(allow_project_writes=True),
+        actor_provider=lambda: "trusted:test",
+    ).recover_pending_project_writes()
+
+    assert recovered[0]["execution"]["status"] == "VERIFIED"
+    assert yaml.safe_load(target.read_text(encoding="utf-8"))["title"] == "Recover me"
 
 
 def test_campaign_update_targets_catalog_file_and_changes_revision(tmp_path):

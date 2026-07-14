@@ -927,12 +927,13 @@ def evidence_sources(run_dir: Path, *, attempt_id: Optional[str] = None,
     sources: list[EvidenceSource] = []
     if selected:
         attempt_root = run_dir / "attempts" / selected
-        if attempt_root.is_dir():
-            sources.extend([
-                EvidenceSource(attempt_root / "collected_run", selected,
-                               "attempt_collected"),
-                EvidenceSource(attempt_root, selected, "attempt_local"),
-            ])
+        # ``selected`` is returned only by ``_safe_attempt_id``, which already
+        # verifies that the resolved Attempt directory exists and is contained.
+        sources.extend([
+            EvidenceSource(attempt_root / "collected_run", selected,
+                           "attempt_collected"),
+            EvidenceSource(attempt_root, selected, "attempt_local"),
+        ])
     if exact_attempt:
         return sources
 
@@ -943,14 +944,8 @@ def evidence_sources(run_dir: Path, *, attempt_id: Optional[str] = None,
         EvidenceSource(run_dir / "collected_run", mirror_attempt, "run_mirror"),
         EvidenceSource(run_dir, mirror_attempt, "run_root"),
     ])
-    unique: list[EvidenceSource] = []
-    seen: set[Path] = set()
-    for source in sources:
-        if source.root in seen:
-            continue
-        seen.add(source.root)
-        unique.append(source)
-    return unique
+    # Attempt roots and Run mirrors are disjoint by construction.
+    return sources
 
 
 def train_metric_records(

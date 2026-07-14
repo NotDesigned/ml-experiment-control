@@ -36,6 +36,7 @@ _KEY_METRIC_FIELDS = (
 )
 _KEY_EVAL_FIELDS = ("g_ppl", "oracle_plan_ppl", "shuffled_plan_ppl", "plan_ppl_gap",
                     "token_recon_ppl")
+_TARGET_STATUS_LIMIT = 500
 
 
 class ArchiveCampaignRequest(BaseModel):
@@ -84,7 +85,14 @@ def health(request: Request) -> DaemonHealth:
             and bool(getattr(request.app.state, "collector_owner", False))
         ),
         collector_requested=request.app.state.collector is not None,
-        collector_error=getattr(request.app.state, "collector_error", None),
+        collector_error=(
+            getattr(request.app.state, "collector_error", None)
+            or request.app.state.index.get_meta("collector_last_error")
+            or None
+        ),
+        project_write_recovery_errors=(
+            request.app.state.project_write_recovery_errors
+        ),
         project_writes=request.app.state.config.action_runtime.allow_project_writes,
         scheduler_mutations=(
             request.app.state.config.action_runtime.allow_scheduler_mutations
@@ -97,14 +105,16 @@ def health(request: Request) -> DaemonHealth:
         ),
         telemetry_enabled=request.app.state.runtime.telemetry.enabled,
         observability=request.app.state.runtime.wandb_service.status(),
+        publisher={
+            "last_success_at": request.app.state.publisher_last_success_at,
+            "last_error": request.app.state.publisher_last_error,
+            "consecutive_failures": request.app.state.publisher_consecutive_failures,
+        },
     )
 
 
-@router.get("/observability")
-def observability(request: Request):
-    """Return bounded projection status without paths or credential metadata."""
+def _observability_payload(request: Request, targets, *, target_total: int):
     runtime = request.app.state.runtime
-    targets = runtime.observability_store.statuses(limit=500)
     local_config = runtime.config.observability.local_wandb
     cloud_config = runtime.config.observability.wandb_cloud
     cloud_configured = bool(
@@ -137,6 +147,14 @@ def observability(request: Request):
         ).configured
     )
     return {
+        "limits": {
+            "target_statuses": {
+                "returned": len(targets),
+                "total": target_total,
+                "limit": _TARGET_STATUS_LIMIT,
+                "truncated": target_total > len(targets),
+            },
+        },
         "archive": {
             "state": (
                 "STANDBY" if not bool(getattr(request.app.state, "collector_owner", False))
@@ -163,6 +181,17 @@ def observability(request: Request):
             "targets": sum(item.target == "cloud" for item in targets),
         },
     }
+
+
+@router.get("/observability")
+def observability(request: Request, project: Optional[str] = None):
+    """Return bounded projection status without paths or credential metadata."""
+
+    store = request.app.state.runtime.observability_store
+    targets = store.statuses(project=project, limit=_TARGET_STATUS_LIMIT)
+    return _observability_payload(
+        request, targets, target_total=store.status_count(project=project),
+    )
 
 
 def _target_payload(item) -> dict[str, Any]:
@@ -394,25 +423,36 @@ def list_projects(request: Request):
 
 
 @router.get("/terminal/snapshot")
-def terminal_snapshot(request: Request):
+def terminal_snapshot(request: Request, project: Optional[str] = None):
     """Serve the server-owned read model to a terminal renderer.
 
     This endpoint intentionally does not initiate a collection cycle. The
     server collector is the sole owner of scheduler observation; the TUI only
     consumes the already-indexed snapshot.
     """
+    projects = [
+        item for item in request.app.state.projects
+        if project is None or item.project == project
+    ]
+    if project is not None and not projects:
+        raise HTTPException(status_code=404, detail=f"unknown project: {project}")
     payload = snapshot_payload(build_snapshot(
         request.app.state.index,
-        request.app.state.projects,
+        projects,
     ))
+    observability_store = request.app.state.runtime.observability_store
+    target_statuses = observability_store.statuses(
+        project=project, limit=_TARGET_STATUS_LIMIT,
+    )
+    target_total = observability_store.status_count(project=project)
     grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-    for item in request.app.state.runtime.observability_store.statuses(limit=500):
+    for item in target_statuses:
         key = (item.attempt.project, item.attempt.run_id, item.attempt.attempt_id)
         grouped.setdefault(key, []).append(_target_payload(item))
-    for project, rows in payload["runs"].items():
+    for project_name, rows in payload["runs"].items():
         for row in rows:
             run_id = str(row.get("run_id") or "")
-            indexed_row = request.app.state.index.get_run(project, run_id)
+            indexed_row = request.app.state.index.get_run(project_name, run_id)
             row["failure_assessment"] = (
                 request.app.state.application.run_failure_assessment(indexed_row)
                 if indexed_row is not None else
@@ -423,15 +463,31 @@ def terminal_snapshot(request: Request):
             }
             attempt_ids.update(
                 attempt_id for (target_project, target_run, attempt_id) in grouped
-                if target_project == project and target_run == run_id
+                if target_project == project_name and target_run == run_id
             )
             row["observability"] = {
                 "attempts": {
-                    attempt_id: grouped.get((project, run_id, attempt_id), [])
+                    attempt_id: grouped.get((project_name, run_id, attempt_id), [])
                     for attempt_id in sorted(attempt_ids) if attempt_id
                 }
             }
-    payload["observability"] = observability(request)
+    payload["observability"] = _observability_payload(
+        request, target_statuses, target_total=target_total,
+    )
+    payload["scale"] = {
+        "projects": len(payload["projects"]),
+        "runs": sum(len(rows) for rows in payload["runs"].values()),
+        "runs_by_project": {
+            project: len(rows) for project, rows in payload["runs"].items()
+        },
+        "target_statuses": {
+            "returned": len(target_statuses),
+            "total": target_total,
+            "limit": _TARGET_STATUS_LIMIT,
+            "truncated": target_total > len(target_statuses),
+        },
+        "project_filter": project,
+    }
     return payload
 
 
@@ -444,7 +500,7 @@ def terminal_refresh(data: RefreshRequest, request: Request):
         raise HTTPException(status_code=404, detail=f"unknown project: {data.project}")
     for project in selected:
         index_project(request.app.state.index, project)
-    return terminal_snapshot(request)
+    return terminal_snapshot(request, project=data.project)
 
 
 @router.get("/objects")

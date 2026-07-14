@@ -13,6 +13,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "coverage.json"
+DAEMON_REPORT = ROOT / "server-coverage.json"
 DEFAULT_MIN_LINE = 100.0
 DEFAULT_MIN_BRANCH = 100.0
 
@@ -47,20 +48,36 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--min-line", type=float, default=DEFAULT_MIN_LINE)
     parser.add_argument("--min-branch", type=float, default=DEFAULT_MIN_BRANCH)
+    parser.add_argument(
+        "--suite", choices=("core", "daemon"), default="core",
+        help="coverage suite to execute and verify",
+    )
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args(argv)
-    if not args.check_only:
-        result = subprocess.run([
-            sys.executable, "-m", "pytest", "-q",
-            "--cov=experiment_control", "--cov-branch",
+    if args.suite == "daemon":
+        report = DAEMON_REPORT
+        pytest_args = [
+            "server/tests", "-q", "--cov=ml_exp_server", "--cov-branch",
+            "--cov-report=term-missing:skip-covered",
+            "--cov-report=json:server-coverage.json",
+        ]
+    else:
+        report = REPORT
+        pytest_args = [
+            "-q", "--cov=experiment_control", "--cov-branch",
             "--cov-report=term-missing", "--cov-report=json:coverage.json",
-        ], cwd=ROOT, check=False)
+        ]
+    if not args.check_only:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", *pytest_args],
+            cwd=ROOT, check=False,
+        )
         if result.returncode:
             return result.returncode
-    if not REPORT.is_file():
-        print("coverage.json is missing", file=sys.stderr)
+    if not report.is_file():
+        print(f"{report.name} is missing", file=sys.stderr)
         return 2
-    return check_report(REPORT, min_line=args.min_line, min_branch=args.min_branch)
+    return check_report(report, min_line=args.min_line, min_branch=args.min_branch)
 
 
 if __name__ == "__main__":
