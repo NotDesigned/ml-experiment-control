@@ -13,6 +13,7 @@ from typing import Callable
 from .actions import ActionService, ActionStore
 from .ingest.indexer import RunIndex
 from .identity import workspace_identity
+from .credentials import CredentialStore
 from .project_config import load_research_project
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .schemas import (
@@ -24,6 +25,8 @@ from .schemas import (
 )
 from .telemetry import Telemetry, initialize_telemetry
 from .observability import WandbServiceManager
+from .observability_store import ObservabilityStore
+from .observability_runtime import ObservabilityCoordinator
 
 
 def _load_registered_project(record: ProjectLifecycleRecord) -> ResearchProject:
@@ -47,6 +50,9 @@ class ExperimentServerRuntime:
     telemetry: Telemetry
     workspace_id: str
     wandb_service: WandbServiceManager
+    credential_store: CredentialStore
+    observability_store: ObservabilityStore
+    observability: ObservabilityCoordinator
 
     @classmethod
     def create(
@@ -80,6 +86,19 @@ class ExperimentServerRuntime:
         run_index.on_update = notify
         telemetry = initialize_telemetry(config.telemetry)
         wandb_service = WandbServiceManager(config.observability.local_wandb)
+        workspace_id = workspace_identity(config)
+        credential_store = CredentialStore(
+            Path(config.observability.credential_root),
+        )
+        observability_store = ObservabilityStore(config.observability_db_path())
+        observability = ObservabilityCoordinator(
+            workspace_id=workspace_id,
+            archive_root=Path(config.observability.log_archive_root),
+            store=observability_store,
+            local=config.observability.local_wandb,
+            cloud=config.observability.wandb_cloud,
+            credential_provider=credential_store.resolve_wandb_api_key,
+        )
         return cls(
             config=config,
             index=run_index,
@@ -88,8 +107,11 @@ class ExperimentServerRuntime:
             action_service=ActionService(action_store, config.action_runtime),
             project_registry=project_registry,
             telemetry=telemetry,
-            workspace_id=workspace_identity(config),
+            workspace_id=workspace_id,
             wandb_service=wandb_service,
+            credential_store=credential_store,
+            observability_store=observability_store,
+            observability=observability,
         )
 
     def project(self, project_name: str) -> ResearchProject:
@@ -159,6 +181,7 @@ class ExperimentServerRuntime:
 
     def close(self) -> None:
         self.wandb_service.stop()
+        self.observability_store.close()
         self.index.close()
         self.telemetry.shutdown()
 

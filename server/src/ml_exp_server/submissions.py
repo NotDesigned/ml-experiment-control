@@ -120,10 +120,23 @@ class ExperimentSubmissionService:
 
     def prepare_first_attempt(
         self, project: str, run_id: str, *, max_gpu_hours: float,
-        reason: str,
+        reason: str, wandb_cloud_sync: bool = False,
     ) -> dict[str, Any]:
         """Prepare a first-Attempt intent without authorizing or scheduling it."""
         with self._prepare_lock:
+            if wandb_cloud_sync:
+                policy = self.runtime.config.observability.wandb_cloud
+                if (
+                    not policy.enabled or not policy.default_credential_ref
+                    or not policy.entity
+                    or not self.runtime.credential_store.status(
+                        policy.default_credential_ref,
+                    ).configured
+                ):
+                    raise ApplicationError(
+                        "W&B Cloud publication is unavailable",
+                        code="PUBLISHER_UNAVAILABLE",
+                    )
             existing = self.list(project, run_id)["submissions"]
             for view in reversed(existing):
                 if not _reusable(view):
@@ -132,6 +145,14 @@ class ExperimentSubmissionService:
                 if existing_budget is not None and float(existing_budget) != max_gpu_hours:
                     raise ApplicationError(
                         "an active submission exists with a different GPU-hour budget",
+                        code="SUBMISSION_INTENT_EXISTS",
+                    )
+                existing_cloud = bool(
+                    view.get("preflight_summary", {}).get("wandb_cloud_sync", False)
+                )
+                if existing_cloud != wandb_cloud_sync:
+                    raise ApplicationError(
+                        "an active submission exists with a different W&B Cloud policy",
                         code="SUBMISSION_INTENT_EXISTS",
                     )
                 view["reused"] = True
@@ -198,6 +219,7 @@ class ExperimentSubmissionService:
                 "run_id": run_id,
                 "attempt_id": attempt_id,
                 "max_gpu_hours": max_gpu_hours,
+                "wandb_cloud_sync": wandb_cloud_sync,
             }, sort_keys=False)
             digest = evidence_digest({
                 "project": project,

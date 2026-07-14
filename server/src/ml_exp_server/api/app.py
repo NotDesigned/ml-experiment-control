@@ -50,18 +50,43 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             else:
                 app.state.collector_owner = True
                 app.state.collector_lease = lease
+                # Only the workspace lease owner may reconcile publisher
+                # targets or rewind collection cursors.
+                app.state.application.recover_observability_policies()
                 # Projection ownership follows the same workspace lease as
                 # canonical collection.  A second daemon must never spawn a
                 # duplicate local service.  Startup is bounded and degradable.
                 app.state.observability = await asyncio.to_thread(
                     app.state.runtime.wandb_service.start,
                 )
+                def publisher_loop() -> None:
+                    while not app.state._stop.is_set():
+                        try:
+                            app.state.runtime.observability.publish_once(
+                                limit_per_target=1,
+                            )
+                        except Exception:
+                            # Target-specific errors are retained in the
+                            # outbox; publisher failure never stops collection.
+                            pass
+                        if app.state._stop.wait(2.0):
+                            break
+
+                publisher_thread = threading.Thread(
+                    target=publisher_loop, name="wandb-publisher", daemon=True,
+                )
+                publisher_thread.start()
+                app.state._publisher_thread = publisher_thread
 
                 def poll_loop() -> None:
                     while not app.state._stop.is_set():
                         app.state.index.set_meta("collector_cycle_started_at", str(time.time()))
                         try:
                             collector.run_cycle()
+                            for project in app.state.projects:
+                                app.state.runtime.observability.collect_rows(
+                                    app.state.index.list_runs(project.project),
+                                )
                             app.state.index.set_meta("collector_last_error", "")
                         except Exception as exc:  # keep the loop alive; surface via meta
                             app.state.index.set_meta("collector_last_error", str(exc)[:500])
@@ -76,12 +101,18 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
         yield
         app.state._stop.set()
         thread = getattr(app.state, "_poll_thread", None)
+        publisher_thread = getattr(app.state, "_publisher_thread", None)
         if thread is not None:
             # The collector owns the index while a cycle is in flight.  Do not
             # close the runtime until that owner has observed the stop signal.
             await asyncio.to_thread(thread.join, 5.0)
+        if publisher_thread is not None:
+            await asyncio.to_thread(publisher_thread.join, 45.0)
         lease = app.state.collector_lease
-        if thread is None or not thread.is_alive():
+        owner_threads = [
+            item for item in (thread, publisher_thread) if item is not None
+        ]
+        if not any(item.is_alive() for item in owner_threads):
             try:
                 app.state.runtime.close()
             finally:
@@ -94,7 +125,8 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             app.state.runtime.wandb_service.stop()
 
             def finish_shutdown() -> None:
-                thread.join()
+                for owner in owner_threads:
+                    owner.join()
                 try:
                     app.state.runtime.close()
                 finally:

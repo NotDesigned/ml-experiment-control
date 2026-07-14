@@ -11,6 +11,7 @@ from enum import Enum
 import ipaddress
 from pathlib import Path
 import re
+import sys
 from typing import Any, Literal, Optional
 from urllib.parse import urlsplit
 
@@ -106,14 +107,18 @@ class LocalWandbConfig(BaseModel):
     bind_host: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1, le=65535)
     data_dir: str = "~/.local/state/ml-expd/wandb"
-    # A managed command must remain attached to the daemon.  There is no safe
-    # universal default: ``wandb server start`` shells out to Docker and its
-    # historical defaults do not honor bind_host or data_dir.  Explicit
-    # placeholders make the ownership and storage boundary reviewable.
+    image: str = "wandb/local"
+    docker_executable: str = "/usr/bin/docker"
+    container_uid: int = Field(default=999, ge=1, le=2**31 - 1)
+    # A managed command must remain attached to the daemon. Empty selects the
+    # packaged foreground Docker wrapper; replacements retain explicit
+    # placeholders so ownership and storage remain reviewable.
     command: list[str] = Field(default_factory=list, max_length=128)
     environment_allowlist: list[str] = Field(default_factory=list, max_length=16)
     startup_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     external_url: Optional[str] = None
+    publisher_entity: Optional[str] = None
+    publisher_credential_ref: Optional[str] = None
 
     @field_validator("bind_host")
     @classmethod
@@ -164,8 +169,18 @@ class LocalWandbConfig(BaseModel):
                 raise ValueError("managed local W&B cannot use external_url")
             if self.bind_host not in {"127.0.0.1", "localhost", "::1"}:
                 raise ValueError("managed local W&B must bind to a loopback host")
+            if not re.fullmatch(r"[A-Za-z0-9_./:@-]+", self.image):
+                raise ValueError("local W&B image contains unsupported characters")
+            if not Path(self.docker_executable).is_absolute():
+                raise ValueError("docker_executable must be an absolute path")
             if not self.command:
-                raise ValueError("managed local W&B requires an explicit foreground command")
+                self.command = [
+                    sys.executable, "-m", "ml_exp_server.local_wandb_service",
+                    "--bind-host", "{bind_host}", "--port", "{port}",
+                    "--data-dir", "{data_dir}", "--image", "{image}",
+                    "--docker", "{docker}",
+                    "--container-uid", "{container_uid}",
+                ]
             rendered = "\0".join(self.command)
             missing = [
                 placeholder for placeholder in ("{bind_host}", "{port}", "{data_dir}")
@@ -193,6 +208,9 @@ class LocalWandbConfig(BaseModel):
             "{bind_host}": self.bind_host,
             "{port}": str(self.port),
             "{data_dir}": str(self.data_path()),
+            "{image}": self.image,
+            "{docker}": self.docker_executable,
+            "{container_uid}": str(self.container_uid),
         }
         return [
             _replace_placeholders(token, substitutions)
@@ -213,6 +231,26 @@ class WandbCloudConfig(BaseModel):
 
     enabled: bool = False
     default_credential_ref: Optional[str] = None
+    entity: Optional[str] = None
+    api_url: str = "https://api.wandb.ai"
+    dashboard_url: str = "https://wandb.ai"
+
+    @model_validator(mode="after")
+    def _validate_cloud_policy(self) -> "WandbCloudConfig":
+        if self.enabled:
+            if not self.default_credential_ref:
+                raise ValueError(
+                    "enabled W&B Cloud publication requires default_credential_ref"
+                )
+        for label, value in (
+            ("api_url", self.api_url), ("dashboard_url", self.dashboard_url),
+        ):
+            parsed = urlsplit(value)
+            if parsed.scheme != "https" or not parsed.hostname:
+                raise ValueError(f"{label} must be an absolute HTTPS URL")
+            if parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError(f"{label} must not contain credentials, query, or fragment")
+        return self
 
 
 class ObservabilityConfig(BaseModel):
@@ -395,6 +433,10 @@ class ServerConfig(BaseModel):
             return Path(self.project_registry_root).expanduser()
         index = self.index_db_path()
         return index.with_name(f"{index.stem}.projects")
+
+    def observability_db_path(self) -> Path:
+        index = self.index_db_path()
+        return index.with_name(f"{index.stem}.observability.sqlite")
 
 
 class EvidenceLayer(BaseModel):

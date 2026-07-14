@@ -646,6 +646,7 @@ class ActionService:
                 "checkpoint": checkpoint,
                 "requested_gpu_hours": requested_gpu_hours,
                 "max_gpu_hours": budget_limit,
+                "wandb_cloud_sync": bool(spec.get("wandb_cloud_sync", False)),
             })
             for name, verb, extra in (
                 ("preflight", "preflight", ["--scope", "submit"]),

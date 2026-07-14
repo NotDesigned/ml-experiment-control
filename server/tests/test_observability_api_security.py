@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from ml_exp_server.api.app import create_app
+from ml_exp_server.observability_store import AttemptRef
 from ml_exp_server.schemas import (
     ObservabilityConfig, ServerConfig, WandbCloudConfig,
 )
@@ -30,6 +31,7 @@ def test_observability_api_exposes_no_credential_reference_or_local_paths(tmp_pa
         assert payload["cloud"] == {
             "publisher_available": False,
             "state": "UNAVAILABLE",
+            "targets": 0,
         }
         encoded = repr(payload)
         assert "private-production-reference" not in encoded
@@ -46,3 +48,30 @@ def test_observability_api_exposes_no_credential_reference_or_local_paths(tmp_pa
         })
         assert write.status_code == 405
         assert write.json() == {"detail": "Method Not Allowed"}
+
+
+def test_observability_api_suppresses_corrupt_credential_bearing_url(tmp_path: Path):
+    config = ServerConfig(
+        index_db=str(tmp_path / "index.sqlite"),
+        action_root=str(tmp_path / "actions"), collector_enabled=False, projects=[],
+        observability=ObservabilityConfig(
+            credential_root=str(tmp_path / "credentials"),
+            log_archive_root=str(tmp_path / "logs"),
+        ),
+    )
+    app = create_app(config)
+    with TestClient(app) as client:
+        store = client.app.state.runtime.observability_store
+        attempt = AttemptRef(client.app.state.runtime.workspace_id, "demo", "run", "a1")
+        store.set_target_state(
+            attempt, "local", "READY", dashboard_url="https://safe.test/run",
+        )
+        with store._lock:
+            store._conn.execute(
+                "UPDATE publication_targets SET dashboard_url=?",
+                ("https://user:secret@example.test/run?token=secret",),
+            )
+            store._conn.commit()
+        payload = client.get("/api/observability/attempts/demo/run/a1").json()
+        assert payload["targets"][0]["dashboard_url"] is None
+        assert "secret" not in repr(payload)

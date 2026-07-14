@@ -80,6 +80,10 @@ REASON = OperationParameter(
 GPU_BUDGET = OperationParameter(
     "max_gpu_hours", "Maximum GPU-hours", kind="number", default=1.0, positive=True,
 )
+WANDB_CLOUD_SYNC = OperationParameter(
+    "wandb_cloud_sync", "Publish this Attempt to W&B Cloud", kind="enum",
+    required=False, default="no", choices=(("No", "no"), ("Yes", "yes")),
+)
 NEW_ATTEMPT_ID = OperationParameter(
     "new_attempt_id", "New Attempt ID", required=False,
     placeholder="Optional attempt-NNN identity",
@@ -121,13 +125,13 @@ OPERATIONS: tuple[OperationDefinition, ...] = (
         "run.submit", "Submit first Attempt",
         "Prepare the first scheduler submission for an authored Run.", "Execution",
         (OperationScopeType.RUN,), "direct", "Prepare a scheduler Action", "SUBMIT_RUN",
-        (GPU_BUDGET,), 30,
+        (GPU_BUDGET, WANDB_CLOUD_SYNC), 30,
     ),
     OperationDefinition(
         "attempt.retry", "Retry as new Attempt",
         "Prepare a retry without reusing an immutable Attempt identity.", "Execution",
         (OperationScopeType.ATTEMPT,), "direct", "Prepare a scheduler Action",
-        "RETRY_ATTEMPT", (REASON, GPU_BUDGET, NEW_ATTEMPT_ID), 30,
+        "RETRY_ATTEMPT", (REASON, GPU_BUDGET, NEW_ATTEMPT_ID, WANDB_CLOUD_SYNC), 30,
     ),
     OperationDefinition(
         "attempt.cancel", "Cancel active Attempt",

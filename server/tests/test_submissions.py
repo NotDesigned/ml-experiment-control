@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from ml_exp_server.authored_runs import authored_run_placeholder
 from ml_exp_server.actions.service import ActionService
 from ml_exp_server.api.app import create_app
+from ml_exp_server.application import ExperimentServerApplication
 from ml_exp_server.campaign_lifecycle import campaign_record_path
 from ml_exp_server.project_config import load_research_project
 from ml_exp_server.schemas import (
@@ -18,9 +19,11 @@ from ml_exp_server.schemas import (
     CampaignRef,
     CampaignRevision,
     CampaignRunMembership,
+    ObservabilityConfig,
     ResearchProject,
     RunIndexRow,
     ServerConfig,
+    WandbCloudConfig,
 )
 
 
@@ -82,7 +85,7 @@ class SubmissionController:
         }
 
 
-def _app(tmp_path):
+def _app(tmp_path, *, cloud=False):
     experiments = tmp_path / "science" / "experiments"
     experiments.mkdir(parents=True)
     campaign = experiments / "study.yml"
@@ -117,6 +120,15 @@ def _app(tmp_path):
         action_root=str(tmp_path / "actions"),
         collector_enabled=False,
         action_runtime=ActionRuntimeConfig(allow_scheduler_mutations=True),
+        observability=ObservabilityConfig(
+            credential_root=str(tmp_path / "credentials"),
+            log_archive_root=str(tmp_path / "archive"),
+            wandb_cloud=WandbCloudConfig(
+                enabled=cloud,
+                default_credential_ref="cloud-primary" if cloud else None,
+                entity="research-team" if cloud else None,
+            ),
+        ),
     )
     app = create_app(config, projects=[project])
     runner = SubmissionController()
@@ -149,9 +161,8 @@ def test_authored_unmaterialized_run_is_selectable_from_tui_read_model(tmp_path)
         submit = next(item for item in operations.json()
                       if item["operation"]["operation_id"] == "run.submit")
         assert submit["status"] == "AVAILABLE"
-        # Cloud publication has no publisher implementation.  The daemon's
-        # operation catalog is the TUI contract, so the control must not be
-        # rendered by any client.
+        # The cloud control remains absent until daemon-host policy and its
+        # credential are both ready.
         parameter_keys = {
             item["key"] for item in submit["operation"]["parameters"]
         }
@@ -196,6 +207,113 @@ def test_authored_unmaterialized_run_is_selectable_from_tui_read_model(tmp_path)
         assert len(rows) == 1
         assert rows[0]["scheduler_state"] == "CREATED"
         assert rows[0]["provenance"] == {"observed": True}
+
+
+def test_cloud_ready_daemon_exposes_submission_option_without_secret_metadata(tmp_path):
+    app, _ = _app(tmp_path, cloud=True)
+    app.state.runtime.credential_store.set_wandb_api_key(
+        "cloud-primary", "secret-cloud-key",
+    )
+    with TestClient(app) as client:
+        operations = client.get("/api/operations", params={
+            "project": "demo", "scope_type": "run", "object_id": "run-a",
+        }).json()
+        submit = next(item for item in operations
+                      if item["operation"]["operation_id"] == "run.submit")
+        parameters = {item["key"]: item for item in submit["operation"]["parameters"]}
+        assert set(parameters) == {"max_gpu_hours", "wandb_cloud_sync"}
+        assert parameters["wandb_cloud_sync"]["default"] == "no"
+
+        prepared = client.post("/api/operations/direct", json={
+            "project": "demo",
+            "scope_type": "run",
+            "object_id": "run-a",
+            "operation_id": "run.submit",
+            "parameters": {"max_gpu_hours": 2, "wandb_cloud_sync": "yes"},
+        })
+        assert prepared.status_code == 200
+        encoded = repr(prepared.json())
+        assert "secret-cloud-key" not in encoded
+        assert "cloud-primary" not in encoded
+        action_id = prepared.json()["action"]["action_id"]
+        # Preparing/authorizing the scheduler Action does not start a mirror.
+        assert client.get(
+            "/api/observability/attempts/demo/run-a/attempt-001",
+        ).json()["targets"] == []
+        authorized = client.post("/api/actions/authorize", json={
+            "action_id": action_id, "note": "reviewed",
+        })
+        assert authorized.status_code == 200
+        executed = client.post("/api/actions/execute", json={
+            "action_id": action_id, "confirmation": f"EXECUTE {action_id}",
+        })
+        assert executed.status_code == 200
+        target = client.get(
+            "/api/observability/attempts/demo/run-a/attempt-001",
+        ).json()["targets"]
+        assert target[0]["target"] == "cloud"
+        assert target[0]["state"] == "PENDING"
+
+        # Restart reconciliation closes the crash window between persisting a
+        # VERIFIED Action and activating its target.
+        store = client.app.state.runtime.observability_store
+        with store._lock:
+            store._conn.execute("DELETE FROM publication_targets")
+            store._conn.commit()
+        ExperimentServerApplication(
+            client.app.state.runtime,
+        ).recover_observability_policies()
+        recovered = client.get(
+            "/api/observability/attempts/demo/run-a/attempt-001",
+        ).json()["targets"]
+        assert recovered[0]["target"] == "cloud"
+
+
+def test_active_submission_cannot_change_cloud_policy(tmp_path):
+    app, _ = _app(tmp_path, cloud=True)
+    app.state.runtime.credential_store.set_wandb_api_key(
+        "cloud-primary", "secret-cloud-key",
+    )
+    with TestClient(app) as client:
+        prepared = client.post(
+            "/api/experiments/demo/run-a/submissions/prepare",
+            json={"max_gpu_hours": 2, "wandb_cloud_sync": True},
+        )
+        assert prepared.status_code == 200
+        conflict = client.post(
+            "/api/experiments/demo/run-a/submissions/prepare",
+            json={"max_gpu_hours": 2, "wandb_cloud_sync": False},
+        )
+        assert conflict.status_code == 409
+        assert conflict.headers["X-ML-Expd-Error-Code"] == "SUBMISSION_INTENT_EXISTS"
+
+
+def test_reconcile_required_does_not_activate_cloud_target(tmp_path):
+    app, runner = _app(tmp_path, cloud=True)
+    app.state.runtime.credential_store.set_wandb_api_key(
+        "cloud-primary", "secret-cloud-key",
+    )
+    with TestClient(app) as client:
+        prepared = client.post(
+            "/api/experiments/demo/run-a/submissions/prepare",
+            json={"max_gpu_hours": 2, "wandb_cloud_sync": True},
+        ).json()
+        action_id = prepared["submission_id"]
+        client.post(
+            f"/api/submissions/{action_id}/authorize",
+            json={"note": "reviewed"},
+        )
+        runner.status_visible = False
+        result = client.post(
+            f"/api/submissions/{action_id}/execute",
+            json={"confirmation": f"EXECUTE {action_id}"},
+        )
+        assert result.status_code == 200
+        assert result.json()["status"] == "RECONCILE_REQUIRED"
+        targets = client.get(
+            "/api/observability/attempts/demo/run-a/attempt-001",
+        ).json()["targets"]
+        assert targets == []
 
 
 def test_nested_materialized_run_replaces_placeholder_and_exposes_exact_cancel(

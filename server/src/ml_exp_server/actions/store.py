@@ -160,3 +160,14 @@ class ActionStore:
                 except (FileNotFoundError, ValueError):
                     continue
         return items
+
+    def list_all(self) -> list[dict[str, Any]]:
+        """Return every readable action snapshot for restart reconciliation."""
+        items = []
+        for path in sorted(self.root.glob("action-*/plan.json")):
+            payload = read_json(path, {})
+            try:
+                items.append(self.snapshot(str(payload["action_id"])))
+            except (KeyError, FileNotFoundError, ValueError):
+                continue
+        return items

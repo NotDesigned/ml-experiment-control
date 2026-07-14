@@ -20,15 +20,28 @@ observability:
     bind_host: 127.0.0.1
     port: 8080
     data_dir: ~/.local/state/ml-expd/wandb
-    # No universal W&B/Docker command can guarantee process-tree ownership.
-    # Supply an attached foreground wrapper with all three placeholders only
-    # after its signal/cleanup behavior has been reviewed.
+    # Empty selects ml-expd's attached Docker wrapper. An explicit replacement
+    # must remain foreground and include all three placeholders.
     command: []
+    docker_executable: /usr/bin/docker
+    # Prefer an immutable @sha256 digest in operational deployments.
+    image: wandb/local
+    container_uid: 999
+    # Publisher identity is separate from dashboard readiness. Set the W&B
+    # entity/team only after the local server account exists.
+    publisher_entity: null
+    # Publishing requires a local-account API key. Provision this reference
+    # through `ml-expd credential wandb set --stdin`; dashboard-only operation
+    # can leave it null.
+    publisher_credential_ref: null
   wandb_cloud:
-    # Reserved policy only. No cloud publisher exists in this release, so no
-    # cloud-sync operation or credential-write API is exposed.
+    # Cloud sync is offered per submit/retry only when all three settings are
+    # present and the referenced daemon-host credential is configured.
     enabled: false
     default_credential_ref: wandb-cloud-default
+    entity: null
+    api_url: https://api.wandb.ai
+    dashboard_url: https://wandb.ai
 collector_enabled: true
 poll_interval_seconds: 20
 projects: []

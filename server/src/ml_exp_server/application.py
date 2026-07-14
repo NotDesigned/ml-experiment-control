@@ -26,6 +26,7 @@ from .project_registry import ProjectRegistryError
 from .runtime import ExperimentServerRuntime
 from .operations import (
     GPU_BUDGET,
+    WANDB_CLOUD_SYNC,
     OPERATIONS_BY_ID,
     OperationAvailability,
     OperationParameter,
@@ -167,6 +168,14 @@ def evidence_digest(payload: dict[str, Any]) -> str:
 class ExperimentServerApplication:
     def __init__(self, runtime: ExperimentServerRuntime):
         self.runtime = runtime
+
+    def recover_observability_policies(self) -> None:
+        """Idempotently close the VERIFIED-action/target crash window."""
+        for action in self.runtime.action_store.list_all():
+            if str(action.get("operation") or "") in {
+                "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION",
+            }:
+                self._activate_observability_policy(action, action)
 
     # --------------------------------------------------------------- scopes
 
@@ -350,6 +359,10 @@ class ExperimentServerApplication:
                 replace(parameter, default=default_budget)
                 if parameter.key == GPU_BUDGET.key else parameter
                 for parameter in base_operation.parameters
+                if (
+                    parameter.key != WANDB_CLOUD_SYNC.key
+                    or self._cloud_publication_available()
+                )
             )
             operation = replace(base_operation, parameters=parameters)
             try:
@@ -373,6 +386,14 @@ class ExperimentServerApplication:
                 )},
             ))
         return result
+
+    def _cloud_publication_available(self) -> bool:
+        policy = self.runtime.config.observability.wandb_cloud
+        if not policy.enabled or not policy.default_credential_ref or not policy.entity:
+            return False
+        return self.runtime.credential_store.status(
+            policy.default_credential_ref,
+        ).configured
 
     def _operation_blockers(
         self, operation_id: str, scope: OperationScope,
@@ -494,11 +515,14 @@ class ExperimentServerApplication:
         scope, configured, _ = self.resolve_scope(project, scope_type, object_id)
         self._require_operation_available(operation_id, project, scope.scope_type, object_id)
         definition = OPERATIONS_BY_ID.get(operation_id)
-        if definition is None:
+        availability = next((item for item in self.operation_availability(
+            project, scope.scope_type, object_id,
+        ) if item.operation.operation_id == operation_id), None)
+        if definition is None or availability is None:
             raise ApplicationError(
                 f"unknown operation {operation_id}", code="INVALID_OPERATION",
             )
-        allowed_parameters = {item.key for item in definition.parameters}
+        allowed_parameters = {item.key for item in availability.operation.parameters}
         unsupported = sorted(set(parameters) - allowed_parameters)
         if unsupported:
             raise ApplicationError(
@@ -506,6 +530,11 @@ class ExperimentServerApplication:
                 code="INVALID_OPERATION",
             )
         reason = str(parameters.get("reason") or "")
+        cloud_sync = str(parameters.get("wandb_cloud_sync") or "no").lower()
+        if cloud_sync not in {"yes", "no"}:
+            raise ApplicationError(
+                "wandb_cloud_sync must be 'yes' or 'no'", code="INVALID_OPERATION",
+            )
         budget = 0.0
         if operation_id in {"run.submit", "attempt.retry"}:
             budget_value = parameters.get("max_gpu_hours")
@@ -527,6 +556,7 @@ class ExperimentServerApplication:
             return self.prepare_run_submit(
                 project, object_id, max_gpu_hours=budget,
                 reason=reason or "Requested from the scoped operation catalog",
+                wandb_cloud_sync=cloud_sync == "yes",
             )
         if operation_id == "attempt.retry":
             return self.prepare_attempt_retry(
@@ -536,6 +566,7 @@ class ExperimentServerApplication:
                     if parameters.get("new_attempt_id") else None
                 ),
                 max_gpu_hours=budget, reason=reason,
+                wandb_cloud_sync=cloud_sync == "yes",
             )
         if operation_id == "attempt.cancel":
             return self.prepare_attempt_cancel(project, object_id, reason=reason)
@@ -1399,7 +1430,8 @@ class ExperimentServerApplication:
         return path.resolve()
 
     def prepare_run_submit(self, project: str, run_id: str, *,
-                           max_gpu_hours: float, reason: str = "") -> dict[str, Any]:
+                           max_gpu_hours: float, reason: str = "",
+                           wandb_cloud_sync: bool = False) -> dict[str, Any]:
         """Prepare a reviewable first-submission Action for an authored Run."""
         self._require_operation_available(
             "run.submit", project, OperationScopeType.RUN, run_id,
@@ -1436,6 +1468,7 @@ class ExperimentServerApplication:
         draft = yaml.safe_dump({
             "campaign_file": str(campaign), "run_id": row.run_id,
             "attempt_id": attempt_id, "max_gpu_hours": max_gpu_hours,
+            "wandb_cloud_sync": wandb_cloud_sync,
         }, sort_keys=False)
         digest = evidence_digest(self.bounded_evidence(scope, configured, row))
         action = self._prepare_action_intent(scope, configured, {
@@ -1453,7 +1486,8 @@ class ExperimentServerApplication:
 
     def prepare_attempt_retry(self, project: str, identity: str, *,
                               new_attempt_id: str | None,
-                              max_gpu_hours: float, reason: str) -> dict[str, Any]:
+                              max_gpu_hours: float, reason: str,
+                              wandb_cloud_sync: bool = False) -> dict[str, Any]:
         if max_gpu_hours <= 0:
             raise ApplicationError("max_gpu_hours must be positive", status_code=422,
                                    code="INVALID_GPU_BUDGET")
@@ -1495,14 +1529,16 @@ class ExperimentServerApplication:
             "campaign_file": str(campaign), "run_id": row.run_id,
             "source_attempt_id": attempt.attempt_id,
             "attempt_id": new_attempt_id, "max_gpu_hours": max_gpu_hours,
+            "wandb_cloud_sync": wandb_cloud_sync,
         }, sort_keys=False)
-        return self._prepare_attempt_action(
+        result = self._prepare_attempt_action(
             scope, configured, row, attempt, kind="RETRY_ATTEMPT", draft=draft,
             title=f"Retry {row.run_id} from {attempt.attempt_id} as {new_attempt_id}",
             change_summary=reason or "retry failed attempt with a new attempt identity",
             resource_estimate=f"up to {max_gpu_hours:g} GPU-hours",
             risk="scheduler mutation; review checkpoint and failure classification before approval",
         )
+        return result
 
     def prepare_attempt_cancel(self, project: str, identity: str, *,
                                reason: str) -> dict[str, Any]:
@@ -1659,6 +1695,7 @@ class ExperimentServerApplication:
         except RuntimeError as exc:
             raise ApplicationError(str(exc), code="ACTION_BLOCKED") from exc
         self._refresh_action_project(action)
+        self._activate_observability_policy(action, result)
         return result
 
     def _refresh_action_project(self, action: dict[str, Any]) -> None:
@@ -1673,6 +1710,24 @@ class ExperimentServerApplication:
         except KeyError:
             return
         index_project(self.runtime.index, configured)
+
+    def _activate_observability_policy(
+        self, action: dict[str, Any], result: dict[str, Any],
+    ) -> None:
+        status = str((result.get("execution") or {}).get("status") or "")
+        if status != "VERIFIED":
+            return
+        preflight = action.get("preflight_summary")
+        if not isinstance(preflight, dict) or not preflight.get("wandb_cloud_sync"):
+            return
+        scope = action.get("scope")
+        if not isinstance(scope, dict):
+            return
+        project = str(scope.get("project") or "")
+        run_id = str(preflight.get("run_id") or "")
+        attempt_id = str(preflight.get("attempt_id") or "")
+        if project and run_id and attempt_id:
+            self.runtime.observability.enable_cloud(project, run_id, attempt_id)
 
     def _execute_action_local(self, action_id: str, confirmation: str) -> dict[str, Any]:
         try:
@@ -1692,6 +1747,7 @@ class ExperimentServerApplication:
             "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION", "CANCEL_RUN",
         } or result.get("execution", {}).get("status") == "VERIFIED":
             self._refresh_action_project(action)
+        self._activate_observability_policy(action, result)
         return result
 
     # ------------------------------------------------------------- projects

@@ -142,9 +142,28 @@ def test_external_url_status_redacts_health_path(tmp_path: Path):
     assert "private-health-path" not in repr(status)
 
 
-def test_managed_service_requires_loopback_and_explicit_consistent_command(tmp_path: Path):
-    with pytest.raises(ValidationError, match="explicit foreground command"):
-        LocalWandbConfig(enabled=True)
+def test_external_service_ready_state_is_rechecked(tmp_path: Path):
+    healthy = True
+    manager = WandbServiceManager(
+        LocalWandbConfig(
+            enabled=True, managed=False,
+            external_url="http://127.0.0.1:8080",
+            data_dir=str(tmp_path / "unused"),
+        ),
+        port_probe=lambda host, port, timeout: healthy,
+        healthcheck=lambda url: healthy,
+    )
+    assert manager.start()["state"] == "READY"
+    healthy = False
+    status = manager.status()
+    assert status["state"] == "DEGRADED"
+    assert status["error"] == "local W&B readiness check failed"
+
+
+def test_managed_service_requires_loopback_and_consistent_command(tmp_path: Path):
+    assert "ml_exp_server.local_wandb_service" in LocalWandbConfig(
+        enabled=True,
+    ).command
     with pytest.raises(ValidationError, match="loopback"):
         _managed(tmp_path, bind_host="0.0.0.0")
     with pytest.raises(ValidationError, match="missing placeholders"):

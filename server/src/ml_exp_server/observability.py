@@ -130,6 +130,12 @@ class WandbServiceManager:
                 self._terminate_process()
                 self._state = "DEGRADED"
                 self._error = "local W&B process exited"
+            if (
+                self.config.enabled and not self.config.managed
+                and self._state == "READY" and not self._external_ready()
+            ):
+                self._state = "DEGRADED"
+                self._error = "local W&B readiness check failed"
             return {
                 "enabled": self.config.enabled,
                 "managed": self.config.managed,
@@ -140,6 +146,23 @@ class WandbServiceManager:
                 "started_at": self._started_at,
                 "error": self._error,
             }
+
+    def _external_ready(self) -> bool:
+        try:
+            host, port = self._readiness_address()
+            port_ready = _bounded_bool_call(
+                lambda: self.port_probe(host, port, 0.2), 0.2,
+            ) if self.port_probe is not None else _bounded_bool_call(
+                lambda: _port_ready(host, port, 0.2), 0.2,
+            )
+            http_ready = _bounded_bool_call(
+                lambda: self.healthcheck(self.config.url()), 0.5,
+            ) if self.healthcheck is not None else _bounded_bool_call(
+                lambda: _http_ready(self.config.url(), 0.5), 0.5,
+            )
+            return bool(port_ready and http_ready)
+        except (OSError, urllib.error.URLError, ValueError):
+            return False
 
     def _environment(self, data_dir: Path) -> dict[str, str]:
         # Default empty: no proxy tokens, cloud credentials, HOME, shell hooks,

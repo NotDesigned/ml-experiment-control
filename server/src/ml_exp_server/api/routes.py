@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -81,12 +82,116 @@ def health(request: Request):
 @router.get("/observability")
 def observability(request: Request):
     """Return bounded projection status without paths or credential metadata."""
+    runtime = request.app.state.runtime
+    targets = runtime.observability_store.statuses(limit=500)
+    local_config = runtime.config.observability.local_wandb
+    cloud_config = runtime.config.observability.wandb_cloud
+    cloud_configured = bool(
+        cloud_config.enabled
+        and cloud_config.default_credential_ref
+        and cloud_config.entity
+        and runtime.credential_store.status(
+            cloud_config.default_credential_ref,
+        ).configured
+    )
+    archive = runtime.observability_store.archive_summary()
+    def publisher_state(target: str, available: bool, enabled: bool) -> str:
+        if not enabled:
+            return "DISABLED"
+        if not available:
+            return "UNAVAILABLE"
+        states = [item.state for item in targets if item.target == target]
+        if not states:
+            return "PENDING"
+        for state in ("FAILED", "DEGRADED", "SYNCING", "PENDING"):
+            if state in states:
+                return state
+        return "READY" if all(state == "READY" for state in states) else "PENDING"
+
+    local_available = bool(
+        local_config.enabled and local_config.publisher_entity
+        and local_config.publisher_credential_ref
+        and runtime.credential_store.status(
+            local_config.publisher_credential_ref,
+        ).configured
+    )
     return {
-        "local_wandb": request.app.state.runtime.wandb_service.status(),
-        "cloud": {
-            "publisher_available": False,
-            "state": "UNAVAILABLE",
+        "archive": {
+            "state": (
+                "STANDBY" if not bool(getattr(request.app.state, "collector_owner", False))
+                else "DEGRADED" if archive["degraded_sources"] else "READY"
+            ),
+            **archive,
+            "target_count": len(targets),
+            "pending_records": sum(item.pending for item in targets),
+            "failed_records": sum(item.terminal for item in targets),
         },
+        "local_wandb": {
+            "service": runtime.wandb_service.status(),
+            "publisher_available": local_available,
+            "publisher_state": publisher_state(
+                "local", local_available, local_config.enabled,
+            ),
+            "targets": sum(item.target == "local" for item in targets),
+        },
+        "cloud": {
+            "publisher_available": cloud_configured,
+            "state": publisher_state(
+                "cloud", cloud_configured, cloud_config.enabled,
+            ),
+            "targets": sum(item.target == "cloud" for item in targets),
+        },
+    }
+
+
+def _target_payload(item) -> dict[str, Any]:
+    return {
+        "target": item.target,
+        "state": item.state,
+        "dashboard_url": _public_dashboard_url(item.dashboard_url),
+        "pending": item.pending,
+        "delivered": item.delivered,
+        "failed": item.terminal,
+        "updated_at": item.updated_at,
+        "error_class": item.last_error,
+    }
+
+
+def _public_dashboard_url(value: Any) -> str | None:
+    text = str(value or "").strip()
+    parsed = urlsplit(text)
+    if (
+        parsed.scheme not in {"http", "https"} or not parsed.hostname
+        or parsed.username is not None or parsed.password is not None
+        or parsed.query or parsed.fragment
+    ):
+        return None
+    try:
+        parsed.port
+    except ValueError:
+        return None
+    return text
+
+
+@router.get("/observability/attempts/{project}/{run_id}/{attempt_id}")
+def attempt_observability(
+    project: str, run_id: str, attempt_id: str, request: Request,
+):
+    from ..observability_store import AttemptRef
+
+    reference = AttemptRef(
+        request.app.state.runtime.workspace_id, project, run_id, attempt_id,
+    )
+    return {
+        "project": project,
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "targets": [
+            _target_payload(item)
+            for item in request.app.state.runtime.observability_store.statuses(
+                attempt=reference, limit=10,
+            )
+        ],
     }
 
 
@@ -255,10 +360,32 @@ def terminal_snapshot(request: Request):
     server collector is the sole owner of scheduler observation; the TUI only
     consumes the already-indexed snapshot.
     """
-    return snapshot_payload(build_snapshot(
+    payload = snapshot_payload(build_snapshot(
         request.app.state.index,
         request.app.state.projects,
     ))
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for item in request.app.state.runtime.observability_store.statuses(limit=500):
+        key = (item.attempt.project, item.attempt.run_id, item.attempt.attempt_id)
+        grouped.setdefault(key, []).append(_target_payload(item))
+    for project, rows in payload["runs"].items():
+        for row in rows:
+            run_id = str(row.get("run_id") or "")
+            attempt_ids = {
+                str(item.get("attempt_id") or "") for item in row.get("attempts") or []
+            }
+            attempt_ids.update(
+                attempt_id for (target_project, target_run, attempt_id) in grouped
+                if target_project == project and target_run == run_id
+            )
+            row["observability"] = {
+                "attempts": {
+                    attempt_id: grouped.get((project, run_id, attempt_id), [])
+                    for attempt_id in sorted(attempt_ids) if attempt_id
+                }
+            }
+    payload["observability"] = observability(request)
+    return payload
 
 
 @router.post("/terminal/refresh")
