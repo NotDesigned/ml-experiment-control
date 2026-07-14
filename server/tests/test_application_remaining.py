@@ -15,7 +15,7 @@ from ml_exp_server.application import (
     attempt_failure_evidence_assessment, structured_failure_summary,
 )
 from ml_exp_server.schemas import (
-    CampaignRef, ControllerConfig, OperationScope, OperationScopeType,
+    CampaignRef, CampaignRelationship, ControllerConfig, OperationScope, OperationScopeType,
     ProjectLifecycleState, ResearchProject,
 )
 
@@ -174,6 +174,86 @@ def test_operation_blocker_matrix(monkeypatch, tmp_path):
     ) == []
 
 
+def test_local_evidence_rebuild_blocker_matrix(monkeypatch, tmp_path):
+    action_runtime = SimpleNamespace(
+        allow_observability_mutations=True,
+        allow_local_evidence_rebuild=False,
+    )
+    index = SimpleNamespace(get_run=lambda *_args: None)
+    value = app(
+        index=index,
+        config=SimpleNamespace(action_runtime=action_runtime),
+    )
+    target_scope = scope(OperationScopeType.ATTEMPT, "run-a::a1")
+    project = SimpleNamespace(project="demo", controller=None)
+    blockers = value._operation_blockers(
+        "evidence.rebuild_local",
+        target_scope,
+        project,
+        SimpleNamespace(state="RUNNING"),
+    )
+    assert any("disabled" in reason for reason in blockers)
+    assert any("no controller" in reason.lower() for reason in blockers)
+    assert any("not terminal" in reason for reason in blockers)
+    assert any("Run evidence is unavailable" in reason for reason in blockers)
+
+    action_runtime.allow_local_evidence_rebuild = True
+    project.controller = SimpleNamespace(capabilities={})
+    run_dir = tmp_path / "run"
+    row = SimpleNamespace(
+        run_dir=str(run_dir),
+        campaign=None,
+        campaign_binding=SimpleNamespace(
+            relationship=CampaignRelationship.PROJECT_MISMATCH,
+        ),
+    )
+    index.get_run = lambda *_args: row
+    blockers = value._operation_blockers(
+        "evidence.rebuild_local",
+        target_scope,
+        project,
+        SimpleNamespace(state="SUCCEEDED"),
+    )
+    assert any("refresh_evidence_local" in reason for reason in blockers)
+    assert any("not exactly bound" in reason for reason in blockers)
+    assert any("no exact authored Campaign" in reason for reason in blockers)
+    assert any("identity files are unavailable" in reason for reason in blockers)
+    assert any("no already-local" in reason for reason in blockers)
+
+    project.controller.capabilities["refresh_evidence_local"] = True
+    row.campaign = "study"
+    row.campaign_binding.relationship = CampaignRelationship.MATCHED
+    attempt_dir = run_dir / "attempts" / "a1"
+    attempt_dir.mkdir(parents=True)
+    (run_dir / "manifest.yaml").write_text("run_id: run-a\n", encoding="utf-8")
+    (attempt_dir / "attempt.yaml").write_text("attempt_id: a1\n", encoding="utf-8")
+    (attempt_dir / "backend.json").write_text("{}\n", encoding="utf-8")
+    durable = attempt_dir / "collected_run"
+    durable.mkdir()
+    (durable / "result.json").write_text("{}\n", encoding="utf-8")
+    assert value._operation_blockers(
+        "evidence.rebuild_local",
+        target_scope,
+        project,
+        SimpleNamespace(state="SUCCEEDED"),
+    ) == []
+
+    original_rglob = Path.rglob
+
+    def failing_rglob(path, pattern):
+        if path == durable:
+            raise OSError("unreadable")
+        return original_rglob(path, pattern)
+
+    monkeypatch.setattr(Path, "rglob", failing_rglob)
+    assert any("no already-local" in reason for reason in value._operation_blockers(
+        "evidence.rebuild_local",
+        target_scope,
+        project,
+        SimpleNamespace(state="SUCCEEDED"),
+    ))
+
+
 def test_require_and_direct_operation_dispatch_edges(monkeypatch):
     value = app()
     value.operation_availability = lambda *_args: []
@@ -240,6 +320,58 @@ def test_require_and_direct_operation_dispatch_edges(monkeypatch):
     assert error_code(lambda: value.invoke_direct_operation(
         "question.create", "demo", OperationScopeType.RUN, "run-a",
     )) == "INVALID_OPERATION"
+
+
+def test_direct_local_evidence_dispatch_and_prepare(tmp_path):
+    value = app()
+    target_scope = scope(OperationScopeType.ATTEMPT, "run-a::a1")
+    value.resolve_scope = lambda *_args: (target_scope, SimpleNamespace(), object())
+    value._require_operation_available = lambda *_args: None
+    definition = module.OPERATIONS_BY_ID["evidence.rebuild_local"]
+    value.operation_availability = lambda *_args: [SimpleNamespace(operation=definition)]
+    value.prepare_local_evidence_rebuild = lambda *_args, **kwargs: kwargs["reason"]
+    assert value.invoke_direct_operation(
+        "evidence.rebuild_local",
+        "demo",
+        OperationScopeType.ATTEMPT,
+        "run-a::a1",
+        {"reason": "repair local evidence"},
+    ) == "repair local evidence"
+
+    value = app()
+    assert error_code(lambda: value.prepare_local_evidence_rebuild(
+        "demo", "run-a::a1", reason=" ",
+    )) == "INVALID_EVIDENCE_REBUILD_REASON"
+
+    configured = ResearchProject(
+        project="demo",
+        title="Demo",
+        run_roots=[],
+        base_dir=tmp_path,
+        campaigns=[CampaignRef(name="study", file="study.yml")],
+    )
+    run_dir = tmp_path / "runs" / "run-a"
+    row = SimpleNamespace(campaign="study", run_id="run-a", run_dir=str(run_dir))
+    attempt = SimpleNamespace(attempt_id="a1")
+    value._require_operation_available = lambda *_args: None
+    value._attempt_context = lambda *_args: (
+        target_scope,
+        configured,
+        row,
+        attempt,
+        run_dir / "attempts/a1",
+    )
+    value._prepare_attempt_action = lambda *_args, **kwargs: {
+        "draft": kwargs["draft"],
+        "kind": kwargs["kind"],
+    }
+    prepared = value.prepare_local_evidence_rebuild(
+        "demo", "run-a::a1", reason=" repair local evidence ",
+    )
+    draft = yaml.safe_load(prepared["draft"])
+    assert prepared["kind"] == "REBUILD_LOCAL_EVIDENCE"
+    assert draft["reason"] == "repair local evidence"
+    assert draft["local_root"] == str(tmp_path)
 
 
 def test_archive_and_backfill_prepare_success_and_validation(tmp_path):

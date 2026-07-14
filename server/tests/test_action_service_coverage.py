@@ -18,6 +18,7 @@ from ml_exp_server.schemas import (
     OperationScopeType,
     ResearchProject,
 )
+from tests.test_action_edges import _local_evidence_action
 
 
 def intent(kind, draft, key="focused-intent"):
@@ -442,3 +443,200 @@ def test_non_submission_controller_outcomes(tmp_path, result, status):
     assert service._execute_controller(plan, execution_for(plan))[
         "execution"
     ]["status"] == status
+
+
+def _local_payload(draft):
+    return {
+        "kind": "REBUILD_LOCAL_EVIDENCE", "intent_id": "local-edge",
+        "draft": yaml.safe_dump(draft), "evidence_digest": "sha256:evidence",
+    }
+
+
+def test_local_evidence_prepare_rejects_scope_controller_identity_and_capability(tmp_path):
+    project, attempt_scope, draft, _campaign, _collection = _local_evidence_action(
+        tmp_path,
+    )
+    service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig())
+    with pytest.raises(ActionError, match="requires exact Attempt scope"):
+        service._prepare_local_evidence_rebuild(
+            "action-localedge", scope(), project, _local_payload(draft),
+        )
+
+    no_controller = ResearchProject(
+        project="demo", title="Demo", run_roots=[], base_dir=project.base_dir,
+    )
+    with pytest.raises(ActionError, match="no controller"):
+        service._prepare_local_evidence_rebuild(
+            "action-localedge", attempt_scope, no_controller, _local_payload(draft),
+        )
+
+    with pytest.raises(ActionError, match="conflicts with exact scope"):
+        service._prepare_local_evidence_rebuild(
+            "action-localedge", attempt_scope, project,
+            _local_payload({**draft, "attempt_id": "attempt-999"}),
+        )
+
+    project.controller.capabilities = {}
+    with pytest.raises(ActionError, match="does not declare"):
+        service._prepare_local_evidence_rebuild(
+            "action-localedge", attempt_scope, project, _local_payload(draft),
+        )
+
+
+def test_local_evidence_prepare_rejects_reason_and_paths(tmp_path):
+    project, attempt_scope, draft, _campaign, _collection = _local_evidence_action(
+        tmp_path,
+    )
+    service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig())
+    with pytest.raises(ActionError, match="reason is required"):
+        service._prepare_local_evidence_rebuild(
+            "action-localedge", attempt_scope, project,
+            _local_payload({**draft, "reason": " "}),
+        )
+
+    relative_campaign = Path(draft["campaign_file"]).relative_to(project.base_dir)
+    with pytest.raises(ActionError, match="must exist under"):
+        service._prepare_local_evidence_rebuild(
+            "action-localedge", attempt_scope, project,
+            _local_payload({**draft, "campaign_file": str(relative_campaign) + ".missing"}),
+        )
+
+    with pytest.raises(ActionError, match="paths must be absolute"):
+        service._prepare_local_evidence_rebuild(
+            "action-localedge", attempt_scope, project,
+            _local_payload({**draft, "run_dir": "relative/run"}),
+        )
+
+    with pytest.raises(ActionError, match="conflicts with campaign identity"):
+        service._prepare_local_evidence_rebuild(
+            "action-localedge", attempt_scope, project,
+            _local_payload({**draft, "run_dir": str(tmp_path / "wrong-run")}),
+        )
+
+
+def test_local_evidence_prepare_optional_inputs_and_missing_evidence(tmp_path):
+    project, attempt_scope, draft, _campaign, collection = _local_evidence_action(
+        tmp_path,
+    )
+    service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig())
+    attempt_dir = Path(draft["run_dir"]) / "attempts" / draft["attempt_id"]
+    (attempt_dir / "status.json").write_text("{}\n", encoding="utf-8")
+    collection.unlink()
+    (attempt_dir / "backend.json").unlink()
+    with pytest.raises(ActionError, match="already-local evidence is missing"):
+        service._prepare_local_evidence_rebuild(
+            "action-localedge", attempt_scope, project, _local_payload(draft),
+        )
+
+    (attempt_dir / "backend.json").write_text("{}\n", encoding="utf-8")
+    collected = attempt_dir / "collected_run"
+    for path in collected.iterdir():
+        path.unlink()
+    with pytest.raises(ActionError, match="already-local evidence is missing"):
+        service._prepare_local_evidence_rebuild(
+            "action-localedge", attempt_scope, project, _local_payload(draft),
+        )
+
+
+def test_local_evidence_prepare_snapshot_and_preview_exceptions(tmp_path):
+    project, attempt_scope, draft, _campaign, _collection = _local_evidence_action(
+        tmp_path,
+    )
+    service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig())
+    service.controller.snapshot_execution_bundle = lambda *args, **kwargs: (
+        _ for _ in ()
+    ).throw(OSError("snapshot failed"))
+    with pytest.raises(ActionError, match="snapshot preparation failed"):
+        service._prepare_local_evidence_rebuild(
+            "action-localedge", attempt_scope, project, _local_payload(draft),
+        )
+
+    snapshot = {
+        "manifest_sha256": "sha256:" + "a" * 64,
+        "root": str(tmp_path / "private"),
+        "manifest_path": str(tmp_path / "private" / "manifest.json"),
+        "manifest": {},
+    }
+    service.controller.snapshot_execution_bundle = lambda *args, **kwargs: snapshot
+    service.controller.execute_snapshot = lambda *args, **kwargs: (
+        _ for _ in ()
+    ).throw(ValueError("preview failed"))
+    plan = service._prepare_local_evidence_rebuild(
+        "action-localedge", attempt_scope, project, _local_payload(draft),
+    )
+    assert plan["ready"] is False
+    assert "preview failed" in next(
+        gate["detail"] for gate in plan["gates"]
+        if gate["name"] == "local_evidence_preview"
+    )
+
+    service.controller.execute_snapshot = lambda *args, **kwargs: {
+        "returncode": 0, "timeout": False, "stdout": "", "stderr": "",
+        "payload": [{
+            "project": "demo", "run_id": "run-a", "attempt_id": "attempt-001",
+            "collection_path": "relative/collection.json",
+        }],
+    }
+    plan = service._prepare_local_evidence_rebuild(
+        "action-localrelative", attempt_scope, project, _local_payload(draft),
+    )
+    assert plan["collection_path"] is None
+
+
+def test_local_evidence_policy_execute_and_reconcile_rejections(tmp_path, monkeypatch):
+    store = ActionStore(tmp_path / "actions")
+    local = synthetic_plan(
+        store, "local-policy", "REBUILD_LOCAL_EVIDENCE",
+        collection_path=str(tmp_path / "collection.json"),
+        expected_collection_sha256=None, controller_snapshot={},
+        snapshot_arguments=["refresh-evidence-local"],
+    )
+    blocked = ActionService(store, ActionRuntimeConfig(), actor_provider=lambda: "actor")
+    blocked.authorize(local, "review")
+    with pytest.raises(ActionError, match="disabled by daemon policy"):
+        blocked.execute(local, f"EXECUTE {local}")
+
+    internal_store = ActionStore(tmp_path / "internal-actions")
+    internal = synthetic_plan(
+        internal_store, "internal-policy", "OBSERVABILITY_BACKFILL",
+    )
+    internal_service = ActionService(
+        internal_store, ActionRuntimeConfig(), actor_provider=lambda: "actor",
+    )
+    internal_service.authorize(internal, "review")
+    with pytest.raises(ActionError, match="observability mutations are disabled"):
+        internal_service.execute(internal, f"EXECUTE {internal}")
+
+    allowed = ActionService(
+        store, ActionRuntimeConfig(allow_local_evidence_rebuild=True),
+        actor_provider=lambda: "actor",
+    )
+    monkeypatch.setattr(
+        allowed.controller, "verify_execution_bundle",
+        lambda value: (_ for _ in ()).throw(ValueError("bad snapshot")),
+    )
+    with pytest.raises(ActionError, match="approved private controller snapshot is invalid"):
+        allowed.execute(local, f"EXECUTE {local}")
+
+    with pytest.raises(ActionError, match="disabled by daemon policy"):
+        blocked.reconcile(local)
+    with pytest.raises(ActionError, match="not awaiting reconciliation"):
+        allowed.reconcile(local)
+
+
+def test_local_evidence_executor_allowlist_and_snapshot_exception(tmp_path):
+    store = ActionStore(tmp_path / "actions")
+    service = ActionService(store, ActionRuntimeConfig())
+    action_id = synthetic_plan(store, "local-executor", "REBUILD_LOCAL_EVIDENCE")
+    plan = store.snapshot(action_id)
+    execution = execution_for(plan)
+    with pytest.raises(ActionError, match="no allowlisted controller verb"):
+        service._execute_local_evidence_rebuild(plan, execution)
+
+    plan["snapshot_arguments"] = ["refresh-evidence-local"]
+    service.controller.execute_snapshot = lambda *args, **kwargs: (
+        _ for _ in ()
+    ).throw(OSError("execution snapshot failed"))
+    result = service._execute_local_evidence_rebuild(plan, execution)
+    assert result["execution"]["status"] == "RECONCILE_REQUIRED"
+    assert "execution snapshot failed" in result["execution"]["error"]
