@@ -188,6 +188,38 @@ def test_wandb_url_prefers_attempt_collection_structured_evidence(tmp_path):
     assert row.provenance["wandb"]["evidence_source"] == "/remote/stdout.log"
 
 
+def test_wandb_url_consumes_root_collection_and_rejects_secret_urls(tmp_path):
+    run_dir = tmp_path / "wandb-run"
+    run_dir.mkdir()
+    (run_dir / "manifest.yaml").write_text(
+        "project: demo\nrun_id: wandb-run\n"
+        "resolved_config:\n  use_wandb: true\n",
+        encoding="utf-8",
+    )
+    (run_dir / "collection.json").write_text(json.dumps({
+        "wandb": {
+            "initialized": True,
+            "url": "https://wandb.ai/team/project/runs/wandb-run",
+            "evidence_source": "/remote/stdout.log",
+        },
+    }))
+
+    observed = scan_run_dir(run_dir, "demo", now=NOW)
+
+    assert observed.provenance["wandb"]["initialized"] is True
+    assert observed.provenance["wandb"]["url"].endswith("/runs/wandb-run")
+
+    (run_dir / "collection.json").write_text(json.dumps({
+        "wandb": {
+            "initialized": True,
+            "url": "https://user:secret@wandb.ai/runs/wandb-run",
+        },
+    }))
+    rejected = scan_run_dir(run_dir, "demo", now=NOW)
+    assert rejected.provenance["wandb"]["initialized"] is False
+    assert "url" not in rejected.provenance["wandb"]
+
+
 def test_terminal_runs_are_never_stale(tmp_path):
     run_dir = tmp_path / "camp" / "run-x"
     run_dir.mkdir(parents=True)

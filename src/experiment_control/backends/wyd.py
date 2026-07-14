@@ -9,6 +9,7 @@ import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .services import BackendServices
 from ..contracts import (
@@ -80,6 +81,45 @@ def log_probe_command(paths: list[str], *, tail: int) -> str:
         f"tail -n {tail} -- \"$path\"; exit 0; "
         "fi; done; exit 1"
     )
+
+
+_WANDB_URL_SCAN_LIMIT = 8 * 1024 * 1024
+
+
+def _safe_wandb_url(value: str) -> bool:
+    if len(value) > 2048:
+        return False
+    parsed = urlsplit(value)
+    return (
+        parsed.scheme in {"http", "https"}
+        and bool(parsed.hostname)
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def wandb_url_probe_command(
+    paths: list[str], *, max_bytes: int = _WANDB_URL_SCAN_LIMIT,
+) -> str:
+    """Build a bounded remote probe that returns only W&B URL evidence."""
+    if not paths:
+        raise ValueError("at least one log path is required")
+    if not 1 <= max_bytes <= _WANDB_URL_SCAN_LIMIT:
+        raise ValueError("max_bytes must be between 1 and 8388608")
+    code = (
+        "import re,sys; limit=int(sys.argv[1]); "
+        "pattern=re.compile(r'wandb initialized:\\s*(https?://[^\\s)>\\]\\\"\\\'?#]+)', re.I);"
+        "\nfor path in sys.argv[2:]:\n"
+        " try:\n"
+        "  with open(path,'rb') as handle: text=handle.read(limit).decode('utf-8','replace')\n"
+        " except OSError: continue\n"
+        " match=pattern.search(text)\n"
+        " if match: print(path); print(match.group(1)); raise SystemExit(0)\n"
+        "raise SystemExit(1)"
+    )
+    return shlex.join(["python3", "-c", code, str(max_bytes), *paths])
 
 
 def render_job(
@@ -653,6 +693,32 @@ class WydSlurmBackend:
             "stdout_tail": diagnostics["stdout"],
             "stderr_tail": diagnostics["stderr"],
         }
+        resolved = run.get("resolved_config")
+        resolved = resolved if isinstance(resolved, dict) else {}
+        if str(resolved.get("use_wandb", "")).strip().lower() in {
+            "1", "true", "yes", "on",
+        }:
+            paths = [
+                str(path) for path in diagnostics["sources"].values() if path
+            ]
+            if paths:
+                observed = self.remote_exec(
+                    backend["ssh_alias"], wandb_url_probe_command(paths), check=False,
+                )
+                lines = [
+                    line.strip() for line in observed.stdout.splitlines() if line.strip()
+                ]
+                if (
+                    observed.returncode == 0
+                    and len(lines) >= 2
+                    and lines[0] in paths
+                    and _safe_wandb_url(lines[1])
+                ):
+                    summary["wandb"] = {
+                        "initialized": True,
+                        "url": lines[1],
+                        "evidence_source": lines[0],
+                    }
         return summary
 
     def logs(self, campaign, run, *, tail: int) -> StreamBackendLogs:

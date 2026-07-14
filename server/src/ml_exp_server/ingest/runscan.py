@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -87,7 +88,7 @@ _CHECKPOINT_KEYS = (
     "checkpoint_exposure_minutes",
 )
 _WANDB_INIT_PATTERN = re.compile(
-    r"wandb initialized:\s*(https?://[^\s)>\]\"']+)", re.IGNORECASE
+    r"wandb initialized:\s*(https?://[^\s)>\]\"'?#]+)", re.IGNORECASE
 )
 _WANDB_LOG_SCAN_LIMIT = 8 * 1024 * 1024
 
@@ -128,9 +129,25 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _safe_wandb_url(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or len(value) > 2048:
+        return None
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return value
+
+
 def _wandb_url_in_text(value: str) -> Optional[str]:
     match = _WANDB_INIT_PATTERN.search(value)
-    return match.group(1) if match else None
+    return _safe_wandb_url(match.group(1)) if match else None
 
 
 def _wandb_url_in_file(path: Path) -> Optional[str]:
@@ -171,8 +188,8 @@ def _wandb_provenance(
         ("run.collection.wandb", collection.get("wandb")),
     ):
         observed = payload if isinstance(payload, dict) else {}
-        url = observed.get("url")
-        if isinstance(url, str) and url.startswith(("http://", "https://")):
+        url = _safe_wandb_url(observed.get("url"))
+        if url is not None:
             result.update({
                 "initialized": bool(observed.get("initialized", True)),
                 "url": url,
@@ -196,8 +213,8 @@ def _wandb_provenance(
 
     for path in structured_candidates:
         observed = _load_json(path)
-        url = observed.get("url") or observed.get("run_url")
-        if isinstance(url, str) and url.startswith(("http://", "https://")):
+        url = _safe_wandb_url(observed.get("url") or observed.get("run_url"))
+        if url is not None:
             result.update({
                 "initialized": bool(observed.get("initialized", True)),
                 "url": url,
