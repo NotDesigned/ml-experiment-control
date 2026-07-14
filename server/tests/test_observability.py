@@ -120,6 +120,7 @@ def test_environment_inheritance_is_an_explicit_non_secret_allowlist(
     "https://user:password@metrics.example.test",
     "https://metrics.example.test/health?api_key=secret",
     "https://metrics.example.test/health#secret",
+    "http://metrics.example.test",
 ])
 def test_external_url_rejects_credential_bearing_or_non_http_values(url: str):
     with pytest.raises(ValidationError):

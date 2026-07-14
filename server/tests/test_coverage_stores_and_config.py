@@ -13,7 +13,7 @@ import yaml
 from ml_exp_server.actions.store import ActionStore
 from ml_exp_server.project_config import ConfigError, load_server_config, load_projects, load_research_project, load_research_question
 from ml_exp_server.schemas import OperationScope, OperationScopeType, ServerConfig, ProjectRef
-from ml_exp_server.storage import StorageError, read_json
+from ml_exp_server.storage import StorageError, atomic_json, read_json
 
 
 def scope(object_id: str = "demo") -> OperationScope:
@@ -108,6 +108,24 @@ def test_action_store_serializes_plan_creation_across_daemon_instances(tmp_path)
             action_id, {"status": "AUTHORIZED", "actor": "second"},
             event="authorized", expected_status="PREPARED",
         )
+
+
+def test_atomic_json_fsync_path_is_private_and_cleans_failed_temporary(
+    tmp_path, monkeypatch,
+):
+    target = tmp_path / "state" / "record.json"
+    atomic_json(target, {"value": 1})
+    assert (target.stat().st_mode & 0o777) == 0o600
+    assert read_json(target, {}) == {"value": 1}
+
+    monkeypatch.setattr(
+        "ml_exp_server.storage.os.replace",
+        lambda *_args: (_ for _ in ()).throw(OSError("disk failure")),
+    )
+    with pytest.raises(OSError, match="disk failure"):
+        atomic_json(target, {"value": 2})
+    assert read_json(target, {}) == {"value": 1}
+    assert not list(target.parent.glob(".record.json.*.tmp"))
 
 
 def write_project(tmp_path: Path, project_body: str,

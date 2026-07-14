@@ -17,7 +17,7 @@ def _require_loopback_host(host: str) -> str:
 
     value = host.strip().strip("[]")
     if value.lower() == "localhost":
-        return host
+        return "localhost"
     try:
         address = ipaddress.ip_address(value)
     except ValueError as exc:
@@ -28,7 +28,7 @@ def _require_loopback_host(host: str) -> str:
         raise SystemExit(
             "ml-expd has no HTTP authentication; refusing a non-loopback --host"
         )
-    return host
+    return str(address)
 
 
 def build_parser() -> argparse.ArgumentParser:

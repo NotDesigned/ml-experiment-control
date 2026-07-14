@@ -43,6 +43,8 @@ uv run --package ml-experiment-server ml-expd \
 at startup, and owns one live collector per workspace. It polls immediately
 and then at `poll_interval_seconds` (20 seconds by default); `--snapshot` is
 the explicit no-poll mode.
+Only one daemon process may mutate a workspace, including in snapshot mode;
+additional processes remain read-only until restarted after the owner exits.
 Because the HTTP control plane does not implement remote-client
 authentication, `--host` accepts loopback addresses only. Use an authenticated
 local tunnel when a client runs on another machine.

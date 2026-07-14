@@ -200,12 +200,39 @@ class RunIndex:
             record = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return record[0] if record else None
 
+    def prune_project_runs(self, project: str, keep_run_ids: set[str]) -> list[str]:
+        """Remove projections whose canonical Run disappeared from a complete scan."""
+
+        with self._lock:
+            existing = {
+                str(row[0]) for row in self._conn.execute(
+                    "SELECT run_id FROM runs WHERE project=?", (project,),
+                ).fetchall()
+            }
+            removed = sorted(existing - keep_run_ids)
+            for run_id in removed:
+                self._conn.execute(
+                    "DELETE FROM collector_status WHERE project=? AND run_id=?",
+                    (project, run_id),
+                )
+                self._conn.execute(
+                    "DELETE FROM runs WHERE project=? AND run_id=?",
+                    (project, run_id),
+                )
+            self._conn.commit()
+        if self.on_update is not None:
+            for run_id in removed:
+                self.on_update(project, run_id)
+        return removed
+
 
 def index_project(index: RunIndex, project: ResearchProject,
                   *, now: Optional[float] = None) -> int:
     """Scan all run roots of a project into the index. Returns run count."""
     rows: list[RunIndexRow] = []
-    for root in project.resolved_run_roots():
+    roots = project.resolved_run_roots()
+    complete_scan = all(root.is_dir() for root in roots)
+    for root in roots:
         for run_dir in discover_run_dirs(root):
             row = scan_run_dir(run_dir, project.project, now=now)
             _reconcile_campaign_binding(row, project)
@@ -238,6 +265,8 @@ def index_project(index: RunIndex, project: ResearchProject,
             # URL when a later bounded log tail no longer contains its init line.
             row.provenance["wandb"] = prior_wandb
         index.upsert_run(row)
+    if complete_scan:
+        index.prune_project_runs(project.project, set(by_id))
     return len(rows)
 
 

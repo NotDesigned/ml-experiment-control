@@ -133,9 +133,15 @@ def test_doctor_reports_invalid_config_without_crashing(tmp_path, capsys):
     assert "✗ server config" in out
 
 
-@pytest.mark.parametrize("host", ["127.0.0.1", "127.1.2.3", "::1", "localhost"])
-def test_daemon_accepts_only_loopback_bind_hosts(host):
-    assert _require_loopback_host(host) == host
+@pytest.mark.parametrize(("host", "normalized"), [
+    ("127.0.0.1", "127.0.0.1"),
+    ("127.1.2.3", "127.1.2.3"),
+    ("::1", "::1"),
+    ("[::1]", "::1"),
+    (" localhost ", "localhost"),
+])
+def test_daemon_accepts_only_loopback_bind_hosts(host, normalized):
+    assert _require_loopback_host(host) == normalized
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "daemon.internal"])

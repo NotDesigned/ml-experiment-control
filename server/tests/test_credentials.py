@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 import pytest
 
@@ -40,3 +41,51 @@ def test_credential_cli_reads_stdin_without_exposing_secret(tmp_path, monkeypatc
     output = capsys.readouterr()
     assert "secret-value" not in output.out + output.err
     assert '"configured": true' in output.out
+
+
+def test_credential_store_rejects_symlinks_and_insecure_permissions(tmp_path: Path):
+    root = tmp_path / "credentials"
+    root.mkdir(mode=0o700)
+    target = tmp_path / "unrelated-secret"
+    target.write_text("must-not-be-read", encoding="utf-8")
+    target.chmod(0o600)
+    linked = root / "cloud-primary.wandb-api-key"
+    linked.symlink_to(target)
+
+    store = CredentialStore(root)
+    with pytest.raises(CredentialError, match="symlink"):
+        store.resolve_wandb_api_key("cloud-primary")
+    with pytest.raises(CredentialError, match="symlink"):
+        store.status("cloud-primary")
+
+    linked.unlink()
+    linked.write_text("secret", encoding="utf-8")
+    linked.chmod(0o644)
+    with pytest.raises(CredentialError, match="0600"):
+        store.resolve_wandb_api_key("cloud-primary")
+
+    linked.chmod(0o600)
+    root.chmod(0o755)
+    with pytest.raises(CredentialError, match="0700"):
+        store.resolve_wandb_api_key("cloud-primary")
+
+
+def test_credential_store_rejects_wrong_owner_and_invalid_content(
+    tmp_path: Path, monkeypatch,
+):
+    store = CredentialStore(tmp_path / "credentials")
+    store.set_wandb_api_key("cloud-primary", "secret")
+    path = store.root / "cloud-primary.wandb-api-key"
+    current_uid = os.getuid()
+    monkeypatch.setattr(
+        "ml_exp_server.credentials.os.getuid", lambda: current_uid + 1,
+    )
+    with pytest.raises(CredentialError, match="owned by the current user"):
+        store.resolve_wandb_api_key("cloud-primary")
+
+    monkeypatch.undo()
+    path.write_text("line-one\nline-two", encoding="utf-8")
+    with pytest.raises(CredentialError, match="invalid shape"):
+        store.resolve_wandb_api_key("cloud-primary")
+    with pytest.raises(CredentialError, match="invalid shape"):
+        store.status("cloud-primary")

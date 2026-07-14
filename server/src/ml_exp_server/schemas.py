@@ -145,6 +145,14 @@ class LocalWandbConfig(BaseModel):
             raise ValueError("external_url must not contain user information")
         if parsed.query or parsed.fragment:
             raise ValueError("external_url must not contain a query or fragment")
+        if parsed.scheme == "http":
+            host = parsed.hostname or ""
+            try:
+                loopback = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                loopback = host.lower() == "localhost"
+            if not loopback:
+                raise ValueError("external_url must use HTTPS unless it is loopback")
         try:
             parsed.port
         except ValueError as exc:

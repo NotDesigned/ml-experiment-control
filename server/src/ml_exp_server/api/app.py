@@ -25,6 +25,48 @@ from .operation_routes import router as operation_router
 from .submission_routes import router as submission_router
 from .sse import EventBroker
 
+
+async def _shutdown(app: FastAPI) -> None:
+    app.state._stop.set()
+    thread = getattr(app.state, "_poll_thread", None)
+    publisher_thread = getattr(app.state, "_publisher_thread", None)
+    if thread is not None:
+        # The collector owns the index while a cycle is in flight. Do not close
+        # the runtime until that owner has observed the stop signal.
+        await asyncio.to_thread(thread.join, 5.0)
+    if publisher_thread is not None:
+        await asyncio.to_thread(publisher_thread.join, 45.0)
+    lease = app.state.collector_lease
+    owner_threads = [
+        item for item in (thread, publisher_thread) if item is not None
+    ]
+    if not any(item.is_alive() for item in owner_threads):
+        try:
+            app.state.runtime.close()
+        finally:
+            if lease is not None:
+                lease.release()
+    else:
+        # Retain the lease until a long in-flight controller observation really
+        # exits; otherwise another daemon could become owner while the prior
+        # collector and its subprocesses are still alive.
+        app.state.runtime.wandb_service.stop()
+
+        def finish_shutdown() -> None:
+            for owner in owner_threads:
+                owner.join()
+            try:
+                app.state.runtime.close()
+            finally:
+                if lease is not None:
+                    lease.release()
+
+        cleanup = threading.Thread(
+            target=finish_shutdown, name="collectord-shutdown", daemon=True,
+        )
+        cleanup.start()
+
+
 def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                index: Optional[RunIndex] = None,
                projects: Optional[list[ResearchProject]] = None) -> FastAPI:
@@ -38,27 +80,47 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             for project in app.state.projects:
                 index_project(app.state.index, project)
 
-        await loop.run_in_executor(None, initial_index)
+        try:
+            await loop.run_in_executor(None, initial_index)
+        except BaseException:
+            app.state.runtime.close()
+            raise
 
         collector: Optional[Collector] = app.state.collector
-        if collector is not None:
-            lease = CollectorLease(app.state.config.index_db_path())
-            if not lease.acquire():
-                app.state.collector_error = (
-                    "another ml-expd process owns this workspace collector"
-                )
-            else:
+        lease = CollectorLease(app.state.config.index_db_path())
+        try:
+            lease_acquired = lease.acquire()
+        except BaseException:
+            app.state.runtime.close()
+            raise
+        if not lease_acquired:
+            app.state.collector_error = (
+                "another ml-expd process owns this workspace"
+            )
+        else:
+            app.state.workspace_owner = True
+            app.state.collector_lease = lease
+            if collector is not None:
                 app.state.collector_owner = True
-                app.state.collector_lease = lease
                 # Only the workspace lease owner may reconcile publisher
                 # targets or rewind collection cursors.
-                app.state.application.recover_observability_policies()
-                # Projection ownership follows the same workspace lease as
-                # canonical collection.  A second daemon must never spawn a
-                # duplicate local service.  Startup is bounded and degradable.
-                app.state.observability = await asyncio.to_thread(
-                    app.state.runtime.wandb_service.start,
-                )
+                try:
+                    app.state.application.recover_observability_policies()
+                    # Projection ownership follows the same workspace lease as
+                    # canonical collection.  A second daemon must never spawn a
+                    # duplicate local service.  Startup is bounded and degradable.
+                    app.state.observability = await asyncio.to_thread(
+                        app.state.runtime.wandb_service.start,
+                    )
+                except BaseException:
+                    app.state.collector_owner = False
+                    app.state.workspace_owner = False
+                    app.state.collector_lease = None
+                    try:
+                        app.state.runtime.close()
+                    finally:
+                        lease.release()
+                    raise
                 def publisher_loop() -> None:
                     while not app.state._stop.is_set():
                         try:
@@ -75,7 +137,11 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                 publisher_thread = threading.Thread(
                     target=publisher_loop, name="wandb-publisher", daemon=True,
                 )
-                publisher_thread.start()
+                try:
+                    publisher_thread.start()
+                except BaseException:
+                    await _shutdown(app)
+                    raise
                 app.state._publisher_thread = publisher_thread
 
                 def poll_loop() -> None:
@@ -96,47 +162,16 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                             break
 
                 thread = threading.Thread(target=poll_loop, name="collectord", daemon=True)
-                thread.start()
-                app.state._poll_thread = thread
-        yield
-        app.state._stop.set()
-        thread = getattr(app.state, "_poll_thread", None)
-        publisher_thread = getattr(app.state, "_publisher_thread", None)
-        if thread is not None:
-            # The collector owns the index while a cycle is in flight.  Do not
-            # close the runtime until that owner has observed the stop signal.
-            await asyncio.to_thread(thread.join, 5.0)
-        if publisher_thread is not None:
-            await asyncio.to_thread(publisher_thread.join, 45.0)
-        lease = app.state.collector_lease
-        owner_threads = [
-            item for item in (thread, publisher_thread) if item is not None
-        ]
-        if not any(item.is_alive() for item in owner_threads):
-            try:
-                app.state.runtime.close()
-            finally:
-                if lease is not None:
-                    lease.release()
-        else:
-            # Retain the lease until a long in-flight controller observation
-            # really exits; otherwise another daemon could become owner while
-            # the prior collector and its subprocesses are still alive.
-            app.state.runtime.wandb_service.stop()
-
-            def finish_shutdown() -> None:
-                for owner in owner_threads:
-                    owner.join()
                 try:
-                    app.state.runtime.close()
-                finally:
-                    if lease is not None:
-                        lease.release()
-
-            cleanup = threading.Thread(
-                target=finish_shutdown, name="collectord-shutdown", daemon=True,
-            )
-            cleanup.start()
+                    thread.start()
+                except BaseException:
+                    await _shutdown(app)
+                    raise
+                app.state._poll_thread = thread
+        try:
+            yield
+        finally:
+            await _shutdown(app)
 
     app = FastAPI(title="ml-expd", version="0.1.0", lifespan=lifespan)
     app.state.broker = EventBroker()
@@ -160,6 +195,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.state.action_service = runtime.action_service
     app.state.collector = None
     app.state.collector_owner = False
+    app.state.workspace_owner = False
     app.state.collector_error = None
     app.state.collector_lease = None
     app.state.observability = app.state.runtime.wandb_service.status()
@@ -169,6 +205,19 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
         app.state.collector = Collector(
             index=app.state.index, projects=app.state.projects,
             config=CollectorConfig(poll_interval_seconds=config.poll_interval_seconds))
+
+    @app.middleware("http")
+    async def require_workspace_writer(request, call_next):
+        if (
+            request.method not in {"GET", "HEAD", "OPTIONS"}
+            and not bool(getattr(app.state, "workspace_owner", False))
+        ):
+            return JSONResponse(
+                {"detail": "workspace mutations are owned by another ml-expd process"},
+                status_code=409,
+                headers={"X-ML-Expd-Error-Code": "WORKSPACE_NOT_OWNER"},
+            )
+        return await call_next(request)
 
     app.include_router(router)
     app.include_router(action_router)

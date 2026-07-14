@@ -2,6 +2,7 @@
 
 import json
 import hashlib
+import shutil
 import textwrap
 
 from ml_exp_server.ingest.indexer import RunIndex, index_project
@@ -320,6 +321,40 @@ def test_index_project_scans_fixture_roots(tmp_path):
     ids = {r.run_id for r in index.list_runs("elf")}
     assert "elf-a1-frozen-t5-l256-s42-h100-v1" in ids
     assert "elf-smoke-slurm-l40s-probe-20260712T0105" in ids
+
+
+def test_index_project_prunes_deleted_runs_only_after_a_complete_root_scan(tmp_path):
+    from ml_exp_server.schemas import ResearchProject
+
+    root = tmp_path / "runs"
+    run_dir = root / "study" / "run-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.yaml").write_text(
+        "project: demo\ncampaign: study\nrun_id: run-a\n",
+        encoding="utf-8",
+    )
+    project = ResearchProject(project="demo", title="Demo", run_roots=[str(root)])
+    index = RunIndex(tmp_path / "index.sqlite")
+    updates = []
+    index.on_update = lambda project_name, run_id: updates.append((project_name, run_id))
+
+    assert index_project(index, project, now=NOW) == 1
+    index.record_poll("demo", "run-a", "observe")
+    shutil.rmtree(run_dir)
+    assert index_project(index, project, now=NOW + 1) == 0
+    assert index.get_run("demo", "run-a") is None
+    assert index.collector_statuses("demo") == []
+    assert updates.count(("demo", "run-a")) == 2
+
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.yaml").write_text(
+        "project: demo\ncampaign: study\nrun_id: run-a\n",
+        encoding="utf-8",
+    )
+    assert index_project(index, project, now=NOW + 2) == 1
+    shutil.rmtree(root)
+    assert index_project(index, project, now=NOW + 3) == 0
+    assert index.get_run("demo", "run-a") is not None
 
 
 def test_index_project_preserves_observed_wandb_url_after_tail_disappears(tmp_path):

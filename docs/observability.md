@@ -97,14 +97,16 @@ reason class; it never exposes rejected payloads or source paths.
 ## Local target
 
 Local W&B is the preferred visualization target when it is explicitly enabled.
-The daemon owns or explicitly references one loopback service and publishes
-through a dedicated worker environment containing only target-specific W&B
+The daemon owns a loopback service or explicitly references an external service
+and publishes through a dedicated worker environment containing only target-specific W&B
 settings. The service process and publisher are separate health domains:
 Dashboard `READY` does not imply that a Run backlog is synchronized.
 
 The W&B SDK is a direct dependency of the daemon distribution. Docker remains
 a host prerequisite for a daemon-managed local service. A configured external
-local service does not require daemon process ownership. With the supported
+local service does not require daemon process ownership; non-loopback external
+URLs must use HTTPS so its API key is never sent over plaintext HTTP. With the
+supported
 W&B SDK, publishing to a self-managed server requires a local account API key;
 configure `publisher_credential_ref` through the same daemon-host CLI. Without
 it the dashboard may be `READY`, but the Local publisher is `UNAVAILABLE` and

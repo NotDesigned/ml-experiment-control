@@ -298,10 +298,62 @@ def test_second_server_reports_collector_lease_loss(tmp_path):
     with TestClient(create_app(config)) as first, TestClient(create_app(config)) as second:
         assert first.get("/api/collector/status").json()["owner"] is True
         payload = second.get("/api/collector/status").json()
+        blocked = second.post("/api/project-lifecycle/unregister-all", json={})
+        assert blocked.status_code == 409
+        assert blocked.headers["X-ML-Expd-Error-Code"] == "WORKSPACE_NOT_OWNER"
     assert payload["enabled"] is False
     assert payload["requested"] is True
     assert payload["owner"] is False
-    assert "owns this workspace collector" in payload["last_error"]
+    assert "owns this workspace" in payload["last_error"]
+
+
+def test_snapshot_daemons_still_enforce_one_workspace_writer(tmp_path):
+    config = ServerConfig(index_db=str(tmp_path / "index.sqlite"), projects=[])
+    with TestClient(create_app(config, poll=False)) as first, TestClient(
+        create_app(config, poll=False)
+    ) as second:
+        assert first.post("/api/project-lifecycle/unregister-all", json={}).status_code == 200
+        assert second.get("/api/health").status_code == 200
+        assert second.post(
+            "/api/project-lifecycle/unregister-all", json={},
+        ).status_code == 409
+
+
+def test_startup_failure_releases_workspace_lease(tmp_path):
+    config = ServerConfig(index_db=str(tmp_path / "index.sqlite"), projects=[])
+    broken = create_app(config)
+
+    def fail_recovery():
+        raise RuntimeError("startup recovery failed")
+
+    broken.state.application.recover_observability_policies = fail_recovery
+    with pytest.raises(RuntimeError, match="startup recovery failed"):
+        with TestClient(broken):
+            pass
+
+    with TestClient(create_app(config)) as recovered:
+        assert recovered.get("/api/collector/status").json()["owner"] is True
+
+
+def test_thread_start_failure_releases_workspace_lease(tmp_path, monkeypatch):
+    config = ServerConfig(index_db=str(tmp_path / "index.sqlite"), projects=[])
+    original_start = api_app.threading.Thread.start
+    failed_once = False
+
+    def fail_publisher_once(thread):
+        nonlocal failed_once
+        if thread.name == "wandb-publisher" and not failed_once:
+            failed_once = True
+            raise RuntimeError("publisher thread failed to start")
+        return original_start(thread)
+
+    monkeypatch.setattr(api_app.threading.Thread, "start", fail_publisher_once)
+    with pytest.raises(RuntimeError, match="publisher thread failed"):
+        with TestClient(create_app(config)):
+            pass
+
+    with TestClient(create_app(config)) as recovered:
+        assert recovered.get("/api/collector/status").json()["owner"] is True
 
 
 def test_attention_includes_failed_runs_and_collector_errors():

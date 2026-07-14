@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import fcntl
+import json
+import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,11 +23,29 @@ def utc_now() -> str:
 def atomic_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+        )
+        encoded = json.dumps(
+            payload, ensure_ascii=False, indent=2, sort_keys=True,
+        ) + "\n"
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = None
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 
 def read_json(path: Path, default: Any) -> Any:
