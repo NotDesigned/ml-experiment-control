@@ -537,8 +537,11 @@ def test_running_attempt_show_and_checkpoint_validation_are_orthogonal(tmp_path)
     app._attempt_context = lambda *args: (target, object(), row, attempt, attempt_dir)
 
     shown = app.attempt_show("demo", "run-a::a1")
-    assert shown["failure_summary"] is None
-    assert shown["diagnostic_evidence"][0]["applicability"] == "NON_APPLICABLE"
+    assessment = shown["failure_assessment"]
+    assert assessment["failure_summary"] is None
+    assert assessment["diagnostic_evidence"][0]["applicability"] == "NON_APPLICABLE"
+    assert "failure_class" not in shown["attempt"]["decision"]
+    assert "failure_class" not in shown["collection"]
     assert shown["collection"]["process_state"] == "RUNNING"
 
     validation = app.attempt_validate("demo", "run-a::a1")
@@ -581,6 +584,7 @@ def test_attempt_agent_evidence_marks_diagnostics_non_applicable(tmp_path):
     assert assessment["diagnostic_evidence"][0]["applicability"] == "NON_APPLICABLE"
     assert "MUST NOT" in assessment["agent_instruction"]
     assert "retry" in assessment["agent_instruction"]
+    assert evidence["attempt"]["decision"] == {"action": "OBSERVE"}
 
 
 def test_terminal_local_fallback_uses_domain_records_for_applicability(tmp_path):
@@ -605,7 +609,7 @@ def test_terminal_local_fallback_uses_domain_records_for_applicability(tmp_path)
 
     shown = app.attempt_show("demo", "run-a::a1")
 
-    failure = shown["failure_summary"]
+    failure = shown["failure_assessment"]["failure_summary"]
     assert failure["failure_domain"] == "process"
     assert failure["failure_class"] == "resource"
     assert failure["applicability"] == "APPLICABLE"
@@ -645,12 +649,26 @@ def test_run_agent_evidence_sanitizes_raw_failure_class_and_uses_assessment(tmp_
     )
 
     assert "failure_class" not in evidence["run"]["decision"]
+    assert evidence["attempts"][0]["decision"] == {"action": "OBSERVE"}
     assessment = evidence["failure_assessment"]
     assert assessment["failure_summary"] is None
     assert assessment["diagnostic_evidence"][0]["failure_class"] == "unknown"
     assert assessment["diagnostic_evidence"][0]["source_binding"] \
         == "BOUND_BY_EXACT_ROOT_COLLECTION"
     assert "MUST NOT" in assessment["agent_instruction"]
+
+    row.campaign = "study"
+    row.campaign_memberships = []
+    app.runtime.index.list_runs = lambda *args, **kwargs: [row]
+    question = Dump(links=SimpleNamespace(campaigns=["study"]))
+    rq = app.bounded_evidence(
+        scope(OperationScopeType.RESEARCH_QUESTION, "q1"),
+        SimpleNamespace(project="demo"), question,
+    )
+    assert rq["runs"][0]["decision"] == {
+        "action": "OBSERVE", "reason": "run is nonterminal",
+    }
+    assert rq["runs"][0]["failure_assessment"]["failure_summary"] is None
 
 
 def test_metric_payload_one_point_missing_key_and_invalid_limit():

@@ -24,6 +24,7 @@ from .ingest.runscan import (
 )
 from .project_registry import ProjectRegistryError
 from .runtime import ExperimentServerRuntime
+from .outward import attempt_dto, operational_decision, run_dto, sanitized_outward
 from .operations import (
     GPU_BUDGET,
     OBSERVABILITY_TARGET,
@@ -442,17 +443,11 @@ class ExperimentServerApplication:
 
     @staticmethod
     def _operational_decision(value: Any) -> dict[str, Any]:
-        value = value if isinstance(value, dict) else {}
-        return {
-            key: value[key] for key in (
-                "action", "reason", "resume_checkpoint", "retries_allowed",
-                "retries_used",
-            ) if value.get(key) is not None
-        }
+        return operational_decision(value)
 
     @staticmethod
     def row_evidence(row: Any) -> dict[str, Any]:
-        return compact_evidence({
+        return sanitized_outward(compact_evidence({
             "run_id": row.run_id, "campaign": row.campaign, "role": row.role,
             "campaign_binding": row.campaign_binding.model_dump(mode="json"),
             "campaign_memberships": [
@@ -467,7 +462,7 @@ class ExperimentServerApplication:
             "decision": ExperimentServerApplication._operational_decision(row.decision),
             "provenance": row.provenance,
             "warnings": row.warnings, "evidence_conflicts": row.evidence_conflicts,
-        })
+        }))
 
     def campaign_contexts(self, project: ResearchProject, row: Any) -> list[dict[str, Any]]:
         """Bounded comparator context for a Run reused by authored Campaigns."""
@@ -537,6 +532,9 @@ class ExperimentServerApplication:
                     "campaign_relationship": row.campaign_binding.relationship.value,
                     "scheduler_state": row.scheduler_state,
                     "decision": self._operational_decision(row.decision),
+                    "failure_assessment": self._agent_failure_assessment(
+                        self.run_failure_assessment(row),
+                    ),
                     "stale_layers": [
                         name for name in ("scheduler", "worker", "process", "model", "evaluation")
                         if getattr(row.evidence, name).stale
@@ -552,53 +550,30 @@ class ExperimentServerApplication:
                 )
             ]
             return {"research_question": resolved.model_dump(mode="json"),
-                    "runs": [self.row_evidence(row) for row in rows]}
+                    "runs": [self._agent_row_evidence(row) for row in rows]}
         if scope.scope_type == OperationScopeType.CAMPAIGN:
             rows = index.list_runs(project.project, campaign=scope.object_id)
             return {"campaign": resolved.model_dump(mode="json"),
                     "lifecycle": campaign_snapshot(index, project, scope.object_id),
-                    "runs": [self.row_evidence(row) for row in rows]}
+                    "runs": [self._agent_row_evidence(row) for row in rows]}
         if scope.scope_type == OperationScopeType.RUN:
-            current_id = preferred_attempt_id(Path(resolved.run_dir))
-            current_attempt = next(
-                (item for item in resolved.attempts if item.attempt_id == current_id), None,
-            )
-            failure_assessment = {
-                "failure_summary": None, "diagnostic_evidence": [],
-            }
-            if current_attempt is not None:
-                _, failure_assessment = self._attempt_failure_assessment(
-                    resolved, current_attempt,
-                    Path(resolved.run_dir) / "attempts" / current_attempt.attempt_id,
-                )
+            failure_assessment = self.run_failure_assessment(resolved)
             return {"run": self.row_evidence(resolved),
                     "campaign_contexts": self.campaign_contexts(project, resolved),
                     "attempts": [
-                        item.model_dump(mode="json") for item in resolved.attempts
+                        attempt_dto(item) for item in resolved.attempts
                     ],
-                    "failure_assessment": {
-                        **failure_assessment,
-                        "agent_instruction": (
-                            "Only failure_summary is applicable failure evidence. "
-                            "diagnostic_evidence is explicitly non-applicable and MUST NOT "
-                            "be treated as failure, retry, or classification evidence."
-                        ),
-                    }}
+                    "failure_assessment": self._agent_failure_assessment(
+                        failure_assessment,
+                    )}
         run_id, attempt_id = scope.object_id.rsplit("::", 1)
         row = index.get_run(project.project, run_id)
         attempt_dir = Path(row.run_dir) / "attempts" / attempt_id
         _, assessment = self._attempt_failure_assessment(row, resolved, attempt_dir)
         return {"run": self.row_evidence(row),
                 "campaign_contexts": self.campaign_contexts(project, row),
-                "attempt": resolved.model_dump(mode="json"),
-                "failure_assessment": {
-                    **assessment,
-                    "agent_instruction": (
-                        "Only failure_summary is applicable failure evidence. "
-                        "diagnostic_evidence is explicitly non-applicable and MUST NOT "
-                        "be treated as failure, retry, or classification evidence."
-                    ),
-                }}
+                "attempt": attempt_dto(resolved),
+                "failure_assessment": self._agent_failure_assessment(assessment)}
 
     # -------------------------------------------------------------- operations
 
@@ -885,10 +860,7 @@ class ExperimentServerApplication:
         if scope.scope_type == OperationScopeType.RUN and hasattr(resolved, "run_id"):
             object_payload = self.row_evidence(resolved)
         elif scope.scope_type == OperationScopeType.ATTEMPT:
-            object_payload = resolved.model_dump(mode="json")
-            object_payload["decision"] = self._operational_decision(
-                object_payload.get("decision"),
-            )
+            object_payload = attempt_dto(resolved)
         elif hasattr(resolved, "model_dump"):
             object_payload = resolved.model_dump(mode="json")
         else:
@@ -1272,6 +1244,45 @@ class ExperimentServerApplication:
             ),
         )
         return collection, assessment
+
+    def run_failure_assessment(self, row: Any) -> dict[str, Any]:
+        """Return the one daemon-owned assessment for a Run's current Attempt."""
+        empty = {"failure_summary": None, "diagnostic_evidence": []}
+        current_id = preferred_attempt_id(Path(row.run_dir))
+        if current_id is None:
+            return empty
+        current_attempt = next(
+            (
+                item for item in getattr(row, "attempts", [])
+                if item.attempt_id == current_id
+            ),
+            None,
+        )
+        if current_attempt is None:
+            return empty
+        _, assessment = self._attempt_failure_assessment(
+            row, current_attempt, Path(row.run_dir) / "attempts" / current_id,
+        )
+        return assessment
+
+    @staticmethod
+    def _agent_failure_assessment(assessment: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **assessment,
+            "agent_instruction": (
+                "Only failure_summary is applicable failure evidence. "
+                "diagnostic_evidence is explicitly non-applicable and MUST NOT "
+                "be treated as failure, retry, or classification evidence."
+            ),
+        }
+
+    def _agent_row_evidence(self, row: Any) -> dict[str, Any]:
+        return {
+            **self.row_evidence(row),
+            "failure_assessment": self._agent_failure_assessment(
+                self.run_failure_assessment(row),
+            ),
+        }
 
     @staticmethod
     def _gate(gate_id: str, status: str, message: str,
@@ -1798,12 +1809,12 @@ class ExperimentServerApplication:
         )
         return {
             "scope": scope.model_dump(mode="json"),
-            "attempt": attempt.model_dump(mode="json"),
+            "attempt": attempt_dto(attempt),
             "run_id": row.run_id,
             "run_dir": row.run_dir,
             "attempt_dir": str(attempt_dir),
-            **assessment,
-            "collection": compact_evidence(collection),
+            "failure_assessment": assessment,
+            "collection": sanitized_outward(compact_evidence(collection)),
         }
 
     def attempt_logs(self, project: str, identity: str, *, stream: str = "both",
@@ -2115,8 +2126,9 @@ class ExperimentServerApplication:
 
     def run_detail(self, project: str, run_id: str) -> dict[str, Any]:
         _, _, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)
-        payload = row.model_dump()
+        payload = run_dto(row)
         payload["is_terminal"] = row.is_terminal
+        payload["failure_assessment"] = self.run_failure_assessment(row)
         return payload
 
     def run_metrics(self, project: str, run_id: str, *, keys: str | None = None,

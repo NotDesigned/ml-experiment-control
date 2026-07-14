@@ -8,6 +8,7 @@ from typing import Any
 
 from .authored_runs import authored_run_placeholders
 from .campaign_lifecycle import campaign_snapshot
+from .outward import run_dto
 from .ingest.indexer import RunIndex, index_project
 from .schemas import ResearchProject, RunIndexRow
 
@@ -88,9 +89,7 @@ def build_snapshot(index: RunIndex, projects: list[ResearchProject],
             state = (row.scheduler_state or "").upper()
             if state in {"FAILED", "PREEMPTED"}:
                 if in_active_research(row):
-                    failure = row.decision.get("failure_class")
-                    items.append(("FAILED", row.run_id,
-                                  state + (f" ({failure})" if failure else "")))
+                    items.append(("FAILED", row.run_id, state))
                 else:
                     historical_failure_count += 1
             stale = _stale_layers(row)
@@ -131,7 +130,7 @@ def snapshot_payload(snapshot: Snapshot) -> dict[str, Any]:
     return {
         "projects": [project.model_dump(mode="json") for project in snapshot.projects],
         "runs": {
-            project: [row.model_dump(mode="json") for row in rows]
+            project: [run_dto(row) for row in rows]
             for project, rows in snapshot.runs.items()
         },
         "attention": snapshot.attention,

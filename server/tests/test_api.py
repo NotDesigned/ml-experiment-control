@@ -96,9 +96,10 @@ def test_tui_session_endpoints_are_server_owned(client):
         "show", "validation", "metrics", "checkpoints", "artifacts",
     }
     show = bundle.json()["show"]
-    assert show["failure_summary"] is None
-    assert show["diagnostic_evidence"]
-    diagnostic = show["diagnostic_evidence"][0]
+    assessment = show["failure_assessment"]
+    assert assessment["failure_summary"] is None
+    assert assessment["diagnostic_evidence"]
+    diagnostic = assessment["diagnostic_evidence"][0]
     assert diagnostic["kind"] == "preliminary_failure_classification"
     assert diagnostic["failure_class"] == "unknown"
     assert diagnostic["applicability"] == "NON_APPLICABLE"
@@ -145,6 +146,15 @@ def test_research_question_detail_matrix(client):
     assert role["canonical_eval_variant_id"] is None
     assert len(role["eval_variants"]) == 4
     assert role["decision"]["action"] == "OBSERVE"
+    assert "failure_class" not in role["decision"]
+    assert role["failure_assessment"]["failure_summary"] is None
+    assert role["failure_assessment"]["diagnostic_evidence"][0][
+        "failure_class"
+    ] == "unknown"
+    assert all(
+        "failure_class" not in str(item.get("decision") or {})
+        for item in payload["decision_timeline"]
+    )
 
 
 def test_run_detail_five_layers(client):
@@ -160,6 +170,31 @@ def test_run_detail_five_layers(client):
     assert evidence["model"]["detail"]["step"] == 3700
     assert len(evidence["evaluation"]["detail"]) == 4
     assert payload["provenance"]["seed"] == 42
+    assert payload["decision"] == {
+        "action": "OBSERVE", "reason": "run is nonterminal",
+    }
+    assert all("failure_class" not in attempt["decision"]
+               for attempt in payload["attempts"])
+    assert payload["failure_assessment"]["failure_summary"] is None
+    assert payload["failure_assessment"]["diagnostic_evidence"][0][
+        "failure_class"
+    ] == "unknown"
+
+
+def test_terminal_snapshot_plain_json_sanitizes_nested_failure_fields(client):
+    payload = client.get("/api/terminal/snapshot").json()
+    row = next(item for item in payload["runs"]["elf"] if item["run_id"] == A1)
+
+    assert "failure_class" not in row["decision"]
+    assert all("failure_class" not in item["decision"] for item in row["attempts"])
+    assert all(
+        "failure_class" not in str(item.get("decision") or {})
+        for item in row["decision_history"]
+    )
+    assert row["failure_assessment"]["failure_summary"] is None
+    assert row["failure_assessment"]["diagnostic_evidence"][0][
+        "failure_class"
+    ] == "unknown"
 
 
 def test_run_metrics_series(client):
@@ -272,11 +307,19 @@ def test_second_server_reports_collector_lease_loss(tmp_path):
 def test_attention_includes_failed_runs_and_collector_errors():
     failed = RunIndexRow(
         project="elf", run_id="failed", run_dir="/tmp/failed",
-        scheduler_state="FAILED", decision={"failure_class": "OOM"},
+        scheduler_state="FAILED", decision={"failure_class": "unknown"},
     )
     plain = failed.model_copy(update={"run_id": "plain", "decision": {}})
     collector = SimpleNamespace(run_id="failed", last_error="scheduler unavailable")
-    items = _attention([failed, plain], [collector])
+    items = _attention([failed, plain], [collector], {
+        "failed": {"failure_summary": {
+            "failure_class": "OOM", "applicability": "APPLICABLE",
+        }},
+        "plain": {"failure_summary": None, "diagnostic_evidence": [{
+            "failure_class": "unknown", "applicability": "NON_APPLICABLE",
+        }]},
+    })
     assert [item["kind"] for item in items].count("failed_run") == 2
     assert any("OOM" in item["detail"] for item in items)
+    assert all("unknown" not in item["detail"] for item in items)
     assert any(item["kind"] == "collector_error" for item in items)

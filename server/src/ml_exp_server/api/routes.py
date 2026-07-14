@@ -15,6 +15,7 @@ from ..campaign_lifecycle import campaign_snapshot
 from ..collectord import Collector
 from ..ingest.indexer import RunIndex, index_project
 from ..ingest.runscan import parse_iso_ts, read_jsonl
+from ..outward import operational_decision, sanitized_outward
 from ..schemas import (
     OperationScopeType,
     ProjectLifecycleState,
@@ -279,12 +280,22 @@ def _stale_layers(row: RunIndexRow) -> list[str]:
         ("evaluation", layers.evaluation)) if layer.stale]
 
 
-def _attention(rows: list[RunIndexRow], collector_statuses) -> list[dict[str, Any]]:
+def _attention(
+    rows: list[RunIndexRow], collector_statuses,
+    failure_assessments: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    failure_assessments = failure_assessments or {}
     items: list[dict[str, Any]] = []
     for row in rows:
         state = (row.scheduler_state or "").upper()
         if state in {"FAILED", "PREEMPTED"}:
-            failure = row.decision.get("failure_class")
+            summary = failure_assessments.get(row.run_id, {}).get("failure_summary")
+            summary = summary if isinstance(summary, dict) else {}
+            failure = (
+                summary.get("failure_class")
+                if str(summary.get("applicability") or "").upper() == "APPLICABLE"
+                else None
+            )
             items.append({"kind": "failed_run", "run_id": row.run_id,
                           "detail": f"{state}" + (f" ({failure})" if failure else "")})
         stale = _stale_layers(row)
@@ -342,12 +353,16 @@ def list_projects(request: Request):
             key = row.scheduler_state or "UNKNOWN"
             counts[key] = counts.get(key, 0) + 1
         statuses = index.collector_statuses(project.project)
+        assessments = {
+            row.run_id: request.app.state.application.run_failure_assessment(row)
+            for row in rows
+        }
         payload.append({
             "project": project.project,
             "title": project.title,
             "run_counts": counts,
             "research_question_count": len(project.research_questions),
-            "attention_count": len(_attention(rows, statuses)),
+            "attention_count": len(_attention(rows, statuses, assessments)),
         })
     return payload
 
@@ -371,6 +386,12 @@ def terminal_snapshot(request: Request):
     for project, rows in payload["runs"].items():
         for row in rows:
             run_id = str(row.get("run_id") or "")
+            indexed_row = request.app.state.index.get_run(project, run_id)
+            row["failure_assessment"] = (
+                request.app.state.application.run_failure_assessment(indexed_row)
+                if indexed_row is not None else
+                {"failure_summary": None, "diagnostic_evidence": []}
+            )
             attempt_ids = {
                 str(item.get("attempt_id") or "") for item in row.get("attempts") or []
             }
@@ -444,6 +465,10 @@ def project_overview(project_name: str, request: Request):
     project = _find_project(projects, project_name)
     rows = index.list_runs(project.project)
     statuses = index.collector_statuses(project.project)
+    assessments = {
+        row.run_id: request.app.state.application.run_failure_assessment(row)
+        for row in rows
+    }
 
     research_questions = []
     for research_question in project.research_questions:
@@ -493,7 +518,7 @@ def project_overview(project_name: str, request: Request):
         "research_questions": research_questions,
         "campaigns": campaigns,
         "run_states": counts,
-        "attention": _attention(rows, statuses),
+        "attention": _attention(rows, statuses, assessments),
         "collector": {
             "enabled": collector is not None,
             "last_cycle_at": float(last_cycle) if last_cycle else None,
@@ -514,6 +539,7 @@ def research_question_detail(project_name: str, research_question_id: str, reque
                             detail=f"unknown research_question: {project_name}/{research_question_id}")
 
     rows = index.list_runs(project.project)
+    application = request.app.state.application
     campaigns = []
     timeline: list[dict[str, Any]] = []
     linked = set(research_question.links.campaigns)
@@ -521,13 +547,14 @@ def research_question_detail(project_name: str, research_question_id: str, reque
         campaign_rows = [r for r in rows if _belongs_to_campaign(r, campaign.name)]
         roles = []
         for row in sorted(campaign_rows, key=lambda r: (r.role or "~", r.run_id)):
+            failure_assessment = application.run_failure_assessment(row)
             membership = _campaign_membership(row, campaign.name)
             role = membership.role if membership and membership.role else row.role
             metrics = {k: row.latest_metrics.get(k) for k in _KEY_METRIC_FIELDS
                        if row.latest_metrics.get(k) is not None}
             metrics.update({k: row.eval_metrics.get(k) for k in _KEY_EVAL_FIELDS
                             if row.eval_metrics.get(k) is not None})
-            roles.append({
+            role_payload = sanitized_outward({
                 "role": role,
                 "role_note": campaign.role_notes.get(role or "", ""),
                 "role_source": "campaign_membership" if membership else row.role_source,
@@ -538,11 +565,14 @@ def research_question_detail(project_name: str, research_question_id: str, reque
                 "canonical_eval_variant_id": row.canonical_eval_variant_id,
                 "checkpoint": row.checkpoint,
                 "artifacts": row.artifacts,
-                "decision": {k: row.decision.get(k) for k in ("action", "reason", "failure_class")
-                             if row.decision.get(k) is not None},
+                "decision": operational_decision(row.decision),
             })
+            role_payload["failure_assessment"] = failure_assessment
+            roles.append(role_payload)
             for snapshot in row.decision_history:
-                timeline.append({"run_id": row.run_id, **snapshot})
+                timeline.append(sanitized_outward({
+                    "run_id": row.run_id, **snapshot,
+                }))
 
         campaigns.append({
             "name": campaign.name,
