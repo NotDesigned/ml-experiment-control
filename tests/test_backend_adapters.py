@@ -19,7 +19,11 @@ from experiment_control.backends.sensecore import (
     scheduler_job_name as sensecore_scheduler_job_name,
     submission_resource_name,
 )
-from experiment_control.backends.wyd import WydSlurmBackend, wandb_url_probe_command
+from experiment_control.backends.wyd import (
+    WydSlurmBackend,
+    _safe_wandb_url,
+    wandb_url_probe_command,
+)
 from experiment_control.project import AssetProbe, AssetRequirement
 from experiment_control.runner import CommandResult
 
@@ -498,6 +502,22 @@ def test_slurm_collection_does_not_probe_wandb_when_disabled(tmp_path):
     assert len(fake.commands) == 4
 
 
+def test_slurm_collection_does_not_probe_wandb_without_log_sources(tmp_path):
+    run = slurm_run()
+    run["resolved_config"] = {"use_wandb": True}
+    fake = QueueRunner([
+        CommandResult(("collect-rsync",), 0),
+        CommandResult(("checkpoint-probe",), 0),
+        CommandResult(("stdout",), 1),
+        CommandResult(("stderr",), 1),
+    ])
+
+    summary = WydSlurmBackend(services(tmp_path, fake)).collect({}, run)
+
+    assert "wandb" not in summary
+    assert len(fake.commands) == 4
+
+
 @pytest.mark.parametrize(
     ("source_matches", "url"),
     [
@@ -536,6 +556,9 @@ def test_wandb_url_probe_command_quotes_paths_and_bounds_reads():
     assert "decode" in command
     with pytest.raises(ValueError, match="between 1 and 8388608"):
         wandb_url_probe_command(["/shared/stdout.log"], max_bytes=8 * 1024 * 1024 + 1)
+    with pytest.raises(ValueError, match="at least one log path"):
+        wandb_url_probe_command([])
+    assert not _safe_wandb_url("https://wandb.ai/" + "x" * 2049)
 
 
 def test_slurm_collection_reports_latest_completed_checkpoint(tmp_path):

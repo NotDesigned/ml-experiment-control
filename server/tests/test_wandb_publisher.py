@@ -1,13 +1,19 @@
 import hashlib
 import math
+import os
+import signal
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
 
+import ml_exp_server.wandb_publisher as wandb_publisher_module
 from ml_exp_server.wandb_publisher import (
     AttemptIdentity,
     PublicationItem,
+    PublishRequest,
     PublisherProcessError,
     SubprocessWandbAdapter,
     TargetConfig,
@@ -199,16 +205,23 @@ def test_subprocess_adapter_passes_json_on_stdin_and_no_parent_environment(
     def runner(command, **kwargs):
         seen["command"] = command
         seen.update(kwargs)
-        return subprocess.CompletedProcess(command, 0, "", "")
+
+        class Process:
+            returncode = 0
+
+            def communicate(self, payload, *, timeout):
+                seen["input"] = payload
+                seen["timeout"] = timeout
+                return "", ""
+
+        return Process()
 
     configured = target(tmp_path, TargetKind.LOCAL)
     adapter = SubprocessWandbAdapter(runner=runner)
     environment = build_publisher_environment(configured)
     request_item = item(TargetKind.LOCAL)
     adapter.publish(
-        __import__("ml_exp_server.wandb_publisher", fromlist=["PublishRequest"]).PublishRequest(
-            configured, identity, request_item
-        ),
+        PublishRequest(configured, identity, request_item),
         environment=environment,
     )
     assert seen["command"][1:] == ["-m", "ml_exp_server.wandb_publisher", "--worker"]
@@ -216,6 +229,10 @@ def test_subprocess_adapter_passes_json_on_stdin_and_no_parent_environment(
     assert "cloud-secret" not in seen["input"]
     assert seen["env"] == environment
     assert seen["cwd"] == str(configured.working_dir)
+    assert seen["start_new_session"] is True
+    assert seen["stdin"] is subprocess.PIPE
+    assert seen["stdout"] is subprocess.PIPE
+    assert seen["stderr"] is subprocess.PIPE
     assert configured.working_dir.stat().st_mode & 0o777 == 0o700
 
 
@@ -223,7 +240,13 @@ def test_subprocess_adapter_discards_child_details(tmp_path: Path, identity):
     secret = "server-secret"
 
     def failed(command, **kwargs):
-        return subprocess.CompletedProcess(command, 1, "", f"failed with {secret}")
+        class Process:
+            returncode = 1
+
+            def communicate(self, payload, *, timeout):
+                return "", f"failed with {secret}"
+
+        return Process()
 
     fake_process = SubprocessWandbAdapter(runner=failed)
     publisher = WandbPublisher(fake_process)
@@ -234,16 +257,76 @@ def test_subprocess_adapter_discards_child_details(tmp_path: Path, identity):
     assert secret not in repr(result)
 
 
-def test_subprocess_timeout_has_bounded_error(tmp_path: Path, identity):
-    def timeout(command, **kwargs):
-        raise subprocess.TimeoutExpired(command, kwargs["timeout"], output="secret")
+def test_subprocess_timeout_has_bounded_error(
+    tmp_path: Path, identity, monkeypatch: pytest.MonkeyPatch,
+):
+    waited = []
 
-    publisher = WandbPublisher(SubprocessWandbAdapter(runner=timeout))
+    class Process:
+        pid = 123456
+        returncode = None
+
+        def communicate(self, payload, *, timeout):
+            raise subprocess.TimeoutExpired("worker", timeout, output="secret")
+
+        def wait(self):
+            waited.append(True)
+
+    monkeypatch.setattr(
+        wandb_publisher_module.os, "getpgid",
+        lambda _pid: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+    monkeypatch.setattr(
+        wandb_publisher_module.os, "killpg",
+        lambda _pgid, _signal: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+
+    publisher = WandbPublisher(SubprocessWandbAdapter(runner=lambda *_args, **_kwargs: Process()))
     result = publisher.publish(
         target(tmp_path, TargetKind.LOCAL), identity, item(TargetKind.LOCAL)
     )
     assert result.acknowledged is False
     assert result.error_class == "PublisherTimeout"
+    assert waited == [True]
+
+
+def test_subprocess_timeout_kills_descendant_process_group(tmp_path: Path, identity):
+    grandchild_pid_path = tmp_path / "grandchild.pid"
+    parent_code = (
+        "import pathlib, subprocess, sys; "
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(60)']); "
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid)); "
+        "child.wait()"
+    )
+
+    def process_tree(_command, **kwargs):
+        return subprocess.Popen(
+            [sys.executable, "-c", parent_code, str(grandchild_pid_path)], **kwargs
+        )
+
+    configured = target(tmp_path, TargetKind.LOCAL)
+    adapter = SubprocessWandbAdapter(timeout_seconds=0.5, runner=process_tree)
+    with pytest.raises(PublisherProcessError, match="PublisherTimeout"):
+        adapter.publish(
+            PublishRequest(configured, identity, item(TargetKind.LOCAL)),
+            environment=build_publisher_environment(configured),
+        )
+
+    grandchild_pid = int(grandchild_pid_path.read_text())
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            os.kill(grandchild_pid, 0)
+        except ProcessLookupError:
+            break
+        stat_path = Path(f"/proc/{grandchild_pid}/stat")
+        if stat_path.is_file() and stat_path.read_text().split()[2] == "Z":
+            break
+        time.sleep(0.01)
+    else:
+        os.kill(grandchild_pid, signal.SIGKILL)
+        pytest.fail("grandchild remained alive after publisher timeout")
 
 
 def test_worker_payload_supports_event_and_log_records(tmp_path: Path, identity):

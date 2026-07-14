@@ -66,3 +66,85 @@ def test_terminal_merge_never_crosses_run_identity():
     assert merge_terminal_observation(
         {"run_id": "old", "latest_metric": {"step": 99}}, current,
     ) == current
+
+
+def test_merge_returns_current_when_previous_is_absent_or_state_is_not_terminal():
+    current = {"run_id": "run", "scheduler_state": "RUNNING"}
+    assert merge_terminal_observation(None, current) == current
+    assert merge_terminal_observation(
+        {"run_id": "run", "latest_metric": {"step": 1}}, current,
+    ) == current
+
+
+def test_terminal_merge_handles_unstepped_metrics_artifacts_and_present_fields():
+    merged = merge_terminal_observation(
+        {
+            "run_id": "run",
+            "latest_metric": "legacy metric",
+            "artifacts": {"old": "checkpoint-1", "shared": "old"},
+            "checkpoint_path": "/old/checkpoint",
+        },
+        {
+            "run_id": "run",
+            "scheduler_state": "FAILED",
+            "latest_metric": {"loss": 2.0},
+            "artifacts": {"shared": "new", "current": "report"},
+            "checkpoint_path": "/new/checkpoint",
+        },
+    )
+
+    assert merged["latest_metric"] == {"loss": 2.0}
+    assert merged["artifacts"] == {
+        "old": "checkpoint-1", "shared": "new", "current": "report",
+    }
+    assert merged["checkpoint_path"] == "/new/checkpoint"
+    assert merged["retained_evidence"]["fields"] == ["artifacts"]
+
+    unchanged = {
+        "run_id": "run",
+        "scheduler_state": "SUCCEEDED",
+        "artifacts": {"shared": "same"},
+    }
+    assert merge_terminal_observation(
+        {"run_id": "run", "artifacts": {"shared": "same"}}, unchanged,
+    ) == unchanged
+
+
+def test_terminal_merge_process_sources_cover_retained_and_no_retention_paths():
+    retained = merge_terminal_observation(
+        {
+            "run_id": "run",
+            "scheduler_state": "RUNNING",
+            "process_evidence": {
+                "stdout_tail": ["old stdout"],
+                "stderr_tail": [],
+                "sources": {"stdout": "/old/stdout"},
+            },
+        },
+        {
+            "run_id": "run",
+            "scheduler_state": "CANCELLED",
+            "process_evidence": {
+                "stdout_tail": [],
+                "stderr_tail": ["new stderr"],
+                "sources": {"stderr": "/new/stderr"},
+            },
+        },
+    )
+    assert retained["process_evidence"]["sources"] == {
+        "stdout": "/old/stdout", "stderr": "/new/stderr",
+    }
+    assert retained["process_evidence"]["retained_streams"] == ["stdout_tail"]
+
+    current = {
+        "run_id": "run",
+        "scheduler_state": "SUCCEEDED",
+        "process_evidence": {"stdout_tail": ["current"], "stderr_tail": []},
+    }
+    assert merge_terminal_observation(
+        {
+            "run_id": "run",
+            "process_evidence": {"stdout_tail": ["old"], "stderr_tail": []},
+        },
+        current,
+    ) == current

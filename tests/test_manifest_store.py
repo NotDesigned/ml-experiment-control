@@ -1,5 +1,8 @@
 import json
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -256,6 +259,51 @@ def test_reconcile_is_idempotent_and_rejects_different_job(tmp_path):
     assert store.reconcile_submission(**kwargs) == store.reconcile_submission(**kwargs)
     with pytest.raises(ValueError, match="already reconciled"):
         store.reconcile_submission(**{**kwargs, "backend_job_id": "job-2"})
+
+
+def test_concurrent_reconcile_rejects_different_backend_job(tmp_path, monkeypatch):
+    store = prepare_store(tmp_path)
+    identity = {
+        "project": "project", "run_id": "run-s0", "attempt_id": "attempt-001",
+    }
+    store.begin_submission(
+        **identity, backend="test-backend", request={"argv": ["submit"]},
+    )
+    original_read_submission = store.read_submission
+
+    def delayed_read_submission(attempt_id):
+        intent = original_read_submission(attempt_id)
+        time.sleep(0.1)
+        return intent
+
+    monkeypatch.setattr(store, "read_submission", delayed_read_submission)
+    ready = Barrier(2)
+
+    def reconcile(job_id):
+        ready.wait()
+        return store.reconcile_submission(**identity, backend_job_id=job_id)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(reconcile, job_id) for job_id in ("job-1", "job-2")]
+    results = []
+    errors = []
+    for future in futures:
+        try:
+            results.append(future.result())
+        except ValueError as exc:
+            errors.append(exc)
+
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert "already reconciled" in str(errors[0])
+    winning_job_id = results[0]["backend_job_id"]
+    assert store.read_submission("attempt-001")["backend_job_id"] == winning_job_id
+    assert store.load_backend("attempt-001")["backend_job_id"] == winning_job_id
+    reconciled_events = [
+        json.loads(line) for line in store.events_path.read_text().splitlines()
+        if json.loads(line)["event"] == "submission_reconciled"
+    ]
+    assert [event["backend_job_id"] for event in reconciled_events] == [winning_job_id]
 
 
 def test_transition_event_id_is_idempotent(tmp_path):

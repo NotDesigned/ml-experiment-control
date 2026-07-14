@@ -80,6 +80,24 @@ class ProjectRegistry:
         with self._lock:
             return self._records(self._load())
 
+    @classmethod
+    def read_records(cls, root: Path) -> list[ProjectLifecycleRecord]:
+        """Read an existing registry without creating its directory or files."""
+
+        path = root / "registry.json"
+        if not path.is_file():
+            return []
+        payload = read_json(path, cls._default())
+        if not isinstance(payload, dict):
+            raise ProjectRegistryError(f"invalid project registry: {path}")
+        if payload.get("schema_version", REGISTRY_SCHEMA_VERSION) != REGISTRY_SCHEMA_VERSION:
+            raise ProjectRegistryError(
+                f"unsupported project registry schema: {payload.get('schema_version')}"
+            )
+        if not isinstance(payload.get("projects", []), list):
+            raise ProjectRegistryError(f"invalid project registry projects: {path}")
+        return cls._records(payload)
+
     def active_records(self) -> list[ProjectLifecycleRecord]:
         return [record for record in self.records()
                 if record.state == ProjectLifecycleState.ACTIVE]

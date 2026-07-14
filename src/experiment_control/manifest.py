@@ -591,19 +591,41 @@ class ExperimentStateStore:
     ) -> LifecycleStatus:
         state = self._coerce_state(state)
         with self._status_lock(attempt_id):
-            self._require_allowed_transition(attempt_id, state)
-            status = LifecycleStatus(
+            return self._write_status_locked(
                 project=project,
                 run_id=run_id,
                 attempt_id=attempt_id,
                 state=state,
-                updated_at=timestamp or utc_now(),
                 exit_code=exit_code,
+                timestamp=timestamp,
+                mirror=mirror,
             )
-            payload = status.to_dict()
-            atomic_write(self.attempt_status_path(attempt_id), payload)
-            if mirror:
-                self._mirror_if_current(attempt_id, self.status_path, payload)
+
+    def _write_status_locked(
+        self,
+        *,
+        project: str,
+        run_id: str,
+        attempt_id: str,
+        state: RunState,
+        exit_code: int | None = None,
+        timestamp: str | None = None,
+        mirror: bool = True,
+    ) -> LifecycleStatus:
+        """Write status while the caller holds the Attempt status lock."""
+        self._require_allowed_transition(attempt_id, state)
+        status = LifecycleStatus(
+            project=project,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            state=state,
+            updated_at=timestamp or utc_now(),
+            exit_code=exit_code,
+        )
+        payload = status.to_dict()
+        atomic_write(self.attempt_status_path(attempt_id), payload)
+        if mirror:
+            self._mirror_if_current(attempt_id, self.status_path, payload)
         return status
 
     @staticmethod
@@ -739,51 +761,55 @@ class ExperimentStateStore:
         self._validate_attempt_identity(project, run_id, attempt_id)
         if not backend_job_id:
             raise ValueError("backend_job_id must not be empty")
-        intent = self.read_submission(attempt_id)
-        if not intent:
-            raise FileNotFoundError("cannot reconcile scheduler job before submission intent")
-        existing_job_id = intent.get("backend_job_id")
-        if existing_job_id and existing_job_id != backend_job_id:
-            raise ValueError(
-                f"attempt is already reconciled to backend job {existing_job_id!r}"
-            )
-        timestamp = intent.get("reconciled_at") or utc_now()
-        reconciled = {
-            **intent,
-            "state": "SUBMITTED",
-            "backend_job_id": backend_job_id,
-            "reconciled_at": timestamp,
-        }
-        atomic_write(self.submission_path(attempt_id), reconciled)
-        backend_payload = {
-            "backend": intent["backend"],
-            "backend_job_id": backend_job_id,
-            "attempt_id": attempt_id,
-        }
-        atomic_write(self.attempt_backend_path(attempt_id), backend_payload)
-        self._mirror_if_current(attempt_id, self.backend_path, backend_payload)
-        self._write_status(
-            project=project,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            state=state,
-            timestamp=timestamp,
-        )
-        append_event_once(
-            self.events_path,
-            {
-                "timestamp": timestamp,
-                "project": project,
-                "run_id": run_id,
-                "attempt_id": attempt_id,
+        state = self._coerce_state(state)
+        with self._status_lock(attempt_id):
+            intent = self.read_submission(attempt_id)
+            if not intent:
+                raise FileNotFoundError(
+                    "cannot reconcile scheduler job before submission intent"
+                )
+            existing_job_id = intent.get("backend_job_id")
+            if existing_job_id and existing_job_id != backend_job_id:
+                raise ValueError(
+                    f"attempt is already reconciled to backend job {existing_job_id!r}"
+                )
+            timestamp = intent.get("reconciled_at") or utc_now()
+            reconciled = {
+                **intent,
+                "state": "SUBMITTED",
+                "backend_job_id": backend_job_id,
+                "reconciled_at": timestamp,
+            }
+            atomic_write(self.submission_path(attempt_id), reconciled)
+            backend_payload = {
                 "backend": intent["backend"],
                 "backend_job_id": backend_job_id,
-                "event": "submission_reconciled",
-                "payload": {"state": state.value},
-            },
-            f"submission-reconciled:{attempt_id}:{backend_job_id}",
-        )
-        return reconciled
+                "attempt_id": attempt_id,
+            }
+            atomic_write(self.attempt_backend_path(attempt_id), backend_payload)
+            self._mirror_if_current(attempt_id, self.backend_path, backend_payload)
+            self._write_status_locked(
+                project=project,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                state=state,
+                timestamp=timestamp,
+            )
+            append_event_once(
+                self.events_path,
+                {
+                    "timestamp": timestamp,
+                    "project": project,
+                    "run_id": run_id,
+                    "attempt_id": attempt_id,
+                    "backend": intent["backend"],
+                    "backend_job_id": backend_job_id,
+                    "event": "submission_reconciled",
+                    "payload": {"state": state.value},
+                },
+                f"submission-reconciled:{attempt_id}:{backend_job_id}",
+            )
+            return reconciled
 
     def transition(
         self,

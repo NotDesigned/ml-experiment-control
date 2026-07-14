@@ -15,7 +15,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -204,7 +206,7 @@ class SubprocessWandbAdapter:
         self,
         *,
         timeout_seconds: float = 60.0,
-        runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        runner: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
@@ -217,21 +219,34 @@ class SubprocessWandbAdapter:
             request.worker_payload(), ensure_ascii=False, allow_nan=False, separators=(",", ":")
         )
         try:
-            result = self._runner(
+            process = self._runner(
                 [sys.executable, "-m", "ml_exp_server.wandb_publisher", "--worker"],
-                input=payload,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                capture_output=True,
-                check=False,
-                timeout=self._timeout_seconds,
                 env=dict(environment),
                 cwd=str(request.target.working_dir),
+                start_new_session=True,
             )
+            process.communicate(payload, timeout=self._timeout_seconds)
         except subprocess.TimeoutExpired as exc:
+            try:
+                process_group = os.getpgid(process.pid)
+            except ProcessLookupError:
+                # start_new_session makes the child's PID its process-group ID.
+                # The leader may already have exited while descendants still
+                # hold its pipes open, so the group can remain killable.
+                process_group = process.pid
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
             raise PublisherProcessError("PublisherTimeout") from exc
         except OSError as exc:
             raise PublisherProcessError(type(exc).__name__) from exc
-        if result.returncode != 0:
+        if process.returncode != 0:
             # Child output can contain SDK/server details and is intentionally
             # discarded rather than entering SQLite or an API response.
             raise PublisherProcessError("WandbWorkerFailed")

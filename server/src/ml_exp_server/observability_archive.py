@@ -51,6 +51,11 @@ _ANCHOR_BYTES = 128
 _DISCARD_MARKER = "discard:"
 
 
+def _secret_key_matches(key: Any) -> bool:
+    normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key)).lower()
+    return _SECRET_KEY.search(normalized) is not None
+
+
 class CursorStore(Protocol):
     """Minimal store boundary needed by a collector integration."""
 
@@ -384,7 +389,7 @@ def _sanitize_url(value: str) -> str:
             # sanitizer pass misparse this as an IPv6 host.
             netloc = f"redacted@{netloc}"
         query = urlencode([
-            (key, "[REDACTED]" if _SECRET_KEY.search(key) else item)
+            (key, "[REDACTED]" if _secret_key_matches(key) else item)
             for key, item in parse_qsl(parsed.query, keep_blank_values=True)
         ])
         return urlunsplit((parsed.scheme, netloc, parsed.path, query, "")) + suffix
@@ -417,7 +422,7 @@ def _structured_payload(
 def _has_secret_key(value: Any) -> bool:
     if isinstance(value, dict):
         return any(
-            _SECRET_KEY.search(str(key)) is not None or _has_secret_key(item)
+            _secret_key_matches(key) or _has_secret_key(item)
             for key, item in value.items()
         )
     if isinstance(value, list):

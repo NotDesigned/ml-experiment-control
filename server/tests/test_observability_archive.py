@@ -9,6 +9,7 @@ from ml_exp_server.observability_archive import (
     ArchiveSource,
     ObservabilityArchive,
     SourceCursor,
+    _has_secret_key,
     sanitize_log_text,
 )
 
@@ -85,6 +86,25 @@ def test_structured_jsonl_rejects_invalid_secret_and_nonfinite_records(tmp_path:
     assert "do-not-store" not in repr(batch)
 
 
+def test_camel_case_secret_keys_are_rejected_without_false_positive(tmp_path: Path):
+    for key in ("refreshToken", "accessToken", "sessionCookie", "authToken"):
+        assert _has_secret_key({key: "top-secret"})
+    assert not _has_secret_key({"trainStepCount": 42})
+
+    metrics = tmp_path / "train_metrics.jsonl"
+    metrics.write_text(
+        '{"step":1,"refreshToken":"top-secret"}\n'
+        '{"step":2,"trainStepCount":42}\n'
+    )
+    batch = ObservabilityArchive(tmp_path / "archive").scan(
+        source(metrics, "metrics", "train")
+    )
+
+    assert [issue.reason for issue in batch.issues] == ["secret_key"]
+    assert [record.payload["step"] for record in batch.records] == [2]
+    assert "top-secret" not in repr(batch)
+
+
 def test_events_accept_nested_finite_json_and_have_stable_record_keys(tmp_path: Path):
     events = tmp_path / "events.jsonl"
     events.write_text('{"event":"metric","values":[1,2.0]}\n')
@@ -99,7 +119,7 @@ def test_structured_string_values_are_sanitized_before_persistence(tmp_path: Pat
     events = tmp_path / "events.jsonl"
     events.write_text(
         '{"event":"warning","message":"password=hunter2",'
-        '"url":"https://user:pass@example.test/path?token=query-secret"}\n'
+        '"url":"https://user:pass@example.test/path?accessToken=query-secret"}\n'
     )
     archive = ObservabilityArchive(tmp_path / "archive")
     batch = archive.scan(source(events, "events", "timeline"))

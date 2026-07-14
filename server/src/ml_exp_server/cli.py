@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Sequence
@@ -32,6 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
     for action in ("status", "clear"):
         command = wandb_action.add_parser(action)
         command.add_argument("reference")
+    subcommands.add_parser(
+        "doctor",
+        help="read-only checklist of config, action gates, and W&B credential state",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
     parser.add_argument(
@@ -71,10 +76,124 @@ def _credential_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _doctor_command(args: argparse.Namespace) -> int:
+    from .credentials import CredentialError, CredentialStore
+    from .project_config import ConfigError, load_server_config
+    from .project_registry import ProjectRegistry, ProjectRegistryError
+
+    checks: list[tuple[str, bool | None, str, str | None]] = []
+    config = None
+    try:
+        config = load_server_config(args.config)
+        checks.append(("server config", True, str(args.config), None))
+    except ConfigError as exc:
+        checks.append((
+            "server config", False, str(exc),
+            "check --config path and schema_version",
+        ))
+
+    if config is not None:
+        runtime = config.action_runtime
+        for flag in (
+            "allow_project_writes", "allow_scheduler_mutations",
+            "allow_observability_mutations",
+        ):
+            if getattr(runtime, flag):
+                checks.append((f"action_runtime.{flag}", True, "enabled", None))
+            else:
+                checks.append((
+                    f"action_runtime.{flag}", None, "disabled (default)",
+                    f"set action_runtime.{flag}: true to allow this Action class",
+                ))
+
+        store = CredentialStore(Path(config.observability.credential_root))
+
+        def credential_check(label: str, reference: str | None) -> None:
+            if not reference:
+                checks.append((
+                    label, False, "credential reference not set",
+                    "set the corresponding W&B credential reference in observability config",
+                ))
+                return
+            try:
+                status = store.status(reference)
+            except CredentialError as exc:
+                checks.append((label, False, str(exc), "use a valid credential reference"))
+                return
+            if status.configured:
+                checks.append((label, True, status.reference, None))
+            else:
+                checks.append((
+                    label, False, f"{status.reference} not set",
+                    f"ml-expd --config ... credential wandb set {status.reference} --stdin",
+                ))
+
+        local = config.observability.local_wandb
+        if not local.enabled:
+            checks.append((
+                "local W&B", None, "disabled",
+                "set observability.local_wandb.enabled: true to publish locally",
+            ))
+        else:
+            if local.managed:
+                docker = Path(local.docker_executable)
+                if docker.is_file() and os.access(docker, os.X_OK):
+                    checks.append(("local W&B docker", True, str(docker), None))
+                else:
+                    checks.append((
+                        "local W&B docker", False, f"{docker} is not an executable file",
+                        "install Docker or point docker_executable at a working binary",
+                    ))
+            if not local.publisher_entity:
+                checks.append((
+                    "local W&B entity", False, "publisher_entity not set",
+                    "set observability.local_wandb.publisher_entity",
+                ))
+            credential_check("local W&B credential", local.publisher_credential_ref)
+
+        cloud = config.observability.wandb_cloud
+        if not cloud.enabled:
+            checks.append((
+                "W&B cloud", None, "disabled",
+                "set observability.wandb_cloud.enabled: true to publish to W&B Cloud",
+            ))
+        else:
+            if not cloud.entity:
+                checks.append((
+                    "W&B cloud entity", False, "entity not set",
+                    "set observability.wandb_cloud.entity",
+                ))
+            credential_check("W&B cloud credential", cloud.default_credential_ref)
+
+        registry_root = config.project_registry_root_path()
+        registry_path = registry_root / "registry.json"
+        if not registry_path.is_file():
+            checks.append((
+                "projects", None,
+                f"registry not initialized; {len(config.projects)} configured for bootstrap",
+                "start ml-expd once to initialize the durable Project registry",
+            ))
+        else:
+            try:
+                records = ProjectRegistry.read_records(registry_root)
+                checks.append(("projects", True, f"{len(records)} registered", None))
+            except ProjectRegistryError as exc:
+                checks.append(("projects", False, str(exc), "repair the Project registry"))
+
+    for name, ok, detail, hint in checks:
+        symbol = "✓" if ok is True else ("·" if ok is None else "✗")
+        print(f"{symbol} {name}: {detail}")
+        if hint:
+            print(f"    → {hint}")
+    return 0 if all(ok is not False for _, ok, _, _ in checks) else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "credential":
         return _credential_command(args)
+    if args.command == "doctor":
+        return _doctor_command(args)
     try:
         import uvicorn
     except ImportError as exc:  # pragma: no cover - installation contract
