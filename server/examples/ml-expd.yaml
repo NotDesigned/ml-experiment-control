@@ -20,15 +20,10 @@ observability:
     bind_host: 127.0.0.1
     port: 8080
     data_dir: ~/.local/state/ml-expd/wandb
-    command:
-      - docker
-      - run
-      - --rm
-      - -v
-      - "{data_dir}:/vol"
-      - -p
-      - "{bind_host}:{port}:8080"
-      - wandb/local
+    # No universal W&B/Docker command can guarantee process-tree ownership.
+    # Supply an attached foreground wrapper with all three placeholders only
+    # after its signal/cleanup behavior has been reviewed.
+    command: []
   wandb_cloud:
     # Reserved policy only. No cloud publisher exists in this release, so no
     # cloud-sync operation or credential-write API is exposed.

@@ -205,7 +205,9 @@ def test_errors_never_echo_command_url_or_secret(tmp_path: Path):
     assert secret not in repr(status)
 
 
-def test_process_group_cleanup_escalates_to_kill(monkeypatch: pytest.MonkeyPatch):
+def test_process_group_and_descendant_cleanup_escalates_to_kill(
+    monkeypatch: pytest.MonkeyPatch,
+):
     process = _Process(pid=98765)
     waits = 0
     signals = []
@@ -220,12 +222,43 @@ def test_process_group_cleanup_escalates_to_kill(monkeypatch: pytest.MonkeyPatch
 
     process.wait = wait
     monkeypatch.setattr(observability.os, "killpg", lambda pgid, sig: signals.append((pgid, sig)))
+    monkeypatch.setattr(observability.os, "kill", lambda pid, sig: signals.append((pid, sig)))
     monkeypatch.setattr(observability.os, "getpgrp", lambda: 123)
-    observability._terminate_process_group(process, process.pid)
+    monkeypatch.setattr(
+        observability, "_descendant_identities", lambda pid: {111: "a", 222: "b"},
+    )
+    monkeypatch.setattr(
+        observability, "_process_start_time",
+        lambda pid: {111: "a", 222: "b"}.get(pid),
+    )
+    observability._terminate_process_tree(process, process.pid)
     assert signals == [
         (process.pid, observability.signal.SIGTERM),
+        (222, observability.signal.SIGTERM),
+        (111, observability.signal.SIGTERM),
         (process.pid, observability.signal.SIGKILL),
+        (222, observability.signal.SIGKILL),
+        (111, observability.signal.SIGKILL),
     ]
+
+
+def test_process_tree_cleanup_never_signals_a_recycled_descendant_pid(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    process = _Process(pid=98765)
+    process.returncode = 0
+    signals = []
+    monkeypatch.setattr(observability.os, "killpg", lambda pgid, sig: signals.append((pgid, sig)))
+    monkeypatch.setattr(observability.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(observability, "_descendant_identities", lambda pid: {})
+    monkeypatch.setattr(observability, "_process_start_time", lambda pid: "new-process")
+
+    observability._terminate_process_tree(
+        process, process.pid, {333: "old-process"},
+        parent_start_identity="old-parent",
+    )
+
+    assert signals == []
 
 
 def test_observability_config_is_optional(tmp_path: Path):

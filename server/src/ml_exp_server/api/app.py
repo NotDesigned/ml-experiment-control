@@ -82,9 +82,11 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             await asyncio.to_thread(thread.join, 5.0)
         lease = app.state.collector_lease
         if thread is None or not thread.is_alive():
-            app.state.runtime.close()
-            if lease is not None:
-                lease.release()
+            try:
+                app.state.runtime.close()
+            finally:
+                if lease is not None:
+                    lease.release()
         else:
             # Retain the lease until a long in-flight controller observation
             # really exits; otherwise another daemon could become owner while
@@ -93,9 +95,11 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
 
             def finish_shutdown() -> None:
                 thread.join()
-                app.state.runtime.close()
-                if lease is not None:
-                    lease.release()
+                try:
+                    app.state.runtime.close()
+                finally:
+                    if lease is not None:
+                        lease.release()
 
             cleanup = threading.Thread(
                 target=finish_shutdown, name="collectord-shutdown", daemon=True,
