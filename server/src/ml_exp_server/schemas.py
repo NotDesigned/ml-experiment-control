@@ -89,6 +89,48 @@ class TelemetryConfig(BaseModel):
     capture_content: Literal[False] = False
 
 
+class LocalWandbConfig(BaseModel):
+    """Daemon-owned local W&B service configuration.
+
+    This is deliberately optional and degradable: the daemon remains the
+    source of truth when Docker/the W&B CLI is unavailable.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    managed: bool = True
+    bind_host: str = "127.0.0.1"
+    port: int = Field(default=8080, ge=1, le=65535)
+    data_dir: str = "~/.local/state/ml-expd/wandb"
+    command: list[str] = Field(
+        default_factory=lambda: ["wandb", "server", "start", "--no-daemon"],
+    )
+    startup_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    external_url: Optional[str] = None
+
+    def url(self) -> str:
+        return self.external_url or f"http://{self.bind_host}:{self.port}"
+
+
+class WandbCloudConfig(BaseModel):
+    """Cloud publication policy; credentials are referenced, never embedded."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    default_credential_ref: Optional[str] = None
+
+
+class ObservabilityConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    log_archive_root: str = "~/.local/state/ml-expd/logs"
+    credential_root: str = "~/.local/state/ml-expd/credentials"
+    local_wandb: LocalWandbConfig = Field(default_factory=LocalWandbConfig)
+    wandb_cloud: WandbCloudConfig = Field(default_factory=WandbCloudConfig)
+
+
 class ActionRuntimeConfig(BaseModel):
     """Mutation boundary; both switches default closed."""
 
@@ -242,6 +284,7 @@ class ServerConfig(BaseModel):
     project_registry_root: Optional[str] = None
     action_runtime: ActionRuntimeConfig = Field(default_factory=ActionRuntimeConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     # The daemon owns live collection by default. ``--snapshot`` is the
     # explicit offline opt-out.
     collector_enabled: bool = True

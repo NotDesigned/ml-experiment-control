@@ -33,6 +33,9 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
         loop = asyncio.get_running_loop()
         app.state.broker.bind_loop(loop)
         app.state._stop = threading.Event()
+        # Optional local W&B is a projection service. Startup failure is
+        # recorded as DEGRADED and must not prevent canonical indexing.
+        app.state.observability = app.state.runtime.wandb_service.start()
 
         def initial_index() -> None:
             for project in app.state.projects:
@@ -104,6 +107,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.state.collector_owner = False
     app.state.collector_error = None
     app.state.collector_lease = None
+    app.state.observability = app.state.runtime.wandb_service.status()
 
     effective_poll = config.collector_enabled if poll is None else poll
     if effective_poll:

@@ -16,7 +16,7 @@ from .schemas import OperationScope, OperationScopeType
 
 OperationMode = Literal["intent", "direct"]
 AvailabilityStatus = Literal["AVAILABLE", "BLOCKED"]
-ParameterKind = Literal["text", "number"]
+ParameterKind = Literal["text", "number", "enum"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +28,7 @@ class OperationParameter:
     default: Any = None
     placeholder: str = ""
     positive: bool = False
+    choices: tuple[tuple[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,10 @@ NEW_ATTEMPT_ID = OperationParameter(
     "new_attempt_id", "New Attempt ID", required=False,
     placeholder="Optional attempt-NNN identity",
 )
+WANDB_CLOUD_SYNC = OperationParameter(
+    "wandb_cloud_sync", "Sync to W&B Cloud", kind="enum", default="no",
+    choices=(("No (local archive only)", "no"), ("Yes (daemon credential)", "yes")),
+)
 
 
 OPERATIONS: tuple[OperationDefinition, ...] = (
@@ -122,13 +127,13 @@ OPERATIONS: tuple[OperationDefinition, ...] = (
         "run.submit", "Submit first Attempt",
         "Prepare the first scheduler submission for an authored Run.", "Execution",
         (OperationScopeType.RUN,), "direct", "Prepare a scheduler Action", "SUBMIT_RUN",
-        (GPU_BUDGET,), 30,
+        (GPU_BUDGET, WANDB_CLOUD_SYNC), 30,
     ),
     OperationDefinition(
         "attempt.retry", "Retry as new Attempt",
         "Prepare a retry without reusing an immutable Attempt identity.", "Execution",
         (OperationScopeType.ATTEMPT,), "direct", "Prepare a scheduler Action",
-        "RETRY_ATTEMPT", (REASON, GPU_BUDGET, NEW_ATTEMPT_ID), 30,
+        "RETRY_ATTEMPT", (REASON, GPU_BUDGET, NEW_ATTEMPT_ID, WANDB_CLOUD_SYNC), 30,
     ),
     OperationDefinition(
         "attempt.cancel", "Cancel active Attempt",

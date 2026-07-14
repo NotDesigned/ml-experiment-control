@@ -9,6 +9,19 @@ action_runtime:
   gate_ttl_seconds: 1800
 telemetry:
   enabled: false
+observability:
+  log_archive_root: ~/.local/state/ml-expd/logs
+  credential_root: ~/.local/state/ml-expd/credentials
+  local_wandb:
+    # The daemon remains healthy if Docker/W&B is unavailable.
+    enabled: false
+    managed: true
+    bind_host: 127.0.0.1
+    port: 8080
+    command: [wandb, server, start, --no-daemon, --port, '8080']
+  wandb_cloud:
+    enabled: false
+    default_credential_ref: wandb-cloud-default
 collector_enabled: true
 poll_interval_seconds: 20
 projects: []
