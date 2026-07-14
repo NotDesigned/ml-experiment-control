@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from ml_exp_server.observability_store import (
-    AttemptRef,
+    ArchiveRejection, AttemptRef,
     CursorConflict,
     LeaseConflict,
     ObservabilityStore,
@@ -132,6 +132,49 @@ def test_payload_must_be_finite_json_before_transaction(tmp_path):
         )
     assert store.get_cursor(SOURCE) is None
     assert store.statuses() == []
+
+
+def test_archive_summary_exposes_only_aggregate_rejection_reasons(tmp_path):
+    store = ObservabilityStore(tmp_path / "observability.sqlite")
+    store.enqueue_and_advance(
+        SOURCE, expected=None, generation="g", byte_offset=4,
+        records=[], targets=[],
+        rejections=[
+            ArchiveRejection("g", 0, 1, "secret_key"),
+            ArchiveRejection("g", 1, 2, "secret_key"),
+            ArchiveRejection("g", 2, 3, "nonfinite"),
+        ], now=1,
+    )
+    summary = store.archive_summary()
+    assert summary["rejected_records"] == 3
+    assert summary["rejected_by_reason"] == {
+        "nonfinite": 1, "secret_key": 2,
+    }
+    assert "source_key" not in summary
+
+    # Replaying the same scan cannot inflate aggregate rejection counts.
+    cursor = store.get_cursor(SOURCE)
+    assert cursor is not None
+    store.enqueue_and_advance(
+        SOURCE, expected=cursor, generation="g", byte_offset=4,
+        records=[], targets=[],
+        rejections=[ArchiveRejection("g", 0, 1, "secret_key")], now=2,
+    )
+    assert store.archive_summary()["rejected_records"] == 3
+
+    # A later clean batch must not erase an earlier identified rejection.
+    cursor = store.get_cursor(SOURCE)
+    assert cursor is not None
+    store.enqueue_and_advance(
+        SOURCE, expected=cursor, generation="g", byte_offset=8,
+        records=[], targets=[], now=3,
+    )
+    assert store.archive_summary() == {
+        "sources": 1,
+        "degraded_sources": 1,
+        "rejected_records": 3,
+        "rejected_by_reason": {"nonfinite": 1, "secret_key": 2},
+    }
 
 
 def test_lease_expiry_retry_backoff_terminal_and_ack_ownership(tmp_path):

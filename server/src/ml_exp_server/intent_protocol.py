@@ -24,6 +24,7 @@ IntentKind = Literal[
     "ARCHIVE_CAMPAIGN",
     "ARCHIVE_RUN",
     "ARCHIVE_ATTEMPT",
+    "OBSERVABILITY_BACKFILL",
 ]
 
 

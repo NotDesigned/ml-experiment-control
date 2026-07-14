@@ -5,6 +5,7 @@ action_root: ~/.local/state/ml-expd/actions
 action_runtime:
   allow_project_writes: false
   allow_scheduler_mutations: false
+  allow_observability_mutations: false
   timeout_seconds: 300
   gate_ttl_seconds: 1800
 telemetry:

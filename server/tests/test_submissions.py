@@ -12,10 +12,14 @@ from ml_exp_server.authored_runs import authored_run_placeholder
 from ml_exp_server.actions.service import ActionService
 from ml_exp_server.api.app import create_app
 from ml_exp_server.application import ExperimentServerApplication
+from ml_exp_server.observability_store import (
+    AttemptRef, OutboxRecord, SourceRef,
+)
 from ml_exp_server.campaign_lifecycle import campaign_record_path
 from ml_exp_server.project_config import load_research_project
 from ml_exp_server.schemas import (
     ActionRuntimeConfig,
+    AttemptSummary,
     CampaignRef,
     CampaignRevision,
     CampaignRunMembership,
@@ -85,7 +89,7 @@ class SubmissionController:
         }
 
 
-def _app(tmp_path, *, cloud=False):
+def _app(tmp_path, *, cloud=False, observability_mutations=False):
     experiments = tmp_path / "science" / "experiments"
     experiments.mkdir(parents=True)
     campaign = experiments / "study.yml"
@@ -119,7 +123,10 @@ def _app(tmp_path, *, cloud=False):
         index_db=str(tmp_path / "index.sqlite"),
         action_root=str(tmp_path / "actions"),
         collector_enabled=False,
-        action_runtime=ActionRuntimeConfig(allow_scheduler_mutations=True),
+        action_runtime=ActionRuntimeConfig(
+            allow_scheduler_mutations=True,
+            allow_observability_mutations=observability_mutations,
+        ),
         observability=ObservabilityConfig(
             credential_root=str(tmp_path / "credentials"),
             log_archive_root=str(tmp_path / "archive"),
@@ -137,6 +144,7 @@ def _app(tmp_path, *, cloud=False):
         config.action_runtime,
         runner,
         actor_provider=lambda: "trusted:operator",
+        internal_executor=app.state.runtime.action_service.internal_executor,
     )
     return app, runner
 
@@ -247,7 +255,7 @@ def test_cloud_ready_daemon_exposes_submission_option_without_secret_metadata(tm
         executed = client.post("/api/actions/execute", json={
             "action_id": action_id, "confirmation": f"EXECUTE {action_id}",
         })
-        assert executed.status_code == 200
+        assert executed.status_code == 200, executed.text
         target = client.get(
             "/api/observability/attempts/demo/run-a/attempt-001",
         ).json()["targets"]
@@ -314,6 +322,92 @@ def test_reconcile_required_does_not_activate_cloud_target(tmp_path):
             "/api/observability/attempts/demo/run-a/attempt-001",
         ).json()["targets"]
         assert targets == []
+
+
+def test_audited_observability_backfill_operation_rewinds_exact_attempt(tmp_path):
+    app, _ = _app(
+        tmp_path, cloud=True, observability_mutations=True,
+    )
+    app.state.runtime.credential_store.set_wandb_api_key(
+        "cloud-primary", "secret-cloud-key",
+    )
+    attempt = AttemptRef(
+        app.state.runtime.workspace_id, "demo", "run-a", "attempt-001",
+    )
+    source = SourceRef(attempt, "metrics")
+    app.state.runtime.observability_store.enqueue_and_advance(
+        source, expected=None, generation="g", byte_offset=4,
+        records=[OutboxRecord("record-1", "metrics", {"step": 1})],
+        targets=[], now=1,
+    )
+    app.state.index.upsert_run(RunIndexRow(
+        project="demo", campaign="study", run_id="run-a",
+        run_dir=str(tmp_path / "run-a"), scheduler_state="SUCCEEDED",
+        attempts=[AttemptSummary(attempt_id="attempt-001", state="SUCCEEDED")],
+    ))
+
+    with TestClient(app) as client:
+        operations = client.get("/api/operations", params={
+            "project": "demo", "scope_type": "run", "object_id": "run-a",
+        }).json()
+        backfill = next(
+            item for item in operations
+            if item["operation"]["operation_id"] == "observability.backfill"
+        )
+        assert backfill["status"] == "AVAILABLE"
+        assert backfill["operation"]["parameters"][0]["choices"] == [
+            ["W&B Cloud", "cloud"],
+        ]
+        prepared = client.post("/api/operations/direct", json={
+            "project": "demo", "scope_type": "run", "object_id": "run-a",
+            "operation_id": "observability.backfill",
+            "parameters": {"target": "cloud", "reason": "publish historical evidence"},
+        })
+        assert prepared.status_code == 200
+        action_id = prepared.json()["action"]["action_id"]
+        assert prepared.json()["preflight"] == {
+            "target": "cloud", "attempt_count": 1,
+        }
+        assert client.post("/api/actions/authorize", json={
+            "action_id": action_id, "note": "approved historical publication",
+        }).status_code == 200
+        executed = client.post("/api/actions/execute", json={
+            "action_id": action_id, "confirmation": f"EXECUTE {action_id}",
+        })
+        assert executed.status_code == 200, executed.text
+        assert executed.json()["execution"]["status"] == "VERIFIED"
+        assert executed.json()["execution"]["result"] == {
+            "target": "cloud", "attempt_count": 1, "rewound_attempts": 1,
+        }
+        assert app.state.runtime.observability_store.get_cursor(source) is None
+        targets = client.get(
+            "/api/observability/attempts/demo/run-a/attempt-001",
+        ).json()["targets"]
+        assert targets[0]["target"] == "cloud"
+        assert targets[0]["state"] == "PENDING"
+
+
+def test_observability_backfill_defaults_closed_by_daemon_policy(tmp_path):
+    app, _ = _app(tmp_path, cloud=True)
+    app.state.runtime.credential_store.set_wandb_api_key(
+        "cloud-primary", "secret-cloud-key",
+    )
+    app.state.index.upsert_run(RunIndexRow(
+        project="demo", campaign="study", run_id="run-a",
+        run_dir=str(tmp_path / "run-a"), scheduler_state="SUCCEEDED",
+        attempts=[AttemptSummary(attempt_id="attempt-001", state="SUCCEEDED")],
+    ))
+
+    with TestClient(app) as client:
+        operations = client.get("/api/operations", params={
+            "project": "demo", "scope_type": "run", "object_id": "run-a",
+        }).json()
+    backfill = next(
+        item for item in operations
+        if item["operation"]["operation_id"] == "observability.backfill"
+    )
+    assert backfill["status"] == "BLOCKED"
+    assert "Observability mutations are disabled by daemon policy" in backfill["reasons"]
 
 
 def test_nested_materialized_run_replaces_placeholder_and_exposes_exact_cancel(

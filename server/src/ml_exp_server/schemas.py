@@ -263,12 +263,13 @@ class ObservabilityConfig(BaseModel):
 
 
 class ActionRuntimeConfig(BaseModel):
-    """Mutation boundary; both switches default closed."""
+    """Mutation boundary; every mutation class defaults closed."""
 
     model_config = ConfigDict(extra="forbid")
 
     allow_project_writes: bool = False
     allow_scheduler_mutations: bool = False
+    allow_observability_mutations: bool = False
     timeout_seconds: int = 300
     gate_ttl_seconds: int = 1800
 

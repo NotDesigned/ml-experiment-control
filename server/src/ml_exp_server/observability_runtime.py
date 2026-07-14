@@ -13,6 +13,7 @@ from .observability_archive import (
     SourceCursor as ArchiveCursor,
 )
 from .observability_store import (
+    ArchiveRejection,
     AttemptRef,
     ObservabilityStore,
     OutboxRecord,
@@ -67,6 +68,30 @@ class ObservabilityCoordinator:
             AttemptRef(self.workspace_id, project, run_id, attempt_id),
             TargetKind.CLOUD.value,
         )
+
+    def backfill(
+        self, target: str, attempts: Iterable[AttemptRef],
+    ) -> dict[str, object]:
+        try:
+            kind = TargetKind(target)
+        except ValueError as exc:
+            raise ValueError("unsupported observability target") from exc
+        if not self._target_enabled(kind):
+            raise RuntimeError("PublisherUnavailable")
+        unique: dict[tuple[str, str, str, str], AttemptRef] = {}
+        for attempt in attempts:
+            if attempt.workspace_id != self.workspace_id:
+                raise ValueError("Attempt workspace does not match coordinator")
+            unique[attempt.values()] = attempt
+        if not unique or len(unique) > 500:
+            raise ValueError("backfill requires between 1 and 500 Attempts")
+        for attempt in unique.values():
+            self.store.backfill_target(attempt, kind.value)
+        return {
+            "target": kind.value,
+            "attempt_count": len(unique),
+            "rewound_attempts": len(unique),
+        }
 
     def collect_rows(self, rows: Iterable[RunIndexRow]) -> None:
         """Archive complete new records; malformed records never stop collection."""
@@ -196,10 +221,12 @@ class ObservabilityCoordinator:
             anchor_digest=batch.cursor.anchor_digest,
             records=records,
             targets=targets,
-            rejected_by_reason={
-                reason: sum(item.reason == reason for item in batch.issues)
-                for reason in {item.reason for item in batch.issues}
-            },
+            rejections=[ArchiveRejection(
+                generation=batch.cursor.generation,
+                byte_start=item.byte_start,
+                byte_end=item.byte_end,
+                reason=item.reason,
+            ) for item in batch.issues],
         )
 
     def _target_enabled(self, kind: TargetKind) -> bool:

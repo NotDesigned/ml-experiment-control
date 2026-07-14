@@ -142,11 +142,13 @@ def _gate(name: str, passed: bool, detail: str, *, warning: bool = False) -> dic
 class ActionService:
     def __init__(self, store: ActionStore, config: ActionRuntimeConfig,
                  runner: Callable[..., dict[str, Any]] | None = None,
-                 actor_provider: Callable[[], str] | None = None):
+                 actor_provider: Callable[[], str] | None = None,
+                 internal_executor: Callable[[dict[str, Any]], dict[str, Any]] | None = None):
         self.store = store
         self.config = config
         self.controller = ProjectControllerGateway(runner)
         self.actor_provider = actor_provider or self._local_actor
+        self.internal_executor = internal_executor
 
     @staticmethod
     def _local_actor() -> str:
@@ -194,6 +196,10 @@ class ActionService:
             plan = self._prepare_controller(action_id, scope, project, payload)
         elif kind in {"ARCHIVE_RUN", "ARCHIVE_ATTEMPT"}:
             plan = self._prepare_object_archive(action_id, scope, project, payload)
+        elif kind == "OBSERVABILITY_BACKFILL":
+            plan = self._prepare_observability_backfill(
+                action_id, scope, project, payload,
+            )
         else:
             raise ActionError(f"intent kind {kind!r} has no executor")
         plan["request_digest"] = request_digest
@@ -446,6 +452,56 @@ class ActionService:
             "proposed_content": proposed, "gates": gates,
             "ready": all(gate["status"] != "FAIL" for gate in gates),
             "command_preview": ["atomic-write", str(target)],
+        })
+        return plan
+
+    def _prepare_observability_backfill(
+        self, action_id: str, scope: OperationScope,
+        project: ResearchProject, intent: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = _parse_mapping(str(intent.get("draft", "")))
+        target_kind = str(payload.get("target") or "")
+        attempts = payload.get("attempts")
+        reason = str(payload.get("reason") or "").strip()
+        valid_attempts = (
+            isinstance(attempts, list) and 0 < len(attempts) <= 500
+            and all(
+                isinstance(item, dict)
+                and _SAFE_ID.fullmatch(str(item.get("run_id") or "")) is not None
+                and _SAFE_ID.fullmatch(str(item.get("attempt_id") or "")) is not None
+                for item in attempts
+            )
+        )
+        identities = [
+            {"run_id": str(item["run_id"]), "attempt_id": str(item["attempt_id"])}
+            for item in attempts or [] if isinstance(item, dict)
+        ] if valid_attempts else []
+        gates = [
+            _gate("exact_project", payload.get("project") == project.project,
+                  project.project),
+            _gate("target", target_kind in {"local", "cloud"}, target_kind),
+            _gate("bounded_attempts", bool(valid_attempts),
+                  f"attempt_count={len(attempts) if isinstance(attempts, list) else 0}; max=500"),
+            _gate("reason", bool(reason), "backfill reason is required"),
+            _gate("evidence_reference", bool(intent.get("evidence_digest")),
+                  "intent is bound to bounded scope evidence"),
+        ]
+        plan = self._base_plan(
+            action_id, scope, intent, "OBSERVABILITY_BACKFILL",
+        )
+        plan.update({
+            "target_kind": target_kind,
+            "attempts": identities,
+            "reason": reason,
+            "gates": gates,
+            "ready": all(item["status"] != "FAIL" for item in gates),
+            "preflight_summary": {
+                "target": target_kind, "attempt_count": len(identities),
+            },
+            "command_preview": [
+                "daemon-observability-backfill", target_kind,
+                f"attempts={len(identities)}",
+            ],
         })
         return plan
 
@@ -784,9 +840,15 @@ class ActionService:
             "WRITE_RESEARCH_QUESTION", "WRITE_CAMPAIGN", "WRITE_CAMPAIGN_ARCHIVE",
             "WRITE_RUN_ARCHIVE", "WRITE_ATTEMPT_ARCHIVE",
         }
+        internal_mutation = operation == "OBSERVABILITY_BACKFILL"
         if project_write and not self.config.allow_project_writes:
             raise ActionError("project writes are disabled by daemon policy")
-        if not project_write and not self.config.allow_scheduler_mutations:
+        if internal_mutation and not self.config.allow_observability_mutations:
+            raise ActionError("observability mutations are disabled by daemon policy")
+        if (
+            not project_write and not internal_mutation
+            and not self.config.allow_scheduler_mutations
+        ):
             raise ActionError("scheduler mutations are disabled by daemon policy")
         if operation in {"SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION"}:
             campaign_path = Path(str(snapshot.get("campaign_file") or ""))
@@ -808,7 +870,33 @@ class ActionService:
         self.store.set_execution(action_id, execution, event="execution_started")
         if project_write:
             return self._execute_write(snapshot, execution)
+        if internal_mutation:
+            return self._execute_internal(snapshot, execution)
         return self._execute_controller(snapshot, execution)
+
+    def _execute_internal(
+        self, plan: dict[str, Any], execution: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.internal_executor is None:
+            raise ActionError("daemon internal executor is unavailable")
+        try:
+            result = self.internal_executor(plan)
+        except Exception as exc:
+            execution.update({
+                "status": "RECONCILE_REQUIRED", "finished_at": utc_now(),
+                "error": type(exc).__name__, "result": None,
+            })
+            return self.store.set_execution(
+                plan["action_id"], execution,
+                event="internal_execution_reconcile_required",
+            )
+        execution.update({
+            "status": "VERIFIED", "finished_at": utc_now(),
+            "error": None, "result": _redact(result),
+        })
+        return self.store.set_execution(
+            plan["action_id"], execution, event="internal_execution_verified",
+        )
 
     def _execute_write(self, plan: dict[str, Any], execution: dict[str, Any]) -> dict[str, Any]:
         if plan.get("files"):
@@ -984,6 +1072,12 @@ class ActionService:
         execution = snapshot["execution"]
         if execution.get("status") == "VERIFIED":
             return snapshot
+        if snapshot.get("operation") == "OBSERVABILITY_BACKFILL":
+            if not self.config.allow_observability_mutations:
+                raise ActionError("observability mutations are disabled by daemon policy")
+            if execution.get("status") not in {"EXECUTING", "RECONCILE_REQUIRED"}:
+                raise ActionError("observability action is not awaiting reconciliation")
+            return self._execute_internal(snapshot, execution)
         if snapshot.get("operation") not in {
             "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION",
         }:

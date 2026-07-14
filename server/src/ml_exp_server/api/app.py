@@ -63,7 +63,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                     while not app.state._stop.is_set():
                         try:
                             app.state.runtime.observability.publish_once(
-                                limit_per_target=1,
+                                limit_per_target=32,
                             )
                         except Exception:
                             # Target-specific errors are retained in the

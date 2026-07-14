@@ -59,6 +59,22 @@ CREATE TABLE IF NOT EXISTS archive_source_status (
     updated_at REAL NOT NULL,
     PRIMARY KEY (workspace_id, project, run_id, attempt_id, source_key)
 );
+CREATE TABLE IF NOT EXISTS archive_rejections (
+    workspace_id TEXT NOT NULL,
+    project TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    generation TEXT NOT NULL,
+    byte_start INTEGER NOT NULL CHECK (byte_start >= 0),
+    byte_end INTEGER NOT NULL CHECK (byte_end >= byte_start),
+    reason TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (
+        workspace_id, project, run_id, attempt_id, source_key,
+        generation, byte_start, byte_end, reason
+    )
+);
 CREATE TABLE IF NOT EXISTS publication_outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     workspace_id TEXT NOT NULL,
@@ -138,6 +154,14 @@ class OutboxRecord:
 
 
 @dataclass(frozen=True)
+class ArchiveRejection:
+    generation: str
+    byte_start: int
+    byte_end: int
+    reason: str
+
+
+@dataclass(frozen=True)
 class OutboxItem:
     id: int
     attempt: AttemptRef
@@ -205,7 +229,17 @@ class ObservabilityStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA busy_timeout=30000")
+        had_rejection_identity = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_rejections'"
+        ).fetchone() is not None
         self._conn.executescript(_SCHEMA)
+        if not had_rejection_identity:
+            # Legacy totals lacked record identities and inflated on cursor
+            # rewind. Reset them once; subsequent counts are replay-idempotent.
+            self._conn.execute(
+                "UPDATE archive_source_status SET rejected_records=0, "
+                "last_error=CASE WHEN last_error='RejectedRecords' THEN NULL ELSE last_error END"
+            )
         columns = {
             row[1] for row in self._conn.execute(
                 "PRAGMA table_info(source_cursors)"
@@ -267,7 +301,7 @@ class ObservabilityStore:
         anchor_digest: str = "",
         records: Iterable[OutboxRecord],
         targets: Sequence[str],
-        rejected_by_reason: Mapping[str, int] | None = None,
+        rejections: Sequence[ArchiveRejection] = (),
         now: Optional[float] = None,
     ) -> int:
         """Atomically queue records for every target and advance a source cursor.
@@ -285,10 +319,17 @@ class ObservabilityStore:
         normalized_targets = tuple(dict.fromkeys(_validate_name(v, "target") for v in targets))
         prepared = [self._prepare_record(record) for record in records]
         timestamp = time.time() if now is None else now
-        rejected = sum(
-            value for value in (rejected_by_reason or {}).values()
-            if isinstance(value, int) and not isinstance(value, bool) and value > 0
-        )
+        prepared_rejections = []
+        for rejection in rejections:
+            if (
+                not rejection.generation or rejection.byte_start < 0
+                or rejection.byte_end < rejection.byte_start
+            ):
+                raise ValueError("invalid archive rejection identity")
+            prepared_rejections.append((
+                rejection.generation, rejection.byte_start, rejection.byte_end,
+                _validate_name(rejection.reason, "rejection reason"),
+            ))
         inserted = 0
         with self._lock:
             try:
@@ -342,18 +383,31 @@ class ObservabilityStore:
                         timestamp,
                     ),
                 )
+                for rejection_generation, byte_start, byte_end, reason in prepared_rejections:
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO archive_rejections "
+                        "(workspace_id, project, run_id, attempt_id, source_key, generation, "
+                        "byte_start, byte_end, reason, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (*source.attempt.values(), source.source_key, rejection_generation,
+                         byte_start, byte_end, reason, timestamp),
+                    )
+                rejected_total = int(self._conn.execute(
+                    "SELECT COUNT(*) AS count FROM archive_rejections WHERE "
+                    "workspace_id=? AND project=? AND run_id=? AND attempt_id=? AND source_key=?",
+                    (*source.attempt.values(), source.source_key),
+                ).fetchone()["count"])
                 self._conn.execute(
                     "INSERT INTO archive_source_status "
                     "(workspace_id, project, run_id, attempt_id, source_key, state, "
                     "rejected_records, last_error, updated_at) VALUES (?,?,?,?,?,?,?,?,?) "
                     "ON CONFLICT(workspace_id, project, run_id, attempt_id, source_key) "
                     "DO UPDATE SET state=excluded.state, "
-                    "rejected_records=archive_source_status.rejected_records+excluded.rejected_records, "
+                    "rejected_records=excluded.rejected_records, "
                     "last_error=excluded.last_error, updated_at=excluded.updated_at",
                     (
                         *source.attempt.values(), source.source_key,
-                        "DEGRADED" if rejected else "READY", rejected,
-                        "RejectedRecords" if rejected else None, timestamp,
+                        "DEGRADED" if rejected_total else "READY", rejected_total,
+                        "RejectedRecords" if rejected_total else None, timestamp,
                     ),
                 )
                 self._conn.commit()
@@ -379,18 +433,27 @@ class ObservabilityStore:
             )
             self._conn.commit()
 
-    def archive_summary(self) -> dict[str, int]:
+    def archive_summary(self) -> dict[str, Any]:
         with self._lock:
             row = self._conn.execute(
                 "SELECT COUNT(*) AS sources, "
-                "COALESCE(SUM(CASE WHEN state='DEGRADED' THEN 1 ELSE 0 END),0) AS degraded, "
-                "COALESCE(SUM(rejected_records),0) AS rejected "
+                "COALESCE(SUM(CASE WHEN state='DEGRADED' THEN 1 ELSE 0 END),0) AS degraded "
                 "FROM archive_source_status"
             ).fetchone()
+            rejected = self._conn.execute(
+                "SELECT COUNT(*) AS rejected FROM archive_rejections"
+            ).fetchone()
+            reasons = self._conn.execute(
+                "SELECT reason, COUNT(*) AS rejected "
+                "FROM archive_rejections GROUP BY reason ORDER BY reason"
+            ).fetchall()
         return {
             "sources": int(row["sources"]),
             "degraded_sources": int(row["degraded"]),
-            "rejected_records": int(row["rejected"]),
+            "rejected_records": int(rejected["rejected"]),
+            "rejected_by_reason": {
+                item["reason"]: int(item["rejected"]) for item in reasons
+            },
         }
 
     def set_target_state(
@@ -456,6 +519,34 @@ class ObservabilityStore:
                 self._conn.rollback()
                 raise
         return bool(inserted)
+
+    def backfill_target(
+        self, attempt: AttemptRef, target: str, *, now: Optional[float] = None,
+    ) -> None:
+        """Explicitly request a complete idempotent replay for one target."""
+        target = _validate_name(target, "target")
+        timestamp = time.time() if now is None else now
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    "INSERT INTO publication_targets "
+                    "(workspace_id, project, run_id, attempt_id, target, state, "
+                    "dashboard_url, last_error, updated_at) "
+                    "VALUES (?,?,?,?,?,'PENDING',NULL,NULL,?) "
+                    "ON CONFLICT(workspace_id, project, run_id, attempt_id, target) "
+                    "DO UPDATE SET state='PENDING', last_error=NULL, updated_at=excluded.updated_at",
+                    (*attempt.values(), target, timestamp),
+                )
+                self._conn.execute(
+                    "DELETE FROM source_cursors WHERE workspace_id=? AND project=? "
+                    "AND run_id=? AND attempt_id=?",
+                    attempt.values(),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def claim(
         self,

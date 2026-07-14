@@ -25,7 +25,7 @@ from .schemas import (
 )
 from .telemetry import Telemetry, initialize_telemetry
 from .observability import WandbServiceManager
-from .observability_store import ObservabilityStore
+from .observability_store import AttemptRef, ObservabilityStore
 from .observability_runtime import ObservabilityCoordinator
 
 
@@ -99,12 +99,34 @@ class ExperimentServerRuntime:
             cloud=config.observability.wandb_cloud,
             credential_provider=credential_store.resolve_wandb_api_key,
         )
+
+        def execute_observability(plan: dict[str, object]) -> dict[str, object]:
+            scope = plan.get("scope")
+            if not isinstance(scope, dict):
+                raise ValueError("observability plan has no scope")
+            project = str(scope.get("project") or "")
+            raw_attempts = plan.get("attempts")
+            if not isinstance(raw_attempts, list):
+                raise ValueError("observability plan has no Attempts")
+            attempts = [
+                AttemptRef(
+                    workspace_id, project,
+                    str(item.get("run_id") or ""),
+                    str(item.get("attempt_id") or ""),
+                )
+                for item in raw_attempts if isinstance(item, dict)
+            ]
+            return observability.backfill(str(plan.get("target_kind") or ""), attempts)
+
         return cls(
             config=config,
             index=run_index,
             projects=loaded_projects,
             action_store=action_store,
-            action_service=ActionService(action_store, config.action_runtime),
+            action_service=ActionService(
+                action_store, config.action_runtime,
+                internal_executor=execute_observability,
+            ),
             project_registry=project_registry,
             telemetry=telemetry,
             workspace_id=workspace_id,

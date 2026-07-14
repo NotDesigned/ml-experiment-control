@@ -84,6 +84,10 @@ WANDB_CLOUD_SYNC = OperationParameter(
     "wandb_cloud_sync", "Publish this Attempt to W&B Cloud", kind="enum",
     required=False, default="no", choices=(("No", "no"), ("Yes", "yes")),
 )
+OBSERVABILITY_TARGET = OperationParameter(
+    "target", "Publication target", kind="enum",
+    choices=(("Local W&B", "local"), ("W&B Cloud", "cloud")),
+)
 NEW_ATTEMPT_ID = OperationParameter(
     "new_attempt_id", "New Attempt ID", required=False,
     placeholder="Optional attempt-NNN identity",
@@ -120,6 +124,15 @@ OPERATIONS: tuple[OperationDefinition, ...] = (
         "Append an archive record while retaining immutable evidence.", "Lifecycle",
         (OperationScopeType.CAMPAIGN, OperationScopeType.RUN, OperationScopeType.ATTEMPT),
         "direct", "Prepare an archive Action", None, (REASON,), 40,
+    ),
+    OperationDefinition(
+        "observability.backfill", "Enable and backfill W&B",
+        "Prepare an audited historical publication for every Attempt in scope.",
+        "Observability", (
+            OperationScopeType.PROJECT, OperationScopeType.CAMPAIGN,
+            OperationScopeType.RUN, OperationScopeType.ATTEMPT,
+        ), "direct", "Enable one publisher target and replay sanitized history",
+        "OBSERVABILITY_BACKFILL", (OBSERVABILITY_TARGET, REASON), 32,
     ),
     OperationDefinition(
         "run.submit", "Submit first Attempt",
@@ -165,6 +178,10 @@ INTENT_SCOPES: dict[str, tuple[OperationScopeType, ...]] = {
     "ARCHIVE_CAMPAIGN": (OperationScopeType.CAMPAIGN,),
     "ARCHIVE_RUN": (OperationScopeType.RUN,),
     "ARCHIVE_ATTEMPT": (OperationScopeType.ATTEMPT,),
+    "OBSERVABILITY_BACKFILL": (
+        OperationScopeType.PROJECT, OperationScopeType.CAMPAIGN,
+        OperationScopeType.RUN, OperationScopeType.ATTEMPT,
+    ),
 }
 
 def intent_scope_error(kind: str, scope_type: OperationScopeType) -> str | None:

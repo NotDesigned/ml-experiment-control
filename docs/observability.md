@@ -85,17 +85,18 @@ PENDING      durable records exist and have not been attempted
 SYNCING      one publisher owns the target lease
 READY        backlog is empty and the target passed its last operation
 DEGRADED     retryable publication failure; canonical collection continues
-FAILED       operator intervention is required
+FAILED       retry budget exhausted; automatic cooldown recovery is pending
 ```
 
-Each target exposes only bounded status: requested, state, backlog count,
-last-success timestamp, sanitized error class, and a credential-free dashboard
+Each target exposes only bounded status: target, state, pending/delivered/failed
+counts, `updated_at`, sanitized error class, and a credential-free dashboard
 URL. Local and Cloud status must never be collapsed into one `wandb_ready`
-boolean.
+boolean. Archive status additionally exposes rejected-record totals grouped by
+reason class; it never exposes rejected payloads or source paths.
 
 ## Local target
 
-Local W&B is the default visualization target when observability is enabled.
+Local W&B is the preferred visualization target when it is explicitly enabled.
 The daemon owns or explicitly references one loopback service and publishes
 through a dedicated worker environment containing only target-specific W&B
 settings. The service process and publisher are separate health domains:
@@ -116,6 +117,26 @@ to `/vol`, and stops its exact container on daemon shutdown. Configure the
 absolute `docker_executable` when Docker is outside `/usr/bin`; production
 operators should replace the mutable `wandb/local` tag with an approved image
 digest. Dashboard readiness and publisher authentication remain separate.
+
+A complete Local publisher configuration requires all three fields:
+
+```yaml
+observability:
+  local_wandb:
+    enabled: true
+    publisher_entity: my-local-entity
+    publisher_credential_ref: wandb-local-default
+```
+
+Provision the Local account key without placing it in YAML or HTTP:
+
+```bash
+ml-expd --config server.yaml credential wandb set wandb-local-default
+```
+
+Use a persistent daemon configuration path such as
+`~/.config/ml-expd/<workspace>.yaml`; `/tmp` configuration is suitable only for
+short-lived smoke tests and must not be the source of a long-running service.
 
 ## Cloud target
 
@@ -147,6 +168,20 @@ ml-expd --config server.yaml credential wandb status wandb-cloud-default
 The CLI output contains only the reference and a configured boolean. Operators
 should unset the shell variable after provisioning; it is not a supported
 daemon runtime environment variable.
+
+## Audited enable and historical backfill
+
+`observability.backfill` is a first-class direct operation on Project,
+Campaign, Run, and Attempt scopes. Preparation freezes the selected Local or
+Cloud target and the exact Attempt set in an immutable Action. At most 500
+Attempts may be included in one Action; use narrower Campaign/Run scopes for a
+larger workspace. Execution requires the normal separate authorization and
+exact `EXECUTE <action-id>` confirmation.
+
+The operation creates or re-enables the selected target and rewinds only the
+frozen Attempts' archive cursors. Sanitized record identities and target
+outbox uniqueness make the replay idempotent. Existing submissions remain
+unchanged until this operation is explicitly authorized.
 
 ## Durability and concurrency
 
@@ -181,5 +216,6 @@ exceptions.
   W&B worker environments;
 - scheduler submission and collection succeed while either publisher is down;
 - TUI states and links are derived only from daemon read models;
+- Local/Cloud historical publication is prepared and audited as an Action;
 - a fresh clone can install the pinned vendor commit and run all publisher
   tests without relying on globally installed `wandb`.

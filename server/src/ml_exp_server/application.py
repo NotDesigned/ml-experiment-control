@@ -26,6 +26,7 @@ from .project_registry import ProjectRegistryError
 from .runtime import ExperimentServerRuntime
 from .operations import (
     GPU_BUDGET,
+    OBSERVABILITY_TARGET,
     WANDB_CLOUD_SYNC,
     OPERATIONS_BY_ID,
     OperationAvailability,
@@ -355,9 +356,18 @@ class ExperimentServerApplication:
         default_budget = 1.0
         result: list[OperationAvailability] = []
         for base_operation in operations_for_scope(scope.scope_type):
+            available_targets = self._publication_targets_available()
             parameters = tuple(
                 replace(parameter, default=default_budget)
-                if parameter.key == GPU_BUDGET.key else parameter
+                if parameter.key == GPU_BUDGET.key else
+                replace(
+                    parameter,
+                    choices=tuple(
+                        choice for choice in parameter.choices
+                        if choice[1] in available_targets
+                    ),
+                    default=(available_targets[0] if available_targets else None),
+                ) if parameter.key == OBSERVABILITY_TARGET.key else parameter
                 for parameter in base_operation.parameters
                 if (
                     parameter.key != WANDB_CLOUD_SYNC.key
@@ -395,6 +405,24 @@ class ExperimentServerApplication:
             policy.default_credential_ref,
         ).configured
 
+    def _local_publication_available(self) -> bool:
+        policy = self.runtime.config.observability.local_wandb
+        return bool(
+            policy.enabled and policy.publisher_entity
+            and policy.publisher_credential_ref
+            and self.runtime.credential_store.status(
+                policy.publisher_credential_ref,
+            ).configured
+        )
+
+    def _publication_targets_available(self) -> tuple[str, ...]:
+        return tuple(
+            target for target, available in (
+                ("local", self._local_publication_available()),
+                ("cloud", self._cloud_publication_available()),
+            ) if available
+        )
+
     def _operation_blockers(
         self, operation_id: str, scope: OperationScope,
         project: ResearchProject, resolved: Any,
@@ -426,6 +454,19 @@ class ExperimentServerApplication:
                     record = root / "attempts" / f"{run_id}--{attempt_id}.yml"
                 if record.is_file():
                     reasons.append(f"Archive record already exists: {record}")
+        elif operation_id == "observability.backfill":
+            if not self.runtime.config.action_runtime.allow_observability_mutations:
+                reasons.append("Observability mutations are disabled by daemon policy")
+            if not self._publication_targets_available():
+                reasons.append("No authenticated W&B publisher target is available")
+            try:
+                attempts = self._observability_attempts(scope, project, resolved)
+            except (KeyError, ValueError):
+                attempts = []
+            if not attempts:
+                reasons.append("Scope has no observed Attempts to backfill")
+            elif len(attempts) > 500:
+                reasons.append("Scope exceeds the 500-Attempt backfill limit")
         elif operation_id == "run.submit":
             if project.controller is None:
                 reasons.append("Project has no controller configuration")
@@ -551,6 +592,12 @@ class ExperimentServerApplication:
                 return self.prepare_campaign_archive(project, object_id, reason=reason)
             return self.prepare_object_archive(
                 project, scope.scope_type, object_id, reason=reason,
+            )
+        if operation_id == "observability.backfill":
+            target = str(parameters.get("target") or "")
+            return self.prepare_observability_backfill(
+                project, scope.scope_type, object_id,
+                target=target, reason=reason,
             )
         if operation_id == "run.submit":
             return self.prepare_run_submit(
@@ -696,6 +743,80 @@ class ExperimentServerApplication:
             "evidence_digest": digest,
         })
         return {"action": action}
+
+    def _observability_attempts(
+        self, scope: OperationScope, project: ResearchProject, resolved: Any,
+    ) -> list[tuple[str, str]]:
+        if scope.scope_type == OperationScopeType.PROJECT:
+            rows = self.runtime.index.list_runs(project.project)
+        elif scope.scope_type == OperationScopeType.CAMPAIGN:
+            rows = self.runtime.index.list_runs(
+                project.project, campaign=scope.object_id,
+            )
+        elif scope.scope_type == OperationScopeType.RUN:
+            rows = [resolved]
+        elif scope.scope_type == OperationScopeType.ATTEMPT:
+            run_id, attempt_id = scope.object_id.rsplit("::", 1)
+            return [(run_id, attempt_id)]
+        else:
+            return []
+        return sorted({
+            (str(row.run_id), str(attempt.attempt_id))
+            for row in rows for attempt in (row.attempts or [])
+            if attempt.attempt_id
+        })
+
+    def prepare_observability_backfill(
+        self, project: str, scope_type: OperationScopeType | str,
+        object_id: str, *, target: str, reason: str,
+    ) -> dict[str, Any]:
+        self._require_operation_available(
+            "observability.backfill", project, scope_type, object_id,
+        )
+        scope, configured, resolved = self.resolve_scope(
+            project, scope_type, object_id,
+        )
+        available = self._publication_targets_available()
+        if target not in available:
+            raise ApplicationError(
+                f"publisher target {target!r} is unavailable",
+                code="PUBLISHER_UNAVAILABLE",
+            )
+        if not reason.strip():
+            raise ApplicationError(
+                "backfill reason is required", status_code=422,
+                code="INVALID_BACKFILL_REASON",
+            )
+        attempts = self._observability_attempts(scope, configured, resolved)
+        digest = evidence_digest(self.bounded_evidence(scope, configured, resolved))
+        action = self._prepare_action_intent(scope, configured, {
+            "kind": "OBSERVABILITY_BACKFILL",
+            "title": (
+                f"Backfill {len(attempts)} Attempts to {target} W&B"
+            ),
+            "target": f"wandb-{target}://{project}/{scope.object_id}",
+            "change_summary": (
+                f"enable {target} publication and replay sanitized history"
+            ),
+            "resource_estimate": f"{len(attempts)} Attempts",
+            "rationale": reason.strip(),
+            "risk": "external publication and potentially large durable backlog",
+            "draft": yaml.safe_dump({
+                "schema_version": 1,
+                "project": project,
+                "target": target,
+                "reason": reason.strip(),
+                "attempts": [
+                    {"run_id": run_id, "attempt_id": attempt_id}
+                    for run_id, attempt_id in attempts
+                ],
+            }, allow_unicode=True, sort_keys=False),
+            "evidence_digest": digest,
+        })
+        return {
+            "action": action,
+            "preflight": {"target": target, "attempt_count": len(attempts)},
+        }
 
     def _attempt_context(self, project: str, identity: str):
         scope, configured, attempt = self.resolve_scope(
