@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -195,7 +196,7 @@ def test_execute_anchors_manifest_write_against_post_identity_path_swap(
 
     def swap_after_identity(root, **kwargs):
         identity = real_identity(root, **kwargs)
-        if str(root).startswith("/proc/self/fd/"):
+        if root == repository:
             repository.rename(moved)
             repository.symlink_to(outside, target_is_directory=True)
         return identity
@@ -311,6 +312,39 @@ def test_existing_manifest_preview_registers_without_project_write_policy(tmp_pa
     assert response.status_code == 200
     assert repeated["executed"] is True
     assert repeated["phase"] == "COMPLETED"
+
+
+def test_existing_git_manifest_executes_with_anchored_filesystem_handle(tmp_path):
+    repository = tmp_path / "existing-git"
+    manifest = repository / "experiments" / "research_project.yaml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(yaml.safe_dump({
+        "schema_version": 1, "project": "existing-git", "title": "Existing Git",
+        "run_roots": [],
+    }), encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.name", "Test"], check=True,
+    )
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-qm", "project"], check=True,
+    )
+
+    with TestClient(create_app(config(tmp_path))) as client:
+        plan = preview(client, repository).json()
+        response = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        )
+
+    assert plan["repository_identity"]["kind"] == "git"
+    assert response.status_code == 200
+    assert response.json()["import"]["phase"] == "COMPLETED"
 
 
 def test_preview_rejects_ambiguous_or_unsupported_sources(tmp_path):

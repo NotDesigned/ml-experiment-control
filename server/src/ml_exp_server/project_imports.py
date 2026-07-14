@@ -544,8 +544,6 @@ class ProjectImportService:
             with _opened_repository(
                 root, plan.get("repository_filesystem_identity"),
             ) as root_fd:
-                anchored_root = Path(f"/proc/self/fd/{root_fd}")
-                anchored_manifest = anchored_root / "experiments" / "research_project.yaml"
                 operation = plan.get("operation")
                 if operation == "GENERATE_AND_REGISTER":
                     if not self.runtime.config.action_runtime.allow_project_writes:
@@ -555,9 +553,9 @@ class ProjectImportService:
                         )
                     _cleanup_manifest_temp(root_fd, import_id)
                 current_identity = _repository_identity(
-                    anchored_root,
+                    root,
                     ignore=(
-                        anchored_manifest
+                        manifest_path
                         if identity_key.endswith("without_manifest") else None
                     ),
                 )
