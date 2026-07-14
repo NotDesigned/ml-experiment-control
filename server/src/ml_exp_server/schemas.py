@@ -8,10 +8,13 @@ here is either a read model or a transport-neutral operation contract.
 from __future__ import annotations
 
 from enum import Enum
+import ipaddress
 from pathlib import Path
+import re
 from typing import Any, Literal, Optional
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA_VERSION = 1
 
@@ -103,14 +106,104 @@ class LocalWandbConfig(BaseModel):
     bind_host: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1, le=65535)
     data_dir: str = "~/.local/state/ml-expd/wandb"
-    command: list[str] = Field(
-        default_factory=lambda: ["wandb", "server", "start", "--no-daemon"],
-    )
+    # A managed command must remain attached to the daemon.  There is no safe
+    # universal default: ``wandb server start`` shells out to Docker and its
+    # historical defaults do not honor bind_host or data_dir.  Explicit
+    # placeholders make the ownership and storage boundary reviewable.
+    command: list[str] = Field(default_factory=list, max_length=128)
+    environment_allowlist: list[str] = Field(default_factory=list, max_length=16)
     startup_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     external_url: Optional[str] = None
 
+    @field_validator("bind_host")
+    @classmethod
+    def _validate_bind_host(cls, value: str) -> str:
+        host = value.strip()
+        if not host or any(char in host for char in "/@?#") or any(char.isspace() for char in host):
+            raise ValueError("bind_host must be a hostname or IP address")
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+                raise ValueError("bind_host must be a hostname or IP address")
+        return host
+
+    @field_validator("external_url")
+    @classmethod
+    def _validate_external_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("external_url must be an absolute HTTP(S) URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("external_url must not contain user information")
+        if parsed.query or parsed.fragment:
+            raise ValueError("external_url must not contain a query or fragment")
+        try:
+            parsed.port
+        except ValueError as exc:
+            raise ValueError("external_url contains an invalid port") from exc
+        return value.rstrip("/")
+
+    @field_validator("environment_allowlist")
+    @classmethod
+    def _validate_environment_allowlist(cls, values: list[str]) -> list[str]:
+        safe = {"PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR", "DOCKER_HOST"}
+        invalid = sorted(set(values) - safe)
+        if invalid:
+            raise ValueError(f"environment_allowlist contains unsupported names: {', '.join(invalid)}")
+        return list(dict.fromkeys(values))
+
+    @model_validator(mode="after")
+    def _validate_lifecycle_contract(self) -> "LocalWandbConfig":
+        if not self.enabled:
+            return self
+        if self.managed:
+            if self.external_url is not None:
+                raise ValueError("managed local W&B cannot use external_url")
+            if self.bind_host not in {"127.0.0.1", "localhost", "::1"}:
+                raise ValueError("managed local W&B must bind to a loopback host")
+            if not self.command:
+                raise ValueError("managed local W&B requires an explicit foreground command")
+            rendered = "\0".join(self.command)
+            missing = [
+                placeholder for placeholder in ("{bind_host}", "{port}", "{data_dir}")
+                if placeholder not in rendered
+            ]
+            if missing:
+                raise ValueError(
+                    "managed local W&B command is missing placeholders: " + ", ".join(missing)
+                )
+        elif self.external_url is None:
+            raise ValueError("external local W&B requires external_url")
+        return self
+
     def url(self) -> str:
-        return self.external_url or f"http://{self.bind_host}:{self.port}"
+        if self.external_url:
+            return self.external_url
+        host = f"[{self.bind_host}]" if ":" in self.bind_host else self.bind_host
+        return f"http://{host}:{self.port}"
+
+    def data_path(self) -> Path:
+        return Path(self.data_dir).expanduser().resolve()
+
+    def resolved_command(self) -> list[str]:
+        substitutions = {
+            "{bind_host}": self.bind_host,
+            "{port}": str(self.port),
+            "{data_dir}": str(self.data_path()),
+        }
+        return [
+            _replace_placeholders(token, substitutions)
+            for token in self.command
+        ]
+
+
+def _replace_placeholders(value: str, substitutions: dict[str, str]) -> str:
+    for key, replacement in substitutions.items():
+        value = value.replace(key, replacement)
+    return value
 
 
 class WandbCloudConfig(BaseModel):

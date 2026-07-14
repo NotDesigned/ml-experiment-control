@@ -33,9 +33,6 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
         loop = asyncio.get_running_loop()
         app.state.broker.bind_loop(loop)
         app.state._stop = threading.Event()
-        # Optional local W&B is a projection service. Startup failure is
-        # recorded as DEGRADED and must not prevent canonical indexing.
-        app.state.observability = app.state.runtime.wandb_service.start()
 
         def initial_index() -> None:
             for project in app.state.projects:
@@ -53,6 +50,12 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             else:
                 app.state.collector_owner = True
                 app.state.collector_lease = lease
+                # Projection ownership follows the same workspace lease as
+                # canonical collection.  A second daemon must never spawn a
+                # duplicate local service.  Startup is bounded and degradable.
+                app.state.observability = await asyncio.to_thread(
+                    app.state.runtime.wandb_service.start,
+                )
 
                 def poll_loop() -> None:
                     while not app.state._stop.is_set():
@@ -78,10 +81,26 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             # close the runtime until that owner has observed the stop signal.
             await asyncio.to_thread(thread.join, 5.0)
         lease = app.state.collector_lease
-        if lease is not None:
-            lease.release()
         if thread is None or not thread.is_alive():
             app.state.runtime.close()
+            if lease is not None:
+                lease.release()
+        else:
+            # Retain the lease until a long in-flight controller observation
+            # really exits; otherwise another daemon could become owner while
+            # the prior collector and its subprocesses are still alive.
+            app.state.runtime.wandb_service.stop()
+
+            def finish_shutdown() -> None:
+                thread.join()
+                app.state.runtime.close()
+                if lease is not None:
+                    lease.release()
+
+            cleanup = threading.Thread(
+                target=finish_shutdown, name="collectord-shutdown", daemon=True,
+            )
+            cleanup.start()
 
     app = FastAPI(title="ml-expd", version="0.1.0", lifespan=lifespan)
     app.state.broker = EventBroker()
