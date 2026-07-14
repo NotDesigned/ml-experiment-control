@@ -404,6 +404,17 @@ class ResearchQuestion(BaseModel):
         return _safe_identity("research question id", value)
 
 
+class ControllerExecutionBundle(BaseModel):
+    """Source inputs copied into a daemon-private reviewed controller bundle."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entry_module: str
+    paths: list[str] = Field(default_factory=list, max_length=64)
+    python_packages: list[str] = Field(default_factory=list, max_length=32)
+    require_clean_git: bool = True
+
+
 class ControllerConfig(BaseModel):
     """How the collector invokes the project's experimentctl (observation verbs only)."""
 
@@ -411,6 +422,7 @@ class ControllerConfig(BaseModel):
     experimentctl: str
     workdir: str = "."
     capabilities: dict[str, bool] = Field(default_factory=dict)
+    execution_bundle: Optional[ControllerExecutionBundle] = None
 
 
 class ResearchProject(BaseModel):
