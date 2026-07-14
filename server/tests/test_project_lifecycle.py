@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -10,6 +11,7 @@ import yaml
 import pytest
 from fastapi.testclient import TestClient
 
+from ml_exp_server import application as application_module
 from ml_exp_server.api.app import create_app
 from ml_exp_server.cli import main
 from ml_exp_server.project_registry import ProjectRegistry, ProjectRegistryError
@@ -91,6 +93,32 @@ def test_registry_fails_closed_on_corrupt_json(tmp_path):
     assert registry.path.read_text(encoding="utf-8") == "{broken"
 
 
+def test_registry_fails_closed_on_relative_or_duplicate_manifest_paths(tmp_path):
+    registry = ProjectRegistry(tmp_path / "workspace-projects")
+    now = "2026-01-01T00:00:00Z"
+    base = {
+        "state": "ACTIVE", "source": "MANUAL",
+        "registered_at": now, "updated_at": now,
+    }
+    registry.path.write_text(json.dumps({
+        "schema_version": 1,
+        "projects": [{"project": "demo", "project_file": "relative.yml", **base}],
+    }), encoding="utf-8")
+    with pytest.raises(ProjectRegistryError, match="path must be absolute"):
+        registry.records()
+
+    shared = str((tmp_path / "shared.yml").resolve())
+    registry.path.write_text(json.dumps({
+        "schema_version": 1,
+        "projects": [
+            {"project": "first", "project_file": shared, **base},
+            {"project": "second", "project_file": shared, **base},
+        ],
+    }), encoding="utf-8")
+    with pytest.raises(ProjectRegistryError, match="duplicate project manifest"):
+        registry.records()
+
+
 def test_registry_serializes_writers_from_independent_daemons(tmp_path):
     root = tmp_path / "workspace-projects"
     first = ProjectRegistry(root)
@@ -111,6 +139,32 @@ def test_registry_serializes_writers_from_independent_daemons(tmp_path):
             call.result()
 
     assert {item.project for item in ProjectRegistry(root).records()} == {"alpha", "beta"}
+
+
+def test_registry_rejects_in_place_project_identity_change(tmp_path):
+    project_path = write_project(tmp_path, "old")
+    registry = ProjectRegistry(tmp_path / "workspace-projects")
+    registry.bootstrap([project_path])
+    payload = yaml.safe_load(project_path.read_text(encoding="utf-8"))
+    payload["project"] = "new"
+    project_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    with pytest.raises(ProjectRegistryError, match="already registered as 'old'"):
+        registry.register("new", project_path)
+
+    assert [record.project for record in registry.records()] == ["old"]
+
+
+def test_active_registration_retry_is_registry_idempotent(tmp_path):
+    project_path = write_project(tmp_path, "demo")
+    registry = ProjectRegistry(tmp_path / "workspace-projects")
+    first = registry.bootstrap([project_path])[0]
+    event_count = len(registry.events())
+
+    retried = registry.register("demo", project_path)
+
+    assert retried == first
+    assert len(registry.events()) == event_count
 
 
 def test_runtime_lifecycle_changes_active_collector_set_without_touching_repository(tmp_path):
@@ -160,6 +214,59 @@ def test_project_lifecycle_api_pauses_resumes_archives_and_unregisters(tmp_path)
         assert removed.status_code == 200 and [item["project"] for item in removed.json()["unregistered"]] == ["demo"]
         assert client.get("/api/project-lifecycle").json()["projects"] == []
     assert project_path.is_file()
+
+
+def test_manual_registration_requires_absolute_daemon_host_path(tmp_path):
+    with TestClient(create_app(config(tmp_path, []))) as client:
+        response = client.post(
+            "/api/project-lifecycle/register",
+            json={"project_file": "experiments/research_project.yaml"},
+        )
+    assert response.status_code == 409
+    assert "absolute daemon-host path" in response.json()["detail"]
+
+
+def test_index_failure_is_reported_as_degraded_after_durable_registration(
+    monkeypatch, tmp_path,
+):
+    project_path = write_project(tmp_path, "demo")
+    with TestClient(create_app(config(tmp_path, []))) as client:
+        monkeypatch.setattr(
+            application_module, "index_project",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("scan unavailable")),
+        )
+        response = client.post(
+            "/api/project-lifecycle/register",
+            json={"project_file": str(project_path)},
+        )
+        listed = client.get("/api/project-lifecycle").json()
+
+    assert response.status_code == 200
+    assert response.json()["initial_index"] == {
+        "status": "DEGRADED", "runs": None, "error": "scan unavailable",
+        "unavailable_run_roots": [],
+    }
+    assert listed["projects"][0]["project"] == "demo"
+    assert listed["projects"][0]["state"] == "ACTIVE"
+
+
+def test_registration_reports_unavailable_run_roots_as_degraded(tmp_path):
+    project_path = write_project(tmp_path, "demo")
+    payload = yaml.safe_load(project_path.read_text(encoding="utf-8"))
+    payload["run_roots"] = ["missing-runs"]
+    project_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    with TestClient(create_app(config(tmp_path, []))) as client:
+        response = client.post(
+            "/api/project-lifecycle/register",
+            json={"project_file": str(project_path)},
+        )
+
+    initial = response.json()["initial_index"]
+    assert response.status_code == 200
+    assert initial["status"] == "DEGRADED"
+    assert initial["runs"] == 0
+    assert initial["unavailable_run_roots"] == [str(tmp_path / "demo" / "missing-runs")]
 
 
 def test_reregister_and_active_transition_refresh_live_project_catalog(tmp_path):

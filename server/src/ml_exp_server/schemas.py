@@ -18,6 +18,15 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA_VERSION = 1
+SAFE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+
+
+def _safe_identity(label: str, value: str) -> str:
+    if not re.fullmatch(SAFE_ID_PATTERN, value):
+        raise ValueError(
+            f"{label} must use 1-128 letters, digits, '.', '_' or '-'"
+        )
+    return value
 
 # Vocabulary mirrored from the package-owned run-directory producer
 # (experiment_control.manifest RunState et al.). Clients render unknown
@@ -297,6 +306,11 @@ class CampaignRunMembership(BaseModel):
     purpose: Optional[str] = None
     included_in_analysis: bool = True
 
+    @field_validator("run_id")
+    @classmethod
+    def validate_run_id(cls, value: str) -> str:
+        return _safe_identity("run_id", value)
+
 
 class CampaignRevision(BaseModel):
     """Resolved immutable identity of the current authored campaign file."""
@@ -320,6 +334,11 @@ class CampaignRef(BaseModel):
     file: Optional[str] = None
     role_notes: dict[str, str] = Field(default_factory=dict)
     current_revision: Optional[CampaignRevision] = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return _safe_identity("campaign name", value)
 
 
 class CampaignBinding(BaseModel):
@@ -362,6 +381,11 @@ class ResearchQuestion(BaseModel):
     notes: list[str] = Field(default_factory=list)
     links: ResearchLinks = Field(default_factory=ResearchLinks)
 
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        return _safe_identity("research question id", value)
+
 
 class ControllerConfig(BaseModel):
     """How the collector invokes the project's experimentctl (observation verbs only)."""
@@ -389,6 +413,11 @@ class ResearchProject(BaseModel):
     authored_file: Optional[Path] = Field(default=None, exclude=True)
     research_questions: list[ResearchQuestion] = Field(default_factory=list)
 
+    @field_validator("project")
+    @classmethod
+    def validate_project(cls, value: str) -> str:
+        return _safe_identity("project", value)
+
     def resolved_run_roots(self) -> list[Path]:
         base = self.base_dir or Path(".")
         return [(base / root).resolve() if not Path(root).is_absolute() else Path(root)
@@ -409,6 +438,11 @@ class ProjectLifecycleRecord(BaseModel):
     registered_at: str
     updated_at: str
     state_reason: str = ""
+
+    @field_validator("project")
+    @classmethod
+    def validate_project(cls, value: str) -> str:
+        return _safe_identity("project", value)
 
 
 class ServerConfig(BaseModel):

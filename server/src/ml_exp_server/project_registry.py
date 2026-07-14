@@ -78,6 +78,7 @@ class ProjectRegistry:
     def _records(payload: dict) -> list[ProjectLifecycleRecord]:
         records: list[ProjectLifecycleRecord] = []
         seen: set[str] = set()
+        seen_paths: dict[Path, str] = {}
         for item in payload.get("projects", []):
             try:
                 record = ProjectLifecycleRecord.model_validate(item)
@@ -85,7 +86,19 @@ class ProjectRegistry:
                 raise ProjectRegistryError("invalid project lifecycle record") from exc
             if record.project in seen:
                 raise ProjectRegistryError(f"duplicate project in registry: {record.project}")
+            path = Path(record.project_file).expanduser()
+            if not path.is_absolute():
+                raise ProjectRegistryError(
+                    f"project registry path must be absolute: {record.project_file}"
+                )
+            canonical = path.resolve()
+            if canonical in seen_paths:
+                raise ProjectRegistryError(
+                    f"duplicate project manifest in registry: {canonical} is used by "
+                    f"{seen_paths[canonical]!r} and {record.project!r}"
+                )
             seen.add(record.project)
+            seen_paths[canonical] = record.project
             records.append(record)
         return records
 
@@ -132,33 +145,33 @@ class ProjectRegistry:
             if self.exists():
                 return self._records(self._load())
             now = utc_now()
-            records: list[ProjectLifecycleRecord] = []
+            pending_paths: list[Path] = []
             seen_paths: set[Path] = set()
             for value in config_project_files:
                 path = Path(value).expanduser().resolve()
                 if path in seen_paths:
                     continue
                 seen_paths.add(path)
-                records.append(ProjectLifecycleRecord(
-                    project=f"__pending__{len(records)}",
-                    project_file=str(path), state=ProjectLifecycleState.ACTIVE,
-                    source=ProjectRegistrationSource.CONFIG_SEED,
-                    registered_at=now, updated_at=now,
-                ))
+                pending_paths.append(path)
             # bootstrap needs an authored Project identity.  Import lazily to
             # keep this module independent of YAML parsing during normal CRUD.
             from .project_config import load_research_project
 
             materialized: list[ProjectLifecycleRecord] = []
             names: set[str] = set()
-            for pending in records:
-                project = load_research_project(Path(pending.project_file))
+            for path in pending_paths:
+                project = load_research_project(path)
                 if project.project in names:
                     raise ProjectRegistryError(
                         f"duplicate project name during registry bootstrap: {project.project}"
                     )
                 names.add(project.project)
-                materialized.append(pending.model_copy(update={"project": project.project}))
+                materialized.append(ProjectLifecycleRecord(
+                    project=project.project,
+                    project_file=str(path), state=ProjectLifecycleState.ACTIVE,
+                    source=ProjectRegistrationSource.CONFIG_SEED,
+                    registered_at=now, updated_at=now,
+                ))
             payload = self._default()
             payload["projects"] = [record.model_dump(mode="json") for record in materialized]
             atomic_json(self.path, payload)
@@ -180,6 +193,18 @@ class ProjectRegistry:
             payload = self._load()
             records = self._records(payload)
             current = next((record for record in records if record.project == project), None)
+            path_owner = next(
+                (
+                    record for record in records
+                    if Path(record.project_file).expanduser().resolve() == Path(path)
+                ),
+                None,
+            )
+            if path_owner is not None and path_owner.project != project:
+                raise ProjectRegistryError(
+                    f"project manifest {path} is already registered as "
+                    f"{path_owner.project!r}; changing Project identity in place is not allowed"
+                )
             now = utc_now()
             if current is not None:
                 if Path(current.project_file).resolve() != Path(path):
@@ -190,6 +215,8 @@ class ProjectRegistry:
                     raise ProjectRegistryError(
                         f"project {project!r} is archived; restore it before reactivating"
                     )
+                if current.state == ProjectLifecycleState.ACTIVE:
+                    return current
                 updated = current.model_copy(update={
                     "state": ProjectLifecycleState.ACTIVE,
                     "updated_at": now,

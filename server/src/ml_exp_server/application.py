@@ -2301,19 +2301,48 @@ class ExperimentServerApplication:
         }
 
     def project_register(self, project_file: Path) -> dict[str, Any]:
+        if not project_file.is_absolute():
+            raise ApplicationError(
+                "project_file must be an absolute daemon-host path",
+                code="PROJECT_REGISTRATION_BLOCKED",
+            )
         try:
             project = self.runtime.register_project(
                 project_file, source=ProjectRegistrationSource.MANUAL,
             )
-            index_project(self.runtime.index, project)
-        except (ProjectRegistryError, FileNotFoundError, ValueError) as exc:
+        except (ProjectRegistryError, OSError, ValueError) as exc:
             raise ApplicationError(str(exc), code="PROJECT_REGISTRATION_BLOCKED") from exc
+        index_error = None
+        indexed_runs = None
+        unavailable_roots = [
+            str(root) for root in project.resolved_run_roots() if not root.is_dir()
+        ]
+        try:
+            indexed_runs = index_project(self.runtime.index, project)
+        except Exception as exc:
+            # Registration is already durable and will be retried by the live
+            # collector or at next startup.  Do not tell the caller it failed.
+            index_error = str(exc)[:500] or type(exc).__name__
+        if index_error is None and unavailable_roots:
+            preview = ", ".join(unavailable_roots[:5])
+            suffix = f" (+{len(unavailable_roots) - 5} more)" if len(unavailable_roots) > 5 else ""
+            index_error = f"run roots are unavailable: {preview}{suffix}"
         record = next(
             item for item in self.runtime.project_records() if item.project == project.project
         )
         return {
             "project": record.model_dump(mode="json"),
-            "effect": "project is active; initial indexing completed and collector observation may run",
+            "initial_index": {
+                "status": "DEGRADED" if index_error else "COMPLETED",
+                "runs": indexed_runs,
+                "error": index_error,
+                "unavailable_run_roots": unavailable_roots,
+            },
+            "effect": (
+                "project is active; initial indexing will be retried"
+                if index_error else
+                "project is active; initial indexing completed and collector observation may run"
+            ),
         }
 
     def project_lifecycle_transition(

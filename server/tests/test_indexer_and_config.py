@@ -4,6 +4,7 @@ import json
 import hashlib
 import shutil
 import textwrap
+import yaml
 
 from ml_exp_server.ingest.indexer import RunIndex, index_project
 from ml_exp_server.ingest.runscan import (
@@ -189,6 +190,53 @@ def test_duplicate_research_question_id_rejected(tmp_path):
     (tmp_path / "experiments" / "research_questions" / "h2.yml").write_text(
         "schema_version: 1\nid: H1\ntitle: dup\n")
     with pytest.raises(ConfigError, match="duplicate research question id"):
+        load_research_project(path)
+
+
+@pytest.mark.parametrize(("field", "value", "message"), [
+    ("project", "../escape", "project"),
+    ("campaign", "bad/name", "campaign name"),
+    ("run_id", "bad/run", "run_id"),
+    ("question", "bad/question", "research question id"),
+])
+def test_project_import_rejects_unsafe_authored_identities(tmp_path, field, value, message):
+    path = _make_project_files(tmp_path)
+    if field == "project":
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        payload["project"] = value
+        path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    elif field == "campaign":
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        payload["campaigns"][0]["name"] = value
+        path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    elif field == "run_id":
+        campaign = tmp_path / "experiments" / "campaign.yml"
+        campaign.write_text(yaml.safe_dump({
+            "schema_version": 1, "project": "elf", "campaign": "study",
+            "runs": [{"run_id": value}],
+        }), encoding="utf-8")
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        payload["campaigns"] = [{"name": "study", "file": "experiments/campaign.yml"}]
+        path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    else:
+        question = tmp_path / "experiments" / "research_questions" / "h1.yml"
+        payload = yaml.safe_load(question.read_text(encoding="utf-8"))
+        payload["id"] = value
+        question.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        load_research_project(path)
+
+
+def test_project_import_rejects_duplicate_yaml_keys(tmp_path):
+    path = _make_project_files(tmp_path)
+    path.write_text(
+        "schema_version: 1\nproject: first\nproject: second\n"
+        "title: Ambiguous\nrun_roots: []\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="duplicate key 'project'"):
         load_research_project(path)
 
 
