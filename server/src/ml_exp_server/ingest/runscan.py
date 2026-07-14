@@ -74,6 +74,8 @@ _CONFIG_EXCERPT_KEYS = (
     "seed", "max_length", "global_batch_size", "epochs", "grad_accum_steps",
     "use_sentence_plan", "sentence_encoder_type", "sentence_encoder_grad",
     "plan_aux_passes", "plan_aux_token_context",
+    "use_wandb", "wandb_base_url", "wandb_project", "wandb_entity",
+    "wandb_run_id", "wandb_run_name", "wandb_url",
     "depth", "device_batch_size",
 )
 

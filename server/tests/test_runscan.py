@@ -115,6 +115,30 @@ def test_smoke_run_created_state_not_flagged(smoke_run_dir):
     assert row.provenance["git_commit"]
 
 
+def test_wandb_identity_is_exposed_only_as_run_provenance(tmp_path):
+    run_dir = tmp_path / "wandb-run"
+    run_dir.mkdir()
+    (run_dir / "manifest.yaml").write_text(
+        "project: demo\n"
+        "run_id: wandb-run\n"
+        "resolved_config:\n"
+        "  use_wandb: true\n"
+        "  wandb_project: demo-metrics\n"
+        "  wandb_entity: research-team\n"
+        "  wandb_run_id: stable-run-id\n",
+        encoding="utf-8",
+    )
+
+    row = scan_run_dir(run_dir, "demo", now=NOW)
+
+    assert row.provenance["resolved_config_excerpt"] == {
+        "use_wandb": True,
+        "wandb_project": "demo-metrics",
+        "wandb_entity": "research-team",
+        "wandb_run_id": "stable-run-id",
+    }
+
+
 def test_terminal_runs_are_never_stale(tmp_path):
     run_dir = tmp_path / "camp" / "run-x"
     run_dir.mkdir(parents=True)
