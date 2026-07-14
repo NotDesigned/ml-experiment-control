@@ -2,6 +2,10 @@ schema_version: 1
 index_db: ~/.local/state/ml-expd/index.sqlite
 project_registry_root: ~/.local/state/ml-expd/projects
 action_root: ~/.local/state/ml-expd/actions
+# Optional shared-host protection. Keep the secret in an owner-only 0600 file.
+# A non-loopback --host also requires --ssl-certfile and --ssl-keyfile.
+http_auth:
+  bearer_token_file: null
 action_runtime:
   allow_project_writes: false
   allow_scheduler_mutations: false

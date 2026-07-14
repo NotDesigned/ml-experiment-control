@@ -157,7 +157,10 @@ def test_action_authorization_and_execution_fail_closed_on_policy_and_tampering(
             service.execute(action_id, f"EXECUTE {action_id}")
 
     action_id = synthetic_plan(store, "executing")
-    store.set_execution(action_id, {"status": "EXECUTING"}, event="test")
+    store.set_execution(
+        action_id, {**store.execution(action_id), "status": "EXECUTING"},
+        event="test",
+    )
     with pytest.raises(ActionError, match="reconcile"):
         blocked.execute(action_id, f"EXECUTE {action_id}")
 
@@ -227,7 +230,10 @@ def test_cancel_timeout_can_reconcile_exact_terminal_job(tmp_path):
         "verification_cwd": str(tmp_path), "request_digest": "sha256:cancel",
     })
     store.set_execution(
-        action_id, {"status": "RECONCILE_REQUIRED", "result": {}}, event="timeout",
+        action_id, {
+            **store.execution(action_id),
+            "status": "RECONCILE_REQUIRED", "result": {},
+        }, event="timeout",
     )
     service = ActionService(
         store, ActionRuntimeConfig(),

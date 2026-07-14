@@ -1,8 +1,9 @@
 from pathlib import Path
+import json
 
 import pytest
 
-from ml_exp_server.cli import _require_loopback_host, main
+from ml_exp_server.cli import _require_loopback_host, _validate_bind_host, main
 from ml_exp_server.credentials import CredentialStore
 from ml_exp_server.project_registry import ProjectRegistry
 
@@ -170,3 +171,80 @@ def test_daemon_accepts_only_loopback_bind_hosts(host, normalized):
 def test_daemon_rejects_unauthenticated_non_loopback_bind_hosts(host):
     with pytest.raises(SystemExit, match="no HTTP authentication"):
         _require_loopback_host(host)
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "daemon.internal"])
+def test_daemon_allows_authenticated_non_loopback_bind_hosts(host):
+    assert _validate_bind_host(host, authenticated=True, tls=True)
+
+
+def test_daemon_rejects_bearer_remote_bind_without_tls():
+    with pytest.raises(SystemExit, match="without --ssl-certfile"):
+        _validate_bind_host("0.0.0.0", authenticated=True)
+
+
+def test_doctor_validates_private_http_bearer_token(tmp_path, capsys):
+    token = tmp_path / "daemon.token"
+    token.write_text("x" * 40 + "\n", encoding="utf-8")
+    token.chmod(0o600)
+    config = _write_config(
+        tmp_path,
+        f"http_auth:\n  bearer_token_file: {token}\n",
+    )
+
+    assert main(["--config", str(config), "doctor"]) == 0
+    assert "✓ HTTP authentication: bearer token ready" in capsys.readouterr().out
+
+    token.chmod(0o644)
+    assert main(["--config", str(config), "doctor"]) == 1
+    assert "permissions must be 0600" in capsys.readouterr().out
+
+
+def test_daemon_doctor_json_report(tmp_path, capsys):
+    config = _write_config(tmp_path)
+    assert main(["--config", str(config), "doctor", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "PASS"
+    assert any(item["name"] == "server config" for item in payload["checks"])
+
+
+def test_daemon_doctor_rejects_remote_plaintext_bind(tmp_path, capsys):
+    token = tmp_path / "daemon.token"
+    token.write_text("x" * 40, encoding="utf-8")
+    token.chmod(0o600)
+    config = _write_config(
+        tmp_path, f"http_auth:\n  bearer_token_file: {token}\n",
+    )
+    assert main([
+        "--config", str(config), "--host", "0.0.0.0", "doctor",
+    ]) == 1
+    assert "✗ HTTP bind policy" in capsys.readouterr().out
+
+
+def test_tls_preflight_fails_before_runtime_initialization(tmp_path, capsys):
+    token = tmp_path / "daemon.token"
+    token.write_text("x" * 40, encoding="utf-8")
+    token.chmod(0o600)
+    action_root = tmp_path / "actions"
+    config = _write_config(
+        tmp_path,
+        f"action_root: {action_root}\n"
+        f"http_auth:\n  bearer_token_file: {token}\n",
+    )
+    arguments = [
+        "--config", str(config), "--host", "0.0.0.0",
+        "--ssl-certfile", str(tmp_path / "missing.crt"),
+        "--ssl-keyfile", str(tmp_path / "missing.key"),
+    ]
+
+    assert main([*arguments, "doctor", "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    tls = next(item for item in report["checks"] if item["name"] == "TLS certificate")
+    assert tls["status"] == "FAIL"
+    assert not (tmp_path / "index.sqlite").exists()
+    assert not action_root.exists()
+
+    with pytest.raises(SystemExit, match="TLS certificate/key cannot be loaded"):
+        main(arguments)
+    assert not (tmp_path / "index.sqlite").exists()
+    assert not action_root.exists()

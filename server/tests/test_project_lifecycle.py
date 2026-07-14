@@ -11,7 +11,7 @@ import yaml
 import pytest
 from fastapi.testclient import TestClient
 
-from ml_exp_server import application as application_module
+from ml_exp_server import project_service as project_service_module
 from ml_exp_server.api.app import create_app
 from ml_exp_server.cli import main
 from ml_exp_server.project_registry import ProjectRegistry, ProjectRegistryError
@@ -232,7 +232,7 @@ def test_index_failure_is_reported_as_degraded_after_durable_registration(
     project_path = write_project(tmp_path, "demo")
     with TestClient(create_app(config(tmp_path, []))) as client:
         monkeypatch.setattr(
-            application_module, "index_project",
+            project_service_module, "index_project",
             lambda *args, **kwargs: (_ for _ in ()).throw(OSError("scan unavailable")),
         )
         response = client.post(

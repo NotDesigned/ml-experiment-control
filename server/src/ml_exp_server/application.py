@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 
 from .authored_runs import authored_run_placeholder
+from .application_errors import ApplicationError
 from .campaign_lifecycle import campaign_snapshot
 from .code_identity import project_code_identity
 from .ingest.indexer import index_project
@@ -23,7 +24,7 @@ from .ingest.runscan import (
     train_metric_records,
 )
 from .evidence_conflicts import classify_evidence_conflicts
-from .project_registry import ProjectRegistryError
+from .project_service import ProjectApplicationService
 from .runtime import ExperimentServerRuntime
 from .outward import attempt_dto, operational_decision, run_dto, sanitized_outward
 from .operations import (
@@ -40,19 +41,9 @@ from .schemas import (
     OperationScopeType,
     CampaignRelationship,
     ProjectLifecycleState,
-    ProjectRegistrationSource,
     ResearchProject,
 )
-
-
-class ApplicationError(RuntimeError):
-    """Stable error shared by transport adapters."""
-
-    def __init__(self, message: str, *, status_code: int = 409,
-                 code: str = "APPLICATION_ERROR"):
-        super().__init__(message)
-        self.status_code = status_code
-        self.code = code
+from .telemetry import Telemetry
 
 
 _OMITTED_EVIDENCE_KEYS = {
@@ -383,6 +374,8 @@ def evidence_digest(payload: dict[str, Any]) -> str:
 class ExperimentServerApplication:
     def __init__(self, runtime: ExperimentServerRuntime):
         self.runtime = runtime
+        self.telemetry = getattr(runtime, "telemetry", Telemetry())
+        self.project_service = ProjectApplicationService(runtime)
 
     def recover_observability_policies(self) -> None:
         """Idempotently close the VERIFIED-action/target crash window."""
@@ -2216,18 +2209,37 @@ class ExperimentServerApplication:
     def prepare_action(self, project: str, scope_type: OperationScopeType | str,
                        object_id: str, intent: dict[str, Any]) -> dict[str, Any]:
         scope, configured, resolved = self.resolve_scope(project, scope_type, object_id)
-        current_digest = evidence_digest(
-            self.bounded_evidence(scope, configured, resolved)
-        )
-        if intent.get("evidence_digest") != current_digest:
-            raise ApplicationError(
-                "intent evidence digest does not match current bounded evidence",
-                code="STALE_EVIDENCE",
+        with self.telemetry.span("research.action.prepare", {
+            "research.project": scope.project,
+            "research.scope_type": scope.scope_type.value,
+            "research.object_id": scope.object_id,
+        }) as span:
+            current_digest = evidence_digest(
+                self.bounded_evidence(scope, configured, resolved)
             )
-        return self._prepare_action_intent(scope, configured, intent)
+            if intent.get("evidence_digest") != current_digest:
+                raise ApplicationError(
+                    "intent evidence digest does not match current bounded evidence",
+                    code="STALE_EVIDENCE",
+                )
+            result = self._prepare_action_intent(scope, configured, intent)
+            span.set_attribute("research.action_id", str(result.get("action_id") or ""))
+            span.set_attribute(
+                "research.status",
+                str((result.get("execution") or {}).get("status") or "UNKNOWN"),
+            )
+            return result
 
     def authorize_action(self, action_id: str, note: str = "") -> dict[str, Any]:
-        return self._authorize_action_local(action_id, note)
+        with self.telemetry.span("research.action.authorize", {
+            "research.action_id": action_id,
+        }) as span:
+            result = self._authorize_action_local(action_id, note)
+            span.set_attribute(
+                "research.status",
+                str((result.get("execution") or {}).get("status") or "UNKNOWN"),
+            )
+            return result
 
     def _authorize_action_local(self, action_id: str, note: str = "") -> dict[str, Any]:
         try:
@@ -2239,21 +2251,37 @@ class ExperimentServerApplication:
             raise ApplicationError(str(exc), code="ACTION_BLOCKED") from exc
 
     def execute_action(self, action_id: str, confirmation: str) -> dict[str, Any]:
-        return self._execute_action_local(action_id, confirmation)
+        with self.telemetry.span("research.action.execute", {
+            "research.action_id": action_id,
+        }) as span:
+            result = self._execute_action_local(action_id, confirmation)
+            span.set_attribute(
+                "research.status",
+                str((result.get("execution") or {}).get("status") or "UNKNOWN"),
+            )
+            return result
 
     def reconcile_action(self, action_id: str) -> dict[str, Any]:
         """Resolve an uncertain scheduler submission through exact status only."""
-        try:
-            action = self.runtime.action_store.snapshot(action_id)
-            result = self.runtime.action_service.reconcile(action_id)
-        except FileNotFoundError as exc:
-            raise ApplicationError("action not found", status_code=404,
-                                   code="UNKNOWN_ACTION") from exc
-        except RuntimeError as exc:
-            raise ApplicationError(str(exc), code="ACTION_BLOCKED") from exc
-        self._refresh_action_project(action)
-        self._activate_observability_policy(action, result)
-        return result
+        with self.telemetry.span("research.action.reconcile", {
+            "research.action_id": action_id,
+        }) as span:
+            try:
+                action = self.runtime.action_store.snapshot(action_id)
+                result = self.runtime.action_service.reconcile(action_id)
+            except FileNotFoundError as exc:
+                raise ApplicationError(
+                    "action not found", status_code=404, code="UNKNOWN_ACTION",
+                ) from exc
+            except RuntimeError as exc:
+                raise ApplicationError(str(exc), code="ACTION_BLOCKED") from exc
+            self._refresh_action_project(action)
+            self._activate_observability_policy(action, result)
+            span.set_attribute(
+                "research.status",
+                str((result.get("execution") or {}).get("status") or "UNKNOWN"),
+            )
+            return result
 
     def _refresh_action_project(self, action: dict[str, Any]) -> None:
         scope = action.get("scope")
@@ -2310,96 +2338,18 @@ class ExperimentServerApplication:
     # ------------------------------------------------------------- projects
 
     def project_lifecycle_list(self) -> dict[str, Any]:
-        """Return daemon-owned registrations, including inactive Projects."""
-        return {
-            "projects": [record.model_dump(mode="json")
-                         for record in self.runtime.project_records()],
-            "events": self.runtime.project_registry.events(),
-        }
+        return self.project_service.lifecycle_list()
 
     def project_register(self, project_file: Path) -> dict[str, Any]:
-        if not project_file.is_absolute():
-            raise ApplicationError(
-                "project_file must be an absolute daemon-host path",
-                code="PROJECT_REGISTRATION_BLOCKED",
-            )
-        try:
-            project = self.runtime.register_project(
-                project_file, source=ProjectRegistrationSource.MANUAL,
-            )
-        except (ProjectRegistryError, OSError, ValueError) as exc:
-            raise ApplicationError(str(exc), code="PROJECT_REGISTRATION_BLOCKED") from exc
-        index_error = None
-        indexed_runs = None
-        unavailable_roots = [
-            str(root) for root in project.resolved_run_roots() if not root.is_dir()
-        ]
-        try:
-            indexed_runs = index_project(self.runtime.index, project)
-        except Exception as exc:
-            # Registration is already durable and will be retried by the live
-            # collector or at next startup.  Do not tell the caller it failed.
-            index_error = str(exc)[:500] or type(exc).__name__
-        if index_error is None and unavailable_roots:
-            preview = ", ".join(unavailable_roots[:5])
-            suffix = f" (+{len(unavailable_roots) - 5} more)" if len(unavailable_roots) > 5 else ""
-            index_error = f"run roots are unavailable: {preview}{suffix}"
-        record = next(
-            item for item in self.runtime.project_records() if item.project == project.project
-        )
-        return {
-            "project": record.model_dump(mode="json"),
-            "initial_index": {
-                "status": "DEGRADED" if index_error else "COMPLETED",
-                "runs": indexed_runs,
-                "error": index_error,
-                "unavailable_run_roots": unavailable_roots,
-            },
-            "effect": (
-                "project is active; initial indexing will be retried"
-                if index_error else
-                "project is active; initial indexing completed and collector observation may run"
-            ),
-        }
+        return self.project_service.register(project_file)
 
     def project_lifecycle_transition(
         self, project: str, target: ProjectLifecycleState, *, reason: str = "",
     ) -> dict[str, Any]:
-        if target == ProjectLifecycleState.ARCHIVED and not reason.strip():
-            raise ApplicationError(
-                "archiving a project requires a reason",
-                code="PROJECT_LIFECYCLE_BLOCKED",
-            )
-        try:
-            record = self.runtime.transition_project(project, target, reason=reason)
-        except (ProjectRegistryError, FileNotFoundError, ValueError) as exc:
-            raise ApplicationError(
-                str(exc), status_code=404 if "unknown" in str(exc) else 409,
-                code="PROJECT_LIFECYCLE_BLOCKED",
-            ) from exc
-        return {
-            "project": record.model_dump(mode="json"),
-            "active": target == ProjectLifecycleState.ACTIVE,
-            "effect": (
-                "project is active; indexing and collector observation may resume"
-                if target == ProjectLifecycleState.ACTIVE
-                else "project is inactive; this daemon stops indexing and collecting it"
-            ),
-        }
+        return self.project_service.transition(project, target, reason=reason)
 
     def project_unregister(self, project: str, *, reason: str = "") -> dict[str, Any]:
-        try:
-            record = self.runtime.unregister_project(project, reason=reason)
-        except ProjectRegistryError as exc:
-            raise ApplicationError(str(exc), status_code=404, code="UNKNOWN_PROJECT") from exc
-        return {
-            "unregistered": record.model_dump(mode="json"),
-            "effect": "Daemon tracking was removed; repository files, runs, artifacts, and jobs were not changed",
-        }
+        return self.project_service.unregister(project, reason=reason)
 
     def project_unregister_all(self, *, reason: str = "") -> dict[str, Any]:
-        records = self.runtime.unregister_all_projects(reason=reason)
-        return {
-            "unregistered": [record.model_dump(mode="json") for record in records],
-            "effect": "Daemon tracking was removed; repository files, runs, artifacts, and jobs were not changed",
-        }
+        return self.project_service.unregister_all(reason=reason)

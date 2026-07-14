@@ -80,9 +80,25 @@ class CollectorLease:
             if exc.errno in {errno.EACCES, errno.EAGAIN}:
                 return False
             raise
+        try:
+            os.ftruncate(fd, 0)
+            payload = f"pid={os.getpid()}\n".encode("ascii")
+            offset = 0
+            while offset < len(payload):
+                written = os.write(fd, payload[offset:])
+                if written <= 0:
+                    raise OSError(errno.EIO, "could not write workspace lease metadata")
+                offset += written
+            os.fsync(fd)
+        except BaseException:
+            # Closing the descriptor also releases flock.  Do not publish it
+            # through ``self._fd`` until the complete lease record is durable.
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
         self._fd = fd
-        os.ftruncate(fd, 0)
-        os.write(fd, f"pid={os.getpid()}\n".encode("ascii"))
         return True
 
     def release(self) -> None:

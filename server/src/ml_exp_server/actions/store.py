@@ -9,8 +9,18 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from ..schemas import OperationScope
-from ..storage import atomic_json, exclusive_file_lock, read_json, utc_now
+from ..storage import (
+    DurableJsonState,
+    DurableSnapshot,
+    StorageError,
+    TransitionConflict,
+    atomic_json,
+    exclusive_file_lock,
+    read_json,
+    utc_now,
+)
 
 
 class ActionStore:
@@ -51,6 +61,64 @@ class ActionStore:
             raise ValueError("invalid action_id")
         return self.root / action_id
 
+    def _execution_state(self, action_id: str) -> DurableJsonState:
+        directory = self.directory(action_id)
+        return DurableJsonState(
+            directory / "execution.json", directory / "journal.jsonl",
+        )
+
+    @staticmethod
+    def _initial_execution(plan: dict[str, Any], *, revision: int) -> dict[str, Any]:
+        return {
+            "revision": revision,
+            "status": "PREPARED" if plan.get("ready") else "BLOCKED",
+            "authorized_at": None,
+            "authorization_note": "",
+            "started_at": None,
+            "finished_at": None,
+            "result": None,
+            "error": None,
+        }
+
+    def _execution_snapshot(self, action_id: str, plan: dict[str, Any] | None = None):
+        state = self._execution_state(action_id)
+        snapshot = state.snapshot({})
+        if not snapshot.value:
+            resolved_plan = plan or read_json(
+                self.directory(action_id) / "plan.json", {},
+            )
+            if not resolved_plan:
+                return snapshot
+            snapshot = state.commit(
+                self._initial_execution(
+                    resolved_plan, revision=snapshot.revision + 1,
+                ),
+                expected_revision=snapshot.revision,
+                event={
+                    "timestamp": utc_now(),
+                    "event": "action_prepared",
+                    "payload": {
+                        "ready": resolved_plan.get("ready"),
+                        "operation": resolved_plan.get("operation"),
+                    },
+                },
+            )
+        else:
+            state.repair_journal(snapshot)
+            execution_revision = snapshot.value.get("revision")
+            if execution_revision is None:
+                snapshot = DurableSnapshot(
+                    value={**snapshot.value, "revision": snapshot.revision},
+                    revision=snapshot.revision,
+                    last_transition=snapshot.last_transition,
+                    journal_pending=snapshot.journal_pending,
+                )
+            elif execution_revision != snapshot.revision:
+                raise StorageError(
+                    f"execution revision does not match durable state: {action_id}"
+                )
+        return snapshot
+
     def save_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
         with self.locked():
             directory = self.directory(str(plan["action_id"]))
@@ -61,34 +129,24 @@ class ActionStore:
                     raise RuntimeError(
                         "idempotency_key is already bound to a different operation intent"
                     )
-                return existing
+                self._execution_snapshot(str(plan["action_id"]), existing)
+                return self.snapshot(str(plan["action_id"]))
             atomic_json(directory / "plan.json", plan)
-            atomic_json(directory / "execution.json", {
-                "status": "PREPARED" if plan.get("ready") else "BLOCKED",
-                "authorized_at": None,
-                "authorization_note": "",
-                "started_at": None,
-                "finished_at": None,
-                "result": None,
-                "error": None,
-            })
-            self.append_journal(plan["action_id"], "action_prepared", {
-                "ready": plan.get("ready"), "operation": plan.get("operation"),
-            })
+            self._execution_snapshot(str(plan["action_id"]), plan)
             return self.snapshot(plan["action_id"])
 
-    def append_journal(self, action_id: str, event: str, payload: dict[str, Any]) -> None:
+    def append_journal(
+        self, action_id: str, event: str, payload: dict[str, Any], *,
+        event_id: str | None = None,
+    ) -> None:
         with self.locked():
-            path = self.directory(action_id) / "journal.jsonl"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps({
-                    "timestamp": utc_now(), "event": event, "payload": payload,
-                }, ensure_ascii=False, sort_keys=True) + "\n")
+            self._execution_state(action_id).append_event({
+                "timestamp": utc_now(), "event": event, "payload": payload,
+            }, event_id=event_id)
 
     def execution(self, action_id: str) -> dict[str, Any]:
         with self.locked():
-            return read_json(self.directory(action_id) / "execution.json", {})
+            return self._execution_snapshot(action_id).value
 
     def write_command(
         self, action_id: str, phase: str, payload: dict[str, Any],
@@ -102,15 +160,23 @@ class ActionStore:
             if existing:
                 if existing.get("payload") != payload:
                     raise ValueError(f"{phase} command is already recorded for this action")
-                return existing
-            record = {
-                "action_id": action_id,
-                "phase": phase,
-                "payload": payload,
-                "created_at": utc_now(),
-            }
-            atomic_json(path, record)
-            self.append_journal(action_id, f"{phase}_command_recorded", {})
+                record = existing
+            else:
+                record = {
+                    "action_id": action_id,
+                    "phase": phase,
+                    "payload": payload,
+                    "created_at": utc_now(),
+                    "journal_event_id": uuid4().hex,
+                }
+                atomic_json(path, record)
+            event_id = str(record.get("journal_event_id") or "")
+            if not event_id:
+                encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+                event_id = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            self.append_journal(
+                action_id, f"{phase}_command_recorded", {}, event_id=event_id,
+            )
             return record
 
     def read_command(self, action_id: str, phase: str) -> dict[str, Any]:
@@ -146,17 +212,37 @@ class ActionStore:
     def set_execution(self, action_id: str, payload: dict[str, Any],
                       *, event: str, expected_status: str | None = None) -> dict[str, Any]:
         with self.locked():
+            state = self._execution_state(action_id)
+            current = self._execution_snapshot(action_id)
             if expected_status is not None:
-                current = self.execution(action_id)
-                if current.get("status") != expected_status:
+                if current.value.get("status") != expected_status:
                     raise RuntimeError(
                         f"action state changed; expected {expected_status}, "
-                        f"found {current.get('status')}"
+                        f"found {current.value.get('status')}"
                     )
-            atomic_json(self.directory(action_id) / "execution.json", payload)
-            self.append_journal(action_id, event, {
-                "status": payload.get("status"), "error": payload.get("error"),
-            })
+            caller_revision = payload.get("revision")
+            if caller_revision != current.revision:
+                raise RuntimeError(
+                    "action state changed; expected revision "
+                    f"{caller_revision}, found {current.revision}"
+                )
+            try:
+                committed_payload = {
+                    **payload, "revision": current.revision + 1,
+                }
+                state.commit(
+                    committed_payload,
+                    expected_revision=current.revision,
+                    event={
+                        "timestamp": utc_now(), "event": event,
+                        "payload": {
+                            "status": committed_payload.get("status"),
+                            "error": committed_payload.get("error"),
+                        },
+                    },
+                )
+            except TransitionConflict as exc:
+                raise RuntimeError(str(exc)) from exc
             return self.snapshot(action_id)
 
     def claim_execution(self, action_id: str) -> None:
@@ -175,19 +261,45 @@ class ActionStore:
     ) -> dict[str, Any]:
         """Move AUTHORIZED to EXECUTING before writing audit claim metadata."""
         with self.locked():
-            current = self.execution(action_id)
-            if current.get("status") != "AUTHORIZED":
+            state = self._execution_state(action_id)
+            current = self._execution_snapshot(action_id)
+            if current.value.get("status") != "AUTHORIZED":
                 raise RuntimeError(
-                    f"action state changed; expected AUTHORIZED, found {current.get('status')}"
+                    "action state changed; expected AUTHORIZED, "
+                    f"found {current.value.get('status')}"
                 )
-            atomic_json(self.directory(action_id) / "execution.json", payload)
-            atomic_json(self.directory(action_id) / "execution.claim", {
+            caller_revision = payload.get("revision")
+            if caller_revision != current.revision:
+                raise RuntimeError(
+                    "action state changed; expected revision "
+                    f"{caller_revision}, found {current.revision}"
+                )
+            claim = {
                 "claimed_at": utc_now(), "pid": os.getpid(),
                 "intent_digest": intent_digest,
-            })
-            self.append_journal(action_id, "execution_started", {
-                "status": payload.get("status"), "error": payload.get("error"),
-            })
+            }
+            committed_payload = {
+                **payload, "revision": current.revision + 1,
+            }
+            state.commit(
+                committed_payload,
+                expected_revision=current.revision,
+                event={
+                    "timestamp": claim["claimed_at"],
+                    "event": "execution_started",
+                    "payload": {
+                        "status": committed_payload.get("status"),
+                        "error": committed_payload.get("error"),
+                        "intent_digest": intent_digest,
+                    },
+                },
+            )
+            try:
+                atomic_json(self.directory(action_id) / "execution.claim", claim)
+            except OSError:
+                # The CAS state and journal already contain the immutable
+                # claim identity.  This compatibility artifact is best-effort.
+                pass
             return self.snapshot(action_id)
 
     def snapshot(self, action_id: str) -> dict[str, Any]:
@@ -196,6 +308,7 @@ class ActionStore:
             plan = read_json(directory / "plan.json", {})
             if not plan:
                 raise FileNotFoundError(action_id)
+            execution = self._execution_snapshot(action_id, plan).value
             journal: list[dict[str, Any]] = []
             path = directory / "journal.jsonl"
             if path.is_file():
@@ -206,7 +319,7 @@ class ActionStore:
                         continue
                     if isinstance(item, dict):
                         journal.append(item)
-            return {**plan, "execution": self.execution(action_id), "journal": journal}
+            return {**plan, "execution": execution, "journal": journal}
 
     def list_for_scope(self, scope: OperationScope) -> list[dict[str, Any]]:
         items = []

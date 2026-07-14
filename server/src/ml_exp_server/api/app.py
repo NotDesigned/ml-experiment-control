@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from ..application import ExperimentServerApplication
+from ..api_contract import (
+    API_PROTOCOL_VERSION,
+    CLIENT_PROTOCOL_HEADER,
+    MIN_CLIENT_PROTOCOL_VERSION,
+    VERSIONED_OPENAPI_PATH,
+)
 from ..collectord import Collector, CollectorConfig, CollectorLease
 from ..ingest.indexer import RunIndex, index_project
+from ..http_auth import load_bearer_token
 from ..project_config import load_server_config
 from ..runtime import ExperimentServerRuntime
 from ..schemas import ServerConfig, ResearchProject
@@ -27,7 +35,9 @@ from .sse import EventBroker
 
 
 async def _shutdown(app: FastAPI) -> None:
-    app.state._stop.set()
+    stop = getattr(app.state, "_stop", None)
+    if stop is not None:
+        stop.set()
     thread = getattr(app.state, "_poll_thread", None)
     publisher_thread = getattr(app.state, "_publisher_thread", None)
     if thread is not None:
@@ -36,13 +46,18 @@ async def _shutdown(app: FastAPI) -> None:
         await asyncio.to_thread(thread.join, 5.0)
     if publisher_thread is not None:
         await asyncio.to_thread(publisher_thread.join, 45.0)
-    lease = app.state.collector_lease
+    lease = getattr(app.state, "collector_lease", None)
+    runtime = getattr(app.state, "runtime", None)
+    if runtime is None:
+        if lease is not None:
+            lease.release()
+        return
     owner_threads = [
         item for item in (thread, publisher_thread) if item is not None
     ]
     if not any(item.is_alive() for item in owner_threads):
         try:
-            app.state.runtime.close()
+            runtime.close()
         finally:
             if lease is not None:
                 lease.release()
@@ -50,13 +65,13 @@ async def _shutdown(app: FastAPI) -> None:
         # Retain the lease until a long in-flight controller observation really
         # exits; otherwise another daemon could become owner while the prior
         # collector and its subprocesses are still alive.
-        app.state.runtime.wandb_service.stop()
+        runtime.wandb_service.stop()
 
         def finish_shutdown() -> None:
             for owner in owner_threads:
                 owner.join()
             try:
-                app.state.runtime.close()
+                runtime.close()
             finally:
                 if lease is not None:
                     lease.release()
@@ -70,61 +85,82 @@ async def _shutdown(app: FastAPI) -> None:
 def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                index: Optional[RunIndex] = None,
                projects: Optional[list[ResearchProject]] = None) -> FastAPI:
+    token_path = config.http_auth.token_path()
+    bearer_token = load_bearer_token(token_path) if token_path is not None else None
+    effective_poll = config.collector_enabled if poll is None else poll
+    injected_projects = list(projects) if projects is not None else None
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         loop = asyncio.get_running_loop()
         app.state.broker.bind_loop(loop)
         app.state._stop = threading.Event()
-
-        collector: Optional[Collector] = app.state.collector
-        lease = CollectorLease(app.state.config.index_db_path())
+        app.state._poll_thread = None
+        app.state._publisher_thread = None
+        app.state.collector_owner = False
+        app.state.workspace_owner = False
+        app.state.collector_lease = None
+        lease = CollectorLease(config.index_db_path())
+        lease_acquired = False
         try:
-            lease_acquired = lease.acquire()
-        except BaseException:
-            app.state.runtime.close()
-            raise
-        if not lease_acquired:
-            app.state.collector_error = (
-                "another ml-expd process owns this workspace"
-            )
-        else:
+            if not lease.acquire():
+                raise RuntimeError(
+                    "another ml-expd process owns this workspace; "
+                    "a second daemon cannot start safely"
+                )
+            lease_acquired = True
             app.state.workspace_owner = True
             app.state.collector_lease = lease
+            runtime = ExperimentServerRuntime.create(
+                config,
+                index=index,
+                projects=injected_projects,
+                on_index_update=lambda project, run_id: app.state.broker.publish_threadsafe({
+                    "type": "index_updated", "project": project, "run_id": run_id,
+                }),
+            )
+            app.state.runtime = runtime
+            app.state.collector_error = None
+            for initializer in tuple(app.state.runtime_initializers):
+                initializer(runtime)
+            app.state.application = ExperimentServerApplication(runtime)
+            app.state.submission_service = ExperimentSubmissionService(
+                app.state.application, runtime,
+            )
+            # Compatibility aliases for extensions and existing integrations.
+            app.state.index = runtime.index
+            app.state.projects = runtime.projects
+            app.state.action_store = runtime.action_store
+            app.state.action_service = runtime.action_service
+            app.state.observability = runtime.wandb_service.status()
+            app.state.collector = (
+                Collector(
+                    index=runtime.index,
+                    projects=runtime.projects,
+                    config=CollectorConfig(
+                        poll_interval_seconds=config.poll_interval_seconds,
+                    ),
+                )
+                if effective_poll else None
+            )
+
+            collector: Optional[Collector] = app.state.collector
             def initial_index() -> None:
                 for project in app.state.projects:
                     index_project(app.state.index, project)
 
-            try:
-                await loop.run_in_executor(None, initial_index)
-            except BaseException:
-                app.state.workspace_owner = False
-                app.state.collector_lease = None
-                try:
-                    app.state.runtime.close()
-                finally:
-                    lease.release()
-                raise
+            await loop.run_in_executor(None, initial_index)
             if collector is not None:
                 app.state.collector_owner = True
                 # Only the workspace lease owner may reconcile publisher
                 # targets or rewind collection cursors.
-                try:
-                    app.state.application.recover_observability_policies()
-                    # Projection ownership follows the same workspace lease as
-                    # canonical collection.  A second daemon must never spawn a
-                    # duplicate local service.  Startup is bounded and degradable.
-                    app.state.observability = await asyncio.to_thread(
-                        app.state.runtime.wandb_service.start,
-                    )
-                except BaseException:
-                    app.state.collector_owner = False
-                    app.state.workspace_owner = False
-                    app.state.collector_lease = None
-                    try:
-                        app.state.runtime.close()
-                    finally:
-                        lease.release()
-                    raise
+                app.state.application.recover_observability_policies()
+                # Projection ownership follows the same workspace lease as
+                # canonical collection.  A second daemon must never spawn a
+                # duplicate local service.  Startup is bounded and degradable.
+                app.state.observability = await asyncio.to_thread(
+                    app.state.runtime.wandb_service.start,
+                )
                 def publisher_loop() -> None:
                     while not app.state._stop.is_set():
                         try:
@@ -144,7 +180,6 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                 try:
                     publisher_thread.start()
                 except BaseException:
-                    await _shutdown(app)
                     raise
                 app.state._publisher_thread = publisher_thread
 
@@ -169,49 +204,98 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                 try:
                     thread.start()
                 except BaseException:
-                    await _shutdown(app)
                     raise
                 app.state._poll_thread = thread
-        try:
             yield
         finally:
-            await _shutdown(app)
+            if getattr(app.state, "runtime", None) is None:
+                if lease_acquired:
+                    lease.release()
+            else:
+                await _shutdown(app)
 
     app = FastAPI(title="ml-expd", version="0.1.0", lifespan=lifespan)
     app.state.broker = EventBroker()
-    def publish_index_update(project: str, run_id: str) -> None:
-        app.state.broker.publish_threadsafe(
-            {"type": "index_updated", "project": project, "run_id": run_id})
-    runtime = ExperimentServerRuntime.create(
-        config, index=index, projects=projects, on_index_update=publish_index_update,
-    )
-    app.state.runtime = runtime
-    app.state.application = ExperimentServerApplication(runtime)
-    app.state.submission_service = ExperimentSubmissionService(
-        app.state.application, runtime,
-    )
-    # Compatibility aliases for extensions and existing integrations. New
-    # transport code should enter through app.state.application.
-    app.state.config = runtime.config
-    app.state.index = runtime.index
-    app.state.projects = runtime.projects
-    app.state.action_store = runtime.action_store
-    app.state.action_service = runtime.action_service
+    app.state.config = config
+    app.state.runtime = None
+    app.state.application = None
+    app.state.submission_service = None
+    app.state.index = None
+    app.state.projects = []
+    app.state.action_store = None
+    app.state.action_service = None
     app.state.collector = None
     app.state.collector_owner = False
     app.state.workspace_owner = False
     app.state.collector_error = None
     app.state.collector_lease = None
-    app.state.observability = app.state.runtime.wandb_service.status()
-
-    effective_poll = config.collector_enabled if poll is None else poll
-    if effective_poll:
-        app.state.collector = Collector(
-            index=app.state.index, projects=app.state.projects,
-            config=CollectorConfig(poll_interval_seconds=config.poll_interval_seconds))
+    app.state.observability = {"state": "NOT_STARTED"}
+    app.state.auth_mode = "bearer" if bearer_token is not None else "none"
+    app.state.runtime_initializers: list[
+        Callable[[ExperimentServerRuntime], None]
+    ] = []
 
     @app.middleware("http")
-    async def require_workspace_writer(request, call_next):
+    async def enforce_http_boundary(request, call_next):
+        if bearer_token is not None:
+            scheme, separator, credential = request.headers.get(
+                "Authorization", "",
+            ).partition(" ")
+            authenticated = (
+                bool(separator)
+                and scheme.lower() == "bearer"
+                and hmac.compare_digest(credential, bearer_token)
+            )
+            if not authenticated:
+                return JSONResponse(
+                    {"detail": "valid bearer authentication is required"},
+                    status_code=401,
+                    headers={
+                        "WWW-Authenticate": 'Bearer realm="ml-expd"',
+                        "X-ML-Expd-Error-Code": "AUTHENTICATION_REQUIRED",
+                    },
+                )
+        client_protocol = request.headers.get(CLIENT_PROTOCOL_HEADER)
+        api_request = request.url.path == "/api" or request.url.path.startswith("/api/")
+        protocol_bootstrap = (
+            request.method in {"GET", "HEAD"}
+            and request.url.path == "/api/health"
+        )
+        if api_request and client_protocol is None and not protocol_bootstrap:
+            return JSONResponse(
+                {
+                    "detail": "client API protocol header is required",
+                    "api_protocol_version": API_PROTOCOL_VERSION,
+                    "min_client_protocol_version": MIN_CLIENT_PROTOCOL_VERSION,
+                },
+                status_code=426,
+                headers={
+                    "X-ML-Expd-Error-Code": "INCOMPATIBLE_API_PROTOCOL",
+                    "X-ML-Expd-Protocol": str(API_PROTOCOL_VERSION),
+                },
+            )
+        if api_request and client_protocol is not None:
+            try:
+                client_protocol_number = int(client_protocol)
+            except ValueError:
+                client_protocol_number = -1
+            if not (
+                MIN_CLIENT_PROTOCOL_VERSION
+                <= client_protocol_number
+                <= API_PROTOCOL_VERSION
+            ):
+                return JSONResponse(
+                    {
+                        "detail": "client and daemon API protocol versions are incompatible",
+                        "api_protocol_version": API_PROTOCOL_VERSION,
+                        "min_client_protocol_version": MIN_CLIENT_PROTOCOL_VERSION,
+                    },
+                    status_code=426,
+                    headers={
+                        "X-ML-Expd-Error-Code": "INCOMPATIBLE_API_PROTOCOL",
+                        "X-ML-Expd-Protocol": str(API_PROTOCOL_VERSION),
+                    },
+                )
         if (
             request.method not in {"GET", "HEAD", "OPTIONS"}
             and not bool(getattr(app.state, "workspace_owner", False))
@@ -221,12 +305,18 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                 status_code=409,
                 headers={"X-ML-Expd-Error-Code": "WORKSPACE_NOT_OWNER"},
             )
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["X-ML-Expd-Protocol"] = str(API_PROTOCOL_VERSION)
+        return response
 
     app.include_router(router)
     app.include_router(action_router)
     app.include_router(operation_router)
     app.include_router(submission_router)
+
+    @app.get(VERSIONED_OPENAPI_PATH, include_in_schema=False)
+    async def versioned_openapi():
+        return JSONResponse(app.openapi())
 
     @app.get("/api", include_in_schema=False)
     @app.get("/api/{path:path}", include_in_schema=False)

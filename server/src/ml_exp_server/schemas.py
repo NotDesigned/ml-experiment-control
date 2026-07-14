@@ -291,6 +291,23 @@ class ActionRuntimeConfig(BaseModel):
     gate_ttl_seconds: int = 1800
 
 
+class HttpAuthConfig(BaseModel):
+    """Optional native authentication for the daemon HTTP transport."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bearer_token_file: Optional[str] = None
+
+    @property
+    def enabled(self) -> bool:
+        return bool(str(self.bearer_token_file or "").strip())
+
+    def token_path(self) -> Path | None:
+        if not self.enabled:
+            return None
+        return Path(str(self.bearer_token_file)).expanduser()
+
+
 class CampaignRunMembership(BaseModel):
     """A Run's role in one authored Campaign revision.
 
@@ -456,6 +473,7 @@ class ServerConfig(BaseModel):
     # The lifecycle registry is workspace-owned. When omitted it is derived
     # from index_db so independent daemon workspaces stay isolated.
     project_registry_root: Optional[str] = None
+    http_auth: HttpAuthConfig = Field(default_factory=HttpAuthConfig)
     action_runtime: ActionRuntimeConfig = Field(default_factory=ActionRuntimeConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)

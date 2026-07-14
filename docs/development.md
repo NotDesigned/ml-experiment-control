@@ -38,6 +38,23 @@ boundary. The daemon must not import a model provider or run the client Agent
 loop. It must also not persist client goals, conversations, model turns, or
 derive scientific conclusions from metrics and evaluation records.
 
+Constructing the FastAPI object is side-effect free. Its lifespan first
+acquires the workspace lease and only then constructs SQLite stores,
+bootstraps the Project registry, indexes Projects, or starts
+publisher/collector threads. This ordering is part of the single-writer
+contract, not an implementation detail. If the lease is already held, startup
+fails before runtime construction; the daemon does not provide a standby
+runtime with partially writable stores.
+
+Server-owned JSON state transitions use `storage.DurableJsonState`: callers
+hold their store's cross-process lock, compare the expected revision, atomically
+replace authoritative state, and append the embedded transition to JSONL. The
+next locked access repairs a journal append interrupted by a crash. Non-state
+events on the same ledger must use `append_event`, which repairs the transition
+first and safely truncates only a crash-incomplete JSONL tail. Complete records
+must be mappings and transition revisions must be contiguous; corruption fails
+closed. New stores must not invent a separate lock/atomic-write/journal protocol.
+
 Submission changes must cover the complete safety path in
 `server/tests/test_submissions.py`: authored-but-unmaterialized Run preparation,
 separate authorization/execution, exact backend-job confirmation, idempotent

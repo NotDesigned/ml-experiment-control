@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..application import ApplicationError
+from ..api_contract import DaemonHealth, ProjectRegistrationResponse
 from ..campaign_lifecycle import campaign_snapshot
 from ..collectord import Collector
 from ..ingest.indexer import RunIndex, index_project
@@ -63,24 +64,37 @@ class AttemptCancelRequest(BaseModel):
     reason: str = Field(default="", max_length=4000)
 
 
-@router.get("/health")
-def health(request: Request):
-    return {
-        "status": "ok", "projects": len(request.app.state.projects),
-        "workspace_id": request.app.state.runtime.workspace_id,
-        "collector_enabled": (
+@router.get("/health", response_model=DaemonHealth)
+def health(request: Request) -> DaemonHealth:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        server_version = version("ml-experiment-server")
+    except PackageNotFoundError:  # source-tree execution without installation
+        server_version = "0.1.0+source"
+    return DaemonHealth(
+        status="ok",
+        server_version=server_version,
+        authentication=request.app.state.auth_mode,
+        transport_security=request.url.scheme,
+        projects=len(request.app.state.projects),
+        workspace_id=request.app.state.runtime.workspace_id,
+        collector_enabled=(
             request.app.state.collector is not None
             and bool(getattr(request.app.state, "collector_owner", False))
         ),
-        "collector_requested": request.app.state.collector is not None,
-        "collector_error": getattr(request.app.state, "collector_error", None),
-        "project_writes": request.app.state.config.action_runtime.allow_project_writes,
-        "scheduler_mutations": request.app.state.config.action_runtime.allow_scheduler_mutations,
-        "observability_mutations": (
+        collector_requested=request.app.state.collector is not None,
+        collector_error=getattr(request.app.state, "collector_error", None),
+        project_writes=request.app.state.config.action_runtime.allow_project_writes,
+        scheduler_mutations=(
+            request.app.state.config.action_runtime.allow_scheduler_mutations
+        ),
+        observability_mutations=(
             request.app.state.config.action_runtime.allow_observability_mutations
         ),
-        "observability": request.app.state.runtime.wandb_service.status(),
-    }
+        telemetry_enabled=request.app.state.runtime.telemetry.enabled,
+        observability=request.app.state.runtime.wandb_service.status(),
+    )
 
 
 @router.get("/observability")
@@ -234,10 +248,16 @@ def project_lifecycle_list(request: Request):
     return request.app.state.application.project_lifecycle_list()
 
 
-@router.post("/project-lifecycle/register")
-def project_lifecycle_register(data: ProjectRegisterRequest, request: Request):
+@router.post(
+    "/project-lifecycle/register", response_model=ProjectRegistrationResponse,
+)
+def project_lifecycle_register(
+    data: ProjectRegisterRequest, request: Request,
+) -> ProjectRegistrationResponse:
     try:
-        return request.app.state.application.project_register(Path(data.project_file))
+        return ProjectRegistrationResponse.model_validate(
+            request.app.state.application.project_register(Path(data.project_file))
+        )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 

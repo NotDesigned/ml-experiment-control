@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import ssl
 import sys
 from typing import Sequence
 
@@ -29,6 +30,56 @@ def _require_loopback_host(host: str) -> str:
             "ml-expd has no HTTP authentication; refusing a non-loopback --host"
         )
     return str(address)
+
+
+def _validate_bind_host(host: str, *, authenticated: bool, tls: bool = False) -> str:
+    """Permit remote binds only with native bearer authentication and TLS."""
+
+    value = host.strip().strip("[]")
+    if not value:
+        raise SystemExit("ml-expd --host must not be empty")
+    if value.lower() == "localhost":
+        return "localhost"
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        address = None
+    if address is not None and address.is_loopback:
+        return str(address)
+    if not authenticated:
+        raise SystemExit(
+            "ml-expd has no HTTP authentication; refusing a non-loopback --host"
+        )
+    if not tls:
+        raise SystemExit(
+            "ml-expd refuses a non-loopback bearer bind without --ssl-certfile "
+            "and --ssl-keyfile"
+        )
+    return str(address) if address is not None else value
+
+
+def _validate_tls_cert_chain(
+    certfile: Path | None, keyfile: Path | None,
+) -> tuple[Path | None, Path | None]:
+    """Fail before runtime initialization when a TLS pair cannot be loaded."""
+
+    if bool(certfile) != bool(keyfile):
+        raise SystemExit("--ssl-certfile and --ssl-keyfile must be provided together")
+    if certfile is None or keyfile is None:
+        return None, None
+    certificate = certfile.expanduser().resolve()
+    private_key = keyfile.expanduser().resolve()
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    try:
+        context.load_cert_chain(
+            certfile=str(certificate), keyfile=str(private_key),
+        )
+    except (OSError, ssl.SSLError) as exc:
+        raise SystemExit(
+            "ml-expd TLS certificate/key cannot be loaded: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    return certificate, private_key
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,12 +104,18 @@ def build_parser() -> argparse.ArgumentParser:
     for action in ("status", "clear"):
         command = wandb_action.add_parser(action)
         command.add_argument("reference")
-    subcommands.add_parser(
+    doctor = subcommands.add_parser(
         "doctor",
         help="read-only checklist of config, action gates, and W&B credential state",
     )
+    doctor.add_argument(
+        "--json", action="store_true", dest="json_output",
+        help="emit a stable machine-readable diagnostic report",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
+    parser.add_argument("--ssl-certfile", type=Path)
+    parser.add_argument("--ssl-keyfile", type=Path)
     parser.add_argument(
         "--snapshot",
         action="store_true",
@@ -98,6 +155,7 @@ def _credential_command(args: argparse.Namespace) -> int:
 
 def _doctor_command(args: argparse.Namespace) -> int:
     from .credentials import CredentialError, CredentialStore
+    from .http_auth import HttpAuthError, load_bearer_token
     from .project_config import ConfigError, load_research_project, load_server_config
     from .project_registry import ProjectRegistry, ProjectRegistryError
 
@@ -113,6 +171,51 @@ def _doctor_command(args: argparse.Namespace) -> int:
         ))
 
     if config is not None:
+        token_path = config.http_auth.token_path()
+        if token_path is None:
+            checks.append((
+                "HTTP authentication", None, "disabled; loopback bind only",
+                "configure http_auth.bearer_token_file before binding a shared host",
+            ))
+        else:
+            try:
+                load_bearer_token(token_path)
+                checks.append(("HTTP authentication", True, "bearer token ready", None))
+            except HttpAuthError as exc:
+                checks.append((
+                    "HTTP authentication", False, str(exc),
+                    "create an owner-only token file with mode 0600",
+                ))
+        tls_pair = False
+        try:
+            certificate, private_key = _validate_tls_cert_chain(
+                args.ssl_certfile, args.ssl_keyfile,
+            )
+            tls_pair = certificate is not None and private_key is not None
+            checks.append((
+                "TLS certificate", True if tls_pair else None,
+                "certificate/key load successfully" if tls_pair else "not configured",
+                None if tls_pair else "TLS is required for a non-loopback bind",
+            ))
+        except SystemExit as exc:
+            checks.append((
+                "TLS certificate", False, str(exc),
+                "configure a readable, matching certificate and private key",
+            ))
+        try:
+            bind = _validate_bind_host(
+                args.host, authenticated=config.http_auth.enabled, tls=tls_pair,
+            )
+            checks.append((
+                "HTTP bind policy", True,
+                f"{bind}:{args.port} ({'TLS' if tls_pair else 'loopback plaintext'})",
+                None,
+            ))
+        except SystemExit as exc:
+            checks.append((
+                "HTTP bind policy", False, str(exc),
+                "use loopback, or configure bearer authentication and TLS",
+            ))
         runtime = config.action_runtime
         for flag in (
             "allow_project_writes", "allow_scheduler_mutations",
@@ -222,12 +325,29 @@ def _doctor_command(args: argparse.Namespace) -> int:
             except ProjectRegistryError as exc:
                 checks.append(("projects", False, str(exc), "repair the Project registry"))
 
+    failed = any(ok is False for _, ok, _, _ in checks)
+    if getattr(args, "json_output", False):
+        print(json.dumps({
+            "status": "FAIL" if failed else "PASS",
+            "checks": [
+                {
+                    "name": name,
+                    "status": "PASS" if ok is True else (
+                        "INFO" if ok is None else "FAIL"
+                    ),
+                    "detail": detail,
+                    "hint": hint,
+                }
+                for name, ok, detail, hint in checks
+            ],
+        }, ensure_ascii=False, sort_keys=True))
+        return 1 if failed else 0
     for name, ok, detail, hint in checks:
         symbol = "✓" if ok is True else ("·" if ok is None else "✗")
         print(f"{symbol} {name}: {detail}")
         if hint:
             print(f"    → {hint}")
-    return 0 if all(ok is not False for _, ok, _, _ in checks) else 1
+    return 1 if failed else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -241,11 +361,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ImportError as exc:  # pragma: no cover - installation contract
         raise SystemExit("install the ml-experiment-server package to run ml-expd") from exc
 
-    from .api.app import create_app_from_config_file
+    from .api.app import create_app
+    from .project_config import load_server_config
 
-    host = _require_loopback_host(args.host)
-    app = create_app_from_config_file(args.config, poll=False if args.snapshot else None)
-    uvicorn.run(app, host=host, port=args.port, log_level=args.log_level)
+    config = load_server_config(args.config)
+    certificate, private_key = _validate_tls_cert_chain(
+        args.ssl_certfile, args.ssl_keyfile,
+    )
+    tls = certificate is not None and private_key is not None
+    host = _validate_bind_host(
+        args.host, authenticated=config.http_auth.enabled, tls=tls,
+    )
+    app = create_app(config, poll=False if args.snapshot else None)
+    uvicorn.run(
+        app, host=host, port=args.port, log_level=args.log_level,
+        ssl_certfile=str(certificate) if certificate else None,
+        ssl_keyfile=str(private_key) if private_key else None,
+    )
     return 0
 
 

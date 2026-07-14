@@ -13,7 +13,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable
 
-from .storage import StorageError, atomic_json, exclusive_file_lock, read_json, utc_now
+from .storage import (
+    DurableJsonState,
+    StorageError,
+    exclusive_file_lock,
+    read_json,
+    utc_now,
+)
 from .schemas import (
     ProjectLifecycleRecord,
     ProjectLifecycleState,
@@ -41,6 +47,7 @@ class ProjectRegistry:
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = root / "registry.json"
         self.events_path = root / "events.jsonl"
+        self._state = DurableJsonState(self.path, self.events_path)
         self.lock_path = root / ".registry.lock"
         self._lock = threading.RLock()
 
@@ -61,7 +68,9 @@ class ProjectRegistry:
 
     def _load(self) -> dict:
         try:
-            payload = read_json(self.path, self._default())
+            snapshot = self._state.snapshot(self._default())
+            self._state.repair_journal(snapshot)
+            payload = snapshot.value
         except StorageError as exc:
             raise ProjectRegistryError(f"invalid project registry: {self.path}") from exc
         if not isinstance(payload, dict):
@@ -73,6 +82,18 @@ class ProjectRegistry:
         if not isinstance(payload.get("projects", []), list):
             raise ProjectRegistryError(f"invalid project registry projects: {self.path}")
         return payload
+
+    def _commit(
+        self, payload: dict, *, event: str, project: str, at: str, detail: dict,
+    ) -> None:
+        try:
+            self._state.commit(payload, event={
+                "event": event, "project": project, "at": at, "detail": detail,
+            })
+        except StorageError as exc:
+            raise ProjectRegistryError(
+                f"could not commit project registry transition: {self.path}"
+            ) from exc
 
     @staticmethod
     def _records(payload: dict) -> list[ProjectLifecycleRecord]:
@@ -174,8 +195,7 @@ class ProjectRegistry:
                 ))
             payload = self._default()
             payload["projects"] = [record.model_dump(mode="json") for record in materialized]
-            atomic_json(self.path, payload)
-            self._append_event("BOOTSTRAP", "", now, {
+            self._commit(payload, event="BOOTSTRAP", project="", at=now, detail={
                 "imported": [record.model_dump(mode="json") for record in materialized],
             })
             return materialized
@@ -231,8 +251,10 @@ class ProjectRegistry:
                 )
                 records.append(updated)
             payload["projects"] = [record.model_dump(mode="json") for record in records]
-            atomic_json(self.path, payload)
-            self._append_event("REGISTER", project, now, updated.model_dump(mode="json"))
+            self._commit(
+                payload, event="REGISTER", project=project, at=now,
+                detail=updated.model_dump(mode="json"),
+            )
             return updated
 
     def transition(
@@ -268,8 +290,7 @@ class ProjectRegistry:
                 updated.model_dump(mode="json") if item.project == project
                 else item.model_dump(mode="json") for item in records
             ]
-            atomic_json(self.path, payload)
-            self._append_event(target.value, project, now, {
+            self._commit(payload, event=target.value, project=project, at=now, detail={
                 "from": current.state.value, "reason": reason,
             })
             return updated
@@ -286,8 +307,7 @@ class ProjectRegistry:
                 record.model_dump(mode="json") for record in records
                 if record.project != project
             ]
-            atomic_json(self.path, payload)
-            self._append_event("UNREGISTER", project, utc_now(), {
+            self._commit(payload, event="UNREGISTER", project=project, at=utc_now(), detail={
                 "from": current.state.value, "project_file": current.project_file,
                 "reason": reason,
             })
@@ -300,29 +320,36 @@ class ProjectRegistry:
             if not records:
                 return []
             payload["projects"] = []
-            atomic_json(self.path, payload)
             now = utc_now()
-            for record in records:
-                self._append_event("UNREGISTER", record.project, now, {
-                    "from": record.state.value, "project_file": record.project_file,
-                    "reason": reason or "unregister_all",
-                })
+            self._commit(payload, event="UNREGISTER", project="", at=now, detail={
+                "reason": reason or "unregister_all",
+                "unregistered": [
+                    {
+                        "project": record.project,
+                        "from": record.state.value,
+                        "project_file": record.project_file,
+                    }
+                    for record in records
+                ],
+            })
             return records
 
     def events(self, *, limit: int = 200) -> list[dict]:
-        if not self.events_path.is_file():
-            return []
-        items: list[dict] = []
-        for line in self.events_path.read_text(encoding="utf-8").splitlines()[-limit:]:
+        with self._locked():
+            snapshot = self._state.snapshot(self._default())
+            self._state.repair_journal(snapshot)
+            if not self.events_path.is_file():
+                return []
+            items: list[dict] = []
             try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(item, dict):
-                items.append(item)
-        return items
-
-    def _append_event(self, event: str, project: str, at: str, detail: dict) -> None:
-        payload = {"event": event, "project": project, "at": at, "detail": detail}
-        with self.events_path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+                lines = self.events_path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError) as exc:
+                raise ProjectRegistryError("project registry events are unreadable") from exc
+            for line in lines[-limit:]:
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict):
+                    items.append(item)
+            return items

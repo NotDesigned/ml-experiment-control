@@ -48,12 +48,29 @@ def test_action_store_is_immutable_claimed_once_and_fails_closed_on_corruption(t
         "not-json\n" + json.dumps(["not", "mapping"]) + "\n" +
         json.dumps({"event": "valid"}) + "\n", encoding="utf-8",
     )
-    assert store.snapshot(action_id)["journal"] == [{"event": "valid"}]
+    with pytest.raises(StorageError, match="invalid complete record"):
+        store.snapshot(action_id)
+    (directory / "journal.jsonl").write_text(
+        json.dumps({"event": "valid"}) + "\n", encoding="utf-8",
+    )
+    repaired = store.snapshot(action_id)["journal"]
+    assert repaired[0] == {"event": "valid"}
+    assert repaired[-1]["event"] == "action_prepared"
+    assert repaired[-1]["revision"] == 1
+    updated = store.set_execution(
+        action_id, {
+            **store.execution(action_id), "status": "FAILED", "error": "boom",
+        }, event="failed",
+    )
+    assert updated["execution"]["status"] == "FAILED"
     (directory / "execution.json").write_text("{broken", encoding="utf-8")
     with pytest.raises(StorageError, match="durable JSON is unreadable"):
         store.execution(action_id)
-    updated = store.set_execution(action_id, {"status": "FAILED", "error": "boom"}, event="failed")
-    assert updated["execution"]["status"] == "FAILED"
+    with pytest.raises(StorageError, match="durable JSON is unreadable"):
+        store.set_execution(
+            action_id, {"revision": 2, "status": "FAILED", "error": "again"},
+            event="failed",
+        )
 
     foreign = scope("other")
     foreign_id = store.action_id(foreign, "intent-b")
@@ -66,6 +83,9 @@ def test_action_store_is_immutable_claimed_once_and_fails_closed_on_corruption(t
     (malformed / "plan.json").write_text(json.dumps({
         "action_id": "not-valid", "scope": operation_scope.model_dump(mode="json"),
     }))
+    with pytest.raises(StorageError, match="durable JSON is unreadable"):
+        store.list_for_scope(operation_scope)
+    atomic_json(directory / "execution.json", {"status": "FAILED", "error": "repaired"})
     assert [item["action_id"] for item in store.list_for_scope(operation_scope)] == [action_id]
     with pytest.raises(FileNotFoundError):
         store.snapshot("action-missing")
@@ -76,7 +96,26 @@ def test_action_store_is_immutable_claimed_once_and_fails_closed_on_corruption(t
     assert read_json(missing, {}) == []
 
 
-def test_begin_execution_remains_reconcilable_if_claim_write_crashes(monkeypatch, tmp_path):
+def test_action_store_recovers_plan_written_before_initial_execution(tmp_path):
+    store = ActionStore(tmp_path / "actions")
+    operation_scope = scope()
+    action_id = store.action_id(operation_scope, "recover-initial-state")
+    directory = store.directory(action_id)
+    directory.mkdir(parents=True)
+    plan = {
+        "action_id": action_id,
+        "scope": operation_scope.model_dump(mode="json"),
+        "ready": True,
+        "operation": "RECOVER_TEST",
+    }
+    (directory / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+
+    recovered = store.snapshot(action_id)
+    assert recovered["execution"]["status"] == "PREPARED"
+    assert recovered["journal"][-1]["event"] == "action_prepared"
+
+
+def test_begin_execution_uses_cas_state_if_claim_artifact_write_fails(monkeypatch, tmp_path):
     from ml_exp_server.actions import store as store_module
 
     store = ActionStore(tmp_path / "actions")
@@ -85,7 +124,10 @@ def test_begin_execution_remains_reconcilable_if_claim_write_crashes(monkeypatch
         "action_id": action_id, "scope": scope().model_dump(mode="json"),
         "ready": True, "operation": "SUBMIT_RUN", "request_digest": "sha256:req",
     })
-    store.set_execution(action_id, {"status": "AUTHORIZED"}, event="authorized")
+    store.set_execution(
+        action_id, {**store.execution(action_id), "status": "AUTHORIZED"},
+        event="authorized",
+    )
     real_atomic = store_module.atomic_json
 
     def fail_claim(path, payload):
@@ -94,11 +136,14 @@ def test_begin_execution_remains_reconcilable_if_claim_write_crashes(monkeypatch
         return real_atomic(path, payload)
 
     monkeypatch.setattr(store_module, "atomic_json", fail_claim)
-    with pytest.raises(OSError, match="crash"):
-        store.begin_execution(
-            action_id, {"status": "EXECUTING"}, intent_digest="sha256:intent",
-        )
+    store.begin_execution(
+        action_id, {**store.execution(action_id), "status": "EXECUTING"},
+        intent_digest="sha256:intent",
+    )
     assert store.execution(action_id)["status"] == "EXECUTING"
+    assert store.snapshot(action_id)["journal"][-1]["payload"][
+        "intent_digest"
+    ] == "sha256:intent"
 
 
 def test_action_store_serializes_plan_creation_across_daemon_instances(tmp_path):
@@ -123,15 +168,30 @@ def test_action_store_serializes_plan_creation_across_daemon_instances(tmp_path)
     assert results[0]["operation"] == results[1]["operation"]
     assert ActionStore(root).snapshot(action_id)["operation"] == results[0]["operation"]
 
+    prepared = ActionStore(root).execution(action_id)
     winner = ActionStore(root).set_execution(
-        action_id, {"status": "AUTHORIZED", "actor": "first"},
+        action_id, {**prepared, "status": "AUTHORIZED", "actor": "first"},
         event="authorized", expected_status="PREPARED",
     )
     assert winner["execution"]["actor"] == "first"
     with pytest.raises(RuntimeError, match="expected PREPARED, found AUTHORIZED"):
         ActionStore(root).set_execution(
-            action_id, {"status": "AUTHORIZED", "actor": "second"},
+            action_id, {**prepared, "status": "AUTHORIZED", "actor": "second"},
             event="authorized", expected_status="PREPARED",
+        )
+
+    first_pending = winner["execution"]
+    stale_pending = dict(first_pending)
+    ActionStore(root).set_execution(
+        action_id, {**first_pending, "status": "RECONCILE_REQUIRED", "actor": "winner"},
+        event="pending", expected_status="AUTHORIZED",
+    )
+    with pytest.raises(RuntimeError, match="expected revision"):
+        ActionStore(root).set_execution(
+            action_id, {
+                **stale_pending, "status": "RECONCILE_REQUIRED", "actor": "stale",
+            },
+            event="pending", expected_status="RECONCILE_REQUIRED",
         )
 
 

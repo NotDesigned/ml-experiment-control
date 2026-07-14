@@ -82,6 +82,13 @@ def load_server_config(path: Path) -> ServerConfig:
         project_file = Path(ref.project_file).expanduser()
         if not project_file.is_absolute():
             ref.project_file = str((path.parent / project_file).resolve())
+    token_file = config.http_auth.bearer_token_file
+    if token_file:
+        token_path = Path(token_file).expanduser()
+        if not token_path.is_absolute():
+            config.http_auth.bearer_token_file = str(
+                (path.parent / token_path).resolve()
+            )
     return config
 
 

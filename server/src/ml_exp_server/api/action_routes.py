@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..application import ApplicationError
+from ..api_contract import ActionSnapshotResponse
 from ..intent_protocol import OperationIntent
 from ..schemas import OperationScopeType
 from .errors import application_http_error
@@ -51,7 +52,7 @@ def list_actions(request: Request, project: str, scope_type: OperationScopeType,
         raise application_http_error(exc) from exc
 
 
-@router.post("/prepare")
+@router.post("/prepare", response_model=ActionSnapshotResponse)
 async def prepare_action(data: PrepareActionRequest, request: Request):
     try:
         return await run_in_threadpool(
@@ -63,7 +64,7 @@ async def prepare_action(data: PrepareActionRequest, request: Request):
         raise application_http_error(exc) from exc
 
 
-@router.post("/authorize")
+@router.post("/authorize", response_model=ActionSnapshotResponse)
 def authorize_action(data: AuthorizeActionRequest, request: Request):
     try:
         return request.app.state.application.authorize_action(data.action_id, data.note)
@@ -71,7 +72,7 @@ def authorize_action(data: AuthorizeActionRequest, request: Request):
         raise application_http_error(exc) from exc
 
 
-@router.post("/execute")
+@router.post("/execute", response_model=ActionSnapshotResponse)
 async def execute_action(data: ExecuteActionRequest, request: Request):
     try:
         result = await run_in_threadpool(
@@ -83,7 +84,7 @@ async def execute_action(data: ExecuteActionRequest, request: Request):
     return result
 
 
-@router.post("/reconcile")
+@router.post("/reconcile", response_model=ActionSnapshotResponse)
 async def reconcile_action(data: ActionRequest, request: Request):
     try:
         return await run_in_threadpool(

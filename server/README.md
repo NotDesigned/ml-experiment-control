@@ -33,4 +33,5 @@ verify that their read-only checkout matches the Project managed by the daemon.
 
 The full architecture, configuration, and verification contract is maintained
 in the repository root `README.md`, `docs/development.md`, and
-`docs/project_lifecycle.md`.
+`docs/project_lifecycle.md`. Protocol negotiation and native bearer/TLS
+deployment are specified in `docs/http_contract.md`.

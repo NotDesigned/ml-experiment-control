@@ -31,20 +31,17 @@ from ..schemas import (
     ResearchProject,
 )
 from ..storage import atomic_json, utc_now
+from .errors import ActionError
+from .files import file_sha as _file_sha
+from .policy import ActionExecutionPolicy
 from .store import ActionStore
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
-class ActionError(RuntimeError):
-    pass
 
 
 def _sha256(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
-
-
-def _file_sha(path: Path) -> str | None:
-    return _sha256(path.read_bytes()) if path.is_file() else None
 
 
 def _manifest_identity_digest(payload: dict[str, Any]) -> str:
@@ -147,6 +144,7 @@ class ActionService:
         self.store = store
         self.config = config
         self.controller = ProjectControllerGateway(runner)
+        self.execution_policy = ActionExecutionPolicy(config)
         self.actor_provider = actor_provider or self._local_actor
         self.internal_executor = internal_executor
 
@@ -836,46 +834,7 @@ class ActionService:
         execution = snapshot["execution"]
         if execution.get("status") == "VERIFIED":
             return snapshot
-        if execution.get("status") in {"EXECUTING", "RECONCILE_REQUIRED"}:
-            raise ActionError("execution intent already exists; reconcile instead of retrying")
-        if execution.get("status") != "AUTHORIZED":
-            raise ActionError("action requires a separate execution authorization")
-        if confirmation != f"EXECUTE {action_id}":
-            raise ActionError(f"confirmation must equal EXECUTE {action_id}")
-        expires_at = datetime.fromisoformat(str(snapshot["gate_expires_at"]).replace("Z", "+00:00"))
-        if datetime.now(timezone.utc) >= expires_at:
-            raise ActionError("gate bundle has expired; prepare and approve a fresh intent")
-        if execution.get("authorized_intent_digest") != snapshot.get("intent_digest"):
-            raise ActionError("authorization does not match the immutable action intent")
-        if execution.get("authorized_gate_bundle_digest") != snapshot.get("gate_bundle_digest"):
-            raise ActionError("authorization does not match the gate bundle")
-        operation = str(snapshot["operation"])
-        project_write = operation in {
-            "WRITE_RESEARCH_QUESTION", "WRITE_CAMPAIGN", "WRITE_CAMPAIGN_ARCHIVE",
-            "WRITE_RUN_ARCHIVE", "WRITE_ATTEMPT_ARCHIVE",
-        }
-        internal_mutation = operation == "OBSERVABILITY_BACKFILL"
-        if project_write and not self.config.allow_project_writes:
-            raise ActionError("project writes are disabled by daemon policy")
-        if internal_mutation and not self.config.allow_observability_mutations:
-            raise ActionError("observability mutations are disabled by daemon policy")
-        if (
-            not project_write and not internal_mutation
-            and not self.config.allow_scheduler_mutations
-        ):
-            raise ActionError("scheduler mutations are disabled by daemon policy")
-        if operation in {"SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION"}:
-            campaign_path = Path(str(snapshot.get("campaign_file") or ""))
-            if _file_sha(campaign_path) != snapshot.get("execution_campaign_sha256"):
-                raise ActionError(
-                    "campaign changed after Action preparation; prepare a fresh action"
-                )
-            manifest_path = Path(str(snapshot.get("execution_manifest_path") or ""))
-            if _file_sha(manifest_path) != snapshot.get("execution_manifest_sha256"):
-                raise ActionError(
-                    "canonical execution manifest changed after Action preparation; "
-                    "prepare a fresh action"
-                )
+        dispatch = self.execution_policy.validate(snapshot, confirmation)
         execution.update({"status": "EXECUTING", "started_at": utc_now(), "error": None})
         try:
             started = self.store.begin_execution(
@@ -884,9 +843,9 @@ class ActionService:
         except RuntimeError as exc:
             raise ActionError(str(exc)) from exc
         execution = started["execution"]
-        if project_write:
+        if dispatch.project_write:
             return self._execute_write(snapshot, execution)
-        if internal_mutation:
+        if dispatch.internal_mutation:
             return self._execute_internal(snapshot, execution)
         return self._execute_controller(snapshot, execution)
 

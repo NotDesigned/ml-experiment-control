@@ -332,24 +332,32 @@ def test_only_collector_lease_owner_starts_and_stops_managed_service(tmp_path: P
     second_app = create_app(config)
     first = _SpyService(lambda: first_app.state.collector_owner is True)
     second = _SpyService(lambda: second_app.state.collector_owner is True)
-    first_app.state.runtime.wandb_service = first
-    second_app.state.runtime.wandb_service = second
+    first_app.state.runtime_initializers.append(
+        lambda runtime: setattr(runtime, "wandb_service", first)
+    )
+    second_app.state.runtime_initializers.append(
+        lambda runtime: setattr(runtime, "wandb_service", second)
+    )
 
-    with TestClient(first_app) as first_client, TestClient(second_app) as second_client:
+    with TestClient(first_app) as first_client:
         assert first.starts == 1
         assert second.starts == 0
         assert first_client.get("/api/health").json()["observability"]["state"] == "READY"
-        assert second_client.get("/api/health").json()["observability"]["state"] == "STANDBY"
+        with pytest.raises(RuntimeError, match="another ml-expd process owns"):
+            with TestClient(second_app):
+                pass
 
     assert first.stops == 1
-    # Non-owners still close their runtime, but never owned a process.
-    assert second.stops == 1
+    # The non-owner never constructs a runtime or reaches its initializer.
+    assert second.stops == 0
 
 
 def test_snapshot_mode_never_starts_managed_service(tmp_path: Path):
     app = create_app(_server_config(tmp_path, collector_enabled=False))
     service = _SpyService()
-    app.state.runtime.wandb_service = service
+    app.state.runtime_initializers.append(
+        lambda runtime: setattr(runtime, "wandb_service", service)
+    )
     with TestClient(app) as client:
         assert client.get("/api/health").json()["collector_requested"] is False
         assert service.starts == 0

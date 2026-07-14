@@ -1,5 +1,6 @@
 """Collector safety boundary: observation verbs only, terminal runs skipped."""
 
+import os
 import textwrap
 from pathlib import Path
 
@@ -141,6 +142,23 @@ def test_collector_lease_allows_exactly_one_owner(tmp_path):
     first.release()
     assert second.acquire() is True
     second.release()
+
+
+def test_lease_metadata_write_failure_releases_fd_for_retry(monkeypatch, tmp_path):
+    lease = CollectorLease(tmp_path / "index.sqlite")
+    real_ftruncate = os.ftruncate
+
+    def fail_metadata_write(fd, length):
+        raise OSError("lease metadata disk failure")
+
+    monkeypatch.setattr(os, "ftruncate", fail_metadata_write)
+    with pytest.raises(OSError, match="lease metadata disk failure"):
+        lease.acquire()
+    assert lease._fd is None
+
+    monkeypatch.setattr(os, "ftruncate", real_ftruncate)
+    assert lease.acquire() is True
+    lease.release()
 
 
 def test_observe_failure_is_preserved_and_skips_decide(tmp_path):

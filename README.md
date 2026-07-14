@@ -44,11 +44,14 @@ at startup, and owns one live collector per workspace. It polls immediately
 and then at `poll_interval_seconds` (20 seconds by default); `--snapshot` is
 the explicit no-poll mode.
 Only one daemon process may mutate a workspace, including in snapshot mode;
-additional processes remain read-only until restarted after the owner exits.
-Because the HTTP control plane does not implement remote-client
-authentication, `--host` accepts loopback addresses only. Use an authenticated
-local tunnel when a client runs on another machine.
-Use `/api/health` and `/openapi.json` for machine-readable health and API shape.
+an additional daemon fails startup before constructing writable stores and can
+be restarted after the owner exits.
+Loopback is the default. Native bearer authentication can protect the control
+plane on a shared host through `http_auth.bearer_token_file`; remote binds also
+require `--ssl-certfile` and `--ssl-keyfile`, so credentials are never exposed
+on a plaintext listener. See [`docs/http_contract.md`](docs/http_contract.md).
+Use `/api/health` for protocol/capability negotiation and follow its
+`openapi_path` (`/api/v1/openapi.json`) for the versioned API shape.
 
 The daemon host owns controller/backend credentials, project checkouts, and
 Action state. Research Console and other clients fetch evidence and submit

@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import ml_exp_server.api.app as api_app
+from ml_exp_server.api_contract import CLIENT_PROTOCOL_HEADER
 from ml_exp_server.api.app import create_app
 from ml_exp_server.api.routes import _attention
 from ml_exp_server.schemas import RunIndexRow
@@ -288,6 +289,97 @@ def test_api_404_contract_is_machine_readable(tmp_path):
         assert missing.json() == {"detail": "API route not found"}
 
 
+def test_api_resources_require_protocol_header_before_dispatch(tmp_path):
+    config = ServerConfig(
+        index_db=str(tmp_path / "index.sqlite"),
+        action_root=str(tmp_path / "actions"),
+        collector_enabled=False,
+        projects=[],
+    )
+    with TestClient(create_app(config)) as test_client:
+        del test_client.headers[CLIENT_PROTOCOL_HEADER]
+        # Health is the one headerless bootstrap exception.
+        assert test_client.get("/api/health").status_code == 200
+        snapshot = test_client.get("/api/terminal/snapshot")
+        assert snapshot.status_code == 426
+        assert snapshot.headers["X-ML-Expd-Error-Code"] == (
+            "INCOMPATIBLE_API_PROTOCOL"
+        )
+        mutation = test_client.post(
+            "/api/project-lifecycle/unregister-all", json={},
+        )
+        assert mutation.status_code == 426
+        assert mutation.headers["X-ML-Expd-Error-Code"] == (
+            "INCOMPATIBLE_API_PROTOCOL"
+        )
+
+
+def test_app_factory_has_no_durable_side_effect_before_lifespan(tmp_path):
+    index_path = tmp_path / "index.sqlite"
+    action_root = tmp_path / "actions"
+    registry_root = tmp_path / "projects"
+    empty = ServerConfig(
+        index_db=str(index_path), action_root=str(action_root),
+        project_registry_root=str(registry_root), projects=[],
+    )
+
+    app = create_app(empty)
+    assert app.state.runtime is None
+    assert not index_path.exists()
+    assert not action_root.exists()
+    assert not (registry_root / "registry.json").exists()
+
+    project_file = tmp_path / "research_project.yaml"
+    project_file.write_text(
+        "schema_version: 1\nproject: demo\ntitle: Demo\nrun_roots: []\n",
+        encoding="utf-8",
+    )
+    seeded = empty.model_copy(update={
+        "projects": [ProjectRef(project_file=str(project_file))],
+    })
+    with TestClient(create_app(seeded)) as test_client:
+        records = test_client.get("/api/project-lifecycle").json()["projects"]
+        assert [record["project"] for record in records] == ["demo"]
+
+
+def test_health_negotiates_versioned_protocol_and_native_bearer_auth(tmp_path):
+    token = "daemon-test-token-" + "x" * 32
+    token_file = tmp_path / "daemon.token"
+    token_file.write_text(token + "\n", encoding="utf-8")
+    token_file.chmod(0o600)
+    config = ServerConfig(
+        index_db=str(tmp_path / "index.sqlite"),
+        action_root=str(tmp_path / "actions"),
+        collector_enabled=False,
+        http_auth={"bearer_token_file": str(token_file)},
+        projects=[],
+    )
+
+    with TestClient(create_app(config)) as authenticated:
+        missing = authenticated.get("/api/health")
+        assert missing.status_code == 401
+        assert missing.headers["X-ML-Expd-Error-Code"] == "AUTHENTICATION_REQUIRED"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-ML-Expd-Client-Protocol": "1",
+        }
+        health = authenticated.get("/api/health", headers=headers)
+        payload = health.json()
+        assert health.status_code == 200
+        assert health.headers["X-ML-Expd-Protocol"] == "1"
+        assert payload["api_protocol_version"] == 1
+        assert payload["authentication"] == "bearer"
+        assert "actions.v1" in payload["capabilities"]
+        assert payload["openapi_path"] == "/api/v1/openapi.json"
+        assert authenticated.get(payload["openapi_path"], headers=headers).status_code == 200
+
+        incompatible = authenticated.get("/api/health", headers={
+            **headers, "X-ML-Expd-Client-Protocol": "2",
+        })
+        assert incompatible.status_code == 426
+        assert incompatible.headers["X-ML-Expd-Error-Code"] == "INCOMPATIBLE_API_PROTOCOL"
+
+
 def test_collector_status_endpoint(client):
     payload = client.get("/api/collector/status").json()
     assert payload["enabled"] is False
@@ -306,22 +398,19 @@ def test_server_enables_collector_by_default(tmp_path):
     assert payload["owner"] is True
 
 
-def test_second_server_reports_collector_lease_loss(tmp_path):
+def test_second_server_fails_startup_when_workspace_lease_is_owned(tmp_path):
     config = ServerConfig(index_db=str(tmp_path / "index.sqlite"), projects=[])
-    with TestClient(create_app(config)) as first, TestClient(create_app(config)) as second:
+    with TestClient(create_app(config)) as first:
         assert first.get("/api/collector/status").json()["owner"] is True
-        payload = second.get("/api/collector/status").json()
-        blocked = second.post("/api/project-lifecycle/unregister-all", json={})
-        assert blocked.status_code == 409
-        assert blocked.headers["X-ML-Expd-Error-Code"] == "WORKSPACE_NOT_OWNER"
-    assert payload["enabled"] is False
-    assert payload["requested"] is True
-    assert payload["owner"] is False
-    assert "owns this workspace" in payload["last_error"]
+        with pytest.raises(RuntimeError, match="another ml-expd process owns"):
+            with TestClient(create_app(config)):
+                pass
+        assert first.get("/api/health").status_code == 200
 
 
-def test_standby_does_not_index_before_workspace_lease(monkeypatch, tmp_path):
+def test_lease_loss_fails_before_runtime_construction(monkeypatch, tmp_path):
     indexed = []
+    initialized = []
 
     class StandbyLease:
         def __init__(self, path):
@@ -335,25 +424,40 @@ def test_standby_does_not_index_before_workspace_lease(monkeypatch, tmp_path):
 
     monkeypatch.setattr(api_app, "CollectorLease", StandbyLease)
     monkeypatch.setattr(api_app, "index_project", lambda index, project: indexed.append(project.project))
-    config = ServerConfig(index_db=str(tmp_path / "index.sqlite"), projects=[])
+    config = ServerConfig(
+        index_db=str(tmp_path / "index.sqlite"),
+        action_root=str(tmp_path / "actions"),
+        observability={
+            "credential_root": str(tmp_path / "credentials"),
+            "log_archive_root": str(tmp_path / "logs"),
+        },
+        projects=[],
+    )
     project = ResearchProject(project="demo", title="Demo", run_roots=[])
+    app = create_app(config, poll=False, projects=[project])
+    app.state.runtime_initializers.append(lambda runtime: initialized.append(runtime))
 
-    with TestClient(create_app(config, poll=False, projects=[project])) as standby:
-        assert standby.get("/api/collector/status").json()["owner"] is False
+    with pytest.raises(RuntimeError, match="a second daemon cannot start safely"):
+        with TestClient(app):
+            pass
 
     assert indexed == []
+    assert initialized == []
+    assert not (tmp_path / "index.sqlite").exists()
+    assert not (tmp_path / "index.observability.sqlite").exists()
+    assert not (tmp_path / "index.projects").exists()
+    assert not (tmp_path / "actions").exists()
+    assert not (tmp_path / "credentials").exists()
+    assert not (tmp_path / "logs").exists()
 
 
-def test_snapshot_daemons_still_enforce_one_workspace_writer(tmp_path):
+def test_snapshot_daemons_still_require_exclusive_workspace_lease(tmp_path):
     config = ServerConfig(index_db=str(tmp_path / "index.sqlite"), projects=[])
-    with TestClient(create_app(config, poll=False)) as first, TestClient(
-        create_app(config, poll=False)
-    ) as second:
+    with TestClient(create_app(config, poll=False)) as first:
         assert first.post("/api/project-lifecycle/unregister-all", json={}).status_code == 200
-        assert second.get("/api/health").status_code == 200
-        assert second.post(
-            "/api/project-lifecycle/unregister-all", json={},
-        ).status_code == 409
+        with pytest.raises(RuntimeError, match="another ml-expd process owns"):
+            with TestClient(create_app(config, poll=False)):
+                pass
 
 
 def test_startup_failure_releases_workspace_lease(tmp_path):
@@ -363,7 +467,9 @@ def test_startup_failure_releases_workspace_lease(tmp_path):
     def fail_recovery():
         raise RuntimeError("startup recovery failed")
 
-    broken.state.application.recover_observability_policies = fail_recovery
+    broken.state.runtime_initializers.append(
+        lambda runtime: setattr(runtime.action_store, "list_all", fail_recovery)
+    )
     with pytest.raises(RuntimeError, match="startup recovery failed"):
         with TestClient(broken):
             pass

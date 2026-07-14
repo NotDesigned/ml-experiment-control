@@ -139,13 +139,17 @@ def _app(tmp_path, *, cloud=False, observability_mutations=False):
     )
     app = create_app(config, projects=[project])
     runner = SubmissionController()
-    app.state.runtime.action_service = ActionService(
-        app.state.runtime.action_store,
-        config.action_runtime,
-        runner,
-        actor_provider=lambda: "trusted:operator",
-        internal_executor=app.state.runtime.action_service.internal_executor,
-    )
+
+    def configure_runtime(runtime):
+        runtime.action_service = ActionService(
+            runtime.action_store,
+            config.action_runtime,
+            runner,
+            actor_provider=lambda: "trusted:operator",
+            internal_executor=runtime.action_service.internal_executor,
+        )
+
+    app.state.runtime_initializers.append(configure_runtime)
     return app, runner
 
 
@@ -219,10 +223,10 @@ def test_authored_unmaterialized_run_is_selectable_from_tui_read_model(tmp_path)
 
 def test_cloud_ready_daemon_exposes_submission_option_without_secret_metadata(tmp_path):
     app, _ = _app(tmp_path, cloud=True)
-    app.state.runtime.credential_store.set_wandb_api_key(
-        "cloud-primary", "secret-cloud-key",
-    )
     with TestClient(app) as client:
+        client.app.state.runtime.credential_store.set_wandb_api_key(
+            "cloud-primary", "secret-cloud-key",
+        )
         operations = client.get("/api/operations", params={
             "project": "demo", "scope_type": "run", "object_id": "run-a",
         }).json()
@@ -279,10 +283,10 @@ def test_cloud_ready_daemon_exposes_submission_option_without_secret_metadata(tm
 
 def test_active_submission_cannot_change_cloud_policy(tmp_path):
     app, _ = _app(tmp_path, cloud=True)
-    app.state.runtime.credential_store.set_wandb_api_key(
-        "cloud-primary", "secret-cloud-key",
-    )
     with TestClient(app) as client:
+        client.app.state.runtime.credential_store.set_wandb_api_key(
+            "cloud-primary", "secret-cloud-key",
+        )
         prepared = client.post(
             "/api/experiments/demo/run-a/submissions/prepare",
             json={"max_gpu_hours": 2, "wandb_cloud_sync": True},
@@ -298,10 +302,10 @@ def test_active_submission_cannot_change_cloud_policy(tmp_path):
 
 def test_reconcile_required_does_not_activate_cloud_target(tmp_path):
     app, runner = _app(tmp_path, cloud=True)
-    app.state.runtime.credential_store.set_wandb_api_key(
-        "cloud-primary", "secret-cloud-key",
-    )
     with TestClient(app) as client:
+        client.app.state.runtime.credential_store.set_wandb_api_key(
+            "cloud-primary", "secret-cloud-key",
+        )
         prepared = client.post(
             "/api/experiments/demo/run-a/submissions/prepare",
             json={"max_gpu_hours": 2, "wandb_cloud_sync": True},
@@ -328,25 +332,25 @@ def test_audited_observability_backfill_operation_rewinds_exact_attempt(tmp_path
     app, _ = _app(
         tmp_path, cloud=True, observability_mutations=True,
     )
-    app.state.runtime.credential_store.set_wandb_api_key(
-        "cloud-primary", "secret-cloud-key",
-    )
-    attempt = AttemptRef(
-        app.state.runtime.workspace_id, "demo", "run-a", "attempt-001",
-    )
-    source = SourceRef(attempt, "metrics")
-    app.state.runtime.observability_store.enqueue_and_advance(
-        source, expected=None, generation="g", byte_offset=4,
-        records=[OutboxRecord("record-1", "metrics", {"step": 1})],
-        targets=[], now=1,
-    )
-    app.state.index.upsert_run(RunIndexRow(
-        project="demo", campaign="study", run_id="run-a",
-        run_dir=str(tmp_path / "run-a"), scheduler_state="SUCCEEDED",
-        attempts=[AttemptSummary(attempt_id="attempt-001", state="SUCCEEDED")],
-    ))
-
     with TestClient(app) as client:
+        runtime = client.app.state.runtime
+        runtime.credential_store.set_wandb_api_key(
+            "cloud-primary", "secret-cloud-key",
+        )
+        attempt = AttemptRef(
+            runtime.workspace_id, "demo", "run-a", "attempt-001",
+        )
+        source = SourceRef(attempt, "metrics")
+        runtime.observability_store.enqueue_and_advance(
+            source, expected=None, generation="g", byte_offset=4,
+            records=[OutboxRecord("record-1", "metrics", {"step": 1})],
+            targets=[], now=1,
+        )
+        client.app.state.index.upsert_run(RunIndexRow(
+            project="demo", campaign="study", run_id="run-a",
+            run_dir=str(tmp_path / "run-a"), scheduler_state="SUCCEEDED",
+            attempts=[AttemptSummary(attempt_id="attempt-001", state="SUCCEEDED")],
+        ))
         operations = client.get("/api/operations", params={
             "project": "demo", "scope_type": "run", "object_id": "run-a",
         }).json()
@@ -389,16 +393,15 @@ def test_audited_observability_backfill_operation_rewinds_exact_attempt(tmp_path
 
 def test_observability_backfill_defaults_closed_by_daemon_policy(tmp_path):
     app, _ = _app(tmp_path, cloud=True)
-    app.state.runtime.credential_store.set_wandb_api_key(
-        "cloud-primary", "secret-cloud-key",
-    )
-    app.state.index.upsert_run(RunIndexRow(
-        project="demo", campaign="study", run_id="run-a",
-        run_dir=str(tmp_path / "run-a"), scheduler_state="SUCCEEDED",
-        attempts=[AttemptSummary(attempt_id="attempt-001", state="SUCCEEDED")],
-    ))
-
     with TestClient(app) as client:
+        client.app.state.runtime.credential_store.set_wandb_api_key(
+            "cloud-primary", "secret-cloud-key",
+        )
+        client.app.state.index.upsert_run(RunIndexRow(
+            project="demo", campaign="study", run_id="run-a",
+            run_dir=str(tmp_path / "run-a"), scheduler_state="SUCCEEDED",
+            attempts=[AttemptSummary(attempt_id="attempt-001", state="SUCCEEDED")],
+        ))
         operations = client.get("/api/operations", params={
             "project": "demo", "scope_type": "run", "object_id": "run-a",
         }).json()
@@ -414,47 +417,47 @@ def test_nested_materialized_run_replaces_placeholder_and_exposes_exact_cancel(
     tmp_path,
 ):
     app, _ = _app(tmp_path)
-    project = app.state.runtime.project("demo")
-    revision = project.campaigns[0].current_revision
-    assert revision is not None
-    run_dir = (
-        project.resolved_run_roots()[0] / "state" / "instance-a" / "study" / "run-a"
-    )
-    attempt_dir = run_dir / "attempts" / "attempt-001"
-    attempt_dir.mkdir(parents=True)
-    (run_dir / "manifest.yaml").write_text(yaml.safe_dump({
-        "project": "demo",
-        "campaign": "study",
-        "campaign_id": revision.revision_id,
-        "run_id": "run-a",
-        "research_role": "candidate",
-        "source_id": "git:abc",
-        "image_id": "sha256:image",
-    }))
-    status = {
-        "project": "demo",
-        "run_id": "run-a",
-        "attempt_id": "attempt-001",
-        "backend": "sensecore",
-        "backend_job_id": "exact-job-42",
-        "state": "RUNNING",
-    }
-    (run_dir / "status.json").write_text(json.dumps(status))
-    (attempt_dir / "status.json").write_text(json.dumps(status))
-    (attempt_dir / "backend.json").write_text(json.dumps({
-        "attempt_id": "attempt-001",
-        "backend": "sensecore",
-        "backend_job_id": "exact-job-42",
-    }))
-    (attempt_dir / "submission.json").write_text(json.dumps({
-        "attempt_id": "attempt-001",
-        "backend": "sensecore",
-        "backend_job_id": "exact-job-42",
-        "state": "SUBMITTED",
-        "submission_token": "a" * 32,
-    }))
-
     with TestClient(app) as client:
+        project = client.app.state.runtime.project("demo")
+        revision = project.campaigns[0].current_revision
+        assert revision is not None
+        run_dir = (
+            project.resolved_run_roots()[0]
+            / "state" / "instance-a" / "study" / "run-a"
+        )
+        attempt_dir = run_dir / "attempts" / "attempt-001"
+        attempt_dir.mkdir(parents=True)
+        (run_dir / "manifest.yaml").write_text(yaml.safe_dump({
+            "project": "demo",
+            "campaign": "study",
+            "campaign_id": revision.revision_id,
+            "run_id": "run-a",
+            "research_role": "candidate",
+            "source_id": "git:abc",
+            "image_id": "sha256:image",
+        }))
+        status = {
+            "project": "demo",
+            "run_id": "run-a",
+            "attempt_id": "attempt-001",
+            "backend": "sensecore",
+            "backend_job_id": "exact-job-42",
+            "state": "RUNNING",
+        }
+        (run_dir / "status.json").write_text(json.dumps(status))
+        (attempt_dir / "status.json").write_text(json.dumps(status))
+        (attempt_dir / "backend.json").write_text(json.dumps({
+            "attempt_id": "attempt-001",
+            "backend": "sensecore",
+            "backend_job_id": "exact-job-42",
+        }))
+        (attempt_dir / "submission.json").write_text(json.dumps({
+            "attempt_id": "attempt-001",
+            "backend": "sensecore",
+            "backend_job_id": "exact-job-42",
+            "state": "SUBMITTED",
+            "submission_token": "a" * 32,
+        }))
         refreshed = client.post(
             "/api/terminal/refresh", json={"project": "demo"},
         ).json()
@@ -512,17 +515,16 @@ def test_reuse_only_membership_does_not_create_authored_run_placeholder():
 
 def test_archived_authored_run_is_visible_but_submit_is_blocked(tmp_path):
     app, _ = _app(tmp_path)
-    project = app.state.runtime.project("demo")
-    revision = project.campaigns[0].current_revision
-    assert revision is not None
-    record = campaign_record_path(project, "study", revision.revision_id, "archive")
-    record.parent.mkdir(parents=True, exist_ok=True)
-    record.write_text(yaml.safe_dump({
-        "project": "demo", "campaign": "study",
-        "revision_id": revision.revision_id, "reason": "retired",
-    }))
-
     with TestClient(app) as client:
+        project = client.app.state.runtime.project("demo")
+        revision = project.campaigns[0].current_revision
+        assert revision is not None
+        record = campaign_record_path(project, "study", revision.revision_id, "archive")
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(yaml.safe_dump({
+            "project": "demo", "campaign": "study",
+            "revision_id": revision.revision_id, "reason": "retired",
+        }))
         snapshot = client.get("/api/terminal/snapshot").json()
         assert any(item["run_id"] == "run-a" for item in snapshot["runs"]["demo"])
         operations = client.get("/api/operations", params={
