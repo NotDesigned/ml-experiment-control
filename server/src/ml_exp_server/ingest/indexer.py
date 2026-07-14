@@ -223,6 +223,20 @@ def index_project(index: RunIndex, project: ResearchProject,
             row.warnings.append(
                 f"duplicate run identity {project.project}/{run_id} found at {locations}"
             )
+        previous = index.get_run(row.project, row.run_id)
+        prior_wandb = previous.provenance.get("wandb") if previous else None
+        current_wandb = row.provenance.get("wandb")
+        if (
+            isinstance(prior_wandb, dict)
+            and prior_wandb.get("initialized")
+            and not (
+                isinstance(current_wandb, dict)
+                and current_wandb.get("initialized")
+            )
+        ):
+            # Runtime URLs are append-only observations. Preserve one captured
+            # URL when a later bounded log tail no longer contains its init line.
+            row.provenance["wandb"] = prior_wandb
         index.upsert_run(row)
     return len(rows)
 

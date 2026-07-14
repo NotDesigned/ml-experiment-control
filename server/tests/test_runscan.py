@@ -117,7 +117,8 @@ def test_smoke_run_created_state_not_flagged(smoke_run_dir):
 
 def test_wandb_identity_is_exposed_only_as_run_provenance(tmp_path):
     run_dir = tmp_path / "wandb-run"
-    run_dir.mkdir()
+    attempt_dir = run_dir / "attempts" / "attempt-001"
+    attempt_dir.mkdir(parents=True)
     (run_dir / "manifest.yaml").write_text(
         "project: demo\n"
         "run_id: wandb-run\n"
@@ -137,6 +138,54 @@ def test_wandb_identity_is_exposed_only_as_run_provenance(tmp_path):
         "wandb_entity": "research-team",
         "wandb_run_id": "stable-run-id",
     }
+    assert row.provenance["wandb"] == {
+        "requested": True,
+        "enabled": True,
+        "initialized": False,
+        "entity": "research-team",
+        "project": "demo-metrics",
+        "run_id": "stable-run-id",
+        "name": "wandb-run",
+    }
+
+    stdout = attempt_dir / "stdout.log"
+    stdout.write_text(
+        "startup\nWandb initialized: https://wandb.ai/research-team/"
+        "demo-metrics/runs/stable-run-id (resume=allow, id=stable-run-id)\n",
+        encoding="utf-8",
+    )
+    observed = scan_run_dir(run_dir, "demo", now=NOW)
+    assert observed.provenance["wandb"]["initialized"] is True
+    assert observed.provenance["wandb"]["url"] == (
+        "https://wandb.ai/research-team/demo-metrics/runs/stable-run-id"
+    )
+    assert observed.provenance["wandb"]["evidence_source"] == str(stdout)
+
+
+def test_wandb_url_prefers_attempt_collection_structured_evidence(tmp_path):
+    run_dir = tmp_path / "wandb-run"
+    attempt_dir = run_dir / "attempts" / "attempt-001"
+    attempt_dir.mkdir(parents=True)
+    (run_dir / "manifest.yaml").write_text(
+        "project: demo\nrun_id: wandb-run\n"
+        "resolved_config:\n  use_wandb: true\n",
+        encoding="utf-8",
+    )
+    (attempt_dir / "collection.json").write_text(json.dumps({
+        "wandb": {
+            "initialized": True,
+            "url": "https://wandb.ai/team/project/runs/wandb-run",
+            "evidence_source": "/remote/stdout.log",
+        },
+    }))
+
+    row = scan_run_dir(run_dir, "demo", now=NOW)
+
+    assert row.provenance["wandb"]["initialized"] is True
+    assert row.provenance["wandb"]["url"] == (
+        "https://wandb.ai/team/project/runs/wandb-run"
+    )
+    assert row.provenance["wandb"]["evidence_source"] == "/remote/stdout.log"
 
 
 def test_terminal_runs_are_never_stale(tmp_path):
@@ -155,6 +204,20 @@ def test_discover_run_dirs_finds_both_generations():
     names = {p.name for p in found}
     assert "elf-a1-frozen-t5-l256-s42-h100-v1" in names
     assert "elf-smoke-slurm-l40s-probe-20260712T0105" in names
+
+
+def test_discover_run_dirs_finds_instance_scoped_run_without_mirror_duplicate(tmp_path):
+    run_dir = tmp_path / "runs" / "state" / "instance-a" / "study" / "run-a"
+    mirror = run_dir / "attempts" / "attempt-001" / "collected_run"
+    mirror.mkdir(parents=True)
+    (run_dir / "manifest.yaml").write_text(
+        "project: demo\ncampaign: study\nrun_id: run-a\n", encoding="utf-8",
+    )
+    (mirror / "manifest.yaml").write_text(
+        "project: demo\ncampaign: study\nrun_id: run-a\n", encoding="utf-8",
+    )
+
+    assert discover_run_dirs(tmp_path / "runs") == [run_dir]
 
 
 def test_autoresearch_harness_json_layout_is_ingested(tmp_path):

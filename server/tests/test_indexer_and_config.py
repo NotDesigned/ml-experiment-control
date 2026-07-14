@@ -322,6 +322,40 @@ def test_index_project_scans_fixture_roots(tmp_path):
     assert "elf-smoke-slurm-l40s-probe-20260712T0105" in ids
 
 
+def test_index_project_preserves_observed_wandb_url_after_tail_disappears(tmp_path):
+    from ml_exp_server.schemas import ResearchProject
+
+    root = tmp_path / "runs"
+    run_dir = root / "campaign-a" / "run-a"
+    attempt_dir = run_dir / "attempts" / "attempt-001"
+    attempt_dir.mkdir(parents=True)
+    (run_dir / "manifest.yaml").write_text(textwrap.dedent("""\
+        project: demo
+        campaign: campaign-a
+        run_id: run-a
+        resolved_config:
+          use_wandb: true
+          wandb_project: metrics
+          wandb_entity: team
+          wandb_run_id: run-a
+    """))
+    stdout = attempt_dir / "stdout.log"
+    stdout.write_text(
+        "Wandb initialized: https://wandb.ai/team/metrics/runs/run-a\n"
+    )
+    project = ResearchProject(project="demo", title="Demo", run_roots=[str(root)])
+    index = RunIndex(tmp_path / "index.sqlite")
+
+    assert index_project(index, project, now=NOW) == 1
+    assert index.get_run("demo", "run-a").provenance["wandb"]["initialized"] is True
+
+    stdout.unlink()
+    assert index_project(index, project, now=NOW + 1) == 1
+    preserved = index.get_run("demo", "run-a").provenance["wandb"]
+    assert preserved["initialized"] is True
+    assert preserved["url"] == "https://wandb.ai/team/metrics/runs/run-a"
+
+
 def test_index_reconciles_frozen_runs_with_current_campaign_revision(tmp_path):
     from ml_exp_server.schemas import CampaignRelationship
 

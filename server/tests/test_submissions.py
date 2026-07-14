@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
@@ -99,11 +100,15 @@ def _app(tmp_path):
         "title": "Demo",
         "run_roots": ["outputs/runs"],
         "campaigns": [{"name": "study", "file": str(campaign)}],
-        "controller": {
+            "controller": {
             "python": "python",
             "experimentctl": "tools/experimentctl.py",
             "workdir": ".",
-            "capabilities": {"submit_outbox": True, "run_identity_v2": True},
+            "capabilities": {
+                "submit_outbox": True,
+                "run_identity_v2": True,
+                "cancel_outbox": True,
+            },
         },
     }, sort_keys=False))
     project = load_research_project(project_file)
@@ -169,6 +174,90 @@ def test_authored_unmaterialized_run_is_selectable_from_tui_read_model(tmp_path)
         assert len(rows) == 1
         assert rows[0]["scheduler_state"] == "CREATED"
         assert rows[0]["provenance"] == {"observed": True}
+
+
+def test_nested_materialized_run_replaces_placeholder_and_exposes_exact_cancel(
+    tmp_path,
+):
+    app, _ = _app(tmp_path)
+    project = app.state.runtime.project("demo")
+    revision = project.campaigns[0].current_revision
+    assert revision is not None
+    run_dir = (
+        project.resolved_run_roots()[0] / "state" / "instance-a" / "study" / "run-a"
+    )
+    attempt_dir = run_dir / "attempts" / "attempt-001"
+    attempt_dir.mkdir(parents=True)
+    (run_dir / "manifest.yaml").write_text(yaml.safe_dump({
+        "project": "demo",
+        "campaign": "study",
+        "campaign_id": revision.revision_id,
+        "run_id": "run-a",
+        "research_role": "candidate",
+        "source_id": "git:abc",
+        "image_id": "sha256:image",
+    }))
+    status = {
+        "project": "demo",
+        "run_id": "run-a",
+        "attempt_id": "attempt-001",
+        "backend": "sensecore",
+        "backend_job_id": "exact-job-42",
+        "state": "RUNNING",
+    }
+    (run_dir / "status.json").write_text(json.dumps(status))
+    (attempt_dir / "status.json").write_text(json.dumps(status))
+    (attempt_dir / "backend.json").write_text(json.dumps({
+        "attempt_id": "attempt-001",
+        "backend": "sensecore",
+        "backend_job_id": "exact-job-42",
+    }))
+    (attempt_dir / "submission.json").write_text(json.dumps({
+        "attempt_id": "attempt-001",
+        "backend": "sensecore",
+        "backend_job_id": "exact-job-42",
+        "state": "SUBMITTED",
+        "submission_token": "a" * 32,
+    }))
+
+    with TestClient(app) as client:
+        refreshed = client.post(
+            "/api/terminal/refresh", json={"project": "demo"},
+        ).json()
+        rows = [
+            item for item in refreshed["runs"]["demo"]
+            if item["run_id"] == "run-a"
+        ]
+        assert len(rows) == 1
+        assert rows[0]["scheduler_state"] == "RUNNING"
+        assert rows[0]["provenance"].get("authored_only") is None
+        assert rows[0]["attempts"] == [{
+            "attempt_id": "attempt-001",
+            "state": "RUNNING",
+            "backend": "sensecore",
+            "backend_job_id": "exact-job-42",
+            "decision": {},
+            "has_submission": True,
+        }]
+
+        run_operations = client.get("/api/operations", params={
+            "project": "demo", "scope_type": "run", "object_id": "run-a",
+        }).json()
+        submit = next(
+            item for item in run_operations
+            if item["operation"]["operation_id"] == "run.submit"
+        )
+        assert submit["status"] == "BLOCKED"
+
+        attempt_operations = client.get("/api/operations", params={
+            "project": "demo", "scope_type": "attempt",
+            "object_id": "run-a::attempt-001",
+        }).json()
+        cancel = next(
+            item for item in attempt_operations
+            if item["operation"]["operation_id"] == "attempt.cancel"
+        )
+        assert cancel["status"] == "AVAILABLE"
 
 
 def test_reuse_only_membership_does_not_create_authored_run_placeholder():

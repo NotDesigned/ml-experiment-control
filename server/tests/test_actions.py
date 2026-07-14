@@ -584,6 +584,93 @@ def test_submit_plan_gates_and_executes_once(tmp_path):
     assert len(submit_calls) == 1
 
 
+def test_submit_plan_blocks_existing_canonical_manifest_that_differs_from_preview(
+    tmp_path,
+):
+    project, campaign = controller_project(tmp_path)
+    actual = (
+        project.base_dir / "outputs" / "runs" / "demo-campaign" / "run-a"
+        / "manifest.yaml"
+    )
+    actual.parent.mkdir(parents=True)
+    actual.write_text(yaml.safe_dump({
+        "identity_version": 2,
+        "run_id": "run-a",
+        "source_id": "git:abc",
+        "image_id": "sha256:image",
+        "git_commit": "older-controller-revision",
+    }))
+    service = ActionService(
+        ActionStore(tmp_path / "actions"), ActionRuntimeConfig(), FakeController(),
+    )
+
+    plan = service.prepare(
+        OperationScope(project="demo", scope_type="run", object_id="run-a"),
+        project,
+        operation_intent("SUBMIT_RUN", submit_draft(campaign)),
+    )
+
+    gate = next(
+        item for item in plan["gates"]
+        if item["name"] == "execution_manifest_match"
+    )
+    assert gate["status"] == "FAIL"
+    assert "conflicts with preview" in gate["detail"]
+    assert plan["ready"] is False
+
+
+def test_submit_execute_fails_closed_when_canonical_manifest_appears_after_prepare(
+    tmp_path,
+):
+    project, campaign = controller_project(tmp_path)
+    runner = FakeController()
+    service = ActionService(
+        ActionStore(tmp_path / "actions"),
+        ActionRuntimeConfig(allow_scheduler_mutations=True), runner,
+        actor_provider=lambda: "trusted:pi",
+    )
+    plan = service.prepare(
+        OperationScope(project="demo", scope_type="run", object_id="run-a"),
+        project,
+        operation_intent("SUBMIT_RUN", submit_draft(campaign)),
+    )
+    service.authorize(plan["action_id"], "reviewed")
+    actual = Path(plan["execution_manifest_path"])
+    actual.parent.mkdir(parents=True)
+    actual.write_text("run_id: run-a\ngit_commit: changed-after-review\n")
+
+    with pytest.raises(ActionError, match="canonical execution manifest changed"):
+        service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
+    assert not [
+        item for item in runner.calls
+        if item[3] == "submit" and "--dry-run" not in item
+    ]
+
+
+def test_submit_execute_fails_closed_when_campaign_changes_after_prepare(tmp_path):
+    project, campaign = controller_project(tmp_path)
+    runner = FakeController()
+    service = ActionService(
+        ActionStore(tmp_path / "actions"),
+        ActionRuntimeConfig(allow_scheduler_mutations=True), runner,
+        actor_provider=lambda: "trusted:pi",
+    )
+    plan = service.prepare(
+        OperationScope(project="demo", scope_type="run", object_id="run-a"),
+        project,
+        operation_intent("SUBMIT_RUN", submit_draft(campaign)),
+    )
+    service.authorize(plan["action_id"], "reviewed")
+    campaign.write_text(campaign.read_text() + "# changed after review\n")
+
+    with pytest.raises(ActionError, match="campaign changed"):
+        service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
+    assert not [
+        item for item in runner.calls
+        if item[3] == "submit" and "--dry-run" not in item
+    ]
+
+
 def test_submit_timeout_requires_reconciliation_and_never_retries(tmp_path):
     project, campaign = controller_project(tmp_path)
     scope = OperationScope(project="demo", scope_type="run", object_id="run-a")

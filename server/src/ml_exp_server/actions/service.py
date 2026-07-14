@@ -47,6 +47,28 @@ def _file_sha(path: Path) -> str | None:
     return _sha256(path.read_bytes()) if path.is_file() else None
 
 
+def _manifest_identity_digest(payload: dict[str, Any]) -> str:
+    """Digest every execution-relevant manifest field except creation time."""
+    identity = {key: value for key, value in payload.items() if key != "created_at"}
+    encoded = json.dumps(
+        identity, sort_keys=True, separators=(",", ":"), default=str,
+    ).encode("utf-8")
+    return _sha256(encoded)
+
+
+def _canonical_manifest_path(
+    campaign: dict[str, Any], *, cwd: Path, run_id: str,
+) -> Path | None:
+    local_root = campaign.get("local_root")
+    campaign_name = campaign.get("campaign")
+    if not local_root or not campaign_name:
+        return None
+    root = Path(str(local_root))
+    if not root.is_absolute():
+        root = cwd / root
+    return (root / str(campaign_name) / run_id / "manifest.yaml").resolve()
+
+
 def _inside(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -504,6 +526,8 @@ class ActionService:
         command, cwd = call.argv, call.cwd
         preview_payload: dict[str, Any] | None = None
         observed: dict[str, Any] = {}
+        execution_manifest_path: Path | None = None
+        execution_manifest_sha256: str | None = None
         if actual_verb == "submit":
             raw = _parse_mapping(campaign.read_text(encoding="utf-8"))
             preview_campaign = deepcopy(raw)
@@ -531,6 +555,27 @@ class ActionService:
                 loaded = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     manifest = loaded
+            preview_identity = _manifest_identity_digest(manifest)
+            execution_manifest_path = _canonical_manifest_path(
+                raw, cwd=cwd, run_id=run_id,
+            )
+            existing_manifest: dict[str, Any] | None = None
+            if execution_manifest_path is not None and execution_manifest_path.is_file():
+                loaded = yaml.safe_load(
+                    execution_manifest_path.read_text(encoding="utf-8")
+                )
+                if isinstance(loaded, dict):
+                    existing_manifest = loaded
+                execution_manifest_sha256 = _file_sha(execution_manifest_path)
+            execution_identity_matches = (
+                execution_manifest_path is not None
+                and (
+                    existing_manifest is None
+                    and execution_manifest_sha256 is None
+                    or existing_manifest is not None
+                    and _manifest_identity_digest(existing_manifest) == preview_identity
+                )
+            )
             identity_ok = all(manifest.get(key) for key in ("run_id", "source_id", "image_id"))
             storage_ok = isinstance(manifest.get("storage"), dict) and bool(manifest["storage"].get("run_dir"))
             run_identity_complete = all(
@@ -547,6 +592,14 @@ class ActionService:
                       "Run manifest v2 must freeze backend, resources, full storage, and rendered command"),
                 _gate("asset_identity_frozen", asset_identity_frozen,
                       "Run manifest must freeze model/dataset/checkpoint asset identities"),
+                _gate(
+                    "execution_manifest_match", execution_identity_matches,
+                    "no canonical execution manifest exists yet"
+                    if execution_manifest_sha256 is None
+                    else "canonical execution manifest identity matches preview"
+                    if execution_identity_matches
+                    else "canonical execution manifest identity conflicts with preview",
+                ),
             ])
             if operation == "RUN_EVALUATION":
                 evaluation = manifest.get("evaluation")
@@ -647,6 +700,11 @@ class ActionService:
             "preflight_summary": preflight_summary,
             "command_preview": _redact(command),
             "cwd": str(cwd),
+            "execution_campaign_sha256": _file_sha(campaign),
+            "execution_manifest_path": (
+                str(execution_manifest_path) if execution_manifest_path is not None else None
+            ),
+            "execution_manifest_sha256": execution_manifest_sha256,
         })
         if actual_verb == "submit":
             verification = self.controller.build(
@@ -729,6 +787,18 @@ class ActionService:
             raise ActionError("project writes are disabled by daemon policy")
         if not project_write and not self.config.allow_scheduler_mutations:
             raise ActionError("scheduler mutations are disabled by daemon policy")
+        if operation in {"SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION"}:
+            campaign_path = Path(str(snapshot.get("campaign_file") or ""))
+            if _file_sha(campaign_path) != snapshot.get("execution_campaign_sha256"):
+                raise ActionError(
+                    "campaign changed after Action preparation; prepare a fresh action"
+                )
+            manifest_path = Path(str(snapshot.get("execution_manifest_path") or ""))
+            if _file_sha(manifest_path) != snapshot.get("execution_manifest_sha256"):
+                raise ActionError(
+                    "canonical execution manifest changed after Action preparation; "
+                    "prepare a fresh action"
+                )
         try:
             self.store.claim_execution(action_id)
         except RuntimeError as exc:

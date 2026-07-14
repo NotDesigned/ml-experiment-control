@@ -15,6 +15,7 @@ holds newer science metrics. Never collapse them into one state.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -85,6 +86,10 @@ _CHECKPOINT_KEYS = (
     "checkpoint_exposure",
     "checkpoint_exposure_minutes",
 )
+_WANDB_INIT_PATTERN = re.compile(
+    r"wandb initialized:\s*(https?://[^\s)>\]\"']+)", re.IGNORECASE
+)
+_WANDB_LOG_SCAN_LIMIT = 8 * 1024 * 1024
 
 
 def parse_iso_ts(value: Any) -> Optional[float]:
@@ -115,6 +120,120 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     except (yaml.YAMLError, OSError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _wandb_url_in_text(value: str) -> Optional[str]:
+    match = _WANDB_INIT_PATTERN.search(value)
+    return match.group(1) if match else None
+
+
+def _wandb_url_in_file(path: Path) -> Optional[str]:
+    if not path.is_file():
+        return None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            return _wandb_url_in_text(handle.read(_WANDB_LOG_SCAN_LIMIT))
+    except OSError:
+        return None
+
+
+def _wandb_provenance(
+    run_dir: Path,
+    attempt_dir: Optional[Path],
+    manifest: dict[str, Any],
+    collection: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    """Resolve requested W&B identity and observed runtime URL from durable evidence."""
+    resolved = manifest.get("resolved_config")
+    resolved = resolved if isinstance(resolved, dict) else {}
+    requested = _truthy(resolved.get("use_wandb"))
+    result: dict[str, Any] = {
+        "requested": requested,
+        "enabled": requested,
+        "initialized": False,
+        "entity": resolved.get("wandb_entity"),
+        "project": resolved.get("wandb_project"),
+        "run_id": resolved.get("wandb_run_id") or manifest.get("run_id"),
+        "name": resolved.get("wandb_run_name") or manifest.get("run_id"),
+    }
+
+    attempt_collection = (
+        _load_json(attempt_dir / "collection.json") if attempt_dir is not None else {}
+    )
+    for source, payload in (
+        ("attempt.collection.wandb", attempt_collection.get("wandb")),
+        ("run.collection.wandb", collection.get("wandb")),
+    ):
+        observed = payload if isinstance(payload, dict) else {}
+        url = observed.get("url")
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            result.update({
+                "initialized": bool(observed.get("initialized", True)),
+                "url": url,
+                "evidence_source": observed.get("evidence_source") or source,
+            })
+            return result
+
+    roots = [path for path in (attempt_dir, run_dir) if path is not None]
+    structured_candidates = []
+    log_candidates = []
+    for root in roots:
+        structured_candidates.extend((
+            root / "wandb.json",
+            root / "collected_run" / "wandb.json",
+        ))
+        log_candidates.extend((
+            root / "stdout.log", root / "stderr.log",
+            root / "collected_run" / "stdout.log",
+            root / "collected_run" / "stderr.log",
+        ))
+
+    for path in structured_candidates:
+        observed = _load_json(path)
+        url = observed.get("url") or observed.get("run_url")
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            result.update({
+                "initialized": bool(observed.get("initialized", True)),
+                "url": url,
+                "evidence_source": str(path),
+            })
+            for key in ("entity", "project", "run_id", "name"):
+                if observed.get(key) is not None:
+                    result[key] = observed[key]
+            return result
+
+    for path in log_candidates:
+        url = _wandb_url_in_file(path)
+        if url:
+            result.update({
+                "initialized": True,
+                "url": url,
+                "evidence_source": str(path),
+            })
+            return result
+
+    process = collection.get("process_evidence")
+    process = process if isinstance(process, dict) else {}
+    for stream in ("stdout_tail", "stderr_tail"):
+        lines = process.get(stream)
+        if not isinstance(lines, list):
+            continue
+        url = _wandb_url_in_text("\n".join(str(item) for item in lines))
+        if url:
+            result.update({
+                "initialized": True,
+                "url": url,
+                "evidence_source": f"collection.process_evidence.{stream}",
+            })
+            return result
+
+    return result if requested else None
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -623,6 +742,9 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
         provenance["resolved_config_excerpt"] = {
             k: resolved[k] for k in _CONFIG_EXCERPT_KEYS if k in resolved
         }
+    wandb = _wandb_provenance(run_dir, attempt_dir, manifest, collection)
+    if wandb is not None:
+        provenance["wandb"] = wandb
 
     contract = manifest.get("research_contract")
     if not isinstance(contract, dict):
@@ -715,17 +837,20 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
 
 
 def discover_run_dirs(root: Path) -> list[Path]:
-    """Find run directories under a run root (layout: <root>/<campaign>/<run_id>)."""
+    """Find run directories below a root, including instance-scoped layouts.
+
+    Controllers may insert durable namespaces such as
+    ``state/<instance>/<campaign>/<run>`` below the Project run root.  Stop
+    descending as soon as a Run is found so mirrored ``collected_run`` trees
+    cannot become duplicate Runs.
+    """
     if not root.is_dir():
         return []
-    found = []
-    for campaign_dir in sorted(root.iterdir()):
-        if not campaign_dir.is_dir():
-            continue
-        if is_run_dir(campaign_dir):  # run dir directly under root
-            found.append(campaign_dir)
-            continue
-        for run_dir in sorted(campaign_dir.iterdir()):
-            if run_dir.is_dir() and is_run_dir(run_dir):
-                found.append(run_dir)
-    return found
+    found: list[Path] = []
+    for directory, children, _ in os.walk(root):
+        path = Path(directory)
+        children.sort()
+        if is_run_dir(path):
+            found.append(path)
+            children[:] = []
+    return sorted(found)
