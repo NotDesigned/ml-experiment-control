@@ -126,6 +126,8 @@ def test_running_attempt_keeps_unclassified_decision_as_non_applicable_diagnosti
         "attempt_state": "RUNNING",
         "observed_at": 111.0,
         "applicability": "NON_APPLICABLE",
+        "source_binding": "EXACT_ATTEMPT",
+        "evidence_source": None,
         "reason": (
             "decision metadata is contextual only and is not exact, fresh, "
             "terminal failure evidence"
@@ -167,6 +169,59 @@ def test_failure_evidence_requires_exact_fresh_terminal_attempt():
     )
     assert running["failure_summary"] is None
     assert running["diagnostic_evidence"][0]["applicability"] == "NON_APPLICABLE"
+
+
+def test_failure_evidence_requires_actual_start_not_manifest_creation_time():
+    assessment = attempt_failure_evidence_assessment(
+        {"attempt_id": "a1", "process_state": "FAILED"},
+        attempt_id="a1", attempt_state="FAILED",
+        attempt_started_at=None, observed_at=101.0,
+    )
+    assert assessment["failure_summary"] is None
+    assert assessment["diagnostic_evidence"][0]["applicability"] \
+        == "UNKNOWN_APPLICABILITY"
+    assert "actual Attempt start" in assessment["diagnostic_evidence"][0]["reason"]
+
+
+def test_failure_domains_use_independent_identity_and_observation_times():
+    collection = {
+        "attempt_id": "a1", "process_state": "FAILED",
+        "scheduler_state": "TIMEOUT",
+        "process_evidence": {"stderr_tail": ["ModuleNotFoundError: pkg"]},
+    }
+    scheduler_fresh = attempt_failure_evidence_assessment(
+        collection, attempt_id="a1", attempt_state="FAILED",
+        attempt_started_at=100.0,
+        domain_observed_at={"process": 99.0, "scheduler": 101.0},
+        domain_attempt_ids={"process": "a1", "scheduler": "a1"},
+    )
+    assert scheduler_fresh["failure_summary"]["failure_domain"] == "scheduler"
+    assert scheduler_fresh["failure_summary"]["failure_signature"] \
+        == "SCHEDULER_TERMINAL_FAILURE"
+    assert scheduler_fresh["diagnostic_evidence"][0]["failure_domain"] == "process"
+    assert scheduler_fresh["diagnostic_evidence"][0]["applicability"] == "STALE"
+
+    process_fresh = attempt_failure_evidence_assessment(
+        collection, attempt_id="a1", attempt_state="FAILED",
+        attempt_started_at=100.0,
+        domain_observed_at={"process": 101.0, "scheduler": 99.0},
+        domain_attempt_ids={"process": "a1", "scheduler": "a1"},
+    )
+    assert process_fresh["failure_summary"]["failure_domain"] == "process"
+    assert process_fresh["failure_summary"]["failure_signature"] \
+        == "MISSING_PYTHON_MODULE"
+    assert process_fresh["diagnostic_evidence"][0]["failure_domain"] == "scheduler"
+    assert process_fresh["diagnostic_evidence"][0]["applicability"] == "STALE"
+
+    wrong_scheduler = attempt_failure_evidence_assessment(
+        {"attempt_id": "a1", "scheduler_state": "TIMEOUT"},
+        attempt_id="a1", attempt_state="FAILED", attempt_started_at=100.0,
+        domain_observed_at={"scheduler": 101.0},
+        domain_attempt_ids={"scheduler": "old"},
+    )
+    assert wrong_scheduler["failure_summary"] is None
+    assert wrong_scheduler["diagnostic_evidence"][0]["applicability"] \
+        == "ATTEMPT_MISMATCH"
 
 
 @pytest.mark.parametrize(
@@ -289,6 +344,33 @@ def test_object_show_plain_object():
     assert shown["evidence_digest"].startswith("sha256:")
 
 
+def test_object_show_run_does_not_duplicate_raw_failure_class():
+    target = scope()
+    row = SimpleNamespace(
+        run_id="run-a",
+        decision={"action": "OBSERVE", "failure_class": "unknown"},
+    )
+    app = ExperimentServerApplication(SimpleNamespace())
+    app.resolve_scope = lambda *args: (
+        target, SimpleNamespace(base_dir=None, authored_file=None), row,
+    )
+    app.row_evidence = lambda value: {
+        "run_id": value.run_id,
+        "decision": app._operational_decision(value.decision),
+    }
+    app.bounded_evidence = lambda *args: {
+        "failure_assessment": {
+            "failure_summary": None,
+            "diagnostic_evidence": [{"failure_class": "unknown"}],
+        },
+    }
+
+    shown = app.object_show("demo", OperationScopeType.RUN, "run-a")
+
+    assert shown["object"]["decision"] == {"action": "OBSERVE"}
+    assert shown["evidence"]["failure_assessment"]["diagnostic_evidence"]
+
+
 def test_campaign_list_status_and_status_error(monkeypatch):
     configured = SimpleNamespace(campaigns=[SimpleNamespace(name="one")])
     app = application(project=lambda name: configured, index=object())
@@ -399,7 +481,7 @@ def test_attempt_local_read_models_cover_files_fallbacks_and_event_dedup(tmp_pat
     )
     attempt = SimpleNamespace(attempt_id="a1")
     target = scope(OperationScopeType.ATTEMPT, "run-a::a1")
-    app = application()
+    app = application(index=SimpleNamespace())
     app._attempt_context = lambda *args: (target, object(), row, attempt, attempt_dir)
     logs = app.attempt_logs("demo", "run-a::a1", lines=1)
     assert logs["streams"]["stdout"]["mode"] == "local_file"
@@ -499,6 +581,76 @@ def test_attempt_agent_evidence_marks_diagnostics_non_applicable(tmp_path):
     assert assessment["diagnostic_evidence"][0]["applicability"] == "NON_APPLICABLE"
     assert "MUST NOT" in assessment["agent_instruction"]
     assert "retry" in assessment["agent_instruction"]
+
+
+def test_terminal_local_fallback_uses_domain_records_for_applicability(tmp_path):
+    attempt_dir = tmp_path / "attempts/a1"
+    attempt_dir.mkdir(parents=True)
+    (attempt_dir / "attempt.json").write_text(json.dumps({
+        "attempt_id": "a1", "state": "FAILED", "failure_class": "resource",
+        "started_at": "2026-01-01T00:00:00Z",
+        "finished_at": "2026-01-01T00:01:00Z",
+    }))
+    (tmp_path / "status.json").write_text(json.dumps({
+        "attempt_id": "a1", "state": "FAILED",
+        "observed_at": "2026-01-01T00:01:01Z",
+    }))
+    row = SimpleNamespace(run_id="run-a", run_dir=str(tmp_path))
+    attempt = Dump(
+        attempt_id="a1", state="FAILED", backend_job_id=None, decision={},
+    )
+    target = scope(OperationScopeType.ATTEMPT, "run-a::a1")
+    app = application()
+    app._attempt_context = lambda *args: (target, object(), row, attempt, attempt_dir)
+
+    shown = app.attempt_show("demo", "run-a::a1")
+
+    failure = shown["failure_summary"]
+    assert failure["failure_domain"] == "process"
+    assert failure["failure_class"] == "resource"
+    assert failure["applicability"] == "APPLICABLE"
+    assert failure["evidence_source"].endswith("attempts/a1/attempt.json")
+
+
+def test_run_agent_evidence_sanitizes_raw_failure_class_and_uses_assessment(tmp_path):
+    attempt_dir = tmp_path / "attempts/a1"
+    attempt_dir.mkdir(parents=True)
+    (tmp_path / "collection.json").write_text(json.dumps({
+        "attempt_id": "a1", "scheduler_state": "RUNNING",
+        "process_state": "RUNNING", "model_state": "OBSERVED",
+    }))
+    (tmp_path / "decision.json").write_text(json.dumps({
+        "action": "OBSERVE", "failure_class": "unknown",
+        "reason": "run is nonterminal",
+    }))
+    attempt = Dump(
+        attempt_id="a1", state="RUNNING",
+        decision={"action": "OBSERVE", "failure_class": "unknown"},
+    )
+    row = SimpleNamespace(
+        run_id="run-a", run_dir=str(tmp_path), attempts=[attempt],
+        decision={"action": "OBSERVE", "failure_class": "unknown",
+                  "reason": "run is nonterminal"},
+    )
+    app = application(index=SimpleNamespace())
+    app.row_evidence = lambda value: {
+        "run_id": value.run_id,
+        "decision": app._operational_decision(value.decision),
+    }
+    app.campaign_contexts = lambda *args: []
+
+    evidence = app.bounded_evidence(
+        scope(OperationScopeType.RUN, "run-a"),
+        SimpleNamespace(project="demo"), row,
+    )
+
+    assert "failure_class" not in evidence["run"]["decision"]
+    assessment = evidence["failure_assessment"]
+    assert assessment["failure_summary"] is None
+    assert assessment["diagnostic_evidence"][0]["failure_class"] == "unknown"
+    assert assessment["diagnostic_evidence"][0]["source_binding"] \
+        == "BOUND_BY_EXACT_ROOT_COLLECTION"
+    assert "MUST NOT" in assessment["agent_instruction"]
 
 
 def test_metric_payload_one_point_missing_key_and_invalid_limit():

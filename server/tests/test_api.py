@@ -97,7 +97,13 @@ def test_tui_session_endpoints_are_server_owned(client):
     }
     show = bundle.json()["show"]
     assert show["failure_summary"] is None
-    assert isinstance(show["diagnostic_evidence"], list)
+    assert show["diagnostic_evidence"]
+    diagnostic = show["diagnostic_evidence"][0]
+    assert diagnostic["kind"] == "preliminary_failure_classification"
+    assert diagnostic["failure_class"] == "unknown"
+    assert diagnostic["applicability"] == "NON_APPLICABLE"
+    assert diagnostic["source_binding"] == "BOUND_BY_EXACT_ROOT_COLLECTION"
+    assert diagnostic["evidence_source"].endswith("/decision.json")
     checkpoint_gate = next(
         gate for gate in bundle.json()["validation"]["gates"]
         if gate["id"] == "attempt.checkpoint_evidence"

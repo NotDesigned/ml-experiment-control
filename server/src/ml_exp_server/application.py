@@ -183,8 +183,13 @@ def attempt_failure_evidence_assessment(
     attempt_id: str,
     attempt_state: str | None,
     attempt_started_at: Any,
-    observed_at: Any,
+    observed_at: Any = None,
+    domain_observed_at: dict[str, Any] | None = None,
+    domain_attempt_ids: dict[str, Any] | None = None,
+    domain_evidence_sources: dict[str, str | None] | None = None,
     decision_observed_at: Any = None,
+    decision_source_binding: str = "EXACT_ATTEMPT",
+    decision_evidence_source: str | None = None,
 ) -> dict[str, Any]:
     """Separate applicable terminal failure evidence from diagnostic signals.
 
@@ -194,53 +199,77 @@ def attempt_failure_evidence_assessment(
     remain visible as explicitly non-applicable diagnostics.
     """
     expected_attempt_id = str(attempt_id)
-    observed_attempt_id = str(collection.get("attempt_id") or "") or None
     state = str(attempt_state or "UNKNOWN").upper()
     process_state = str(collection.get("process_state") or "UNKNOWN").upper()
     scheduler_state = str(collection.get("scheduler_state") or "UNKNOWN").upper()
     worker_state = str(collection.get("worker_state") or "UNKNOWN").upper()
     started_ts = _evidence_timestamp(attempt_started_at)
-    observed_ts = _evidence_timestamp(observed_at)
-
-    identity_matches = observed_attempt_id == expected_attempt_id
-    timestamp_known = started_ts is not None and observed_ts is not None
-    fresh = bool(timestamp_known and observed_ts >= started_ts)
     terminal_failure = state in _FAILED_ATTEMPT_STATES
+    observed_by_domain = dict(domain_observed_at or {})
+    identities_by_domain = dict(domain_attempt_ids or {})
+    sources_by_domain = dict(domain_evidence_sources or {})
+    for domain in ("process", "scheduler", "worker"):
+        observed_by_domain.setdefault(domain, observed_at)
+        identities_by_domain.setdefault(domain, collection.get("attempt_id"))
 
-    if not identity_matches:
-        applicability = "ATTEMPT_MISMATCH"
-        applicability_reason = (
-            f"evidence names {observed_attempt_id or 'no Attempt'} instead of "
-            f"{expected_attempt_id}"
+    def applicability_for(domain: str, *, domain_terminal: bool) \
+            -> tuple[str, str, str | None, float | None]:
+        observed_id = str(identities_by_domain.get(domain) or "") or None
+        observed_ts = _evidence_timestamp(observed_by_domain.get(domain))
+        if observed_id != expected_attempt_id:
+            return (
+                "ATTEMPT_MISMATCH",
+                f"{domain} evidence names {observed_id or 'no Attempt'} instead of "
+                f"{expected_attempt_id}", observed_id, observed_ts,
+            )
+        if started_ts is None or observed_ts is None:
+            return (
+                "UNKNOWN_APPLICABILITY",
+                f"actual Attempt start or {domain} observation time is unavailable",
+                observed_id, observed_ts,
+            )
+        if observed_ts < started_ts:
+            return (
+                "STALE", f"{domain} evidence predates the exact Attempt start",
+                observed_id, observed_ts,
+            )
+        if not terminal_failure:
+            return (
+                "NON_APPLICABLE",
+                f"exact Attempt state {state} is not a failed terminal state",
+                observed_id, observed_ts,
+            )
+        if not domain_terminal:
+            return (
+                "NON_APPLICABLE", f"{domain} layer state is not terminal failed",
+                observed_id, observed_ts,
+            )
+        return (
+            "APPLICABLE", f"exact, fresh terminal {domain} evidence",
+            observed_id, observed_ts,
         )
-    elif not timestamp_known:
-        applicability = "UNKNOWN_APPLICABILITY"
-        applicability_reason = "Attempt start or evidence observation time is unavailable"
-    elif not fresh:
-        applicability = "STALE"
-        applicability_reason = "evidence predates the exact Attempt start"
-    elif not terminal_failure:
-        applicability = "NON_APPLICABLE"
-        applicability_reason = f"exact Attempt state {state} is not a failed terminal state"
-    else:
-        applicability = "APPLICABLE"
-        applicability_reason = "exact, fresh evidence for a failed terminal Attempt"
 
     failure_summary: dict[str, Any] | None = None
     diagnostics: list[dict[str, Any]] = []
     raw_process = _raw_process_failure_summary(collection)
 
-    if process_state in _FAILED_PROCESS_STATES:
-        candidate = raw_process or {
+    candidates: list[tuple[str, dict[str, Any], bool]] = []
+    process_terminal = process_state in _FAILED_PROCESS_STATES
+    if process_terminal or raw_process is not None:
+        process_candidate = raw_process or {
             "failure_signature": "UNCLASSIFIED_PROCESS_FAILURE",
             "failure_class": _normalized_failure_class(collection.get("failure_class"))
             or "unknown",
             "phase": "unknown",
             "source": "collection.process_evidence",
         }
-        candidate = {**candidate, "failure_domain": "process"}
-    elif scheduler_state in _FAILED_SCHEDULER_STATES:
-        candidate = {
+        candidates.append((
+            "process", {**process_candidate, "failure_domain": "process"},
+            process_terminal,
+        ))
+    scheduler_terminal = scheduler_state in _FAILED_SCHEDULER_STATES
+    if scheduler_terminal:
+        candidates.append(("scheduler", {
             "failure_signature": "SCHEDULER_TERMINAL_FAILURE",
             "failure_class": _normalized_failure_class(collection.get("failure_class"))
             or "scheduler",
@@ -248,9 +277,10 @@ def attempt_failure_evidence_assessment(
             "phase": "unknown",
             "source": "collection.scheduler_state",
             "scheduler_state": scheduler_state,
-        }
-    elif worker_state in _FAILED_WORKER_STATES:
-        candidate = {
+        }, True))
+    worker_terminal = worker_state in _FAILED_WORKER_STATES
+    if worker_terminal:
+        candidates.append(("worker", {
             "failure_signature": "WORKER_TERMINAL_FAILURE",
             "failure_class": _normalized_failure_class(collection.get("failure_class"))
             or "worker",
@@ -258,35 +288,41 @@ def attempt_failure_evidence_assessment(
             "phase": "unknown",
             "source": "collection.worker_state",
             "worker_state": worker_state,
-        }
-    else:
-        # A recognizable log signature while the process is still RUNNING is
-        # useful for inspection, but cannot become the Attempt's failure.
-        candidate = ({**raw_process, "failure_domain": "process"}
-                     if raw_process is not None else None)
+        }, True))
 
-    if candidate is not None:
-        if applicability == "APPLICABLE" and (
-            process_state in _FAILED_PROCESS_STATES
-            or scheduler_state in _FAILED_SCHEDULER_STATES
-            or worker_state in _FAILED_WORKER_STATES
-        ):
-            failure_summary = {
-                **candidate,
-                "attempt_id": expected_attempt_id,
-                "observed_at": observed_ts,
-                "applicability": "APPLICABLE",
-            }
-        else:
+    assessed: list[tuple[str, dict[str, Any], str, str, str | None, float | None]] = []
+    for domain, candidate, domain_terminal in candidates:
+        applicability, reason, observed_id, observed_ts = applicability_for(
+            domain, domain_terminal=domain_terminal,
+        )
+        assessed.append((
+            domain, candidate, applicability, reason, observed_id, observed_ts,
+        ))
+
+    selected = next((item for item in assessed if item[2] == "APPLICABLE"), None)
+    if selected is not None:
+        _, candidate, _, _, _, observed_ts = selected
+        failure_summary = {
+            **candidate,
+            "attempt_id": expected_attempt_id,
+            "observed_at": observed_ts,
+            "applicability": "APPLICABLE",
+            "evidence_source": sources_by_domain.get(selected[0]),
+        }
+    for domain, candidate, applicability, reason, observed_id, observed_ts in assessed:
+        if selected is not None and candidate is selected[1]:
+            continue
+        if applicability != "APPLICABLE":
             diagnostics.append({
                 "kind": "failure_signal",
                 **candidate,
-                "attempt_id": observed_attempt_id,
+                "attempt_id": observed_id,
                 "expected_attempt_id": expected_attempt_id,
                 "attempt_state": state,
                 "observed_at": observed_ts,
                 "applicability": applicability,
-                "reason": applicability_reason,
+                "evidence_source": sources_by_domain.get(domain),
+                "reason": reason,
             })
 
     decision_class = (
@@ -302,6 +338,8 @@ def attempt_failure_evidence_assessment(
             "attempt_state": state,
             "observed_at": _evidence_timestamp(decision_observed_at),
             "applicability": "NON_APPLICABLE",
+            "source_binding": decision_source_binding,
+            "evidence_source": decision_evidence_source,
             "reason": (
                 "decision metadata is contextual only and is not exact, fresh, "
                 "terminal failure evidence"
@@ -403,6 +441,16 @@ class ExperimentServerApplication:
         return OperationScope(project=project.project, scope_type=kind, object_id=object_id), project, resolved
 
     @staticmethod
+    def _operational_decision(value: Any) -> dict[str, Any]:
+        value = value if isinstance(value, dict) else {}
+        return {
+            key: value[key] for key in (
+                "action", "reason", "resume_checkpoint", "retries_allowed",
+                "retries_used",
+            ) if value.get(key) is not None
+        }
+
+    @staticmethod
     def row_evidence(row: Any) -> dict[str, Any]:
         return compact_evidence({
             "run_id": row.run_id, "campaign": row.campaign, "role": row.role,
@@ -416,7 +464,8 @@ class ExperimentServerApplication:
             "eval_variants": row.eval_variants,
             "canonical_eval_variant_id": row.canonical_eval_variant_id,
             "checkpoint": row.checkpoint, "artifacts": row.artifacts,
-            "decision": row.decision, "provenance": row.provenance,
+            "decision": ExperimentServerApplication._operational_decision(row.decision),
+            "provenance": row.provenance,
             "warnings": row.warnings, "evidence_conflicts": row.evidence_conflicts,
         })
 
@@ -486,7 +535,8 @@ class ExperimentServerApplication:
                 "runs": [{
                     "run_id": row.run_id, "campaign": row.campaign, "role": row.role,
                     "campaign_relationship": row.campaign_binding.relationship.value,
-                    "scheduler_state": row.scheduler_state, "decision": row.decision,
+                    "scheduler_state": row.scheduler_state,
+                    "decision": self._operational_decision(row.decision),
                     "stale_layers": [
                         name for name in ("scheduler", "worker", "process", "model", "evaluation")
                         if getattr(row.evidence, name).stale
@@ -509,11 +559,31 @@ class ExperimentServerApplication:
                     "lifecycle": campaign_snapshot(index, project, scope.object_id),
                     "runs": [self.row_evidence(row) for row in rows]}
         if scope.scope_type == OperationScopeType.RUN:
+            current_id = preferred_attempt_id(Path(resolved.run_dir))
+            current_attempt = next(
+                (item for item in resolved.attempts if item.attempt_id == current_id), None,
+            )
+            failure_assessment = {
+                "failure_summary": None, "diagnostic_evidence": [],
+            }
+            if current_attempt is not None:
+                _, failure_assessment = self._attempt_failure_assessment(
+                    resolved, current_attempt,
+                    Path(resolved.run_dir) / "attempts" / current_attempt.attempt_id,
+                )
             return {"run": self.row_evidence(resolved),
                     "campaign_contexts": self.campaign_contexts(project, resolved),
                     "attempts": [
                         item.model_dump(mode="json") for item in resolved.attempts
-                    ]}
+                    ],
+                    "failure_assessment": {
+                        **failure_assessment,
+                        "agent_instruction": (
+                            "Only failure_summary is applicable failure evidence. "
+                            "diagnostic_evidence is explicitly non-applicable and MUST NOT "
+                            "be treated as failure, retry, or classification evidence."
+                        ),
+                    }}
         run_id, attempt_id = scope.object_id.rsplit("::", 1)
         row = index.get_run(project.project, run_id)
         attempt_dir = Path(row.run_dir) / "attempts" / attempt_id
@@ -812,7 +882,14 @@ class ExperimentServerApplication:
                     object_id: str) -> dict[str, Any]:
         """Return one of the five canonical objects plus its bounded evidence."""
         scope, configured, resolved = self.resolve_scope(project, scope_type, object_id)
-        if hasattr(resolved, "model_dump"):
+        if scope.scope_type == OperationScopeType.RUN and hasattr(resolved, "run_id"):
+            object_payload = self.row_evidence(resolved)
+        elif scope.scope_type == OperationScopeType.ATTEMPT:
+            object_payload = resolved.model_dump(mode="json")
+            object_payload["decision"] = self._operational_decision(
+                object_payload.get("decision"),
+            )
+        elif hasattr(resolved, "model_dump"):
             object_payload = resolved.model_dump(mode="json")
         else:
             object_payload = compact_evidence(resolved)
@@ -1042,17 +1119,62 @@ class ExperimentServerApplication:
     def _attempt_failure_assessment(
         self, row: Any, attempt: Any, attempt_dir: Path,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        run_dir = Path(row.run_dir)
         collection_path = attempt_dir / "collection.json"
+        root_collection_path = run_dir / "collection.json"
         decision_path = attempt_dir / "decision.json"
+        root_decision_path = run_dir / "decision.json"
+        status_path = attempt_dir / "status.json"
+        root_status_path = run_dir / "status.json"
+        attempt_record_path = attempt_dir / "attempt.json"
+
         collection = self._read_mapping(collection_path)
-        decision = self._read_mapping(decision_path)
-        if not collection and (attempt_dir / "attempt.json").is_file():
-            attempt_record = self._read_mapping(attempt_dir / "attempt.json")
+        selected_collection_path = collection_path
+        if not collection:
+            collection = self._read_mapping(root_collection_path)
+            selected_collection_path = root_collection_path
+
+        local_decision = self._read_mapping(decision_path)
+        root_decision = self._read_mapping(root_decision_path)
+        if local_decision:
+            decision = local_decision
+            selected_decision_path = decision_path
+            decision_binding = (
+                "EXACT_ATTEMPT" if decision.get("attempt_id") == attempt.attempt_id
+                else "EXACT_ATTEMPT_PATH_UNSCOPED" if decision.get("attempt_id") is None
+                else "ATTEMPT_MISMATCH"
+            )
+        else:
+            decision = root_decision
+            selected_decision_path = root_decision_path
+            decision_binding = (
+                "EXACT_ROOT_MIRROR" if decision.get("attempt_id") == attempt.attempt_id
+                else "BOUND_BY_EXACT_ROOT_COLLECTION"
+                if decision.get("attempt_id") is None
+                and collection.get("attempt_id") == attempt.attempt_id
+                and selected_collection_path == root_collection_path
+                else "ROOT_MIRROR_UNSCOPED" if decision.get("attempt_id") is None
+                else "ATTEMPT_MISMATCH"
+            )
+
+        status = self._read_mapping(status_path)
+        root_status = self._read_mapping(root_status_path)
+        attempt_record = self._read_mapping(attempt_record_path)
+        domain_observed_at: dict[str, Any] = {}
+        domain_attempt_ids: dict[str, Any] = {}
+        domain_sources: dict[str, str | None] = {}
+
+        def observed(payload: dict[str, Any], path: Path, *keys: str) -> Any:
+            return next(
+                (payload.get(key) for key in keys if payload.get(key) is not None),
+                self._path_mtime(path),
+            )
+
+        if not collection and attempt_record:
             summary = self._read_mapping(attempt_dir / "summary.json")
-            root_status = self._read_mapping(Path(row.run_dir) / "status.json")
             summary_metrics = summary.get("metrics")
             collection = {
-                "attempt_id": attempt.attempt_id,
+                "attempt_id": attempt_record.get("attempt_id"),
                 "scheduler_state": root_status.get("state"),
                 "worker_state": "LOCAL_GPU",
                 "process_state": attempt_record.get("state"),
@@ -1065,32 +1187,89 @@ class ExperimentServerApplication:
                 ),
                 "failure_class": attempt_record.get("failure_class"),
             }
+            process_observed = observed(
+                attempt_record, attempt_record_path,
+                "finished_at", "observed_at", "updated_at",
+            )
+            scheduler_observed = observed(
+                root_status, root_status_path, "observed_at", "updated_at", "finished_at",
+            )
+            domain_observed_at.update({
+                "process": process_observed,
+                "worker": process_observed,
+                "scheduler": scheduler_observed,
+            })
+            domain_attempt_ids.update({
+                "process": attempt_record.get("attempt_id"),
+                "worker": attempt_record.get("attempt_id"),
+                "scheduler": root_status.get("attempt_id"),
+            })
+            domain_sources.update({
+                "process": str(attempt_record_path),
+                "worker": str(attempt_record_path),
+                "scheduler": str(root_status_path),
+            })
+        elif collection:
+            process = collection.get("process_evidence")
+            process = process if isinstance(process, dict) else {}
+            collection_observed = observed(
+                collection, selected_collection_path, "observed_at", "collected_at",
+            )
+            domain_observed_at.update({
+                "process": process.get("observed_at")
+                or collection.get("process_observed_at") or collection_observed,
+                "worker": collection.get("worker_observed_at") or collection_observed,
+                "scheduler": collection.get("scheduler_observed_at") or collection_observed,
+            })
+            domain_attempt_ids.update({
+                domain: collection.get("attempt_id")
+                for domain in ("process", "worker", "scheduler")
+            })
+            domain_sources.update({
+                domain: str(selected_collection_path)
+                for domain in ("process", "worker", "scheduler")
+            })
+            status_candidate = status if status else root_status
+            status_candidate_path = status_path if status else root_status_path
+            if (
+                status_candidate.get("attempt_id") == attempt.attempt_id
+                and status_candidate.get("state") is not None
+            ):
+                domain_observed_at["scheduler"] = observed(
+                    status_candidate, status_candidate_path,
+                    "observed_at", "updated_at", "finished_at",
+                )
+                domain_attempt_ids["scheduler"] = status_candidate.get("attempt_id")
+                domain_sources["scheduler"] = str(status_candidate_path)
 
         manifest, _ = self._manifest_at(
             attempt_dir, ("attempt.yaml", "attempt.json", "control_attempt.yaml"),
         )
-        status = self._read_mapping(attempt_dir / "status.json")
-        process = collection.get("process_evidence")
-        process = process if isinstance(process, dict) else {}
         attempt_started_at = (
-            status.get("started_at") or manifest.get("started_at")
-            or manifest.get("created_at")
-        )
-        observed_at = (
-            process.get("observed_at") or collection.get("observed_at")
-            or collection.get("collected_at") or self._path_mtime(collection_path)
+            status.get("started_at") or attempt_record.get("started_at")
+            or manifest.get("started_at")
+            or (
+                root_status.get("started_at")
+                if root_status.get("attempt_id") == attempt.attempt_id else None
+            )
         )
         decision_observed_at = (
             decision.get("observed_at") or decision.get("created_at")
-            or self._path_mtime(decision_path)
+            or self._path_mtime(selected_decision_path)
         )
         assessment = attempt_failure_evidence_assessment(
             collection, decision,
             attempt_id=attempt.attempt_id,
             attempt_state=attempt.state,
             attempt_started_at=attempt_started_at,
-            observed_at=observed_at,
+            domain_observed_at=domain_observed_at,
+            domain_attempt_ids=domain_attempt_ids,
+            domain_evidence_sources=domain_sources,
             decision_observed_at=decision_observed_at,
+            decision_source_binding=decision_binding,
+            decision_evidence_source=(
+                str(selected_decision_path) if decision else None
+            ),
         )
         return collection, assessment
 
