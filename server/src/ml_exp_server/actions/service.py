@@ -38,6 +38,7 @@ from .store import ActionStore
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def _sha256(data: bytes) -> str:
@@ -204,6 +205,10 @@ class ActionService:
             plan = self._prepare_object_archive(action_id, scope, project, payload)
         elif kind == "OBSERVABILITY_BACKFILL":
             plan = self._prepare_observability_backfill(
+                action_id, scope, project, payload,
+            )
+        elif kind == "REBUILD_LOCAL_EVIDENCE":
+            plan = self._prepare_local_evidence_rebuild(
                 action_id, scope, project, payload,
             )
         else:
@@ -524,6 +529,190 @@ class ActionService:
         )[:500]
         return _gate(name, passed, detail), result
 
+    def _prepare_local_evidence_rebuild(
+        self, action_id: str, scope: OperationScope,
+        project: ResearchProject, intent: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Freeze one pure-local exact-Attempt evidence rebuild command."""
+        if scope.scope_type != OperationScopeType.ATTEMPT:
+            raise ActionError("local evidence rebuild requires exact Attempt scope")
+        if project.controller is None:
+            raise ActionError("project has no controller configuration")
+        spec = _parse_mapping(str(intent.get("draft", "")))
+        run_id, scoped_attempt_id = scope.object_id.rsplit("::", 1)
+        attempt_id = str(spec.get("attempt_id") or "")
+        if (
+            spec.get("project") != project.project
+            or spec.get("run_id") != run_id
+            or attempt_id != scoped_attempt_id
+        ):
+            raise ActionError("local evidence rebuild draft conflicts with exact scope")
+        if not project.controller.capabilities.get("refresh_evidence_local"):
+            raise ActionError(
+                "project controller does not declare refresh_evidence_local"
+            )
+        reason = str(spec.get("reason") or "").strip()
+        if not reason:
+            raise ActionError("local evidence rebuild reason is required")
+        base = (project.base_dir or Path(".")).resolve()
+        campaign = Path(str(spec.get("campaign_file") or ""))
+        if not campaign.is_absolute():
+            campaign = base / campaign
+        campaign = campaign.resolve()
+        if not campaign.is_file() or not _inside(campaign, base / "experiments"):
+            raise ActionError(
+                "campaign_file must exist under the project's experiments directory"
+            )
+
+        run_dir = Path(str(spec.get("run_dir") or ""))
+        local_root = Path(str(spec.get("local_root") or ""))
+        if not run_dir.is_absolute() or not local_root.is_absolute():
+            raise ActionError("local evidence paths must be absolute")
+        run_dir = run_dir.resolve()
+        local_root = local_root.resolve()
+        campaign_payload = _parse_mapping(campaign.read_text(encoding="utf-8"))
+        campaign_id = str(campaign_payload.get("campaign") or "")
+        expected_run_dir = (local_root / campaign_id / run_id).resolve()
+        if (
+            campaign_payload.get("project") != project.project
+            or not campaign_id
+            or run_dir != expected_run_dir
+        ):
+            raise ActionError("local evidence run path conflicts with campaign identity")
+        attempt_dir = run_dir / "attempts" / attempt_id
+        reviewed_inputs = {
+            "inputs/campaign.yml": campaign,
+            "inputs/run/manifest.yaml": run_dir / "manifest.yaml",
+            "inputs/attempt/attempt.yaml": attempt_dir / "attempt.yaml",
+            "inputs/attempt/backend.json": attempt_dir / "backend.json",
+        }
+        collection_preimage = attempt_dir / "collection.json"
+        if collection_preimage.is_file():
+            reviewed_inputs["inputs/attempt/collection.json"] = collection_preimage
+        missing = [
+            str(path) for path in reviewed_inputs.values() if not path.is_file()
+        ]
+        collected_run = attempt_dir / "collected_run"
+        if missing or not collected_run.is_dir() or not any(collected_run.iterdir()):
+            detail = ", ".join(missing) if missing else str(collected_run)
+            raise ActionError(f"required already-local evidence is missing: {detail}")
+        try:
+            controller_snapshot = self.controller.snapshot_execution_bundle(
+                project, self.store.directory(action_id) / "controller-input",
+                reviewed_inputs=reviewed_inputs,
+            )
+        except (OSError, ValueError) as exc:
+            raise ActionError(f"controller snapshot preparation failed: {exc}") from exc
+        snapshot_campaign = "{controller_snapshot}/inputs/campaign.yml"
+        snapshot_identity_root = "{controller_snapshot}/inputs"
+        preview_arguments = [
+            snapshot_campaign, "refresh-evidence-local", "--run", run_id,
+            "--attempt-id", attempt_id, "--local-root", str(local_root),
+            "--identity-root", snapshot_identity_root, "--dry-run",
+        ]
+        try:
+            preview_result = self.controller.execute_snapshot(
+                controller_snapshot, preview_arguments,
+                timeout=self.config.timeout_seconds,
+            )
+        except (OSError, ValueError) as exc:
+            preview_result = {
+                "returncode": 1, "timeout": False, "payload": None,
+                "stdout": "", "stderr": str(exc),
+            }
+        preview_passed = (
+            preview_result.get("returncode") == 0
+            and not preview_result.get("timeout")
+        )
+        preview_gate = _gate(
+            "local_evidence_preview", preview_passed,
+            "private controller preview passed" if preview_passed else str(
+                preview_result.get("stderr") or preview_result.get("stdout")
+                or "private controller preview failed"
+            )[:500],
+        )
+        payload = preview_result.get("payload")
+        record = (
+            payload[0] if isinstance(payload, list) and len(payload) == 1
+            and isinstance(payload[0], dict) else {}
+        )
+        input_digest = str(record.get("input_digest") or "")
+        old_digest = record.get("old_digest")
+        collection = Path(str(record.get("collection_path") or ""))
+        collection_absolute = collection.is_absolute()
+        collection = collection.resolve()
+        identity_exact = (
+            record.get("project") == project.project
+            and record.get("run_id") == run_id
+            and record.get("attempt_id") == attempt_id
+        )
+        target_exact = collection_absolute and collection == collection_preimage.resolve()
+        digest_exact = (
+            _SHA256_DIGEST.fullmatch(input_digest) is not None
+            and (old_digest is None or (
+                isinstance(old_digest, str)
+                and _SHA256_DIGEST.fullmatch(old_digest) is not None
+            ))
+        )
+        local_only = (
+            record.get("local_only") is True
+            and record.get("backend_accessed") is False
+            and record.get("scheduler_accessed") is False
+            and record.get("controller_snapshot_sha256")
+            == controller_snapshot["manifest_sha256"]
+        )
+        gates = [
+            _gate("exact_project", spec.get("project") == project.project,
+                  project.project),
+            _gate("exact_attempt_scope", identity_exact,
+                  f"{project.project}:{run_id}::{attempt_id}"),
+            _gate("controller_capability", True, "refresh_evidence_local"),
+            _gate("local_evidence_preview", preview_gate["status"] != "FAIL",
+                  preview_gate["detail"]),
+            _gate("local_collection_target", target_exact, str(collection)),
+            _gate("local_input_digest", digest_exact, input_digest or "missing"),
+            _gate("no_backend_or_scheduler", local_only,
+                  "controller preview declares local-only execution"),
+            _gate("evidence_reference", bool(intent.get("evidence_digest")),
+                  "intent is bound to exact Attempt evidence"),
+        ]
+        execution_arguments = [
+            snapshot_campaign, "refresh-evidence-local", "--run", run_id,
+            "--attempt-id", attempt_id, "--local-root", str(local_root),
+            "--identity-root", snapshot_identity_root,
+            "--expected-input-digest", input_digest,
+        ]
+        plan = self._base_plan(
+            action_id, scope, intent, "REBUILD_LOCAL_EVIDENCE",
+        )
+        plan.update({
+            "campaign_file": str(campaign),
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+            "reason": reason,
+            "input_digest": input_digest,
+            "collection_path": str(collection),
+            "expected_collection_sha256": old_digest,
+            "controller_snapshot": controller_snapshot,
+            "snapshot_arguments": execution_arguments,
+            "gates": gates,
+            "ready": all(item["status"] != "FAIL" for item in gates),
+            "preflight_summary": {
+                "project": project.project,
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "input_digest": input_digest,
+                "old_digest": old_digest,
+                "local_only": local_only,
+            },
+            "command_preview": _redact([
+                "private-controller", controller_snapshot["manifest_sha256"],
+                *execution_arguments,
+            ]),
+            "diff": json.dumps(_redact(record), ensure_ascii=False, indent=2),
+        })
+        return plan
+
     def _prepare_controller(self, action_id: str, scope: OperationScope,
                             project: ResearchProject,
                             intent: dict[str, Any]) -> dict[str, Any]:
@@ -835,6 +1024,21 @@ class ActionService:
         if execution.get("status") == "VERIFIED":
             return snapshot
         dispatch = self.execution_policy.validate(snapshot, confirmation)
+        if dispatch.local_evidence_rebuild:
+            collection_path = Path(str(snapshot.get("collection_path") or ""))
+            if _file_sha(collection_path) != snapshot.get("expected_collection_sha256"):
+                raise ActionError(
+                    "collection changed after local evidence Action preparation; "
+                    "prepare a fresh action"
+                )
+            try:
+                self.controller.verify_execution_bundle(
+                    snapshot.get("controller_snapshot") or {},
+                )
+            except (OSError, ValueError) as exc:
+                raise ActionError(
+                    f"approved private controller snapshot is invalid: {exc}"
+                ) from exc
         execution.update({"status": "EXECUTING", "started_at": utc_now(), "error": None})
         try:
             started = self.store.begin_execution(
@@ -847,6 +1051,8 @@ class ActionService:
             return self._execute_write(snapshot, execution)
         if dispatch.internal_mutation:
             return self._execute_internal(snapshot, execution)
+        if dispatch.local_evidence_rebuild:
+            return self._execute_local_evidence_rebuild(snapshot, execution)
         return self._execute_controller(snapshot, execution)
 
     def _execute_internal(
@@ -871,6 +1077,87 @@ class ActionService:
         })
         return self.store.set_execution(
             plan["action_id"], execution, event="internal_execution_verified",
+        )
+
+    def _execute_local_evidence_rebuild(
+        self, plan: dict[str, Any], execution: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Execute and verify the one allowlisted pure-local controller verb."""
+        arguments = [str(item) for item in plan.get("snapshot_arguments") or []]
+        if "refresh-evidence-local" not in arguments:
+            raise ActionError("local evidence Action has no allowlisted controller verb")
+        try:
+            result = self.controller.execute_snapshot(
+                plan.get("controller_snapshot") or {}, arguments,
+                timeout=self.config.timeout_seconds,
+            )
+        except (OSError, ValueError) as exc:
+            result = {
+                "returncode": 1, "timeout": False, "payload": None,
+                "stdout": "", "stderr": str(exc),
+            }
+        failure = None
+        if result.get("timeout"):
+            failure = "local evidence rebuild timed out"
+        elif result.get("returncode") != 0:
+            failure = str(
+                result.get("stderr") or result.get("stdout")
+                or "local evidence rebuild controller failed"
+            )[:1000]
+        payload = result.get("payload")
+        record = (
+            payload[0] if isinstance(payload, list) and len(payload) == 1
+            and isinstance(payload[0], dict) else None
+        )
+        collection_path = Path(str(plan.get("collection_path") or ""))
+        actual_digest = _file_sha(collection_path)
+        if failure is None and record is None:
+            failure = "local evidence rebuild did not return exactly one result"
+        if failure is None and record is not None:
+            exact_identity = (
+                record.get("project") == plan["scope"]["project"]
+                and record.get("run_id") == plan.get("run_id")
+                and record.get("attempt_id") == plan.get("attempt_id")
+            )
+            exact_result = (
+                exact_identity
+                and record.get("input_digest") == plan.get("input_digest")
+                and record.get("old_digest") == plan.get("expected_collection_sha256")
+                and record.get("new_digest") == actual_digest
+                and str(Path(str(record.get("collection_path") or "")).resolve())
+                == str(collection_path.resolve())
+                and record.get("local_only") is True
+                and record.get("backend_accessed") is False
+                and record.get("scheduler_accessed") is False
+                and record.get("controller_snapshot_sha256")
+                == (plan.get("controller_snapshot") or {}).get("manifest_sha256")
+                and result.get("controller_snapshot_sha256")
+                == (plan.get("controller_snapshot") or {}).get("manifest_sha256")
+                and _SHA256_DIGEST.fullmatch(str(record.get("new_digest") or ""))
+                is not None
+            )
+            if not exact_result:
+                failure = "local evidence rebuild result failed exact identity verification"
+        if failure is not None:
+            execution.update({
+                "status": "FAILED", "finished_at": utc_now(),
+                "error": failure,
+                "result": {
+                    "controller": _redact(result),
+                    "observed_collection_sha256": actual_digest,
+                },
+            })
+            return self.store.set_execution(
+                plan["action_id"], execution,
+                event="local_evidence_rebuild_failed",
+            )
+        execution.update({
+            "status": "VERIFIED", "finished_at": utc_now(), "error": None,
+            "result": _redact(record),
+        })
+        return self.store.set_execution(
+            plan["action_id"], execution,
+            event="local_evidence_rebuild_verified",
         )
 
     def _execute_write(self, plan: dict[str, Any], execution: dict[str, Any]) -> dict[str, Any]:

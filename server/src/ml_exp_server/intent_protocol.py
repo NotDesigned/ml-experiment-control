@@ -25,6 +25,7 @@ IntentKind = Literal[
     "ARCHIVE_RUN",
     "ARCHIVE_ATTEMPT",
     "OBSERVABILITY_BACKFILL",
+    "REBUILD_LOCAL_EVIDENCE",
 ]
 
 

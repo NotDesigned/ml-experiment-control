@@ -219,7 +219,7 @@ def _doctor_command(args: argparse.Namespace) -> int:
         runtime = config.action_runtime
         for flag in (
             "allow_project_writes", "allow_scheduler_mutations",
-            "allow_observability_mutations",
+            "allow_observability_mutations", "allow_local_evidence_rebuild",
         ):
             if getattr(runtime, flag):
                 checks.append((f"action_runtime.{flag}", True, "enabled", None))

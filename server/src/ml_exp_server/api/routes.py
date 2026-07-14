@@ -92,6 +92,9 @@ def health(request: Request) -> DaemonHealth:
         observability_mutations=(
             request.app.state.config.action_runtime.allow_observability_mutations
         ),
+        local_evidence_rebuild=(
+            request.app.state.config.action_runtime.allow_local_evidence_rebuild
+        ),
         telemetry_enabled=request.app.state.runtime.telemetry.enabled,
         observability=request.app.state.runtime.wandb_service.status(),
     )

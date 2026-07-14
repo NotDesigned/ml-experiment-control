@@ -42,6 +42,7 @@ from .schemas import (
     CampaignRelationship,
     ProjectLifecycleState,
     ResearchProject,
+    TERMINAL_RUN_STATES,
 )
 from .telemetry import Telemetry
 
@@ -692,6 +693,54 @@ class ExperimentServerApplication:
                 reasons.append("Scope has no observed Attempts to backfill")
             elif len(attempts) > 500:
                 reasons.append("Scope exceeds the 500-Attempt backfill limit")
+        elif operation_id == "evidence.rebuild_local":
+            if not self.runtime.config.action_runtime.allow_local_evidence_rebuild:
+                reasons.append("Local evidence rebuild Actions are disabled by daemon policy")
+            if project.controller is None:
+                reasons.append("Project has no controller configuration")
+            elif not project.controller.capabilities.get("refresh_evidence_local"):
+                reasons.append(
+                    "Project controller does not declare refresh_evidence_local"
+                )
+            state = str(getattr(resolved, "state", None) or "UNKNOWN").upper()
+            if state not in TERMINAL_RUN_STATES:
+                reasons.append(f"Attempt state {state} is not terminal")
+            run_id, attempt_id = scope.object_id.rsplit("::", 1)
+            row = self.runtime.index.get_run(project.project, run_id)
+            if row is None:
+                reasons.append("Exact Run evidence is unavailable")
+            else:
+                relationship = row.campaign_binding.relationship
+                if relationship != CampaignRelationship.MATCHED:
+                    reasons.append(
+                        "Run is not exactly bound to the current authored Campaign: "
+                        f"{relationship.value}"
+                    )
+                if not row.campaign:
+                    reasons.append("Run has no exact authored Campaign identity")
+                attempt_dir = Path(row.run_dir) / "attempts" / attempt_id
+                required = (
+                    Path(row.run_dir) / "manifest.yaml",
+                    attempt_dir / "attempt.yaml",
+                    attempt_dir / "backend.json",
+                )
+                missing = [str(path) for path in required if not path.is_file()]
+                if missing:
+                    reasons.append(
+                        "Exact Attempt durable identity files are unavailable: "
+                        + ", ".join(missing)
+                    )
+                durable = attempt_dir / "collected_run"
+                try:
+                    has_durable_artifact = durable.is_dir() and any(
+                        path.is_file() for path in durable.rglob("*")
+                    )
+                except OSError:
+                    has_durable_artifact = False
+                if not has_durable_artifact:
+                    reasons.append(
+                        "Exact Attempt has no already-local collected_run artifacts"
+                    )
         elif operation_id == "run.submit":
             if project.controller is None:
                 reasons.append("Project has no controller configuration")
@@ -823,6 +872,10 @@ class ExperimentServerApplication:
             return self.prepare_observability_backfill(
                 project, scope.scope_type, object_id,
                 target=target, reason=reason,
+            )
+        if operation_id == "evidence.rebuild_local":
+            return self.prepare_local_evidence_rebuild(
+                project, object_id, reason=reason,
             )
         if operation_id == "run.submit":
             return self.prepare_run_submit(
@@ -2113,6 +2166,41 @@ class ExperimentServerApplication:
             title=f"Cancel {row.run_id} {attempt.attempt_id}",
             change_summary=reason or "cancel the exact observed backend job",
             resource_estimate="none", risk="scheduler cancellation",
+        )
+
+    def prepare_local_evidence_rebuild(
+        self, project: str, identity: str, *, reason: str,
+    ) -> dict[str, Any]:
+        """Prepare an exact terminal-Attempt local evidence rebuild Action."""
+        if not reason.strip():
+            raise ApplicationError(
+                "local evidence rebuild reason is required", status_code=422,
+                code="INVALID_EVIDENCE_REBUILD_REASON",
+            )
+        self._require_operation_available(
+            "evidence.rebuild_local", project, OperationScopeType.ATTEMPT, identity,
+        )
+        scope, configured, row, attempt, _ = self._attempt_context(project, identity)
+        campaign = self._campaign_file(configured, row.campaign)
+        run_dir = Path(row.run_dir).resolve()
+        local_root = run_dir.parent.parent
+        draft = yaml.safe_dump({
+            "schema_version": 1,
+            "project": project,
+            "campaign_file": str(campaign),
+            "run_id": row.run_id,
+            "attempt_id": attempt.attempt_id,
+            "run_dir": str(run_dir),
+            "local_root": str(local_root),
+            "reason": reason.strip(),
+        }, sort_keys=False)
+        return self._prepare_attempt_action(
+            scope, configured, row, attempt,
+            kind="REBUILD_LOCAL_EVIDENCE", draft=draft,
+            title=f"Rebuild local evidence for {row.run_id} {attempt.attempt_id}",
+            change_summary="recompute collection.json from already-local durable artifacts",
+            resource_estimate="local CPU and filesystem only",
+            risk="replaces exact Attempt collection.json; no backend or scheduler access",
         )
 
     def _prepare_attempt_action(

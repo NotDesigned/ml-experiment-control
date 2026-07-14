@@ -16,6 +16,7 @@ from .files import file_sha
 class ExecutionDispatch:
     project_write: bool
     internal_mutation: bool
+    local_evidence_rebuild: bool
 
 
 class ActionExecutionPolicy:
@@ -66,13 +67,17 @@ class ActionExecutionPolicy:
         operation = str(snapshot["operation"])
         project_write = operation in self.PROJECT_WRITE_OPERATIONS
         internal_mutation = operation == "OBSERVABILITY_BACKFILL"
+        local_evidence_rebuild = operation == "REBUILD_LOCAL_EVIDENCE"
         if project_write and not self.config.allow_project_writes:
             raise ActionError("project writes are disabled by daemon policy")
         if internal_mutation and not self.config.allow_observability_mutations:
             raise ActionError("observability mutations are disabled by daemon policy")
+        if local_evidence_rebuild and not self.config.allow_local_evidence_rebuild:
+            raise ActionError("local evidence rebuild Actions are disabled by daemon policy")
         if (
             not project_write
             and not internal_mutation
+            and not local_evidence_rebuild
             and not self.config.allow_scheduler_mutations
         ):
             raise ActionError("scheduler mutations are disabled by daemon policy")
@@ -92,4 +97,5 @@ class ActionExecutionPolicy:
         return ExecutionDispatch(
             project_write=project_write,
             internal_mutation=internal_mutation,
+            local_evidence_rebuild=local_evidence_rebuild,
         )

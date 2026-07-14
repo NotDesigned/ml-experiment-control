@@ -14,7 +14,7 @@ from ml_exp_server.actions.service import ActionError, ActionService
 from ml_exp_server.actions.store import ActionStore
 from ml_exp_server.schemas import (
     ActionRuntimeConfig, OperationScope, OperationScopeType, CampaignRef, CampaignRevision,
-    ControllerConfig, ResearchProject,
+    ControllerConfig, ControllerExecutionBundle, ResearchProject,
 )
 
 
@@ -246,6 +246,156 @@ def test_cancel_timeout_can_reconcile_exact_terminal_job(tmp_path):
     result = service.reconcile(action_id)
 
     assert result["execution"]["status"] == "VERIFIED"
+
+
+def _local_evidence_action(tmp_path: Path):
+    science = tmp_path / "science"
+    campaign = science / "experiments" / "study.yml"
+    campaign.parent.mkdir(parents=True)
+    local_root = tmp_path / "runs"
+    run_dir = local_root / "study" / "run-a"
+    attempt_dir = run_dir / "attempts" / "attempt-001"
+    collected = attempt_dir / "collected_run"
+    collected.mkdir(parents=True)
+    campaign.write_text(
+        "schema_version: 1\nproject: demo\ncampaign: study\n"
+        "runs: [{run_id: run-a}]\n",
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.yaml").write_text("run_id: run-a\n", encoding="utf-8")
+    (attempt_dir / "attempt.yaml").write_text(
+        "attempt_id: attempt-001\n", encoding="utf-8",
+    )
+    (attempt_dir / "backend.json").write_text("{}\n", encoding="utf-8")
+    (collected / "status.json").write_text('{"state":"COMPLETED"}\n')
+    collection = attempt_dir / "collection.json"
+    collection.write_text('{"old":true}\n', encoding="utf-8")
+    project = ResearchProject(
+        project="demo", title="Demo", run_roots=[], base_dir=science,
+        controller=ControllerConfig(
+            python="python", experimentctl="unused.py", workdir=".",
+            capabilities={"refresh_evidence_local": True},
+            execution_bundle=ControllerExecutionBundle(
+                entry_module="demo", require_clean_git=False,
+            ),
+        ),
+    )
+    scope = OperationScope(
+        project="demo", scope_type="attempt",
+        object_id="run-a::attempt-001",
+    )
+    draft = {
+        "schema_version": 1, "project": "demo",
+        "campaign_file": str(campaign), "run_id": "run-a",
+        "attempt_id": "attempt-001", "run_dir": str(run_dir),
+        "local_root": str(local_root), "reason": "repair stale evidence",
+    }
+    return project, scope, draft, campaign, collection
+
+
+def test_local_evidence_action_executes_only_approved_snapshot(tmp_path):
+    project, operation_scope, draft, campaign, collection = _local_evidence_action(tmp_path)
+    store = ActionStore(tmp_path / "actions")
+    service = ActionService(
+        store, ActionRuntimeConfig(allow_local_evidence_rebuild=True),
+        actor_provider=lambda: "tester",
+    )
+    snapshot_digest = "sha256:" + "a" * 64
+    snapshot = {
+        "root": str(tmp_path / "private"),
+        "manifest_path": str(tmp_path / "private" / "manifest.json"),
+        "manifest_sha256": snapshot_digest,
+        "manifest": {"entry_module": "demo"},
+    }
+    input_digest = "sha256:" + "b" * 64
+    old_digest = actions._file_sha(collection)
+    calls: list[list[str]] = []
+    service.controller.snapshot_execution_bundle = lambda *a, **k: snapshot
+    service.controller.verify_execution_bundle = lambda value: None
+
+    def execute_snapshot(value, arguments, *, timeout):
+        assert value == snapshot
+        calls.append(arguments)
+        if "--dry-run" in arguments:
+            new_digest = old_digest
+        else:
+            collection.write_text('{"rebuilt":true}\n', encoding="utf-8")
+            new_digest = actions._file_sha(collection)
+        record = {
+            "project": "demo", "run_id": "run-a",
+            "attempt_id": "attempt-001", "input_digest": input_digest,
+            "old_digest": old_digest, "new_digest": new_digest,
+            "collection_path": str(collection), "local_only": True,
+            "backend_accessed": False, "scheduler_accessed": False,
+            "controller_snapshot_sha256": snapshot_digest,
+        }
+        return {
+            "returncode": 0, "timeout": False, "payload": [record],
+            "stdout": "", "stderr": "",
+            "controller_snapshot_sha256": snapshot_digest,
+        }
+
+    service.controller.execute_snapshot = execute_snapshot
+    prepared = service.prepare(
+        operation_scope, project,
+        operation_intent("REBUILD_LOCAL_EVIDENCE", draft),
+    )
+    assert prepared["ready"] is True
+    assert "{controller_snapshot}/inputs/campaign.yml" in prepared["snapshot_arguments"]
+    assert "--dry-run" in calls[0]
+
+    # Original reviewed code/identity inputs are no longer execution inputs.
+    campaign.write_text("mutated: after-approval\n", encoding="utf-8")
+    action_id = prepared["action_id"]
+    service.authorize(action_id, "reviewed exact private snapshot")
+    executed = service.execute(action_id, f"EXECUTE {action_id}")
+
+    assert executed["execution"]["status"] == "VERIFIED"
+    assert executed["execution"]["result"]["new_digest"] == actions._file_sha(collection)
+    assert "--dry-run" not in calls[1]
+    assert service.execute(action_id, f"EXECUTE {action_id}") == executed
+
+
+def test_local_evidence_action_fails_closed_on_collection_cas(tmp_path):
+    project, operation_scope, draft, _, collection = _local_evidence_action(tmp_path)
+    service = ActionService(
+        ActionStore(tmp_path / "actions"),
+        ActionRuntimeConfig(allow_local_evidence_rebuild=True),
+        actor_provider=lambda: "tester",
+    )
+    snapshot_digest = "sha256:" + "a" * 64
+    snapshot = {
+        "manifest_sha256": snapshot_digest, "root": str(tmp_path / "private"),
+        "manifest_path": str(tmp_path / "private" / "manifest.json"),
+        "manifest": {},
+    }
+    old_digest = actions._file_sha(collection)
+    service.controller.snapshot_execution_bundle = lambda *a, **k: snapshot
+    service.controller.verify_execution_bundle = lambda value: None
+    service.controller.execute_snapshot = lambda *a, **k: {
+        "returncode": 0, "timeout": False, "stdout": "", "stderr": "",
+        "controller_snapshot_sha256": snapshot_digest,
+        "payload": [{
+            "project": "demo", "run_id": "run-a", "attempt_id": "attempt-001",
+            "input_digest": "sha256:" + "b" * 64, "old_digest": old_digest,
+            "new_digest": old_digest, "collection_path": str(collection),
+            "local_only": True, "backend_accessed": False,
+            "scheduler_accessed": False,
+            "controller_snapshot_sha256": snapshot_digest,
+        }],
+    }
+    prepared = service.prepare(
+        operation_scope, project,
+        operation_intent("REBUILD_LOCAL_EVIDENCE", draft),
+    )
+    action_id = prepared["action_id"]
+    service.authorize(action_id, "reviewed")
+    collection.write_text('{"raced":true}\n', encoding="utf-8")
+
+    with pytest.raises(ActionError, match="collection changed"):
+        service.execute(action_id, f"EXECUTE {action_id}")
+
+    assert service.store.snapshot(action_id)["execution"]["status"] == "AUTHORIZED"
 
 
 def test_multi_write_detects_changed_target_and_rolls_back_partial_write(monkeypatch, tmp_path):

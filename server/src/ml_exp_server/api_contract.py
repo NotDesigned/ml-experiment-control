@@ -56,6 +56,7 @@ class DaemonHealth(BaseModel):
     project_writes: bool
     scheduler_mutations: bool
     observability_mutations: bool
+    local_evidence_rebuild: bool
     telemetry_enabled: bool
     observability: ObservabilityHealth
 

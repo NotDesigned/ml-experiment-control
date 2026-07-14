@@ -135,6 +135,14 @@ OPERATIONS: tuple[OperationDefinition, ...] = (
         "OBSERVABILITY_BACKFILL", (OBSERVABILITY_TARGET, REASON), 32,
     ),
     OperationDefinition(
+        "evidence.rebuild_local", "Rebuild local Attempt evidence",
+        "Recompute one terminal Attempt collection from already-local durable artifacts. "
+        "The reviewed Action cannot query a scheduler, contact a backend, or start work.",
+        "Evidence", (OperationScopeType.ATTEMPT,), "direct",
+        "Prepare an audited local-evidence rebuild Action",
+        "REBUILD_LOCAL_EVIDENCE", (REASON,), 31,
+    ),
+    OperationDefinition(
         "run.submit", "Submit first Attempt",
         "Prepare the first scheduler submission for an authored Run.", "Execution",
         (OperationScopeType.RUN,), "direct", "Prepare a scheduler Action", "SUBMIT_RUN",
@@ -182,6 +190,7 @@ INTENT_SCOPES: dict[str, tuple[OperationScopeType, ...]] = {
         OperationScopeType.PROJECT, OperationScopeType.CAMPAIGN,
         OperationScopeType.RUN, OperationScopeType.ATTEMPT,
     ),
+    "REBUILD_LOCAL_EVIDENCE": (OperationScopeType.ATTEMPT,),
 }
 
 def intent_scope_error(kind: str, scope_type: OperationScopeType) -> str | None:
