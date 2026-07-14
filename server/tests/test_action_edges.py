@@ -406,6 +406,51 @@ def test_local_evidence_action_fails_closed_on_collection_cas(tmp_path):
     assert service.store.snapshot(action_id)["execution"]["status"] == "AUTHORIZED"
 
 
+def test_local_evidence_failed_preview_keeps_scope_truth_and_no_cwd_target(
+    tmp_path, monkeypatch,
+):
+    project, operation_scope, draft, _campaign, _collection = (
+        _local_evidence_action(tmp_path)
+    )
+    service = ActionService(
+        ActionStore(tmp_path / "actions"),
+        ActionRuntimeConfig(allow_local_evidence_rebuild=True),
+        actor_provider=lambda: "tester",
+    )
+    snapshot_digest = "sha256:" + "8" * 64
+    service.controller.snapshot_execution_bundle = lambda *a, **k: {
+        "manifest_sha256": snapshot_digest,
+        "root": str(tmp_path / "private"),
+        "manifest_path": str(tmp_path / "private" / "manifest.json"),
+        "manifest": {},
+    }
+    service.controller.execute_snapshot = lambda *a, **k: {
+        "returncode": 1, "timeout": False, "payload": None,
+        "stdout": "", "stderr": "reviewed identity rejected",
+    }
+    daemon_cwd = tmp_path / "daemon-cwd"
+    daemon_cwd.mkdir()
+    monkeypatch.chdir(daemon_cwd)
+
+    blocked = service.prepare(
+        operation_scope, project,
+        operation_intent("REBUILD_LOCAL_EVIDENCE", draft),
+    )
+    gates = {item["name"]: item for item in blocked["gates"]}
+
+    assert blocked["ready"] is False
+    assert blocked["collection_path"] is None
+    assert blocked["input_digest"] == ""
+    assert blocked["expected_new_collection_sha256"] == ""
+    assert gates["exact_attempt_scope"]["status"] == "PASS"
+    assert gates["preview_exact_identity"]["status"] == "FAIL"
+    assert gates["local_collection_target"] == {
+        "name": "local_collection_target", "status": "FAIL",
+        "detail": "unavailable",
+    }
+    assert str(daemon_cwd) not in json.dumps(blocked)
+
+
 @pytest.mark.parametrize(
     ("failure_mode", "written_payload", "reconciled_status"),
     [

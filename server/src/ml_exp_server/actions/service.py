@@ -586,6 +586,9 @@ class ActionService:
             "inputs/attempt/attempt.yaml": attempt_dir / "attempt.yaml",
             "inputs/attempt/backend.json": attempt_dir / "backend.json",
         }
+        status_preimage = attempt_dir / "status.json"
+        if status_preimage.is_file():
+            reviewed_inputs["inputs/attempt/status.json"] = status_preimage
         collection_preimage = attempt_dir / "collection.json"
         if collection_preimage.is_file():
             reviewed_inputs["inputs/attempt/collection.json"] = collection_preimage
@@ -641,15 +644,20 @@ class ActionService:
         expected_new_digest = str(
             record.get("expected_new_collection_digest") or ""
         )
-        collection = Path(str(record.get("collection_path") or ""))
-        collection_absolute = collection.is_absolute()
-        collection = collection.resolve()
+        raw_collection = record.get("collection_path")
+        collection = None
+        if isinstance(raw_collection, str) and raw_collection.strip():
+            candidate = Path(raw_collection)
+            if candidate.is_absolute():
+                collection = candidate.resolve()
         identity_exact = (
             record.get("project") == project.project
             and record.get("run_id") == run_id
             and record.get("attempt_id") == attempt_id
         )
-        target_exact = collection_absolute and collection == collection_preimage.resolve()
+        target_exact = (
+            collection is not None and collection == collection_preimage.resolve()
+        )
         digest_exact = (
             _SHA256_DIGEST.fullmatch(input_digest) is not None
             and (old_digest is None or (
@@ -671,12 +679,17 @@ class ActionService:
         gates = [
             _gate("exact_project", spec.get("project") == project.project,
                   project.project),
-            _gate("exact_attempt_scope", identity_exact,
+            _gate("exact_attempt_scope", True,
+                  f"{project.project}:{run_id}::{attempt_id}"),
+            _gate("preview_exact_identity", identity_exact,
                   f"{project.project}:{run_id}::{attempt_id}"),
             _gate("controller_capability", True, "refresh_evidence_local"),
             _gate("local_evidence_preview", preview_gate["status"] != "FAIL",
                   preview_gate["detail"]),
-            _gate("local_collection_target", target_exact, str(collection)),
+            _gate(
+                "local_collection_target", target_exact,
+                str(collection) if collection is not None else "unavailable",
+            ),
             _gate("local_input_digest", digest_exact, input_digest or "missing"),
             _gate("no_backend_or_scheduler", local_only,
                   "controller preview declares local-only execution"),
@@ -698,7 +711,7 @@ class ActionService:
             "attempt_id": attempt_id,
             "reason": reason,
             "input_digest": input_digest,
-            "collection_path": str(collection),
+            "collection_path": str(collection) if collection is not None else None,
             "expected_collection_sha256": old_digest,
             "expected_new_collection_sha256": expected_new_digest,
             "atomic_collection_replace": True,
