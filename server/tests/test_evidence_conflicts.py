@@ -3,19 +3,28 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 from ml_exp_server.application import ExperimentServerApplication
-from ml_exp_server.evidence_conflicts import classify_evidence_conflicts
+from ml_exp_server.evidence_conflicts import _family_id, classify_evidence_conflicts
 
 
 PROJECT = "elf"
 RUN_ID = "elf-aux1-mb64-ga2-h100-20260714-r1"
 ATTEMPT_ID = "attempt-001"
 OBSERVED_AT = 1784029337.1040568
+DIMENSIONS = {
+    steps: {
+        "sampling_method": "sde", "num_sampling_steps": steps, "cfg": 1.0,
+        "self_cond_cfg_scale": 3.0, "time_schedule": "logit_normal",
+        "time_warp_gamma": gamma,
+    }
+    for steps, gamma in ((32, 1.5), (64, 1.0))
+}
 
 
-def _source(*, variant_id: str, family_id: str, metric: str, value: float) -> dict:
+def _source(*, variant_id: str, dimensions: dict, metric: str, value: float) -> dict:
     return {
         "source": f"collected_run/train_sampling_eval/{variant_id}/metrics.jsonl",
         "value": value,
@@ -23,7 +32,8 @@ def _source(*, variant_id: str, family_id: str, metric: str, value: float) -> di
         "binding": {
             "project": PROJECT, "run_id": RUN_ID, "attempt_id": ATTEMPT_ID,
             "epoch": 1, "step": 38035, "variant_id": variant_id,
-            "family_id": family_id, "metric": metric,
+            "family_id": _family_id(dimensions), "metric": metric,
+            "sampling_dimensions": dimensions,
         },
     }
 
@@ -39,11 +49,11 @@ def _cross_family_conflicts() -> list[dict]:
         "type": "legacy_flat_metric_conflict", "metric": metric,
         "sources": [
             _source(
-                variant_id=f"steps32-{metric}", family_id="sha256:steps32",
+                variant_id=f"steps32-{metric}", dimensions=DIMENSIONS[32],
                 metric=metric, value=left,
             ),
             _source(
-                variant_id=f"steps64-{metric}", family_id="sha256:steps64",
+                variant_id=f"steps64-{metric}", dimensions=DIMENSIONS[64],
                 metric=metric, value=right,
             ),
         ],
@@ -66,15 +76,18 @@ def test_same_exact_variant_rewrite_remains_blocking_and_keeps_sources():
         "type": "metric_value_conflict",
         "sources": [
             _source(
-                variant_id="steps32-generation", family_id="sha256:steps32",
+                variant_id="steps32-generation", dimensions=DIMENSIONS[32],
                 metric="g_ppl", value=252.03480132729845,
             ),
             _source(
-                variant_id="steps32-generation", family_id="sha256:steps32",
+                variant_id="steps32-generation", dimensions=DIMENSIONS[32],
                 metric="g_ppl", value=999.0,
             ),
         ],
     }
+    conflict["sources"][1]["source"] = (
+        "attempts/attempt-001/train_sampling_eval/steps32-generation/metrics.jsonl"
+    )
     blocking, reclassified = classify_evidence_conflicts(
         [conflict], project=PROJECT, run_id=RUN_ID, attempt_id=ATTEMPT_ID,
     )
@@ -100,14 +113,50 @@ def test_incomplete_legacy_conflict_stays_blocking_without_label_guessing():
     assert reclassified == []
 
 
+@pytest.mark.parametrize("mutation", [
+    "missing_family", "missing_source", "missing_dimensions",
+    "fake_family_sha", "mismatched_family_hash", "blank_source",
+])
+def test_incomplete_or_forged_family_bindings_remain_blocking(mutation):
+    left = _source(
+        variant_id="steps32-generation", dimensions=DIMENSIONS[32],
+        metric="g_ppl", value=252.0,
+    )
+    right = _source(
+        variant_id="steps64-generation", dimensions=DIMENSIONS[64],
+        metric="g_ppl", value=238.0,
+    )
+    binding = right["binding"]
+    if mutation == "missing_family":
+        binding.pop("family_id")
+    elif mutation == "missing_source":
+        right.pop("source")
+    elif mutation == "missing_dimensions":
+        binding.pop("sampling_dimensions")
+    elif mutation == "fake_family_sha":
+        binding["family_id"] = "sha256:steps64"
+    elif mutation == "mismatched_family_hash":
+        binding["family_id"] = _family_id(DIMENSIONS[32])
+    else:
+        right["source"] = " "
+
+    raw = {"type": "legacy_flat_metric_conflict", "sources": [left, right]}
+    blocking, reclassified = classify_evidence_conflicts(
+        [raw], project=PROJECT, run_id=RUN_ID, attempt_id=ATTEMPT_ID,
+    )
+
+    assert blocking == [raw]
+    assert reclassified == []
+
+
 def test_legacy_source_records_with_direct_exact_bindings_can_be_reclassified():
     sources = []
-    for variant_id, family_id, value in (
-        ("steps32-generation", "sha256:steps32", 252.03480132729845),
-        ("steps64-generation", "sha256:steps64", 238.58811625648886),
+    for variant_id, dimensions, value in (
+        ("steps32-generation", DIMENSIONS[32], 252.03480132729845),
+        ("steps64-generation", DIMENSIONS[64], 238.58811625648886),
     ):
         nested = _source(
-            variant_id=variant_id, family_id=family_id,
+            variant_id=variant_id, dimensions=dimensions,
             metric="g_ppl", value=value,
         )
         sources.append({

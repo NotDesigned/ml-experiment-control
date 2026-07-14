@@ -625,6 +625,35 @@ def evaluation_snapshot(
         "latest_metric_complete": latest_complete,
     }
 
+
+def _bind_evaluation_snapshot_to_attempt(
+    snapshot: dict[str, Any], *, attempt_id: Optional[str], exact: bool,
+) -> dict[str, Any]:
+    """Suppress top-level science unless raw evidence binds to one Attempt."""
+    if exact:
+        return {
+            **snapshot,
+            "attempt_binding_state": "EXACT_ATTEMPT_BOUND",
+            "source_attempt_id": attempt_id,
+            "unresolved_evidence": [],
+        }
+    current = snapshot.get("current")
+    current = current if isinstance(current, dict) else {}
+    return {
+        **snapshot,
+        "attempt_binding_state": "EXACT_ATTEMPT_NOT_BOUND",
+        "source_attempt_id": attempt_id,
+        "unresolved_evidence": ["exact_attempt_binding"],
+        "current": {
+            **current,
+            "state": "EXACT_ATTEMPT_NOT_BOUND",
+            "metrics": {},
+            "metric_sources": {},
+            "missing_metrics": list(snapshot.get("required_metrics") or []),
+        },
+        "latest_metric_complete": None,
+    }
+
 _ROLE_PATTERN = re.compile(r"^[a-z]+-([a-z]\d+)-")
 
 _PROVENANCE_KEYS = ("git_commit", "source_id", "image_id", "config_path", "seed",
@@ -1330,7 +1359,14 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
     if not isinstance(contract, dict):
         contract = None
     eval_variants, eval_attempt_id = evaluation_variants(run_dir)
-    eval_snapshot = evaluation_snapshot(eval_variants, contract)
+    eval_snapshot = _bind_evaluation_snapshot_to_attempt(
+        evaluation_snapshot(eval_variants, contract),
+        attempt_id=eval_attempt_id,
+        exact=(
+            selected_attempt is not None
+            and eval_attempt_id == selected_attempt
+        ),
+    )
     evidence.evaluation = _eval_layer(eval_variants, eval_attempt_id)
     harness_metrics = status.get("metrics") if isinstance(status.get("metrics"), dict) else {}
     if not harness_metrics and isinstance(attempt_summary.get("metrics"), dict):
@@ -1392,7 +1428,11 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
                 key: complete_metrics[key] for key in _EVAL_METRIC_KEYS
                 if complete_metrics.get(key) is not None
             }
-    elif not eval_variants and not collection.get("evidence_conflicts"):
+    elif (
+        selected_attempt is not None
+        and not eval_variants
+        and not collection.get("evidence_conflicts")
+    ):
         # Legacy collectors sometimes provide one unnamed eval record only.
         eval_metrics = {
             key: collection[key] for key in _EVAL_METRIC_KEYS

@@ -180,6 +180,11 @@ def test_evaluation_snapshot_never_mixes_interleaved_variant_steps(tmp_path):
     (run_dir / "manifest.yaml").write_text(
         "project: elf\nrun_id: interleaved\n", encoding="utf-8",
     )
+    (run_dir / "attempts" / "attempt-001").mkdir(parents=True)
+    (run_dir / "status.json").write_text(
+        json.dumps({"attempt_id": "attempt-001", "state": "RUNNING"}),
+        encoding="utf-8",
+    )
     modes = {
         "clean": ("clean_token_reconstruction", "token_recon_ppl", 40.0),
         "generation": ("generation_refine_decode", "g_ppl", 1.1),
@@ -240,6 +245,56 @@ def test_evaluation_snapshot_never_mixes_interleaved_variant_steps(tmp_path):
     assert restored["current"]["step"] == 34000
     assert restored["current"]["metrics"]["plan_ppl_gap"] == 1.0
     assert restored["latest_metric_complete"] == restored["current"]
+
+
+def test_unbound_run_root_eval_is_history_only_without_top_level_science(tmp_path):
+    run_dir = tmp_path / "unbound"
+    run_dir.mkdir()
+    (run_dir / "manifest.yaml").write_text(
+        "project: elf\nrun_id: unbound\n", encoding="utf-8",
+    )
+    for variant, mode, metric, value in (
+        ("clean", "clean_token_reconstruction", "token_recon_ppl", 40.0),
+        ("generation", "generation_refine_decode", "g_ppl", 31.0),
+        ("oracle", "oracle_plan_generation", "oracle_plan_ppl", 20.0),
+        ("shuffled", "shuffled_plan_generation", "shuffled_plan_ppl", 25.5),
+    ):
+        root = run_dir / "train_sampling_eval" / variant
+        root.mkdir(parents=True)
+        (root / "metrics.jsonl").write_text(json.dumps({
+            "epoch": 1, "step": 200, "mode": mode, metric: value,
+        }) + "\n", encoding="utf-8")
+
+    row = scan_run_dir(run_dir, "elf", now=NOW)
+    snapshot = row.evaluation_snapshot
+
+    assert len(row.eval_variants) == 4
+    assert snapshot["families"][0]["latest_metric_complete"]["metrics"][
+        "g_ppl"
+    ] == 31.0
+    assert snapshot["attempt_binding_state"] == "EXACT_ATTEMPT_NOT_BOUND"
+    assert snapshot["unresolved_evidence"] == ["exact_attempt_binding"]
+    assert snapshot["current"]["metrics"] == {}
+    assert snapshot["latest_metric_complete"] is None
+    assert row.eval_metrics == {}
+
+
+def test_unbound_legacy_collection_eval_is_not_promoted_to_flat_science(tmp_path):
+    run_dir = tmp_path / "legacy-unbound"
+    run_dir.mkdir()
+    (run_dir / "manifest.yaml").write_text(
+        "project: elf\nrun_id: legacy-unbound\n", encoding="utf-8",
+    )
+    (run_dir / "collection.json").write_text(
+        json.dumps({"g_ppl": 31.0}), encoding="utf-8",
+    )
+
+    row = scan_run_dir(run_dir, "elf", now=NOW)
+
+    assert row.eval_metrics == {}
+    assert row.evaluation_snapshot["attempt_binding_state"] == (
+        "EXACT_ATTEMPT_NOT_BOUND"
+    )
 
 
 def test_evaluation_snapshot_has_no_science_without_any_complete_checkpoint():
