@@ -312,19 +312,24 @@ def test_local_evidence_action_executes_only_approved_snapshot(tmp_path):
     calls: list[list[str]] = []
     service.controller.snapshot_execution_bundle = lambda *a, **k: snapshot
     service.controller.verify_execution_bundle = lambda value: None
+    rebuilt_bytes = b'{"rebuilt":true}\n'
+    expected_new_digest = actions._sha256(rebuilt_bytes)
 
     def execute_snapshot(value, arguments, *, timeout):
         assert value == snapshot
         calls.append(arguments)
         if "--dry-run" in arguments:
-            new_digest = old_digest
+            new_digest = expected_new_digest
         else:
-            collection.write_text('{"rebuilt":true}\n', encoding="utf-8")
+            collection.write_bytes(rebuilt_bytes)
             new_digest = actions._file_sha(collection)
         record = {
             "project": "demo", "run_id": "run-a",
             "attempt_id": "attempt-001", "input_digest": input_digest,
             "old_digest": old_digest, "new_digest": new_digest,
+            "expected_new_collection_digest": expected_new_digest,
+            "atomic_collection_replace": True,
+            "write_protocol": "dirfd-fsync-rename-v1",
             "collection_path": str(collection), "local_only": True,
             "backend_accessed": False, "scheduler_accessed": False,
             "controller_snapshot_sha256": snapshot_digest,
@@ -379,6 +384,9 @@ def test_local_evidence_action_fails_closed_on_collection_cas(tmp_path):
             "project": "demo", "run_id": "run-a", "attempt_id": "attempt-001",
             "input_digest": "sha256:" + "b" * 64, "old_digest": old_digest,
             "new_digest": old_digest, "collection_path": str(collection),
+            "expected_new_collection_digest": old_digest,
+            "atomic_collection_replace": True,
+            "write_protocol": "dirfd-fsync-rename-v1",
             "local_only": True, "backend_accessed": False,
             "scheduler_accessed": False,
             "controller_snapshot_sha256": snapshot_digest,
@@ -396,6 +404,99 @@ def test_local_evidence_action_fails_closed_on_collection_cas(tmp_path):
         service.execute(action_id, f"EXECUTE {action_id}")
 
     assert service.store.snapshot(action_id)["execution"]["status"] == "AUTHORIZED"
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "written_payload", "reconciled_status"),
+    [
+        ("timeout", b'{"rebuilt":true}\n', "VERIFIED"),
+        ("returncode", None, "FAILED"),
+        ("malformed", b'{"rebuilt":true}\n', "VERIFIED"),
+        ("identity", b'{"rebuilt":true}\n', "VERIFIED"),
+        ("unexpected", b'{"tampered":true}\n', "RECONCILE_REQUIRED"),
+    ],
+)
+def test_local_evidence_uncertain_execution_reconciles_read_only_without_rerun(
+    tmp_path, failure_mode, written_payload, reconciled_status,
+):
+    project, operation_scope, draft, _campaign, collection = (
+        _local_evidence_action(tmp_path)
+    )
+    service = ActionService(
+        ActionStore(tmp_path / "actions"),
+        ActionRuntimeConfig(allow_local_evidence_rebuild=True),
+        actor_provider=lambda: "tester",
+    )
+    snapshot_digest = "sha256:" + "c" * 64
+    snapshot = {
+        "manifest_sha256": snapshot_digest,
+        "root": str(tmp_path / "private"),
+        "manifest_path": str(tmp_path / "private" / "manifest.json"),
+        "manifest": {},
+    }
+    old_digest = actions._file_sha(collection)
+    input_digest = "sha256:" + "d" * 64
+    rebuilt_payload = b'{"rebuilt":true}\n'
+    expected_new = actions._sha256(rebuilt_payload)
+    calls = 0
+    service.controller.snapshot_execution_bundle = lambda *a, **k: snapshot
+    service.controller.verify_execution_bundle = lambda value: None
+
+    def execute_snapshot(_snapshot, arguments, *, timeout):
+        nonlocal calls
+        calls += 1
+        base_record = {
+            "project": "demo", "run_id": "run-a",
+            "attempt_id": "attempt-001", "input_digest": input_digest,
+            "old_digest": old_digest, "new_digest": expected_new,
+            "expected_new_collection_digest": expected_new,
+            "collection_path": str(collection), "local_only": True,
+            "backend_accessed": False, "scheduler_accessed": False,
+            "atomic_collection_replace": True,
+            "write_protocol": "dirfd-fsync-rename-v1",
+            "controller_snapshot_sha256": snapshot_digest,
+        }
+        if "--dry-run" in arguments:
+            return {
+                "returncode": 0, "timeout": False, "payload": [base_record],
+                "stdout": "", "stderr": "",
+                "controller_snapshot_sha256": snapshot_digest,
+            }
+        if written_payload is not None:
+            collection.write_bytes(written_payload)
+        record = dict(base_record)
+        if failure_mode == "identity":
+            record["attempt_id"] = "attempt-999"
+        return {
+            "returncode": 2 if failure_mode == "returncode" else 0,
+            "timeout": failure_mode in {"timeout", "unexpected"},
+            "payload": [] if failure_mode == "malformed" else [record],
+            "stdout": "", "stderr": "controller uncertain",
+            "controller_snapshot_sha256": snapshot_digest,
+        }
+
+    service.controller.execute_snapshot = execute_snapshot
+    prepared = service.prepare(
+        operation_scope, project,
+        operation_intent("REBUILD_LOCAL_EVIDENCE", draft),
+    )
+    action_id = prepared["action_id"]
+    intent_digest = prepared["intent_digest"]
+    assert prepared["expected_new_collection_sha256"] == expected_new
+    service.authorize(action_id, "reviewed")
+    uncertain = service.execute(action_id, f"EXECUTE {action_id}")
+
+    assert uncertain["execution"]["status"] == "RECONCILE_REQUIRED"
+    assert calls == 2
+    bytes_before_reconcile = collection.read_bytes()
+    reconciled = service.reconcile(action_id)
+
+    assert reconciled["action_id"] == action_id
+    assert reconciled["intent_digest"] == intent_digest
+    assert reconciled["execution"]["status"] == reconciled_status
+    assert reconciled["execution"]["result"]["reconciled_read_only"] is True
+    assert collection.read_bytes() == bytes_before_reconcile
+    assert calls == 2
 
 
 def test_multi_write_detects_changed_target_and_rolls_back_partial_write(monkeypatch, tmp_path):

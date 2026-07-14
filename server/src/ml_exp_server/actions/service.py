@@ -638,6 +638,9 @@ class ActionService:
         )
         input_digest = str(record.get("input_digest") or "")
         old_digest = record.get("old_digest")
+        expected_new_digest = str(
+            record.get("expected_new_collection_digest") or ""
+        )
         collection = Path(str(record.get("collection_path") or ""))
         collection_absolute = collection.is_absolute()
         collection = collection.resolve()
@@ -653,6 +656,8 @@ class ActionService:
                 isinstance(old_digest, str)
                 and _SHA256_DIGEST.fullmatch(old_digest) is not None
             ))
+            and _SHA256_DIGEST.fullmatch(expected_new_digest) is not None
+            and record.get("new_digest") == expected_new_digest
         )
         local_only = (
             record.get("local_only") is True
@@ -660,6 +665,8 @@ class ActionService:
             and record.get("scheduler_accessed") is False
             and record.get("controller_snapshot_sha256")
             == controller_snapshot["manifest_sha256"]
+            and record.get("atomic_collection_replace") is True
+            and record.get("write_protocol") == "dirfd-fsync-rename-v1"
         )
         gates = [
             _gate("exact_project", spec.get("project") == project.project,
@@ -693,6 +700,9 @@ class ActionService:
             "input_digest": input_digest,
             "collection_path": str(collection),
             "expected_collection_sha256": old_digest,
+            "expected_new_collection_sha256": expected_new_digest,
+            "atomic_collection_replace": True,
+            "write_protocol": "dirfd-fsync-rename-v1",
             "controller_snapshot": controller_snapshot,
             "snapshot_arguments": execution_arguments,
             "gates": gates,
@@ -703,6 +713,7 @@ class ActionService:
                 "attempt_id": attempt_id,
                 "input_digest": input_digest,
                 "old_digest": old_digest,
+                "expected_new_digest": expected_new_digest,
                 "local_only": local_only,
             },
             "command_preview": _redact([
@@ -1123,12 +1134,18 @@ class ActionService:
                 exact_identity
                 and record.get("input_digest") == plan.get("input_digest")
                 and record.get("old_digest") == plan.get("expected_collection_sha256")
-                and record.get("new_digest") == actual_digest
+                and record.get("new_digest")
+                == plan.get("expected_new_collection_sha256")
+                and record.get("expected_new_collection_digest")
+                == plan.get("expected_new_collection_sha256")
+                and actual_digest == plan.get("expected_new_collection_sha256")
                 and str(Path(str(record.get("collection_path") or "")).resolve())
                 == str(collection_path.resolve())
                 and record.get("local_only") is True
                 and record.get("backend_accessed") is False
                 and record.get("scheduler_accessed") is False
+                and record.get("atomic_collection_replace") is True
+                and record.get("write_protocol") == "dirfd-fsync-rename-v1"
                 and record.get("controller_snapshot_sha256")
                 == (plan.get("controller_snapshot") or {}).get("manifest_sha256")
                 and result.get("controller_snapshot_sha256")
@@ -1140,16 +1157,19 @@ class ActionService:
                 failure = "local evidence rebuild result failed exact identity verification"
         if failure is not None:
             execution.update({
-                "status": "FAILED", "finished_at": utc_now(),
+                "status": "RECONCILE_REQUIRED", "finished_at": utc_now(),
                 "error": failure,
                 "result": {
                     "controller": _redact(result),
                     "observed_collection_sha256": actual_digest,
+                    "expected_new_collection_sha256": plan.get(
+                        "expected_new_collection_sha256"
+                    ),
                 },
             })
             return self.store.set_execution(
                 plan["action_id"], execution,
-                event="local_evidence_rebuild_failed",
+                event="local_evidence_rebuild_reconcile_required",
             )
         execution.update({
             "status": "VERIFIED", "finished_at": utc_now(), "error": None,
@@ -1334,6 +1354,64 @@ class ActionService:
         execution = snapshot["execution"]
         if execution.get("status") == "VERIFIED":
             return snapshot
+        if snapshot.get("operation") == "REBUILD_LOCAL_EVIDENCE":
+            if not self.config.allow_local_evidence_rebuild:
+                raise ActionError("local evidence rebuild Actions are disabled by daemon policy")
+            if execution.get("status") not in {"EXECUTING", "RECONCILE_REQUIRED"}:
+                raise ActionError("local evidence rebuild is not awaiting reconciliation")
+            collection_path = Path(str(snapshot.get("collection_path") or ""))
+            actual_digest = _file_sha(collection_path)
+            expected_new = snapshot.get("expected_new_collection_sha256")
+            reviewed_old = snapshot.get("expected_collection_sha256")
+            previous = execution.get("result")
+            result = dict(previous) if isinstance(previous, dict) else {}
+            result.update({
+                "observed_collection_sha256": actual_digest,
+                "expected_new_collection_sha256": expected_new,
+                "reviewed_old_collection_sha256": reviewed_old,
+                "reconciled_read_only": True,
+            })
+            now = utc_now()
+            if actual_digest == expected_new:
+                execution.update({
+                    "status": "VERIFIED", "finished_at": now,
+                    "last_reconciled_at": now, "error": None,
+                    "result": result,
+                })
+                return self.store.set_execution(
+                    action_id, execution,
+                    event="local_evidence_rebuild_reconciled",
+                )
+            if (
+                actual_digest == reviewed_old
+                and snapshot.get("atomic_collection_replace") is True
+                and snapshot.get("write_protocol") == "dirfd-fsync-rename-v1"
+            ):
+                execution.update({
+                    "status": "FAILED", "finished_at": now,
+                    "last_reconciled_at": now,
+                    "error": (
+                        "collection remains at the reviewed old digest; "
+                        "the atomic local evidence write did not execute"
+                    ),
+                    "result": result,
+                })
+                return self.store.set_execution(
+                    action_id, execution,
+                    event="local_evidence_rebuild_not_executed",
+                )
+            execution.update({
+                "status": "RECONCILE_REQUIRED", "last_reconciled_at": now,
+                "error": (
+                    "collection digest is neither the reviewed old digest nor "
+                    "the frozen expected new digest; manual investigation is required"
+                ),
+                "result": result,
+            })
+            return self.store.set_execution(
+                action_id, execution,
+                event="local_evidence_rebuild_reconcile_blocked",
+            )
         if snapshot.get("operation") == "OBSERVABILITY_BACKFILL":
             if not self.config.allow_observability_mutations:
                 raise ActionError("observability mutations are disabled by daemon policy")
