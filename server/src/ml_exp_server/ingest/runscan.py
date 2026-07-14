@@ -233,21 +233,31 @@ def _evaluation_history(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _evaluation_variant_family(history: list[dict[str, Any]]) -> dict[str, Any]:
-    modes = {
-        record.get("mode") for record in history
-        if isinstance(record.get("mode"), str)
-    }
-    if modes and modes <= {"clean_token_reconstruction"}:
+    modes = [record.get("mode") for record in history]
+    if modes and all(mode == "clean_token_reconstruction" for mode in modes):
+        if any(record.get("sampling_dimensions") is not None for record in history):
+            return {
+                "status": "CONFLICTING",
+                "reason": "family-independent reconstruction carries sampling dimensions",
+                "required_producer_fields": list(_EVAL_FAMILY_DIMENSION_KEYS),
+            }
         return {
             "status": "RESOLVED",
             "scope": "FAMILY_INDEPENDENT_RECONSTRUCTION",
         }
+    sampling_modes = {
+        "generation_refine_decode", "oracle_plan_generation",
+        "shuffled_plan_generation",
+    }
+    if not modes or any(mode not in sampling_modes for mode in modes) \
+            or len(set(modes)) != 1:
+        return {
+            "status": "UNRESOLVED",
+            "reason": "one variant must contain exactly one recognized evaluation mode",
+            "required_producer_fields": list(_EVAL_FAMILY_DIMENSION_KEYS),
+        }
     dimensions = [
         record.get("sampling_dimensions") for record in history
-        if record.get("mode") in {
-            "generation_refine_decode", "oracle_plan_generation",
-            "shuffled_plan_generation",
-        }
     ]
     required = list(_EVAL_FAMILY_DIMENSION_KEYS)
     if not dimensions or any(not isinstance(item, dict) for item in dimensions):
@@ -305,7 +315,7 @@ def _evaluation_checkpoint_snapshot(
     """
     epoch, step = identity
     candidates: dict[
-        str, list[tuple[Any, dict[str, Any], dict[str, Any]]]
+        str, dict[str, list[tuple[Any, dict[str, Any], dict[str, Any]]]]
     ] = {}
     conflicting_metrics: set[str] = set()
     for variant in variants:
@@ -322,6 +332,25 @@ def _evaluation_checkpoint_snapshot(
                 )
             mode = record.get("mode")
             primary = _EVAL_PRIMARY_METRICS_BY_MODE.get(mode)
+            family = variant.get("evaluation_family")
+            family = family if isinstance(family, dict) else {}
+            dimensions = record.get("sampling_dimensions")
+            if family.get("scope") == "FAMILY_INDEPENDENT_RECONSTRUCTION":
+                family_matches = (
+                    mode == "clean_token_reconstruction" and dimensions is None
+                )
+            elif family.get("scope") == "SAMPLING_FAMILY":
+                family_matches = (
+                    isinstance(dimensions, dict)
+                    and dimensions == family.get("dimensions")
+                    and family.get("family_id") == _evaluation_family_id(dimensions)
+                )
+            else:
+                # Legacy single-family records have no structured dimensions.
+                family_matches = dimensions is None
+            if primary is None or not family_matches:
+                conflicting_metrics.add("mode" if primary is None else primary)
+                continue
             metric_keys = [primary] if primary is not None else []
             if mode == "generation_refine_decode":
                 if record.get("generation_mean_entropy") is not None:
@@ -338,20 +367,26 @@ def _evaluation_checkpoint_snapshot(
                     else record.get(metric)
                 )
                 if value is not None:
-                    candidates.setdefault(metric, []).append((value, variant, record))
+                    variant_id = str(variant.get("variant") or "")
+                    candidates.setdefault(metric, {}).setdefault(
+                        variant_id, [],
+                    ).append((value, variant, record))
 
     metrics: dict[str, Any] = {}
     metric_sources: dict[str, Any] = {}
-    for metric, observations in sorted(candidates.items()):
+    for metric, by_variant in sorted(candidates.items()):
         if metric in conflicting_metrics:
             continue
-        values = {float(value) for value, _, _ in observations}
-        if len(values) != 1:
+        if len(by_variant) != 1:
             conflicting_metrics.add(metric)
             continue
-        value, variant, record = sorted(
-            observations, key=lambda item: str(item[1].get("variant") or ""),
-        )[0]
+        observations = next(iter(by_variant.values()))
+        values = {float(value) for value, _, _ in observations}
+        modes = {record.get("mode") for _, _, record in observations}
+        if len(values) != 1 or len(modes) != 1:
+            conflicting_metrics.add(metric)
+            continue
+        value, variant, record = observations[0]
         metrics[metric] = value
         source = {
             "variant_id": variant.get("variant"),
@@ -508,7 +543,15 @@ def evaluation_snapshot(
             mode = (item.get("latest") or {}).get("mode")
             if isinstance(mode, str):
                 mode_counts[mode] = mode_counts.get(mode, 0) + 1
-        legacy_single = bool(mode_counts) and all(count == 1 for count in mode_counts.values())
+        legacy_single = (
+            len(reconstruction) == 1
+            and len(sampling) == 3
+            and mode_counts == {
+                "generation_refine_decode": 1,
+                "oracle_plan_generation": 1,
+                "shuffled_plan_generation": 1,
+            }
+        )
 
     families: list[dict[str, Any]] = []
     for family_id, members in sorted(resolved.items()):

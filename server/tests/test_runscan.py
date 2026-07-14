@@ -253,6 +253,7 @@ def test_evaluation_snapshot_has_no_science_without_any_complete_checkpoint():
         record = {"epoch": 0, "step": step, "mode": mode, metric: 1.0}
         variants.append({
             "variant": variant, "latest": record, "history": [record],
+            "evaluation_family": runscan._evaluation_variant_family([record]),
         })
 
     snapshot = evaluation_snapshot(variants)
@@ -290,8 +291,8 @@ def test_duplicate_oracle_rewrites_are_conflicts_not_corrections(tmp_path, rewri
     assert history["conflicting_metrics"] == ["oracle_plan_ppl"]
     assert "oracle_plan_ppl" not in history
     snapshot = evaluation_snapshot(variants)
-    assert snapshot["current"]["state"] == "PARTIAL"
-    assert "oracle_plan_ppl" in snapshot["current"]["conflicting_metrics"]
+    assert snapshot["current"]["state"] == "UNRESOLVED"
+    assert snapshot["current"]["metrics"] == {}
     assert "plan_ppl_gap" not in snapshot["current"]["metrics"]
     assert snapshot["latest_metric_complete"] is None
 
@@ -319,8 +320,8 @@ def test_duplicate_variant_sources_merge_and_expose_cross_source_conflicts(tmp_p
         "oracle_plan_ppl",
     ]
     snapshot = evaluation_snapshot(variants)
-    assert snapshot["current"]["state"] == "PARTIAL"
-    assert "oracle_plan_ppl" in snapshot["current"]["conflicting_metrics"]
+    assert snapshot["current"]["state"] == "UNRESOLVED"
+    assert snapshot["current"]["metrics"] == {}
     assert "plan_ppl_gap" not in snapshot["current"]["metrics"]
     assert snapshot["latest_metric_complete"] is None
 
@@ -487,7 +488,10 @@ def test_identical_duplicate_records_are_idempotent_and_generic_ppl_is_fallback(
         record = history["history"][0]
         assert record[expected_metric] == value
         assert "conflicting_metrics" not in record
-        variants.append({"variant": variant, "latest": record, "history": [record]})
+        variants.append({
+            "variant": variant, "latest": record, "history": [record],
+            "evaluation_family": runscan._evaluation_variant_family([record]),
+        })
 
     snapshot = evaluation_snapshot(variants)
     assert snapshot["current"]["state"] == "COMPLETE"
@@ -503,12 +507,119 @@ def test_unknown_mode_cannot_claim_a_named_primary_metric():
         ("shuffled", "shuffled_plan_generation", "shuffled_plan_ppl"),
     ):
         record = {"epoch": 0, "step": 1, "mode": mode, metric: 1.0}
-        variants.append({"variant": variant, "latest": record, "history": [record]})
+        variants.append({
+            "variant": variant, "latest": record, "history": [record],
+            "evaluation_family": runscan._evaluation_variant_family([record]),
+        })
 
     snapshot = evaluation_snapshot(variants)
-    assert snapshot["current"]["state"] == "PARTIAL"
-    assert snapshot["current"]["missing_metrics"] == ["oracle_plan_ppl"]
+    assert snapshot["current"]["state"] == "UNRESOLVED"
+    assert snapshot["current"]["metrics"] == {}
     assert "plan_ppl_gap" not in snapshot["current"]["metrics"]
+
+
+def test_duplicate_semantic_slot_variants_fail_closed_even_when_values_match():
+    dimensions = {
+        "sampling_method": "sde", "num_sampling_steps": 32, "cfg": 1.0,
+        "self_cond_cfg_scale": 3.0, "time_schedule": "logit_normal",
+        "time_warp_gamma": 1.0,
+    }
+    family_id = runscan._evaluation_family_id(dimensions)
+    variants = []
+    for variant_id, mode, metric, value in (
+        ("clean", "clean_token_reconstruction", "token_recon_ppl", 20.0),
+        ("generation", "generation_refine_decode", "g_ppl", 3.0),
+        ("oracle-a", "oracle_plan_generation", "oracle_plan_ppl", 2.0),
+        ("oracle-b", "oracle_plan_generation", "oracle_plan_ppl", 2.0),
+        ("shuffled", "shuffled_plan_generation", "shuffled_plan_ppl", 4.0),
+    ):
+        record = {"epoch": 0, "step": 10, "mode": mode, metric: value}
+        family = {
+            "status": "RESOLVED",
+            "scope": "FAMILY_INDEPENDENT_RECONSTRUCTION",
+        }
+        if variant_id != "clean":
+            record["sampling_dimensions"] = dimensions
+            family = {
+                "status": "RESOLVED", "scope": "SAMPLING_FAMILY",
+                "family_id": family_id, "dimensions": dimensions,
+            }
+        variants.append({
+            "variant": variant_id, "latest": record, "history": [record],
+            "evaluation_family": family,
+        })
+
+    snapshot = evaluation_snapshot(variants)
+
+    assert snapshot["family_state"] == "SINGLE_ELIGIBLE_FAMILY"
+    assert snapshot["current"]["state"] == "PARTIAL"
+    assert snapshot["current"]["conflicting_metrics"] == ["oracle_plan_ppl"]
+    assert "oracle_plan_ppl" not in snapshot["current"]["metrics"]
+    assert "plan_ppl_gap" not in snapshot["current"]["metrics"]
+    assert snapshot["latest_metric_complete"] is None
+
+
+def test_record_dimensions_must_match_the_bound_sampling_family():
+    dimensions = {
+        "sampling_method": "sde", "num_sampling_steps": 32, "cfg": 1.0,
+        "self_cond_cfg_scale": 3.0, "time_schedule": "logit_normal",
+        "time_warp_gamma": 1.0,
+    }
+    variants = []
+    for variant_id, mode, metric in (
+        ("clean", "clean_token_reconstruction", "token_recon_ppl"),
+        ("generation", "generation_refine_decode", "g_ppl"),
+        ("oracle", "oracle_plan_generation", "oracle_plan_ppl"),
+        ("shuffled", "shuffled_plan_generation", "shuffled_plan_ppl"),
+    ):
+        record = {"epoch": 0, "step": 10, "mode": mode, metric: 2.0}
+        family = {
+            "status": "RESOLVED",
+            "scope": "FAMILY_INDEPENDENT_RECONSTRUCTION",
+        }
+        if variant_id != "clean":
+            record["sampling_dimensions"] = dict(dimensions)
+            family = {
+                "status": "RESOLVED", "scope": "SAMPLING_FAMILY",
+                "family_id": runscan._evaluation_family_id(dimensions),
+                "dimensions": dimensions,
+            }
+        variants.append({
+            "variant": variant_id, "latest": record, "history": [record],
+            "evaluation_family": family,
+        })
+    variants[1]["history"][0]["sampling_dimensions"] = {
+        **dimensions, "num_sampling_steps": 64,
+    }
+
+    snapshot = evaluation_snapshot(variants)
+
+    assert snapshot["current"]["state"] == "PARTIAL"
+    assert "g_ppl" in snapshot["current"]["conflicting_metrics"]
+    assert snapshot["latest_metric_complete"] is None
+
+
+def test_legacy_family_requires_exact_four_slot_mode_set():
+    variants = []
+    for variant_id, mode, metric in (
+        ("clean", "clean_token_reconstruction", "token_recon_ppl"),
+        ("generation", "generation_refine_decode", "g_ppl"),
+        ("oracle", "oracle_plan_generation", "oracle_plan_ppl"),
+        ("shuffled", "shuffled_plan_generation", "shuffled_plan_ppl"),
+        ("unknown", "totally_unknown_mode", "ppl"),
+    ):
+        record = {"epoch": 0, "step": 10, "mode": mode, metric: 2.0}
+        variants.append({
+            "variant": variant_id, "latest": record, "history": [record],
+            "evaluation_family": runscan._evaluation_variant_family([record]),
+        })
+
+    snapshot = evaluation_snapshot(variants)
+
+    assert snapshot["family_state"] == "UNRESOLVED"
+    assert snapshot["families"] == []
+    assert snapshot["current"]["metrics"] == {}
+    assert snapshot["latest_metric_complete"] is None
 
 
 def test_eval_history_is_bounded_and_flags_nonidentical_duplicate_steps(tmp_path):
