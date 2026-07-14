@@ -252,21 +252,20 @@ class SourceRevisionService:
         with lock_path.open("a+", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             try:
-                if not path.is_file():
+                try:
+                    if not path.is_file():
+                        raise ApplicationError(
+                            "source import plan not found", status_code=404,
+                            code="UNKNOWN_SOURCE_IMPORT",
+                        )
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    if not isinstance(payload, dict):
+                        raise ValueError("plan must be a mapping")
+                except (OSError, json.JSONDecodeError, ValueError) as exc:
                     raise ApplicationError(
-                        "source import plan not found", status_code=404,
-                        code="UNKNOWN_SOURCE_IMPORT",
-                    )
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(payload, dict):
-                    raise ValueError("plan must be a mapping")
+                        "source import plan is unreadable", code="SOURCE_IMPORT_BLOCKED",
+                    ) from exc
                 yield path, payload
-            except (OSError, json.JSONDecodeError, ValueError) as exc:
-                if isinstance(exc, ApplicationError):
-                    raise
-                raise ApplicationError(
-                    "source import plan is unreadable", code="SOURCE_IMPORT_BLOCKED",
-                ) from exc
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 

@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 from ml_exp_server.api.app import create_app
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server import project_imports
 from tests.test_project_imports import config
 
 
@@ -104,9 +103,7 @@ def test_preview_rejects_resolve_root_project_and_existing_identity_edges(
             import_service.preview(repository, project="bad/id")
 
 
-def test_locked_plan_validation_corruption_and_application_error_passthrough(
-    tmp_path, monkeypatch,
-):
+def test_locked_plan_validation_corruption_and_body_error_passthrough(tmp_path):
     with TestClient(create_app(config(tmp_path))) as client:
         import_service = service(client)
         with pytest.raises(ApplicationError, match="invalid import identity"):
@@ -128,14 +125,12 @@ def test_locked_plan_validation_corruption_and_application_error_passthrough(
         with pytest.raises(ApplicationError, match="unreadable"):
             import_service.execute(corrupt, f"IMPORT {corrupt}")
 
-        class CaughtApplicationError(ValueError):
-            def __init__(self, message, **kwargs):
-                super().__init__(message)
-
-        monkeypatch.setattr(project_imports, "ApplicationError", CaughtApplicationError)
-        passthrough = "import-" + "c" * 24
-        with pytest.raises(CaughtApplicationError, match="not found"):
-            import_service.execute(passthrough, f"IMPORT {passthrough}")
+        repository = tmp_path / "body-error"
+        repository.mkdir()
+        plan = import_service.preview(repository)
+        with pytest.raises(ValueError, match="execution body failed"):
+            with import_service._locked_plan(plan["import_id"]):
+                raise ValueError("execution body failed")
 
 
 def test_execute_stale_repository_and_manifest_parse_edges(tmp_path):

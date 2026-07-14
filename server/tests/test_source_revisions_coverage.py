@@ -134,7 +134,7 @@ def test_preview_binding_and_materialization_error_edges(tmp_path, monkeypatch):
             revision_service.preview("demo", proposal(base))
 
 
-def test_locked_plan_invalid_missing_corrupt_and_passthrough(tmp_path, monkeypatch):
+def test_locked_plan_invalid_missing_corrupt_and_body_passthrough(tmp_path):
     root, _base = repository(tmp_path)
     with TestClient(create_app(config(
         tmp_path, root / "experiments" / "research_project.yaml", imports=True,
@@ -156,14 +156,10 @@ def test_locked_plan_invalid_missing_corrupt_and_passthrough(tmp_path, monkeypat
         with pytest.raises(ApplicationError, match="unreadable"):
             revision_service.execute(corrupt, "bad")
 
-        class CaughtApplicationError(ValueError):
-            def __init__(self, message, **kwargs):
-                super().__init__(message)
-
-        monkeypatch.setattr(source_revisions, "ApplicationError", CaughtApplicationError)
-        passthrough = "source-import-" + "c" * 24
-        with pytest.raises(CaughtApplicationError, match="not found"):
-            revision_service.execute(passthrough, "bad")
+        plan = revision_service.preview("demo", proposal(_base))
+        with pytest.raises(ValueError, match="execution body failed"):
+            with revision_service._locked_plan(plan["import_id"]):
+                raise ValueError("execution body failed")
 
 
 def test_execute_tampered_identity_collision_and_changed_materialization(
