@@ -191,6 +191,10 @@ consumer upgrade checklist are defined in
 [`docs/downstream_contract.md`](docs/downstream_contract.md). Imports whose
 names begin with `_` are implementation details and are not downstream APIs.
 
+The daemon workspace's Project registry, `ACTIVE`/`PAUSED`/`ARCHIVED` state
+machine, collector effects, and non-destructive archive/unregister semantics
+are specified in [`docs/project_lifecycle.md`](docs/project_lifecycle.md).
+
 ## Backend lifecycle
 
 Each backend implements:

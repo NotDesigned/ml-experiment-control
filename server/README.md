@@ -32,4 +32,5 @@ There is no `/api/agent/*` API or daemon-owned model-turn state.
 verify that their read-only checkout matches the Project managed by the daemon.
 
 The full architecture, configuration, and verification contract is maintained
-in the repository root `README.md` and `docs/development.md`.
+in the repository root `README.md`, `docs/development.md`, and
+`docs/project_lifecycle.md`.

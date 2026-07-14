@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from ml_exp_server.ingest.runscan import (
-    discover_run_dirs, is_run_dir, parse_iso_ts, scan_run_dir,
+    discover_run_dirs, evaluation_variants, is_run_dir, parse_iso_ts, scan_run_dir,
 )
 from tests.conftest import A1_SCHEDULER_TS, A1_WORKER_TS, FIXTURES
 
@@ -93,6 +93,63 @@ def test_declared_canonical_eval_variant_controls_flat_view(tmp_path):
     assert row.canonical_eval_variant_id == "variant-b"
     assert row.eval_metrics == {"g_ppl": 20.0}
     assert len(row.eval_variants) == 2
+
+
+def test_eval_history_preserves_matched_nonlatest_steps(tmp_path):
+    histories = {}
+    for run_id, steps in (("aux0", (2000, 4000, 6000, 8000, 10000)),
+                          ("aux1", (2000, 4000, 6000, 8000))):
+        root = tmp_path / run_id / "train_sampling_eval" / "generation"
+        root.mkdir(parents=True)
+        (root / "metrics.jsonl").write_text("".join(
+            json.dumps({
+                "epoch": 0, "step": step, "mode": "generation_refine_decode",
+                "g_ppl": step / 1000, "prompt": "must not be exposed",
+                "samples": ["large model output"], "api_key": "secret",
+            }) + "\n"
+            for step in steps
+        ), encoding="utf-8")
+        variants, _ = evaluation_variants(tmp_path / run_id)
+        histories[run_id] = variants[0]
+
+    assert histories["aux0"]["records"] == 5
+    assert histories["aux1"]["records"] == 4
+    assert histories["aux0"]["latest"]["step"] == 10000
+    assert histories["aux1"]["latest"]["step"] == 8000
+    assert [record["step"] for record in histories["aux0"]["history"]] == [
+        2000, 4000, 6000, 8000, 10000,
+    ]
+    assert histories["aux1"]["history"][-1]["step"] == 8000
+    for item in histories.values():
+        assert item["history_limit"] == 32
+        assert item["history_truncated"] is False
+        assert item["history_omitted_records"] == 0
+        assert not ({"prompt", "samples", "api_key"} & item["latest"].keys())
+        assert all(not ({"prompt", "samples", "api_key"} & record.keys())
+                   for record in item["history"])
+
+
+def test_eval_history_is_bounded_and_deduplicated_by_epoch_step(tmp_path):
+    root = tmp_path / "bounded" / "variant-a"
+    root.mkdir(parents=True)
+    records = [
+        {"epoch": 0, "step": step, "ppl": float(step)}
+        for step in range(35)
+    ]
+    records.append({"epoch": 0, "step": 34, "ppl": 0.34})
+    (root / "metrics.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8",
+    )
+
+    variants, _ = evaluation_variants(tmp_path / "bounded")
+    item = variants[0]
+    assert item["records"] == 36
+    assert item["history_total"] == 35
+    assert len(item["history"]) == item["history_limit"] == 32
+    assert item["history_truncated"] is True
+    assert item["history_omitted_records"] == 3
+    assert item["history"][0]["step"] == 3
+    assert item["history"][-1] == {"epoch": 0, "step": 34, "ppl": 0.34}
 
 
 def test_a1_model_layer_goes_stale_much_later(a1_run_dir):
