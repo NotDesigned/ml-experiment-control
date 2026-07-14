@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -115,6 +116,104 @@ def test_materialize_no_change_gitlink_and_symlink_edges(tmp_path, monkeypatch):
         )
 
 
+def test_tree_digest_rejects_mutable_invalid_and_special_trees(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="unavailable"):
+        source_revisions._tree_digest(tmp_path / "missing")
+
+    writable = tmp_path / "writable"
+    writable.mkdir()
+    with pytest.raises(ValueError, match="tree is writable"):
+        source_revisions._tree_digest(writable, require_read_only=True)
+
+    absolute = tmp_path / "absolute"
+    absolute.mkdir()
+    (absolute / "link").symlink_to(tmp_path / "outside")
+    with pytest.raises(ValueError, match="escaping symlink"):
+        source_revisions._tree_digest(absolute)
+
+    invalid = tmp_path / "invalid"
+    invalid.mkdir()
+    link = invalid / "link"
+    link.symlink_to("target")
+    real_resolve = Path.resolve
+
+    def fail_link_resolve(path, *args, **kwargs):
+        if path == link:
+            raise RuntimeError("loop")
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_link_resolve)
+    with pytest.raises(ValueError, match="invalid symlink"):
+        source_revisions._tree_digest(invalid)
+    monkeypatch.setattr(Path, "resolve", real_resolve)
+
+    readonly = tmp_path / "readonly"
+    directory = readonly / "nested"
+    directory.mkdir(parents=True)
+    (directory / "file").write_text("value", encoding="utf-8")
+    (directory / "file").chmod(0o444)
+    readonly.chmod(0o555)
+    with pytest.raises(ValueError, match="tree is writable"):
+        source_revisions._tree_digest(readonly, require_read_only=True)
+
+    special = tmp_path / "special"
+    special.mkdir()
+    os.mkfifo(special / "fifo")
+    with pytest.raises(ValueError, match="special file"):
+        source_revisions._tree_digest(special)
+
+
+def test_source_tree_resolver_rejects_metadata_symlink_and_digest_mismatch(tmp_path):
+    configured = source_revisions.ServerConfig(
+        index_db=str(tmp_path / "state/index.sqlite"),
+        action_root=str(tmp_path / "state/actions"),
+        project_registry_root=str(tmp_path / "state/projects"),
+        collector_enabled=False,
+    )
+    sources = (
+        configured.project_registry_root_path() / "source-revisions" / "sources" / "demo"
+    )
+    linked_id = "source." + "a" * 64
+    linked = sources / linked_id
+    linked.mkdir(parents=True)
+    outside = tmp_path / "metadata.json"
+    outside.write_text("{}", encoding="utf-8")
+    (linked / "source.json").symlink_to(outside)
+    with pytest.raises(ValueError, match="metadata path is a symlink"):
+        source_revisions.resolve_source_tree(configured, "demo", linked_id)
+
+    external_project = tmp_path / "external-project"
+    (external_project / linked_id).mkdir(parents=True)
+    (sources.parent / "linked-project").symlink_to(
+        external_project, target_is_directory=True,
+    )
+    with pytest.raises(ValueError, match="storage path is not canonical"):
+        source_revisions.resolve_source_tree(configured, "linked-project", linked_id)
+
+    template = tmp_path / "tree-template"
+    template.mkdir()
+    (template / "file.py").write_text("original\n", encoding="utf-8")
+    digest = source_revisions._tree_digest(template)
+    source_id = "source." + digest.removeprefix("sha256:")
+    final = sources / source_id
+    final.mkdir(parents=True)
+    template.rename(final / "tree")
+    tree_file = final / "tree" / "file.py"
+    tree_file.chmod(0o444)
+    (final / "tree").chmod(0o555)
+    metadata = final / "source.json"
+    metadata.write_text(json.dumps({
+        "project": "demo", "source_id": source_id, "tree": "tree",
+        "tree_digest": digest,
+    }), encoding="utf-8")
+    metadata.chmod(0o444)
+    tree_file.chmod(0o644)
+    tree_file.write_text("changed\n", encoding="utf-8")
+    tree_file.chmod(0o444)
+    with pytest.raises(ValueError, match="tree digest mismatch"):
+        source_revisions.resolve_source_tree(configured, "demo", source_id)
+
+
 def test_preview_binding_and_materialization_error_edges(tmp_path, monkeypatch):
     root, base = repository(tmp_path)
     with TestClient(create_app(config(
@@ -178,6 +277,16 @@ def test_execute_tampered_identity_collision_and_changed_materialization(
         with pytest.raises(ApplicationError, match="planned source identity"):
             revision_service.execute(plan["import_id"], plan["confirmation"])
 
+        with pytest.raises(ApplicationError, match="identity collision"):
+            revision_service.preview("demo", proposal(base))
+        plan_path.unlink()
+        plan = revision_service.preview("demo", proposal(base))
+        stored = json.loads(plan_path.read_text())
+        stored["project"] = "bad/id"
+        plan_path.write_text(json.dumps(stored), encoding="utf-8")
+        with pytest.raises(ApplicationError, match="planned Project identity"):
+            revision_service.execute(plan["import_id"], plan["confirmation"])
+        plan_path.unlink()
         plan = revision_service.preview("demo", proposal(base))
         monkeypatch.setattr(
             revision_service, "_proposal",
@@ -187,6 +296,14 @@ def test_execute_tampered_identity_collision_and_changed_materialization(
             revision_service.execute(plan["import_id"], plan["confirmation"])
         monkeypatch.undo()
 
+        plan = revision_service.preview("demo", proposal(base))
+        stored = json.loads(plan_path.read_text())
+        stored["tree_digest"] = "sha256:" + "0" * 64
+        plan_path.write_text(json.dumps(stored), encoding="utf-8")
+        with pytest.raises(ApplicationError, match="tree identity changed"):
+            revision_service.execute(plan["import_id"], plan["confirmation"])
+
+        plan_path.unlink()
         plan = revision_service.preview("demo", proposal(base))
         first = revision_service.execute(plan["import_id"], plan["confirmation"])
         metadata = Path(first["source"]["metadata_path"])
@@ -207,6 +324,19 @@ def test_execute_tampered_identity_collision_and_changed_materialization(
             revision_service, "_materialize", lambda *args, **kwargs: ["other.py"],
         )
         with pytest.raises(ApplicationError, match="changed after preview"):
+            revision_service.execute(plan["import_id"], plan["confirmation"])
+        monkeypatch.undo()
+
+        plan = revision_service.preview("demo", other)
+
+        def different_tree(_repository, _base, _patch, tree):
+            tree.mkdir(parents=True)
+            (tree / ".git").mkdir()
+            (tree / "train.py").write_text("value = 99\n", encoding="utf-8")
+            return ["train.py"]
+
+        monkeypatch.setattr(revision_service, "_materialize", different_tree)
+        with pytest.raises(ApplicationError, match="tree changed after preview"):
             revision_service.execute(plan["import_id"], plan["confirmation"])
 
 
@@ -240,20 +370,18 @@ def test_execute_cleanup_branches_and_get_errors(tmp_path, monkeypatch):
 
 def test_execute_chmod_skips_materialized_symlink(tmp_path, monkeypatch):
     root, base = repository(tmp_path)
+    (root / "link.py").symlink_to("train.py")
+    source_revisions._git(root, "add", "link.py")
+    source_revisions._git(
+        root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "-qm", "internal source link",
+    )
+    base = source_revisions._git(root, "rev-parse", "HEAD").decode().strip()
     with TestClient(create_app(config(
         tmp_path, root / "experiments" / "research_project.yaml", imports=True,
     ))) as client:
         revision_service = service(client)
         plan = revision_service.preview("demo", proposal(base))
-
-        def materialize(_repository, _base, _patch, tree):
-            tree.mkdir(parents=True)
-            (tree / ".git").mkdir()
-            (tree / "train.py").write_text("value = 2\n", encoding="utf-8")
-            (tree / "link.py").symlink_to("train.py")
-            return ["train.py"]
-
-        monkeypatch.setattr(revision_service, "_materialize", materialize)
         result = revision_service.execute(plan["import_id"], plan["confirmation"])
 
     assert Path(result["source"]["tree_path"]).joinpath("link.py").is_symlink()

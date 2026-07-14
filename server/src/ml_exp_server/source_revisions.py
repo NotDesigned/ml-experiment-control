@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Iterator
 from uuid import uuid4
 
-from experiment_control.manifest import atomic_write
+from experiment_control.manifest import atomic_create, atomic_write
 
 from .application_errors import ApplicationError
 from .schemas import ServerConfig
@@ -31,22 +31,86 @@ _PROTECTED = {".git", ".ssh", ".aws", ".gnupg", "credentials", "keys", "secrets"
 _PROTECTED_SUFFIXES = {".key", ".pem", ".p12", ".pfx"}
 
 
+def _tree_digest(root: Path, *, require_read_only: bool = False) -> str:
+    """Hash a source tree without following links or trusting filesystem modes."""
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("source revision tree is unavailable")
+    if require_read_only and root.stat().st_mode & 0o222:
+        raise ValueError("source revision tree is writable")
+    digest = hashlib.sha256()
+
+    def field(value: bytes) -> None:
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+
+    stack = [root]
+    while stack:
+        directory = stack.pop()
+        children = sorted(directory.iterdir(), key=lambda item: item.name)
+        directories: list[Path] = []
+        for path in children:
+            relative = path.relative_to(root).as_posix().encode("utf-8")
+            if path.is_symlink():
+                target = os.readlink(path)
+                if Path(target).is_absolute():
+                    raise ValueError("source revision tree contains an escaping symlink")
+                try:
+                    resolved = path.resolve(strict=False)
+                except (OSError, RuntimeError) as exc:
+                    raise ValueError("source revision tree contains an invalid symlink") from exc
+                if resolved != root and root not in resolved.parents:
+                    raise ValueError("source revision tree contains an escaping symlink")
+                field(b"L")
+                field(relative)
+                field(target.encode("utf-8"))
+            elif path.is_dir():
+                if require_read_only and path.stat().st_mode & 0o222:
+                    raise ValueError("source revision tree is writable")
+                field(b"D")
+                field(relative)
+                directories.append(path)
+            elif path.is_file():
+                mode = path.stat().st_mode
+                if require_read_only and mode & 0o222:
+                    raise ValueError("source revision tree is writable")
+                field(b"F")
+                field(relative)
+                field(b"X" if mode & 0o111 else b"-")
+                with path.open("rb") as handle:
+                    while chunk := handle.read(1024 * 1024):
+                        field(chunk)
+            else:
+                raise ValueError("source revision tree contains a special file")
+        stack.extend(reversed(directories))
+    return "sha256:" + digest.hexdigest()
+
+
 def resolve_source_tree(config: ServerConfig, project: str, source_id: str) -> Path:
     """Resolve one validated content-addressed tree without trusting a request path."""
     if not _PROJECT_ID.fullmatch(project) or not _SOURCE_ID.fullmatch(source_id):
         raise ValueError("invalid source revision identity")
     root = config.project_registry_root_path() / "source-revisions" / "sources"
     metadata_path = root / project / source_id / "source.json"
+    canonical_root = root.resolve(strict=True)
+    canonical_source = canonical_root / project / source_id
+    if metadata_path.parent.resolve(strict=True) != canonical_source:
+        raise ValueError("source revision storage path is not canonical")
+    if metadata_path.parent.is_symlink() or metadata_path.is_symlink():
+        raise ValueError("source revision metadata path is a symlink")
+    if metadata_path.stat().st_mode & 0o222:
+        raise ValueError("source revision metadata is writable")
     payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    tree_digest = str(payload.get("tree_digest") or "")
     if (
         payload.get("project") != project
         or payload.get("source_id") != source_id
         or payload.get("tree") != "tree"
+        or tree_digest != "sha256:" + source_id.removeprefix("source.")
     ):
         raise ValueError("source revision metadata identity mismatch")
     tree = metadata_path.parent / "tree"
-    if not tree.is_dir():
-        raise ValueError("source revision tree is unavailable")
+    if _tree_digest(tree, require_read_only=True) != tree_digest:
+        raise ValueError("source revision tree digest mismatch")
     return tree
 
 
@@ -197,9 +261,11 @@ class SourceRevisionService:
         temporary = self.root / f".preview-{uuid4().hex}"
         try:
             changed = self._materialize(repository, base, patch, temporary)
+            shutil.rmtree(temporary / ".git")
+            tree_digest = _tree_digest(temporary)
         except ApplicationError:
             raise
-        except (OSError, subprocess.SubprocessError, UnicodeDecodeError) as exc:
+        except (OSError, ValueError, subprocess.SubprocessError, UnicodeDecodeError) as exc:
             raise ApplicationError(
                 "proposal patch does not apply cleanly to its exact base commit",
                 code="SOURCE_IMPORT_BLOCKED",
@@ -211,34 +277,48 @@ class SourceRevisionService:
                 "declared changed_files do not match the patch",
                 code="SOURCE_IMPORT_BLOCKED",
             )
-        source_hash = hashlib.sha256(
-            project.encode() + b"\0" + base.encode() + b"\0" + patch_digest.encode()
-        ).hexdigest()
+        source_hash = tree_digest.removeprefix("sha256:")
         source_id = f"source.{source_hash}"
-        import_id = f"source-import-{source_hash[:24]}"
-        plan = {
-            "schema_version": 1,
-            "import_id": import_id,
+        provenance = {
+            "proposal_id": proposal.get("proposal_id"),
+            "binding": binding if isinstance(binding, dict) else {},
+            "repository_identity": (
+                proposal.get("repository_identity")
+                if isinstance(proposal.get("repository_identity"), dict) else {}
+            ),
+            "checks": proposal.get("checks") if isinstance(proposal.get("checks"), list) else [],
+        }
+        canonical = {
             "project": project,
             "base_commit": base,
             "patch": patch.decode("utf-8"),
             "patch_digest": patch_digest,
+            "tree_digest": tree_digest,
             "changed_files": changed,
-            "proposal_provenance": {
-                "proposal_id": proposal.get("proposal_id"),
-                "binding": binding if isinstance(binding, dict) else {},
-                "repository_identity": (
-                    proposal.get("repository_identity")
-                    if isinstance(proposal.get("repository_identity"), dict) else {}
-                ),
-                "checks": proposal.get("checks") if isinstance(proposal.get("checks"), list) else [],
-            },
+            "proposal_provenance": provenance,
             "source_id": source_id,
+        }
+        encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+        import_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        import_id = f"source-import-{import_hash[:24]}"
+        plan = {
+            "schema_version": 1,
+            "import_id": import_id,
+            **canonical,
             "confirmation": f"IMPORT SOURCE {source_id}",
             "executed": False,
         }
         self.plans.mkdir(parents=True, exist_ok=True)
-        atomic_write(self.plans / f"{import_id}.json", plan)
+        try:
+            atomic_create(self.plans / f"{import_id}.json", plan)
+        except FileExistsError:
+            with self._locked_plan(import_id) as (_path, existing_plan):
+                if any(existing_plan.get(key) != value for key, value in canonical.items()):
+                    raise ApplicationError(
+                        "source import plan identity collision",
+                        code="SOURCE_IMPORT_BLOCKED",
+                    )
+                return existing_plan
         return plan
 
     @contextmanager
@@ -279,58 +359,82 @@ class SourceRevisionService:
                     f"confirmation must equal IMPORT SOURCE {source_id}",
                     code="SOURCE_IMPORT_BLOCKED",
                 )
+            project = str(plan.get("project") or "")
+            if not _PROJECT_ID.fullmatch(project):
+                raise ApplicationError(
+                    "invalid planned Project identity", code="SOURCE_IMPORT_BLOCKED",
+                )
+            tree_digest = str(plan.get("tree_digest") or "")
+            if tree_digest != "sha256:" + source_id.removeprefix("source."):
+                raise ApplicationError(
+                    "source import plan tree identity changed", code="SOURCE_IMPORT_BLOCKED",
+                )
+            final = self.sources / project / source_id
+            metadata_path = final / "source.json"
+            if final.is_dir() and metadata_path.is_file():
+                try:
+                    resolve_source_tree(self.runtime.config, project, source_id)
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    raise ApplicationError(
+                        "source identity collision", code="SOURCE_IMPORT_BLOCKED",
+                    ) from exc
+                plan["executed"] = True
+                plan["source"] = {
+                    "source_id": source_id, "tree_path": str(final / "tree"),
+                    "metadata_path": str(metadata_path),
+                }
+                atomic_write(plan_path, plan)
+                return {"import": plan, "source": plan["source"]}
             if not self.runtime.config.action_runtime.allow_source_imports:
                 raise ApplicationError(
                     "source imports are disabled by daemon policy",
                     code="SOURCE_IMPORT_BLOCKED",
                 )
-            repository = self._repository(str(plan.get("project") or ""))
+            repository = self._repository(project)
             base, patch, patch_digest, declared = self._proposal(plan)
             if patch_digest != plan.get("patch_digest"):
                 raise ApplicationError("source import plan changed", code="SOURCE_IMPORT_BLOCKED")
-            final = self.sources / str(plan["project"]) / source_id
-            metadata_path = final / "source.json"
-            if final.is_dir() and metadata_path.is_file():
-                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-                if metadata.get("patch_digest") != patch_digest:
+            temporary = final.parent / f".{source_id}.{uuid4().hex}.tmp"
+            try:
+                changed = self._materialize(repository, base, patch, temporary / "tree")
+                if changed != declared:
                     raise ApplicationError(
-                        "source identity collision", code="SOURCE_IMPORT_BLOCKED",
+                        "source import changed after preview", code="SOURCE_IMPORT_BLOCKED",
                     )
-            else:
-                temporary = final.parent / f".{source_id}.{uuid4().hex}.tmp"
-                try:
-                    changed = self._materialize(repository, base, patch, temporary / "tree")
-                    if changed != declared:
-                        raise ApplicationError(
-                            "source import changed after preview", code="SOURCE_IMPORT_BLOCKED",
-                        )
-                    shutil.rmtree(temporary / "tree" / ".git")
-                    metadata = {
-                        "schema_version": 1, "source_id": source_id,
-                        "project": plan["project"], "base_commit": base,
-                        "patch_digest": patch_digest, "changed_files": changed,
-                        "proposal_provenance": plan.get("proposal_provenance", {}),
-                        "tree": "tree",
-                    }
-                    atomic_write(temporary / "source.json", metadata)
-                    for item in sorted((temporary / "tree").rglob("*"), reverse=True):
-                        if item.is_symlink():
-                            continue
-                        mode = item.stat().st_mode & 0o777
-                        item.chmod((mode & 0o555) if item.is_file() else 0o555)
-                    (temporary / "tree").chmod(0o555)
-                    (temporary / "source.json").chmod(0o444)
-                    final.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(temporary, final)
-                except ApplicationError:
-                    shutil.rmtree(temporary, ignore_errors=True)
-                    raise
-                except (OSError, subprocess.SubprocessError, UnicodeDecodeError) as exc:
-                    shutil.rmtree(temporary, ignore_errors=True)
+                shutil.rmtree(temporary / "tree" / ".git")
+                materialized_digest = _tree_digest(temporary / "tree")
+                if materialized_digest != tree_digest:
                     raise ApplicationError(
-                        "failed to materialize immutable source revision",
+                        "source import tree changed after preview",
                         code="SOURCE_IMPORT_BLOCKED",
-                    ) from exc
+                    )
+                metadata = {
+                    "schema_version": 1, "source_id": source_id,
+                    "project": project, "base_commit": base,
+                    "patch_digest": patch_digest, "changed_files": changed,
+                    "tree_digest": tree_digest,
+                    "proposal_provenance": plan.get("proposal_provenance", {}),
+                    "tree": "tree",
+                }
+                atomic_write(temporary / "source.json", metadata)
+                for item in sorted((temporary / "tree").rglob("*"), reverse=True):
+                    if item.is_symlink():
+                        continue
+                    mode = item.stat().st_mode & 0o777
+                    item.chmod((mode & 0o555) if item.is_file() else 0o555)
+                (temporary / "tree").chmod(0o555)
+                (temporary / "source.json").chmod(0o444)
+                final.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(temporary, final)
+            except ApplicationError:
+                shutil.rmtree(temporary, ignore_errors=True)
+                raise
+            except (OSError, subprocess.SubprocessError, UnicodeDecodeError) as exc:
+                shutil.rmtree(temporary, ignore_errors=True)
+                raise ApplicationError(
+                    "failed to materialize immutable source revision",
+                    code="SOURCE_IMPORT_BLOCKED",
+                ) from exc
             plan["executed"] = True
             plan["source"] = {
                 "source_id": source_id, "tree_path": str(final / "tree"),

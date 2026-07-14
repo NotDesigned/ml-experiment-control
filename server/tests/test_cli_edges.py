@@ -156,6 +156,43 @@ def test_doctor_maps_corrupt_registry(tmp_path, capsys):
     assert "invalid project registry" in capsys.readouterr().out
 
 
+def test_doctor_validates_project_import_root_access(monkeypatch, tmp_path, capsys):
+    missing = tmp_path / "missing"
+    config = write_config(
+        tmp_path,
+        f"project_import_roots:\n  - {missing}\n",
+    )
+    assert main(["--config", str(config), "doctor", "--json"]) == 1
+    checks = {item["name"]: item for item in json.loads(capsys.readouterr().out)["checks"]}
+    assert checks["project_import_roots"]["status"] == "FAIL"
+    assert "does not exist" in checks["project_import_roots"]["detail"]
+
+    root = tmp_path / "imports"
+    root.mkdir()
+    config = write_config(
+        tmp_path,
+        f"project_import_roots:\n  - {root}\n",
+    )
+    assert main(["--config", str(config), "doctor", "--json"]) == 0
+    checks = {item["name"]: item for item in json.loads(capsys.readouterr().out)["checks"]}
+    assert checks["project_import_roots"]["status"] == "PASS"
+
+    monkeypatch.setattr(cli.os, "access", lambda _path, _mode: False)
+    assert main(["--config", str(config), "doctor", "--json"]) == 1
+    assert "not readable/searchable" in capsys.readouterr().out
+
+    config = write_config(
+        tmp_path,
+        f"project_import_roots:\n  - {root}\n"
+        "action_runtime:\n  allow_project_writes: true\n",
+    )
+    monkeypatch.setattr(
+        cli.os, "access", lambda _path, mode: mode == os.R_OK | os.X_OK,
+    )
+    assert main(["--config", str(config), "doctor", "--json"]) == 1
+    assert "not writable/searchable" in capsys.readouterr().out
+
+
 def test_main_serves_snapshot_with_tls_arguments(monkeypatch, tmp_path):
     config = write_config(tmp_path)
     cert = tmp_path / "cert.pem"

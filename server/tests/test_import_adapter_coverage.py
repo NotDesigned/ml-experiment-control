@@ -125,13 +125,18 @@ def test_source_tree_resolver_rejects_identity_metadata_and_missing_tree(tmp_pat
     metadata = source / "source.json"
     metadata.write_text(json.dumps({
         "project": "other", "source_id": source_id, "tree": "tree",
+        "tree_digest": "sha256:" + "a" * 64,
     }), encoding="utf-8")
+    metadata.chmod(0o444)
     with pytest.raises(ValueError, match="metadata identity mismatch"):
         resolve_source_tree(config, "demo", source_id)
 
+    metadata.chmod(0o644)
     metadata.write_text(json.dumps({
         "project": "demo", "source_id": source_id, "tree": "tree",
+        "tree_digest": "sha256:" + "a" * 64,
     }), encoding="utf-8")
+    metadata.chmod(0o444)
     with pytest.raises(ValueError, match="tree is unavailable"):
         resolve_source_tree(config, "demo", source_id)
 

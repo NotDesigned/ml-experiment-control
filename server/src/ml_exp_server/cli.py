@@ -229,11 +229,32 @@ def _doctor_command(args: argparse.Namespace) -> int:
                     f"set action_runtime.{flag}: true to allow this Action class",
                 ))
         import_roots = config.project_import_root_paths()
-        checks.append((
-            "project_import_roots", True if import_roots else None,
-            ", ".join(str(item) for item in import_roots) if import_roots else "disabled (default)",
-            None if import_roots else "configure project_import_roots to enable zero-config discovery",
-        ))
+        if not import_roots:
+            checks.append((
+                "project_import_roots", None, "disabled (default)",
+                "configure project_import_roots to enable zero-config discovery",
+            ))
+        else:
+            root_errors: list[str] = []
+            for root in import_roots:
+                if not root.is_dir():
+                    root_errors.append(f"{root}: directory does not exist")
+                elif not os.access(root, os.R_OK | os.X_OK):
+                    root_errors.append(f"{root}: not readable/searchable")
+                elif runtime.allow_project_writes and not os.access(
+                    root, os.W_OK | os.X_OK,
+                ):
+                    root_errors.append(f"{root}: not writable/searchable")
+            checks.append((
+                "project_import_roots", not root_errors,
+                "; ".join(root_errors) if root_errors else (
+                    f"{len(import_roots)} canonical root(s) accessible"
+                ),
+                (
+                    "create/fix root permissions and, for systemd ProtectSystem, "
+                    "add matching ReadWritePaths"
+                ) if root_errors else None,
+            ))
 
         store = CredentialStore(Path(config.observability.credential_root))
 

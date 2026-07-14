@@ -1008,6 +1008,7 @@ class ActionService:
         plan.update({
             "campaign_file": str(campaign), "run_id": run_id,
             "attempt_id": attempt_id, "backend_job_id": spec.get("backend_job_id"),
+            "expected_source_id": expected_source_id,
             "gates": gates, "ready": all(item["status"] != "FAIL" for item in gates),
             "diff": json.dumps(
                 _redact(preview_payload if preview_payload else observed),
@@ -1518,6 +1519,31 @@ class ActionService:
 
     def _execute_controller(self, plan: dict[str, Any], execution: dict[str, Any]) -> dict[str, Any]:
         command = [str(item) for item in plan["command_preview"]]
+        expected_source_id = str(plan.get("expected_source_id") or "")
+        if expected_source_id.startswith("source."):
+            try:
+                if self.source_resolver is None:
+                    raise ValueError("source resolver is unavailable")
+                source_root = self.source_resolver(
+                    str(plan["scope"]["project"]), expected_source_id,
+                )
+                root_index = command.index("--source-root") + 1
+                source_index = command.index("--source-id") + 1
+                if (
+                    command[root_index] != str(source_root)
+                    or command[source_index] != expected_source_id
+                ):
+                    raise ValueError("approved command source binding changed")
+            except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
+                execution.update({
+                    "status": "FAILED", "finished_at": utc_now(),
+                    "error": f"imported source failed execution-time validation: {exc}",
+                    "result": None,
+                })
+                return self.store.set_execution(
+                    plan["action_id"], execution,
+                    event="execution_source_validation_failed",
+                )
         result = self.controller.execute_command(
             command, cwd=Path(plan["cwd"]), timeout=self.config.timeout_seconds,
         )

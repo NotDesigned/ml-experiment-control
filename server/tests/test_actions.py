@@ -745,7 +745,9 @@ def test_imported_source_tree_is_passed_to_controller_preview_and_checks(tmp_pat
     source_root.mkdir(parents=True)
     runner = FakeController(source_id=source_id)
     service = ActionService(
-        ActionStore(tmp_path / "actions"), ActionRuntimeConfig(), runner,
+        ActionStore(tmp_path / "actions"),
+        ActionRuntimeConfig(allow_scheduler_mutations=True), runner,
+        actor_provider=lambda: "trusted:pi",
         source_resolver=lambda project_id, requested: (
             source_root if (project_id, requested) == ("demo", source_id) else None
         ),
@@ -770,6 +772,9 @@ def test_imported_source_tree_is_passed_to_controller_preview_and_checks(tmp_pat
                for call in source_calls)
     assert all(call[call.index("--source-id") + 1] == source_id
                for call in source_calls)
+    service.authorize(plan["action_id"], "source binding reviewed")
+    executed = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
+    assert executed["execution"]["status"] == "VERIFIED"
 
     failing = ActionService(
         ActionStore(tmp_path / "failing-actions"), ActionRuntimeConfig(), runner,
@@ -783,6 +788,88 @@ def test_imported_source_tree_is_passed_to_controller_preview_and_checks(tmp_pat
     )
     assert next(item for item in failing["gates"]
                 if item["name"] == "daemon_source_available")["status"] == "FAIL"
+
+
+def test_imported_source_is_revalidated_immediately_before_submit(tmp_path):
+    project, campaign = controller_project(tmp_path)
+    project.controller.capabilities["daemon_source_revision"] = True
+    source_id = "source." + "a" * 64
+    source_root = tmp_path / "immutable-source" / "tree"
+    source_root.mkdir(parents=True)
+    valid = True
+
+    def resolve(project_id, requested):
+        if not valid:
+            raise ValueError("tree digest mismatch")
+        assert (project_id, requested) == ("demo", source_id)
+        return source_root
+
+    runner = FakeController(source_id=source_id)
+    service = ActionService(
+        ActionStore(tmp_path / "actions"),
+        ActionRuntimeConfig(allow_scheduler_mutations=True), runner,
+        actor_provider=lambda: "trusted:pi", source_resolver=resolve,
+    )
+    draft = yaml.safe_load(submit_draft(campaign))
+    draft["expected_source_id"] = source_id
+    plan = service.prepare(
+        OperationScope(project="demo", scope_type="run", object_id="run-a"),
+        project,
+        operation_intent("SUBMIT_RUN", yaml.safe_dump(draft), "intent-source-recheck"),
+    )
+    assert plan["ready"] is True
+    service.authorize(plan["action_id"], "source reviewed")
+    valid = False
+    result = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
+
+    assert result["execution"]["status"] == "FAILED"
+    assert "execution-time validation" in result["execution"]["error"]
+    actual_submits = [
+        call for call in runner.calls if call[3] == "submit" and "--dry-run" not in call
+    ]
+    assert actual_submits == []
+
+
+def test_execution_source_revalidation_rejects_missing_resolver_and_command_drift(
+    tmp_path,
+):
+    project, campaign = controller_project(tmp_path)
+    project.controller.capabilities["daemon_source_revision"] = True
+    source_id = "source." + "a" * 64
+    source_root = tmp_path / "source" / "tree"
+    source_root.mkdir(parents=True)
+    draft = yaml.safe_load(submit_draft(campaign))
+    draft["expected_source_id"] = source_id
+
+    def prepared(name):
+        runner = FakeController(source_id=source_id)
+        service = ActionService(
+            ActionStore(tmp_path / name), ActionRuntimeConfig(), runner,
+            source_resolver=lambda *_args: source_root,
+        )
+        plan = service.prepare(
+            OperationScope(project="demo", scope_type="run", object_id="run-a"),
+            project,
+            operation_intent("SUBMIT_RUN", yaml.safe_dump(draft), f"intent-{name}"),
+        )
+        return service, plan, service.store.snapshot(plan["action_id"])["execution"]
+
+    service, plan, execution = prepared("missing-resolver")
+    service.source_resolver = None
+    result = service._execute_controller(plan, execution)
+    assert result["execution"]["status"] == "FAILED"
+
+    service, plan, execution = prepared("missing-source-id")
+    plan["command_preview"].remove("--source-id")
+    plan["command_preview"].remove(source_id)
+    result = service._execute_controller(plan, execution)
+    assert result["execution"]["status"] == "FAILED"
+
+    service, plan, execution = prepared("changed-source-root")
+    root_index = plan["command_preview"].index("--source-root") + 1
+    plan["command_preview"][root_index] = str(tmp_path / "different")
+    result = service._execute_controller(plan, execution)
+    assert result["execution"]["status"] == "FAILED"
 
 def test_submit_plan_blocks_existing_canonical_manifest_that_differs_from_preview(
     tmp_path,

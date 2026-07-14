@@ -1,6 +1,7 @@
 """Focused defensive coverage for Project import persistence and discovery."""
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from ml_exp_server import project_imports
 from ml_exp_server.api.app import create_app
 from ml_exp_server.application_errors import ApplicationError
 from tests.test_project_imports import config
@@ -102,6 +104,70 @@ def test_preview_rejects_resolve_root_project_and_existing_identity_edges(
         with pytest.raises(ApplicationError, match="must use"):
             import_service.preview(repository, project="bad/id")
 
+        unreadable = tmp_path / "unreadable"
+        unreadable_manifest = unreadable / "experiments" / "research_project.yaml"
+        unreadable_manifest.parent.mkdir(parents=True)
+        unreadable_manifest.write_text("[", encoding="utf-8")
+        with pytest.raises(ApplicationError, match="manifest is unreadable"):
+            import_service.preview(unreadable)
+
+
+def test_manifest_path_validation_non_string_edges(tmp_path):
+    project_imports._validate_manifest_paths(tmp_path, None)
+    project_imports._validate_manifest_paths(tmp_path, {
+        "run_roots": [None],
+        "campaigns": [None, {"file": None}],
+        "controller": {"workdir": None},
+    })
+    project_imports._validate_manifest_paths(tmp_path, {
+        "controller": {"workdir": ".", "experimentctl": None},
+    })
+
+
+def test_dirfd_and_directory_identity_defensive_edges(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="invalid import identity"):
+        project_imports._manifest_temp_name("bad")
+    special = tmp_path / "special"
+    special.mkdir()
+    os.mkfifo(special / "fifo")
+    identity = project_imports._directory_identity(special)
+    assert identity["files"] == 1
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    with pytest.raises(ApplicationError, match="directory changed"):
+        with project_imports._opened_repository(
+            repository, {"device": -1, "inode": -1},
+        ):
+            pass
+
+    link = tmp_path / "repository-link"
+    link.symlink_to(repository, target_is_directory=True)
+    with pytest.raises(ApplicationError, match="path changed"):
+        with project_imports._opened_repository(
+            link, project_imports._filesystem_identity(repository),
+        ):
+            pass
+
+    descriptor = os.open(repository, os.O_RDONLY | os.O_DIRECTORY)
+    monkeypatch.setattr(
+        project_imports, "_filesystem_identity",
+        lambda _path: (_ for _ in ()).throw(OSError("gone")),
+    )
+    try:
+        assert project_imports._descriptor_matches_path(descriptor, repository) is False
+    finally:
+        os.close(descriptor)
+
+    root_fd = os.open(repository, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        assert project_imports._digest_manifest_at(root_fd) is None
+        (repository / "experiments").mkdir()
+        assert project_imports._read_manifest_at(root_fd) == (False, None)
+        assert project_imports._digest_manifest_at(root_fd) is None
+    finally:
+        os.close(root_fd)
+
 
 def test_locked_plan_validation_corruption_and_body_error_passthrough(tmp_path):
     with TestClient(create_app(config(tmp_path))) as client:
@@ -158,8 +224,32 @@ def test_execute_stale_repository_and_manifest_parse_edges(tmp_path):
         manifest = plain / "experiments" / "research_project.yaml"
         manifest.parent.mkdir()
         manifest.write_text("[", encoding="utf-8")
-        with pytest.raises(ApplicationError, match="manifest changed"):
+        with pytest.raises(ApplicationError, match="(?:repository|manifest) changed"):
             import_service.execute(plan["import_id"], plan["confirmation"])
+
+
+def test_execute_rejects_tampered_plan_paths(tmp_path):
+    repository = tmp_path / "tampered-plan"
+    repository.mkdir()
+    with TestClient(create_app(config(tmp_path, writes=True))) as client:
+        import_service = service(client)
+        plan = import_service.preview(repository)
+        plan_path = import_service.root / f"{plan['import_id']}.json"
+        stored = json.loads(plan_path.read_text(encoding="utf-8"))
+        stored["manifest_path"] = str(repository / "other.yaml")
+        plan_path.write_text(json.dumps(stored), encoding="utf-8")
+        with pytest.raises(ApplicationError, match="not canonical"):
+            import_service.execute(plan["import_id"], plan["confirmation"])
+
+        plan_path.unlink()
+        plan = import_service.preview(repository)
+        stored = json.loads(plan_path.read_text(encoding="utf-8"))
+        stored["source"] = None
+        plan_path.write_text(json.dumps(stored), encoding="utf-8")
+        with pytest.raises(ApplicationError, match="invalid paths"):
+            import_service.execute(plan["import_id"], plan["confirmation"])
+        with pytest.raises(ApplicationError, match="identity collision"):
+            import_service.preview(repository)
 
     existing = tmp_path / "existing-stale"
     manifest = existing / "experiments" / "research_project.yaml"
@@ -175,5 +265,25 @@ def test_execute_stale_repository_and_manifest_parse_edges(tmp_path):
             "schema_version": 1, "project": "stale", "title": "Changed",
             "run_roots": [],
         }), encoding="utf-8")
+        with pytest.raises(ApplicationError, match="(?:repository|manifest) changed"):
+            import_service.execute(plan["import_id"], plan["confirmation"])
+
+
+def test_existing_import_digest_check_remains_fail_closed(tmp_path, monkeypatch):
+    repository = tmp_path / "existing-digest"
+    manifest = repository / "experiments" / "research_project.yaml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(yaml.safe_dump({
+        "schema_version": 1, "project": "digest", "title": "Digest",
+        "run_roots": [],
+    }), encoding="utf-8")
+    with TestClient(create_app(config(tmp_path))) as client:
+        import_service = service(client)
+        plan = import_service.preview(repository)
+        manifest.write_text(manifest.read_text().replace("Digest", "Changed"), encoding="utf-8")
+        monkeypatch.setattr(
+            project_imports, "_repository_identity",
+            lambda *_args, **_kwargs: plan["repository_identity"],
+        )
         with pytest.raises(ApplicationError, match="manifest changed"):
             import_service.execute(plan["import_id"], plan["confirmation"])

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 
@@ -105,6 +106,9 @@ def test_source_revision_execute_materializes_idempotent_read_only_tree(tmp_path
             f"/api/source-revisions/{plan['import_id']}/execute",
             json={"confirmation": plan["confirmation"]},
         )
+        repeated_preview = client.post("/api/source-revisions/preview", json={
+            "project": "demo", "proposal": proposal(base),
+        })
         fetched = client.get(
             f"/api/projects/demo/source-revisions/{plan['source_id']}"
         )
@@ -118,8 +122,75 @@ def test_source_revision_execute_materializes_idempotent_read_only_tree(tmp_path
     assert tree.stat().st_mode & 0o222 == 0
     assert (tree / "train.py").stat().st_mode & 0o222 == 0
     assert first.json()["source"] == second.json()["source"]
+    assert repeated_preview.json()["executed"] is True
     assert fetched.json()["patch_digest"] == plan["patch_digest"]
+    assert fetched.json()["tree_digest"] == "sha256:" + plan["source_id"].split(".", 1)[1]
     assert (root / "train.py").read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_source_revision_recovers_published_tree_without_repo_or_open_policy(tmp_path):
+    root, base = repository(tmp_path)
+    configured = config(
+        tmp_path, root / "experiments" / "research_project.yaml", imports=True,
+    )
+    with TestClient(create_app(configured)) as client:
+        revision_service = client.app.state.application.source_revision_service
+        plan = revision_service.preview("demo", proposal(base))
+        first = revision_service.execute(plan["import_id"], plan["confirmation"])
+        plan_path = revision_service.plans / f"{plan['import_id']}.json"
+        stored = json.loads(plan_path.read_text(encoding="utf-8"))
+        stored["executed"] = False
+        stored.pop("source", None)
+        plan_path.chmod(0o644)
+        plan_path.write_text(json.dumps(stored), encoding="utf-8")
+        root.rename(tmp_path / "repository-moved")
+        configured.action_runtime.allow_source_imports = False
+        recovered = revision_service.execute(plan["import_id"], plan["confirmation"])
+
+    assert recovered["import"]["executed"] is True
+    assert recovered["source"] == first["source"]
+
+
+def test_source_revision_rejects_tree_tampering_and_escaping_baseline_symlink(tmp_path):
+    root, base = repository(tmp_path)
+    configured = config(
+        tmp_path, root / "experiments" / "research_project.yaml", imports=True,
+    )
+    with TestClient(create_app(configured)) as client:
+        plan = client.post("/api/source-revisions/preview", json={
+            "project": "demo", "proposal": proposal(base),
+        }).json()
+        created = client.post(
+            f"/api/source-revisions/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        ).json()
+        tree_file = Path(created["source"]["tree_path"]) / "train.py"
+        tree_file.chmod(0o644)
+        tree_file.write_text("value = 99\n", encoding="utf-8")
+        rejected = client.get(
+            f"/api/projects/demo/source-revisions/{plan['source_id']}"
+        )
+
+    assert rejected.status_code == 409
+    assert "unreadable" in rejected.json()["detail"]
+
+    outside = tmp_path / "outside.py"
+    outside.write_text("outside = True\n", encoding="utf-8")
+    (root / "escape.py").symlink_to("../outside.py")
+    git(root, "add", "escape.py")
+    git(root, "commit", "-qm", "escaping link")
+    linked_base = git(root, "rev-parse", "HEAD").strip()
+    with TestClient(create_app(config(
+        tmp_path / "linked-state",
+        root / "experiments" / "research_project.yaml",
+        imports=True,
+    ))) as client:
+        rejected = client.post("/api/source-revisions/preview", json={
+            "project": "demo", "proposal": proposal(linked_base),
+        })
+
+    assert rejected.status_code == 409
+    assert "does not apply cleanly" in rejected.json()["detail"]
 
 
 def test_source_revision_rejects_forged_metadata_protected_paths_and_unknown_base(

@@ -117,6 +117,180 @@ def test_execute_rejects_manifest_created_after_preview(tmp_path):
     assert response.headers["X-ML-Expd-Error-Code"] == "PROJECT_IMPORT_STALE"
 
 
+def test_execute_rejects_repository_replaced_by_outside_symlink(tmp_path):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    config_value = config(tmp_path, writes=True)
+    config_value.project_import_roots = [str(allowed)]
+    repository = allowed / "demo"
+    repository.mkdir()
+
+    with TestClient(create_app(config_value)) as client:
+        plan = preview(client, repository).json()
+        repository.rename(allowed / "demo-moved")
+        repository.symlink_to(outside, target_is_directory=True)
+        response = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        )
+
+    assert response.status_code == 409
+    assert response.headers["X-ML-Expd-Error-Code"] == "PROJECT_IMPORT_STALE"
+    assert not (outside / "experiments" / "research_project.yaml").exists()
+
+
+def test_execute_revalidates_current_import_allowlist(tmp_path):
+    repository = tmp_path / "demo"
+    repository.mkdir()
+    config_value = config(tmp_path, writes=True)
+    with TestClient(create_app(config_value)) as client:
+        plan = preview(client, repository).json()
+        config_value.project_import_roots = [str(tmp_path / "different")]
+        response = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        )
+
+    assert response.status_code == 409
+    assert response.headers["X-ML-Expd-Error-Code"] == "PROJECT_IMPORT_STALE"
+    assert not (repository / "experiments" / "research_project.yaml").exists()
+
+
+def test_completed_import_remains_idempotent_after_repository_and_policy_drift(tmp_path):
+    repository = tmp_path / "demo"
+    repository.mkdir()
+    config_value = config(tmp_path, writes=True)
+    with TestClient(create_app(config_value)) as client:
+        plan = preview(client, repository).json()
+        first = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        ).json()
+        repository.rename(tmp_path / "demo-moved")
+        config_value.project_import_roots = []
+        repeated = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        )
+
+    assert repeated.status_code == 200
+    assert repeated.json() == first
+
+
+def test_execute_anchors_manifest_write_against_post_identity_path_swap(
+    tmp_path, monkeypatch,
+):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    repository = allowed / "demo"
+    repository.mkdir()
+    moved = allowed / "demo-moved"
+    config_value = config(tmp_path, writes=True)
+    config_value.project_import_roots = [str(allowed)]
+    real_identity = project_imports._repository_identity
+
+    def swap_after_identity(root, **kwargs):
+        identity = real_identity(root, **kwargs)
+        if str(root).startswith("/proc/self/fd/"):
+            repository.rename(moved)
+            repository.symlink_to(outside, target_is_directory=True)
+        return identity
+
+    with TestClient(create_app(config_value)) as client:
+        plan = preview(client, repository).json()
+        monkeypatch.setattr(project_imports, "_repository_identity", swap_after_identity)
+        response = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        )
+
+    assert response.status_code == 409
+    assert response.headers["X-ML-Expd-Error-Code"] == "PROJECT_IMPORT_STALE"
+    assert not (outside / "experiments" / "research_project.yaml").exists()
+
+
+def test_execute_rejects_non_git_repository_content_change(tmp_path):
+    repository = tmp_path / "plain"
+    repository.mkdir()
+    controller = repository / "experimentctl.py"
+    controller.write_text("print('v1')\n", encoding="utf-8")
+    with TestClient(create_app(config(tmp_path, writes=True))) as client:
+        plan = preview(client, repository).json()
+        controller.write_text("print('v2')\n", encoding="utf-8")
+        response = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        )
+
+    assert response.status_code == 409
+    assert response.headers["X-ML-Expd-Error-Code"] == "PROJECT_IMPORT_STALE"
+    assert not (repository / "experiments" / "research_project.yaml").exists()
+
+
+def test_execute_cleans_own_crash_leftover_before_identity_check(tmp_path):
+    repository = tmp_path / "crash-recovery"
+    repository.mkdir()
+    with TestClient(create_app(config(tmp_path, writes=True))) as client:
+        plan = preview(client, repository).json()
+        experiments = repository / "experiments"
+        experiments.mkdir()
+        leftover = experiments / project_imports._manifest_temp_name(plan["import_id"])
+        leftover.write_text("partially durable yaml", encoding="utf-8")
+        response = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["import"]["phase"] == "COMPLETED"
+    assert not leftover.exists()
+
+
+def test_existing_import_never_cleans_transaction_named_repository_file(tmp_path):
+    repository = tmp_path / "existing-cleanup-scope"
+    manifest = repository / "experiments" / "research_project.yaml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(yaml.safe_dump({
+        "schema_version": 1, "project": "existing-cleanup-scope",
+        "title": "Existing", "run_roots": [],
+    }), encoding="utf-8")
+    with TestClient(create_app(config(tmp_path))) as client:
+        plan = preview(client, repository).json()
+        victim = manifest.parent / project_imports._manifest_temp_name(plan["import_id"])
+        victim.write_text("repository-owned", encoding="utf-8")
+        response = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        )
+
+    assert response.status_code == 409
+    assert response.headers["X-ML-Expd-Error-Code"] == "PROJECT_IMPORT_STALE"
+    assert victim.read_text(encoding="utf-8") == "repository-owned"
+
+
+def test_closed_write_policy_never_cleans_generated_import_temp_name(tmp_path):
+    repository = tmp_path / "closed-cleanup-scope"
+    repository.mkdir()
+    with TestClient(create_app(config(tmp_path))) as client:
+        plan = preview(client, repository).json()
+        experiments = repository / "experiments"
+        experiments.mkdir()
+        victim = experiments / project_imports._manifest_temp_name(plan["import_id"])
+        victim.write_text("repository-owned", encoding="utf-8")
+        response = client.post(
+            f"/api/project-imports/{plan['import_id']}/execute",
+            json={"confirmation": plan["confirmation"]},
+        )
+
+    assert response.status_code == 409
+    assert "disabled by daemon policy" in response.json()["detail"]
+    assert victim.read_text(encoding="utf-8") == "repository-owned"
+
+
 def test_existing_manifest_preview_registers_without_project_write_policy(tmp_path):
     repository = tmp_path / "existing"
     manifest = repository / "experiments" / "research_project.yaml"
@@ -131,9 +305,12 @@ def test_existing_manifest_preview_registers_without_project_write_policy(tmp_pa
             f"/api/project-imports/{plan['import_id']}/execute",
             json={"confirmation": plan["confirmation"]},
         )
+        repeated = preview(client, repository).json()
 
     assert plan["operation"] == "REGISTER_EXISTING"
     assert response.status_code == 200
+    assert repeated["executed"] is True
+    assert repeated["phase"] == "COMPLETED"
 
 
 def test_preview_rejects_ambiguous_or_unsupported_sources(tmp_path):
@@ -160,6 +337,20 @@ def test_preview_rejects_paths_outside_allowlist_and_skips_symlink_discovery(tmp
     controller = outside / "experimentctl.py"
     controller.write_text("raise SystemExit\n", encoding="utf-8")
     (repository / "experimentctl.py").symlink_to(controller)
+    outside_questions = outside / "questions"
+    outside_questions.mkdir()
+    (repository / "experiments").mkdir()
+    (repository / "experiments" / "research_questions").symlink_to(
+        outside_questions, target_is_directory=True,
+    )
+    outside_campaigns = outside / "campaigns"
+    outside_campaigns.mkdir()
+    (outside_campaigns / "escaped.yaml").write_text(
+        "campaign: escaped\n", encoding="utf-8",
+    )
+    (repository / "experiments" / "campaigns").symlink_to(
+        outside_campaigns, target_is_directory=True,
+    )
 
     with TestClient(create_app(config_value)) as client:
         rejected = preview(client, outside)
@@ -169,6 +360,47 @@ def test_preview_rejects_paths_outside_allowlist_and_skips_symlink_discovery(tmp
     assert "project_import_roots" in rejected.json()["detail"]
     assert plan["manifest"]["run_roots"] == []
     assert "controller" not in plan["manifest"]
+    assert "research_questions_dir" not in plan["manifest"]
+    assert "campaigns" not in plan["manifest"]
+
+
+def test_preview_rejects_manifest_symlink_and_out_of_repository_references(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    (linked / "experiments").symlink_to(outside, target_is_directory=True)
+
+    with TestClient(create_app(config(tmp_path))) as client:
+        response = preview(client, linked)
+    assert response.status_code == 409
+    assert "manifest_path may not traverse a symlink" in response.json()["detail"]
+
+    cases = [
+        ({"run_roots": ["../outside"]}, "run_roots[0]"),
+        ({"research_questions_dir": str(outside)}, "research_questions_dir"),
+        ({"campaigns": [{"name": "escaped", "file": str(outside / "x.yaml")}]},
+         "campaigns[0].file"),
+        ({"controller": {"python": "python3", "experimentctl": "tool.py",
+                          "workdir": str(outside)}}, "controller.workdir"),
+        ({"controller": {"python": "python3", "experimentctl": "../outside.py",
+                          "workdir": "."}}, "controller.experimentctl"),
+    ]
+    for index, (extra, label) in enumerate(cases):
+        repository = tmp_path / f"reference-{index}"
+        manifest = repository / "experiments" / "research_project.yaml"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(yaml.safe_dump({
+            "schema_version": 1,
+            "project": f"reference-{index}",
+            "title": "Reference",
+            "run_roots": [],
+            **extra,
+        }), encoding="utf-8")
+        with TestClient(create_app(config(tmp_path))) as client:
+            response = preview(client, repository)
+        assert response.status_code == 409
+        assert label in response.json()["detail"]
 
 
 def test_execute_rolls_forward_after_manifest_and_registry_crash_windows(
@@ -211,14 +443,12 @@ def test_execute_reports_manifest_filesystem_failure_and_remains_retryable(
         service = client.app.state.application.project_import_service
         plan = service.preview(repository)
         manifest = repository / "experiments" / "research_project.yaml"
-        real_atomic_write = project_imports.atomic_write
+        real_write_manifest = project_imports._atomic_write_manifest
 
-        def fail_manifest(path, payload, **kwargs):
-            if path == manifest:
-                raise OSError(30, "Read-only file system")
-            return real_atomic_write(path, payload, **kwargs)
+        def fail_manifest(_root_fd, _payload, _import_id):
+            raise OSError(30, "Read-only file system")
 
-        monkeypatch.setattr(project_imports, "atomic_write", fail_manifest)
+        monkeypatch.setattr(project_imports, "_atomic_write_manifest", fail_manifest)
         with pytest.raises(ApplicationError, match="could not be materialized") as caught:
             service.execute(plan["import_id"], plan["confirmation"])
         assert caught.value.code == "PROJECT_IMPORT_BLOCKED"
@@ -228,7 +458,9 @@ def test_execute_reports_manifest_filesystem_failure_and_remains_retryable(
         assert stored["phase"] == "PREPARED"
         assert not manifest.exists()
 
-        monkeypatch.setattr(project_imports, "atomic_write", real_atomic_write)
+        monkeypatch.setattr(
+            project_imports, "_atomic_write_manifest", real_write_manifest,
+        )
         recovered = service.execute(plan["import_id"], plan["confirmation"])
 
     assert recovered["import"]["phase"] == "COMPLETED"

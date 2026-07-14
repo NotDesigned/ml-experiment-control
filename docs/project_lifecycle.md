@@ -85,6 +85,14 @@ follow discovered controller, run-root, or Campaign symlinks. Generated
 manifest imports are persisted as a recoverable four-phase transaction
 (`PREPARED`, `MANIFEST_APPLIED`, `REGISTERED`, `COMPLETED`), so retry after a
 process crash rolls forward and a completed import is idempotent.
+Non-Git repositories receive a no-follow content digest so files changed after
+preview also make the plan stale. Manifest creation is anchored to the opened
+repository directory with `openat`/`O_NOFOLLOW` and an fsynced rename; swapping
+the reviewed path after validation cannot redirect the write outside the
+allowlist.
+The temporary manifest name is bound to the import identity; a retry removes
+only its own anchored pre-rename residue before rechecking repository identity,
+so a process kill between fsync and rename still rolls forward safely.
 
 The daemon's operating-system sandbox must agree with this policy. When
 `allow_project_writes` is enabled, every configured import root that may
@@ -103,6 +111,17 @@ daemon-owned, read-only, content-addressed source tree. A Campaign may bind a
 new Run by setting its concrete `source_id` to that imported identity; submit
 preflight then requires the controller preview manifest to contain the same
 source identity.
+The `source_id` is the SHA-256 identity of the fully materialized tree rather
+than merely the patch request. Metadata retains that tree digest, and every
+resolve (including submit preflight) re-hashes the read-only tree and rejects
+content drift, writable paths, special files, and absolute or escaping
+symlinks. Relative symlinks are accepted only when their resolved target stays
+inside the same source tree. Identical previews preserve the original durable
+plan instead of resetting its execution phase. A digest-valid tree published
+before a crash can finish its plan record without reopening the original Git
+repository or import policy, and completed imports remain idempotent. The tree
+is resolved again immediately before controller dispatch, after authorization,
+so a changed tree cannot reach the scheduler through an older prepare result.
 For an imported `source.*` identity the Project controller must declare the
 `daemon_source_revision` capability and accept `--source-root PATH --source-id
 ID` on dry-run, preflight/assets checks, and submit. The daemon resolves PATH
