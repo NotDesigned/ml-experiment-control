@@ -4,11 +4,31 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import ipaddress
 import json
 import os
 from pathlib import Path
 import sys
 from typing import Sequence
+
+
+def _require_loopback_host(host: str) -> str:
+    """Keep the unauthenticated control plane local to the daemon host."""
+
+    value = host.strip().strip("[]")
+    if value.lower() == "localhost":
+        return host
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise SystemExit(
+            "ml-expd has no HTTP authentication; --host must be a loopback address"
+        ) from exc
+    if not address.is_loopback:
+        raise SystemExit(
+            "ml-expd has no HTTP authentication; refusing a non-loopback --host"
+        )
+    return host
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -201,8 +221,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from .api.app import create_app_from_config_file
 
+    host = _require_loopback_host(args.host)
     app = create_app_from_config_file(args.config, poll=False if args.snapshot else None)
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    uvicorn.run(app, host=host, port=args.port, log_level=args.log_level)
     return 0
 
 

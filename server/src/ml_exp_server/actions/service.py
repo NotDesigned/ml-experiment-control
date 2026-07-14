@@ -813,9 +813,13 @@ class ActionService:
             "authorized_gate_bundle_digest": snapshot["gate_bundle_digest"],
             "authorization_expires_at": snapshot["gate_expires_at"],
         })
-        return self.store.set_execution(
-            action_id, execution, event="execution_authorized",
-        )
+        try:
+            return self.store.set_execution(
+                action_id, execution, event="execution_authorized",
+                expected_status="PREPARED",
+            )
+        except RuntimeError as exc:
+            raise ActionError(str(exc)) from exc
 
     def execute(self, action_id: str, confirmation: str) -> dict[str, Any]:
         snapshot = self.store.snapshot(action_id)
@@ -867,7 +871,13 @@ class ActionService:
         except RuntimeError as exc:
             raise ActionError(str(exc)) from exc
         execution.update({"status": "EXECUTING", "started_at": utc_now(), "error": None})
-        self.store.set_execution(action_id, execution, event="execution_started")
+        try:
+            self.store.set_execution(
+                action_id, execution, event="execution_started",
+                expected_status="AUTHORIZED",
+            )
+        except RuntimeError as exc:
+            raise ActionError(str(exc)) from exc
         if project_write:
             return self._execute_write(snapshot, execution)
         if internal_mutation:

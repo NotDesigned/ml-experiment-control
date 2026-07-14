@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from ml_exp_server.cli import main
+import pytest
+
+from ml_exp_server.cli import _require_loopback_host, main
 from ml_exp_server.credentials import CredentialStore
 from ml_exp_server.project_registry import ProjectRegistry
 
@@ -129,3 +131,14 @@ def test_doctor_reports_invalid_config_without_crashing(tmp_path, capsys):
     out = capsys.readouterr().out
     assert exit_code == 1
     assert "✗ server config" in out
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.1.2.3", "::1", "localhost"])
+def test_daemon_accepts_only_loopback_bind_hosts(host):
+    assert _require_loopback_host(host) == host
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "daemon.internal"])
+def test_daemon_rejects_unauthenticated_non_loopback_bind_hosts(host):
+    with pytest.raises(SystemExit, match="no HTTP authentication"):
+        _require_loopback_host(host)

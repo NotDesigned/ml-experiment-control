@@ -270,6 +270,35 @@ class ObservabilityArchive:
             paths.append(path)
         return tuple(paths)
 
+    def load(self, source_ids: Sequence[str]) -> tuple[ArchiveRecord, ...]:
+        """Load previously sanitized records for an audited target replay."""
+
+        records: list[ArchiveRecord] = []
+        for source_id in sorted(set(source_ids)):
+            if not re.fullmatch(r"[0-9a-f]{64}", source_id):
+                # Pre-archive and embedded integrations may use readable
+                # cursor keys. They have no content-addressed archive path,
+                # but their canonical source cursor should still be rewound.
+                continue
+            directory = self._safe_child(source_id[:2], source_id)
+            if not directory.exists():
+                continue
+            if directory.is_symlink() or not directory.is_dir():
+                raise ValueError("archive source directory must be a real directory")
+            for path in sorted(directory.glob("*.json")):
+                if path.is_symlink() or not path.is_file():
+                    raise ValueError("archive record path must be a regular file")
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    record = ArchiveRecord(**payload)
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
+                    raise ValueError(f"invalid archived observability record: {path}") from exc
+                _validate_record(record)
+                if record.source_id != source_id or path.stem != record.idempotency_key:
+                    raise ValueError("archived observability record identity mismatch")
+                records.append(record)
+        return tuple(records)
+
     def _safe_child(self, *parts: str) -> Path:
         if any(not re.fullmatch(r"[A-Za-z0-9._-]+", part) for part in parts):
             raise ValueError("unsafe archive path component")

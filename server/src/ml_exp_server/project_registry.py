@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable
 
-from .storage import atomic_json, read_json, utc_now
+from .storage import StorageError, atomic_json, exclusive_file_lock, read_json, utc_now
 from .schemas import (
     ProjectLifecycleRecord,
     ProjectLifecycleState,
@@ -40,7 +41,16 @@ class ProjectRegistry:
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = root / "registry.json"
         self.events_path = root / "events.jsonl"
+        self.lock_path = root / ".registry.lock"
         self._lock = threading.RLock()
+
+    @contextmanager
+    def _locked(self):
+        """Hold both the in-process and workspace-wide registry lock."""
+
+        with self._lock:
+            with exclusive_file_lock(self.lock_path):
+                yield
 
     def exists(self) -> bool:
         return self.path.is_file()
@@ -50,7 +60,10 @@ class ProjectRegistry:
         return {"schema_version": REGISTRY_SCHEMA_VERSION, "projects": []}
 
     def _load(self) -> dict:
-        payload = read_json(self.path, self._default())
+        try:
+            payload = read_json(self.path, self._default())
+        except StorageError as exc:
+            raise ProjectRegistryError(f"invalid project registry: {self.path}") from exc
         if not isinstance(payload, dict):
             raise ProjectRegistryError(f"invalid project registry: {self.path}")
         if payload.get("schema_version", REGISTRY_SCHEMA_VERSION) != REGISTRY_SCHEMA_VERSION:
@@ -77,7 +90,7 @@ class ProjectRegistry:
         return records
 
     def records(self) -> list[ProjectLifecycleRecord]:
-        with self._lock:
+        with self._locked():
             return self._records(self._load())
 
     @classmethod
@@ -87,7 +100,10 @@ class ProjectRegistry:
         path = root / "registry.json"
         if not path.is_file():
             return []
-        payload = read_json(path, cls._default())
+        try:
+            payload = read_json(path, cls._default())
+        except StorageError as exc:
+            raise ProjectRegistryError(f"invalid project registry: {path}") from exc
         if not isinstance(payload, dict):
             raise ProjectRegistryError(f"invalid project registry: {path}")
         if payload.get("schema_version", REGISTRY_SCHEMA_VERSION) != REGISTRY_SCHEMA_VERSION:
@@ -112,7 +128,7 @@ class ProjectRegistry:
         malformed project YAML should remain an operator-visible startup error
         in the normal runtime load path, just as it did before migration.
         """
-        with self._lock:
+        with self._locked():
             if self.exists():
                 return self._records(self._load())
             now = utc_now()
@@ -160,7 +176,7 @@ class ProjectRegistry:
     ) -> ProjectLifecycleRecord:
         """Add a verified project or reactivate an explicitly paused one."""
         path = str(project_file.expanduser().resolve())
-        with self._lock:
+        with self._locked():
             payload = self._load()
             records = self._records(payload)
             current = next((record for record in records if record.project == project), None)
@@ -204,7 +220,7 @@ class ProjectRegistry:
             },
             ProjectLifecycleState.ARCHIVED: {ProjectLifecycleState.PAUSED},
         }
-        with self._lock:
+        with self._locked():
             payload = self._load()
             records = self._records(payload)
             current = next((record for record in records if record.project == project), None)
@@ -233,7 +249,7 @@ class ProjectRegistry:
 
     def unregister(self, project: str, *, reason: str = "") -> ProjectLifecycleRecord:
         """Forget one project from this daemon workspace, preserving its audit event."""
-        with self._lock:
+        with self._locked():
             payload = self._load()
             records = self._records(payload)
             current = next((record for record in records if record.project == project), None)
@@ -251,11 +267,11 @@ class ProjectRegistry:
             return current
 
     def unregister_all(self, *, reason: str = "") -> list[ProjectLifecycleRecord]:
-        with self._lock:
-            records = self.records()
+        with self._locked():
+            payload = self._load()
+            records = self._records(payload)
             if not records:
                 return []
-            payload = self._load()
             payload["projects"] = []
             atomic_json(self.path, payload)
             now = utc_now()

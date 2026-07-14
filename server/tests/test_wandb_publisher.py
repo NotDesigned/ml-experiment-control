@@ -321,7 +321,11 @@ def test_subprocess_timeout_kills_descendant_process_group(tmp_path: Path, ident
         except ProcessLookupError:
             break
         stat_path = Path(f"/proc/{grandchild_pid}/stat")
-        if stat_path.is_file() and stat_path.read_text().split()[2] == "Z":
+        try:
+            if stat_path.is_file() and stat_path.read_text().split()[2] == "Z":
+                break
+        except (FileNotFoundError, ProcessLookupError):
+            # The process may disappear between the existence check and read.
             break
         time.sleep(0.01)
     else:

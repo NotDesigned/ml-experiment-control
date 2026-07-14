@@ -64,9 +64,10 @@ class ObservabilityCoordinator:
         self.worker_id = f"{socket.gethostname()}-{id(self):x}"
 
     def enable_cloud(self, project: str, run_id: str, attempt_id: str) -> None:
+        attempt = AttemptRef(self.workspace_id, project, run_id, attempt_id)
         self.store.activate_target_and_rewind(
-            AttemptRef(self.workspace_id, project, run_id, attempt_id),
-            TargetKind.CLOUD.value,
+            attempt, TargetKind.CLOUD.value,
+            records=self._archived_outbox_records(attempt),
         )
 
     def backfill(
@@ -86,12 +87,23 @@ class ObservabilityCoordinator:
         if not unique or len(unique) > 500:
             raise ValueError("backfill requires between 1 and 500 Attempts")
         for attempt in unique.values():
-            self.store.backfill_target(attempt, kind.value)
+            self.store.backfill_target(
+                attempt, kind.value, records=self._archived_outbox_records(attempt),
+            )
         return {
             "target": kind.value,
             "attempt_count": len(unique),
             "rewound_attempts": len(unique),
         }
+
+    def _archived_outbox_records(self, attempt: AttemptRef) -> tuple[OutboxRecord, ...]:
+        archived = self.archive.load(self.store.source_keys(attempt))
+        return tuple(OutboxRecord(
+            record_key=item.idempotency_key,
+            kind=item.kind,
+            payload=item.payload,
+            observed_at=_observed_at(item.payload),
+        ) for item in archived)
 
     def collect_rows(self, rows: Iterable[RunIndexRow]) -> None:
         """Archive complete new records; malformed records never stop collection."""

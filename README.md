@@ -43,6 +43,9 @@ uv run --package ml-experiment-server ml-expd \
 at startup, and owns one live collector per workspace. It polls immediately
 and then at `poll_interval_seconds` (20 seconds by default); `--snapshot` is
 the explicit no-poll mode.
+Because the HTTP control plane does not implement remote-client
+authentication, `--host` accepts loopback addresses only. Use an authenticated
+local tunnel when a client runs on another machine.
 Use `/api/health` and `/openapi.json` for machine-readable health and API shape.
 
 The daemon host owns controller/backend credentials, project checkouts, and

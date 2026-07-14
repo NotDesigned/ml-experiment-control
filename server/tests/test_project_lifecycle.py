@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import yaml
+import pytest
 from fastapi.testclient import TestClient
 
 from ml_exp_server.api.app import create_app
 from ml_exp_server.cli import main
-from ml_exp_server.project_registry import ProjectRegistry
+from ml_exp_server.project_registry import ProjectRegistry, ProjectRegistryError
 from ml_exp_server.runtime import ExperimentServerRuntime
 from ml_exp_server.schemas import (
     ServerConfig,
@@ -74,6 +77,40 @@ def test_registry_bootstraps_once_and_does_not_resurrect_config_sources(tmp_path
     registry.unregister("first")
     assert registry.bootstrap([first]) == []
     assert any(item["event"] == "UNREGISTER" for item in registry.events())
+
+
+def test_registry_fails_closed_on_corrupt_json(tmp_path):
+    registry = ProjectRegistry(tmp_path / "workspace-projects")
+    registry.path.write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(ProjectRegistryError, match="invalid project registry"):
+        registry.records()
+    with pytest.raises(ProjectRegistryError, match="invalid project registry"):
+        registry.register("demo", tmp_path / "demo.yaml")
+
+    assert registry.path.read_text(encoding="utf-8") == "{broken"
+
+
+def test_registry_serializes_writers_from_independent_daemons(tmp_path):
+    root = tmp_path / "workspace-projects"
+    first = ProjectRegistry(root)
+    second = ProjectRegistry(root)
+    first.bootstrap([])
+    barrier = Barrier(2)
+
+    def register(registry, project):
+        barrier.wait(timeout=5)
+        registry.register(project, tmp_path / f"{project}.yaml")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        calls = [
+            pool.submit(register, first, "alpha"),
+            pool.submit(register, second, "beta"),
+        ]
+        for call in calls:
+            call.result()
+
+    assert {item.project for item in ProjectRegistry(root).records()} == {"alpha", "beta"}
 
 
 def test_runtime_lifecycle_changes_active_collector_set_without_touching_repository(tmp_path):

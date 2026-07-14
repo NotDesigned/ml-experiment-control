@@ -289,6 +289,19 @@ class ObservabilityStore:
             anchor_digest=row["anchor_digest"],
         )
 
+    def source_keys(self, attempt: AttemptRef) -> tuple[str, ...]:
+        """Return every archived source identity ever observed for an Attempt."""
+
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT source_key FROM source_cursors WHERE workspace_id=? AND project=? "
+                "AND run_id=? AND attempt_id=? UNION SELECT source_key FROM "
+                "archive_source_status WHERE workspace_id=? AND project=? AND run_id=? "
+                "AND attempt_id=? ORDER BY source_key",
+                (*attempt.values(), *attempt.values()),
+            ).fetchall()
+        return tuple(str(row["source_key"]) for row in rows)
+
     def enqueue_and_advance(
         self,
         source: SourceRef,
@@ -488,7 +501,8 @@ class ObservabilityStore:
             self._conn.commit()
 
     def activate_target_and_rewind(
-        self, attempt: AttemptRef, target: str, *, now: Optional[float] = None,
+        self, attempt: AttemptRef, target: str, *,
+        records: Sequence[OutboxRecord] = (), now: Optional[float] = None,
     ) -> bool:
         """Activate a target once and rewind sources for complete backfill.
 
@@ -498,6 +512,7 @@ class ObservabilityStore:
         that were already delivered to another target.
         """
         target = _validate_name(target, "target")
+        prepared = [self._prepare_record(record) for record in records]
         timestamp = time.time() if now is None else now
         with self._lock:
             try:
@@ -509,6 +524,15 @@ class ObservabilityStore:
                     (*attempt.values(), target, timestamp),
                 ).rowcount
                 if inserted:
+                    for record, payload_json in prepared:
+                        self._conn.execute(
+                            "INSERT OR IGNORE INTO publication_outbox "
+                            "(workspace_id, project, run_id, attempt_id, target, record_key, "
+                            "kind, payload_json, observed_at, created_at, available_at) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            (*attempt.values(), target, record.record_key, record.kind,
+                             payload_json, record.observed_at, timestamp, timestamp),
+                        )
                     self._conn.execute(
                         "DELETE FROM source_cursors WHERE workspace_id=? AND project=? "
                         "AND run_id=? AND attempt_id=?",
@@ -521,10 +545,12 @@ class ObservabilityStore:
         return bool(inserted)
 
     def backfill_target(
-        self, attempt: AttemptRef, target: str, *, now: Optional[float] = None,
+        self, attempt: AttemptRef, target: str, *,
+        records: Sequence[OutboxRecord] = (), now: Optional[float] = None,
     ) -> None:
         """Explicitly request a complete idempotent replay for one target."""
         target = _validate_name(target, "target")
+        prepared = [self._prepare_record(record) for record in records]
         timestamp = time.time() if now is None else now
         with self._lock:
             try:
@@ -538,6 +564,15 @@ class ObservabilityStore:
                     "DO UPDATE SET state='PENDING', last_error=NULL, updated_at=excluded.updated_at",
                     (*attempt.values(), target, timestamp),
                 )
+                for record, payload_json in prepared:
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO publication_outbox "
+                        "(workspace_id, project, run_id, attempt_id, target, record_key, "
+                        "kind, payload_json, observed_at, created_at, available_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (*attempt.values(), target, record.record_key, record.kind,
+                         payload_json, record.observed_at, timestamp, timestamp),
+                    )
                 self._conn.execute(
                     "DELETE FROM source_cursors WHERE workspace_id=? AND project=? "
                     "AND run_id=? AND attempt_id=?",

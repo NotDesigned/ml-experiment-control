@@ -6,10 +6,11 @@ import hashlib
 import json
 import os
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from ..schemas import OperationScope
-from ..storage import atomic_json, read_json, utc_now
+from ..storage import atomic_json, exclusive_file_lock, read_json, utc_now
 
 
 class ActionStore:
@@ -17,6 +18,28 @@ class ActionStore:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._lock_state = threading.local()
+        self.lock_path = self.root / ".actions.lock"
+
+    @contextmanager
+    def locked(self):
+        """Serialize durable Action state across threads and daemon processes."""
+
+        with self._lock:
+            depth = getattr(self._lock_state, "depth", 0)
+            if depth:
+                self._lock_state.depth = depth + 1
+                try:
+                    yield
+                finally:
+                    self._lock_state.depth -= 1
+                return
+            with exclusive_file_lock(self.lock_path):
+                self._lock_state.depth = 1
+                try:
+                    yield
+                finally:
+                    self._lock_state.depth = 0
 
     @staticmethod
     def action_id(scope: OperationScope, intent_key: str) -> str:
@@ -29,7 +52,7 @@ class ActionStore:
         return self.root / action_id
 
     def save_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
-        with self._lock:
+        with self.locked():
             directory = self.directory(str(plan["action_id"]))
             directory.mkdir(parents=True, exist_ok=True)
             existing = read_json(directory / "plan.json", {})
@@ -51,7 +74,7 @@ class ActionStore:
             return self.snapshot(plan["action_id"])
 
     def append_journal(self, action_id: str, event: str, payload: dict[str, Any]) -> None:
-        with self._lock:
+        with self.locked():
             path = self.directory(action_id) / "journal.jsonl"
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as stream:
@@ -60,7 +83,8 @@ class ActionStore:
                 }, ensure_ascii=False, sort_keys=True) + "\n")
 
     def execution(self, action_id: str) -> dict[str, Any]:
-        return read_json(self.directory(action_id) / "execution.json", {})
+        with self.locked():
+            return read_json(self.directory(action_id) / "execution.json", {})
 
     def write_command(
         self, action_id: str, phase: str, payload: dict[str, Any],
@@ -68,7 +92,7 @@ class ActionStore:
         """Persist sensitive/free-form input outside immutable action plans."""
         if phase not in {"authorize", "execute"}:
             raise ValueError("unsupported action command phase")
-        with self._lock:
+        with self.locked():
             path = self.directory(action_id) / "commands" / f"{phase}.json"
             existing = read_json(path, {})
             if existing:
@@ -101,13 +125,14 @@ class ActionStore:
     ) -> None:
         if phase not in {"prepare", "authorize", "execute", "reconcile"}:
             raise ValueError("unsupported action activity phase")
-        atomic_json(self.directory(action_id) / "activity_errors" / f"{phase}.json", {
-            "action_id": action_id,
-            "phase": phase,
-            "message": message[:1000],
-            "category": category,
-            "created_at": utc_now(),
-        })
+        with self.locked():
+            atomic_json(self.directory(action_id) / "activity_errors" / f"{phase}.json", {
+                "action_id": action_id,
+                "phase": phase,
+                "message": message[:1000],
+                "category": category,
+                "created_at": utc_now(),
+            })
 
     def activity_error(self, action_id: str, phase: str) -> dict[str, Any]:
         return read_json(
@@ -115,8 +140,15 @@ class ActionStore:
         )
 
     def set_execution(self, action_id: str, payload: dict[str, Any],
-                      *, event: str) -> dict[str, Any]:
-        with self._lock:
+                      *, event: str, expected_status: str | None = None) -> dict[str, Any]:
+        with self.locked():
+            if expected_status is not None:
+                current = self.execution(action_id)
+                if current.get("status") != expected_status:
+                    raise RuntimeError(
+                        f"action state changed; expected {expected_status}, "
+                        f"found {current.get('status')}"
+                    )
             atomic_json(self.directory(action_id) / "execution.json", payload)
             self.append_journal(action_id, event, {
                 "status": payload.get("status"), "error": payload.get("error"),
@@ -125,30 +157,32 @@ class ActionStore:
 
     def claim_execution(self, action_id: str) -> None:
         """Cross-process, create-once claim for one immutable action intent."""
-        path = self.directory(action_id) / "execution.claim"
-        try:
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError as exc:
-            raise RuntimeError("execution intent has already been claimed") from exc
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(json.dumps({"claimed_at": utc_now(), "pid": os.getpid()}) + "\n")
+        with self.locked():
+            path = self.directory(action_id) / "execution.claim"
+            try:
+                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError as exc:
+                raise RuntimeError("execution intent has already been claimed") from exc
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(json.dumps({"claimed_at": utc_now(), "pid": os.getpid()}) + "\n")
 
     def snapshot(self, action_id: str) -> dict[str, Any]:
-        directory = self.directory(action_id)
-        plan = read_json(directory / "plan.json", {})
-        if not plan:
-            raise FileNotFoundError(action_id)
-        journal: list[dict[str, Any]] = []
-        path = directory / "journal.jsonl"
-        if path.is_file():
-            for line in path.read_text(encoding="utf-8").splitlines()[-100:]:
-                try:
-                    item = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(item, dict):
-                    journal.append(item)
-        return {**plan, "execution": self.execution(action_id), "journal": journal}
+        with self.locked():
+            directory = self.directory(action_id)
+            plan = read_json(directory / "plan.json", {})
+            if not plan:
+                raise FileNotFoundError(action_id)
+            journal: list[dict[str, Any]] = []
+            path = directory / "journal.jsonl"
+            if path.is_file():
+                for line in path.read_text(encoding="utf-8").splitlines()[-100:]:
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(item, dict):
+                        journal.append(item)
+            return {**plan, "execution": self.execution(action_id), "journal": journal}
 
     def list_for_scope(self, scope: OperationScope) -> list[dict[str, Any]]:
         items = []

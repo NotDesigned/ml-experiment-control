@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 import yaml
@@ -11,14 +13,14 @@ import yaml
 from ml_exp_server.actions.store import ActionStore
 from ml_exp_server.project_config import ConfigError, load_server_config, load_projects, load_research_project, load_research_question
 from ml_exp_server.schemas import OperationScope, OperationScopeType, ServerConfig, ProjectRef
-from ml_exp_server.storage import read_json
+from ml_exp_server.storage import StorageError, read_json
 
 
 def scope(object_id: str = "demo") -> OperationScope:
     return OperationScope(project="demo", scope_type=OperationScopeType.PROJECT, object_id=object_id)
 
 
-def test_action_store_is_immutable_claimed_once_and_tolerates_corrupt_records(tmp_path):
+def test_action_store_is_immutable_claimed_once_and_fails_closed_on_corruption(tmp_path):
     store = ActionStore(tmp_path / "actions")
     operation_scope = scope()
     action_id = store.action_id(operation_scope, "intent-a")
@@ -48,7 +50,8 @@ def test_action_store_is_immutable_claimed_once_and_tolerates_corrupt_records(tm
     )
     assert store.snapshot(action_id)["journal"] == [{"event": "valid"}]
     (directory / "execution.json").write_text("{broken", encoding="utf-8")
-    assert store.execution(action_id) == {}
+    with pytest.raises(StorageError, match="durable JSON is unreadable"):
+        store.execution(action_id)
     updated = store.set_execution(action_id, {"status": "FAILED", "error": "boom"}, event="failed")
     assert updated["execution"]["status"] == "FAILED"
 
@@ -71,6 +74,40 @@ def test_action_store_is_immutable_claimed_once_and_tolerates_corrupt_records(tm
     assert read_json(missing, {"fallback": True}) == {"fallback": True}
     missing.write_text("[]")
     assert read_json(missing, {}) == []
+
+
+def test_action_store_serializes_plan_creation_across_daemon_instances(tmp_path):
+    root = tmp_path / "actions"
+    stores = [ActionStore(root), ActionStore(root)]
+    operation_scope = scope()
+    action_id = stores[0].action_id(operation_scope, "shared-intent")
+    barrier = Barrier(2)
+
+    def save(index):
+        barrier.wait(timeout=5)
+        return stores[index].save_plan({
+            "action_id": action_id,
+            "scope": operation_scope.model_dump(mode="json"),
+            "ready": True,
+            "operation": f"PLAN_{index}",
+        })
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(save, range(2)))
+
+    assert results[0]["operation"] == results[1]["operation"]
+    assert ActionStore(root).snapshot(action_id)["operation"] == results[0]["operation"]
+
+    winner = ActionStore(root).set_execution(
+        action_id, {"status": "AUTHORIZED", "actor": "first"},
+        event="authorized", expected_status="PREPARED",
+    )
+    assert winner["execution"]["actor"] == "first"
+    with pytest.raises(RuntimeError, match="expected PREPARED, found AUTHORIZED"):
+        ActionStore(root).set_execution(
+            action_id, {"status": "AUTHORIZED", "actor": "second"},
+            event="authorized", expected_status="PREPARED",
+        )
 
 
 def write_project(tmp_path: Path, project_body: str,

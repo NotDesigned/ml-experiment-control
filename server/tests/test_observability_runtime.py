@@ -89,6 +89,28 @@ def test_collect_restart_partial_line_sanitization_and_late_cloud_target(tmp_pat
     assert by_target["cloud"].pending == 3
 
 
+def test_backfill_replays_archive_after_canonical_source_is_truncated(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    attempt_dir = run_dir / "attempts" / "attempt-001"
+    attempt_dir.mkdir(parents=True)
+    metrics = attempt_dir / "metrics.jsonl"
+    metrics.write_text('{"step":1,"loss":2}\n', encoding="utf-8")
+    row = RunIndexRow(
+        project="demo", run_id="run-a", run_dir=str(run_dir),
+        attempts=[AttemptSummary(attempt_id="attempt-001")],
+    )
+    store = ObservabilityStore(tmp_path / "observability.sqlite")
+    coordinator = _coordinator(tmp_path, store)
+    coordinator.collect_rows([row])
+    metrics.write_text("", encoding="utf-8")
+
+    coordinator.enable_cloud("demo", "run-a", "attempt-001")
+
+    claimed = store.claim("cloud", "worker", limit=10)
+    assert len(claimed) == 1
+    assert claimed[0].payload == {"step": 1, "loss": 2}
+
+
 def test_local_publisher_acknowledges_outbox_and_sets_dashboard_url(tmp_path: Path):
     run_dir = tmp_path / "run"
     attempt_dir = run_dir / "attempts" / "attempt-001"
