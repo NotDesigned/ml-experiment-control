@@ -19,6 +19,7 @@ from .manifest import (
 )
 from .run_manifest import build_run_manifest, comparable_manifest
 from .outbox import cancel_intent_path, execute_cancel_outbox
+from .observations import merge_terminal_observation
 from .contracts import (
     AssetVerification,
     AttemptManifest,
@@ -67,6 +68,7 @@ __all__ = [
     "comparable_manifest",
     "cancel_intent_path",
     "execute_cancel_outbox",
+    "merge_terminal_observation",
     "AssetVerification",
     "AttemptManifest",
     "BackendConfig",
