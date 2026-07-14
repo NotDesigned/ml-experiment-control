@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 from ml_exp_server.ingest.runscan import (
-    discover_run_dirs, evaluation_variants, is_run_dir, parse_iso_ts, scan_run_dir,
+    discover_run_dirs, evidence_sources, evaluation_variants, is_run_dir, parse_iso_ts,
+    scan_run_dir,
 )
 from tests.conftest import A1_SCHEDULER_TS, A1_WORKER_TS, FIXTURES
 
@@ -15,6 +16,43 @@ def test_parse_iso_ts():
     assert parse_iso_ts("2026-07-11T14:31:48.755999Z") == A1_SCHEDULER_TS
     assert parse_iso_ts(None) is None
     assert parse_iso_ts("not a date") is None
+
+
+def test_attempt_identity_cannot_escape_attempts_directory(tmp_path):
+    run = tmp_path / "campaign" / "run-a"
+    attempts = run / "attempts"
+    attempts.mkdir(parents=True)
+    secret = tmp_path / "campaign" / "secret-attempt"
+    secret.mkdir()
+    (secret / "train_metrics.jsonl").write_text(
+        '{"step": 999, "private_marker": "LEAKED"}\n', encoding="utf-8",
+    )
+    (run / "manifest.yaml").write_text("run_id: run-a\n", encoding="utf-8")
+    (run / "status.json").write_text(
+        '{"attempt_id": "../../secret-attempt", "state": "RUNNING"}',
+        encoding="utf-8",
+    )
+
+    row = scan_run_dir(run, "demo")
+
+    assert row.evidence.model.source is None
+    assert "private_marker" not in row.latest_metrics
+    assert evidence_sources(
+        run, attempt_id="../../secret-attempt", exact_attempt=True,
+    ) == []
+
+
+def test_symlinked_attempt_tree_is_not_evidence(tmp_path):
+    run = tmp_path / "run-a"
+    external = tmp_path / "external"
+    external_attempt = external / "attempt-001"
+    run.mkdir()
+    external_attempt.mkdir(parents=True)
+    (run / "attempts").symlink_to(external, target_is_directory=True)
+
+    assert evidence_sources(
+        run, attempt_id="attempt-001", exact_attempt=True,
+    ) == []
 
 
 def test_a1_old_generation_layout_is_recognized(a1_run_dir):

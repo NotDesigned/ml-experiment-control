@@ -27,7 +27,7 @@ def _load_yaml(path: Path) -> dict:
         raise ConfigError(f"config file not found: {path}")
     try:
         data = yaml.safe_load(path.read_text())
-    except yaml.YAMLError as exc:
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         raise ConfigError(f"invalid YAML in {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ConfigError(f"expected a mapping at top level of {path}")

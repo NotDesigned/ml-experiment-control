@@ -343,6 +343,30 @@ class EvidenceSource:
     kind: str
 
 
+def _safe_attempt_id(run_dir: Path, value: object) -> Optional[str]:
+    attempts_dir = run_dir / "attempts"
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value,
+    ):
+        return None
+    candidate = attempts_dir / value
+    try:
+        resolved_run = run_dir.resolve()
+        resolved_root = attempts_dir.resolve()
+        resolved = candidate.resolve()
+    except OSError:
+        return None
+    if (
+        attempts_dir.is_symlink()
+        or resolved_root.parent != resolved_run
+        or candidate.is_symlink()
+        or resolved.parent != resolved_root
+        or not resolved.is_dir()
+    ):
+        return None
+    return value
+
+
 def preferred_attempt_id(run_dir: Path) -> Optional[str]:
     """Resolve the current Attempt without inferring it from scientific metrics.
 
@@ -353,12 +377,15 @@ def preferred_attempt_id(run_dir: Path) -> Optional[str]:
     attempts_dir = run_dir / "attempts"
     for mirror in (run_dir / "status.json", run_dir / "collection.json",
                    run_dir / "decision.json"):
-        attempt_id = _load_json(mirror).get("attempt_id")
-        if isinstance(attempt_id, str) and (attempts_dir / attempt_id).is_dir():
+        attempt_id = _safe_attempt_id(run_dir, _load_json(mirror).get("attempt_id"))
+        if attempt_id is not None:
             return attempt_id
     if not attempts_dir.is_dir():
         return None
-    attempts = sorted(path.name for path in attempts_dir.iterdir() if path.is_dir())
+    attempts = sorted(
+        value for path in attempts_dir.iterdir()
+        if (value := _safe_attempt_id(run_dir, path.name)) is not None
+    )
     return attempts[-1] if attempts else None
 
 
@@ -370,7 +397,10 @@ def evidence_sources(run_dir: Path, *, attempt_id: Optional[str] = None,
     Run aggregation first reads the selected Attempt and uses root mirrors only
     for legacy/incomplete layouts.
     """
-    selected = attempt_id or preferred_attempt_id(run_dir)
+    selected = (
+        _safe_attempt_id(run_dir, attempt_id)
+        if attempt_id is not None else preferred_attempt_id(run_dir)
+    )
     sources: list[EvidenceSource] = []
     if selected:
         attempt_root = run_dir / "attempts" / selected

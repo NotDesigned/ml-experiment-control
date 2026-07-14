@@ -11,7 +11,7 @@ import ml_exp_server.api.app as api_app
 from ml_exp_server.api.app import create_app
 from ml_exp_server.api.routes import _attention
 from ml_exp_server.schemas import RunIndexRow
-from ml_exp_server.schemas import ServerConfig, ProjectRef
+from ml_exp_server.schemas import ResearchProject, ServerConfig, ProjectRef
 from tests.conftest import FIXTURES
 
 
@@ -305,6 +305,30 @@ def test_second_server_reports_collector_lease_loss(tmp_path):
     assert payload["requested"] is True
     assert payload["owner"] is False
     assert "owns this workspace" in payload["last_error"]
+
+
+def test_standby_does_not_index_before_workspace_lease(monkeypatch, tmp_path):
+    indexed = []
+
+    class StandbyLease:
+        def __init__(self, path):
+            pass
+
+        def acquire(self):
+            return False
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(api_app, "CollectorLease", StandbyLease)
+    monkeypatch.setattr(api_app, "index_project", lambda index, project: indexed.append(project.project))
+    config = ServerConfig(index_db=str(tmp_path / "index.sqlite"), projects=[])
+    project = ResearchProject(project="demo", title="Demo", run_roots=[])
+
+    with TestClient(create_app(config, poll=False, projects=[project])) as standby:
+        assert standby.get("/api/collector/status").json()["owner"] is False
+
+    assert indexed == []
 
 
 def test_snapshot_daemons_still_enforce_one_workspace_writer(tmp_path):

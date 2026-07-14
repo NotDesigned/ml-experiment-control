@@ -76,6 +76,31 @@ def test_action_store_is_immutable_claimed_once_and_fails_closed_on_corruption(t
     assert read_json(missing, {}) == []
 
 
+def test_begin_execution_remains_reconcilable_if_claim_write_crashes(monkeypatch, tmp_path):
+    from ml_exp_server.actions import store as store_module
+
+    store = ActionStore(tmp_path / "actions")
+    action_id = store.action_id(scope(), "intent-execute")
+    store.save_plan({
+        "action_id": action_id, "scope": scope().model_dump(mode="json"),
+        "ready": True, "operation": "SUBMIT_RUN", "request_digest": "sha256:req",
+    })
+    store.set_execution(action_id, {"status": "AUTHORIZED"}, event="authorized")
+    real_atomic = store_module.atomic_json
+
+    def fail_claim(path, payload):
+        if path.name == "execution.claim":
+            raise OSError("crash")
+        return real_atomic(path, payload)
+
+    monkeypatch.setattr(store_module, "atomic_json", fail_claim)
+    with pytest.raises(OSError, match="crash"):
+        store.begin_execution(
+            action_id, {"status": "EXECUTING"}, intent_digest="sha256:intent",
+        )
+    assert store.execution(action_id)["status"] == "EXECUTING"
+
+
 def test_action_store_serializes_plan_creation_across_daemon_instances(tmp_path):
     root = tmp_path / "actions"
     stores = [ActionStore(root), ActionStore(root)]
@@ -108,6 +133,31 @@ def test_action_store_serializes_plan_creation_across_daemon_instances(tmp_path)
             action_id, {"status": "AUTHORIZED", "actor": "second"},
             event="authorized", expected_status="PREPARED",
         )
+
+
+def test_action_store_rejects_concurrent_different_request_digests(tmp_path):
+    root = tmp_path / "actions"
+    stores = [ActionStore(root), ActionStore(root)]
+    action_id = stores[0].action_id(scope(), "shared-key")
+    barrier = Barrier(2)
+
+    def save(index):
+        barrier.wait(timeout=5)
+        try:
+            stores[index].save_plan({
+                "action_id": action_id, "scope": scope().model_dump(mode="json"),
+                "ready": True, "operation": f"PLAN_{index}",
+                "request_digest": f"sha256:{index}",
+            })
+            return "saved"
+        except RuntimeError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(save, range(2)))
+
+    assert results.count("saved") == 1
+    assert sum("already bound" in result for result in results) == 1
 
 
 def test_atomic_json_fsync_path_is_private_and_cleans_failed_temporary(

@@ -214,6 +214,34 @@ def test_cancel_preparation_binds_live_backend_job_and_capability(tmp_path):
     assert statuses["cancel_outbox_capability"] == "FAIL"
 
 
+def test_cancel_timeout_can_reconcile_exact_terminal_job(tmp_path):
+    store = ActionStore(tmp_path / "actions")
+    operation_scope = OperationScope(
+        project="demo", scope_type="attempt", object_id="run-a::attempt-001",
+    )
+    action_id = store.action_id(operation_scope, "cancel-timeout")
+    store.save_plan({
+        "action_id": action_id, "scope": operation_scope.model_dump(mode="json"),
+        "ready": True, "operation": "CANCEL_RUN", "backend_job_id": "job-7",
+        "verification_command_preview": ["controller", "status"],
+        "verification_cwd": str(tmp_path), "request_digest": "sha256:cancel",
+    })
+    store.set_execution(
+        action_id, {"status": "RECONCILE_REQUIRED", "result": {}}, event="timeout",
+    )
+    service = ActionService(
+        store, ActionRuntimeConfig(),
+        runner=lambda *a, **k: {
+            "returncode": 0, "timeout": False,
+            "payload": [{"backend_job_id": "job-7", "state": "CANCELLED"}],
+        },
+    )
+
+    result = service.reconcile(action_id)
+
+    assert result["execution"]["status"] == "VERIFIED"
+
+
 def test_multi_write_detects_changed_target_and_rolls_back_partial_write(monkeypatch, tmp_path):
     store = ActionStore(tmp_path / "actions")
     service = ActionService(store, ActionRuntimeConfig())

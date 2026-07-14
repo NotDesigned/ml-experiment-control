@@ -156,6 +156,14 @@ class ActionService:
 
     def prepare(self, scope: OperationScope, project: ResearchProject,
                 intent: OperationIntent | dict[str, Any]) -> dict[str, Any]:
+        # Preparation writes preview artifacts before the immutable plan.  Keep
+        # that whole sequence under the same cross-process lock as save_plan so
+        # competing payloads cannot overwrite the winner's reviewed artifacts.
+        with self.store.locked():
+            return self._prepare_locked(scope, project, intent)
+
+    def _prepare_locked(self, scope: OperationScope, project: ResearchProject,
+                        intent: OperationIntent | dict[str, Any]) -> dict[str, Any]:
         """Validate a client intent and materialize a read-only Action plan.
 
         Preparation is idempotent and never authorizes execution.  When the
@@ -212,7 +220,10 @@ class ActionService:
             sort_keys=True, separators=(",", ":"), default=str,
         )
         plan["intent_digest"] = _sha256(canonical_intent.encode("utf-8"))
-        return self.store.save_plan(plan)
+        try:
+            return self.store.save_plan(plan)
+        except RuntimeError as exc:
+            raise ActionError(str(exc)) from exc
 
     @staticmethod
     def _intent_key(scope: OperationScope, payload: dict[str, Any]) -> str:
@@ -763,14 +774,13 @@ class ActionService:
             ),
             "execution_manifest_sha256": execution_manifest_sha256,
         })
-        if actual_verb == "submit":
-            verification = self.controller.build(
-                project, campaign, "status", run_id, attempt_id=attempt_id,
-            )
-            plan.update({
-                "verification_command_preview": _redact(verification.argv),
-                "verification_cwd": str(verification.cwd),
-            })
+        verification = self.controller.build(
+            project, campaign, "status", run_id, attempt_id=attempt_id,
+        )
+        plan.update({
+            "verification_command_preview": _redact(verification.argv),
+            "verification_cwd": str(verification.cwd),
+        })
         return plan
 
     @staticmethod
@@ -866,18 +876,14 @@ class ActionService:
                     "canonical execution manifest changed after Action preparation; "
                     "prepare a fresh action"
                 )
-        try:
-            self.store.claim_execution(action_id)
-        except RuntimeError as exc:
-            raise ActionError(str(exc)) from exc
         execution.update({"status": "EXECUTING", "started_at": utc_now(), "error": None})
         try:
-            self.store.set_execution(
-                action_id, execution, event="execution_started",
-                expected_status="AUTHORIZED",
+            started = self.store.begin_execution(
+                action_id, execution, intent_digest=str(snapshot["intent_digest"]),
             )
         except RuntimeError as exc:
             raise ActionError(str(exc)) from exc
+        execution = started["execution"]
         if project_write:
             return self._execute_write(snapshot, execution)
         if internal_mutation:
@@ -1088,6 +1094,37 @@ class ActionService:
             if execution.get("status") not in {"EXECUTING", "RECONCILE_REQUIRED"}:
                 raise ActionError("observability action is not awaiting reconciliation")
             return self._execute_internal(snapshot, execution)
+        if snapshot.get("operation") == "CANCEL_RUN":
+            if execution.get("status") not in {"EXECUTING", "RECONCILE_REQUIRED"}:
+                raise ActionError("cancellation is not awaiting reconciliation")
+            command = [str(item) for item in snapshot.get("verification_command_preview") or []]
+            if not command:
+                raise ActionError("cancellation plan has no verification command")
+            verification_result = self.controller.execute_command(
+                command, cwd=Path(snapshot["verification_cwd"]),
+                timeout=self.config.timeout_seconds,
+            )
+            payload = verification_result.get("payload")
+            observed = payload[0] if isinstance(payload, list) and payload else {}
+            exact = str(observed.get("backend_job_id") or "") == str(
+                snapshot.get("backend_job_id") or ""
+            )
+            state = str(observed.get("state") or "").upper()
+            terminal = state in {
+                "CANCELLED", "CANCELED", "COMPLETED", "FAILED", "SUCCEEDED",
+            }
+            verified = exact and terminal
+            execution.update({
+                "status": "VERIFIED" if verified else "RECONCILE_REQUIRED",
+                "last_reconciled_at": utc_now(),
+                "finished_at": utc_now() if verified else execution.get("finished_at"),
+                "error": None if verified else "cancellation is not yet terminal",
+                "result": {"observation": _redact(observed)},
+            })
+            return self.store.set_execution(
+                action_id, execution,
+                event="cancellation_verified" if verified else "cancellation_reconcile_pending",
+            )
         if snapshot.get("operation") not in {
             "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION",
         }:

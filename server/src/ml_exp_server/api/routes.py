@@ -76,6 +76,9 @@ def health(request: Request):
         "collector_error": getattr(request.app.state, "collector_error", None),
         "project_writes": request.app.state.config.action_runtime.allow_project_writes,
         "scheduler_mutations": request.app.state.config.action_runtime.allow_scheduler_mutations,
+        "observability_mutations": (
+            request.app.state.config.action_runtime.allow_observability_mutations
+        ),
         "observability": request.app.state.runtime.wandb_service.status(),
     }
 

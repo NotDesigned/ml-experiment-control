@@ -115,13 +115,35 @@ def test_doctor_reports_invalid_credential_reference_without_crashing(tmp_path, 
 
 def test_doctor_counts_durable_registry_instead_of_static_config(tmp_path, capsys):
     config = _write_config(tmp_path)
+    project_file = tmp_path / "research_project.yaml"
+    project_file.write_text(
+        "schema_version: 1\nproject: live-project\ntitle: Live\nrun_roots: []\n",
+        encoding="utf-8",
+    )
     registry = ProjectRegistry(tmp_path / "index.projects")
     registry.bootstrap([])
-    registry.register("live-project", tmp_path / "research_project.yaml")
+    registry.register("live-project", project_file)
 
     assert main(["--config", str(config), "doctor"]) == 0
     out = capsys.readouterr().out
     assert "✓ projects: 1 registered" in out
+
+
+def test_doctor_rejects_registered_project_that_daemon_cannot_load(tmp_path, capsys):
+    config = _write_config(tmp_path)
+    registry = ProjectRegistry(tmp_path / "index.projects")
+    registry.bootstrap([])
+    registry.register("ghost", tmp_path / "missing.yaml")
+
+    assert main(["--config", str(config), "doctor"]) == 1
+    assert "✗ projects: ghost: config file not found" in capsys.readouterr().out
+
+
+def test_doctor_reports_non_utf8_config_without_traceback(tmp_path, capsys):
+    config = tmp_path / "server.yaml"
+    config.write_bytes(b"\xff\xfe")
+    assert main(["--config", str(config), "doctor"]) == 1
+    assert "✗ server config" in capsys.readouterr().out
 
 
 def test_doctor_reports_invalid_config_without_crashing(tmp_path, capsys):

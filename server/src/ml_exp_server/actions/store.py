@@ -57,6 +57,10 @@ class ActionStore:
             directory.mkdir(parents=True, exist_ok=True)
             existing = read_json(directory / "plan.json", {})
             if existing:
+                if existing.get("request_digest") != plan.get("request_digest"):
+                    raise RuntimeError(
+                        "idempotency_key is already bound to a different operation intent"
+                    )
                 return existing
             atomic_json(directory / "plan.json", plan)
             atomic_json(directory / "execution.json", {
@@ -165,6 +169,26 @@ class ActionStore:
                 raise RuntimeError("execution intent has already been claimed") from exc
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 stream.write(json.dumps({"claimed_at": utc_now(), "pid": os.getpid()}) + "\n")
+
+    def begin_execution(
+        self, action_id: str, payload: dict[str, Any], *, intent_digest: str,
+    ) -> dict[str, Any]:
+        """Move AUTHORIZED to EXECUTING before writing audit claim metadata."""
+        with self.locked():
+            current = self.execution(action_id)
+            if current.get("status") != "AUTHORIZED":
+                raise RuntimeError(
+                    f"action state changed; expected AUTHORIZED, found {current.get('status')}"
+                )
+            atomic_json(self.directory(action_id) / "execution.json", payload)
+            atomic_json(self.directory(action_id) / "execution.claim", {
+                "claimed_at": utc_now(), "pid": os.getpid(),
+                "intent_digest": intent_digest,
+            })
+            self.append_journal(action_id, "execution_started", {
+                "status": payload.get("status"), "error": payload.get("error"),
+            })
+            return self.snapshot(action_id)
 
     def snapshot(self, action_id: str) -> dict[str, Any]:
         with self.locked():

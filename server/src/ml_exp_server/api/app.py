@@ -76,16 +76,6 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
         app.state.broker.bind_loop(loop)
         app.state._stop = threading.Event()
 
-        def initial_index() -> None:
-            for project in app.state.projects:
-                index_project(app.state.index, project)
-
-        try:
-            await loop.run_in_executor(None, initial_index)
-        except BaseException:
-            app.state.runtime.close()
-            raise
-
         collector: Optional[Collector] = app.state.collector
         lease = CollectorLease(app.state.config.index_db_path())
         try:
@@ -100,6 +90,20 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
         else:
             app.state.workspace_owner = True
             app.state.collector_lease = lease
+            def initial_index() -> None:
+                for project in app.state.projects:
+                    index_project(app.state.index, project)
+
+            try:
+                await loop.run_in_executor(None, initial_index)
+            except BaseException:
+                app.state.workspace_owner = False
+                app.state.collector_lease = None
+                try:
+                    app.state.runtime.close()
+                finally:
+                    lease.release()
+                raise
             if collector is not None:
                 app.state.collector_owner = True
                 # Only the workspace lease owner may reconcile publisher

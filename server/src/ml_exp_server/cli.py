@@ -98,7 +98,7 @@ def _credential_command(args: argparse.Namespace) -> int:
 
 def _doctor_command(args: argparse.Namespace) -> int:
     from .credentials import CredentialError, CredentialStore
-    from .project_config import ConfigError, load_server_config
+    from .project_config import ConfigError, load_research_project, load_server_config
     from .project_registry import ProjectRegistry, ProjectRegistryError
 
     checks: list[tuple[str, bool | None, str, str | None]] = []
@@ -164,12 +164,18 @@ def _doctor_command(args: argparse.Namespace) -> int:
                         "local W&B docker", False, f"{docker} is not an executable file",
                         "install Docker or point docker_executable at a working binary",
                     ))
-            if not local.publisher_entity:
+            if not local.publisher_entity and not local.publisher_credential_ref:
                 checks.append((
-                    "local W&B entity", False, "publisher_entity not set",
-                    "set observability.local_wandb.publisher_entity",
+                    "local W&B publisher", None, "disabled (dashboard-only)",
+                    "set publisher_entity and publisher_credential_ref to mirror Attempts",
                 ))
-            credential_check("local W&B credential", local.publisher_credential_ref)
+            else:
+                if not local.publisher_entity:
+                    checks.append((
+                        "local W&B entity", False, "publisher_entity not set",
+                        "set observability.local_wandb.publisher_entity",
+                    ))
+                credential_check("local W&B credential", local.publisher_credential_ref)
 
         cloud = config.observability.wandb_cloud
         if not cloud.enabled:
@@ -196,7 +202,23 @@ def _doctor_command(args: argparse.Namespace) -> int:
         else:
             try:
                 records = ProjectRegistry.read_records(registry_root)
-                checks.append(("projects", True, f"{len(records)} registered", None))
+                errors = []
+                for record in records:
+                    if str(record.state.value) != "ACTIVE":
+                        continue
+                    try:
+                        project = load_research_project(Path(record.project_file))
+                        if project.project != record.project:
+                            errors.append(f"{record.project}: manifest identity drift")
+                    except (ConfigError, OSError, UnicodeDecodeError) as exc:
+                        errors.append(f"{record.project}: {exc}")
+                if errors:
+                    checks.append((
+                        "projects", False, "; ".join(errors)[:1000],
+                        "repair registered Project manifests before starting ml-expd",
+                    ))
+                else:
+                    checks.append(("projects", True, f"{len(records)} registered", None))
             except ProjectRegistryError as exc:
                 checks.append(("projects", False, str(exc), "repair the Project registry"))
 
