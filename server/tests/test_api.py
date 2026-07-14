@@ -142,7 +142,11 @@ def test_research_question_detail_matrix(client):
     assert role["role_note"] == "frozen Sentence-T5"
     assert role["evidence"]["worker"]["stale"] is True
     assert role["key_metrics"]["step"] == 3700
-    assert "plan_ppl_gap" not in role["key_metrics"]
+    assert role["key_metrics"]["plan_ppl_gap"] > 0
+    assert role["evaluation_snapshot"]["latest_metric_complete"]["step"] == 2000
+    assert role["evaluation_snapshot"]["latest_metric_complete"]["metric_sources"][
+        "plan_ppl_gap"
+    ]["step"] == 2000
     assert role["canonical_eval_variant_id"] is None
     assert len(role["eval_variants"]) == 4
     assert role["decision"]["action"] == "OBSERVE"

@@ -535,6 +535,7 @@ class RunIndexRow(BaseModel):
     latest_metrics: dict[str, Any] = Field(default_factory=dict)
     eval_metrics: dict[str, Any] = Field(default_factory=dict)
     eval_variants: list[dict[str, Any]] = Field(default_factory=list)
+    evaluation_snapshot: dict[str, Any] = Field(default_factory=dict)
     canonical_eval_variant_id: Optional[str] = None
     decision: dict[str, Any] = Field(default_factory=dict)
     decision_history: list[dict[str, Any]] = Field(default_factory=list)

@@ -126,6 +126,7 @@ def campaign_snapshot(
             "latest_metrics": row.latest_metrics,
             "eval_metrics": row.eval_metrics,
             "eval_variants": row.eval_variants,
+            "evaluation_snapshot": row.evaluation_snapshot,
             "checkpoint": row.checkpoint,
             "artifacts": row.artifacts,
             "provenance": row.provenance,

@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 from ml_exp_server.ingest.runscan import (
-    discover_run_dirs, evidence_sources, evaluation_variants, is_run_dir, parse_iso_ts,
-    scan_run_dir,
+    discover_run_dirs, evidence_sources, evaluation_snapshot,
+    evaluation_variants, is_run_dir, parse_iso_ts, scan_run_dir,
 )
 from tests.conftest import A1_SCHEDULER_TS, A1_WORKER_TS, FIXTURES
 
@@ -165,6 +165,95 @@ def test_eval_history_preserves_matched_nonlatest_steps(tmp_path):
         assert not ({"prompt", "samples", "api_key"} & item["latest"].keys())
         assert all(not ({"prompt", "samples", "api_key"} & record.keys())
                    for record in item["history"])
+
+
+def test_evaluation_snapshot_never_mixes_interleaved_variant_steps(tmp_path):
+    run_dir = tmp_path / "interleaved"
+    run_dir.mkdir()
+    (run_dir / "manifest.yaml").write_text(
+        "project: elf\nrun_id: interleaved\n", encoding="utf-8",
+    )
+    modes = {
+        "clean": ("clean_token_reconstruction", "token_recon_ppl", 40.0),
+        "generation": ("generation_refine_decode", "g_ppl", 1.1),
+        "oracle": ("oracle_plan_generation", "oracle_plan_ppl", 2.0),
+        "shuffled": ("shuffled_plan_generation", "shuffled_plan_ppl", 3.0),
+    }
+    for variant, (mode, metric, value) in modes.items():
+        root = run_dir / "train_sampling_eval" / variant
+        root.mkdir(parents=True)
+        records = [{"epoch": 0, "step": 32000, "mode": mode, metric: value}]
+        # Simulate independent JSONL writers: shuffled is still at 32000 while
+        # the other three variants have published checkpoint 34000.
+        if variant != "shuffled":
+            records.append({
+                "epoch": 0, "step": 34000, "mode": mode, metric: value + 0.5,
+            })
+        (root / "metrics.jsonl").write_text(
+            "".join(json.dumps(record) + "\n" for record in records),
+            encoding="utf-8",
+        )
+
+    row = scan_run_dir(run_dir, "elf", now=NOW)
+    snapshot = row.evaluation_snapshot
+
+    assert row.evidence.evaluation.state == "step 34000 · PARTIAL"
+    assert snapshot["current"]["state"] == "PARTIAL"
+    assert snapshot["current"]["step"] == 34000
+    assert snapshot["current"]["missing_metrics"] == ["shuffled_plan_ppl"]
+    assert "shuffled_plan_ppl" not in snapshot["current"]["metrics"]
+    assert "plan_ppl_gap" not in snapshot["current"]["metrics"]
+    assert {
+        source["step"] for source in snapshot["current"]["metric_sources"].values()
+    } == {34000}
+
+    complete = snapshot["latest_metric_complete"]
+    assert complete["state"] == "COMPLETE"
+    assert complete["step"] == 32000
+    assert complete["metrics"]["plan_ppl_gap"] == 1.0
+    assert complete["metric_sources"]["plan_ppl_gap"] == {
+        "derived_from": ["oracle_plan_ppl", "shuffled_plan_ppl"],
+        "epoch": 0,
+        "step": 32000,
+    }
+
+    shuffled = run_dir / "train_sampling_eval" / "shuffled" / "metrics.jsonl"
+    with shuffled.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({
+            "epoch": 0,
+            "step": 34000,
+            "mode": "shuffled_plan_generation",
+            "shuffled_plan_ppl": 3.5,
+        }) + "\n")
+
+    restored_row = scan_run_dir(run_dir, "elf", now=NOW)
+    restored = restored_row.evaluation_snapshot
+    assert restored_row.evidence.evaluation.state == "step 34000 · COMPLETE"
+    assert restored["current"]["state"] == "COMPLETE"
+    assert restored["current"]["step"] == 34000
+    assert restored["current"]["metrics"]["plan_ppl_gap"] == 1.0
+    assert restored["latest_metric_complete"] == restored["current"]
+
+
+def test_evaluation_snapshot_has_no_science_without_any_complete_checkpoint():
+    variants = []
+    for variant, mode, metric, step in (
+        ("clean", "clean_token_reconstruction", "token_recon_ppl", 34000),
+        ("generation", "generation_refine_decode", "g_ppl", 34000),
+        ("oracle", "oracle_plan_generation", "oracle_plan_ppl", 34000),
+        ("shuffled", "shuffled_plan_generation", "shuffled_plan_ppl", 32000),
+    ):
+        record = {"epoch": 0, "step": step, "mode": mode, metric: 1.0}
+        variants.append({
+            "variant": variant, "latest": record, "history": [record],
+        })
+
+    snapshot = evaluation_snapshot(variants)
+
+    assert snapshot["current"]["state"] == "PARTIAL"
+    assert snapshot["current"]["step"] == 34000
+    assert "plan_ppl_gap" not in snapshot["current"]["metrics"]
+    assert snapshot["latest_metric_complete"] is None
 
 
 def test_eval_history_is_bounded_and_deduplicated_by_epoch_step(tmp_path):

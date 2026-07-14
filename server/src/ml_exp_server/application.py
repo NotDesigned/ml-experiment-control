@@ -457,6 +457,7 @@ class ExperimentServerApplication:
             "evidence": row.evidence.model_dump(mode="json"),
             "latest_metrics": row.latest_metrics, "eval_metrics": row.eval_metrics,
             "eval_variants": row.eval_variants,
+            "evaluation_snapshot": getattr(row, "evaluation_snapshot", {}),
             "canonical_eval_variant_id": row.canonical_eval_variant_id,
             "checkpoint": row.checkpoint, "artifacts": row.artifacts,
             "decision": ExperimentServerApplication._operational_decision(row.decision),
@@ -501,6 +502,7 @@ class ExperimentServerApplication:
                     "scheduler_state": peer.scheduler_state,
                     "latest_metrics": peer.latest_metrics,
                     "eval_metrics": peer.eval_metrics,
+                    "evaluation_snapshot": getattr(peer, "evaluation_snapshot", {}),
                     "provenance": peer.provenance,
                 })
             lifecycle = campaign_snapshot(

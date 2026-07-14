@@ -62,6 +62,14 @@ _EVAL_HISTORY_METRIC_KEYS = (
     "rougeL",
 )
 
+_EVAL_PRIMARY_METRICS_BY_MODE = {
+    "clean_token_reconstruction": "token_recon_ppl",
+    "generation_refine_decode": "g_ppl",
+    "oracle_plan_generation": "oracle_plan_ppl",
+    "shuffled_plan_generation": "shuffled_plan_ppl",
+}
+_EVAL_REQUIRED_PRIMARY_METRICS = tuple(_EVAL_PRIMARY_METRICS_BY_MODE.values())
+
 
 def _evaluation_record(record: dict[str, Any]) -> dict[str, Any]:
     """Return the bounded, non-text projection exposed through read APIs."""
@@ -130,6 +138,140 @@ def _canonical_eval_variant_id(
     if len(variants) == 1:
         return str(variants[0].get("variant"))
     return None
+
+
+def _evaluation_checkpoint_snapshot(
+    identity: tuple[Any, Any],
+    variants: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Project scientific metrics that really belong to one checkpoint.
+
+    Variant JSONL files are written independently.  A checkpoint therefore
+    cannot be represented by taking the latest record from every file: during
+    an interleaved write those records commonly refer to different steps.
+    """
+    epoch, step = identity
+    candidates: dict[
+        str, list[tuple[Any, dict[str, Any], dict[str, Any]]]
+    ] = {}
+    for variant in variants:
+        for record in variant.get("history") or []:
+            if not isinstance(record, dict):
+                continue
+            if (record.get("epoch"), record.get("step")) != identity:
+                continue
+            mode = record.get("mode")
+            primary = _EVAL_PRIMARY_METRICS_BY_MODE.get(mode)
+            if primary is None:
+                inferred = [
+                    metric for metric in _EVAL_REQUIRED_PRIMARY_METRICS
+                    if record.get(metric) is not None
+                ]
+                primary = inferred[0] if len(inferred) == 1 else None
+            metric_keys = [primary] if primary is not None else []
+            if mode == "generation_refine_decode":
+                if record.get("generation_mean_entropy") is not None:
+                    metric_keys.append("generation_mean_entropy")
+                elif record.get("mean_entropy") is not None:
+                    metric_keys.append("generation_mean_entropy")
+            for metric in metric_keys:
+                value = (
+                    record.get("mean_entropy")
+                    if metric == "generation_mean_entropy"
+                    and record.get("generation_mean_entropy") is None
+                    else record.get(metric)
+                )
+                if value is not None:
+                    candidates.setdefault(metric, []).append((value, variant, record))
+
+    metrics: dict[str, Any] = {}
+    metric_sources: dict[str, Any] = {}
+    conflicting_metrics: list[str] = []
+    for metric, observations in sorted(candidates.items()):
+        values = {float(value) for value, _, _ in observations}
+        if len(values) != 1:
+            conflicting_metrics.append(metric)
+            continue
+        value, variant, record = sorted(
+            observations, key=lambda item: str(item[1].get("variant") or ""),
+        )[0]
+        metrics[metric] = value
+        source = {
+            "variant": variant.get("variant"),
+            "mode": record.get("mode"),
+            "epoch": epoch,
+            "step": step,
+        }
+        metric_sources[metric] = {
+            key: value for key, value in source.items() if value is not None
+        }
+
+    if (
+        isinstance(metrics.get("oracle_plan_ppl"), (int, float))
+        and isinstance(metrics.get("shuffled_plan_ppl"), (int, float))
+    ):
+        metrics["plan_ppl_gap"] = (
+            metrics["shuffled_plan_ppl"] - metrics["oracle_plan_ppl"]
+        )
+        metric_sources["plan_ppl_gap"] = {
+            "derived_from": ["oracle_plan_ppl", "shuffled_plan_ppl"],
+            **({"epoch": epoch} if epoch is not None else {}),
+            "step": step,
+        }
+
+    missing = [
+        metric for metric in _EVAL_REQUIRED_PRIMARY_METRICS
+        if metric not in metrics
+    ]
+    return {
+        "state": "COMPLETE" if not missing and not any(
+            metric in _EVAL_REQUIRED_PRIMARY_METRICS
+            for metric in conflicting_metrics
+        ) else "PARTIAL",
+        **({"epoch": epoch} if epoch is not None else {}),
+        "step": step,
+        "metrics": metrics,
+        "metric_sources": metric_sources,
+        "missing_metrics": missing,
+        "conflicting_metrics": conflicting_metrics,
+    }
+
+
+def evaluation_snapshot(variants: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build current and most-recent metric-complete checkpoint projections."""
+    identities = {
+        (record.get("epoch"), record.get("step"))
+        for variant in variants
+        for record in (variant.get("history") or [])
+        if isinstance(record, dict) and record.get("step") is not None
+    }
+    ordered = sorted(
+        identities,
+        key=lambda identity: (
+            float(identity[0]) if identity[0] is not None else float("-inf"),
+            float(identity[1]),
+        ),
+    )
+    checkpoints = [
+        _evaluation_checkpoint_snapshot(identity, variants) for identity in ordered
+    ]
+    current = checkpoints[-1] if checkpoints else {
+        "state": "NOT_OBSERVED",
+        "metrics": {},
+        "metric_sources": {},
+        "missing_metrics": list(_EVAL_REQUIRED_PRIMARY_METRICS),
+        "conflicting_metrics": [],
+    }
+    latest_complete = next(
+        (item for item in reversed(checkpoints) if item["state"] == "COMPLETE"),
+        None,
+    )
+    return {
+        "schema_version": 1,
+        "required_metrics": list(_EVAL_REQUIRED_PRIMARY_METRICS),
+        "current": current,
+        "latest_metric_complete": latest_complete,
+    }
 
 _ROLE_PATTERN = re.compile(r"^[a-z]+-([a-z]\d+)-")
 
@@ -649,21 +791,25 @@ def _latest_train_record(
     return (records[-1] if records else {}), path, attempt_id
 
 
-def _eval_layer(run_dir: Path) -> EvidenceLayer:
-    """Latest record across every eval variant directory."""
+def _eval_layer(
+    variants: list[dict[str, Any]], attempt_id: Optional[str],
+) -> EvidenceLayer:
+    """Latest observed evaluation checkpoint, independent of model progress."""
     layer = EvidenceLayer()
     best_ts: Optional[float] = None
-    variants, attempt_id = evaluation_variants(run_dir)
     layer.attempt_id = attempt_id
     for variant in variants:
         metrics_path = Path(variant["source"])
         ts = _mtime(metrics_path)
-        latest = variant["latest"]
-        layer.detail[variant["variant"]] = latest
+        layer.detail[variant["variant"]] = variant["latest"]
         if ts is not None and (best_ts is None or ts > best_ts):
             best_ts = ts
             layer.source = str(metrics_path)
-            layer.state = f"step {latest.get('step')}" if latest.get("step") is not None else "present"
+    current = evaluation_snapshot(variants)["current"]
+    if current.get("step") is not None:
+        layer.state = f"step {current['step']} · {current['state']}"
+    elif variants:
+        layer.state = "present"
     layer.as_of = best_ts
     return layer
 
@@ -808,7 +954,9 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
             source=str(run_dir / "collection.json"),
         )
 
-    evidence.evaluation = _eval_layer(run_dir)
+    eval_variants, eval_attempt_id = evaluation_variants(run_dir)
+    eval_snapshot = evaluation_snapshot(eval_variants)
+    evidence.evaluation = _eval_layer(eval_variants, eval_attempt_id)
     harness_metrics = status.get("metrics") if isinstance(status.get("metrics"), dict) else {}
     if not harness_metrics and isinstance(attempt_summary.get("metrics"), dict):
         harness_metrics = attempt_summary["metrics"]
@@ -862,7 +1010,6 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
     contract = manifest.get("research_contract")
     if not isinstance(contract, dict):
         contract = None
-    eval_variants, _ = evaluation_variants(run_dir)
     canonical_eval_variant_id = _canonical_eval_variant_id(eval_variants, contract)
     eval_metrics: dict[str, Any] = {}
     if canonical_eval_variant_id is not None:
@@ -932,6 +1079,7 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
         latest_metrics=latest_metrics,
         eval_metrics=eval_metrics,
         eval_variants=eval_variants,
+        evaluation_snapshot=eval_snapshot,
         canonical_eval_variant_id=canonical_eval_variant_id,
         decision=decision,
         decision_history=_decision_history(run_dir),

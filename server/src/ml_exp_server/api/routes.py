@@ -555,8 +555,12 @@ def research_question_detail(project_name: str, research_question_id: str, reque
             role = membership.role if membership and membership.role else row.role
             metrics = {k: row.latest_metrics.get(k) for k in _KEY_METRIC_FIELDS
                        if row.latest_metrics.get(k) is not None}
-            metrics.update({k: row.eval_metrics.get(k) for k in _KEY_EVAL_FIELDS
-                            if row.eval_metrics.get(k) is not None})
+            complete = row.evaluation_snapshot.get("latest_metric_complete")
+            scientific_metrics = (
+                complete.get("metrics", {}) if isinstance(complete, dict) else {}
+            )
+            metrics.update({k: scientific_metrics.get(k) for k in _KEY_EVAL_FIELDS
+                            if scientific_metrics.get(k) is not None})
             role_payload = sanitized_outward({
                 "role": role,
                 "role_note": campaign.role_notes.get(role or "", ""),
@@ -565,6 +569,7 @@ def research_question_detail(project_name: str, research_question_id: str, reque
                 "evidence": row.evidence.model_dump(),
                 "key_metrics": metrics,
                 "eval_variants": row.eval_variants,
+                "evaluation_snapshot": row.evaluation_snapshot,
                 "canonical_eval_variant_id": row.canonical_eval_variant_id,
                 "checkpoint": row.checkpoint,
                 "artifacts": row.artifacts,
