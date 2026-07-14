@@ -36,6 +36,7 @@ from ..schemas import (
     EvidenceLayers,
     RunIndexRow,
 )
+from ..evidence_conflicts import classify_evidence_conflicts
 
 # collection.json keys that are operational rather than scientific metrics.
 _COLLECTION_NON_METRIC_KEYS = {
@@ -1399,11 +1400,19 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
         }
         if harness_metrics.get("val_bpb") is not None:
             eval_metrics["val_bpb"] = harness_metrics["val_bpb"]
-    conflicts = list(collection.get("evidence_conflicts") or [])
+    conflicts, reclassified_conflicts = classify_evidence_conflicts(
+        collection.get("evidence_conflicts"),
+        project=project, run_id=str(run_id), attempt_id=selected_attempt,
+    )
     warnings = [
         warning for warning in list(collection.get("warnings") or [])
         if warning not in conflicts
     ]
+    if reclassified_conflicts:
+        warnings.append(
+            "cross-variant or cross-family evaluation values retained as "
+            "distinct evidence, not conflicts"
+        )
     if eval_variants and eval_snapshot.get("family_state") in {
         "UNRESOLVED", "CANONICAL_NOT_DECLARED", "CANONICAL_BINDING_CONFLICT",
         "CANONICAL_NOT_FOUND",

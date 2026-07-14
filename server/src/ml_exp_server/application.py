@@ -22,6 +22,7 @@ from .ingest.runscan import (
     read_jsonl,
     train_metric_records,
 )
+from .evidence_conflicts import classify_evidence_conflicts
 from .project_registry import ProjectRegistryError
 from .runtime import ExperimentServerRuntime
 from .outward import attempt_dto, operational_decision, run_dto, sanitized_outward
@@ -1708,14 +1709,21 @@ class ExperimentServerApplication:
                 {"records": evidence_records, "groups": sorted(artifacts)},
             ))
 
-        evidence_conflicts = collection.get("evidence_conflicts")
-        evidence_conflicts = evidence_conflicts if isinstance(evidence_conflicts, list) else []
+        evidence_conflicts, reclassified = classify_evidence_conflicts(
+            collection.get("evidence_conflicts"),
+            project=project, run_id=row.run_id, attempt_id=attempt_id,
+        )
         gates.append(self._gate(
             "attempt.evidence_conflicts",
             "BLOCKED" if evidence_conflicts else "PASS",
-            "evidence contains conflicting values" if evidence_conflicts
-            else "no evidence conflicts are recorded",
-            {"count": len(evidence_conflicts), "conflicts": evidence_conflicts[:50]},
+            "exact variant-bound evidence contains conflicting values"
+            if evidence_conflicts else
+            "no exact-identity evidence conflicts are recorded",
+            {
+                "count": len(evidence_conflicts),
+                "conflicts": evidence_conflicts[:50],
+                "reclassified_cross_binding": reclassified[:50],
+            },
         ))
 
         return gates

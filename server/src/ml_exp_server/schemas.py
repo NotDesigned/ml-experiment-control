@@ -546,7 +546,7 @@ class RunIndexRow(BaseModel):
     provenance: dict[str, Any] = Field(default_factory=dict)
     attempts: list[AttemptSummary] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
-    evidence_conflicts: list[str] = Field(default_factory=list)
+    evidence_conflicts: list[Any] = Field(default_factory=list)
     scanned_at: Optional[float] = None
 
     @property
