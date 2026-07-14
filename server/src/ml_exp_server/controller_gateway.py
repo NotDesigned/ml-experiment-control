@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 from uuid import uuid4
 
+import yaml
+
 from experiment_control.runner import CommandRunner as CoreCommandRunner
 from experiment_control.runner import SubprocessRunner
 
@@ -33,6 +35,9 @@ _SECRET = re.compile(
     r"api[_-]?key|proxy|authorization|cookie)(?:$|[_-])"
 )
 _SNAPSHOT_ROOT_ARGUMENT = "{controller_snapshot}"
+_TRUSTED_RUNTIME_SOURCES = {
+    "yaml": Path(str(yaml.__file__)).resolve(strict=True).parent,
+}
 
 
 def redact(value: Any) -> Any:
@@ -458,6 +463,17 @@ class ProjectControllerGateway:
                 "content_sha256": trusted_core["content_sha256"],
             }:
                 raise ValueError("daemon experiment_control changed while snapshotting")
+            trusted_runtime: dict[str, dict[str, Any]] = {}
+            for package, source in _TRUSTED_RUNTIME_SOURCES.items():
+                identity = _source_tree_identity(source)
+                _copy_source(source, temporary / "src" / Path(*package.split(".")))
+                if _source_tree_identity(source) != identity:
+                    raise ValueError(
+                        f"daemon trusted runtime package changed while snapshotting: {package}"
+                    )
+                trusted_runtime[package] = {
+                    "source_realpath": str(source), **identity,
+                }
             package_sources: dict[str, str] = {}
             for package in bundle.python_packages:
                 source = self._package_source(python, package)
@@ -499,6 +515,7 @@ class ProjectControllerGateway:
                 "reviewed_inputs": sorted(reviewed_inputs),
                 "python_packages": package_sources,
                 "trusted_core": trusted_core,
+                "trusted_runtime": trusted_runtime,
                 "environment": {
                     "isolated_path": True,
                     "private_source": "{controller_snapshot}/src",

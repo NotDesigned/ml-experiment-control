@@ -443,6 +443,32 @@ def test_snapshot_rejects_contract_and_publish_conflicts(monkeypatch, tmp_path):
         )
 
 
+def test_snapshot_rejects_trusted_runtime_package_drift(monkeypatch, tmp_path):
+    gateway = ProjectControllerGateway()
+    _install_trusted_core(gateway, tmp_path)
+    runtime = tmp_path / "trusted-runtime"
+    runtime.mkdir()
+    (runtime / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(module, "_TRUSTED_RUNTIME_SOURCES", {"runtime": runtime})
+    stable_identity = module._source_tree_identity
+    runtime_calls = 0
+
+    def changing_identity(source):
+        nonlocal runtime_calls
+        identity = stable_identity(source)
+        if source == runtime:
+            runtime_calls += 1
+            if runtime_calls == 2:
+                identity = {**identity, "content_sha256": "sha256:changed"}
+        return identity
+
+    monkeypatch.setattr(module, "_source_tree_identity", changing_identity)
+    with pytest.raises(ValueError, match="trusted runtime package changed"):
+        gateway.snapshot_execution_bundle(
+            _project(tmp_path), tmp_path / "runtime-drift", reviewed_inputs={},
+        )
+
+
 def test_existing_snapshot_is_verified_and_reused(tmp_path):
     snapshot = _minimal_snapshot(tmp_path)
     result = ProjectControllerGateway().snapshot_execution_bundle(

@@ -61,6 +61,16 @@ def test_campaign_context_preserves_orphaned_membership():
     assert result[0]["orphaned_campaign"] is True
 
 
+def test_observability_policy_recovery_skips_unrelated_actions():
+    value = app(action_store=SimpleNamespace(
+        list_all=lambda: [{"operation": "CREATE_RESEARCH_QUESTION_DRAFT"}],
+    ))
+    value._activate_observability_policy = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("unrelated Actions must not activate publication policy"),
+    )
+    value.recover_observability_policies()
+
+
 def test_operation_availability_fails_closed_on_unavailable_evidence(monkeypatch):
     operation = module.OPERATIONS_BY_ID["run.submit"]
     value = app()
