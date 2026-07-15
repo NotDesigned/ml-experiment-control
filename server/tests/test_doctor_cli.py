@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import subprocess
 
 import pytest
 
@@ -78,6 +79,28 @@ def test_doctor_reports_backend_availability_and_enforces_scheduler_gate(
     }
     assert enforced["backend.sensecore"]["status"] == "FAIL"
     assert enforced["backend.slurm"]["status"] == "FAIL"
+
+
+def test_doctor_reports_backend_probe_timeout_without_hanging(
+    monkeypatch, tmp_path, capsys,
+):
+    def timeout_safe_sco(_self, command, **kwargs):
+        if "normalize-state" in command:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout_seconds"])
+        return CommandResult(tuple(command), 0)
+
+    monkeypatch.setattr(
+        "experiment_control.runner.SubprocessRunner.run", timeout_safe_sco,
+    )
+    config = _write_config(tmp_path)
+
+    assert main(["--config", str(config), "doctor", "--json"]) == 0
+    checks = {
+        item["name"]: item
+        for item in json.loads(capsys.readouterr().out)["checks"]
+    }
+    assert checks["backend.sensecore"]["status"] == "INFO"
+    assert "safe-sco" in checks["backend.sensecore"]["detail"]
 
 
 def test_doctor_flags_missing_wandb_credentials_as_hard_failures(tmp_path, capsys):

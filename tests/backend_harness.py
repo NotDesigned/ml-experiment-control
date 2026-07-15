@@ -14,9 +14,11 @@ class QueueRunner:
     def __init__(self, results: list[CommandResult]):
         self.results = list(results)
         self.commands: list[tuple[str, ...]] = []
+        self.command_kwargs: list[dict] = []
 
     def run(self, command, **kwargs):
         self.commands.append(tuple(command))
+        self.command_kwargs.append(dict(kwargs))
         if not self.results:
             raise AssertionError(f"unexpected command: {command!r}")
         result = self.results.pop(0)

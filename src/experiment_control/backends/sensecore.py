@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,8 @@ from ..submission import require_submission_intent, validate_submission_token
 
 SENSECORE_BASE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 SENSECORE_ATTEMPT_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
+_DOCTOR_TOOL_PROBE_TIMEOUT_SECONDS = 5.0
+_DOCTOR_WORKSPACE_PROBE_TIMEOUT_SECONDS = 25.0
 
 
 def scheduler_job_name(base_name: str, attempt_id: str) -> str:
@@ -119,25 +122,42 @@ class SenseCoreBackend:
         )
         checks = []
         for name, command in tools:
-            result = self.s.run_command(command, check=False)
+            try:
+                result = self.s.run_command(
+                    command, check=False,
+                    timeout_seconds=_DOCTOR_TOOL_PROBE_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                checks.append(PreflightCheck(
+                    name, "tool", "FAIL", f"{name} probe timed out",
+                ))
+                continue
             checks.append(PreflightCheck(
                 name, "tool", "PASS" if result.returncode == 0 else "FAIL",
                 f"{name} is executable" if result.returncode == 0
                 else f"{name} is unavailable",
             ))
         if all(check.status == "PASS" for check in checks):
-            access = self.s.run_command([
-                "timeout", "20s", "env",
-                "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
-                "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY",
-                sco, "ws", "instances", "list",
-            ], check=False)
-            checks.append(PreflightCheck(
-                "workspace-access", "authentication",
-                "PASS" if access.returncode == 0 else "FAIL",
-                "SCO credentials permit a workspace query" if access.returncode == 0
-                else "SCO authentication, components, or API connectivity is unavailable",
-            ))
+            try:
+                access = self.s.run_command([
+                    "timeout", "20s", "env",
+                    "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
+                    "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY",
+                    sco, "ws", "instances", "list",
+                ], check=False,
+                    timeout_seconds=_DOCTOR_WORKSPACE_PROBE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                checks.append(PreflightCheck(
+                    "workspace-access", "authentication", "FAIL",
+                    "SCO workspace access probe timed out",
+                ))
+            else:
+                checks.append(PreflightCheck(
+                    "workspace-access", "authentication",
+                    "PASS" if access.returncode == 0 else "FAIL",
+                    "SCO credentials permit a workspace query" if access.returncode == 0
+                    else "SCO authentication, components, or API connectivity is unavailable",
+                ))
         return PreflightReport(self.kind, "doctor", tuple(checks))
 
     @staticmethod

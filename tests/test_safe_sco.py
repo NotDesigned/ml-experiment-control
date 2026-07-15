@@ -159,6 +159,27 @@ def test_normalize_state_covers_scheduler_terminals(raw, expected) -> None:
     assert result.stdout.strip() == expected
 
 
+def test_normalize_state_exits_while_inherited_stdin_remains_open() -> None:
+    executable = shutil.which("experiment-safe-sco")
+    assert executable is not None
+    process = subprocess.Popen(
+        [executable, "normalize-state", "RUNNING"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.wait(timeout=1) == 0
+        assert process.stdout is not None
+        assert process.stdout.read() == "RUNNING\n"
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+
 def test_help_and_argument_errors_are_stable() -> None:
     executable = shutil.which("experiment-safe-sco")
     assert executable is not None

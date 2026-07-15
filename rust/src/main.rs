@@ -207,10 +207,17 @@ fn run() -> Result<(), &'static str> {
     if arguments.next().is_some() {
         return Err("safe_sco: too many arguments");
     }
-    let mut input = String::new();
-    io::stdin()
-        .read_to_string(&mut input)
-        .map_err(|_| "safe_sco: could not read standard input")?;
+    let input = match mode.as_str() {
+        "normalize-state" => String::new(),
+        "redact-lines" | "worker-list" | "job-summary" | "job-list" => {
+            let mut input = String::new();
+            io::stdin()
+                .read_to_string(&mut input)
+                .map_err(|_| "safe_sco: could not read standard input")?;
+            input
+        }
+        _ => return Err("safe_sco: unsupported sanitizer mode"),
+    };
     print!("{}", sanitize(&mode, value.as_deref(), &input)?);
     Ok(())
 }

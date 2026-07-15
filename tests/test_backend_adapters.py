@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import subprocess
 
 import pytest
 
@@ -42,6 +43,30 @@ def test_sensecore_availability_checks_tools_and_credential_backed_api(tmp_path)
         "sco-cli", "safe-sco", "bash-cli", "timeout-cli", "workspace-access",
     ]
     assert fake.commands[-1][-3:] == ("ws", "instances", "list")
+    assert [call["timeout_seconds"] for call in fake.command_kwargs] == [
+        5.0, 5.0, 5.0, 5.0, 25.0,
+    ]
+
+
+@pytest.mark.parametrize("workspace", [False, True])
+def test_sensecore_availability_converts_probe_timeout_to_failure(
+    tmp_path, workspace,
+):
+    class TimeoutRunner:
+        def run(self, command, **kwargs):
+            if (workspace and command[:2] == ["timeout", "20s"]) or (
+                not workspace and "normalize-state" in command
+            ):
+                raise subprocess.TimeoutExpired(command, kwargs["timeout_seconds"])
+            return CommandResult(tuple(command), 0)
+
+    report = SenseCoreBackend(services(tmp_path, TimeoutRunner())).availability()
+
+    assert report.ready is False
+    failed = [check for check in report.checks if check.status == "FAIL"]
+    assert len(failed) == 1
+    assert failed[0].name == ("workspace-access" if workspace else "safe-sco")
+    assert "timed out" in failed[0].message
 
 
 @pytest.mark.parametrize("access_code", [1, 124])
