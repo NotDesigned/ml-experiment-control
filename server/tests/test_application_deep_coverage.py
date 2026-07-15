@@ -117,7 +117,10 @@ def test_run_validate_covers_binding_provenance_and_current_attempt(
         assert gates["run.current_attempt"]["status"] == "UNKNOWN"
 
 
-def retry_context(*, state="FAILED", decision=None, attempts=("attempt-001",), job=None):
+def retry_context(
+    *, state="FAILED", decision=None, attempts=("attempt-001",), job=None,
+    run_dir=None,
+):
     attempt = SimpleNamespace(
         attempt_id=attempts[0], state=state, decision=decision,
         backend_job_id=job,
@@ -125,6 +128,7 @@ def retry_context(*, state="FAILED", decision=None, attempts=("attempt-001",), j
     row = SimpleNamespace(
         run_id="run-a", campaign="study",
         attempts=[SimpleNamespace(attempt_id=item) for item in attempts],
+        run_dir=run_dir,
     )
     configured = SimpleNamespace(project="demo")
     return (
@@ -149,6 +153,14 @@ def test_prepare_attempt_retry_rejects_invalid_budget_before_lookup():
     assert application_error_code(lambda: app.prepare_attempt_retry(
         "demo", "run-a::attempt-001", new_attempt_id=None,
         max_gpu_hours=0, reason="test",
+    )) == "INVALID_GPU_BUDGET"
+
+
+def test_prepare_attempt_retry_rejects_invalid_resource_approval_before_lookup():
+    app = application()
+    assert application_error_code(lambda: app.prepare_attempt_retry(
+        "demo", "run-a::attempt-001", new_attempt_id=None,
+        max_gpu_hours=None, reason="test", resource_approval="unexpected",
     )) == "INVALID_GPU_BUDGET"
 
 
@@ -181,6 +193,19 @@ def test_prepare_attempt_retry_generates_valid_identity_and_prepares_action():
     assert result["action"]["kind"] == "RETRY_ATTEMPT"
     assert draft["attempt_id"] == "attempt-010"
     assert draft["wandb_cloud_sync"] is True
+
+
+def test_prepare_attempt_retry_review_exact_preserves_legacy_root_without_budget():
+    app = retry_application(retry_context(run_dir="/legacy/runs/run-a"))
+
+    result = app.prepare_attempt_retry(
+        "demo", "run-a::attempt-001", new_attempt_id="attempt-002",
+        max_gpu_hours=None, reason="retry", resource_approval="review_exact",
+    )
+
+    draft = yaml.safe_load(result["action"]["draft"])
+    assert draft["local_root"] == "/legacy"
+    assert "max_gpu_hours" not in draft
 
 
 @pytest.mark.parametrize(("new_attempt_id", "expected"), [

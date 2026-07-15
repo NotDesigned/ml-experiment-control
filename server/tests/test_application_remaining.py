@@ -627,6 +627,14 @@ def test_prepare_run_submit_validation_matrix(
     )) == code
 
 
+def test_prepare_run_submit_rejects_invalid_resource_approval_before_lookup():
+    value = app()
+    value._require_operation_available = lambda *_args: None
+    assert error_code(lambda: value.prepare_run_submit(
+        "demo", "run-a", max_gpu_hours=None, resource_approval="unexpected",
+    )) == "INVALID_GPU_BUDGET"
+
+
 def test_misc_read_model_and_observability_scope_edges(tmp_path):
     value = app()
     attempt = SimpleNamespace(
