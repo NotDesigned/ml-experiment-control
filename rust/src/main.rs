@@ -39,6 +39,8 @@ static SENSITIVE_QUERY_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static WORKER_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._-]+$").expect("worker regex is valid"));
+const STRUCTURED_EVIDENCE_PREFIX: &str = "EXPERIMENT_EVIDENCE_JSON=";
+const STRUCTURED_EVIDENCE_MAX_CHARS: usize = 131_072;
 
 fn redact_line(input: &str) -> String {
     let value = URL_USERINFO_RE.replace_all(input, "$1<redacted>@");
@@ -47,6 +49,105 @@ fn redact_line(input: &str) -> String {
     SECRET_ASSIGNMENT_RE
         .replace_all(&value, "$1<redacted>")
         .into_owned()
+}
+
+fn normalized_key(key: &str) -> String {
+    let mut normalized = String::with_capacity(key.len());
+    let mut previous_was_lowercase_or_digit = false;
+    for character in key.chars() {
+        if character == '-' || character == '.' {
+            normalized.push('_');
+            previous_was_lowercase_or_digit = false;
+            continue;
+        }
+        if character.is_ascii_uppercase() && previous_was_lowercase_or_digit {
+            normalized.push('_');
+        }
+        normalized.push(character.to_ascii_lowercase());
+        previous_was_lowercase_or_digit =
+            character.is_ascii_lowercase() || character.is_ascii_digit();
+    }
+    normalized
+}
+
+fn sensitive_json_key(key: &str) -> bool {
+    let key = normalized_key(key);
+    let sensitive_suffix = [
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "credential",
+        "authorization",
+        "cookie",
+        "proxy",
+        "signature",
+        "api_key",
+        "access_key",
+        "access_key_id",
+        "access_key_secret",
+        "private_key",
+    ]
+    .iter()
+    .any(|suffix| key == *suffix || key.ends_with(&format!("_{suffix}")));
+    sensitive_suffix || key.starts_with("authorization_")
+}
+
+fn redact_json_value(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                if sensitive_json_key(key) {
+                    *child = Value::String("<redacted>".to_owned());
+                } else {
+                    redact_json_value(child);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                redact_json_value(item);
+            }
+        }
+        Value::String(text) => *text = redact_line(text),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn redact_structured_evidence_line(line: &str) -> String {
+    let Some(marker) = line.find(STRUCTURED_EVIDENCE_PREFIX) else {
+        return redact_line(line);
+    };
+    let (prefix, evidence) = line.split_at(marker);
+    let payload = &evidence[STRUCTURED_EVIDENCE_PREFIX.len()..];
+    let safe_prefix = redact_line(prefix);
+    if payload.is_empty() || payload.len() > STRUCTURED_EVIDENCE_MAX_CHARS {
+        return format!("{safe_prefix}{STRUCTURED_EVIDENCE_PREFIX}<redacted-malformed>");
+    }
+    let Ok(mut value) = serde_json::from_str::<Value>(payload) else {
+        return format!("{safe_prefix}{STRUCTURED_EVIDENCE_PREFIX}<redacted-malformed>");
+    };
+    if !value.is_object() {
+        return format!("{safe_prefix}{STRUCTURED_EVIDENCE_PREFIX}<redacted-malformed>");
+    }
+    redact_json_value(&mut value);
+    match serde_json::to_string(&value) {
+        Ok(payload) => format!("{safe_prefix}{STRUCTURED_EVIDENCE_PREFIX}{payload}"),
+        Err(_) => format!("{safe_prefix}{STRUCTURED_EVIDENCE_PREFIX}<redacted-malformed>"),
+    }
+}
+
+fn redact_lines(input: &str) -> String {
+    input
+        .split_inclusive('\n')
+        .map(|line| {
+            let (body, newline) = match line.strip_suffix('\n') {
+                Some(body) => (body.strip_suffix('\r').unwrap_or(body), &line[body.len()..]),
+                None => (line, ""),
+            };
+            format!("{}{newline}", redact_structured_evidence_line(body))
+        })
+        .collect()
 }
 
 fn normalize_state(input: &str) -> &'static str {
@@ -162,7 +263,7 @@ fn sanitize(mode: &str, value: Option<&str>, input: &str) -> Result<String, &'st
         "normalize-state" => value
             .map(|state| format!("{}\n", normalize_state(state)))
             .ok_or("safe_sco: normalize-state requires a state value"),
-        "redact-lines" => Ok(redact_line(input)),
+        "redact-lines" => Ok(redact_lines(input)),
         "worker-list" => serde_json::to_string(&worker_list(input)?)
             .map(|output| format!("{output}\n"))
             .map_err(|_| "safe_sco: could not serialize sanitized worker output"),
@@ -245,6 +346,69 @@ mod tests {
             assert!(!output.contains(secret));
         }
         assert_eq!(output.matches("<redacted>").count(), 4);
+    }
+
+    #[test]
+    fn structured_evidence_preserves_scientific_token_fields() {
+        let input = concat!(
+            "2026-07-16T12:00:00Z EXPERIMENT_EVIDENCE_JSON=",
+            r#"{"token_recon_ppl":23.3,"oracle_plan_token_denoising_l2":2.1,"sampled_plan_num_samples":16,"tokenizer_path":"/data/tokenizer","proxy_loss":0.4}"#,
+            "\n"
+        );
+        let output = sanitize("redact-lines", None, input).expect("valid evidence");
+        let payload = output
+            .trim_end()
+            .split_once(STRUCTURED_EVIDENCE_PREFIX)
+            .unwrap()
+            .1;
+        let evidence: Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(evidence["token_recon_ppl"], 23.3);
+        assert_eq!(evidence["oracle_plan_token_denoising_l2"], 2.1);
+        assert_eq!(evidence["sampled_plan_num_samples"], 16);
+        assert_eq!(evidence["tokenizer_path"], "/data/tokenizer");
+        assert_eq!(evidence["proxy_loss"], 0.4);
+    }
+
+    #[test]
+    fn structured_evidence_redacts_sensitive_keys_and_string_values() {
+        let input = concat!(
+            "EXPERIMENT_EVIDENCE_JSON=",
+            r#"{"submission_token":"alpha","refreshToken":"bravo","WANDB_API_KEY":"echo","nested":{"access_key_secret":"foxtrot","metric_url":"https://user:pass@example.test/?token=charlie"},"message":"Authorization: Bearer delta"}"#,
+            "\n"
+        );
+        let output = sanitize("redact-lines", None, input).expect("valid evidence");
+        for secret in [
+            "alpha",
+            "bravo",
+            "echo",
+            "foxtrot",
+            "user:pass",
+            "charlie",
+            "delta",
+        ] {
+            assert!(!output.contains(secret));
+        }
+        let payload = output
+            .trim_end()
+            .strip_prefix(STRUCTURED_EVIDENCE_PREFIX)
+            .unwrap();
+        let evidence: Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(evidence["submission_token"], "<redacted>");
+        assert_eq!(evidence["refreshToken"], "<redacted>");
+        assert_eq!(evidence["WANDB_API_KEY"], "<redacted>");
+        assert_eq!(evidence["nested"]["access_key_secret"], "<redacted>");
+    }
+
+    #[test]
+    fn malformed_structured_evidence_is_suppressed() {
+        let secret = "must-not-echo";
+        let input = format!("{STRUCTURED_EVIDENCE_PREFIX}{{\"token\":\"{secret}\"\n");
+        let output = sanitize("redact-lines", None, &input).expect("fail closed output");
+        assert_eq!(
+            output,
+            format!("{STRUCTURED_EVIDENCE_PREFIX}<redacted-malformed>\n")
+        );
+        assert!(!output.contains(secret));
     }
 
     #[test]

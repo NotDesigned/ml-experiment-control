@@ -143,6 +143,60 @@ def test_redact_lines_handles_assignments_urls_bearer_and_query() -> None:
     assert result.stdout.count("<redacted>") >= 5
 
 
+def test_redact_lines_preserves_structured_scientific_token_fields() -> None:
+    payload = {
+        "run_id": "run-1",
+        "attempt_id": "attempt-001",
+        "image_id": "sha256:abc",
+        "token_recon_ppl": 23.3,
+        "oracle_plan_token_denoising_l2": 2.1,
+        "sampled_plan_num_samples": 16,
+        "tokenizer_path": "/data/tokenizer",
+        "proxy_loss": 0.4,
+    }
+    prefix = "EXPERIMENT_EVIDENCE_JSON="
+    result = run_safe(
+        "redact-lines", "2026-07-16T12:00:00Z " + prefix + json.dumps(payload) + "\n",
+    )
+    assert result.returncode == 0
+    evidence = json.loads(result.stdout.split(prefix, 1)[1])
+    assert evidence == payload
+
+
+def test_redact_lines_structurally_redacts_evidence_secrets() -> None:
+    payload = {
+        "submission_token": "alpha",
+        "refreshToken": "bravo",
+        "WANDB_API_KEY": "echo",
+        "nested": {
+            "access_key_secret": "foxtrot",
+            "metric_url": "https://user:pass@example.test/?token=charlie",
+        },
+        "message": "Authorization: Bearer delta",
+    }
+    prefix = "EXPERIMENT_EVIDENCE_JSON="
+    result = run_safe("redact-lines", prefix + json.dumps(payload) + "\n")
+    assert result.returncode == 0
+    for secret in (
+        "alpha", "bravo", "echo", "foxtrot", "user:pass", "charlie", "delta",
+    ):
+        assert secret not in result.stdout
+    evidence = json.loads(result.stdout.removeprefix(prefix))
+    assert evidence["submission_token"] == "<redacted>"
+    assert evidence["refreshToken"] == "<redacted>"
+    assert evidence["WANDB_API_KEY"] == "<redacted>"
+    assert evidence["nested"]["access_key_secret"] == "<redacted>"
+
+
+def test_redact_lines_suppresses_malformed_structured_evidence() -> None:
+    secret = "must-not-echo"
+    prefix = "EXPERIMENT_EVIDENCE_JSON="
+    result = run_safe("redact-lines", f'{prefix}{{"token":"{secret}"\n')
+    assert result.returncode == 0
+    assert result.stdout == f"{prefix}<redacted-malformed>\n"
+    assert secret not in result.stdout
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
