@@ -275,6 +275,65 @@ def test_reconciled_submission_observation_can_bind_execution_campaign(tmp_path)
     assert all(call.argv[2] == str(execution_campaign) for call in calls)
 
 
+def test_revision_drift_requires_current_submitted_attempt(tmp_path):
+    project = _project(tmp_path, "camp")
+    execution_source = tmp_path / "execution-source.yml"
+    execution_source.write_text("schema_version: 1\ncampaign: camp\n")
+    campaign_sha = hashlib.sha256(execution_source.read_bytes()).hexdigest()
+    action_store, _, _ = _verified_action_store(
+        tmp_path, campaign=execution_source, campaign_sha=campaign_sha,
+    )
+    row = _drifted_row(tmp_path, campaign_sha)
+    row.attempts = []
+    index = RunIndex(tmp_path / "index.sqlite")
+    index.upsert_run(row)
+    collector = Collector(
+        index=index, projects=[project], action_store=action_store,
+        config=CollectorConfig(dry_run=True),
+    )
+
+    assert collector.plan_cycle() == []
+
+
+@pytest.mark.parametrize("failure", ["directory", "read_error"])
+def test_revision_drift_rejects_non_file_or_unreadable_campaign(
+    tmp_path, monkeypatch, failure,
+):
+    project = _project(tmp_path, "camp")
+    execution_source = tmp_path / "execution-source.yml"
+    execution_source.write_text("schema_version: 1\ncampaign: camp\n")
+    campaign_sha = hashlib.sha256(execution_source.read_bytes()).hexdigest()
+    action_store, execution_campaign, action = _verified_action_store(
+        tmp_path, campaign=execution_source, campaign_sha=campaign_sha,
+    )
+    if failure == "directory":
+        action["execution_campaign_file"] = str(execution_campaign.parent)
+    index = RunIndex(tmp_path / "index.sqlite")
+    index.upsert_run(_drifted_row(tmp_path, campaign_sha))
+    collector = Collector(
+        index=index, projects=[project], action_store=action_store,
+        config=CollectorConfig(dry_run=True),
+    )
+    if failure == "read_error":
+        monkeypatch.setattr(
+            collector, "_file_sha256",
+            lambda _path: (_ for _ in ()).throw(OSError("unreadable")),
+        )
+
+    assert collector.plan_cycle() == []
+
+
+def test_plan_cycle_ignores_action_without_mapping_scope(tmp_path):
+    index = RunIndex(tmp_path / "index.sqlite")
+    action_store = SimpleNamespace(list_all=lambda: [{"scope": "invalid"}])
+    collector = Collector(
+        index=index, projects=[], action_store=action_store,
+        config=CollectorConfig(dry_run=True),
+    )
+
+    assert collector.plan_cycle() == []
+
+
 @pytest.mark.parametrize(
     "tamper",
     [

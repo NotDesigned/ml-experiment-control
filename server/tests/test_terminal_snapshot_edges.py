@@ -46,12 +46,12 @@ def test_current_collector_error_requires_error_and_recent_poll():
 
 
 def test_build_snapshot_classifies_active_historical_stale_and_collector(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ):
     project = ResearchProject(
         project="demo", title="Demo", run_roots=[], campaigns=[
             CampaignRef(name="active"), CampaignRef(name="archived"),
-        ],
+        ], base_dir=tmp_path,
     )
     rows = [
         row("active-failed", "active", "FAILED"),
@@ -86,6 +86,9 @@ def test_build_snapshot_classifies_active_historical_stale_and_collector(
             "lifecycle_state": "ARCHIVED" if campaign == "archived" else "ACTIVE",
         },
     )
+    archive_root = tmp_path / "experiments/archive_records/runs"
+    archive_root.mkdir(parents=True)
+    (archive_root / "historical-failed.yml").write_text("record_type: run\n")
 
     snapshot = build_snapshot(index, [project], reindex=True)
 
@@ -94,6 +97,7 @@ def test_build_snapshot_classifies_active_historical_stale_and_collector(
     assert snapshot.attention["demo"][0][:2] == ("STALE", "running-stale")
     assert ("FAILED", "active-failed", "FAILED") in snapshot.attention["demo"]
     assert snapshot.collector_errors[("demo", "running-stale")] == "poll failed"
+    assert snapshot.archived_runs == {"demo": {"historical-failed"}}
 
 
 def test_snapshot_payload_round_trip_filters_malformed_collections():
@@ -108,6 +112,7 @@ def test_snapshot_payload_round_trip_filters_malformed_collections():
             {"project": "demo", "campaign": "study", "status": {"state": "ACTIVE"}},
             {"project": "bad", "campaign": "bad", "status": "invalid"},
         ],
+        "archived_runs": {"demo": ["run-a"], "bad": "not-a-list"},
         "collector_errors": [
             {"project": "demo", "run_id": "run-a", "error": "poll"},
             {"project": "demo", "run_id": "run-b", "error": ""},
@@ -120,7 +125,9 @@ def test_snapshot_payload_round_trip_filters_malformed_collections():
     assert list(snapshot.runs) == ["demo"]
     assert snapshot.attention["demo"] == [("FAILED", "run-a", "FAILED")]
     assert snapshot.historical_failures == {"demo": 2}
+    assert snapshot.archived_runs == {"demo": {"run-a"}}
     assert encoded["campaign_statuses"][0]["campaign"] == "study"
+    assert encoded["archived_runs"] == {"demo": ["run-a"]}
     assert encoded["collector_errors"][0]["error"] == "poll"
 
 

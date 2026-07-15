@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .authored_runs import authored_run_placeholders
@@ -26,6 +27,7 @@ class Snapshot:
     attention: dict[str, list[tuple[str, str, str]]]
     historical_failures: dict[str, int] = field(default_factory=dict)
     campaign_statuses: dict[tuple[str, str], dict] = field(default_factory=dict)
+    archived_runs: dict[str, set[str]] = field(default_factory=dict)
     collector_errors: dict[tuple[str, str], str] = field(default_factory=dict)
     loaded_at: float = field(default_factory=time.time)
 
@@ -56,6 +58,7 @@ def build_snapshot(index: RunIndex, projects: list[ResearchProject],
     attention: dict[str, list[tuple[str, str, str]]] = {}
     historical_failures: dict[str, int] = {}
     campaign_statuses: dict[tuple[str, str], dict] = {}
+    archived_runs: dict[str, set[str]] = {}
     collector_errors: dict[tuple[str, str], str] = {}
     for project in projects:
         if reindex:
@@ -66,6 +69,13 @@ def build_snapshot(index: RunIndex, projects: list[ResearchProject],
         ))
         rows.sort(key=lambda row: row.run_id)
         runs[project.project] = rows
+        archive_root = (
+            Path(project.base_dir or ".") / "experiments" / "archive_records" / "runs"
+        )
+        archived_runs[project.project] = {
+            row.run_id for row in rows
+            if (archive_root / f"{row.run_id}.yml").is_file()
+        }
         for campaign in project.campaigns:
             campaign_statuses[(project.project, campaign.name)] = campaign_snapshot(
                 index, project, campaign.name,
@@ -121,7 +131,8 @@ def build_snapshot(index: RunIndex, projects: list[ResearchProject],
     return Snapshot(
         projects=projects, runs=runs, attention=attention,
         historical_failures=historical_failures,
-        campaign_statuses=campaign_statuses, collector_errors=collector_errors,
+        campaign_statuses=campaign_statuses, archived_runs=archived_runs,
+        collector_errors=collector_errors,
     )
 
 
@@ -139,6 +150,10 @@ def snapshot_payload(snapshot: Snapshot) -> dict[str, Any]:
             {"project": project, "campaign": campaign, "status": status}
             for (project, campaign), status in snapshot.campaign_statuses.items()
         ],
+        "archived_runs": {
+            project: sorted(run_ids)
+            for project, run_ids in snapshot.archived_runs.items()
+        },
         "collector_errors": [
             {"project": project, "run_id": run_id, "error": error}
             for (project, run_id), error in snapshot.collector_errors.items()
@@ -165,6 +180,11 @@ def snapshot_from_payload(payload: dict[str, Any]) -> Snapshot:
         if isinstance(item, dict) and isinstance(item.get("status"), dict):
             campaign_statuses[(str(item.get("project") or ""),
                                str(item.get("campaign") or ""))] = item["status"]
+    archived_runs = {
+        str(project): {str(run_id) for run_id in run_ids}
+        for project, run_ids in (payload.get("archived_runs") or {}).items()
+        if isinstance(run_ids, list)
+    }
     collector_errors: dict[tuple[str, str], str] = {}
     for item in payload.get("collector_errors") or []:
         if isinstance(item, dict) and item.get("error"):
@@ -177,6 +197,7 @@ def snapshot_from_payload(payload: dict[str, Any]) -> Snapshot:
         historical_failures={str(key): int(value) for key, value in
                              (payload.get("historical_failures") or {}).items()},
         campaign_statuses=campaign_statuses,
+        archived_runs=archived_runs,
         collector_errors=collector_errors,
         loaded_at=float(payload.get("loaded_at") or time.time()),
     )
