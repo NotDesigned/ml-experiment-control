@@ -1,9 +1,11 @@
 """Collector safety boundary: observation verbs only, terminal runs skipped."""
 
-import os
 import errno
+import hashlib
+import os
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +19,9 @@ from ml_exp_server.schemas import (
     CampaignRelationship,
     ControllerConfig,
     ResearchProject,
+    AttemptSummary,
+    EvidenceLayer,
+    EvidenceLayers,
     RunIndexRow,
 )
 from tests.conftest import FIXTURES
@@ -104,6 +109,222 @@ def test_revision_drift_is_not_polled_through_current_authored_campaign(tmp_path
     ))
     collector = Collector(index=index, projects=[project],
                           config=CollectorConfig(dry_run=True))
+    assert collector.plan_cycle() == []
+
+
+@pytest.mark.parametrize("scheduler_attempt", ["attempt-002", None])
+def test_normal_observation_uses_exact_current_attempt(tmp_path, scheduler_attempt):
+    project = _project(tmp_path, "camp")
+    index = RunIndex(tmp_path / "index.sqlite")
+    index.upsert_run(RunIndexRow(
+        project="elf", campaign="camp", campaign_source="manifest",
+        campaign_binding=CampaignBinding(
+            relationship=CampaignRelationship.MATCHED,
+            origin_project="elf", origin_campaign="camp",
+        ),
+        run_id="retry-run", run_dir=str(tmp_path / "runs" / "camp" / "retry-run"),
+        scheduler_state="RUNNING",
+        evidence=EvidenceLayers(scheduler=EvidenceLayer(
+            state="RUNNING", attempt_id=scheduler_attempt,
+        )),
+        attempts=[
+            AttemptSummary(
+                attempt_id="attempt-001", state="FAILED", backend="slurm",
+                backend_job_id="job-123", has_submission=True,
+            ),
+            AttemptSummary(
+                attempt_id="attempt-002", state="RUNNING", backend="slurm",
+                backend_job_id="job-456", has_submission=True,
+            ),
+        ],
+    ))
+    collector = Collector(
+        index=index, projects=[project], config=CollectorConfig(dry_run=True),
+    )
+
+    calls = collector.plan_cycle()
+
+    assert [call.verb for call in calls] == ["observe", "decide"]
+    assert all(call.argv[-2:] == ["--attempt-id", "attempt-002"] for call in calls)
+
+
+def _verified_action_store(
+    tmp_path: Path, *, campaign: Path, campaign_sha: str,
+    attempt_id: str = "attempt-001", backend_job_id: str = "job-123",
+):
+    root = tmp_path / "actions"
+    action_id = "action-verified"
+    action_root = root / action_id
+    action_root.mkdir(parents=True)
+    execution_campaign = action_root / "campaign.execution.yml"
+    execution_campaign.write_bytes(campaign.read_bytes())
+    action = {
+        "action_id": action_id,
+        "operation": "SUBMIT_RUN",
+        "scope": {"project": "elf", "scope_type": "run", "object_id": "drifted-run"},
+        "run_id": "drifted-run",
+        "attempt_id": attempt_id,
+        "created_at": "2026-07-15T00:00:00Z",
+        "execution_campaign_file": str(execution_campaign),
+        "execution_campaign_sha256": f"sha256:{campaign_sha}",
+        "execution": {
+            "status": "VERIFIED",
+            "result": {"submission": {"backend_job_id": backend_job_id}},
+        },
+    }
+    return SimpleNamespace(
+        list_all=lambda: [action],
+        directory=lambda value: root / value,
+    ), execution_campaign, action
+
+
+def _drifted_row(tmp_path: Path, campaign_sha: str) -> RunIndexRow:
+    return RunIndexRow(
+        project="elf", campaign="camp", campaign_source="manifest",
+        campaign_binding=CampaignBinding(
+            relationship=CampaignRelationship.CAMPAIGN_REVISION_DRIFT,
+            issues=[CampaignRelationship.CAMPAIGN_REVISION_DRIFT],
+            origin_project="elf", origin_campaign="camp",
+            origin_revision=f"campaign.{campaign_sha}",
+            current_revision="campaign.current",
+        ),
+        run_id="drifted-run", run_dir=str(tmp_path / "runs" / "camp" / "drifted-run"),
+        scheduler_state="RUNNING",
+        evidence=EvidenceLayers(scheduler=EvidenceLayer(
+            state="RUNNING", attempt_id="attempt-001",
+        )),
+        attempts=[AttemptSummary(
+            attempt_id="attempt-001", state="RUNNING", backend="slurm",
+            backend_job_id="job-123", has_submission=True,
+        )],
+    )
+
+
+def test_revision_drift_polls_exact_verified_execution_campaign(tmp_path):
+    project = _project(tmp_path, "camp")
+    execution_source = tmp_path / "execution-source.yml"
+    execution_source.write_text(
+        "schema_version: 1\ncampaign: camp\nlocal_root: /daemon/runs\n"
+    )
+    campaign_sha = hashlib.sha256(execution_source.read_bytes()).hexdigest()
+    action_store, execution_campaign, _ = _verified_action_store(
+        tmp_path, campaign=execution_source, campaign_sha=campaign_sha,
+    )
+    index = RunIndex(tmp_path / "index.sqlite")
+    index.upsert_run(_drifted_row(tmp_path, campaign_sha))
+    collector = Collector(
+        index=index, projects=[project], action_store=action_store,
+        config=CollectorConfig(dry_run=True),
+    )
+
+    calls = collector.plan_cycle()
+
+    assert [call.verb for call in calls] == ["observe", "decide"]
+    assert all(call.argv[2] == str(execution_campaign) for call in calls)
+    assert all(call.argv[-2:] == ["--attempt-id", "attempt-001"] for call in calls)
+
+
+def test_run_scoped_evaluation_can_bind_execution_campaign(tmp_path):
+    project = _project(tmp_path, "camp")
+    execution_source = tmp_path / "execution-source.yml"
+    execution_source.write_text(
+        "schema_version: 1\ncampaign: camp\nlocal_root: /daemon/runs\n"
+    )
+    campaign_sha = hashlib.sha256(execution_source.read_bytes()).hexdigest()
+    action_store, execution_campaign, action = _verified_action_store(
+        tmp_path, campaign=execution_source, campaign_sha=campaign_sha,
+    )
+    action["operation"] = "RUN_EVALUATION"
+    index = RunIndex(tmp_path / "index.sqlite")
+    index.upsert_run(_drifted_row(tmp_path, campaign_sha))
+    collector = Collector(
+        index=index, projects=[project], action_store=action_store,
+        config=CollectorConfig(dry_run=True),
+    )
+
+    calls = collector.plan_cycle()
+
+    assert [call.verb for call in calls] == ["observe", "decide"]
+    assert all(call.argv[2] == str(execution_campaign) for call in calls)
+
+
+def test_reconciled_submission_observation_can_bind_execution_campaign(tmp_path):
+    project = _project(tmp_path, "camp")
+    execution_source = tmp_path / "execution-source.yml"
+    execution_source.write_text(
+        "schema_version: 1\ncampaign: camp\nlocal_root: /daemon/runs\n"
+    )
+    campaign_sha = hashlib.sha256(execution_source.read_bytes()).hexdigest()
+    action_store, execution_campaign, action = _verified_action_store(
+        tmp_path, campaign=execution_source, campaign_sha=campaign_sha,
+    )
+    action["execution"]["result"] = {
+        "submission": None,
+        "observation": {"backend_job_id": "job-123", "state": "QUEUED"},
+    }
+    index = RunIndex(tmp_path / "index.sqlite")
+    index.upsert_run(_drifted_row(tmp_path, campaign_sha))
+    collector = Collector(
+        index=index, projects=[project], action_store=action_store,
+        config=CollectorConfig(dry_run=True),
+    )
+
+    calls = collector.plan_cycle()
+
+    assert [call.verb for call in calls] == ["observe", "decide"]
+    assert all(call.argv[2] == str(execution_campaign) for call in calls)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "campaign", "digest", "job", "job_conflict", "attempt", "status",
+        "scope", "path", "origin", "action_id", "symlink",
+    ],
+)
+def test_revision_drift_execution_campaign_binding_fails_closed(tmp_path, tamper):
+    project = _project(tmp_path, "camp")
+    execution_source = tmp_path / "execution-source.yml"
+    execution_source.write_text(
+        "schema_version: 1\ncampaign: camp\nlocal_root: /daemon/runs\n"
+    )
+    campaign_sha = hashlib.sha256(execution_source.read_bytes()).hexdigest()
+    action_store, execution_campaign, action = _verified_action_store(
+        tmp_path, campaign=execution_source, campaign_sha=campaign_sha,
+    )
+    row = _drifted_row(tmp_path, campaign_sha)
+    if tamper == "campaign":
+        execution_campaign.write_text("schema_version: 1\ncampaign: tampered\n")
+    elif tamper == "digest":
+        action["execution_campaign_sha256"] = "sha256:" + "0" * 64
+    elif tamper == "job":
+        action["execution"]["result"]["submission"]["backend_job_id"] = "job-other"
+    elif tamper == "job_conflict":
+        action["execution"]["result"]["observation"] = {
+            "backend_job_id": "job-other",
+        }
+    elif tamper == "attempt":
+        action["attempt_id"] = "attempt-002"
+    elif tamper == "scope":
+        action["scope"]["object_id"] = "other-run"
+    elif tamper == "path":
+        action["execution_campaign_file"] = str(execution_source)
+    elif tamper == "origin":
+        row.campaign_binding.origin_project = "other-project"
+    elif tamper == "action_id":
+        action["action_id"] = "invalid"
+    elif tamper == "symlink":
+        execution_campaign.unlink()
+        execution_campaign.symlink_to(execution_source)
+    else:
+        action["execution"]["status"] = "AUTHORIZED"
+    index = RunIndex(tmp_path / "index.sqlite")
+    index.upsert_run(row)
+    collector = Collector(
+        index=index, projects=[project], action_store=action_store,
+        config=CollectorConfig(dry_run=True),
+    )
+
     assert collector.plan_cycle() == []
 
 

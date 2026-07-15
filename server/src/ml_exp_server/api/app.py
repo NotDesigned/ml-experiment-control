@@ -193,6 +193,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                 Collector(
                     index=runtime.index,
                     projects=runtime.projects,
+                    action_store=runtime.action_store,
                     config=CollectorConfig(
                         poll_interval_seconds=config.poll_interval_seconds,
                     ),

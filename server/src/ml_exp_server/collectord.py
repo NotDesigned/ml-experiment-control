@@ -9,16 +9,23 @@ submit/cancel/stage/prepare.
 from __future__ import annotations
 
 import errno
+import hashlib
 import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from .actions.store import ActionStore
 from .campaign_lifecycle import campaign_snapshot
 from .controller_gateway import ControllerCall, ProjectControllerGateway
 from .ingest.indexer import RunIndex, index_project
-from .schemas import CampaignRelationship, ResearchProject, TERMINAL_RUN_STATES
+from .schemas import (
+    CampaignRelationship,
+    ResearchProject,
+    RunIndexRow,
+    TERMINAL_RUN_STATES,
+)
 
 # Hard allowlist. Anything else — most importantly submit/cancel/stage/prepare —
 # must raise before a subprocess is even constructed.
@@ -36,6 +43,9 @@ _UNSAFE_CAMPAIGN_RELATIONSHIPS = frozenset({
 })
 
 _SUBPROCESS_TIMEOUT = 300
+_SUBMISSION_OPERATIONS = frozenset({
+    "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION",
+})
 
 
 class ForbiddenVerbError(ValueError):
@@ -118,16 +128,145 @@ class Collector:
     projects: list[ResearchProject]
     config: CollectorConfig = field(default_factory=CollectorConfig)
     controller: ProjectControllerGateway = field(default_factory=ProjectControllerGateway)
+    action_store: ActionStore | None = None
+
+    @staticmethod
+    def _current_attempt_id(row: RunIndexRow) -> str | None:
+        attempt_id = row.evidence.scheduler.attempt_id
+        if attempt_id:
+            return attempt_id
+        submitted = [item.attempt_id for item in row.attempts if item.has_submission]
+        return submitted[-1] if submitted else None
+
+    @staticmethod
+    def _file_sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _verified_execution_campaign(
+        self, project: ResearchProject, row: RunIndexRow,
+        actions: list[dict[str, object]],
+    ) -> Path | None:
+        """Resolve the immutable campaign that actually submitted a drifted Run.
+
+        Daemon-owned control roots require an execution copy of an authored
+        Campaign.  That operational-only copy has a different byte identity,
+        so the resulting Run correctly appears revision-drifted relative to
+        today's authored file.  It is safe to observe only through the exact
+        VERIFIED Action copy that froze and submitted the current Attempt.
+        """
+        if (
+            self.action_store is None
+            or row.campaign_binding.relationship
+            != CampaignRelationship.CAMPAIGN_REVISION_DRIFT
+        ):
+            return None
+        attempt_id = self._current_attempt_id(row)
+        origin_revision = str(row.campaign_binding.origin_revision or "")
+        if (
+            not attempt_id
+            or not origin_revision.startswith("campaign.")
+            or row.campaign_binding.origin_project != project.project
+            or row.campaign_binding.origin_campaign != row.campaign
+        ):
+            return None
+        attempt = next(
+            (item for item in row.attempts if item.attempt_id == attempt_id), None,
+        )
+        if attempt is None or not attempt.has_submission or not attempt.backend_job_id:
+            return None
+
+        candidates: list[tuple[str, Path]] = []
+        for action in actions:
+            execution = action.get("execution")
+            scope = action.get("scope")
+            operation = action.get("operation")
+            scope_type = scope.get("scope_type") if isinstance(scope, dict) else None
+            scope_object = str(scope.get("object_id") or "") if isinstance(scope, dict) else ""
+            exact_scope = (
+                (
+                    operation == "SUBMIT_RUN"
+                    and scope_type == "run"
+                    and scope_object == row.run_id
+                )
+                or (
+                    operation == "RETRY_ATTEMPT"
+                    and scope_type == "attempt"
+                    and scope_object.startswith(f"{row.run_id}::")
+                )
+                or (
+                    operation == "RUN_EVALUATION"
+                    and (
+                        (scope_type == "run" and scope_object == row.run_id)
+                        or (
+                            scope_type == "attempt"
+                            and scope_object.startswith(f"{row.run_id}::")
+                        )
+                    )
+                )
+            )
+            if (
+                operation not in _SUBMISSION_OPERATIONS
+                or not exact_scope
+                or not isinstance(execution, dict)
+                or execution.get("status") != "VERIFIED"
+                or not isinstance(scope, dict)
+                or scope.get("project") != project.project
+                or action.get("run_id") != row.run_id
+                or action.get("attempt_id") != attempt_id
+            ):
+                continue
+            result = execution.get("result")
+            submission = result.get("submission") if isinstance(result, dict) else None
+            observation = result.get("observation") if isinstance(result, dict) else None
+            bound_jobs = {
+                str(value.get("backend_job_id") or "")
+                for value in (submission, observation)
+                if isinstance(value, dict) and value.get("backend_job_id")
+            }
+            if bound_jobs != {str(attempt.backend_job_id)}:
+                continue
+            action_id = str(action.get("action_id") or "")
+            try:
+                action_root = self.action_store.directory(action_id).resolve()
+                candidate = Path(str(action.get("execution_campaign_file") or ""))
+                if candidate.is_symlink():
+                    continue
+                campaign = candidate.resolve(strict=True)
+                campaign.relative_to(action_root)
+            except (FileNotFoundError, OSError, ValueError):
+                continue
+            if not campaign.is_file():
+                continue
+            try:
+                actual = self._file_sha256(campaign)
+            except OSError:
+                continue
+            if (
+                action.get("execution_campaign_sha256") != f"sha256:{actual}"
+                or origin_revision != f"campaign.{actual}"
+            ):
+                continue
+            candidates.append((str(action.get("created_at") or ""), campaign))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item[0])[1]
     last_cycle_at: Optional[float] = None
 
     def build_command(self, project: ResearchProject, campaign_file: Path,
-                      run_id: str, verb: str) -> PlannedCall:
+                      run_id: str, verb: str, *,
+                      attempt_id: str | None = None) -> PlannedCall:
         if verb not in OBSERVATION_VERBS:
             raise ForbiddenVerbError(
                 f"verb {verb!r} is not an observation verb; collector refuses "
                 f"anything outside {sorted(OBSERVATION_VERBS)}"
             )
-        return self.controller.build(project, campaign_file, verb, run_id)
+        return self.controller.build(
+            project, campaign_file, verb, run_id, attempt_id=attempt_id,
+        )
 
     def _campaign_files(self, project: ResearchProject) -> dict[str, Path]:
         """campaign name → campaign YAML from the project-owned catalog."""
@@ -150,6 +289,14 @@ class Collector:
         are actively polled; everything else stays passive file scanning.
         """
         calls: list[PlannedCall] = []
+        actions_by_run: dict[tuple[str, str], list[dict[str, object]]] = {}
+        if self.action_store is not None:
+            for action in self.action_store.list_all():
+                scope = action.get("scope")
+                if not isinstance(scope, dict):
+                    continue
+                key = (str(scope.get("project") or ""), str(action.get("run_id") or ""))
+                actions_by_run.setdefault(key, []).append(action)
         for project in self.projects:
             campaign_files = self._campaign_files(project)
             inactive_campaigns = {
@@ -160,16 +307,27 @@ class Collector:
             for row in self.index.list_runs(project.project):
                 if (row.scheduler_state or "").upper() in TERMINAL_RUN_STATES:
                     continue
-                if row.campaign_binding.relationship in _UNSAFE_CAMPAIGN_RELATIONSHIPS:
+                execution_campaign = self._verified_execution_campaign(
+                    project, row,
+                    actions_by_run.get((project.project, row.run_id), []),
+                )
+                if (
+                    row.campaign_binding.relationship in _UNSAFE_CAMPAIGN_RELATIONSHIPS
+                    and execution_campaign is None
+                ):
                     continue
                 if (row.campaign or "") in inactive_campaigns:
                     continue
-                campaign_file = campaign_files.get(row.campaign or "")
+                campaign_file = (
+                    execution_campaign or campaign_files.get(row.campaign or "")
+                )
                 if campaign_file is None:
                     continue
+                attempt_id = self._current_attempt_id(row)
                 for verb in ("observe", "decide"):
                     calls.append(self.build_command(project, campaign_file,
-                                                    row.run_id, verb))
+                                                    row.run_id, verb,
+                                                    attempt_id=attempt_id))
         return calls
 
     def run_cycle(self) -> list[PlannedCall]:
