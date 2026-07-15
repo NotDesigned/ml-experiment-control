@@ -650,13 +650,18 @@ def test_action_prepare_rejects_intent_kind_outside_exact_scope(tmp_path):
 
 def test_exactly_bound_attempt_retry_can_prepare_and_execute(tmp_path):
     project, campaign = controller_project(tmp_path)
+    legacy_root = (project.base_dir / "outputs" / "runs").resolve()
+    legacy_root.mkdir(parents=True)
+    project.run_roots = [str(legacy_root)]
+    project.daemon_run_root = (tmp_path / "daemon-runs" / "demo").resolve()
+    project.daemon_run_root.mkdir(parents=True)
     scope = OperationScope(
         project="demo", scope_type="attempt", object_id="run-a::attempt-001",
     )
     draft = yaml.safe_dump({
         "campaign_file": str(campaign), "run_id": "run-a",
         "source_attempt_id": "attempt-001", "attempt_id": "attempt-002",
-        "max_gpu_hours": 8,
+        "max_gpu_hours": 8, "local_root": str(legacy_root),
     })
     runner = FakeController()
     service = ActionService(
@@ -672,6 +677,12 @@ def test_exactly_bound_attempt_retry_can_prepare_and_execute(tmp_path):
     service.authorize(plan["action_id"], "reviewed retry lineage")
     result = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
     assert result["execution"]["status"] == "VERIFIED"
+    live_submit = next(
+        item for item in runner.calls
+        if item[3] == "submit" and "--dry-run" not in item
+    )
+    execution_campaign = yaml.safe_load(Path(live_submit[2]).read_text())
+    assert execution_campaign["local_root"] == str(legacy_root)
 
 
 def test_submit_plan_gates_and_executes_once(tmp_path):

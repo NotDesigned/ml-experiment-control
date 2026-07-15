@@ -242,7 +242,22 @@ def index_project(index: RunIndex, project: ResearchProject,
     for row in rows:
         by_id.setdefault(row.run_id, []).append(row)
     for run_id, candidates in sorted(by_id.items()):
-        candidates.sort(key=lambda item: item.run_dir)
+        canonical_root = (
+            project.daemon_run_root.resolve()
+            if project.daemon_run_root is not None else None
+        )
+
+        def candidate_priority(item: RunIndexRow) -> tuple[int, str]:
+            canonical = False
+            if canonical_root is not None:
+                try:
+                    Path(item.run_dir).resolve().relative_to(canonical_root)
+                    canonical = True
+                except ValueError:
+                    pass
+            return (0 if canonical else 1, item.run_dir)
+
+        candidates.sort(key=candidate_priority)
         row = candidates[0]
         if len(candidates) > 1:
             _add_issue(row, CampaignRelationship.DUPLICATE_RUN_ID)

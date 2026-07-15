@@ -41,6 +41,14 @@ def _load_registered_project(record: ProjectLifecycleRecord) -> ResearchProject:
     return project
 
 
+def _bind_daemon_run_root(config: ServerConfig, project: ResearchProject) -> ResearchProject:
+    """Attach and initialize workspace-owned canonical Run storage."""
+    root = config.project_run_root_path(project.project).resolve()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    project.daemon_run_root = root
+    return project
+
+
 @dataclass
 class ExperimentServerRuntime:
     config: ServerConfig
@@ -77,13 +85,16 @@ class ExperimentServerRuntime:
                     Path(ref.project_file) for ref in config.projects
                 )
                 loaded_projects = [
-                    _load_registered_project(record) for record in records
+                    _bind_daemon_run_root(config, _load_registered_project(record))
+                    for record in records
                     if record.state == ProjectLifecycleState.ACTIVE
                 ]
             else:
                 # Explicit injected Projects are a test/embedding override. They
                 # intentionally do not seed or mutate the durable registry.
-                loaded_projects = list(projects)
+                loaded_projects = [
+                    _bind_daemon_run_root(config, project) for project in projects
+                ]
 
             action_store = ActionStore(config.action_root_path())
             previous_callback = on_index_update
@@ -178,7 +189,9 @@ class ExperimentServerRuntime:
         self, project_file: Path, *,
         source: ProjectRegistrationSource = ProjectRegistrationSource.MANUAL,
     ) -> ResearchProject:
-        project = load_research_project(project_file)
+        project = _bind_daemon_run_root(
+            self.config, load_research_project(project_file),
+        )
         self.project_registry.register(project.project, project_file, source=source)
         self._replace_active_project(project)
         return project
@@ -201,7 +214,9 @@ class ExperimentServerRuntime:
             )
             if record is None:
                 raise ProjectRegistryError(f"unknown registered project: {project_name}")
-            activated = _load_registered_project(record)
+            activated = _bind_daemon_run_root(
+                self.config, _load_registered_project(record),
+            )
         record = self.project_registry.transition(project_name, target, reason=reason)
         if target == ProjectLifecycleState.ACTIVE:
             assert activated is not None

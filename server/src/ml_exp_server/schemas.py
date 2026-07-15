@@ -443,6 +443,9 @@ class ResearchProject(BaseModel):
     # Resolved at load time; not part of the on-disk schema.
     base_dir: Optional[Path] = None
     authored_file: Optional[Path] = Field(default=None, exclude=True)
+    # Daemon-owned canonical control-plane storage. This is injected by the
+    # runtime and deliberately never serialized into the science repository.
+    daemon_run_root: Optional[Path] = Field(default=None, exclude=True)
     research_questions: list[ResearchQuestion] = Field(default_factory=list)
 
     @field_validator("project")
@@ -452,8 +455,18 @@ class ResearchProject(BaseModel):
 
     def resolved_run_roots(self) -> list[Path]:
         base = self.base_dir or Path(".")
-        return [(base / root).resolve() if not Path(root).is_absolute() else Path(root)
-                for root in self.run_roots]
+        roots = [
+            (base / root).resolve() if not Path(root).is_absolute() else Path(root)
+            for root in self.run_roots
+        ]
+        if self.daemon_run_root is not None:
+            # Index authored compatibility roots first so a migrated/canonical
+            # row wins deterministically when the same Run exists in both.
+            roots.append(self.daemon_run_root.resolve())
+        # Authored roots remain readable for a non-destructive migration
+        # window, but all new controller materialization targets the injected,
+        # daemon-owned root.
+        return list(dict.fromkeys(roots))
 
 
 class ProjectRef(BaseModel):
@@ -485,6 +498,9 @@ class ServerConfig(BaseModel):
     schema_version: int = SCHEMA_VERSION
     index_db: str = "~/.local/state/ml-expd/index.sqlite"
     action_root: str = "~/.local/state/ml-expd/actions"
+    # Canonical Run/Attempt control metadata lives outside imported source
+    # trees. When omitted, use a sibling ``runs`` directory next to index_db.
+    run_root: Optional[str] = None
     # The lifecycle registry is workspace-owned. When omitted it is derived
     # from index_db so independent daemon workspaces stay isolated.
     project_registry_root: Optional[str] = None
@@ -506,6 +522,14 @@ class ServerConfig(BaseModel):
 
     def action_root_path(self) -> Path:
         return Path(self.action_root).expanduser()
+
+    def run_root_path(self) -> Path:
+        if self.run_root:
+            return Path(self.run_root).expanduser()
+        return self.index_db_path().parent / "runs"
+
+    def project_run_root_path(self, project: str) -> Path:
+        return self.run_root_path() / project
 
     def project_registry_root_path(self) -> Path:
         if self.project_registry_root:

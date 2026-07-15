@@ -829,8 +829,36 @@ class ActionService:
                 ]
 
         actual_verb = "cancel" if operation == "CANCEL_RUN" else "submit"
+        execution_campaign = campaign
+        if actual_verb == "submit" and project.daemon_run_root is not None:
+            # The authored Campaign describes science and backend resources;
+            # the daemon owns where canonical Run/Attempt control metadata is
+            # materialized. Freeze that storage binding into the Action so a
+            # later source checkout update cannot redirect an approved submit.
+            execution_payload = _parse_mapping(campaign.read_text(encoding="utf-8"))
+            requested_root = spec.get("local_root")
+            execution_root = (
+                Path(str(requested_root)).resolve()
+                if requested_root else project.daemon_run_root.resolve()
+            )
+            allowed_roots = {root.resolve() for root in project.resolved_run_roots()}
+            if execution_root not in allowed_roots:
+                raise ActionError(
+                    "execution local_root is outside registered project run roots"
+                )
+            execution_payload["local_root"] = str(execution_root)
+            execution_campaign = (
+                self.store.directory(action_id) / "campaign.execution.yml"
+            )
+            execution_campaign.parent.mkdir(parents=True, exist_ok=True)
+            execution_campaign.write_text(
+                yaml.safe_dump(
+                    execution_payload, allow_unicode=True, sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
         call = self.controller.build(
-            project, campaign, actual_verb, run_id, attempt_id=attempt_id,
+            project, execution_campaign, actual_verb, run_id, attempt_id=attempt_id,
             extra=imported_source_args,
         )
         command, cwd = call.argv, call.cwd
@@ -839,7 +867,7 @@ class ActionService:
         execution_manifest_path: Path | None = None
         execution_manifest_sha256: str | None = None
         if actual_verb == "submit":
-            raw = _parse_mapping(campaign.read_text(encoding="utf-8"))
+            raw = _parse_mapping(execution_campaign.read_text(encoding="utf-8"))
             preview_campaign = deepcopy(raw)
             preview_root = self.store.directory(action_id) / "preview_runs"
             preview_campaign["local_root"] = str(preview_root)
@@ -929,14 +957,25 @@ class ActionService:
                 ))
             resources = manifest.get("resources") if isinstance(manifest.get("resources"), dict) else {}
             budget_limit = spec.get("max_gpu_hours")
+            resource_approval = str(
+                spec.get("resource_approval") or "budget_cap"
+            )
             requested_gpu_hours = self._gpu_hours(resources, manifest.get("backend"))
             budget_ok = (
-                isinstance(budget_limit, (int, float))
-                and requested_gpu_hours is not None
-                and requested_gpu_hours <= float(budget_limit)
+                requested_gpu_hours is not None
+                and (
+                    resource_approval == "review_exact"
+                    or (
+                        resource_approval == "budget_cap"
+                        and isinstance(budget_limit, (int, float))
+                        and requested_gpu_hours <= float(budget_limit)
+                    )
+                )
             )
             gates.append(_gate("budget", budget_ok,
-                               f"requested_gpu_hours={requested_gpu_hours}; max_gpu_hours={budget_limit}"))
+                               f"resource_approval={resource_approval}; "
+                               f"requested_gpu_hours={requested_gpu_hours}; "
+                               f"max_gpu_hours={budget_limit}"))
             backend = manifest.get("backend") if isinstance(manifest.get("backend"), dict) else {}
             preemptible = bool(backend.get("preemptible")) or backend.get("kind") == "sensecore"
             checkpoint = manifest.get("checkpoint") if isinstance(manifest.get("checkpoint"), dict) else {}
@@ -957,11 +996,13 @@ class ActionService:
                 "backend": backend,
                 "resources": resources,
                 "storage": manifest.get("storage"),
+                "control_metadata_root": raw.get("local_root"),
                 "command": manifest.get("command"),
                 "assets": manifest.get("assets"),
                 "checkpoint": checkpoint,
                 "requested_gpu_hours": requested_gpu_hours,
                 "max_gpu_hours": budget_limit,
+                "resource_approval": resource_approval,
                 "wandb_cloud_sync": bool(spec.get("wandb_cloud_sync", False)),
             })
             for name, verb, extra in (
@@ -970,7 +1011,7 @@ class ActionService:
                 ("assets", "assets-verify", []),
             ):
                 check_call = self.controller.build(
-                    project, campaign, verb, run_id,
+                    project, execution_campaign, verb, run_id,
                     attempt_id=attempt_id, extra=[*extra, *imported_source_args],
                 )
                 gate, _ = self._run_gate(name, check_call.argv, check_call.cwd)
@@ -1007,6 +1048,7 @@ class ActionService:
 
         plan.update({
             "campaign_file": str(campaign), "run_id": run_id,
+            "execution_campaign_file": str(execution_campaign),
             "attempt_id": attempt_id, "backend_job_id": spec.get("backend_job_id"),
             "expected_source_id": expected_source_id,
             "gates": gates, "ready": all(item["status"] != "FAIL" for item in gates),
@@ -1018,14 +1060,15 @@ class ActionService:
             "preflight_summary": preflight_summary,
             "command_preview": _redact(command),
             "cwd": str(cwd),
-            "execution_campaign_sha256": _file_sha(campaign),
+            "authored_campaign_sha256": _file_sha(campaign),
+            "execution_campaign_sha256": _file_sha(execution_campaign),
             "execution_manifest_path": (
                 str(execution_manifest_path) if execution_manifest_path is not None else None
             ),
             "execution_manifest_sha256": execution_manifest_sha256,
         })
         verification = self.controller.build(
-            project, campaign, "status", run_id, attempt_id=attempt_id,
+            project, execution_campaign, "status", run_id, attempt_id=attempt_id,
         )
         plan.update({
             "verification_command_preview": _redact(verification.argv),

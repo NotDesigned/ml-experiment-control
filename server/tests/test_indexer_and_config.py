@@ -14,6 +14,7 @@ from ml_exp_server.project_config import (
     ConfigError, _declared_run_specs, _static_template_value,
     load_server_config, load_research_project,
 )
+from ml_exp_server.schemas import ServerConfig
 from tests.conftest import A1_SCHEDULER_TS, FIXTURES
 
 import pytest
@@ -280,6 +281,18 @@ def test_server_config(tmp_path):
     assert config.poll_interval_seconds == 60
     assert config.index_db_path().name == "index.sqlite"
     assert config.action_root_path() == tmp_path / "actions"
+    assert config.run_root_path() == tmp_path / "runs"
+    assert config.project_run_root_path("demo") == tmp_path / "runs" / "demo"
+
+
+def test_server_config_accepts_explicit_daemon_run_root(tmp_path):
+    config = ServerConfig(
+        index_db=str(tmp_path / "state" / "index.sqlite"),
+        run_root=str(tmp_path / "durable-runs"),
+    )
+
+    assert config.run_root_path() == tmp_path / "durable-runs"
+    assert config.project_run_root_path("demo") == tmp_path / "durable-runs" / "demo"
 
 
 def test_server_config_defaults_to_twenty_second_polling(tmp_path):
@@ -519,6 +532,31 @@ def test_duplicate_run_identity_is_reported_without_silent_last_write(tmp_path):
     row = index.get_run("elf", "same-run")
     assert row.campaign_binding.relationship == CampaignRelationship.DUPLICATE_RUN_ID
     assert row.run_dir == str(tmp_path / "a" / "study" / "same-run")
+    assert any("duplicate run identity" in warning for warning in row.warnings)
+
+
+def test_daemon_canonical_run_wins_over_authored_compatibility_copy(tmp_path):
+    from ml_exp_server.schemas import CampaignRelationship, ResearchProject
+
+    authored = tmp_path / "a-authored"
+    canonical = tmp_path / "z-canonical"
+    for root, marker in ((authored, "authored"), (canonical, "canonical")):
+        run_dir = root / "study" / "same-run"
+        run_dir.mkdir(parents=True)
+        (run_dir / "manifest.yaml").write_text(
+            "project: elf\ncampaign: study\nrun_id: same-run\n"
+            f"marker: {marker}\n"
+        )
+    project = ResearchProject(
+        project="elf", title="t", run_roots=[str(authored)],
+        daemon_run_root=canonical,
+    )
+    index = RunIndex(tmp_path / "index.sqlite")
+
+    assert index_project(index, project, now=NOW) == 2
+    row = index.get_run("elf", "same-run")
+    assert row.campaign_binding.relationship == CampaignRelationship.DUPLICATE_RUN_ID
+    assert row.run_dir == str(canonical / "study" / "same-run")
     assert any("duplicate run identity" in warning for warning in row.warnings)
 
 

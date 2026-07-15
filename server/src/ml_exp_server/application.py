@@ -863,17 +863,28 @@ class ExperimentServerApplication:
             raise ApplicationError(
                 "wandb_cloud_sync must be 'yes' or 'no'", code="INVALID_OPERATION",
             )
-        budget = 0.0
+        resource_approval = str(
+            parameters.get("resource_approval") or "budget_cap"
+        ).lower()
+        if resource_approval not in {"budget_cap", "review_exact"}:
+            raise ApplicationError(
+                "resource_approval must be 'budget_cap' or 'review_exact'",
+                code="INVALID_OPERATION",
+            )
+        budget: float | None = None
         if operation_id in {"run.submit", "attempt.retry"}:
             budget_value = parameters.get("max_gpu_hours")
-            try:
-                budget = float(1.0 if budget_value is None else budget_value)
-            except (TypeError, ValueError) as exc:
-                raise ApplicationError(
-                    "max_gpu_hours must be a number", code="INVALID_OPERATION",
-                ) from exc
-            if budget <= 0:
-                raise ApplicationError("max_gpu_hours must be positive", code="INVALID_OPERATION")
+            if resource_approval == "budget_cap":
+                try:
+                    budget = float(1.0 if budget_value is None else budget_value)
+                except (TypeError, ValueError) as exc:
+                    raise ApplicationError(
+                        "max_gpu_hours must be a number", code="INVALID_OPERATION",
+                    ) from exc
+                if budget <= 0:
+                    raise ApplicationError(
+                        "max_gpu_hours must be positive", code="INVALID_OPERATION",
+                    )
         if operation_id == "object.archive":
             if scope.scope_type == OperationScopeType.CAMPAIGN:
                 return self.prepare_campaign_archive(project, object_id, reason=reason)
@@ -893,6 +904,7 @@ class ExperimentServerApplication:
         if operation_id == "run.submit":
             return self.prepare_run_submit(
                 project, object_id, max_gpu_hours=budget,
+                resource_approval=resource_approval,
                 reason=reason or "Requested from the scoped operation catalog",
                 wandb_cloud_sync=cloud_sync == "yes",
             )
@@ -904,6 +916,7 @@ class ExperimentServerApplication:
                     if parameters.get("new_attempt_id") else None
                 ),
                 max_gpu_hours=budget, reason=reason,
+                resource_approval=resource_approval,
                 wandb_cloud_sync=cloud_sync == "yes",
             )
         if operation_id == "attempt.cancel":
@@ -2042,13 +2055,19 @@ class ExperimentServerApplication:
         return path.resolve()
 
     def prepare_run_submit(self, project: str, run_id: str, *,
-                           max_gpu_hours: float, reason: str = "",
+                           max_gpu_hours: float | None, reason: str = "",
+                           resource_approval: str = "budget_cap",
                            wandb_cloud_sync: bool = False) -> dict[str, Any]:
         """Prepare a reviewable first-submission Action for an authored Run."""
         self._require_operation_available(
             "run.submit", project, OperationScopeType.RUN, run_id,
         )
-        if max_gpu_hours <= 0:
+        if resource_approval not in {"budget_cap", "review_exact"}:
+            raise ApplicationError("invalid resource approval mode", status_code=422,
+                                   code="INVALID_GPU_BUDGET")
+        if resource_approval == "budget_cap" and (
+            max_gpu_hours is None or max_gpu_hours <= 0
+        ):
             raise ApplicationError("max_gpu_hours must be positive", status_code=422,
                                    code="INVALID_GPU_BUDGET")
         scope, configured, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)
@@ -2077,15 +2096,18 @@ class ExperimentServerApplication:
         campaign = self._campaign_file(configured, campaign_name)
         existing = [item.attempt_id for item in row.attempts]
         attempt_id = existing[-1] if existing else "attempt-001"
-        draft = yaml.safe_dump({
+        draft_payload = {
             "campaign_file": str(campaign), "run_id": row.run_id,
-            "attempt_id": attempt_id, "max_gpu_hours": max_gpu_hours,
+            "attempt_id": attempt_id, "resource_approval": resource_approval,
             "wandb_cloud_sync": wandb_cloud_sync,
             **(
                 {"expected_source_id": row.provenance["source_id"]}
                 if row.provenance.get("source_binding") == "campaign_file" else {}
             ),
-        }, sort_keys=False)
+        }
+        if max_gpu_hours is not None:
+            draft_payload["max_gpu_hours"] = max_gpu_hours
+        draft = yaml.safe_dump(draft_payload, sort_keys=False)
         expected_source = (
             str(row.provenance.get("source_id") or "")
             if row.provenance.get("source_binding") == "campaign_file" else ""
@@ -2103,7 +2125,11 @@ class ExperimentServerApplication:
             "title": f"Launch {row.run_id} as {attempt_id}",
             "target": f"run://{configured.project}/{row.run_id}",
             "change_summary": reason or "submit the authored Run's first Attempt",
-            "resource_estimate": f"up to {max_gpu_hours:g} GPU-hours",
+            "resource_estimate": (
+                "exact dry-run resources require human Action confirmation"
+                if resource_approval == "review_exact"
+                else f"up to {max_gpu_hours:g} GPU-hours"
+            ),
             "rationale": "materialize an authored Campaign membership",
             "risk": "scheduler mutation; approval and prepared gates are required before execution",
             "draft": draft,
@@ -2113,9 +2139,15 @@ class ExperimentServerApplication:
 
     def prepare_attempt_retry(self, project: str, identity: str, *,
                               new_attempt_id: str | None,
-                              max_gpu_hours: float, reason: str,
+                              max_gpu_hours: float | None, reason: str,
+                              resource_approval: str = "budget_cap",
                               wandb_cloud_sync: bool = False) -> dict[str, Any]:
-        if max_gpu_hours <= 0:
+        if resource_approval not in {"budget_cap", "review_exact"}:
+            raise ApplicationError("invalid resource approval mode", status_code=422,
+                                   code="INVALID_GPU_BUDGET")
+        if resource_approval == "budget_cap" and (
+            max_gpu_hours is None or max_gpu_hours <= 0
+        ):
             raise ApplicationError("max_gpu_hours must be positive", status_code=422,
                                    code="INVALID_GPU_BUDGET")
         scope, configured, row, attempt, _ = self._attempt_context(project, identity)
@@ -2152,17 +2184,31 @@ class ExperimentServerApplication:
             raise ApplicationError("new attempt_id already exists",
                                    code="DUPLICATE_ATTEMPT_ID")
         campaign = self._campaign_file(configured, row.campaign)
-        draft = yaml.safe_dump({
+        draft_payload = {
             "campaign_file": str(campaign), "run_id": row.run_id,
             "source_attempt_id": attempt.attempt_id,
-            "attempt_id": new_attempt_id, "max_gpu_hours": max_gpu_hours,
+            "attempt_id": new_attempt_id, "resource_approval": resource_approval,
             "wandb_cloud_sync": wandb_cloud_sync,
-        }, sort_keys=False)
+        }
+        if getattr(row, "run_dir", None):
+            # Keep legacy Runs coherent until an operator migrates the whole
+            # Run directory; newly materialized Runs already live in the
+            # daemon root and therefore naturally retain that root on retry.
+            draft_payload["local_root"] = str(
+                Path(row.run_dir).resolve().parent.parent
+            )
+        if max_gpu_hours is not None:
+            draft_payload["max_gpu_hours"] = max_gpu_hours
+        draft = yaml.safe_dump(draft_payload, sort_keys=False)
         result = self._prepare_attempt_action(
             scope, configured, row, attempt, kind="RETRY_ATTEMPT", draft=draft,
             title=f"Retry {row.run_id} from {attempt.attempt_id} as {new_attempt_id}",
             change_summary=reason or "retry failed attempt with a new attempt identity",
-            resource_estimate=f"up to {max_gpu_hours:g} GPU-hours",
+            resource_estimate=(
+                "exact dry-run resources require human Action confirmation"
+                if resource_approval == "review_exact"
+                else f"up to {max_gpu_hours:g} GPU-hours"
+            ),
             risk="scheduler mutation; review checkpoint and failure classification before approval",
         )
         return result

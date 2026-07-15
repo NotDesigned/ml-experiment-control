@@ -43,6 +43,18 @@ uv run --package ml-experiment-server ml-expd \
 at startup, and owns one live collector per workspace. It polls immediately
 and then at `poll_interval_seconds` (20 seconds by default); `--snapshot` is
 the explicit no-poll mode.
+Canonical Run and Attempt control metadata is written below the daemon-owned
+`run_root` (by default a `runs` sibling of `index_db`), never into an imported
+project checkout. Authored `research_project.yaml` `run_roots` remain readable
+as compatibility roots for existing runs, while checkpoints and other large
+backend artifacts stay in their backend storage and are referenced by manifest.
+Upgrades do not silently copy existing run trees. Stop the daemon, copy each
+existing `<authored-run-root>/<campaign>/<run>` directory into
+`<run_root>/<project>/<campaign>/<run>` while preserving ownership and relative
+paths, then restart it. During a staged migration both roots are scanned and
+the daemon-owned copy wins when the same Run exists in both; a legacy Run that
+has not been copied continues to write retries beside its existing attempts so
+one immutable Run is never split across roots.
 Only one daemon process may mutate a workspace, including in snapshot mode;
 an additional daemon fails startup before constructing writable stores and can
 be restarted after the owner exits.

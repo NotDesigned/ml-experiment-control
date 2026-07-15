@@ -83,10 +83,21 @@ class ActionExecutionPolicy:
             raise ActionError("scheduler mutations are disabled by daemon policy")
 
         if operation in self.IDENTITY_PINNED_OPERATIONS:
-            campaign_path = Path(str(snapshot.get("campaign_file") or ""))
+            campaign_path = Path(str(
+                snapshot.get("execution_campaign_file")
+                or snapshot.get("campaign_file") or ""
+            ))
             if file_sha(campaign_path) != snapshot.get("execution_campaign_sha256"):
                 raise ActionError(
                     "campaign changed after Action preparation; prepare a fresh action"
+                )
+            authored_sha = snapshot.get("authored_campaign_sha256")
+            if authored_sha is not None and file_sha(
+                Path(str(snapshot.get("campaign_file") or ""))
+            ) != authored_sha:
+                raise ActionError(
+                    "authored campaign changed after Action preparation; "
+                    "prepare a fresh action"
                 )
             manifest_path = Path(str(snapshot.get("execution_manifest_path") or ""))
             if file_sha(manifest_path) != snapshot.get("execution_manifest_sha256"):

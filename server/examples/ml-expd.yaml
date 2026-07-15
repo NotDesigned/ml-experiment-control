@@ -1,5 +1,8 @@
 schema_version: 1
 index_db: ~/.local/state/ml-expd/index.sqlite
+# Canonical Run/Attempt control metadata. Project source-tree run_roots are
+# compatibility read roots only; new submit/retry materialization goes here.
+run_root: ~/.local/state/ml-expd/runs
 project_registry_root: ~/.local/state/ml-expd/projects
 # Absolute daemon-host roots eligible for zero-config discovery. Empty keeps
 # path probing disabled even for authenticated clients.

@@ -286,7 +286,7 @@ def test_require_and_direct_operation_dispatch_edges(monkeypatch):
         return [SimpleNamespace(operation=operation)]
 
     value.operation_availability = lambda *_args: availability(
-        "run.submit", ("wandb_cloud_sync", "max_gpu_hours"),
+        "run.submit", ("wandb_cloud_sync", "max_gpu_hours", "resource_approval"),
     )
     assert error_code(lambda: value.invoke_direct_operation(
         "run.submit", "demo", OperationScopeType.RUN, "run-a",
@@ -299,6 +299,10 @@ def test_require_and_direct_operation_dispatch_edges(monkeypatch):
     assert error_code(lambda: value.invoke_direct_operation(
         "run.submit", "demo", OperationScopeType.RUN, "run-a",
         {"max_gpu_hours": 0},
+    )) == "INVALID_OPERATION"
+    assert error_code(lambda: value.invoke_direct_operation(
+        "run.submit", "demo", OperationScopeType.RUN, "run-a",
+        {"resource_approval": "surprise"},
     )) == "INVALID_OPERATION"
 
     value.prepare_campaign_archive = lambda *_args, **_kwargs: "campaign"
@@ -315,7 +319,10 @@ def test_require_and_direct_operation_dispatch_edges(monkeypatch):
         value.resolve_scope = lambda *_args, local_scope=local_scope: (
             local_scope, SimpleNamespace(), object(),
         )
-        params = ("max_gpu_hours",) if operation_id == "attempt.retry" else ()
+        params = (
+            ("max_gpu_hours", "resource_approval")
+            if operation_id == "attempt.retry" else ()
+        )
         value.operation_availability = (
             lambda *_args, operation_id=operation_id, params=params:
             availability(operation_id, params)
