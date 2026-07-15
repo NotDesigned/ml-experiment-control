@@ -197,6 +197,25 @@ def test_redact_lines_suppresses_malformed_structured_evidence() -> None:
     assert secret not in result.stdout
 
 
+def test_redact_lines_reassembles_transport_fragmented_evidence() -> None:
+    prefix = "EXPERIMENT_EVIDENCE_JSON="
+    raw = (
+        "before\n"
+        f'{prefix}{{"run_id":"long-\n'
+        'run","token_recon_ppl":\n'
+        "23.3}\n"
+        "after token=alpha\n"
+    )
+    result = run_safe("redact-lines", raw)
+    assert result.returncode == 0
+    lines = result.stdout.splitlines()
+    assert lines[0] == "before"
+    assert json.loads(lines[1].removeprefix(prefix)) == {
+        "run_id": "long-run", "token_recon_ppl": 23.3,
+    }
+    assert lines[2] == "after token=<redacted>"
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [

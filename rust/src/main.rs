@@ -114,40 +114,66 @@ fn redact_json_value(value: &mut Value) {
     }
 }
 
-fn redact_structured_evidence_line(line: &str) -> String {
-    let Some(marker) = line.find(STRUCTURED_EVIDENCE_PREFIX) else {
-        return redact_line(line);
-    };
-    let (prefix, evidence) = line.split_at(marker);
-    let payload = &evidence[STRUCTURED_EVIDENCE_PREFIX.len()..];
-    let safe_prefix = redact_line(prefix);
-    if payload.is_empty() || payload.len() > STRUCTURED_EVIDENCE_MAX_CHARS {
-        return format!("{safe_prefix}{STRUCTURED_EVIDENCE_PREFIX}<redacted-malformed>");
-    }
-    let Ok(mut value) = serde_json::from_str::<Value>(payload) else {
-        return format!("{safe_prefix}{STRUCTURED_EVIDENCE_PREFIX}<redacted-malformed>");
-    };
-    if !value.is_object() {
-        return format!("{safe_prefix}{STRUCTURED_EVIDENCE_PREFIX}<redacted-malformed>");
-    }
-    redact_json_value(&mut value);
-    match serde_json::to_string(&value) {
-        Ok(payload) => format!("{safe_prefix}{STRUCTURED_EVIDENCE_PREFIX}{payload}"),
-        Err(_) => format!("{safe_prefix}{STRUCTURED_EVIDENCE_PREFIX}<redacted-malformed>"),
+fn line_parts(line: &str) -> (&str, &str) {
+    match line.strip_suffix('\n') {
+        Some(body) => (body.strip_suffix('\r').unwrap_or(body), &line[body.len()..]),
+        None => (line, ""),
     }
 }
 
 fn redact_lines(input: &str) -> String {
-    input
-        .split_inclusive('\n')
-        .map(|line| {
-            let (body, newline) = match line.strip_suffix('\n') {
-                Some(body) => (body.strip_suffix('\r').unwrap_or(body), &line[body.len()..]),
-                None => (line, ""),
-            };
-            format!("{}{newline}", redact_structured_evidence_line(body))
-        })
-        .collect()
+    let lines = input.split_inclusive('\n').collect::<Vec<_>>();
+    let mut output = String::with_capacity(input.len());
+    let mut index = 0;
+    while index < lines.len() {
+        let (body, newline) = line_parts(lines[index]);
+        let Some(marker) = body.find(STRUCTURED_EVIDENCE_PREFIX) else {
+            output.push_str(&redact_line(body));
+            output.push_str(newline);
+            index += 1;
+            continue;
+        };
+        output.push_str(&redact_line(&body[..marker]));
+        output.push_str(STRUCTURED_EVIDENCE_PREFIX);
+        let mut payload = body[marker + STRUCTURED_EVIDENCE_PREFIX.len()..].to_owned();
+        let mut final_newline = newline;
+        loop {
+            if payload.len() > STRUCTURED_EVIDENCE_MAX_CHARS {
+                output.push_str("<redacted-malformed>");
+                output.push_str(final_newline);
+                return output;
+            }
+            match serde_json::from_str::<Value>(&payload) {
+                Ok(mut value) if value.is_object() => {
+                    redact_json_value(&mut value);
+                    match serde_json::to_string(&value) {
+                        Ok(payload) => output.push_str(&payload),
+                        Err(_) => output.push_str("<redacted-malformed>"),
+                    }
+                    output.push_str(final_newline);
+                    index += 1;
+                    break;
+                }
+                Ok(_) => {
+                    output.push_str("<redacted-malformed>");
+                    output.push_str(final_newline);
+                    return output;
+                }
+                Err(error) if error.is_eof() && index + 1 < lines.len() => {
+                    index += 1;
+                    let (fragment, newline) = line_parts(lines[index]);
+                    payload.push_str(fragment);
+                    final_newline = newline;
+                }
+                Err(_) => {
+                    output.push_str("<redacted-malformed>");
+                    output.push_str(final_newline);
+                    return output;
+                }
+            }
+        }
+    }
+    output
 }
 
 fn normalize_state(input: &str) -> &'static str {
@@ -409,6 +435,25 @@ mod tests {
             format!("{STRUCTURED_EVIDENCE_PREFIX}<redacted-malformed>\n")
         );
         assert!(!output.contains(secret));
+    }
+
+    #[test]
+    fn fragmented_structured_evidence_is_reassembled_without_physical_newlines() {
+        let input = concat!(
+            "before\n",
+            "EXPERIMENT_EVIDENCE_JSON={\"run_id\":\"long-\n",
+            "run\",\"token_recon_ppl\":\n",
+            "23.3}\n",
+            "after token=alpha\n"
+        );
+        let output = sanitize("redact-lines", None, input).expect("fragmented evidence");
+        let lines = output.lines().collect::<Vec<_>>();
+        assert_eq!(lines[0], "before");
+        let payload = lines[1].strip_prefix(STRUCTURED_EVIDENCE_PREFIX).unwrap();
+        let evidence: Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(evidence["run_id"], "long-run");
+        assert_eq!(evidence["token_recon_ppl"], 23.3);
+        assert_eq!(lines[2], "after token=<redacted>");
     }
 
     #[test]
