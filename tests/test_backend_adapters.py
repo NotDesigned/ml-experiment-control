@@ -28,6 +28,61 @@ from experiment_control.project import AssetProbe, AssetRequirement
 from experiment_control.runner import CommandResult
 
 
+def test_sensecore_availability_checks_tools_and_credential_backed_api(tmp_path):
+    fake = QueueRunner([
+        CommandResult(("sco",), 0),
+        CommandResult(("safe-sco",), 0),
+        CommandResult(("bash",), 0),
+        CommandResult(("timeout",), 0),
+        CommandResult(("workspace-list",), 0),
+    ])
+    report = SenseCoreBackend(services(tmp_path, fake)).availability()
+    assert report.ready is True
+    assert [check.name for check in report.checks] == [
+        "sco-cli", "safe-sco", "bash-cli", "timeout-cli", "workspace-access",
+    ]
+    assert fake.commands[-1][-3:] == ("ws", "instances", "list")
+
+
+@pytest.mark.parametrize("access_code", [1, 124])
+def test_sensecore_availability_fails_closed_without_tools_or_api(
+    tmp_path, access_code,
+):
+    results = [
+        CommandResult(("sco",), 0),
+        CommandResult(("safe-sco",), 0),
+        CommandResult(("bash",), 0),
+        CommandResult(("timeout",), 0),
+        CommandResult(("workspace-list",), access_code),
+    ]
+    report = SenseCoreBackend(services(tmp_path, QueueRunner(results))).availability()
+    assert report.ready is False
+    assert report.checks[-1].name == "workspace-access"
+    assert "authentication" in report.checks[-1].message
+
+    missing = SenseCoreBackend(services(tmp_path, QueueRunner([
+        CommandResult(("sco",), 127),
+        CommandResult(("safe-sco",), 127),
+        CommandResult(("bash",), 127),
+        CommandResult(("timeout",), 127),
+    ]))).availability()
+    assert missing.ready is False
+    assert len(missing.checks) == 4
+
+
+def test_slurm_availability_checks_all_local_transport_tools(tmp_path):
+    ready = WydSlurmBackend(services(tmp_path, QueueRunner([
+        CommandResult(("ssh",), 0), CommandResult(("rsync",), 0),
+    ]))).availability()
+    assert ready.ready is True
+
+    missing = WydSlurmBackend(services(tmp_path, QueueRunner([
+        CommandResult(("ssh",), 127), CommandResult(("rsync",), 127),
+    ]))).availability()
+    assert missing.ready is False
+    assert [check.name for check in missing.checks] == ["ssh-cli", "rsync-cli"]
+
+
 def test_sensecore_preflight_checks_cli_and_sanitized_workspace_access(tmp_path):
     fake = QueueRunner([
         CommandResult(("sco-version",), 0, "v1.2.0\n"),

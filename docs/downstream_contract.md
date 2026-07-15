@@ -40,6 +40,13 @@ type checker can reject missing required identity fields and incompatible
 backend result shapes. Campaign and project summary payloads remain open
 because their scientific fields are owned by the host project.
 
+Every implementation of the public `Backend` protocol provides
+`availability() -> PreflightReport`. This run-independent method must be
+read-only, must not render raw command output, and must cover daemon-host tools
+plus any generic authentication probe needed before a concrete Run is known.
+Run-specific workspace, scheduler-resource, and storage checks remain in
+`preflight(run, scope=...)`.
+
 ## Submission identity
 
 Hosts must call `ExperimentStateStore.begin_submission(...)` with the selected

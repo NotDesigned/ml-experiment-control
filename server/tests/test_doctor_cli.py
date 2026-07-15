@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from experiment_control.runner import CommandResult
 from ml_exp_server.cli import _require_loopback_host, _validate_bind_host, main
 from ml_exp_server.credentials import CredentialStore
 from ml_exp_server.project_registry import ProjectRegistry
@@ -31,6 +32,52 @@ def test_doctor_reports_defaults_as_informational_not_failing(tmp_path, capsys):
     assert "· local W&B: disabled" in out
     assert "· W&B cloud: disabled" in out
     assert "· projects: registry not initialized; 0 configured for bootstrap" in out
+
+
+def test_doctor_reports_backend_availability_and_enforces_scheduler_gate(
+    monkeypatch, tmp_path, capsys,
+):
+    def available(_self, command, **_kwargs):
+        return CommandResult(tuple(command), 0)
+
+    monkeypatch.setattr(
+        "experiment_control.runner.SubprocessRunner.run", available,
+    )
+    config = _write_config(tmp_path)
+    assert main(["--config", str(config), "doctor", "--json"]) == 0
+    checks = {
+        item["name"]: item
+        for item in json.loads(capsys.readouterr().out)["checks"]
+    }
+    assert checks["backend.local"]["status"] == "PASS"
+    assert checks["backend.sensecore"]["status"] == "PASS"
+    assert checks["backend.slurm"]["status"] == "PASS"
+
+    def unavailable(_self, command, **_kwargs):
+        return CommandResult(tuple(command), 127)
+
+    monkeypatch.setattr(
+        "experiment_control.runner.SubprocessRunner.run", unavailable,
+    )
+    assert main(["--config", str(config), "doctor", "--json"]) == 0
+    optional = {
+        item["name"]: item
+        for item in json.loads(capsys.readouterr().out)["checks"]
+    }
+    assert optional["backend.sensecore"]["status"] == "INFO"
+    assert optional["backend.slurm"]["status"] == "INFO"
+
+    required = _write_config(
+        tmp_path,
+        "action_runtime:\n  allow_scheduler_mutations: true\n",
+    )
+    assert main(["--config", str(required), "doctor", "--json"]) == 1
+    enforced = {
+        item["name"]: item
+        for item in json.loads(capsys.readouterr().out)["checks"]
+    }
+    assert enforced["backend.sensecore"]["status"] == "FAIL"
+    assert enforced["backend.slurm"]["status"] == "FAIL"
 
 
 def test_doctor_flags_missing_wandb_credentials_as_hard_failures(tmp_path, capsys):

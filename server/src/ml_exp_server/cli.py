@@ -106,7 +106,10 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("reference")
     doctor = subcommands.add_parser(
         "doctor",
-        help="read-only checklist of config, action gates, and W&B credential state",
+        help=(
+            "read-only checklist of config, backend availability, action gates, "
+            "and W&B credential state"
+        ),
     )
     doctor.add_argument(
         "--json", action="store_true", dest="json_output",
@@ -154,6 +157,9 @@ def _credential_command(args: argparse.Namespace) -> int:
 
 
 def _doctor_command(args: argparse.Namespace) -> int:
+    from experiment_control.backends import BackendServices, build_registry
+    from experiment_control.runner import SubprocessRunner
+
     from .credentials import CredentialError, CredentialStore
     from .http_auth import HttpAuthError, load_bearer_token
     from .project_config import ConfigError, load_research_project, load_server_config
@@ -228,6 +234,45 @@ def _doctor_command(args: argparse.Namespace) -> int:
                     f"action_runtime.{flag}", None, "disabled (default)",
                     f"set action_runtime.{flag}: true to allow this Action class",
                 ))
+
+        def unavailable(*_args, **_kwargs):
+            raise RuntimeError(  # pragma: no cover - Backend availability invariant
+                "backend Doctor probe used a non-probe service"
+            )
+
+        runner = SubprocessRunner()
+        services = BackendServices(
+            run_command=runner.run,
+            local_run_dir=unavailable,
+            backend_record=unavailable,
+            summarize_run=unavailable,
+            parse_metric=unavailable,
+            parse_checkpoint=unavailable,
+            atomic_write=unavailable,
+            utc_now=unavailable,
+        )
+        registry = build_registry(services)
+        for kind in sorted(registry.kinds):
+            report = registry.get(kind).availability()
+            failures = [
+                check.name for check in report.checks if check.status == "FAIL"
+            ]
+            if not failures:
+                checks.append((
+                    f"backend.{kind}", True,
+                    f"{len(report.checks)} host/API probe(s) passed", None,
+                ))
+                continue
+            required = runtime.allow_scheduler_mutations
+            checks.append((
+                f"backend.{kind}", False if required else None,
+                "unavailable: " + ", ".join(failures),
+                (
+                    "install/configure this backend before allowing scheduler mutations"
+                    if required else
+                    "backend is currently optional because scheduler mutations are disabled"
+                ),
+            ))
         import_roots = config.project_import_root_paths()
         if not import_roots:
             checks.append((

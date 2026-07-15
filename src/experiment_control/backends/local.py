@@ -56,6 +56,17 @@ class LocalBackend:
     def __init__(self, services: BackendServices):
         self.s = services
 
+    def availability(self) -> PreflightReport:
+        """Report whether the daemon host can safely supervise local processes."""
+        ready = _process_identity(os.getpid()) is not None
+        return PreflightReport(self.kind, "doctor", (
+            PreflightCheck(
+                "process-identity", "tool", "PASS" if ready else "FAIL",
+                "Linux process identity is available" if ready
+                else "Linux /proc process identity is unavailable",
+            ),
+        ))
+
     @staticmethod
     def _attempt_dir(run: dict[str, Any], attempt_id: str) -> Path:
         return Path(str(run["storage"]["run_dir"])) / "attempts" / attempt_id

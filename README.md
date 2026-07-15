@@ -212,10 +212,16 @@ durability, credential isolation, and client status boundaries are specified in
 Each backend implements:
 
 ```text
+availability
 validate -> preflight -> identity -> stage -> render
                     -> durable intent -> recover or submit -> reconcile
                                       -> status/logs/collect/cancel
 ```
+
+`availability()` is the run-independent daemon-host check used by `ml-expd
+doctor`. It verifies the local executables and generic API authentication needed
+to reach a backend without submitting, cancelling, or reading job payloads.
+`preflight` remains the run-specific resource and authorization check.
 
 `preflight` returns a credential-free `PreflightReport`. SenseCore checks the
 SCO executable and a sanitized exact-name workspace query. WYD scopes checks

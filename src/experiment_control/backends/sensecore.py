@@ -104,6 +104,42 @@ class SenseCoreBackend:
     def __init__(self, services: BackendServices):
         self.s = services
 
+    def availability(self) -> PreflightReport:
+        """Check SCO, its sanitizer, and credential-backed API access.
+
+        Command output is captured and deliberately discarded.  In particular,
+        Doctor never renders a workspace table or a SCO authentication error.
+        """
+        sco = self.sco_bin({})
+        tools = (
+            ("sco-cli", [sco, "version"]),
+            ("safe-sco", [self.safe_sco_bin(), "normalize-state", "RUNNING"]),
+            ("bash-cli", ["bash", "--version"]),
+            ("timeout-cli", ["timeout", "--version"]),
+        )
+        checks = []
+        for name, command in tools:
+            result = self.s.run_command(command, check=False)
+            checks.append(PreflightCheck(
+                name, "tool", "PASS" if result.returncode == 0 else "FAIL",
+                f"{name} is executable" if result.returncode == 0
+                else f"{name} is unavailable",
+            ))
+        if all(check.status == "PASS" for check in checks):
+            access = self.s.run_command([
+                "timeout", "20s", "env",
+                "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
+                "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY",
+                sco, "ws", "instances", "list",
+            ], check=False)
+            checks.append(PreflightCheck(
+                "workspace-access", "authentication",
+                "PASS" if access.returncode == 0 else "FAIL",
+                "SCO credentials permit a workspace query" if access.returncode == 0
+                else "SCO authentication, components, or API connectivity is unavailable",
+            ))
+        return PreflightReport(self.kind, "doctor", tuple(checks))
+
     @staticmethod
     def sco_bin(run: dict[str, Any]) -> str:
         """Resolve a non-secret CLI override without exposing SCO credentials."""

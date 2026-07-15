@@ -133,6 +133,7 @@ def test_local_backend_cancels_an_exact_process_group(tmp_path):
 def test_local_backend_validation_preflight_assets_stage_and_dry_run(tmp_path):
     run = local_run(tmp_path)
     backend, _ = local_backend(tmp_path, run)
+    assert backend.availability().ready is True
     backend.validate(run)
     report = backend.preflight(run, scope="submit")
     assert report.ready is True
@@ -190,6 +191,11 @@ def test_local_backend_validation_preflight_assets_stage_and_dry_run(tmp_path):
     original_identity = local_module._process_identity
     local_module._process_identity = lambda _pid: None
     try:
+        unavailable = backend.availability()
+        assert unavailable.ready is False
+        assert unavailable.checks[0].message == (
+            "Linux /proc process identity is unavailable"
+        )
         report = backend.preflight(run, scope="observe")
         assert [check.status for check in report.checks] == [
             "FAIL", "FAIL", "FAIL",

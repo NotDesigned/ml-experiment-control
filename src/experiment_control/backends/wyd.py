@@ -211,6 +211,21 @@ class WydSlurmBackend:
     def __init__(self, services: BackendServices):
         self.s = services
 
+    def availability(self) -> PreflightReport:
+        """Check every daemon-host executable used by the Slurm adapter."""
+        checks = []
+        for name, command in (
+            ("ssh-cli", [self.ssh_bin, "-V"]),
+            ("rsync-cli", [self.rsync_bin, "--version"]),
+        ):
+            result = self.s.run_command(command, check=False)
+            checks.append(PreflightCheck(
+                name, "tool", "PASS" if result.returncode == 0 else "FAIL",
+                f"{name} is executable" if result.returncode == 0
+                else f"{name} is unavailable",
+            ))
+        return PreflightReport(self.kind, "doctor", tuple(checks))
+
     @property
     def ssh_bin(self) -> str:
         return os.environ.get("EXPERIMENTCTL_SSH_BIN", "ssh")
