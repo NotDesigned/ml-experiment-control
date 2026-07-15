@@ -39,6 +39,18 @@ def test_missing_executable_is_a_structured_command_failure():
     assert "FileNotFoundError" in result.stderr
 
 
+def test_subprocess_runner_replaces_invalid_utf8_at_the_process_boundary():
+    result = SubprocessRunner().run([
+        sys.executable,
+        "-c",
+        "import os; os.write(1, b'valid\\ninvalid=\\x88\\n'); "
+        "os.write(2, b'bad=\\xff\\n')",
+    ])
+    assert result.returncode == 0
+    assert result.stdout == "valid\ninvalid=�\n"
+    assert result.stderr == "bad=�\n"
+
+
 def test_subprocess_runner_enforces_hard_timeout():
     with pytest.raises(subprocess.TimeoutExpired):
         SubprocessRunner().run(

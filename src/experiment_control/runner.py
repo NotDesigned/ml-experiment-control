@@ -57,7 +57,8 @@ class SubprocessRunner:
         try:
             completed = subprocess.run(
                 list(command), cwd=cwd, check=False, input=input_text,
-                text=True, capture_output=True, timeout=timeout_seconds,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True, timeout=timeout_seconds,
             )
             result = CommandResult(
                 args=arguments, returncode=completed.returncode,
