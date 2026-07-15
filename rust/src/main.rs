@@ -40,7 +40,7 @@ static SENSITIVE_QUERY_RE: LazyLock<Regex> = LazyLock::new(|| {
 static WORKER_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._-]+$").expect("worker regex is valid"));
 const STRUCTURED_EVIDENCE_PREFIX: &str = "EXPERIMENT_EVIDENCE_JSON=";
-const STRUCTURED_EVIDENCE_MAX_CHARS: usize = 131_072;
+const STRUCTURED_EVIDENCE_MAX_CHARS: usize = 1_048_576;
 
 fn redact_line(input: &str) -> String {
     let value = URL_USERINFO_RE.replace_all(input, "$1<redacted>@");
@@ -454,6 +454,30 @@ mod tests {
         assert_eq!(evidence["run_id"], "long-run");
         assert_eq!(evidence["token_recon_ppl"], 23.3);
         assert_eq!(lines[2], "after token=<redacted>");
+    }
+
+    #[test]
+    fn structured_evidence_can_exceed_the_legacy_128_kib_limit() {
+        let payload = "x".repeat(131_073);
+        let input = format!("{STRUCTURED_EVIDENCE_PREFIX}{{\"large_summary\":\"{payload}\"}}\n");
+        let output = sanitize("redact-lines", None, &input).expect("bounded evidence");
+        let encoded = output
+            .trim_end()
+            .strip_prefix(STRUCTURED_EVIDENCE_PREFIX)
+            .unwrap();
+        let evidence: Value = serde_json::from_str(encoded).unwrap();
+        assert_eq!(evidence["large_summary"].as_str().unwrap().len(), 131_073);
+    }
+
+    #[test]
+    fn oversized_structured_evidence_is_suppressed() {
+        let payload = "x".repeat(STRUCTURED_EVIDENCE_MAX_CHARS + 1);
+        let input = format!("{STRUCTURED_EVIDENCE_PREFIX}{{\"large_summary\":\"{payload}\"}}\n");
+        let output = sanitize("redact-lines", None, &input).expect("fail closed output");
+        assert_eq!(
+            output,
+            format!("{STRUCTURED_EVIDENCE_PREFIX}<redacted-malformed>\n")
+        );
     }
 
     #[test]

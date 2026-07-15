@@ -710,6 +710,28 @@ def test_sensecore_collection_merges_identity_bound_structured_evidence(tmp_path
     assert summary["process_evidence"]["stdout_tail"] == ["training output"]
 
 
+def test_sensecore_collection_accepts_bounded_evidence_above_legacy_limit(tmp_path):
+    run = sensecore_run()
+    payload = {
+        "run_id": run["run_id"],
+        "attempt_id": "attempt-001",
+        "image_id": run["image_id"],
+        "state": "SUCCEEDED",
+        "large_summary": "x" * 131073,
+    }
+    sentinel = "EXPERIMENT_EVIDENCE_JSON=" + json.dumps(payload, separators=(",", ":"))
+    fake = QueueRunner([
+        CommandResult(("stream",), 0, sentinel + "\n"),
+        CommandResult(("redact",), 0, sentinel + "\n"),
+        CommandResult(("workers",), 0, '[{"phase":"Succeeded"}]\n'),
+    ])
+
+    summary = SenseCoreBackend(services(tmp_path, fake)).collect({}, run)
+
+    assert len(summary["large_summary"]) == 131073
+    assert summary["structured_evidence"]["identity_verified"] is True
+
+
 def test_sensecore_collection_rejects_structured_evidence_identity_conflict(tmp_path):
     run = sensecore_run()
     payload = {
