@@ -43,6 +43,7 @@ from .store import ActionStore
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_CAMPAIGN_REVISION = re.compile(r"^campaign\.[0-9a-f]{64}$")
 
 
 def _sha256(data: bytes) -> str:
@@ -763,6 +764,16 @@ class ActionService:
         experiments = base / "experiments"
         if not campaign.is_file() or not _inside(campaign, experiments):
             raise ActionError("campaign_file must exist under the project's experiments directory")
+        try:
+            authored_campaign_bytes = campaign.read_bytes()
+            authored_campaign_text = authored_campaign_bytes.decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ActionError(f"campaign_file cannot be read as UTF-8: {exc}") from exc
+        authored_campaign_payload = _parse_mapping(authored_campaign_text)
+        authored_campaign_sha256 = _sha256(authored_campaign_bytes)
+        authored_revision_from_bytes = (
+            "campaign." + hashlib.sha256(authored_campaign_bytes).hexdigest()
+        )
         kind = str(intent["kind"])
         operation = {
             "SUBMIT_RUN": "SUBMIT_RUN", "RETRY_ATTEMPT": "RETRY_ATTEMPT",
@@ -830,36 +841,127 @@ class ActionService:
 
         actual_verb = "cancel" if operation == "CANCEL_RUN" else "submit"
         execution_campaign = campaign
-        if actual_verb == "submit" and project.daemon_run_root is not None:
+        execution_payload = deepcopy(authored_campaign_payload)
+        authored_revision_capability = bool(
+            project.controller.capabilities.get("authored_campaign_revision")
+        )
+        if actual_verb == "submit" and (
+            project.daemon_run_root is not None or authored_revision_capability
+        ):
             # The authored Campaign describes science and backend resources;
             # the daemon owns where canonical Run/Attempt control metadata is
             # materialized. Freeze that storage binding into the Action so a
             # later source checkout update cannot redirect an approved submit.
-            execution_payload = _parse_mapping(campaign.read_text(encoding="utf-8"))
-            requested_root = spec.get("local_root")
-            execution_root = (
-                Path(str(requested_root)).resolve()
-                if requested_root else project.daemon_run_root.resolve()
-            )
-            allowed_roots = {root.resolve() for root in project.resolved_run_roots()}
-            if execution_root not in allowed_roots:
-                raise ActionError(
-                    "execution local_root is outside registered project run roots"
-                )
-            execution_payload["local_root"] = str(execution_root)
             execution_campaign = (
                 self.store.directory(action_id) / "campaign.execution.yml"
             )
             execution_campaign.parent.mkdir(parents=True, exist_ok=True)
-            execution_campaign.write_text(
-                yaml.safe_dump(
-                    execution_payload, allow_unicode=True, sort_keys=False,
-                ),
-                encoding="utf-8",
-            )
+            if project.daemon_run_root is not None:
+                requested_root = spec.get("local_root")
+                execution_root = (
+                    Path(str(requested_root)).resolve()
+                    if requested_root else project.daemon_run_root.resolve()
+                )
+                allowed_roots = {
+                    root.resolve() for root in project.resolved_run_roots()
+                }
+                if execution_root not in allowed_roots:
+                    raise ActionError(
+                        "execution local_root is outside registered project run roots"
+                    )
+                execution_payload["local_root"] = str(execution_root)
+                execution_campaign.write_text(
+                    yaml.safe_dump(
+                        execution_payload, allow_unicode=True, sort_keys=False,
+                    ),
+                    encoding="utf-8",
+                )
+            else:
+                # Preserve the exact reviewed bytes. Preview and live execution
+                # must never reopen the mutable authored path after catalog
+                # revision validation.
+                execution_campaign.write_bytes(authored_campaign_bytes)
+
+        # A daemon-owned submit may rewrite only the operational local_root in
+        # a private Campaign copy. Controllers that opt into this contract
+        # freeze either the exact current authored revision (new Run) or the
+        # existing canonical Run revision (retry / Attempt evaluation).
+        # Build once without the optional identity solely to resolve the
+        # controller cwd used by relative local_root values.
+        probe_call = self.controller.build(
+            project, execution_campaign, actual_verb, run_id,
+            attempt_id=attempt_id, extra=imported_source_args,
+        )
+        campaign_revision: str | None = None
+        campaign_revision_source: str | None = None
+        inherits_run_revision = operation == "RETRY_ATTEMPT" or (
+            operation == "RUN_EVALUATION"
+            and scope.scope_type == OperationScopeType.ATTEMPT
+        )
+        if actual_verb == "submit" and authored_revision_capability:
+            if inherits_run_revision:
+                canonical_path = _canonical_manifest_path(
+                    execution_payload, cwd=probe_call.cwd, run_id=run_id,
+                )
+                if canonical_path is None or not canonical_path.is_file():
+                    raise ActionError(
+                        "retry/evaluation requires the exact canonical Run manifest "
+                        "to inherit its immutable Campaign revision"
+                    )
+                try:
+                    canonical_manifest = yaml.safe_load(
+                        canonical_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+                    raise ActionError(
+                        f"canonical Run manifest cannot be read: {exc}"
+                    ) from exc
+                expected_campaign = str(execution_payload.get("campaign") or "")
+                exact_scope = (
+                    isinstance(canonical_manifest, dict)
+                    and canonical_manifest.get("project") == project.project
+                    and canonical_manifest.get("campaign") == expected_campaign
+                    and canonical_manifest.get("run_id") == run_id
+                )
+                inherited = (
+                    str(canonical_manifest.get("campaign_id") or "")
+                    if isinstance(canonical_manifest, dict) else ""
+                )
+                if not exact_scope or _CAMPAIGN_REVISION.fullmatch(inherited) is None:
+                    raise ActionError(
+                        "canonical Run manifest does not match the exact project, "
+                        "Campaign, and Run scope with an immutable campaign.<sha256> revision"
+                    )
+                campaign_revision = inherited
+                campaign_revision_source = "canonical_run"
+            else:
+                reference = next((
+                    item for item in project.campaigns
+                    if item.current_revision is not None
+                    and Path(item.current_revision.file).resolve() == campaign
+                ), None)
+                if reference is None or reference.current_revision is None:
+                    raise ActionError(
+                        "authored campaign revision capability requires a current "
+                        "catalog Campaign matching campaign_file"
+                    )
+                catalog_revision = reference.current_revision.revision_id
+                if catalog_revision != authored_revision_from_bytes:
+                    raise ActionError(
+                        "campaign_file changed after the Project catalog was loaded; "
+                        "refresh or re-register the Project before preparing submission"
+                    )
+                campaign_revision = catalog_revision
+                campaign_revision_source = "authored_catalog"
+
+        campaign_identity_args = (
+            ["--campaign-id", campaign_revision]
+            if campaign_revision is not None else []
+        )
+        controller_extra = [*imported_source_args, *campaign_identity_args]
         call = self.controller.build(
             project, execution_campaign, actual_verb, run_id, attempt_id=attempt_id,
-            extra=imported_source_args,
+            extra=controller_extra,
         )
         command, cwd = call.argv, call.cwd
         preview_payload: dict[str, Any] | None = None
@@ -879,7 +981,7 @@ class ActionService:
             )
             preview_call = self.controller.build(
                 project, preview_path, "submit", run_id,
-                attempt_id=attempt_id, dry_run=True, extra=imported_source_args,
+                attempt_id=attempt_id, dry_run=True, extra=controller_extra,
             )
             preview_command, preview_cwd = preview_call.argv, preview_call.cwd
             gate, result = self._run_gate("dry_run", preview_command, preview_cwd)
@@ -939,6 +1041,13 @@ class ActionService:
                     else "canonical execution manifest identity conflicts with preview",
                 ),
             ])
+            if campaign_revision is not None:
+                gates.append(_gate(
+                    "campaign_revision_binding",
+                    manifest.get("campaign_id") == campaign_revision,
+                    "preview Run manifest must preserve the reviewed Campaign revision "
+                    f"{campaign_revision} from {campaign_revision_source}",
+                ))
             if expected_source_id:
                 gates.append(_gate(
                     "authored_source_binding",
@@ -992,6 +1101,7 @@ class ActionService:
                 "source_id": manifest.get("source_id"),
                 "image_id": manifest.get("image_id"),
                 "config_path": manifest.get("config_path"),
+                "campaign_id": manifest.get("campaign_id"),
                 "resolved_config": manifest.get("resolved_config"),
                 "backend": backend,
                 "resources": resources,
@@ -1012,14 +1122,15 @@ class ActionService:
             ):
                 check_call = self.controller.build(
                     project, execution_campaign, verb, run_id,
-                    attempt_id=attempt_id, extra=[*extra, *imported_source_args],
+                    attempt_id=attempt_id, extra=[*extra, *controller_extra],
                 )
                 gate, _ = self._run_gate(name, check_call.argv, check_call.cwd)
                 gates.append(gate)
-            capability = project.controller.capabilities
+            controller_capabilities = project.controller.capabilities
             gates.append(_gate(
                 "submit_outbox_capability",
-                bool(capability.get("submit_outbox")) and bool(capability.get("run_identity_v2")),
+                bool(controller_capabilities.get("submit_outbox"))
+                and bool(controller_capabilities.get("run_identity_v2")),
                 "controller must declare durable submit reconciliation and Run identity v2",
             ))
         else:
@@ -1051,6 +1162,8 @@ class ActionService:
             "execution_campaign_file": str(execution_campaign),
             "attempt_id": attempt_id, "backend_job_id": spec.get("backend_job_id"),
             "expected_source_id": expected_source_id,
+            "campaign_revision": campaign_revision,
+            "campaign_revision_source": campaign_revision_source,
             "gates": gates, "ready": all(item["status"] != "FAIL" for item in gates),
             "diff": json.dumps(
                 _redact(preview_payload if preview_payload else observed),
@@ -1060,8 +1173,11 @@ class ActionService:
             "preflight_summary": preflight_summary,
             "command_preview": _redact(command),
             "cwd": str(cwd),
-            "authored_campaign_sha256": _file_sha(campaign),
-            "execution_campaign_sha256": _file_sha(execution_campaign),
+            "authored_campaign_sha256": authored_campaign_sha256,
+            "execution_campaign_sha256": (
+                authored_campaign_sha256
+                if execution_campaign == campaign else _file_sha(execution_campaign)
+            ),
             "execution_manifest_path": (
                 str(execution_manifest_path) if execution_manifest_path is not None else None
             ),
@@ -1069,6 +1185,7 @@ class ActionService:
         })
         verification = self.controller.build(
             project, execution_campaign, "status", run_id, attempt_id=attempt_id,
+            extra=controller_extra,
         )
         plan.update({
             "verification_command_preview": _redact(verification.argv),

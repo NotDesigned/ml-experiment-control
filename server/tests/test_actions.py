@@ -518,6 +518,7 @@ class FakeController:
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
             manifest = {
                 "identity_version": 2,
+                "project": "demo", "campaign": "demo-campaign",
                 "run_id": "run-a", "source_id": self.source_id, "image_id": "sha256:image",
                 "backend": {"kind": "slurm", "time": "04:00:00"},
                 "resources": {"gpus": 2, "cpus": 8},
@@ -526,6 +527,8 @@ class FakeController:
                 "checkpoint": {"expected_first_minutes": 10, "max_uncheckpointed_minutes": 15},
                 "assets": [{"kind": "dataset", "identity": "dataset-v1"}],
             }
+            if "--campaign-id" in command:
+                manifest["campaign_id"] = command[command.index("--campaign-id") + 1]
             if self.evaluation:
                 manifest["evaluation"] = {
                     "checkpoint_digest": "sha256:checkpoint",
@@ -739,6 +742,277 @@ def test_submit_plan_gates_and_executes_once(tmp_path):
     submit_calls = [item for item in runner.calls if item[3] == "submit" and "--dry-run" not in item]
     assert len(submit_calls) == 1
 
+
+def test_submit_preserves_authored_campaign_revision_across_local_root_rewrite(
+    tmp_path, monkeypatch,
+):
+    root = tmp_path / "science"
+    campaign_dir = root / "experiments" / "campaigns"
+    campaign_dir.mkdir(parents=True)
+    campaign = campaign_dir / "demo.yml"
+    campaign.write_text(yaml.safe_dump({
+        "schema_version": 1, "project": "demo", "campaign": "demo-campaign",
+        "local_root": "outputs/runs", "runs": [{"run_id": "run-a"}],
+    }, sort_keys=False), encoding="utf-8")
+    project_file = root / "experiments" / "research_project.yaml"
+    project_file.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "project": "demo",
+        "title": "Demo",
+        "run_roots": ["outputs/runs"],
+        "controller": {
+            "python": "python",
+            "experimentctl": "tools/experimentctl.py",
+            "workdir": ".",
+            "capabilities": {
+                "submit_outbox": True,
+                "run_identity_v2": True,
+                "authored_campaign_revision": True,
+            },
+        },
+        "campaigns": [{
+            "name": "demo-campaign",
+            "file": "experiments/campaigns/demo.yml",
+        }],
+    }, sort_keys=False), encoding="utf-8")
+    project = load_research_project(project_file)
+    revision = project.campaigns[0].current_revision
+    assert revision is not None
+    original_campaign_bytes = campaign.read_bytes()
+    runner = FakeController()
+    service = ActionService(
+        ActionStore(tmp_path / "actions"),
+        ActionRuntimeConfig(allow_scheduler_mutations=True), runner,
+        actor_provider=lambda: "trusted:pi",
+    )
+
+    # Reproduce a mutation after the one reviewed read but before preview. The
+    # controller must receive the private A bytes, never mutable authored B.
+    original_build = service.controller.build
+    build_calls = 0
+
+    def mutate_authored_after_private_freeze(*args, **kwargs):
+        nonlocal build_calls
+        result = original_build(*args, **kwargs)
+        build_calls += 1
+        if build_calls == 1:
+            campaign.write_bytes(
+                original_campaign_bytes + b"# changed during prepare\n"
+            )
+        return result
+
+    monkeypatch.setattr(
+        service.controller, "build", mutate_authored_after_private_freeze,
+    )
+    frozen = service.prepare(
+        OperationScope(project="demo", scope_type="run", object_id="run-a"),
+        project,
+        operation_intent(
+            "SUBMIT_RUN", submit_draft(campaign), "intent-private-freeze",
+        ),
+    )
+    assert frozen["ready"] is True
+    assert frozen["execution_campaign_file"] != str(campaign)
+    assert Path(frozen["execution_campaign_file"]).read_bytes() == original_campaign_bytes
+    assert frozen["campaign_revision"] == revision.revision_id
+    assert frozen["preflight_summary"]["campaign_id"] == revision.revision_id
+    service.authorize(frozen["action_id"], "reviewed frozen bytes")
+    with pytest.raises(ActionError, match="authored campaign changed"):
+        service.execute(
+            frozen["action_id"], f"EXECUTE {frozen['action_id']}",
+        )
+
+    monkeypatch.setattr(service.controller, "build", original_build)
+    campaign.write_bytes(original_campaign_bytes)
+    project.daemon_run_root = (tmp_path / "daemon-runs" / "demo").resolve()
+    project.daemon_run_root.mkdir(parents=True)
+
+    plan = service.prepare(
+        OperationScope(project="demo", scope_type="run", object_id="run-a"),
+        project,
+        operation_intent(
+            "SUBMIT_RUN", submit_draft(campaign), "intent-root-rewrite",
+        ),
+    )
+
+    assert plan["ready"] is True
+    assert plan["campaign_revision"] == revision.revision_id
+    assert plan["campaign_revision_source"] == "authored_catalog"
+    gate = next(
+        item for item in plan["gates"]
+        if item["name"] == "campaign_revision_binding"
+    )
+    assert gate["status"] == "PASS"
+    assert plan["preflight_summary"]["campaign_id"] == revision.revision_id
+    assert "--campaign-id" in plan["command_preview"]
+    assert revision.revision_id in plan["command_preview"]
+
+    service.authorize(plan["action_id"], "reviewed authored revision")
+    result = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
+    assert result["execution"]["status"] == "VERIFIED"
+    live_submit = next(
+        call for call in runner.calls
+        if call[3] == "submit" and "--dry-run" not in call
+    )
+    assert live_submit[live_submit.index("--campaign-id") + 1] == revision.revision_id
+
+    campaign.write_text(
+        campaign.read_text(encoding="utf-8") + "# changed after catalog load\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ActionError, match="Project catalog was loaded"):
+        service.prepare(
+            OperationScope(project="demo", scope_type="run", object_id="run-a"),
+            project,
+            operation_intent(
+                "SUBMIT_RUN", submit_draft(campaign), "intent-stale-catalog",
+            ),
+        )
+
+
+def test_retry_inherits_frozen_campaign_revision_from_canonical_run(tmp_path):
+    root = tmp_path / "science"
+    campaign_dir = root / "experiments" / "campaigns"
+    campaign_dir.mkdir(parents=True)
+    campaign = campaign_dir / "demo.yml"
+    campaign.write_text(yaml.safe_dump({
+        "schema_version": 1, "project": "demo", "campaign": "demo-campaign",
+        "local_root": "outputs/runs", "runs": [{"run_id": "run-a"}],
+    }, sort_keys=False), encoding="utf-8")
+    project_file = root / "experiments" / "research_project.yaml"
+    project_file.write_text(yaml.safe_dump({
+        "schema_version": 1, "project": "demo", "title": "Demo",
+        "run_roots": ["outputs/runs"],
+        "controller": {
+            "python": "python", "experimentctl": "tools/experimentctl.py",
+            "workdir": ".", "capabilities": {
+                "submit_outbox": True, "run_identity_v2": True,
+                "authored_campaign_revision": True,
+            },
+        },
+        "campaigns": [{
+            "name": "demo-campaign", "file": "experiments/campaigns/demo.yml",
+        }],
+    }, sort_keys=False), encoding="utf-8")
+    project = load_research_project(project_file)
+    project.daemon_run_root = (tmp_path / "daemon-runs" / "demo").resolve()
+    project.daemon_run_root.mkdir(parents=True)
+    runner = FakeController()
+    service = ActionService(
+        ActionStore(tmp_path / "actions"),
+        ActionRuntimeConfig(allow_scheduler_mutations=True), runner,
+        actor_provider=lambda: "trusted:pi",
+    )
+    first = service.prepare(
+        OperationScope(project="demo", scope_type="run", object_id="run-a"),
+        project,
+        operation_intent("SUBMIT_RUN", submit_draft(campaign), "intent-first-run"),
+    )
+    frozen_revision = first["campaign_revision"]
+    preview_manifest = Path(json.loads(first["diff"])["manifest_path"])
+    canonical_manifest = Path(first["execution_manifest_path"])
+    canonical_manifest.parent.mkdir(parents=True, exist_ok=True)
+    canonical_manifest.write_bytes(preview_manifest.read_bytes())
+
+    retry_draft = yaml.safe_dump({
+        "campaign_file": str(campaign), "run_id": "run-a",
+        "source_attempt_id": "attempt-001", "attempt_id": "attempt-002",
+        "max_gpu_hours": 8,
+    })
+    retry = service.prepare(
+        OperationScope(
+            project="demo", scope_type="attempt",
+            object_id="run-a::attempt-001",
+        ),
+        project,
+        operation_intent("RETRY_ATTEMPT", retry_draft, "intent-retry-run"),
+    )
+
+    assert retry["ready"] is True
+    assert retry["campaign_revision"] == frozen_revision
+    assert retry["campaign_revision_source"] == "canonical_run"
+    assert retry["command_preview"][
+        retry["command_preview"].index("--campaign-id") + 1
+    ] == frozen_revision
+    assert next(
+        gate for gate in retry["gates"]
+        if gate["name"] == "execution_manifest_match"
+    )["status"] == "PASS"
+
+    service.authorize(retry["action_id"], "reviewed retry identity")
+    result = service.execute(
+        retry["action_id"], f"EXECUTE {retry['action_id']}",
+    )
+    assert result["execution"]["status"] == "VERIFIED"
+    live_retry = next(
+        call for call in reversed(runner.calls)
+        if call[3] == "submit" and "--dry-run" not in call
+    )
+    assert live_retry[live_retry.index("--campaign-id") + 1] == frozen_revision
+
+    project.controller.capabilities["evaluation_as_run"] = True
+    runner.evaluation = True
+    canonical_payload = yaml.safe_load(canonical_manifest.read_text())
+    canonical_payload["evaluation"] = {
+        "checkpoint_digest": "sha256:checkpoint",
+        "spec_digest": "sha256:eval-spec",
+        "output_namespace": "eval/run-a/spec-1",
+    }
+    canonical_manifest.write_text(yaml.safe_dump(canonical_payload))
+    evaluation_draft = yaml.safe_dump({
+        "campaign_file": str(campaign), "run_id": "run-a",
+        "source_attempt_id": "attempt-002", "attempt_id": "attempt-003",
+        "max_gpu_hours": 8,
+    })
+    attempt_evaluation = service.prepare(
+        OperationScope(
+            project="demo", scope_type="attempt",
+            object_id="run-a::attempt-002",
+        ),
+        project,
+        operation_intent(
+            "RUN_EVALUATION", evaluation_draft, "intent-attempt-evaluation",
+        ),
+    )
+    assert attempt_evaluation["ready"] is True
+    assert attempt_evaluation["campaign_revision"] == frozen_revision
+    assert attempt_evaluation["campaign_revision_source"] == "canonical_run"
+    assert attempt_evaluation["verification_command_preview"][
+        attempt_evaluation["verification_command_preview"].index(
+            "--campaign-id"
+        ) + 1
+    ] == frozen_revision
+
+    run_evaluation = service.prepare(
+        OperationScope(project="demo", scope_type="run", object_id="run-a"),
+        project,
+        operation_intent(
+            "RUN_EVALUATION",
+            yaml.safe_dump({
+                "campaign_file": str(campaign), "run_id": "run-a",
+                "attempt_id": "attempt-004", "max_gpu_hours": 8,
+            }),
+            "intent-run-evaluation",
+        ),
+    )
+    assert run_evaluation["ready"] is True
+    assert run_evaluation["campaign_revision"] == frozen_revision
+    assert run_evaluation["campaign_revision_source"] == "authored_catalog"
+
+    canonical_payload["project"] = "wrong-project"
+    canonical_manifest.write_text(yaml.safe_dump(canonical_payload))
+    with pytest.raises(ActionError, match="does not match the exact project"):
+        service.prepare(
+            OperationScope(
+                project="demo", scope_type="attempt",
+                object_id="run-a::attempt-002",
+            ),
+            project,
+            operation_intent(
+                "RUN_EVALUATION", evaluation_draft,
+                "intent-wrong-canonical-scope",
+            ),
+        )
 
 def test_submit_plan_binds_preview_to_authored_source_revision(tmp_path):
     project, campaign = controller_project(tmp_path)
