@@ -32,6 +32,52 @@ SENSECORE_BASE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 SENSECORE_ATTEMPT_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 _DOCTOR_TOOL_PROBE_TIMEOUT_SECONDS = 5.0
 _DOCTOR_WORKSPACE_PROBE_TIMEOUT_SECONDS = 25.0
+_STRUCTURED_EVIDENCE_PREFIX = "EXPERIMENT_EVIDENCE_JSON="
+_STRUCTURED_EVIDENCE_MAX_CHARS = 131072
+_STRUCTURED_EVIDENCE_RESERVED_KEYS = frozenset({
+    "backend",
+    "backend_job_id",
+    "evidence_unavailable_reason",
+    "live_logs_expired",
+    "process_evidence",
+    "worker_evidence_available",
+    "worker_phases",
+    "worker_state",
+})
+
+
+def _structured_evidence(
+    lines: list[str], *, run: RunSpec, attempt_id: str,
+) -> dict[str, Any] | None:
+    """Return the last identity-bound project summary emitted by the worker."""
+    for line in reversed(lines):
+        marker = line.find(_STRUCTURED_EVIDENCE_PREFIX)
+        if marker < 0:
+            continue
+        encoded = line[marker + len(_STRUCTURED_EVIDENCE_PREFIX):].strip()
+        if not encoded or len(encoded) > _STRUCTURED_EVIDENCE_MAX_CHARS:
+            raise RuntimeError("SenseCore structured evidence is empty or oversized")
+        try:
+            payload = json.loads(encoded)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("SenseCore structured evidence is malformed") from error
+        if not isinstance(payload, dict):
+            raise RuntimeError("SenseCore structured evidence must be an object")
+        expected = {
+            "run_id": str(run["run_id"]),
+            "attempt_id": str(attempt_id),
+            "image_id": str(run["image_id"]),
+        }
+        for key, value in expected.items():
+            if str(payload.get(key) or "") != value:
+                raise RuntimeError(
+                    f"SenseCore structured evidence {key} conflicts with the exact Attempt"
+                )
+        return {
+            key: value for key, value in payload.items()
+            if key not in _STRUCTURED_EVIDENCE_RESERVED_KEYS
+        }
+    return None
 
 
 def scheduler_job_name(base_name: str, attempt_id: str) -> str:
@@ -490,23 +536,39 @@ class SenseCoreBackend:
     def collect(self, campaign, run) -> CollectionResult:
         snapshot = self.logs(campaign, run, tail=200)
         lines = snapshot["lines"]
+        record = self.s.backend_record(campaign, run)
+        structured = _structured_evidence(
+            lines, run=run, attempt_id=str(record["attempt_id"]),
+        )
         metrics = [metric for line in lines if (metric := self.s.parse_metric(campaign, line))]
         checkpoints = [
             checkpoint for line in lines
             if (checkpoint := self.s.parse_checkpoint(campaign, line))
         ]
         metric_lines = [line for line in lines if "Step " in line or "gPPL:" in line or ("plan" in line.lower() and "ppl" in line.lower())]
+        process_lines = [
+            line for line in lines if _STRUCTURED_EVIDENCE_PREFIX not in line
+        ]
         result = {"run_id": run["run_id"], "backend": "sensecore", "model_observed": bool(metrics),
                   "latest_metric": metrics[-1] if metrics else None, "metric_log_lines": metric_lines[-20:],
                   "live_logs_expired": snapshot["expired"],
                   "process_evidence": {
-                      "observed": bool(lines) and not snapshot["expired"],
+                      "observed": bool(process_lines) and not snapshot["expired"],
                       "sources": {"combined": "sensecore_stream_logs"},
                       # SCO exposes one sanitized combined stream rather than
                       # distinct process stdout/stderr channels.
-                      "stdout_tail": lines,
+                      "stdout_tail": process_lines,
                       "stderr_tail": [],
                   }}
+        if structured is not None:
+            result.update(structured)
+            result["run_id"] = run["run_id"]
+            result["backend"] = "sensecore"
+            result["model_observed"] = True
+            result["structured_evidence"] = {
+                "identity_verified": True,
+                "source": "sensecore_stream_logs",
+            }
         if snapshot["expired"]:
             result["evidence_unavailable_reason"] = "live_logs_expired"
         try:

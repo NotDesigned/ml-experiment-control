@@ -675,6 +675,59 @@ def test_sensecore_logs_classify_expired_stream(tmp_path):
     assert logs["backend_job_id"] == resource_name
 
 
+def test_sensecore_collection_merges_identity_bound_structured_evidence(tmp_path):
+    run = sensecore_run()
+    payload = {
+        "run_id": run["run_id"],
+        "attempt_id": "attempt-001",
+        "image_id": run["image_id"],
+        "state": "SUCCEEDED",
+        "train_loss": 1.25,
+        "g_ppl": 42.0,
+        "artifacts": {"train_metrics": {"records": 3}},
+        "backend": "spoofed",
+        "worker_state": "spoofed",
+    }
+    sentinel = "EXPERIMENT_EVIDENCE_JSON=" + json.dumps(payload, separators=(",", ":"))
+    fake = QueueRunner([
+        CommandResult(("stream",), 0, f"training output\n{sentinel}\n"),
+        CommandResult(("redact",), 0, f"training output\n{sentinel}\n"),
+        CommandResult(("workers",), 0, '[{"phase":"Succeeded"}]\n'),
+    ])
+
+    summary = SenseCoreBackend(services(tmp_path, fake)).collect({}, run)
+
+    assert summary["state"] == "SUCCEEDED"
+    assert summary["train_loss"] == 1.25
+    assert summary["g_ppl"] == 42.0
+    assert summary["artifacts"] == {"train_metrics": {"records": 3}}
+    assert summary["backend"] == "sensecore"
+    assert summary["worker_state"] == "RELEASED"
+    assert summary["structured_evidence"] == {
+        "identity_verified": True,
+        "source": "sensecore_stream_logs",
+    }
+    assert summary["process_evidence"]["stdout_tail"] == ["training output"]
+
+
+def test_sensecore_collection_rejects_structured_evidence_identity_conflict(tmp_path):
+    run = sensecore_run()
+    payload = {
+        "run_id": "different-run",
+        "attempt_id": "attempt-001",
+        "image_id": run["image_id"],
+        "state": "SUCCEEDED",
+    }
+    sentinel = "EXPERIMENT_EVIDENCE_JSON=" + json.dumps(payload, separators=(",", ":"))
+    fake = QueueRunner([
+        CommandResult(("stream",), 0, sentinel + "\n"),
+        CommandResult(("redact",), 0, sentinel + "\n"),
+    ])
+
+    with pytest.raises(RuntimeError, match="run_id conflicts"):
+        SenseCoreBackend(services(tmp_path, fake)).collect({}, run)
+
+
 def test_sensecore_submit_checks_exact_created_job(tmp_path):
     run = sensecore_run()
     resource_name = submission_resource_name(
