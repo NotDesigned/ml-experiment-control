@@ -83,6 +83,32 @@ def test_submission_routes_map_every_application_error():
     ))
 
 
+def test_attempt_retry_route_uses_daemon_exact_review_policy():
+    calls = []
+    application = SimpleNamespace(prepare_attempt_retry=lambda *args, **kwargs: (
+        calls.append((args, kwargs)) or {"action": "prepared"}
+    ))
+    req = request(
+        application=application,
+        config=SimpleNamespace(action_runtime=ActionRuntimeConfig(
+            scheduler_resource_approval="review_exact",
+            max_gpu_hours_per_action=None,
+        )),
+    )
+
+    result = routes.attempt_retry(
+        "elf", "run-a::attempt-001",
+        routes.AttemptRetryRequest(
+            max_gpu_hours=24, new_attempt_id="attempt-002", reason="review",
+        ),
+        req,
+    )
+
+    assert result == {"action": "prepared"}
+    assert calls[0][1]["resource_approval"] == "review_exact"
+    assert calls[0][1]["max_gpu_hours"] is None
+
+
 def test_health_source_version_fallback(monkeypatch):
     monkeypatch.setattr(
         "importlib.metadata.version",

@@ -908,9 +908,15 @@ def attempt_retry(
     project_name: str, attempt_id: str, data: AttemptRetryRequest, request: Request,
 ):
     try:
-        return request.app.state.application.prepare_attempt_retry(
+        application = request.app.state.application
+        policy = request.app.state.config.action_runtime
+        resource_approval = policy.scheduler_resource_approval
+        return application.prepare_attempt_retry(
             project_name, attempt_id, new_attempt_id=data.new_attempt_id,
-            max_gpu_hours=data.max_gpu_hours, reason=data.reason,
+            max_gpu_hours=(
+                data.max_gpu_hours if resource_approval == "budget_cap" else None
+            ),
+            reason=data.reason, resource_approval=resource_approval,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

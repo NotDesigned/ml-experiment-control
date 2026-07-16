@@ -56,6 +56,28 @@ _OMITTED_EVIDENCE_KEYS = {
 }
 
 
+def _reviewable_unknown_retry(
+    decision: dict[str, Any], resource_approval: str,
+    *, operator_reason: str | None = None,
+) -> bool:
+    """Allow an unknown failure to reach review, never automatic execution."""
+    action = str(decision.get("action") or "").upper()
+    failure = str(decision.get("failure_class") or "").lower()
+    allowed = decision.get("retries_allowed")
+    used = decision.get("retries_used", 0)
+    return (
+        action in {"REVIEW_RETRY", "DO_NOT_RETRY"}
+        and failure == "unknown"
+        and isinstance(allowed, int)
+        and not isinstance(allowed, bool)
+        and isinstance(used, int)
+        and not isinstance(used, bool)
+        and used < allowed
+        and resource_approval == "review_exact"
+        and (operator_reason is None or bool(operator_reason.strip()))
+    )
+
+
 def compact_evidence(value: Any, *, depth: int = 0) -> Any:
     if depth >= 8:
         return "[nested evidence omitted]"
@@ -811,7 +833,17 @@ class ExperimentServerApplication:
             if operation_id == "attempt.retry":
                 if state not in {"FAILED", "PREEMPTED", "CANCELLED"}:
                     reasons.append(f"Attempt state {state} is not retryable")
-                if str(decision.get("action") or "").upper() == "DO_NOT_RETRY":
+                policy = getattr(
+                    getattr(self.runtime, "config", None),
+                    "action_runtime", ActionRuntimeConfig(),
+                )
+                if (
+                    str(decision.get("action") or "").upper() == "DO_NOT_RETRY"
+                    and not _reviewable_unknown_retry(
+                        decision,
+                        getattr(policy, "scheduler_resource_approval", "budget_cap"),
+                    )
+                ):
                     reasons.append("Collected decision is DO_NOT_RETRY")
                 allowed, used = decision.get("retries_allowed"), decision.get("retries_used", 0)
                 if isinstance(allowed, int) and isinstance(used, int) and used >= allowed:
@@ -2170,16 +2202,8 @@ class ExperimentServerApplication:
         decision_failure = str(decision.get("failure_class") or "").lower()
         allowed = decision.get("retries_allowed")
         used = decision.get("retries_used", 0)
-        reviewable_unknown_failure = (
-            decision_action in {"REVIEW_RETRY", "DO_NOT_RETRY"}
-            and decision_failure == "unknown"
-            and isinstance(allowed, int)
-            and not isinstance(allowed, bool)
-            and isinstance(used, int)
-            and not isinstance(used, bool)
-            and used < allowed
-            and resource_approval == "review_exact"
-            and bool(reason.strip())
+        reviewable_unknown_failure = _reviewable_unknown_retry(
+            decision, resource_approval, operator_reason=reason,
         )
         if decision_action == "DO_NOT_RETRY" and not reviewable_unknown_failure:
             raise ApplicationError(

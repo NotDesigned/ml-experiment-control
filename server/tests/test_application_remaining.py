@@ -183,6 +183,18 @@ def test_operation_blocker_matrix(monkeypatch, tmp_path):
         project, retry,
     ) == []
 
+    value.runtime.config = SimpleNamespace(action_runtime=SimpleNamespace(
+        scheduler_resource_approval="review_exact",
+    ))
+    retry.decision = {
+        "action": "DO_NOT_RETRY", "failure_class": "unknown",
+        "retries_allowed": 1, "retries_used": 0,
+    }
+    assert value._operation_blockers(
+        "attempt.retry", scope(OperationScopeType.ATTEMPT, "run-a::a1"),
+        project, retry,
+    ) == []
+
 
 def test_local_evidence_rebuild_blocker_matrix(monkeypatch, tmp_path):
     action_runtime = SimpleNamespace(
