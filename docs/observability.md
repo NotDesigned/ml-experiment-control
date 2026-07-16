@@ -185,6 +185,45 @@ frozen Attempts' archive cursors. Sanitized record identities and target
 outbox uniqueness make the replay idempotent. Existing submissions remain
 unchanged until this operation is explicitly authorized.
 
+## Archive storage format
+
+The sanitized archive on disk is dual-read, single-write: every `persist`
+call writes only the immutable v2 layout, but a daemon upgraded in place
+continues to read records a v1-only daemon already wrote.
+
+- **v1 (read-only)**: one file per record at
+  `<archive_root>/<source_id[:2]>/<source_id>/<idempotency_key>.json`,
+  holding one canonical-JSON `ArchiveRecord`.
+- **v2 (read/write)**: records for one source accumulate into immutable,
+  content-addressed segments under
+  `<archive_root>/<source_id[:2]>/<source_id>/segments/`:
+  - `segment-<sha256>.jsonl` -- one canonical-JSON record per line, where
+    `<sha256>` is the digest of the segment's full bytes;
+  - `segment-<sha256>.idx` -- the crash-safe commit marker: canonical JSON
+    recording each record's key, byte offsets, and per-record digest,
+    alongside the segment's own digest and size. `load()` treats the index
+    as the sole source of truth for what is durably committed and
+    re-validates every offset and digest on every read. A segment written
+    without a matching index (a crash between the two publishes) is
+    invisible to `load()`; the next `persist()` call for those same records
+    backfills the missing index in place rather than writing a second
+    segment.
+
+Each `persist()` call groups its input by source and writes at most one new
+segment (and index) per source; records already durable under either format
+are matched by idempotency key and never rewritten. A key that would resolve
+to different sanitized bytes across formats, batches, or existing on-disk
+state fails closed instead of silently preferring one side.
+
+**Rollback note**: this migration is one-way. A daemon binary from before v2
+was introduced only understands the per-record `.json` layout, so rolling
+back after any v2 segment has been written leaves that build unable to read
+the records inside it. Rolling back remains safe only before the first v2
+write for a given `archive_root`; afterward, roll forward instead. No
+migration rewrites existing v1 files into v2 segments, and none is needed --
+both formats are read transparently, so a permanently mixed-format archive
+is expected, not a transient state to clean up.
+
 ## Durability and concurrency
 
 SQLite owns source cursors, target state, outbox records, retry counts, leases,

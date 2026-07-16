@@ -66,10 +66,11 @@ def test_collect_restart_partial_line_sanitization_and_late_cloud_target(tmp_pat
     # target and no unbounded Local outbox backlog.
     assert store.statuses(limit=10) == []
 
-    archived = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (tmp_path / "archive").rglob("*.json")
-    )
+    # Read the archive through its own dual-format loader -- exercising the
+    # real v1/v2 read path -- rather than assuming a raw on-disk layout.
+    sources = first._sources(row)
+    loaded = first.archive.load([item.source_id for item in sources])
+    archived = "\n".join(str(record.payload) for record in loaded)
     assert "top-secret" not in archived
     assert "[REDACTED]" in archived
 

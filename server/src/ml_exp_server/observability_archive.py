@@ -4,20 +4,28 @@ The module deliberately does not own cursor persistence.  Callers load a
 ``SourceCursor`` from their durable store, call :meth:`ObservabilityArchive.scan`,
 persist the returned records, and atomically enqueue those records together
 with ``batch.cursor``.  No raw source bytes are written below ``archive_root``.
+
+Persistence is dual-read, new-write. Every new ``persist`` call writes only
+the immutable v2 layout: ``<source>/segments/segment-<sha256>.jsonl`` holds
+one canonical-JSON record per line and ``segment-<sha256>.idx`` is the
+crash-safe commit marker recording each record's offsets and digests. The
+legacy v1 layout, one ``<source>/<record-key>.json`` file per record, is
+still read so archives written by an older daemon remain queryable, but it
+is never written again.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
 import re
-import stat
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping, Protocol, Sequence
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from .incremental_io import SourceCursor, digest as _digest, scan_increment
 
 
 SourceKind = Literal["log", "metrics", "events"]
@@ -47,8 +55,8 @@ _PRIVATE_KEY = re.compile(
     re.DOTALL,
 )
 _URL = re.compile(r"https?://[^\s<>'\"]+")
-_ANCHOR_BYTES = 128
-_DISCARD_MARKER = "discard:"
+_KEY = re.compile(r"[0-9a-f]{64}")
+_SEGMENT_NAME = re.compile(r"segment-([0-9a-f]{64})")
 
 
 def _secret_key_matches(key: Any) -> bool:
@@ -91,21 +99,7 @@ class ArchiveSource:
             (self.workspace_id, self.project, self.run_id, self.attempt_id,
              self.kind, self.name)
         )
-        return hashlib.sha256(identity.encode()).hexdigest()
-
-
-@dataclass(frozen=True)
-class SourceCursor:
-    source_id: str
-    generation: str
-    file_identity: str
-    offset: int
-    anchor_start: int
-    anchor_digest: str
-
-    def __post_init__(self) -> None:
-        if self.offset < 0 or self.anchor_start < 0 or self.anchor_start > self.offset:
-            raise ValueError("invalid source cursor offsets")
+        return _digest(identity.encode())
 
 
 @dataclass(frozen=True)
@@ -160,122 +154,60 @@ class ObservabilityArchive:
         self, source: ArchiveSource, cursor: SourceCursor | None = None,
     ) -> ArchiveBatch:
         """Return newly completed records and the cursor to commit with them."""
-        if cursor is not None and cursor.source_id != source.source_id:
-            raise ValueError("cursor does not belong to source")
-        path = source.path.expanduser()
-        if path.is_symlink():
-            raise ValueError("observability sources must not be symbolic links")
-        with path.open("rb") as handle:
-            info = os.fstat(handle.fileno())
-            if not stat.S_ISREG(info.st_mode):
-                raise ValueError("observability source must be a regular file")
-            file_identity = f"{info.st_dev}:{info.st_ino}"
-            offset, generation, changed = self._start_position(
-                handle, source, cursor, file_identity, info.st_size,
-            )
-            handle.seek(offset)
-            data = handle.read(self.max_read_bytes)
-            discarding = bool(
-                cursor is not None
-                and cursor.anchor_digest.startswith(_DISCARD_MARKER)
-                and not changed
-            )
-            issues: list[ArchiveIssue] = []
-            record_start = offset
-            if discarding:
-                newline = data.find(b"\n")
-                if newline < 0:
-                    new_offset = offset + len(data)
-                    complete = b""
-                    still_discarding = True
-                    if data:
-                        issues.append(ArchiveIssue(offset, new_offset, "oversized_record"))
-                else:
-                    record_start = offset + newline + 1
-                    remaining = data[newline + 1:]
-                    complete_length = remaining.rfind(b"\n") + 1
-                    complete = remaining[:complete_length]
-                    new_offset = record_start + complete_length
-                    still_discarding = False
-            else:
-                complete_length = data.rfind(b"\n") + 1
-                complete = data[:complete_length]
-                new_offset = offset + complete_length
-                still_discarding = False
-                if complete_length == 0 and len(data) == self.max_read_bytes:
-                    # Drop the entire logical record, including future chunks,
-                    # until its terminating newline arrives.
-                    new_offset = offset + len(data)
-                    complete = b""
-                    still_discarding = True
-                    issues.append(ArchiveIssue(offset, new_offset, "oversized_record"))
-            records, record_issues = self._records(
-                source, generation, record_start, complete,
-            )
-            issues.extend(record_issues)
-            anchor_start = max(0, new_offset - _ANCHOR_BYTES)
-            handle.seek(anchor_start)
-            anchor = handle.read(new_offset - anchor_start)
-
-        new_cursor = SourceCursor(
-            source_id=source.source_id,
-            generation=generation,
-            file_identity=file_identity,
-            offset=new_offset,
-            anchor_start=anchor_start,
-            anchor_digest=(
-                _DISCARD_MARKER if still_discarding else ""
-            ) + _digest(anchor),
+        increment = scan_increment(
+            source.source_id, source.path, cursor, max_read_bytes=self.max_read_bytes,
         )
+        records, record_issues = self._records(
+            source, increment.cursor.generation, increment.record_start, increment.data,
+        )
+        issues = tuple(
+            ArchiveIssue(item.byte_start, item.byte_end, "oversized_record")
+            for item in increment.issues
+        ) + tuple(record_issues)
         return ArchiveBatch(
-            source=source, cursor=new_cursor, records=tuple(records),
-            issues=tuple(issues), generation_changed=changed,
+            source=source, cursor=increment.cursor, records=tuple(records),
+            issues=issues, generation_changed=increment.generation_changed,
         )
 
     def persist(self, records: Sequence[ArchiveRecord]) -> tuple[Path, ...]:
-        """Persist sanitized records once, using content-addressed filenames.
+        """Persist sanitized records once, using content-addressed v2 segments.
 
-        Existing identical records are harmless after a crash/replay.  A key
-        collision with different content fails closed.
+        Records are grouped by ``source_id``; each source gets at most one
+        new immutable ``segments/segment-<sha256>.jsonl`` file per call,
+        covering only the records not already durable in either the legacy
+        v1 layout or an existing v2 segment. The returned tuple mirrors
+        ``records`` positionally, so multiple records commonly resolve to
+        the same segment path. A key collision against different full
+        canonical record bytes -- in this batch, or already on disk --
+        fails closed.
         """
-        paths: list[Path] = []
+        if not records:
+            return ()
+        order: list[ArchiveRecord] = []
         for record in records:
-            if not re.fullmatch(r"[0-9a-f]{64}", record.idempotency_key):
+            if not _KEY.fullmatch(record.idempotency_key):
                 raise ValueError("invalid archive record key")
             _validate_record(record)
-            directory = self._safe_child(record.source_id[:2], record.source_id)
-            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-            _fsync_directory(directory.parent)
-            _fsync_directory(directory)
-            path = self._safe_child(
-                record.source_id[:2], record.source_id,
-                f"{record.idempotency_key}.json",
-            )
-            if path.is_symlink():
-                raise ValueError("archive record path must not be a symbolic link")
-            encoded = _canonical_json(asdict(record)) + b"\n"
-            try:
-                descriptor = os.open(
-                    path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
-                )
-            except FileExistsError:
-                if path.read_bytes() != encoded:
-                    raise RuntimeError("archive idempotency collision")
-            else:
-                with os.fdopen(descriptor, "wb") as handle:
-                    handle.write(encoded)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                _fsync_directory(directory)
-            paths.append(path)
-        return tuple(paths)
+            order.append(record)
+
+        groups: dict[str, list[ArchiveRecord]] = {}
+        for record in order:
+            groups.setdefault(record.source_id, []).append(record)
+
+        resolved: dict[str, Path] = {}
+        for source_id, group in groups.items():
+            resolved.update(self._persist_source_group(source_id, group))
+        return tuple(resolved[record.idempotency_key] for record in order)
 
     def load(self, source_ids: Sequence[str]) -> tuple[ArchiveRecord, ...]:
-        """Load previously sanitized records for an audited target replay."""
+        """Load previously sanitized records for an audited target replay.
 
+        Both the legacy v1 layout and v2 segments are read; output is
+        stably ordered by source id, then by record key.
+        """
         records: list[ArchiveRecord] = []
         for source_id in sorted(set(source_ids)):
-            if not re.fullmatch(r"[0-9a-f]{64}", source_id):
+            if not _KEY.fullmatch(source_id):
                 # Pre-archive and embedded integrations may use readable
                 # cursor keys. They have no content-addressed archive path,
                 # but their canonical source cursor should still be rewound.
@@ -285,18 +217,9 @@ class ObservabilityArchive:
                 continue
             if directory.is_symlink() or not directory.is_dir():
                 raise ValueError("archive source directory must be a real directory")
-            for path in sorted(directory.glob("*.json")):
-                if path.is_symlink() or not path.is_file():
-                    raise ValueError("archive record path must be a regular file")
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                    record = ArchiveRecord(**payload)
-                except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
-                    raise ValueError(f"invalid archived observability record: {path}") from exc
-                _validate_record(record)
-                if record.source_id != source_id or path.stem != record.idempotency_key:
-                    raise ValueError("archived observability record identity mismatch")
-                records.append(record)
+            existing = self._existing_records(source_id, directory)
+            for key in sorted(existing):
+                records.append(existing[key][0])
         return tuple(records)
 
     def _safe_child(self, *parts: str) -> Path:
@@ -310,37 +233,212 @@ class ObservabilityArchive:
             raise ValueError("archive path escapes archive_root")
         return candidate
 
-    def _start_position(
-        self, handle: Any, source: ArchiveSource, cursor: SourceCursor | None,
-        file_identity: str, size: int,
-    ) -> tuple[int, str, bool]:
-        if cursor is None:
-            generation = _digest(
-                f"initial\x00{source.source_id}\x00{file_identity}".encode()
-            )
-            return 0, generation, True
+    def _persist_source_group(
+        self, source_id: str, group: Sequence[ArchiveRecord],
+    ) -> dict[str, Path]:
+        directory = self._safe_child(source_id[:2], source_id)
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _fsync_directory(directory.parent)
+        _fsync_directory(directory)
 
-        replacement_reason: str | None = None
-        if cursor.file_identity != file_identity:
-            replacement_reason = "replace"
-        elif size < cursor.offset:
-            replacement_reason = "truncate"
-        else:
-            handle.seek(cursor.anchor_start)
-            anchor = handle.read(cursor.offset - cursor.anchor_start)
-            expected_anchor = cursor.anchor_digest.removeprefix(_DISCARD_MARKER)
-            if _digest(anchor) != expected_anchor:
-                replacement_reason = "rewrite"
-        if replacement_reason is None:
-            return cursor.offset, cursor.generation, False
+        encoded_by_key: dict[str, bytes] = {}
+        new_order: list[tuple[str, bytes]] = []
+        for record in group:
+            encoded = _canonical_json(asdict(record)) + b"\n"
+            existing = encoded_by_key.get(record.idempotency_key)
+            if existing is None:
+                encoded_by_key[record.idempotency_key] = encoded
+                new_order.append((record.idempotency_key, encoded))
+            elif existing != encoded:
+                raise RuntimeError("archive idempotency collision")
 
-        handle.seek(0)
-        prefix_digest = _digest(handle.read(min(size, 4096)))
-        generation = _digest(
-            (f"{cursor.generation}\x00{replacement_reason}\x00{file_identity}\x00"
-             f"{size}\x00{prefix_digest}").encode()
+        already = self._existing_records(source_id, directory)
+        resolved: dict[str, Path] = {}
+        pending: list[tuple[str, bytes]] = []
+        for key, encoded in new_order:
+            found = already.get(key)
+            if found is None:
+                pending.append((key, encoded))
+                continue
+            _record, found_encoded, found_path = found
+            if found_encoded != encoded:
+                raise RuntimeError("archive idempotency collision")
+            resolved[key] = found_path
+
+        if pending:
+            segment_path = self._commit_v2_segment(source_id, directory, pending)
+            for key, _encoded in pending:
+                resolved[key] = segment_path
+        return resolved
+
+    def _commit_v2_segment(
+        self, source_id: str, directory: Path, pending: Sequence[tuple[str, bytes]],
+    ) -> Path:
+        segments_dir = self._safe_child(source_id[:2], source_id, "segments")
+        # ``_persist_source_group`` always calls ``_existing_records`` (which
+        # runs the identical symlink/real-directory check via
+        # ``_v2_committed_records``) for this exact source/directory before
+        # ever reaching here, so a second check here would be unreachable.
+        segments_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+        segment_bytes = b"".join(encoded for _key, encoded in pending)
+        segment_digest = _digest(segment_bytes)
+        segment_path = self._safe_child(
+            source_id[:2], source_id, "segments", f"segment-{segment_digest}.jsonl",
         )
-        return 0, generation, True
+        index_path = self._safe_child(
+            source_id[:2], source_id, "segments", f"segment-{segment_digest}.idx",
+        )
+        if segment_path.is_symlink() or index_path.is_symlink():
+            raise ValueError("archive segment path must not be a symbolic link")
+
+        if segment_path.exists():
+            if not segment_path.is_file() or segment_path.read_bytes() != segment_bytes:
+                raise RuntimeError("archive segment collision")
+        else:
+            _atomic_publish(segments_dir, segment_path, segment_bytes)
+
+        index_bytes = _canonical_json(_v2_index_payload(
+            source_id, segment_digest, len(segment_bytes), pending,
+        )) + b"\n"
+        # Unlike the segment above, an index is only ever discoverable
+        # through ``_v2_committed_records``, which ``_existing_records``
+        # already consulted for this exact source/directory: a pre-existing,
+        # valid index at this content-addressed path means these keys would
+        # already have resolved above and never reached ``pending``, and an
+        # invalid one would already have raised. It cannot exist here.
+        _atomic_publish(segments_dir, index_path, index_bytes)
+
+        _fsync_directory(segments_dir)
+        return segment_path
+
+    def _existing_records(
+        self, source_id: str, directory: Path,
+    ) -> dict[str, tuple[ArchiveRecord, bytes, Path]]:
+        """Merge legacy v1 files and committed v2 segments for one source.
+
+        A key present in both formats (or across segments) must carry
+        identical full canonical record bytes; any mismatch fails closed.
+        """
+        records: dict[str, tuple[ArchiveRecord, bytes, Path]] = {}
+        for path in sorted(directory.glob("*.json")):
+            record, raw = self._load_v1_record(source_id, path)
+            records[record.idempotency_key] = (record, raw, path)
+        for key, entry in self._v2_committed_records(source_id, directory).items():
+            record, encoded, segment_path = entry
+            if key in records and records[key][1] != encoded:
+                raise RuntimeError("archive idempotency collision")
+            records[key] = (record, encoded, segment_path)
+        return records
+
+    def _load_v1_record(self, source_id: str, path: Path) -> tuple[ArchiveRecord, bytes]:
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("archive record path must be a regular file")
+        raw = path.read_bytes()
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+            record = ArchiveRecord(**payload)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
+            raise ValueError(f"invalid archived observability record: {path}") from exc
+        _validate_record(record)
+        if record.source_id != source_id or path.stem != record.idempotency_key:
+            raise ValueError("archived observability record identity mismatch")
+        return record, raw
+
+    def _v2_committed_records(
+        self, source_id: str, directory: Path,
+    ) -> dict[str, tuple[ArchiveRecord, bytes, Path]]:
+        segments_dir = self._safe_child(source_id[:2], source_id, "segments")
+        if not segments_dir.exists():
+            return {}
+        if segments_dir.is_symlink() or not segments_dir.is_dir():
+            raise ValueError("archive segments directory must be a real directory")
+
+        records: dict[str, tuple[ArchiveRecord, bytes, Path]] = {}
+        # Only ``.idx`` files are enumerated: the index is the commit
+        # marker, so a segment written without one (a crash between the two
+        # publishes) is correctly invisible here. A random leftover temp
+        # file never matches this glob either.
+        for index_path in sorted(segments_dir.glob("segment-*.idx")):
+            match = _SEGMENT_NAME.fullmatch(index_path.stem)
+            if index_path.is_symlink() or not index_path.is_file() or not match:
+                raise ValueError(f"invalid archive segment index: {index_path}")
+            segment_path = segments_dir / f"{index_path.stem}.jsonl"
+            for key, (record, chunk) in self._load_v2_segment(
+                source_id, match.group(1), segment_path, index_path,
+            ).items():
+                if key in records:
+                    raise ValueError("archive record duplicated across segments")
+                records[key] = (record, chunk, segment_path)
+        return records
+
+    def _load_v2_segment(
+        self, source_id: str, expected_digest: str, segment_path: Path, index_path: Path,
+    ) -> dict[str, tuple[ArchiveRecord, bytes]]:
+        if segment_path.is_symlink() or not segment_path.is_file():
+            raise ValueError(f"archive segment missing or invalid: {segment_path}")
+        segment_bytes = segment_path.read_bytes()
+        if _digest(segment_bytes) != expected_digest:
+            raise ValueError(f"archive segment digest mismatch: {segment_path}")
+        try:
+            index_payload = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"invalid archive segment index: {index_path}") from exc
+        if (
+            not isinstance(index_payload, dict)
+            or index_payload.get("version") != 2
+            or index_payload.get("source_id") != source_id
+            or index_payload.get("segment_sha256") != expected_digest
+            or index_payload.get("segment_size") != len(segment_bytes)
+            or not isinstance(index_payload.get("records"), list)
+        ):
+            raise ValueError(f"invalid archive segment index: {index_path}")
+
+        entries: dict[str, tuple[ArchiveRecord, bytes]] = {}
+        position = 0
+        for entry in index_payload["records"]:
+            key, chunk = self._validate_index_entry(entry, segment_bytes, position, index_path)
+            if not chunk.endswith(b"\n"):
+                raise ValueError(f"invalid archive segment index offsets: {index_path}")
+            try:
+                payload = json.loads(chunk[:-1].decode("utf-8"))
+                record = ArchiveRecord(**payload)
+            except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
+                raise ValueError(
+                    f"invalid archived observability record: {index_path}"
+                ) from exc
+            _validate_record(record)
+            if record.source_id != source_id or record.idempotency_key != key:
+                raise ValueError("archived observability record identity mismatch")
+            if key in entries:
+                raise ValueError(f"duplicate record key within segment: {index_path}")
+            entries[key] = (record, chunk)
+            position += len(chunk)
+        if position != len(segment_bytes):
+            raise ValueError(f"archive segment index incomplete: {index_path}")
+        return entries
+
+    @staticmethod
+    def _validate_index_entry(
+        entry: Any, segment_bytes: bytes, position: int, index_path: Path,
+    ) -> tuple[str, bytes]:
+        if not isinstance(entry, dict):
+            raise ValueError(f"invalid archive segment index: {index_path}")
+        key = entry.get("idempotency_key")
+        start = entry.get("byte_start")
+        end = entry.get("byte_end")
+        entry_digest = entry.get("sha256")
+        if (
+            not isinstance(key, str) or not _KEY.fullmatch(key)
+            or not isinstance(start, int) or isinstance(start, bool)
+            or not isinstance(end, int) or isinstance(end, bool)
+            or start != position or end < start or end > len(segment_bytes)
+        ):
+            raise ValueError(f"invalid archive segment index offsets: {index_path}")
+        chunk = segment_bytes[start:end]
+        if _digest(chunk) != entry_digest:
+            raise ValueError(f"archive record digest mismatch: {index_path}")
+        return key, chunk
 
     def _records(
         self, source: ArchiveSource, generation: str, base: int, data: bytes,
@@ -486,6 +584,57 @@ def _canonical_json(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _v2_index_payload(
+    source_id: str, segment_digest: str, segment_size: int,
+    pending: Sequence[tuple[str, bytes]],
+) -> dict[str, Any]:
+    entries = []
+    position = 0
+    for key, encoded in pending:
+        end = position + len(encoded)
+        entries.append({
+            "idempotency_key": key, "byte_start": position, "byte_end": end,
+            "sha256": _digest(encoded),
+        })
+        position = end
+    return {
+        "version": 2, "source_id": source_id, "segment_sha256": segment_digest,
+        "segment_size": segment_size, "records": entries,
+    }
+
+
+def _atomic_publish(directory: Path, final_path: Path, data: bytes) -> None:
+    """Durably write ``data`` then publish it at ``final_path``.
+
+    The temp file lives in the same directory (same filesystem, so the
+    publish step below is a metadata-only operation), is opened
+    ``O_EXCL``/``O_NOFOLLOW``, and is fsynced before publication. Publication
+    uses a hardlink rather than a rename so an existing final path -- always
+    expected to be byte-identical because callers name it by content digest
+    -- is never overwritten.
+    """
+    token = os.urandom(16).hex()
+    temp_path = directory / f".tmp-{token}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(temp_path, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temp_path, final_path)
+        except FileExistsError:
+            # A concurrent or previously crashed writer already published
+            # this exact content-addressed path.
+            pass
+    finally:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+
+
 def _validate_record(record: ArchiveRecord) -> None:
     payload = record.payload
     if record.kind == "log":
@@ -516,7 +665,3 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-
-
-def _digest(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
+import shutil
 import stat
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +17,7 @@ from ml_exp_server.observability_archive import (
     ObservabilityArchive,
     SourceCursor,
     ArchiveRecord,
+    _atomic_publish,
     _fsync_directory,
     _sanitize_url,
     _validate_record,
@@ -156,6 +159,9 @@ def test_logs_are_sanitized_before_record_or_disk_persistence(tmp_path: Path):
     assert "[REDACTED]" in str(batch.records[0].payload["text"])
     assert secret not in paths[0].read_text()
     assert "query-secret" not in paths[0].read_text()
+    index_text = paths[0].with_suffix(".idx").read_text()
+    assert secret not in index_text
+    assert "query-secret" not in index_text
 
 
 @pytest.mark.parametrize("name", [
@@ -206,8 +212,13 @@ def test_persist_is_idempotent_and_fails_closed_on_collision(tmp_path: Path):
     payload = json.loads(first.read_text())
     assert payload["idempotency_key"] == record.idempotency_key
 
+    # The segment's filename is content-addressed, so directly corrupting its
+    # bytes on disk breaks that invariant and is caught as digest corruption
+    # -- a stricter, earlier failure than a same-key/different-bytes
+    # collision between two otherwise-valid writes (see the dedicated
+    # collision tests below).
     first.write_text("different")
-    with pytest.raises(RuntimeError, match="collision"):
+    with pytest.raises(ValueError, match="digest mismatch"):
         archive.persist([record])
 
 
@@ -306,7 +317,7 @@ def test_discard_cursor_at_eof_has_no_duplicate_issue(tmp_path):
     assert batch.issues == ()
 
 
-def test_persist_rejects_bad_key_and_record_symlink(tmp_path):
+def test_persist_rejects_bad_key_and_segment_symlink(tmp_path):
     path = tmp_path / "stdout.log"
     path.write_text("line\n")
     archive = ObservabilityArchive(tmp_path / "archive")
@@ -314,11 +325,17 @@ def test_persist_rejects_bad_key_and_record_symlink(tmp_path):
     with pytest.raises(ValueError, match="invalid archive record key"):
         archive.persist([replace(record, idempotency_key="bad")])
 
-    persisted = archive.persist([record])[0]
-    persisted.unlink()
+    # A first persist commits a content-addressed segment + index. Removing
+    # both and pre-empting the exact same content-addressed segment path
+    # with a symlink must be rejected the next time the identical batch is
+    # persisted (e.g. after a crash-retry that re-scans the same bytes).
+    segment_path = archive.persist([record])[0]
+    index_path = segment_path.with_suffix(".idx")
+    segment_path.unlink()
+    index_path.unlink()
     target = archive.archive_root / "safe-target"
     target.write_text("outside")
-    persisted.symlink_to(target)
+    segment_path.symlink_to(target)
     with pytest.raises(ValueError, match="symbolic link"):
         archive.persist([record])
 
@@ -336,27 +353,35 @@ def test_archive_load_skips_readable_and_missing_ids_then_rejects_bad_directory(
         archive.load(["b" * 64])
 
 
-def test_archive_load_rejects_record_symlink_invalid_json_and_identity(tmp_path):
+def test_archive_load_rejects_v1_record_symlink_invalid_json_and_identity(tmp_path):
+    # persist() only ever writes the new v2 layout now; the legacy
+    # ``<key>.json`` layout is still read, so these edge cases must be
+    # exercised against a hand-authored legacy file, exactly as an older
+    # daemon would have left on disk.
     path = tmp_path / "stdout.log"
     path.write_text("line\n")
     archive = ObservabilityArchive(tmp_path / "archive")
     record = archive.scan(source(path)).records[0]
-    persisted = archive.persist([record])[0]
+    directory = archive._safe_child(record.source_id[:2], record.source_id)
+    directory.mkdir(parents=True)
+    legacy = directory / f"{record.idempotency_key}.json"
+    legacy.write_text(json.dumps(record.__dict__))
+
     outside = tmp_path / "outside.json"
     outside.write_text("{}")
-    persisted.unlink()
-    persisted.symlink_to(outside)
+    legacy.unlink()
+    legacy.symlink_to(outside)
     with pytest.raises(ValueError, match="regular file"):
         archive.load([record.source_id])
 
-    persisted.unlink()
-    persisted.write_text("not-json")
+    legacy.unlink()
+    legacy.write_text("not-json")
     with pytest.raises(ValueError, match="invalid archived"):
         archive.load([record.source_id])
 
-    persisted.write_text(json.dumps(record.__dict__))
-    renamed = persisted.with_name("d" * 64 + ".json")
-    persisted.rename(renamed)
+    legacy.write_text(json.dumps(record.__dict__))
+    renamed = legacy.with_name("d" * 64 + ".json")
+    legacy.rename(renamed)
     with pytest.raises(ValueError, match="identity mismatch"):
         archive.load([record.source_id])
 
@@ -391,9 +416,530 @@ def test_validate_record_rejects_every_integrity_violation(tmp_path):
             _validate_record(invalid)
 
 
+def test_atomic_publish_swallows_concurrent_publish_race(tmp_path, monkeypatch):
+    # A concurrent or previously crashed writer racing to hardlink the same
+    # content-addressed path must not surface as a failure.
+    directory = tmp_path / "segments"
+    directory.mkdir()
+    final_path = directory / "final.jsonl"
+    monkeypatch.setattr(
+        "ml_exp_server.observability_archive.os.link",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileExistsError()),
+    )
+    _atomic_publish(directory, final_path, b"payload")
+    assert not final_path.exists()
+
+
+def test_atomic_publish_swallows_concurrent_temp_cleanup_race(tmp_path, monkeypatch):
+    # A concurrent cleanup of the same random temp name must not surface as
+    # a failure once the real content has already been published.
+    directory = tmp_path / "segments"
+    directory.mkdir()
+    final_path = directory / "final.jsonl"
+    monkeypatch.setattr(
+        "ml_exp_server.observability_archive.os.unlink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+    _atomic_publish(directory, final_path, b"payload")
+    assert final_path.read_bytes() == b"payload"
+
+
 def test_fsync_directory_ignores_open_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "ml_exp_server.observability_archive.os.open",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unsupported")),
     )
     _fsync_directory(tmp_path)
+
+
+def test_persist_groups_one_segment_per_source_and_replays_without_duplication(
+    tmp_path,
+):
+    metrics = tmp_path / "train_metrics.jsonl"
+    metrics.write_text(
+        '{"step":1,"loss":2.0}\n{"step":2,"loss":1.5}\n{"step":3,"loss":1.0}\n'
+    )
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    metrics_batch = archive.scan(source(metrics, "metrics", "train"))
+    log_batch = archive.scan(source(log))
+    assert len(metrics_batch.records) == 3
+
+    all_records = metrics_batch.records + log_batch.records
+    paths = archive.persist(all_records)
+    assert paths[0] == paths[1] == paths[2]
+    assert paths[3] != paths[0]
+
+    metrics_dir = archive._safe_child(
+        metrics_batch.records[0].source_id[:2], metrics_batch.records[0].source_id,
+        "segments",
+    )
+    assert sorted(item.suffix for item in metrics_dir.iterdir()) == [".idx", ".jsonl"]
+
+    replayed = archive.persist(all_records)
+    assert replayed == paths
+    assert sorted(item.suffix for item in metrics_dir.iterdir()) == [".idx", ".jsonl"]
+
+    loaded = archive.load([
+        metrics_batch.records[0].source_id, log_batch.records[0].source_id,
+    ])
+    assert loaded == tuple(
+        sorted(all_records, key=lambda item: (item.source_id, item.idempotency_key))
+    )
+
+
+def test_v2_index_records_offsets_and_digests_slice_the_segment(tmp_path):
+    metrics = tmp_path / "train_metrics.jsonl"
+    metrics.write_text('{"step":1,"loss":2.0}\n{"step":2,"loss":1.5}\n')
+    archive = ObservabilityArchive(tmp_path / "archive")
+    batch = archive.scan(source(metrics, "metrics", "train"))
+    segment_path = archive.persist(batch.records)[0]
+    index_path = segment_path.with_suffix(".idx")
+
+    segment_bytes = segment_path.read_bytes()
+    index = json.loads(index_path.read_text())
+    assert index["version"] == 2
+    assert index["source_id"] == batch.records[0].source_id
+    assert index["segment_size"] == len(segment_bytes)
+    assert hashlib.sha256(segment_bytes).hexdigest() == index["segment_sha256"]
+    assert index_path.suffix != ".json"
+    for record, entry in zip(batch.records, index["records"]):
+        chunk = segment_bytes[entry["byte_start"]:entry["byte_end"]]
+        assert hashlib.sha256(chunk).hexdigest() == entry["sha256"]
+        assert json.loads(chunk.decode())["idempotency_key"] == record.idempotency_key
+        assert entry["idempotency_key"] == record.idempotency_key
+
+
+def test_persist_same_key_different_full_bytes_fails_closed(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    # Same source_id/generation/byte_start/byte_end/payload_digest (so the
+    # idempotency key matches), but a different kind -- kind and name are
+    # deliberately excluded from the key material, so this is a legitimate
+    # same-key-different-bytes collision, not a hash collision.
+    twin = replace(record, kind="metrics", name="alt")
+    assert twin.idempotency_key == record.idempotency_key
+
+    with pytest.raises(RuntimeError, match="collision"):
+        archive.persist([record, twin])
+
+    archive.persist([record])
+    with pytest.raises(RuntimeError, match="collision"):
+        archive.persist([twin])
+
+
+def test_persist_fails_closed_against_existing_legacy_v1_record(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    directory = archive._safe_child(record.source_id[:2], record.source_id)
+    directory.mkdir(parents=True)
+    legacy = directory / f"{record.idempotency_key}.json"
+    legacy.write_text(json.dumps({**record.__dict__, "name": "different-name"}))
+
+    with pytest.raises(RuntimeError, match="collision"):
+        archive.persist([record])
+
+
+def test_load_reads_mixed_v1_and_v2_records_in_stable_order(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("first\nsecond\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    batch = archive.scan(source(log))
+    first, second = batch.records
+
+    directory = archive._safe_child(first.source_id[:2], first.source_id)
+    directory.mkdir(parents=True)
+    (directory / f"{first.idempotency_key}.json").write_text(
+        json.dumps(first.__dict__)
+    )
+    archive.persist([second])
+
+    loaded = archive.load([first.source_id])
+    assert loaded == tuple(
+        sorted([first, second], key=lambda item: item.idempotency_key)
+    )
+
+
+def test_persist_backfills_missing_index_without_creating_second_segment(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    segment_path = archive.persist([record])[0]
+    index_path = segment_path.with_suffix(".idx")
+    segments_dir = segment_path.parent
+    index_path.unlink()
+
+    # A crash between publishing the segment and publishing its index marker
+    # leaves the segment orphaned -- load() must not surface it.
+    assert archive.load([record.source_id]) == ()
+
+    result = archive.persist([record])[0]
+    assert result == segment_path
+    assert index_path.exists()
+    assert sorted(item.name for item in segments_dir.iterdir()) == sorted(
+        [segment_path.name, index_path.name]
+    )
+    assert archive.load([record.source_id]) == (record,)
+
+
+def test_index_referencing_missing_segment_fails_closed(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    segment_path = archive.persist([record])[0]
+    segment_path.unlink()
+
+    with pytest.raises(ValueError, match="missing or invalid"):
+        archive.load([record.source_id])
+    with pytest.raises(ValueError, match="missing or invalid"):
+        archive.persist([record])
+
+
+def test_tampered_segment_bytes_fail_closed_on_load(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    segment_path = archive.persist([record])[0]
+    segment_path.write_bytes(segment_path.read_bytes() + b"tampered")
+
+    with pytest.raises(ValueError, match="segment digest mismatch"):
+        archive.load([record.source_id])
+
+
+def test_tampered_index_offsets_fail_closed_on_load(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    segment_path = archive.persist([record])[0]
+    index_path = segment_path.with_suffix(".idx")
+    payload = json.loads(index_path.read_text())
+    payload["records"][0]["byte_start"] = 5
+    index_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="index offsets"):
+        archive.load([record.source_id])
+
+
+def test_tampered_index_record_digest_fails_closed_on_load(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    segment_path = archive.persist([record])[0]
+    index_path = segment_path.with_suffix(".idx")
+    payload = json.loads(index_path.read_text())
+    payload["records"][0]["sha256"] = "0" * 64
+    index_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="record digest mismatch"):
+        archive.load([record.source_id])
+
+
+def test_symlinked_segment_or_index_fails_closed_on_load(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    segment_path = archive.persist([record])[0]
+    index_path = segment_path.with_suffix(".idx")
+
+    segment_bytes = segment_path.read_bytes()
+    outside_segment = tmp_path / "outside-segment"
+    outside_segment.write_bytes(segment_bytes)
+    segment_path.unlink()
+    segment_path.symlink_to(outside_segment)
+    with pytest.raises(ValueError, match="missing or invalid"):
+        archive.load([record.source_id])
+
+    segment_path.unlink()
+    segment_path.write_bytes(segment_bytes)
+    outside_index = tmp_path / "outside-index"
+    outside_index.write_bytes(index_path.read_bytes())
+    index_path.unlink()
+    index_path.symlink_to(outside_index)
+    with pytest.raises(ValueError, match="invalid archive segment index"):
+        archive.load([record.source_id])
+
+
+def test_symlinked_segments_directory_fails_closed(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    archive.persist([record])
+    directory = archive._safe_child(record.source_id[:2], record.source_id)
+    segments_dir = directory / "segments"
+    # Keep the real target inside archive_root so this specifically exercises
+    # the "segments must be a real directory" check, distinct from the
+    # archive_root-escape check covered by test_safe_roots_sources_and_cursor_binding.
+    outside = archive.archive_root / "outside-segments"
+    shutil.move(str(segments_dir), str(outside))
+    segments_dir.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="real directory"):
+        archive.load([record.source_id])
+
+
+def test_persist_dedupes_the_exact_same_record_within_one_batch(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+
+    # The identical record (same key, byte-identical encoding) appearing
+    # twice in one persist() call must dedupe silently, not raise.
+    paths = archive.persist([record, record])
+    assert paths[0] == paths[1]
+    assert archive.load([record.source_id]) == (record,)
+
+
+def test_persist_fails_closed_when_orphan_segment_bytes_are_corrupted(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    segment_path = archive.persist([record])[0]
+    index_path = segment_path.with_suffix(".idx")
+    # Orphan the segment (crash before the index marker was published), then
+    # corrupt its bytes -- distinct from test_index_referencing_missing_segment
+    # (missing entirely) and from load-time digest tampering (caught earlier,
+    # via _v2_committed_records, once an index exists).
+    index_path.unlink()
+    segment_path.write_bytes(b"corrupted-orphan-content")
+
+    with pytest.raises(RuntimeError, match="segment collision"):
+        archive.persist([record])
+
+
+def test_load_fails_closed_on_v1_v2_cross_format_collision(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    twin = replace(record, kind="metrics", name="alt")
+    assert twin.idempotency_key == record.idempotency_key
+    archive.persist([twin])
+
+    directory = archive._safe_child(record.source_id[:2], record.source_id)
+    (directory / f"{record.idempotency_key}.json").write_text(
+        json.dumps(record.__dict__)
+    )
+
+    with pytest.raises(RuntimeError, match="collision"):
+        archive.load([record.source_id])
+
+
+def test_load_rejects_key_duplicated_across_two_segments(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    archive.persist([record])
+
+    segments_dir = archive._safe_child(
+        record.source_id[:2], record.source_id, "segments",
+    )
+    # Hand-craft a second, differently-encoded segment (as if from a buggy
+    # writer or a multi-writer race) that commits the exact same key --
+    # differently indented JSON gives it a different digest/filename than
+    # the segment persist() already published.
+    line = (json.dumps(record.__dict__, indent=0) + "\n").encode("utf-8")
+    digest2 = hashlib.sha256(line).hexdigest()
+    (segments_dir / f"segment-{digest2}.jsonl").write_bytes(line)
+    index2 = {
+        "version": 2, "source_id": record.source_id, "segment_sha256": digest2,
+        "segment_size": len(line),
+        "records": [{
+            "idempotency_key": record.idempotency_key, "byte_start": 0,
+            "byte_end": len(line), "sha256": hashlib.sha256(line).hexdigest(),
+        }],
+    }
+    (segments_dir / f"segment-{digest2}.idx").write_text(json.dumps(index2))
+
+    with pytest.raises(ValueError, match="duplicated across segments"):
+        archive.load([record.source_id])
+
+
+def test_tampered_index_invalid_json_fails_closed_on_load(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    segment_path = archive.persist([record])[0]
+    index_path = segment_path.with_suffix(".idx")
+    index_path.write_text("not-json")
+
+    with pytest.raises(ValueError, match="invalid archive segment index"):
+        archive.load([record.source_id])
+
+
+def test_tampered_index_wrong_version_fails_closed_on_load(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    segment_path = archive.persist([record])[0]
+    index_path = segment_path.with_suffix(".idx")
+    payload = json.loads(index_path.read_text())
+    payload["version"] = 1
+    index_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="invalid archive segment index"):
+        archive.load([record.source_id])
+
+
+def test_index_entry_missing_trailing_newline_fails_closed_on_load(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    segment_path = archive.persist([record])[0]
+    index_path = segment_path.with_suffix(".idx")
+    segment_bytes = segment_path.read_bytes()
+    payload = json.loads(index_path.read_text())
+    entry = payload["records"][0]
+    # Shrink the declared span by one byte so it stops just short of the
+    # line's trailing "\n" -- offsets and the recomputed digest still
+    # validate, but the terminator check must still fail closed.
+    new_end = entry["byte_end"] - 1
+    chunk = segment_bytes[entry["byte_start"]:new_end]
+    entry["byte_end"] = new_end
+    entry["sha256"] = hashlib.sha256(chunk).hexdigest()
+    index_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="index offsets"):
+        archive.load([record.source_id])
+
+
+def test_index_missing_trailing_entry_reports_incomplete_segment(tmp_path):
+    metrics = tmp_path / "train_metrics.jsonl"
+    metrics.write_text('{"step":1}\n{"step":2}\n')
+    archive = ObservabilityArchive(tmp_path / "archive")
+    batch = archive.scan(source(metrics, "metrics", "train"))
+    segment_path = archive.persist(batch.records)[0]
+    index_path = segment_path.with_suffix(".idx")
+    payload = json.loads(index_path.read_text())
+    payload["records"] = payload["records"][:1]
+    index_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="index incomplete"):
+        archive.load([batch.records[0].source_id])
+
+
+def test_segment_record_invalid_json_fails_closed_on_load(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    directory = archive._safe_child(record.source_id[:2], record.source_id)
+    segments_dir = directory / "segments"
+    segments_dir.mkdir(parents=True)
+
+    line = b"not-json\n"
+    seg_digest = hashlib.sha256(line).hexdigest()
+    (segments_dir / f"segment-{seg_digest}.jsonl").write_bytes(line)
+    index_payload = {
+        "version": 2, "source_id": record.source_id, "segment_sha256": seg_digest,
+        "segment_size": len(line),
+        "records": [{
+            "idempotency_key": record.idempotency_key, "byte_start": 0,
+            "byte_end": len(line), "sha256": hashlib.sha256(line).hexdigest(),
+        }],
+    }
+    (segments_dir / f"segment-{seg_digest}.idx").write_text(json.dumps(index_payload))
+
+    with pytest.raises(ValueError, match="invalid archived observability record"):
+        archive.load([record.source_id])
+
+
+def test_segment_record_identity_mismatch_fails_closed_on_load(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    directory = archive._safe_child(record.source_id[:2], record.source_id)
+    segments_dir = directory / "segments"
+    segments_dir.mkdir(parents=True)
+
+    line = (json.dumps(record.__dict__) + "\n").encode("utf-8")
+    seg_digest = hashlib.sha256(line).hexdigest()
+    (segments_dir / f"segment-{seg_digest}.jsonl").write_bytes(line)
+    wrong_key = "0" * 64
+    index_payload = {
+        "version": 2, "source_id": record.source_id, "segment_sha256": seg_digest,
+        "segment_size": len(line),
+        "records": [{
+            "idempotency_key": wrong_key, "byte_start": 0,
+            "byte_end": len(line), "sha256": hashlib.sha256(line).hexdigest(),
+        }],
+    }
+    (segments_dir / f"segment-{seg_digest}.idx").write_text(json.dumps(index_payload))
+
+    with pytest.raises(ValueError, match="identity mismatch"):
+        archive.load([record.source_id])
+
+
+def test_segment_duplicate_key_within_same_segment_fails_closed_on_load(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    directory = archive._safe_child(record.source_id[:2], record.source_id)
+    segments_dir = directory / "segments"
+    segments_dir.mkdir(parents=True)
+
+    line = (json.dumps(record.__dict__) + "\n").encode("utf-8")
+    segment_bytes = line + line
+    seg_digest = hashlib.sha256(segment_bytes).hexdigest()
+    (segments_dir / f"segment-{seg_digest}.jsonl").write_bytes(segment_bytes)
+    entry = {
+        "idempotency_key": record.idempotency_key, "byte_start": 0,
+        "byte_end": len(line), "sha256": hashlib.sha256(line).hexdigest(),
+    }
+    entry2 = {**entry, "byte_start": len(line), "byte_end": len(line) * 2}
+    index_payload = {
+        "version": 2, "source_id": record.source_id, "segment_sha256": seg_digest,
+        "segment_size": len(segment_bytes), "records": [entry, entry2],
+    }
+    (segments_dir / f"segment-{seg_digest}.idx").write_text(json.dumps(index_payload))
+
+    with pytest.raises(ValueError, match="duplicate record key within segment"):
+        archive.load([record.source_id])
+
+
+def test_index_entry_not_a_dict_fails_closed_on_load(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    segment_path = archive.persist([record])[0]
+    index_path = segment_path.with_suffix(".idx")
+    payload = json.loads(index_path.read_text())
+    payload["records"][0] = "not-a-dict"
+    index_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="invalid archive segment index"):
+        archive.load([record.source_id])
+
+
+def test_leftover_temp_files_are_ignored_by_scans(tmp_path):
+    log = tmp_path / "stdout.log"
+    log.write_text("hello\n")
+    archive = ObservabilityArchive(tmp_path / "archive")
+    record = archive.scan(source(log)).records[0]
+    segment_path = archive.persist([record])[0]
+    segments_dir = segment_path.parent
+    (segments_dir / ".tmp-deadbeefdeadbeef").write_bytes(b"partial-segment-write")
+    (segments_dir.parent / ".tmp-leftover").write_bytes(b"partial-v1-write")
+
+    assert archive.load([record.source_id]) == (record,)
+    assert archive.persist([record])[0] == segment_path
