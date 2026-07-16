@@ -29,7 +29,7 @@ from .schemas import (
     RunIndexRow,
     TERMINAL_RUN_STATES,
 )
-from .storage import atomic_json
+from .storage import atomic_text
 
 # Hard allowlist. Anything else — most importantly submit/cancel/stage/prepare —
 # must raise before a subprocess is even constructed.
@@ -386,15 +386,18 @@ class Collector:
 
         execution_payload = dict(payload)
         execution_payload["local_root"] = str(canonical_root)
-        identity_bytes = json.dumps(
-            execution_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")
-        execution_sha = hashlib.sha256(identity_bytes).hexdigest()
+        try:
+            encoded = yaml.safe_dump(
+                execution_payload, allow_unicode=True, sort_keys=True,
+            )
+        except yaml.YAMLError:
+            return None
+        execution_sha = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
         target = (
             Path(root).resolve()
             / project.project
             / str(row.campaign)
-            / f"campaign.{execution_sha}.json"
+            / f"campaign.{execution_sha}.yml"
         )
         if target.exists():
             existing = self._campaign_payload(target)
@@ -402,7 +405,7 @@ class Collector:
                 return None
         else:
             try:
-                atomic_json(target, execution_payload)
+                atomic_text(target, encoded)
             except OSError:
                 return None
         return target, revision

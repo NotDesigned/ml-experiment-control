@@ -13,7 +13,7 @@ import yaml
 from ml_exp_server.actions.store import ActionStore
 from ml_exp_server.project_config import ConfigError, load_server_config, load_projects, load_research_project, load_research_question
 from ml_exp_server.schemas import OperationScope, OperationScopeType, ServerConfig, ProjectRef
-from ml_exp_server.storage import StorageError, atomic_json, read_json
+from ml_exp_server.storage import StorageError, atomic_json, atomic_text, read_json
 
 
 def scope(object_id: str = "demo") -> OperationScope:
@@ -236,6 +236,19 @@ def test_atomic_json_fsync_path_is_private_and_cleans_failed_temporary(
         atomic_json(target, {"value": 2})
     assert read_json(target, {}) == {"value": 1}
     assert not list(target.parent.glob(".record.json.*.tmp"))
+
+
+def test_atomic_text_writes_private_utf8_and_replaces(tmp_path):
+    target = tmp_path / "campaign.yml"
+
+    atomic_text(target, "project: elf\nvalue: 1.0e-08\n")
+    atomic_text(target, "project: elf\nvalue: 2.0e-08\n")
+
+    assert target.read_text(encoding="utf-8") == (
+        "project: elf\nvalue: 2.0e-08\n"
+    )
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert not list(tmp_path.glob(".campaign.yml.*.tmp"))
 
 
 def write_project(tmp_path: Path, project_body: str,
