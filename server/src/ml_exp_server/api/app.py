@@ -196,6 +196,9 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                     action_store=runtime.action_store,
                     config=CollectorConfig(
                         poll_interval_seconds=config.poll_interval_seconds,
+                        execution_campaign_root=(
+                            config.index_db_path().parent / "collector-campaigns"
+                        ),
                     ),
                 )
                 if effective_poll else None

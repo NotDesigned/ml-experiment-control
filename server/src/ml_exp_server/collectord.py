@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
 import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+import yaml
 
 from .actions.store import ActionStore
 from .campaign_lifecycle import campaign_snapshot
@@ -26,6 +29,7 @@ from .schemas import (
     RunIndexRow,
     TERMINAL_RUN_STATES,
 )
+from .storage import atomic_json
 
 # Hard allowlist. Anything else — most importantly submit/cancel/stage/prepare —
 # must raise before a subprocess is even constructed.
@@ -59,6 +63,7 @@ PlannedCall = ControllerCall
 class CollectorConfig:
     poll_interval_seconds: int = 20
     dry_run: bool = False
+    execution_campaign_root: Path | None = None
 
 
 class CollectorLease:
@@ -259,14 +264,17 @@ class Collector:
 
     def build_command(self, project: ResearchProject, campaign_file: Path,
                       run_id: str, verb: str, *,
-                      attempt_id: str | None = None) -> PlannedCall:
+                      attempt_id: str | None = None,
+                      campaign_id: str | None = None) -> PlannedCall:
         if verb not in OBSERVATION_VERBS:
             raise ForbiddenVerbError(
                 f"verb {verb!r} is not an observation verb; collector refuses "
                 f"anything outside {sorted(OBSERVATION_VERBS)}"
             )
+        extra = ["--campaign-id", campaign_id] if campaign_id else []
         return self.controller.build(
             project, campaign_file, verb, run_id, attempt_id=attempt_id,
+            extra=extra,
         )
 
     def _campaign_files(self, project: ResearchProject) -> dict[str, Path]:
@@ -282,6 +290,138 @@ class Collector:
             if path.is_file():
                 mapping[campaign.name] = path
         return mapping
+
+    @staticmethod
+    def _campaign_payload(path: Path) -> dict[str, Any] | None:
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _controller_workdir(project: ResearchProject) -> Path | None:
+        if project.controller is None:
+            return None
+        base = (project.base_dir or Path(".")).resolve()
+        workdir = Path(project.controller.workdir)
+        return (workdir if workdir.is_absolute() else base / workdir).resolve()
+
+    def _authored_run_dir(
+        self, project: ResearchProject, payload: dict[str, Any], row: RunIndexRow,
+    ) -> Path | None:
+        workdir = self._controller_workdir(project)
+        campaign = str(payload.get("campaign") or "")
+        local_root = payload.get("local_root", "outputs/experiment_campaigns")
+        if workdir is None or campaign != row.campaign or not local_root:
+            return None
+        root = Path(str(local_root))
+        if not root.is_absolute():
+            root = workdir / root
+        return (root / campaign / row.run_id).resolve()
+
+    @staticmethod
+    def _contains_exact_run(payload: dict[str, Any], run_id: str) -> bool:
+        runs = payload.get("runs")
+        if not isinstance(runs, list):
+            return False
+        matches = [
+            item for item in runs
+            if isinstance(item, dict) and str(item.get("run_id") or "") == run_id
+        ]
+        return len(matches) == 1
+
+    def _materialize_canonical_campaign(
+        self,
+        project: ResearchProject,
+        row: RunIndexRow,
+        authored: Path,
+        payload: dict[str, Any],
+    ) -> tuple[Path, str] | None:
+        """Create a daemon-private execution copy for one canonical imported Run.
+
+        The authored Campaign remains the scientific identity.  The copy changes
+        only the operational ``local_root`` so observation verbs update the exact
+        indexed Run instead of creating a second tree in the source checkout.
+        """
+        root = self.config.execution_campaign_root
+        daemon_run_root = project.daemon_run_root
+        binding = row.campaign_binding
+        if root is None or daemon_run_root is None:
+            return None
+        try:
+            canonical_root = daemon_run_root.resolve(strict=True)
+            run_dir = Path(row.run_dir).resolve(strict=True)
+            expected_run_dir = (
+                canonical_root / str(row.campaign) / row.run_id
+            ).resolve()
+        except OSError:
+            return None
+        if run_dir != expected_run_dir:
+            return None
+        if (
+            binding.relationship != CampaignRelationship.MATCHED
+            or binding.origin_project != project.project
+            or binding.origin_campaign != row.campaign
+            or not self._contains_exact_run(payload, row.run_id)
+            or payload.get("project") != project.project
+        ):
+            return None
+        try:
+            authored_sha = self._file_sha256(authored)
+        except OSError:
+            return None
+        revision = f"campaign.{authored_sha}"
+        if (
+            binding.origin_revision != revision
+            or binding.current_revision != revision
+        ):
+            return None
+
+        execution_payload = dict(payload)
+        execution_payload["local_root"] = str(canonical_root)
+        identity_bytes = json.dumps(
+            execution_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        execution_sha = hashlib.sha256(identity_bytes).hexdigest()
+        target = (
+            Path(root).resolve()
+            / project.project
+            / str(row.campaign)
+            / f"campaign.{execution_sha}.json"
+        )
+        if target.exists():
+            existing = self._campaign_payload(target)
+            if existing != execution_payload:
+                return None
+        else:
+            try:
+                atomic_json(target, execution_payload)
+            except OSError:
+                return None
+        return target, revision
+
+    def _poll_campaign(
+        self, project: ResearchProject, row: RunIndexRow, authored: Path,
+    ) -> tuple[Path, str | None] | None:
+        """Bind an authored Campaign to the indexed Run without path ambiguity."""
+        # Embedded/test Projects without a daemon root retain the original v1
+        # behavior. A live daemon always binds ``daemon_run_root`` in runtime.py.
+        if project.daemon_run_root is None:
+            return authored, None
+        payload = self._campaign_payload(authored)
+        if payload is None:
+            return None
+        try:
+            indexed = Path(row.run_dir).resolve(strict=True)
+        except OSError:
+            return None
+        authored_run = self._authored_run_dir(project, payload, row)
+        if authored_run == indexed:
+            return authored, None
+        return self._materialize_canonical_campaign(
+            project, row, authored, payload,
+        )
 
     def plan_cycle(self) -> list[PlannedCall]:
         """Decide which (run, verb) pairs the next cycle would execute.
@@ -319,16 +459,26 @@ class Collector:
                     continue
                 if (row.campaign or "") in inactive_campaigns:
                     continue
-                campaign_file = (
-                    execution_campaign or campaign_files.get(row.campaign or "")
-                )
+                campaign_id: str | None = None
+                if execution_campaign is not None:
+                    campaign_file = execution_campaign
+                    campaign_id = row.campaign_binding.origin_revision
+                else:
+                    authored = campaign_files.get(row.campaign or "")
+                    if authored is None:
+                        continue
+                    resolved = self._poll_campaign(project, row, authored)
+                    if resolved is None:
+                        continue
+                    campaign_file, campaign_id = resolved
                 if campaign_file is None:
                     continue
                 attempt_id = self._current_attempt_id(row)
                 for verb in ("observe", "decide"):
                     calls.append(self.build_command(project, campaign_file,
                                                     row.run_id, verb,
-                                                    attempt_id=attempt_id))
+                                                    attempt_id=attempt_id,
+                                                    campaign_id=campaign_id))
         return calls
 
     def run_cycle(self) -> list[PlannedCall]:

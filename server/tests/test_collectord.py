@@ -223,7 +223,11 @@ def test_revision_drift_polls_exact_verified_execution_campaign(tmp_path):
 
     assert [call.verb for call in calls] == ["observe", "decide"]
     assert all(call.argv[2] == str(execution_campaign) for call in calls)
-    assert all(call.argv[-2:] == ["--attempt-id", "attempt-001"] for call in calls)
+    assert all("--attempt-id" in call.argv for call in calls)
+    assert all(
+        call.argv[call.argv.index("--attempt-id") + 1] == "attempt-001"
+        for call in calls
+    )
 
 
 def test_matched_revision_prefers_daemon_execution_campaign(tmp_path):
@@ -255,6 +259,122 @@ def test_matched_revision_prefers_daemon_execution_campaign(tmp_path):
 
     assert [call.verb for call in calls] == ["observe", "decide"]
     assert all(call.argv[2] == str(execution_campaign) for call in calls)
+    assert all("--campaign-id" in call.argv for call in calls)
+    assert all(
+        call.argv[call.argv.index("--campaign-id") + 1] == authored_revision
+        for call in calls
+    )
+
+
+def test_direct_import_polls_canonical_run_through_private_campaign(tmp_path):
+    campaign_name = "imported-campaign"
+    run_id = "imported-run"
+    authored = tmp_path / "project" / "experiments" / "campaign.yml"
+    authored.parent.mkdir(parents=True)
+    authored.write_text(textwrap.dedent(f"""\
+        schema_version: 1
+        project: elf
+        campaign: {campaign_name}
+        local_root: outputs/experiment_campaigns
+        runs:
+          - run_id: {run_id}
+    """))
+    revision = "campaign." + hashlib.sha256(authored.read_bytes()).hexdigest()
+    canonical_root = tmp_path / "daemon" / "runs" / "elf"
+    run_dir = canonical_root / campaign_name / run_id
+    run_dir.mkdir(parents=True)
+    project = ResearchProject(
+        project="elf", title="ELF", run_roots=[str(canonical_root)],
+        daemon_run_root=canonical_root,
+        controller=ControllerConfig(
+            python="/usr/bin/python3", experimentctl="tools/experimentctl.py",
+            workdir=".",
+        ),
+        base_dir=tmp_path / "project",
+        campaigns=[CampaignRef(name=campaign_name, file=str(authored))],
+    )
+    row = RunIndexRow(
+        project="elf", campaign=campaign_name, campaign_source="manifest",
+        campaign_binding=CampaignBinding(
+            relationship=CampaignRelationship.MATCHED,
+            origin_project="elf", origin_campaign=campaign_name,
+            origin_revision=revision, current_revision=revision,
+        ),
+        run_id=run_id, run_dir=str(run_dir), scheduler_state="RUNNING",
+        evidence=EvidenceLayers(scheduler=EvidenceLayer(
+            state="RUNNING", attempt_id="attempt-001",
+        )),
+        attempts=[AttemptSummary(
+            attempt_id="attempt-001", state="RUNNING", backend="sensecore",
+            backend_job_id="job-123", has_submission=True,
+        )],
+    )
+    index = RunIndex(tmp_path / "index.sqlite")
+    index.upsert_run(row)
+    cache_root = tmp_path / "daemon" / "collector-campaigns"
+    collector = Collector(
+        index=index, projects=[project],
+        config=CollectorConfig(
+            dry_run=True, execution_campaign_root=cache_root,
+        ),
+    )
+
+    calls = collector.plan_cycle()
+
+    assert [call.verb for call in calls] == ["observe", "decide"]
+    execution_campaign = Path(calls[0].argv[2])
+    assert execution_campaign.is_relative_to(cache_root)
+    assert all(call.argv[2] == str(execution_campaign) for call in calls)
+    execution_payload = collector._campaign_payload(execution_campaign)
+    assert execution_payload is not None
+    assert execution_payload["local_root"] == str(canonical_root.resolve())
+    assert all("--campaign-id" in call.argv for call in calls)
+    assert all(
+        call.argv[call.argv.index("--campaign-id") + 1] == revision
+        for call in calls
+    )
+    assert not (
+        project.base_dir / "outputs" / "experiment_campaigns" / campaign_name / run_id
+    ).exists()
+
+
+def test_direct_import_path_mismatch_fails_closed(tmp_path):
+    project = _project(tmp_path, "camp")
+    canonical_root = tmp_path / "daemon" / "runs" / "elf"
+    canonical_root.mkdir(parents=True)
+    project.daemon_run_root = canonical_root
+    row_dir = tmp_path / "unexpected" / "camp" / "run-a"
+    row_dir.mkdir(parents=True)
+    authored = Path(str(project.campaigns[0].file))
+    authored.write_text(textwrap.dedent("""\
+        schema_version: 1
+        project: elf
+        campaign: camp
+        local_root: outputs/experiment_campaigns
+        runs:
+          - run_id: run-a
+    """))
+    revision = "campaign." + hashlib.sha256(authored.read_bytes()).hexdigest()
+    index = RunIndex(tmp_path / "index.sqlite")
+    index.upsert_run(RunIndexRow(
+        project="elf", campaign="camp", campaign_source="manifest",
+        campaign_binding=CampaignBinding(
+            relationship=CampaignRelationship.MATCHED,
+            origin_project="elf", origin_campaign="camp",
+            origin_revision=revision, current_revision=revision,
+        ),
+        run_id="run-a", run_dir=str(row_dir), scheduler_state="RUNNING",
+    ))
+    collector = Collector(
+        index=index, projects=[project],
+        config=CollectorConfig(
+            dry_run=True,
+            execution_campaign_root=tmp_path / "daemon" / "collector-campaigns",
+        ),
+    )
+
+    assert collector.plan_cycle() == []
+    assert not (project.base_dir / "outputs").exists()
 
 
 def test_run_scoped_evaluation_can_bind_execution_campaign(tmp_path):
