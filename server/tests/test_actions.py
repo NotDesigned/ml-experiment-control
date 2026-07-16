@@ -523,6 +523,7 @@ class FakeController:
                 "identity_version": 2,
                 "project": "demo", "campaign": "demo-campaign",
                 "run_id": "run-a", "source_id": self.source_id, "image_id": "sha256:image",
+                "git_commit": "c" * 40,
                 "backend": {"kind": "slurm", "time": "04:00:00"},
                 "resources": {"gpus": 2, "cpus": 8},
                 "storage": {"run_dir": "/data/project/runs/run-a", "checkpoint_dir": "/data/project/runs/run-a/checkpoints"},
@@ -662,6 +663,40 @@ def test_revision_inheriting_retry_requires_readable_canonical_manifest(
             ),
             project, operation_intent("RETRY_ATTEMPT", draft),
         )
+
+
+def test_revision_inheriting_retry_freezes_canonical_git_commit(tmp_path):
+    project, campaign = controller_project(tmp_path)
+    project.controller.capabilities["authored_campaign_revision"] = True
+    canonical = (
+        project.base_dir / "outputs" / "runs" / "demo-campaign"
+        / "run-a" / "manifest.yaml"
+    )
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text(yaml.safe_dump({
+        "project": "demo", "campaign": "demo-campaign", "run_id": "run-a",
+        "campaign_id": "campaign." + "a" * 64,
+        "git_commit": "c" * 40,
+    }), encoding="utf-8")
+    service = ActionService(
+        ActionStore(tmp_path / "actions"), ActionRuntimeConfig(), FakeController(),
+    )
+    draft = yaml.safe_dump({
+        "campaign_file": str(campaign), "run_id": "run-a",
+        "source_attempt_id": "attempt-001", "attempt_id": "attempt-002",
+        "max_gpu_hours": 8,
+    })
+
+    plan = service.prepare(
+        OperationScope(
+            project="demo", scope_type="attempt",
+            object_id="run-a::attempt-001",
+        ),
+        project, operation_intent("RETRY_ATTEMPT", draft),
+    )
+
+    execution = yaml.safe_load(Path(plan["execution_campaign_file"]).read_text())
+    assert execution["git_commit"] == "c" * 40
 
 
 @pytest.mark.parametrize(("draft_updates", "error"), [

@@ -932,6 +932,21 @@ class ActionService:
                         "canonical Run manifest does not match the exact project, "
                         "Campaign, and Run scope with an immutable campaign.<sha256> revision"
                     )
+                inherited_git_commit = str(canonical_manifest.get("git_commit") or "")
+                if re.fullmatch(r"[0-9a-f]{40}", inherited_git_commit) is None:
+                    raise ActionError(
+                        "canonical Run manifest has no valid immutable git_commit"
+                    )
+                # The controller checkout may advance for operational fixes
+                # between Attempts.  Retry metadata must still identify the
+                # exact source commit frozen by the canonical scientific Run.
+                execution_payload["git_commit"] = inherited_git_commit
+                execution_campaign.write_text(
+                    yaml.safe_dump(
+                        execution_payload, allow_unicode=True, sort_keys=False,
+                    ),
+                    encoding="utf-8",
+                )
                 campaign_revision = inherited
                 campaign_revision_source = "canonical_run"
             else:
