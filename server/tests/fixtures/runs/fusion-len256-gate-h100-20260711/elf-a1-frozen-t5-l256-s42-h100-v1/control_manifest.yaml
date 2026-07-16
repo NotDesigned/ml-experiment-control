@@ -117,7 +117,7 @@ resolved_config:
   log_freq: 100
   eval_freq: 1
   save_freq: 0.1
-  output_dir: /datapool/liangluocheng/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
+  output_dir: /datapool/researcher/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
   hf_repo_id: null
   resume: null
   warm_start: null
@@ -133,50 +133,50 @@ resolved_config:
   num_workers: 8
 backend:
   kind: slurm
-  ssh_alias: wyd-l40s
+  ssh_alias: gpu-cluster
   partition: h100
   account: lab
   qos: normal
   gres: gpu:h100:4
   time: '24:00:00'
   mount_root: /datapool
-  apptainer_cache_dir: /datapool/liangluocheng/elf/apptainer/cache
-  apptainer_tmp_dir: /datapool/liangluocheng/elf/apptainer/tmp
-  source_dir: /datapool/liangluocheng/elf/sources/e44db5b272df3b6a196e8f58addc54446003595f
-  sif_path: /datapool/liangluocheng/elf/images/1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4.sif
-  data_root: /datapool/liangluocheng
-  project_data_root: /datapool/liangluocheng/elf
-  hf_home: /datapool/liangluocheng/.cache/huggingface
-  hf_datasets_cache: /datapool/liangluocheng/.cache/huggingface/datasets
+  apptainer_cache_dir: /datapool/researcher/elf/apptainer/cache
+  apptainer_tmp_dir: /datapool/researcher/elf/apptainer/tmp
+  source_dir: /datapool/researcher/elf/sources/e44db5b272df3b6a196e8f58addc54446003595f
+  sif_path: /datapool/researcher/elf/images/1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4.sif
+  data_root: /datapool/researcher
+  project_data_root: /datapool/researcher/elf
+  hf_home: /datapool/researcher/.cache/huggingface
+  hf_datasets_cache: /datapool/researcher/.cache/huggingface/datasets
 resources:
   gpus: 4
   cpus: 32
 storage:
-  run_dir: /datapool/liangluocheng/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
+  run_dir: /datapool/researcher/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
 command:
 - env
 - ATTEMPT_ID=attempt-001
 - BACKEND=slurm
-- CHECKPOINT_ROOT=/datapool/liangluocheng/elf/checkpoints
-- DATA_ROOT=/datapool/liangluocheng
-- ELF_B_OWT_CHECKPOINT=/datapool/liangluocheng/elf/checkpoints/ELF-B-owt-torch/checkpoint_95085
-- HF_DATASETS_CACHE=/datapool/liangluocheng/.cache/huggingface/datasets
-- HF_HOME=/datapool/liangluocheng/.cache/huggingface
+- CHECKPOINT_ROOT=/datapool/researcher/elf/checkpoints
+- DATA_ROOT=/datapool/researcher
+- ELF_B_OWT_CHECKPOINT=/datapool/researcher/elf/checkpoints/ELF-B-owt-torch/checkpoint_95085
+- HF_DATASETS_CACHE=/datapool/researcher/.cache/huggingface/datasets
+- HF_HOME=/datapool/researcher/.cache/huggingface
 - IMAGE_ID=sha256:1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4
 - LOG_FREQ=100
 - NGPU=4
 - NUM_WORKERS=8
-- OUTPUT_DIR=/datapool/liangluocheng/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
-- PROJECT_DATA_ROOT=/datapool/liangluocheng/elf
+- OUTPUT_DIR=/datapool/researcher/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
+- PROJECT_DATA_ROOT=/datapool/researcher/elf
 - PROJECT_NAME=elf
 - QUOTA_TYPE=normal
 - REQUIRE_OFFLINE_CACHE=1
 - RUN_ID=elf-a1-frozen-t5-l256-s42-h100-v1
-- SAVE_DIR=/datapool/liangluocheng/elf/saved_models
+- SAVE_DIR=/datapool/researcher/elf/saved_models
 - SOURCE_ID=e44db5b272df3b6a196e8f58addc54446003595f
 - USE_WANDB=false
-- WANDB_CACHE_DIR=/datapool/liangluocheng/elf/wandb_cache
-- WANDB_DIR=/datapool/liangluocheng/elf/wandb
+- WANDB_CACHE_DIR=/datapool/researcher/elf/wandb_cache
+- WANDB_DIR=/datapool/researcher/elf/wandb
 - bash
 - scripts/cloud_train.sh
 - src/configs/training_configs/ablations/owt_elfb/tier0_1_sentence_t5_len256.yml

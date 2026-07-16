@@ -103,7 +103,7 @@ resolved_config:
   log_freq: 100
   eval_freq: 1
   save_freq: 0.1
-  output_dir: /datapool/liangluocheng/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
+  output_dir: /datapool/researcher/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
   hf_repo_id: null
   resume: null
   warm_start: null
@@ -121,8 +121,8 @@ source_id: e44db5b272df3b6a196e8f58addc54446003595f
 image_id: sha256:1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4
 seed: 42
 storage:
-  run_dir: /datapool/liangluocheng/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
-  checkpoint_dir: /datapool/liangluocheng/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
+  run_dir: /datapool/researcher/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
+  checkpoint_dir: /datapool/researcher/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1
 resume_policy:
   enabled: true
   max_infra_retries: 2
