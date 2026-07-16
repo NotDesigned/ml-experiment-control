@@ -155,6 +155,8 @@ def test_a1_metrics_and_provenance(a1_run_dir):
     assert row.role_source == "heuristic"
     assert row.attempts and row.attempts[0].attempt_id == "attempt-001"
     assert row.decision["action"] == "OBSERVE"
+    assert row.decision["retries_allowed"] == 0
+    assert row.decision["retries_used"] == 0
 
 
 def test_declared_canonical_eval_variant_controls_flat_view(tmp_path):

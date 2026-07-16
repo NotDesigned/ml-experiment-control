@@ -188,6 +188,7 @@ def test_run_detail_five_layers(client):
     assert payload["provenance"]["seed"] == 42
     assert payload["decision"] == {
         "action": "OBSERVE", "reason": "run is nonterminal",
+        "retries_allowed": 0, "retries_used": 0,
     }
     assert all("failure_class" not in attempt["decision"]
                for attempt in payload["attempts"])

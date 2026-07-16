@@ -1159,7 +1159,10 @@ def _observation_decision(payload: dict[str, Any]) -> dict[str, Any]:
     """Keep operational decision metadata, not a hypothesis verdict."""
     return {
         key: payload[key]
-        for key in ("action", "reason", "failure_class")
+        for key in (
+            "action", "reason", "failure_class", "resume_checkpoint",
+            "retries_allowed", "retries_used",
+        )
         if payload.get(key) is not None
     }
 
