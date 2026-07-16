@@ -499,7 +499,8 @@ class FakeController:
     def __init__(
         self, *, timeout_submit: bool = False, evaluation: bool = False,
         status_visible: bool = True, status_job_id: str = "job-123",
-        source_id: str = "git:abc",
+        source_id: str = "git:abc", stage_failure: bool = False,
+        stage_timeout: bool = False,
     ):
         self.calls: list[list[str]] = []
         self.timeout_submit = timeout_submit
@@ -507,6 +508,8 @@ class FakeController:
         self.status_visible = status_visible
         self.status_job_id = status_job_id
         self.source_id = source_id
+        self.stage_failure = stage_failure
+        self.stage_timeout = stage_timeout
 
     def __call__(self, command, *, cwd, timeout):
         self.calls.append(list(command))
@@ -546,6 +549,16 @@ class FakeController:
                         "stdout": "", "stderr": "timeout"}
             return {"returncode": 0, "timeout": False,
                     "payload": [{"run_id": "run-a", "backend_job_id": "job-123"}],
+                    "stdout": "", "stderr": ""}
+        if verb == "stage":
+            if self.stage_timeout:
+                return {"returncode": None, "timeout": True, "payload": None,
+                        "stdout": "", "stderr": "timeout"}
+            if self.stage_failure:
+                return {"returncode": 1, "timeout": False, "payload": None,
+                        "stdout": "", "stderr": "staging failed"}
+            return {"returncode": 0, "timeout": False,
+                    "payload": [{"run_id": "run-a", "staged": True}],
                     "stdout": "", "stderr": ""}
         if verb == "status":
             if not self.status_visible:
@@ -588,6 +601,67 @@ def submit_draft(campaign: Path):
         "campaign_file": str(campaign), "run_id": "run-a",
         "attempt_id": "attempt-001", "max_gpu_hours": 8,
     })
+
+
+def test_submit_rejects_non_utf8_campaign(tmp_path):
+    project, campaign = controller_project(tmp_path)
+    campaign.write_bytes(b"\xff")
+    service = ActionService(
+        ActionStore(tmp_path / "actions"), ActionRuntimeConfig(), FakeController(),
+    )
+
+    with pytest.raises(ActionError, match="cannot be read as UTF-8"):
+        service.prepare(
+            OperationScope(project="demo", scope_type="run", object_id="run-a"),
+            project, operation_intent("SUBMIT_RUN", submit_draft(campaign)),
+        )
+
+
+def test_authored_revision_submit_requires_catalog_campaign(tmp_path):
+    project, campaign = controller_project(tmp_path)
+    project.controller.capabilities["authored_campaign_revision"] = True
+    service = ActionService(
+        ActionStore(tmp_path / "actions"), ActionRuntimeConfig(), FakeController(),
+    )
+
+    with pytest.raises(ActionError, match="requires a current catalog Campaign"):
+        service.prepare(
+            OperationScope(project="demo", scope_type="run", object_id="run-a"),
+            project, operation_intent("SUBMIT_RUN", submit_draft(campaign)),
+        )
+
+
+@pytest.mark.parametrize("invalid_manifest", [False, True])
+def test_revision_inheriting_retry_requires_readable_canonical_manifest(
+    tmp_path, invalid_manifest,
+):
+    project, campaign = controller_project(tmp_path)
+    project.controller.capabilities["authored_campaign_revision"] = True
+    if invalid_manifest:
+        canonical = (
+            project.base_dir / "outputs" / "runs" / "demo-campaign"
+            / "run-a" / "manifest.yaml"
+        )
+        canonical.parent.mkdir(parents=True)
+        canonical.write_bytes(b"\xff")
+    draft = yaml.safe_dump({
+        "campaign_file": str(campaign), "run_id": "run-a",
+        "source_attempt_id": "attempt-001", "attempt_id": "attempt-002",
+        "max_gpu_hours": 8,
+    })
+    service = ActionService(
+        ActionStore(tmp_path / "actions"), ActionRuntimeConfig(), FakeController(),
+    )
+
+    expected = "cannot be read" if invalid_manifest else "requires the exact canonical"
+    with pytest.raises(ActionError, match=expected):
+        service.prepare(
+            OperationScope(
+                project="demo", scope_type="attempt",
+                object_id="run-a::attempt-001",
+            ),
+            project, operation_intent("RETRY_ATTEMPT", draft),
+        )
 
 
 @pytest.mark.parametrize(("draft_updates", "error"), [
@@ -735,12 +809,44 @@ def test_submit_plan_gates_and_executes_once(tmp_path):
     assert result["execution"]["status"] == "VERIFIED"
     assert result["execution"]["result"]["submission"]["backend_job_id"] == "job-123"
     assert result["execution"]["result"]["observation"]["state"] == "QUEUED"
+    stage_index = next(i for i, item in enumerate(runner.calls) if item[3] == "stage")
+    submit_index = next(
+        i for i, item in enumerate(runner.calls)
+        if item[3] == "submit" and "--dry-run" not in item
+    )
+    assert stage_index < submit_index
+    assert result["execution"]["result"]["stage_command"]["returncode"] == 0
     submit_calls = [item for item in runner.calls if item[3] == "submit" and "--dry-run" not in item]
     assert len(submit_calls) == 1
 
     service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
     submit_calls = [item for item in runner.calls if item[3] == "submit" and "--dry-run" not in item]
     assert len(submit_calls) == 1
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_submit_stage_failure_never_mutates_scheduler(tmp_path, timeout):
+    project, campaign = controller_project(tmp_path)
+    runner = FakeController(stage_failure=not timeout, stage_timeout=timeout)
+    service = ActionService(
+        ActionStore(tmp_path / "actions"),
+        ActionRuntimeConfig(allow_scheduler_mutations=True), runner,
+        actor_provider=lambda: "trusted:pi",
+    )
+    plan = service.prepare(
+        OperationScope(project="demo", scope_type="run", object_id="run-a"),
+        project, operation_intent("SUBMIT_RUN", submit_draft(campaign)),
+    )
+    service.authorize(plan["action_id"], "reviewed")
+
+    result = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
+
+    assert result["execution"]["status"] == "FAILED"
+    assert "staging" in result["execution"]["error"]
+    assert not [
+        item for item in runner.calls
+        if item[3] == "submit" and "--dry-run" not in item
+    ]
 
 
 def test_submit_preserves_authored_campaign_revision_across_local_root_rewrite(

@@ -964,6 +964,14 @@ class ActionService:
             extra=controller_extra,
         )
         command, cwd = call.argv, call.cwd
+        stage_command: list[str] | None = None
+        stage_cwd: Path | None = None
+        if actual_verb == "submit":
+            stage_call = self.controller.build(
+                project, execution_campaign, "stage", run_id,
+                attempt_id=attempt_id, extra=controller_extra,
+            )
+            stage_command, stage_cwd = stage_call.argv, stage_call.cwd
         preview_payload: dict[str, Any] | None = None
         observed: dict[str, Any] = {}
         execution_manifest_path: Path | None = None
@@ -1173,6 +1181,10 @@ class ActionService:
             "preflight_summary": preflight_summary,
             "command_preview": _redact(command),
             "cwd": str(cwd),
+            "stage_command_preview": (
+                _redact(stage_command) if stage_command is not None else None
+            ),
+            "stage_cwd": str(stage_cwd) if stage_cwd is not None else None,
             "authored_campaign_sha256": authored_campaign_sha256,
             "execution_campaign_sha256": (
                 authored_campaign_sha256
@@ -1499,6 +1511,7 @@ class ActionService:
     def _submission_result(
         self, plan: dict[str, Any], execution: dict[str, Any],
         submit_result: dict[str, Any], *, submit_error: str | None = None,
+        stage_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         submitted = self._single_status_record(submit_result.get("payload"))
         expected_job_id = str((submitted or {}).get("backend_job_id") or "") or None
@@ -1506,6 +1519,7 @@ class ActionService:
             plan, expected_job_id=expected_job_id,
         )
         result = {
+            "stage_command": _redact(stage_result),
             "submission": _redact(submitted),
             "submission_command": _redact(submit_result),
             "observation": _redact(observed),
@@ -1679,6 +1693,12 @@ class ActionService:
 
     def _execute_controller(self, plan: dict[str, Any], execution: dict[str, Any]) -> dict[str, Any]:
         command = [str(item) for item in plan["command_preview"]]
+        is_submission = plan["operation"] in {
+            "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION",
+        }
+        stage_command = [
+            str(item) for item in plan.get("stage_command_preview") or []
+        ]
         expected_source_id = str(plan.get("expected_source_id") or "")
         if expected_source_id.startswith("source."):
             try:
@@ -1687,13 +1707,14 @@ class ActionService:
                 source_root = self.source_resolver(
                     str(plan["scope"]["project"]), expected_source_id,
                 )
-                root_index = command.index("--source-root") + 1
-                source_index = command.index("--source-id") + 1
-                if (
-                    command[root_index] != str(source_root)
-                    or command[source_index] != expected_source_id
-                ):
-                    raise ValueError("approved command source binding changed")
+                for approved_command in (command, stage_command):
+                    root_index = approved_command.index("--source-root") + 1
+                    source_index = approved_command.index("--source-id") + 1
+                    if (
+                        approved_command[root_index] != str(source_root)
+                        or approved_command[source_index] != expected_source_id
+                    ):
+                        raise ValueError("approved command source binding changed")
             except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
                 execution.update({
                     "status": "FAILED", "finished_at": utc_now(),
@@ -1704,17 +1725,51 @@ class ActionService:
                     plan["action_id"], execution,
                     event="execution_source_validation_failed",
                 )
+        stage_result: dict[str, Any] | None = None
+        if is_submission:
+            stage_cwd = plan.get("stage_cwd")
+            if not stage_command or not stage_cwd:
+                execution.update({
+                    "status": "FAILED", "finished_at": utc_now(),
+                    "error": "submission plan has no immutable source staging command",
+                    "result": None,
+                })
+                return self.store.set_execution(
+                    plan["action_id"], execution, event="execution_stage_failed",
+                )
+            stage_result = self.controller.execute_command(
+                stage_command,
+                cwd=Path(str(stage_cwd)),
+                timeout=self.config.timeout_seconds,
+            )
+            if stage_result.get("timeout") or stage_result.get("returncode") != 0:
+                detail = str(
+                    stage_result.get("stderr")
+                    or stage_result.get("stdout")
+                    or "source staging controller failed"
+                )[:1000]
+                error = (
+                    "source staging timed out before scheduler submission"
+                    if stage_result.get("timeout")
+                    else f"source staging failed before scheduler submission: {detail}"
+                )
+                execution.update({
+                    "status": "FAILED", "finished_at": utc_now(),
+                    "error": error,
+                    "result": {"stage_command": _redact(stage_result)},
+                })
+                return self.store.set_execution(
+                    plan["action_id"], execution, event="execution_stage_failed",
+                )
         result = self.controller.execute_command(
             command, cwd=Path(plan["cwd"]), timeout=self.config.timeout_seconds,
         )
-        is_submission = plan["operation"] in {
-            "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION",
-        }
         if result.get("timeout"):
             if is_submission:
                 return self._submission_result(
                     plan, execution, result,
                     submit_error="controller timed out after execution intent",
+                    stage_result=stage_result,
                 )
             execution.update({
                 "status": "RECONCILE_REQUIRED", "finished_at": utc_now(),
@@ -1730,6 +1785,7 @@ class ActionService:
                 return self._submission_result(
                     plan, execution, result,
                     submit_error=f"submit controller failed after execution intent: {detail}",
+                    stage_result=stage_result,
                 )
             execution.update({
                 "status": "FAILED", "finished_at": utc_now(),
@@ -1738,7 +1794,9 @@ class ActionService:
             })
             return self.store.set_execution(plan["action_id"], execution, event="execution_failed")
         if is_submission:
-            return self._submission_result(plan, execution, result)
+            return self._submission_result(
+                plan, execution, result, stage_result=stage_result,
+            )
         payload = result.get("payload")
         execution.update({
             "status": "VERIFIED", "finished_at": utc_now(), "result": _redact(payload),

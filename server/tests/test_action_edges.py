@@ -121,6 +121,7 @@ def synthetic_plan(store: ActionStore, intent: str, *, operation: str = "SUBMIT_
         "ready": True, "operation": operation, "intent_digest": "sha256:intent",
         "gate_bundle_digest": "sha256:gates", "gate_expires_at": expires,
         "command_preview": ["controller", "submit"], "cwd": ".",
+        "stage_command_preview": ["controller", "stage"], "stage_cwd": ".",
         "verification_command_preview": ["controller", "status"],
         "verification_cwd": ".",
     })
@@ -176,8 +177,33 @@ def test_controller_execution_result_contract(tmp_path, result, status):
     action_id = synthetic_plan(store, status)
     plan = store.snapshot(action_id)
     execution = plan["execution"]
-    service = ActionService(store, ActionRuntimeConfig(), runner=lambda *a, **k: result)
+    def runner(command, **kwargs):
+        if command[-1] == "stage":
+            return {
+                "timeout": False, "returncode": 0, "stderr": "", "stdout": "",
+                "payload": [{"staged": True}],
+            }
+        return result
+
+    service = ActionService(store, ActionRuntimeConfig(), runner=runner)
     assert service._execute_controller(plan, execution)["execution"]["status"] == status
+
+
+def test_submission_execution_requires_frozen_stage_command(tmp_path):
+    store = ActionStore(tmp_path / "actions")
+    action_id = synthetic_plan(store, "missing-stage")
+    plan = store.snapshot(action_id)
+    plan.pop("stage_command_preview")
+    plan.pop("stage_cwd")
+
+    result = ActionService(
+        store, ActionRuntimeConfig(), runner=lambda *a, **k: pytest.fail(
+            "controller must not run without a frozen stage command"
+        ),
+    )._execute_controller(plan, plan["execution"])
+
+    assert result["execution"]["status"] == "FAILED"
+    assert "no immutable source staging command" in result["execution"]["error"]
 
 
 def test_cancel_preparation_binds_live_backend_job_and_capability(tmp_path):
