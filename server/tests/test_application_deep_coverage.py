@@ -208,6 +208,45 @@ def test_prepare_attempt_retry_review_exact_preserves_legacy_root_without_budget
     assert "max_gpu_hours" not in draft
 
 
+def test_prepare_attempt_retry_allows_exact_review_of_unknown_failure_with_budget():
+    app = retry_application(retry_context(decision={
+        "action": "DO_NOT_RETRY", "failure_class": "unknown",
+        "retries_allowed": 1, "retries_used": 0,
+    }))
+
+    result = app.prepare_attempt_retry(
+        "demo", "run-a::attempt-001", new_attempt_id="attempt-002",
+        max_gpu_hours=None, reason="clean progress ended with worker deletion",
+        resource_approval="review_exact",
+    )
+
+    review = yaml.safe_load(result["action"]["draft"])["failure_review"]
+    assert review == {
+        "required": True,
+        "producer_decision": "DO_NOT_RETRY",
+        "producer_failure_class": "unknown",
+        "operator_reason": "clean progress ended with worker deletion",
+    }
+
+
+@pytest.mark.parametrize("change", [
+    {"failure_class": "resource"},
+    {"retries_allowed": 0},
+])
+def test_prepare_attempt_retry_never_reviews_hard_or_exhausted_failure(change):
+    decision = {
+        "action": "DO_NOT_RETRY", "failure_class": "unknown",
+        "retries_allowed": 1, "retries_used": 0,
+        **change,
+    }
+    app = retry_application(retry_context(decision=decision))
+
+    assert application_error_code(lambda: app.prepare_attempt_retry(
+        "demo", "run-a::attempt-001", new_attempt_id="attempt-002",
+        max_gpu_hours=None, reason="review", resource_approval="review_exact",
+    )) in {"ATTEMPT_RETRY_FORBIDDEN", "ATTEMPT_RETRY_BUDGET_EXHAUSTED"}
+
+
 @pytest.mark.parametrize(("new_attempt_id", "expected"), [
     ("bad", "INVALID_ATTEMPT_ID"),
     ("attempt-001", "DUPLICATE_ATTEMPT_ID"),

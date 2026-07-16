@@ -2166,13 +2166,26 @@ class ExperimentServerApplication:
                 code="ATTEMPT_NOT_RETRYABLE",
             )
         decision = attempt.decision if isinstance(attempt.decision, dict) else {}
-        if str(decision.get("action") or "").upper() == "DO_NOT_RETRY":
+        decision_action = str(decision.get("action") or "").upper()
+        decision_failure = str(decision.get("failure_class") or "").lower()
+        allowed = decision.get("retries_allowed")
+        used = decision.get("retries_used", 0)
+        reviewable_unknown_failure = (
+            decision_action in {"REVIEW_RETRY", "DO_NOT_RETRY"}
+            and decision_failure == "unknown"
+            and isinstance(allowed, int)
+            and not isinstance(allowed, bool)
+            and isinstance(used, int)
+            and not isinstance(used, bool)
+            and used < allowed
+            and resource_approval == "review_exact"
+            and bool(reason.strip())
+        )
+        if decision_action == "DO_NOT_RETRY" and not reviewable_unknown_failure:
             raise ApplicationError(
                 "attempt decision explicitly forbids retry",
                 code="ATTEMPT_RETRY_FORBIDDEN",
             )
-        allowed = decision.get("retries_allowed")
-        used = decision.get("retries_used", 0)
         if isinstance(allowed, int) and isinstance(used, int) and used >= allowed:
             raise ApplicationError(
                 f"attempt retry budget exhausted: used={used}, allowed={allowed}",
@@ -2199,6 +2212,13 @@ class ExperimentServerApplication:
             "attempt_id": new_attempt_id, "resource_approval": resource_approval,
             "wandb_cloud_sync": wandb_cloud_sync,
         }
+        if reviewable_unknown_failure:
+            draft_payload["failure_review"] = {
+                "required": True,
+                "producer_decision": decision_action,
+                "producer_failure_class": decision_failure,
+                "operator_reason": reason.strip(),
+            }
         if getattr(row, "run_dir", None):
             # Keep legacy Runs coherent until an operator migrates the whole
             # Run directory; newly materialized Runs already live in the
