@@ -276,6 +276,11 @@ def test_direct_import_polls_canonical_run_through_private_campaign(tmp_path):
         project: elf
         campaign: {campaign_name}
         local_root: outputs/experiment_campaigns
+        research_contract:
+          terminal_checks:
+            - metric: tiny_value
+              op: lte
+              value: 1.0e-08
         runs:
           - run_id: {run_id}
     """))
@@ -336,6 +341,16 @@ def test_direct_import_polls_canonical_run_through_private_campaign(tmp_path):
     assert not (
         project.base_dir / "outputs" / "experiment_campaigns" / campaign_name / run_id
     ).exists()
+
+    repeated = collector.plan_cycle()
+    assert [call.verb for call in repeated] == ["observe", "decide"]
+    assert all(call.argv[2] == str(execution_campaign) for call in repeated)
+    repeated_payload = collector._campaign_payload(execution_campaign)
+    assert repeated_payload is not None
+    assert (
+        repeated_payload["research_contract"]["terminal_checks"][0]["value"]
+        == 1.0e-08
+    )
 
 
 def test_direct_import_path_mismatch_fails_closed(tmp_path):

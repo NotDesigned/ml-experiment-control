@@ -294,8 +294,14 @@ class Collector:
     @staticmethod
     def _campaign_payload(path: Path) -> dict[str, Any] | None:
         try:
-            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            source = path.read_text(encoding="utf-8")
+            payload = (
+                json.loads(source) if path.suffix == ".json"
+                else yaml.safe_load(source)
+            )
+        except (
+            OSError, UnicodeDecodeError, json.JSONDecodeError, yaml.YAMLError,
+        ):
             return None
         return payload if isinstance(payload, dict) else None
 
