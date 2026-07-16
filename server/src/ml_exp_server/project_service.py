@@ -77,8 +77,26 @@ class ProjectApplicationService:
         }
 
     def transition(
-        self, project: str, target: ProjectLifecycleState, *, reason: str = "",
+        self, project: str, action: str, target: ProjectLifecycleState, *, reason: str = "",
     ) -> dict[str, Any]:
+        allowed_sources = {
+            "pause": {ProjectLifecycleState.ACTIVE},
+            "resume": {ProjectLifecycleState.PAUSED},
+            "archive": {ProjectLifecycleState.ACTIVE, ProjectLifecycleState.PAUSED},
+            "restore": {ProjectLifecycleState.ARCHIVED},
+        }
+        records = self.runtime.project_records()
+        current = next((item for item in records if item.project == project), None)
+        if current is None:
+            raise ApplicationError(
+                f"unknown registered project: {project}", status_code=404,
+                code="PROJECT_LIFECYCLE_BLOCKED",
+            )
+        if action not in allowed_sources or current.state not in allowed_sources[action]:
+            raise ApplicationError(
+                f"cannot {action} project {project!r} while it is {current.state.value}",
+                status_code=409, code="PROJECT_LIFECYCLE_BLOCKED",
+            )
         if target == ProjectLifecycleState.ARCHIVED and not reason.strip():
             raise ApplicationError(
                 "archiving a project requires a reason",

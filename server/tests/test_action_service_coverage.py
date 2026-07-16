@@ -389,10 +389,15 @@ def test_reconcile_policy_and_controller_outcomes(tmp_path):
         internal, {**store.execution(internal), "status": "RECONCILE_REQUIRED"},
         event="test",
     )
-    assert ActionService(
+    calls = []
+    reconciled = ActionService(
         store, ActionRuntimeConfig(allow_observability_mutations=True),
-        internal_executor=lambda plan: {"ok": True},
-    ).reconcile(internal)["execution"]["status"] == "VERIFIED"
+        internal_executor=lambda plan: calls.append(plan) or {"ok": True},
+    ).reconcile(internal)
+    assert reconciled["execution"]["status"] == "RECONCILE_REQUIRED"
+    assert reconciled["execution"]["result"]["reconciled_read_only"] is True
+    assert "cannot be replayed" in reconciled["execution"]["error"]
+    assert calls == []
 
     cancel = synthetic_plan(store, "cancel", "CANCEL_RUN")
     with pytest.raises(ActionError, match="not awaiting reconciliation"):

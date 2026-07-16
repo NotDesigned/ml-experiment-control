@@ -14,7 +14,10 @@ that endpoint still fails with HTTP 426.
 Each Action execution envelope also carries a monotonic `revision`. The daemon
 uses that revision as a compare-and-set token, so a late execute or reconcile
 response cannot overwrite a newer durable transition even when the status text
-itself has not changed.
+itself has not changed. Reconcile is not a generic mutation retry endpoint:
+operation-specific reconciliation must observe durable effects without
+reissuing them, or fail closed as `RECONCILE_REQUIRED` when no read-only proof
+exists.
 
 Protocol version 1 currently guarantees these capability families:
 
@@ -39,6 +42,14 @@ The same target-page metadata is returned by `/api/observability`.
 Callers that need one Project can pass `project=<id>` to the terminal snapshot;
 the daemon then avoids loading and serializing unrelated Projects and target
 statuses. An unknown filter returns 404 rather than an ambiguous empty view.
+
+Generic Submit/Retry operations use daemon-owned scheduler resource policy from
+`action_runtime.scheduler_resource_approval` and `max_gpu_hours_per_action`.
+Clients receive only a read-only policy summary in operation metadata and cannot
+override those values through the generic operation endpoint. The prepared
+Action freezes requested resources, policy cap/mode, and the resulting budget
+gate for human approval. Explicit legacy submission endpoints retain their
+operator-facing parameters for protocol compatibility.
 
 Health also reports the daemon-owned publisher loop separately from individual
 outbox targets. `publisher.last_error`, `last_success_at`, and

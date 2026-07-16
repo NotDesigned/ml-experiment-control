@@ -286,7 +286,7 @@ def test_require_and_direct_operation_dispatch_edges(monkeypatch):
         return [SimpleNamespace(operation=operation)]
 
     value.operation_availability = lambda *_args: availability(
-        "run.submit", ("wandb_cloud_sync", "max_gpu_hours", "resource_approval"),
+        "run.submit", ("wandb_cloud_sync",),
     )
     assert error_code(lambda: value.invoke_direct_operation(
         "run.submit", "demo", OperationScopeType.RUN, "run-a",
@@ -319,15 +319,12 @@ def test_require_and_direct_operation_dispatch_edges(monkeypatch):
         value.resolve_scope = lambda *_args, local_scope=local_scope: (
             local_scope, SimpleNamespace(), object(),
         )
-        params = (
-            ("max_gpu_hours", "resource_approval")
-            if operation_id == "attempt.retry" else ()
-        )
+        params = ()
         value.operation_availability = (
             lambda *_args, operation_id=operation_id, params=params:
             availability(operation_id, params)
         )
-        payload = {"max_gpu_hours": 1} if params else {}
+        payload = {}
         assert value.invoke_direct_operation(
             operation_id, "demo", kind, local_scope.object_id, payload,
         ) == expected

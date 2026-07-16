@@ -31,6 +31,7 @@ from .runtime import ExperimentServerRuntime
 from .outward import attempt_dto, operational_decision, run_dto, sanitized_outward
 from .operations import (
     GPU_BUDGET,
+    RESOURCE_APPROVAL,
     OBSERVABILITY_TARGET,
     WANDB_CLOUD_SYNC,
     OPERATIONS_BY_ID,
@@ -43,6 +44,7 @@ from .schemas import (
     OperationScopeType,
     CampaignRelationship,
     ProjectLifecycleState,
+    ActionRuntimeConfig,
     ResearchProject,
     TERMINAL_RUN_STATES,
 )
@@ -592,13 +594,14 @@ class ExperimentServerApplication:
     ) -> list[OperationAvailability]:
         """Return deterministic operation eligibility for one exact scope."""
         scope, configured, resolved = self.resolve_scope(project, scope_type, object_id)
-        default_budget = 1.0
+        resource_policy = getattr(
+            getattr(self.runtime, "config", None),
+            "action_runtime", ActionRuntimeConfig(),
+        )
         result: list[OperationAvailability] = []
         for base_operation in operations_for_scope(scope.scope_type):
             available_targets = self._publication_targets_available()
             parameters = tuple(
-                replace(parameter, default=default_budget)
-                if parameter.key == GPU_BUDGET.key else
                 replace(
                     parameter,
                     choices=tuple(
@@ -609,8 +612,11 @@ class ExperimentServerApplication:
                 ) if parameter.key == OBSERVABILITY_TARGET.key else parameter
                 for parameter in base_operation.parameters
                 if (
-                    parameter.key != WANDB_CLOUD_SYNC.key
-                    or self._cloud_publication_available()
+                    parameter.key not in {GPU_BUDGET.key, RESOURCE_APPROVAL.key}
+                    and (
+                        parameter.key != WANDB_CLOUD_SYNC.key
+                        or self._cloud_publication_available()
+                    )
                 )
             )
             operation = replace(base_operation, parameters=parameters)
@@ -624,15 +630,28 @@ class ExperimentServerApplication:
                 operation=operation, scope=scope,
                 status="BLOCKED" if reasons else "AVAILABLE",
                 reasons=tuple(reasons), expected_effect=operation.expected_effect,
-                metadata={"intent_kind": (
-                    {
-                        OperationScopeType.CAMPAIGN: "ARCHIVE_CAMPAIGN",
-                        OperationScopeType.RUN: "ARCHIVE_RUN",
-                        OperationScopeType.ATTEMPT: "ARCHIVE_ATTEMPT",
-                    }[scope.scope_type]
-                    if operation.operation_id == "object.archive"
-                    else operation.intent_kind
-                )},
+                metadata={
+                    "intent_kind": (
+                        {
+                            OperationScopeType.CAMPAIGN: "ARCHIVE_CAMPAIGN",
+                            OperationScopeType.RUN: "ARCHIVE_RUN",
+                            OperationScopeType.ATTEMPT: "ARCHIVE_ATTEMPT",
+                        }[scope.scope_type]
+                        if operation.operation_id == "object.archive"
+                        else operation.intent_kind
+                    ),
+                    **({
+                        "resource_policy": {
+                            "approval": resource_policy.scheduler_resource_approval,
+                            "max_gpu_hours": (
+                                resource_policy.max_gpu_hours_per_action
+                                if resource_policy.scheduler_resource_approval == "budget_cap"
+                                else None
+                            ),
+                            "owner": "daemon",
+                        },
+                    } if operation.operation_id in {"run.submit", "attempt.retry"} else {}),
+                },
             ))
         return result
 
@@ -863,28 +882,18 @@ class ExperimentServerApplication:
             raise ApplicationError(
                 "wandb_cloud_sync must be 'yes' or 'no'", code="INVALID_OPERATION",
             )
-        resource_approval = str(
-            parameters.get("resource_approval") or "budget_cap"
-        ).lower()
-        if resource_approval not in {"budget_cap", "review_exact"}:
-            raise ApplicationError(
-                "resource_approval must be 'budget_cap' or 'review_exact'",
-                code="INVALID_OPERATION",
-            )
+        resource_approval = "budget_cap"
         budget: float | None = None
         if operation_id in {"run.submit", "attempt.retry"}:
-            budget_value = parameters.get("max_gpu_hours")
-            if resource_approval == "budget_cap":
-                try:
-                    budget = float(1.0 if budget_value is None else budget_value)
-                except (TypeError, ValueError) as exc:
-                    raise ApplicationError(
-                        "max_gpu_hours must be a number", code="INVALID_OPERATION",
-                    ) from exc
-                if budget <= 0:
-                    raise ApplicationError(
-                        "max_gpu_hours must be positive", code="INVALID_OPERATION",
-                    )
+            policy = getattr(
+                getattr(self.runtime, "config", None),
+                "action_runtime", ActionRuntimeConfig(),
+            )
+            resource_approval = policy.scheduler_resource_approval
+            budget = (
+                policy.max_gpu_hours_per_action
+                if resource_approval == "budget_cap" else None
+            )
         if operation_id == "object.archive":
             if scope.scope_type == OperationScopeType.CAMPAIGN:
                 return self.prepare_campaign_archive(project, object_id, reason=reason)
@@ -2552,9 +2561,11 @@ class ExperimentServerApplication:
         return self.source_revision_service.get(project, source_id)
 
     def project_lifecycle_transition(
-        self, project: str, target: ProjectLifecycleState, *, reason: str = "",
+        self, project: str, action: str, target: ProjectLifecycleState, *, reason: str = "",
     ) -> dict[str, Any]:
-        return self.project_service.transition(project, target, reason=reason)
+        return self.project_service.transition(
+            project, action, target, reason=reason,
+        )
 
     def project_unregister(self, project: str, *, reason: str = "") -> dict[str, Any]:
         return self.project_service.unregister(project, reason=reason)

@@ -289,8 +289,21 @@ class ActionRuntimeConfig(BaseModel):
     allow_scheduler_mutations: bool = False
     allow_observability_mutations: bool = False
     allow_local_evidence_rebuild: bool = False
+    scheduler_resource_approval: Literal["budget_cap", "review_exact"] = "budget_cap"
+    max_gpu_hours_per_action: Optional[float] = Field(default=1.0, gt=0)
     timeout_seconds: int = 300
     gate_ttl_seconds: int = 1800
+
+    @model_validator(mode="after")
+    def _validate_scheduler_resource_policy(self) -> "ActionRuntimeConfig":
+        if (
+            self.scheduler_resource_approval == "budget_cap"
+            and self.max_gpu_hours_per_action is None
+        ):
+            raise ValueError(
+                "budget_cap scheduler policy requires max_gpu_hours_per_action"
+            )
+        return self
 
 
 class HttpAuthConfig(BaseModel):

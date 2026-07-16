@@ -17,6 +17,9 @@ action_runtime:
   allow_source_imports: false
   allow_scheduler_mutations: false
   allow_observability_mutations: false
+  # TUI users approve or reject prepared exact resources; they do not set policy.
+  scheduler_resource_approval: budget_cap
+  max_gpu_hours_per_action: 1.0
   timeout_seconds: 300
   gate_ttl_seconds: 1800
 telemetry:

@@ -89,7 +89,10 @@ class SubmissionController:
         }
 
 
-def _app(tmp_path, *, cloud=False, observability_mutations=False):
+def _app(
+    tmp_path, *, cloud=False, observability_mutations=False,
+    resource_approval="budget_cap", max_gpu_hours=1.0,
+):
     experiments = tmp_path / "science" / "experiments"
     experiments.mkdir(parents=True)
     campaign = experiments / "study.yml"
@@ -126,6 +129,8 @@ def _app(tmp_path, *, cloud=False, observability_mutations=False):
         action_runtime=ActionRuntimeConfig(
             allow_scheduler_mutations=True,
             allow_observability_mutations=observability_mutations,
+            scheduler_resource_approval=resource_approval,
+            max_gpu_hours_per_action=max_gpu_hours,
         ),
         observability=ObservabilityConfig(
             credential_root=str(tmp_path / "credentials"),
@@ -178,7 +183,12 @@ def test_authored_unmaterialized_run_is_selectable_from_tui_read_model(tmp_path)
         parameter_keys = {
             item["key"] for item in submit["operation"]["parameters"]
         }
-        assert parameter_keys == {"max_gpu_hours", "resource_approval"}
+        assert parameter_keys == set()
+        assert submit["metadata"]["resource_policy"] == {
+            "approval": "budget_cap",
+            "max_gpu_hours": 1.0,
+            "owner": "daemon",
+        }
 
         unsupported_cloud = client.post("/api/operations/direct", json={
             "project": "demo",
@@ -195,19 +205,15 @@ def test_authored_unmaterialized_run_is_selectable_from_tui_read_model(tmp_path)
         assert "wandb_cloud_sync" in unsupported_cloud.json()["detail"]
         assert not list((tmp_path / "actions").glob("action-*"))
 
-        exact_review = client.post("/api/operations/direct", json={
+        policy_override = client.post("/api/operations/direct", json={
             "project": "demo",
             "scope_type": "run",
             "object_id": "run-a",
             "operation_id": "run.submit",
             "parameters": {"resource_approval": "review_exact"},
         })
-        assert exact_review.status_code == 200
-        action = exact_review.json()["action"]
-        assert action["preflight_summary"]["resource_approval"] == "review_exact"
-        assert action["preflight_summary"]["max_gpu_hours"] is None
-        budget_gate = next(gate for gate in action["gates"] if gate["name"] == "budget")
-        assert budget_gate["status"] == "PASS"
+        assert policy_override.status_code == 409
+        assert policy_override.headers["X-ML-Expd-Error-Code"] == "INVALID_OPERATION"
 
         unknown = client.get("/api/operations", params={
             "project": "demo", "scope_type": "run", "object_id": "missing-run",
@@ -235,8 +241,33 @@ def test_authored_unmaterialized_run_is_selectable_from_tui_read_model(tmp_path)
         assert rows[0]["provenance"] == {"observed": True}
 
 
+def test_daemon_exact_resource_policy_is_read_only_to_generic_clients(tmp_path):
+    app, _ = _app(
+        tmp_path, resource_approval="review_exact", max_gpu_hours=None,
+    )
+    with TestClient(app) as client:
+        submit = next(item for item in client.get("/api/operations", params={
+            "project": "demo", "scope_type": "run", "object_id": "run-a",
+        }).json() if item["operation"]["operation_id"] == "run.submit")
+        assert submit["metadata"]["resource_policy"] == {
+            "approval": "review_exact",
+            "max_gpu_hours": None,
+            "owner": "daemon",
+        }
+        prepared = client.post("/api/operations/direct", json={
+            "project": "demo", "scope_type": "run", "object_id": "run-a",
+            "operation_id": "run.submit", "parameters": {},
+        })
+        assert prepared.status_code == 200
+        action = prepared.json()["action"]
+        assert action["preflight_summary"]["resource_approval"] == "review_exact"
+        assert action["preflight_summary"]["max_gpu_hours"] is None
+        budget_gate = next(gate for gate in action["gates"] if gate["name"] == "budget")
+        assert budget_gate["status"] == "PASS"
+
+
 def test_cloud_ready_daemon_exposes_submission_option_without_secret_metadata(tmp_path):
-    app, runner = _app(tmp_path, cloud=True)
+    app, runner = _app(tmp_path, cloud=True, max_gpu_hours=2.0)
     with TestClient(app) as client:
         client.app.state.runtime.credential_store.set_wandb_api_key(
             "cloud-primary", "secret-cloud-key",
@@ -247,8 +278,11 @@ def test_cloud_ready_daemon_exposes_submission_option_without_secret_metadata(tm
         submit = next(item for item in operations
                       if item["operation"]["operation_id"] == "run.submit")
         parameters = {item["key"]: item for item in submit["operation"]["parameters"]}
-        assert set(parameters) == {
-            "max_gpu_hours", "resource_approval", "wandb_cloud_sync",
+        assert set(parameters) == {"wandb_cloud_sync"}
+        assert submit["metadata"]["resource_policy"] == {
+            "approval": "budget_cap",
+            "max_gpu_hours": 2.0,
+            "owner": "daemon",
         }
         assert parameters["wandb_cloud_sync"]["default"] == "no"
 
@@ -257,7 +291,7 @@ def test_cloud_ready_daemon_exposes_submission_option_without_secret_metadata(tm
             "scope_type": "run",
             "object_id": "run-a",
             "operation_id": "run.submit",
-            "parameters": {"max_gpu_hours": 2, "wandb_cloud_sync": "yes"},
+            "parameters": {"wandb_cloud_sync": "yes"},
         })
         assert prepared.status_code == 200
         encoded = repr(prepared.json())

@@ -1622,7 +1622,21 @@ class ActionService:
                 raise ActionError("observability mutations are disabled by daemon policy")
             if execution.get("status") not in {"EXECUTING", "RECONCILE_REQUIRED"}:
                 raise ActionError("observability action is not awaiting reconciliation")
-            return self._execute_internal(snapshot, execution)
+            previous = execution.get("result")
+            result = dict(previous) if isinstance(previous, dict) else {}
+            result["reconciled_read_only"] = True
+            execution.update({
+                "status": "RECONCILE_REQUIRED",
+                "last_reconciled_at": utc_now(),
+                "error": (
+                    "observability backfill cannot be replayed during reconciliation; "
+                    "inspect target status and prepare a new explicit Action if replay is needed"
+                ),
+                "result": result,
+            })
+            return self.store.set_execution(
+                action_id, execution, event="observability_reconcile_requires_operator",
+            )
         if snapshot.get("operation") == "CANCEL_RUN":
             if execution.get("status") not in {"EXECUTING", "RECONCILE_REQUIRED"}:
                 raise ActionError("cancellation is not awaiting reconciliation")

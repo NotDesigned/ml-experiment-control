@@ -44,7 +44,11 @@ Valid transitions are:
 
 Archive requires an operator reason. Restore is deliberately two-step:
 `ARCHIVED -> PAUSED -> ACTIVE`, so restoring a record cannot silently resume
-backend polling.
+backend polling. Lifecycle verbs are source-state-sensitive API operations, not
+aliases for target states: `restore` is valid only from `ARCHIVED`, `resume`
+only from `PAUSED`, and `pause` only from `ACTIVE`. A verb whose source state
+does not match must fail closed even when another transition shares its target
+state.
 
 ## Operations
 

@@ -311,12 +311,12 @@ def _find_project(projects: list[ResearchProject], name: str) -> ResearchProject
     raise HTTPException(status_code=404, detail=f"unknown project: {name}")
 
 
-def _project_lifecycle_response(request: Request, project: str,
+def _project_lifecycle_response(request: Request, project: str, action: str,
                                 state: ProjectLifecycleState,
                                 data: ProjectLifecycleRequest):
     try:
         return request.app.state.application.project_lifecycle_transition(
-            project, state, reason=data.reason,
+            project, action, state, reason=data.reason,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -402,22 +402,30 @@ def source_revision_get(project: str, source_id: str, request: Request):
 
 @router.post("/project-lifecycle/{project}/pause")
 def project_lifecycle_pause(project: str, data: ProjectLifecycleRequest, request: Request):
-    return _project_lifecycle_response(request, project, ProjectLifecycleState.PAUSED, data)
+    return _project_lifecycle_response(
+        request, project, "pause", ProjectLifecycleState.PAUSED, data,
+    )
 
 
 @router.post("/project-lifecycle/{project}/resume")
 def project_lifecycle_resume(project: str, data: ProjectLifecycleRequest, request: Request):
-    return _project_lifecycle_response(request, project, ProjectLifecycleState.ACTIVE, data)
+    return _project_lifecycle_response(
+        request, project, "resume", ProjectLifecycleState.ACTIVE, data,
+    )
 
 
 @router.post("/project-lifecycle/{project}/archive")
 def project_lifecycle_archive(project: str, data: ProjectLifecycleRequest, request: Request):
-    return _project_lifecycle_response(request, project, ProjectLifecycleState.ARCHIVED, data)
+    return _project_lifecycle_response(
+        request, project, "archive", ProjectLifecycleState.ARCHIVED, data,
+    )
 
 
 @router.post("/project-lifecycle/{project}/restore")
 def project_lifecycle_restore(project: str, data: ProjectLifecycleRequest, request: Request):
-    return _project_lifecycle_response(request, project, ProjectLifecycleState.PAUSED, data)
+    return _project_lifecycle_response(
+        request, project, "restore", ProjectLifecycleState.PAUSED, data,
+    )
 
 
 @router.post("/project-lifecycle/{project}/unregister")

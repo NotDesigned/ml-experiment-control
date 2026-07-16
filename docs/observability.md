@@ -182,8 +182,12 @@ exact `EXECUTE <action-id>` confirmation.
 
 The operation creates or re-enables the selected target and rewinds only the
 frozen Attempts' archive cursors. Sanitized record identities and target
-outbox uniqueness make the replay idempotent. Existing submissions remain
-unchanged until this operation is explicitly authorized.
+outbox uniqueness make an explicitly authorized replay idempotent. Existing
+submissions remain unchanged until this operation is explicitly authorized.
+An execute transport failure never authorizes an implicit second replay:
+reconcile must not call the backfill executor again. If the durable Action is
+not already VERIFIED, reconciliation remains `RECONCILE_REQUIRED` with an
+operator-facing explanation; a new replay requires a new explicit Action.
 
 ## Durability and concurrency
 

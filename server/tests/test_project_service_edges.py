@@ -65,13 +65,16 @@ def test_register_reports_many_unavailable_roots_and_empty_index_error(
 ])
 def test_transition_maps_registry_status(message, status):
     runtime = SimpleNamespace(
+        project_records=lambda: [SimpleNamespace(
+            project="demo", state=ProjectLifecycleState.ACTIVE,
+        )],
         transition_project=lambda *_args, **_kwargs: (_ for _ in ()).throw(
             ProjectRegistryError(message)
         ),
     )
     with pytest.raises(ApplicationError) as caught:
         ProjectApplicationService(runtime).transition(
-            "demo", ProjectLifecycleState.PAUSED,
+            "demo", "pause", ProjectLifecycleState.PAUSED,
         )
     assert caught.value.status_code == status
 
