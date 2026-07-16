@@ -32,6 +32,8 @@ SENSECORE_BASE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 SENSECORE_ATTEMPT_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 _DOCTOR_TOOL_PROBE_TIMEOUT_SECONDS = 5.0
 _DOCTOR_WORKSPACE_PROBE_TIMEOUT_SECONDS = 25.0
+_COLLECTION_LOG_TAIL = 10000
+_PROCESS_EVIDENCE_LOG_TAIL = 200
 _STRUCTURED_EVIDENCE_PREFIX = "EXPERIMENT_EVIDENCE_JSON="
 _STRUCTURED_EVIDENCE_MAX_CHARS = 1048576
 _STRUCTURED_EVIDENCE_RESERVED_KEYS = frozenset({
@@ -534,7 +536,10 @@ class SenseCoreBackend:
         return self.status(campaign, run)
 
     def collect(self, campaign, run) -> CollectionResult:
-        snapshot = self.logs(campaign, run, tail=200)
+        # Checkpoints and structured evidence are sparse compared with tqdm output
+        # and generation-evaluation logs.  Keep the public process tail bounded,
+        # but inspect the largest supported live-log window for durable evidence.
+        snapshot = self.logs(campaign, run, tail=_COLLECTION_LOG_TAIL)
         lines = snapshot["lines"]
         record = self.s.backend_record(campaign, run)
         structured = _structured_evidence(
@@ -548,7 +553,7 @@ class SenseCoreBackend:
         metric_lines = [line for line in lines if "Step " in line or "gPPL:" in line or ("plan" in line.lower() and "ppl" in line.lower())]
         process_lines = [
             line for line in lines if _STRUCTURED_EVIDENCE_PREFIX not in line
-        ]
+        ][-_PROCESS_EVIDENCE_LOG_TAIL:]
         result = {"run_id": run["run_id"], "backend": "sensecore", "model_observed": bool(metrics),
                   "latest_metric": metrics[-1] if metrics else None, "metric_log_lines": metric_lines[-20:],
                   "live_logs_expired": snapshot["expired"],
@@ -637,8 +642,20 @@ class SenseCoreBackend:
         )
         redacted = self._redact_error(result.stdout + "\n" + result.stderr)
         lines = redacted.splitlines()[-tail:]
-        expired = result.returncode != 0 and any(
-            token in redacted.lower() for token in ("expired", "403", "offline log")
+        # GNU timeout returns 124 for a healthy long-lived stream.  Do not treat
+        # that expected polling boundary as an expired log token, and do not use
+        # a bare ``403`` substring: progress such as ``403/19017`` is ordinary
+        # model output.  SenseCore's actual expiry diagnostic contains an expiry
+        # or offline-log phrase (and exits before the timeout).
+        diagnostic = redacted.lower()
+        expired = result.returncode not in {0, 124} and any(
+            token in diagnostic for token in (
+                "logs have expired",
+                "log has expired",
+                "log token expired",
+                "offline log",
+                "403 forbidden",
+            )
         )
         return {
             "run_id": run["run_id"], "backend": "sensecore",

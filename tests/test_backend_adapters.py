@@ -675,6 +675,25 @@ def test_sensecore_logs_classify_expired_stream(tmp_path):
     assert logs["backend_job_id"] == resource_name
 
 
+def test_sensecore_logs_do_not_treat_progress_step_403_as_expired(tmp_path):
+    resource_name = "sensecore-run--attempt-002"
+    progress = "Epoch 1: 403/19017 [04:24<3:23:01, 1.53it/s]"
+    fake = QueueRunner([
+        CommandResult(("stream",), 124, stdout=progress + "\n"),
+        CommandResult(("redact",), 0, stdout=progress + "\n"),
+    ])
+    backend = SenseCoreBackend(services(
+        tmp_path, fake,
+        record={"attempt_id": "attempt-002", "backend_job_id": resource_name},
+    ))
+
+    logs = backend.logs({}, sensecore_run(), tail=5)
+
+    assert logs["expired"] is False
+    assert logs["stream_exit_code"] == 124
+    assert logs["lines"] == [progress]
+
+
 def test_sensecore_collection_merges_identity_bound_structured_evidence(tmp_path):
     run = sensecore_run()
     payload = {

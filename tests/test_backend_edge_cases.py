@@ -270,6 +270,38 @@ def test_sensecore_collects_metrics_checkpoints_and_worker_fallback(tmp_path, mo
     }
 
 
+def test_sensecore_collection_uses_wide_evidence_window_but_bounds_process_tail(
+    tmp_path, monkeypatch,
+):
+    requested_tails = []
+    lines = ["checkpoint"] + [f"progress {index}" for index in range(300)]
+    service = services(tmp_path, QueueRunner([]))
+    service = replace(
+        service,
+        parse_checkpoint=lambda campaign, line: (
+            {"step": 1902, "path": "/checkpoint_1902"}
+            if line == "checkpoint" else None
+        ),
+    )
+    backend = SenseCoreBackend(service)
+
+    def fake_logs(*args, **kwargs):
+        requested_tails.append(kwargs["tail"])
+        return {"lines": lines, "expired": False}
+
+    monkeypatch.setattr(backend, "logs", fake_logs)
+    monkeypatch.setattr(backend, "workers", lambda *args: {
+        "worker_state": "ALLOCATED", "worker_evidence_available": True,
+    })
+
+    result = backend.collect({}, {"run_id": "run"})
+
+    assert requested_tails == [10000]
+    assert result["latest_completed_checkpoint"] == "/checkpoint_1902"
+    assert result["latest_completed_checkpoint_step"] == 1902
+    assert result["process_evidence"]["stdout_tail"] == lines[-200:]
+
+
 def test_sensecore_worker_unknown_and_log_tail_bounds(tmp_path):
     backend = SenseCoreBackend(services(
         tmp_path, QueueRunner([CommandResult(("workers",), 0, '[{"phase":"mystery"}]')]),
