@@ -938,12 +938,30 @@ def evidence_sources(run_dir: Path, *, attempt_id: Optional[str] = None,
         return sources
 
     mirror_attempt = _load_json(run_dir / "collection.json").get("attempt_id")
+    include_mirrors = True
     if not isinstance(mirror_attempt, str):
-        mirror_attempt = selected
-    sources.extend([
-        EvidenceSource(run_dir / "collected_run", mirror_attempt, "run_mirror"),
-        EvidenceSource(run_dir, mirror_attempt, "run_root"),
-    ])
+        # A Run-level mirror without an Attempt binding is safe only for a
+        # legacy/single-Attempt layout.  During retry submission the controller
+        # updates status.json before collection.json; treating the still-old
+        # collection as the newly selected Attempt can otherwise expose the
+        # previous Attempt's metrics under the retry identity.
+        attempts_dir = run_dir / "attempts"
+        known_attempts = (
+            [
+                value for path in attempts_dir.iterdir()
+                if (value := _safe_attempt_id(run_dir, path.name)) is not None
+            ]
+            if attempts_dir.is_dir() else []
+        )
+        if len(known_attempts) <= 1:
+            mirror_attempt = selected
+        else:
+            include_mirrors = False
+    if include_mirrors:
+        sources.extend([
+            EvidenceSource(run_dir / "collected_run", mirror_attempt, "run_mirror"),
+            EvidenceSource(run_dir, mirror_attempt, "run_root"),
+        ])
     # Attempt roots and Run mirrors are disjoint by construction.
     return sources
 

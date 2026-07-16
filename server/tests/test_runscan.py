@@ -83,6 +83,26 @@ def test_nested_collection_latest_metric_is_exact_attempt_evidence(tmp_path):
     assert row.evidence.model.attempt_id == "attempt-002"
 
 
+def test_unbound_run_mirror_is_not_attributed_to_new_retry_attempt(tmp_path):
+    run = tmp_path / "campaign" / "run-a"
+    first = run / "attempts" / "attempt-001"
+    second = run / "attempts" / "attempt-002"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (run / "status.json").write_text(json.dumps({
+        "attempt_id": "attempt-002", "state": "STARTING",
+    }), encoding="utf-8")
+    (run / "collection.json").write_text(json.dumps({
+        "latest_metric": {"step": 300, "train_loss": 0.6506},
+    }), encoding="utf-8")
+
+    records, source, attempt_id = train_metric_records(run)
+
+    assert records == []
+    assert source is None
+    assert attempt_id is None
+
+
 def test_symlinked_attempt_tree_is_not_evidence(tmp_path):
     run = tmp_path / "run-a"
     external = tmp_path / "external"
