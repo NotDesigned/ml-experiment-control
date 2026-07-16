@@ -150,19 +150,15 @@ class Collector:
         self, project: ResearchProject, row: RunIndexRow,
         actions: list[dict[str, object]],
     ) -> Path | None:
-        """Resolve the immutable campaign that actually submitted a drifted Run.
+        """Resolve the immutable campaign that actually submitted the current Attempt.
 
         Daemon-owned control roots require an execution copy of an authored
-        Campaign.  That operational-only copy has a different byte identity,
-        so the resulting Run correctly appears revision-drifted relative to
-        today's authored file.  It is safe to observe only through the exact
-        VERIFIED Action copy that froze and submitted the current Attempt.
+        Campaign.  The copy can differ only in operational fields such as
+        ``local_root`` while retaining the authored Campaign revision in the
+        Run manifest.  Therefore both MATCHED and drifted Runs must prefer the
+        exact VERIFIED Action copy that submitted the current Attempt.
         """
-        if (
-            self.action_store is None
-            or row.campaign_binding.relationship
-            != CampaignRelationship.CAMPAIGN_REVISION_DRIFT
-        ):
+        if self.action_store is None:
             return None
         attempt_id = self._current_attempt_id(row)
         origin_revision = str(row.campaign_binding.origin_revision or "")
@@ -245,9 +241,14 @@ class Collector:
                 actual = self._file_sha256(campaign)
             except OSError:
                 continue
+            approved_revision = str(action.get("campaign_revision") or "")
+            revision_matches = (
+                approved_revision == origin_revision
+                if approved_revision else origin_revision == f"campaign.{actual}"
+            )
             if (
                 action.get("execution_campaign_sha256") != f"sha256:{actual}"
-                or origin_revision != f"campaign.{actual}"
+                or not revision_matches
             ):
                 continue
             candidates.append((str(action.get("created_at") or ""), campaign))

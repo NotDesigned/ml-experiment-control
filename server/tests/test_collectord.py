@@ -151,6 +151,7 @@ def test_normal_observation_uses_exact_current_attempt(tmp_path, scheduler_attem
 def _verified_action_store(
     tmp_path: Path, *, campaign: Path, campaign_sha: str,
     attempt_id: str = "attempt-001", backend_job_id: str = "job-123",
+    campaign_revision: str | None = None,
 ):
     root = tmp_path / "actions"
     action_id = "action-verified"
@@ -165,6 +166,7 @@ def _verified_action_store(
         "run_id": "drifted-run",
         "attempt_id": attempt_id,
         "created_at": "2026-07-15T00:00:00Z",
+        "campaign_revision": campaign_revision or f"campaign.{campaign_sha}",
         "execution_campaign_file": str(execution_campaign),
         "execution_campaign_sha256": f"sha256:{campaign_sha}",
         "execution": {
@@ -222,6 +224,37 @@ def test_revision_drift_polls_exact_verified_execution_campaign(tmp_path):
     assert [call.verb for call in calls] == ["observe", "decide"]
     assert all(call.argv[2] == str(execution_campaign) for call in calls)
     assert all(call.argv[-2:] == ["--attempt-id", "attempt-001"] for call in calls)
+
+
+def test_matched_revision_prefers_daemon_execution_campaign(tmp_path):
+    project = _project(tmp_path, "camp")
+    execution_source = tmp_path / "execution-source.yml"
+    execution_source.write_text(
+        "schema_version: 1\ncampaign: camp\nlocal_root: /daemon/runs\n"
+    )
+    execution_sha = hashlib.sha256(execution_source.read_bytes()).hexdigest()
+    authored_revision = "campaign." + "a" * 64
+    action_store, execution_campaign, _ = _verified_action_store(
+        tmp_path, campaign=execution_source, campaign_sha=execution_sha,
+        campaign_revision=authored_revision,
+    )
+    row = _drifted_row(tmp_path, execution_sha)
+    row.campaign_binding = CampaignBinding(
+        relationship=CampaignRelationship.MATCHED,
+        origin_project="elf", origin_campaign="camp",
+        origin_revision=authored_revision, current_revision=authored_revision,
+    )
+    index = RunIndex(tmp_path / "index.sqlite")
+    index.upsert_run(row)
+    collector = Collector(
+        index=index, projects=[project], action_store=action_store,
+        config=CollectorConfig(dry_run=True),
+    )
+
+    calls = collector.plan_cycle()
+
+    assert [call.verb for call in calls] == ["observe", "decide"]
+    assert all(call.argv[2] == str(execution_campaign) for call in calls)
 
 
 def test_run_scoped_evaluation_can_bind_execution_campaign(tmp_path):
@@ -337,7 +370,7 @@ def test_plan_cycle_ignores_action_without_mapping_scope(tmp_path):
 @pytest.mark.parametrize(
     "tamper",
     [
-        "campaign", "digest", "job", "job_conflict", "attempt", "status",
+        "campaign", "digest", "revision", "job", "job_conflict", "attempt", "status",
         "scope", "path", "origin", "action_id", "symlink",
     ],
 )
@@ -356,6 +389,8 @@ def test_revision_drift_execution_campaign_binding_fails_closed(tmp_path, tamper
         execution_campaign.write_text("schema_version: 1\ncampaign: tampered\n")
     elif tamper == "digest":
         action["execution_campaign_sha256"] = "sha256:" + "0" * 64
+    elif tamper == "revision":
+        action["campaign_revision"] = "campaign." + "0" * 64
     elif tamper == "job":
         action["execution"]["result"]["submission"]["backend_job_id"] = "job-other"
     elif tamper == "job_conflict":
