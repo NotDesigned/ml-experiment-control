@@ -23,6 +23,7 @@ from .actions.store import ActionStore
 from .campaign_lifecycle import campaign_snapshot
 from .controller_gateway import ControllerCall, ProjectControllerGateway
 from .ingest.indexer import RunIndex, index_project
+from .ingest.runscan import collection_latest_metric, read_jsonl
 from .schemas import (
     CampaignRelationship,
     ResearchProject,
@@ -47,6 +48,7 @@ _UNSAFE_CAMPAIGN_RELATIONSHIPS = frozenset({
 })
 
 _SUBPROCESS_TIMEOUT = 300
+_OBSERVED_METRIC_HISTORY_LIMIT = 20_000
 _SUBMISSION_OPERATIONS = frozenset({
     "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION",
 })
@@ -142,6 +144,80 @@ class Collector:
             return attempt_id
         submitted = [item.attempt_id for item in row.attempts if item.has_submission]
         return submitted[-1] if submitted else None
+
+    @staticmethod
+    def _persist_observed_metric(row: RunIndexRow) -> None:
+        """Accumulate controller-published latest metrics for one exact Attempt.
+
+        This is daemon-owned derived evidence, intentionally separate from a
+        producer-authored ``train_metrics.jsonl``.  Polls repeat the latest log
+        line, so records are de-duplicated by monotonically increasing step and
+        the file is atomically rewritten instead of appended in place.
+        """
+        attempt_id = Collector._current_attempt_id(row)
+        if attempt_id is None:
+            return
+        run_dir = Path(row.run_dir)
+        attempts_dir = run_dir / "attempts"
+        attempt_dir = attempts_dir / attempt_id
+        try:
+            resolved_attempts = attempts_dir.resolve(strict=True)
+            resolved_attempt = attempt_dir.resolve(strict=True)
+            resolved_attempt.relative_to(resolved_attempts)
+        except (FileNotFoundError, OSError, ValueError):
+            return
+        if resolved_attempt.parent != resolved_attempts:
+            return
+
+        collection: dict[str, Any] = {}
+        for path in (
+            resolved_attempt / "collection.json", run_dir / "collection.json",
+        ):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            bound_attempt = payload.get("attempt_id")
+            if isinstance(bound_attempt, str) and bound_attempt != attempt_id:
+                continue
+            if collection_latest_metric(payload):
+                collection = payload
+                break
+        record = collection_latest_metric(collection)
+        step = record.get("step")
+        if (
+            isinstance(step, bool)
+            or not isinstance(step, int)
+            or step < 0
+        ):
+            return
+
+        history_path = resolved_attempt / "observed_train_metrics.jsonl"
+        records = [item for item in read_jsonl(history_path) if isinstance(item, dict)]
+        existing_index: int | None = None
+        maximum_step = -1
+        for index, item in enumerate(records):
+            value = item.get("step")
+            if isinstance(value, int) and not isinstance(value, bool):
+                maximum_step = max(maximum_step, value)
+                if value == step:
+                    existing_index = index
+        if step < maximum_step:
+            return
+        if existing_index is not None:
+            if records[existing_index] == record:
+                return
+            records[existing_index] = record
+        else:
+            records.append(record)
+        records = records[-_OBSERVED_METRIC_HISTORY_LIMIT:]
+        encoded = "".join(
+            json.dumps(item, sort_keys=True, separators=(",", ":")) + "\n"
+            for item in records
+        )
+        atomic_text(history_path, encoded)
 
     @staticmethod
     def _file_sha256(path: Path) -> str:
@@ -514,6 +590,13 @@ class Collector:
                 error = str(result.get("stderr") or result.get("stdout") or "").strip()[
                     -500:
                 ] or f"exit code {result.get('returncode')}"
+            elif call.verb == "observe":
+                row = self.index.get_run(call.project, call.run_id)
+                if row is not None:
+                    try:
+                        self._persist_observed_metric(row)
+                    except OSError as exc:
+                        error = f"could not persist observed metric history: {exc}"
             self.index.record_poll(call.project, call.run_id, call.verb, error)
             if call.verb == "observe" and error is not None:
                 failed_observations.add(run_key)

@@ -2,6 +2,7 @@
 
 import errno
 import hashlib
+import json
 import os
 import textwrap
 from pathlib import Path
@@ -583,6 +584,44 @@ def test_run_cycle_executes_and_records_errors(tmp_path):
     # decide ran last and failed; its error must be recorded.
     assert statuses["decide"].last_error == "boom"
     assert index.get_meta("collector_last_cycle_at") is not None
+
+
+def test_observed_metric_history_is_attempt_scoped_deduplicated_and_monotonic(
+    tmp_path,
+):
+    run_dir = tmp_path / "runs" / "camp" / "run-a"
+    first_attempt = run_dir / "attempts" / "attempt-001"
+    second_attempt = run_dir / "attempts" / "attempt-002"
+    first_attempt.mkdir(parents=True)
+    second_attempt.mkdir(parents=True)
+    row = RunIndexRow(
+        project="elf", run_id="run-a", campaign="camp", run_dir=str(run_dir),
+        evidence=EvidenceLayers(scheduler=EvidenceLayer(
+            state="RUNNING", attempt_id="attempt-002",
+        )),
+    )
+
+    def publish(step, loss, *, attempt_id="attempt-002"):
+        (run_dir / "collection.json").write_text(json.dumps({
+            "attempt_id": attempt_id,
+            "latest_metric": {"step": step, "train_loss": loss},
+        }), encoding="utf-8")
+        Collector._persist_observed_metric(row)
+
+    publish(100, 1.0)
+    publish(100, 0.9)
+    publish(90, 9.0)
+    publish(200, 0.5)
+    publish(300, 0.1, attempt_id="attempt-001")
+
+    history = [json.loads(line) for line in (
+        second_attempt / "observed_train_metrics.jsonl"
+    ).read_text(encoding="utf-8").splitlines()]
+    assert history == [
+        {"step": 100, "train_loss": 0.9},
+        {"step": 200, "train_loss": 0.5},
+    ]
+    assert not (first_attempt / "observed_train_metrics.jsonl").exists()
 
 
 def test_collector_lease_allows_exactly_one_owner(tmp_path):

@@ -948,18 +948,73 @@ def evidence_sources(run_dir: Path, *, attempt_id: Optional[str] = None,
     return sources
 
 
+def collection_latest_metric(collection: dict[str, Any]) -> dict[str, Any]:
+    """Return the finite scalar metric record published by a controller.
+
+    Project controllers commonly cannot mirror a remote ``train_metrics.jsonl``
+    file, but can still return its latest parsed record in
+    ``collection.json.latest_metric``.  Keep this projection deliberately
+    bounded and scalar-only: collection payloads can also contain logs,
+    artifacts, and other unbounded backend data that must never enter the
+    metric API.
+    """
+    raw = collection.get("latest_metric")
+    if not isinstance(raw, dict):
+        return {}
+    record: dict[str, Any] = {}
+    for key, value in list(raw.items())[:256]:
+        if not isinstance(key, str) or not key or len(key) > 128:
+            continue
+        if isinstance(value, bool):
+            record[key] = value
+        elif isinstance(value, int):
+            record[key] = value
+        elif isinstance(value, float) and math.isfinite(value):
+            record[key] = value
+        elif isinstance(value, str) and len(value) <= 1024:
+            record[key] = value
+    step = record.get("step")
+    if isinstance(step, float) and step.is_integer():
+        record["step"] = int(step)
+    return record
+
+
 def train_metric_records(
     run_dir: Path, *, attempt_id: Optional[str] = None, exact_attempt: bool = False,
 ) -> tuple[list[dict[str, Any]], Optional[Path], Optional[str]]:
     """Read training metrics from one coherent Attempt-scoped source."""
-    for source in evidence_sources(
+    sources = evidence_sources(
         run_dir, attempt_id=attempt_id, exact_attempt=exact_attempt,
-    ):
+    )
+    # Prefer producer-authored histories across every applicable evidence root.
+    # A daemon-derived latest-point history must not shadow a real metric file
+    # that becomes available later in a lower-precedence mirror.
+    for source in sources:
         for filename in ("train_metrics.jsonl", "metrics.jsonl"):
             path = source.root / filename
             records = read_jsonl(path)
             if records:
                 return records, path, source.attempt_id
+    for source in sources:
+        path = source.root / "observed_train_metrics.jsonl"
+        records = read_jsonl(path)
+        if records:
+            return records, path, source.attempt_id
+    # A newly observed Run is readable immediately, even before the collector
+    # has accumulated its first daemon-owned history point.
+    for source in sources:
+        path = source.root / "collection.json"
+        collection = _load_json(path)
+        bound_attempt = collection.get("attempt_id")
+        if (
+            isinstance(bound_attempt, str)
+            and source.attempt_id is not None
+            and bound_attempt != source.attempt_id
+        ):
+            continue
+        record = collection_latest_metric(collection)
+        if record:
+            return [record], path, source.attempt_id
     return [], None, attempt_id
 
 
@@ -1381,6 +1436,9 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
         if key in _COLLECTION_NON_METRIC_KEYS or not isinstance(value, (int, float, str, bool)):
             continue
         if key not in _EVAL_METRIC_KEYS:
+            latest_metrics[key] = value
+    for key, value in collection_latest_metric(collection).items():
+        if key != "timestamp" and key not in _EVAL_METRIC_KEYS:
             latest_metrics[key] = value
     # train_metrics.jsonl is fresher than collection.json when both exist.
     for key, value in train_record.items():

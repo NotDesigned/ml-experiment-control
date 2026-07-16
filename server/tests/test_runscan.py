@@ -9,6 +9,7 @@ from ml_exp_server.ingest import runscan
 from ml_exp_server.ingest.runscan import (
     discover_run_dirs, evidence_sources, evaluation_snapshot,
     evaluation_variants, is_run_dir, parse_iso_ts, scan_run_dir,
+    train_metric_records,
 )
 from tests.conftest import A1_SCHEDULER_TS, A1_WORKER_TS, FIXTURES
 
@@ -43,6 +44,43 @@ def test_attempt_identity_cannot_escape_attempts_directory(tmp_path):
     assert evidence_sources(
         run, attempt_id="../../secret-attempt", exact_attempt=True,
     ) == []
+
+
+def test_nested_collection_latest_metric_is_exact_attempt_evidence(tmp_path):
+    run = tmp_path / "campaign" / "run-a"
+    attempt = run / "attempts" / "attempt-002"
+    attempt.mkdir(parents=True)
+    (run / "manifest.yaml").write_text(
+        "project: demo\ncampaign: campaign\nrun_id: run-a\n", encoding="utf-8",
+    )
+    (run / "status.json").write_text(
+        json.dumps({"attempt_id": "attempt-002", "state": "RUNNING"}),
+        encoding="utf-8",
+    )
+    (attempt / "collection.json").write_text(json.dumps({
+        "attempt_id": "attempt-002",
+        "model_state": "OBSERVED",
+        "latest_metric": {
+            "step": 500.0,
+            "train_loss": 0.1151,
+            "bad": float("nan"),
+            "nested": {"must": "not leak"},
+        },
+    }), encoding="utf-8")
+
+    records, source, attempt_id = train_metric_records(
+        run, attempt_id="attempt-002", exact_attempt=True,
+    )
+    row = scan_run_dir(run, "demo", now=NOW)
+
+    assert records == [{"step": 500, "train_loss": 0.1151}]
+    assert source == attempt / "collection.json"
+    assert attempt_id == "attempt-002"
+    assert row.latest_metrics["step"] == 500
+    assert row.latest_metrics["train_loss"] == pytest.approx(0.1151)
+    assert "bad" not in row.latest_metrics
+    assert "nested" not in row.latest_metrics
+    assert row.evidence.model.attempt_id == "attempt-002"
 
 
 def test_symlinked_attempt_tree_is_not_evidence(tmp_path):
