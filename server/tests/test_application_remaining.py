@@ -567,6 +567,10 @@ def test_terminal_aggregate_benchmark_accepts_seed_list_and_result_artifact(
         manifest["checkpoint"] = {}
         manifest["storage"] = {"run_dir": "/data/run-a"}
         manifest["research_contract"] = {
+            "question": (
+                "Does the candidate improve a predeclared learning curve "
+                "without selecting a checkpoint after seeing the result?"
+            ),
             "required_artifacts": {
                 "common": {"result": "outputs/{run_id}.json"},
             },
@@ -597,6 +601,19 @@ def test_terminal_aggregate_benchmark_accepts_seed_list_and_result_artifact(
         gates["attempt.checkpoint_evidence"]["evidence"]["applicability"]
         == "NOT_REQUIRED"
     )
+
+    for path in (run_dir / "manifest.yaml", attempt_dir / "attempt.yaml"):
+        manifest = yaml.safe_load(path.read_text())
+        manifest["research_contract"]["required_artifacts"]["common"][
+            "checkpoint"
+        ] = "checkpoints/final.pt"
+        path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+
+    gates = gates_by_id(value._attempt_validation_gates(
+        "demo", row, attempt, attempt_dir, require_current=True,
+    ))
+
+    assert gates["attempt.checkpoint_evidence"]["status"] == "UNKNOWN"
 
 
 @pytest.mark.parametrize(("integrity", "expected"), [

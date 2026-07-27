@@ -1805,6 +1805,12 @@ class ExperimentServerApplication:
         local_checkpoints = sorted(
             path.name for path in (attempt_dir / "collected_run").glob("checkpoint*")
         )
+        research_contract = run_manifest.get("research_contract")
+        required_artifacts = (
+            research_contract.get("required_artifacts") or {}
+            if isinstance(research_contract, dict)
+            else {}
+        )
         if checkpoint and checkpoint_step is not None:
             gates.append(self._gate(
                 "attempt.checkpoint_evidence", "PASS",
@@ -1817,7 +1823,7 @@ class ExperimentServerApplication:
             and bool(run_manifest)
             and not run_manifest.get("checkpoint")
             and "checkpoint" not in json.dumps(
-                run_manifest.get("research_contract") or {},
+                required_artifacts,
                 sort_keys=True,
             ).lower()
             and not (
