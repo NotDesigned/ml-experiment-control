@@ -260,6 +260,11 @@ def test_matched_revision_prefers_daemon_execution_campaign(tmp_path):
 
     assert [call.verb for call in calls] == ["observe", "decide"]
     assert all(call.argv[2] == str(execution_campaign) for call in calls)
+    assert all("--campaign-id" in call.argv for call in calls)
+    assert all(
+        call.argv[call.argv.index("--campaign-id") + 1] == authored_revision
+        for call in calls
+    )
 
 
 def test_terminal_scheduler_state_gets_final_collection_when_attempt_is_stale(
