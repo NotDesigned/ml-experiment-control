@@ -556,6 +556,49 @@ def test_attempt_validation_complete_and_conflicting_paths(monkeypatch, tmp_path
     assert gates["attempt.evidence_identity"]["status"] == "UNKNOWN"
 
 
+def test_terminal_aggregate_benchmark_accepts_seed_list_and_result_artifact(
+    monkeypatch, tmp_path,
+):
+    run_dir, attempt_dir, row, attempt = validation_context(tmp_path)
+    for path in (run_dir / "manifest.yaml", attempt_dir / "attempt.yaml"):
+        manifest = yaml.safe_load(path.read_text())
+        manifest.pop("seed")
+        manifest["resolved_config"] = {"seeds": [801, 802, 803]}
+        manifest["checkpoint"] = {}
+        manifest["storage"] = {"run_dir": "/data/run-a"}
+        manifest["research_contract"] = {
+            "required_artifacts": {
+                "common": {"result": "outputs/{run_id}.json"},
+            },
+        }
+        path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    write_json(attempt_dir / "collection.json", {
+        "attempt_id": "a1",
+        "backend_job_id": "job-1",
+        "process_state": "SUCCEEDED",
+        "model_state": "OBSERVED",
+        "artifacts": {"result": {"records": 1, "nonempty_records": 1}},
+    })
+    value = app()
+    monkeypatch.setattr(module, "preferred_attempt_id", lambda _root: "a1")
+    monkeypatch.setattr(
+        module, "train_metric_records",
+        lambda *_args, **_kwargs: ([], None, "a1"),
+    )
+
+    gates = gates_by_id(value._attempt_validation_gates(
+        "demo", row, attempt, attempt_dir, require_current=True,
+    ))
+
+    assert gates["attempt.immutable_provenance"]["status"] == "PASS"
+    assert gates["attempt.model_evidence"]["status"] == "PASS"
+    assert gates["attempt.checkpoint_evidence"]["status"] == "PASS"
+    assert (
+        gates["attempt.checkpoint_evidence"]["evidence"]["applicability"]
+        == "NOT_REQUIRED"
+    )
+
+
 @pytest.mark.parametrize(("integrity", "expected"), [
     ({"source": False}, "BLOCKED"),
     ({"source": True}, "PASS"),

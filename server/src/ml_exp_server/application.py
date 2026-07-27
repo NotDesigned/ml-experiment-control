@@ -1579,6 +1579,17 @@ class ExperimentServerApplication:
                 attempt_value = attempt_value if attempt_value is not None else (
                     attempt_resolved.get(key) if isinstance(attempt_resolved, dict) else None
                 )
+                if run_value is None and attempt_value is None:
+                    run_value = (
+                        run_resolved.get("seeds")
+                        if isinstance(run_resolved, dict)
+                        else None
+                    )
+                    attempt_value = (
+                        attempt_resolved.get("seeds")
+                        if isinstance(attempt_resolved, dict)
+                        else None
+                    )
             compared[key] = {"run": run_value, "attempt": attempt_value}
             if run_value is None or attempt_value is None:
                 missing_immutable.append(key)
@@ -1763,6 +1774,20 @@ class ExperimentServerApplication:
                 {"expected": attempt_id, "source_attempt_id": source_attempt_id,
                  "source": str(metric_source) if metric_source else None},
             ))
+        elif not records and (
+            str(collection.get("model_state") or "").upper() == "OBSERVED"
+            and isinstance(collection.get("artifacts"), dict)
+            and sum(
+                int(item.get("records") or 0)
+                for item in collection["artifacts"].values()
+                if isinstance(item, dict)
+            ) > 0
+        ):
+            gates.append(self._gate(
+                "attempt.model_evidence", "PASS",
+                "exact-Attempt model result artifacts are observed",
+                {"source_attempt_id": source_attempt_id},
+            ))
         elif not records:
             gates.append(self._gate(
                 "attempt.model_evidence", "UNKNOWN", "no exact-Attempt model metrics found",
@@ -1786,6 +1811,24 @@ class ExperimentServerApplication:
                 "completed checkpoint is recorded for the exact Attempt",
                 {"path": checkpoint, "step": checkpoint_step,
                  "local_entries": local_checkpoints[:20]},
+            ))
+        elif (
+            terminal_success
+            and bool(run_manifest)
+            and not run_manifest.get("checkpoint")
+            and "checkpoint" not in json.dumps(
+                run_manifest.get("research_contract") or {},
+                sort_keys=True,
+            ).lower()
+            and not (
+                isinstance(run_manifest.get("storage"), dict)
+                and run_manifest["storage"].get("checkpoint_dir")
+            )
+        ):
+            gates.append(self._gate(
+                "attempt.checkpoint_evidence", "PASS",
+                "Run identity does not declare checkpoint evidence",
+                {"applicability": "NOT_REQUIRED", "local_entries": []},
             ))
         else:
             gates.append(self._gate(
