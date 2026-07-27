@@ -11,8 +11,13 @@ from typing import Any
 import yaml
 
 from .application import ApplicationError, ExperimentServerApplication, evidence_digest
+from .code_identity import project_code_identity
 from .runtime import ExperimentServerRuntime
-from .schemas import OperationScope, OperationScopeType
+from .schemas import (
+    CampaignRevision,
+    OperationScope,
+    OperationScopeType,
+)
 
 
 _SUBMISSION_OPERATIONS = {"SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION"}
@@ -36,6 +41,40 @@ def _reusable(view: dict[str, Any]) -> bool:
     return datetime.now(timezone.utc) < expires_at
 
 
+def _prepared_matches_current_authored_state(
+    view: dict[str, Any],
+    revision: CampaignRevision,
+    code_identity: dict[str, Any],
+) -> bool:
+    """Do not silently reuse a review prepared against an older checkout.
+
+    Executing/verified submissions remain bound to their immutable Action.
+    This guard applies only while the Action is still PREPARED and therefore
+    has not been authorized by an operator.
+    """
+    if view.get("status") != "PREPARED":
+        return True
+    summary = view.get("preflight_summary")
+    summary = summary if isinstance(summary, dict) else {}
+    frozen_campaign = str(summary.get("campaign_id") or "")
+    if frozen_campaign and frozen_campaign != revision.revision_id:
+        return False
+    frozen_commit = str(view.get("git_commit") or summary.get("git_commit") or "")
+    repository = code_identity.get("repository")
+    repository = repository if isinstance(repository, dict) else {}
+    current_commit = str(repository.get("commit") or "")
+    # Older/non-git Actions have no comparable commit. Preserve their
+    # idempotency behavior, while every git-backed Action with a frozen commit
+    # must still point at the current clean checkout.
+    if not frozen_commit or not current_commit:
+        return True
+    return (
+        repository.get("kind") == "git"
+        and repository.get("dirty") is False
+        and frozen_commit == current_commit
+    )
+
+
 class ExperimentSubmissionService:
     """Expose submission as an idempotent, inspectable experiment resource."""
 
@@ -53,6 +92,15 @@ class ExperimentSubmissionService:
         execution = execution if isinstance(execution, dict) else {}
         status = str(execution.get("status") or "UNKNOWN")
         action_id = str(action.get("action_id") or "")
+        git_commit = None
+        summary = action.get("preflight_summary")
+        if isinstance(summary, dict):
+            git_commit = summary.get("git_commit")
+        if not git_commit:
+            for change in action.get("semantic_changes") or []:
+                if isinstance(change, dict) and change.get("path") == "git_commit":
+                    git_commit = change.get("after")
+                    break
         if status == "PREPARED":
             next_action = "AUTHORIZE"
         elif status == "AUTHORIZED":
@@ -78,6 +126,7 @@ class ExperimentSubmissionService:
             "intent_digest": action.get("intent_digest"),
             "gates": action.get("gates") or [],
             "preflight_summary": action.get("preflight_summary") or {},
+            "git_commit": git_commit,
             "execution": execution,
         }
 
@@ -112,6 +161,7 @@ class ExperimentSubmissionService:
             action for action in self.runtime.action_store.list_for_scope(scope)
             if self._is_submission(action)
         ]
+        actions.sort(key=lambda action: str(action.get("created_at") or ""))
         return {
             "project": project,
             "run_id": run_id,
@@ -137,26 +187,6 @@ class ExperimentSubmissionService:
                         "W&B Cloud publication is unavailable",
                         code="PUBLISHER_UNAVAILABLE",
                     )
-            existing = self.list(project, run_id)["submissions"]
-            for view in reversed(existing):
-                if not _reusable(view):
-                    continue
-                existing_budget = view["preflight_summary"].get("max_gpu_hours")
-                if existing_budget is not None and float(existing_budget) != max_gpu_hours:
-                    raise ApplicationError(
-                        "an active submission exists with a different GPU-hour budget",
-                        code="SUBMISSION_INTENT_EXISTS",
-                    )
-                existing_cloud = bool(
-                    view.get("preflight_summary", {}).get("wandb_cloud_sync", False)
-                )
-                if existing_cloud != wandb_cloud_sync:
-                    raise ApplicationError(
-                        "an active submission exists with a different W&B Cloud policy",
-                        code="SUBMISSION_INTENT_EXISTS",
-                    )
-                view["reused"] = True
-                return view
             try:
                 configured = self.runtime.project(project)
             except KeyError as exc:
@@ -194,6 +224,31 @@ class ExperimentSubmissionService:
                     "authored Campaign file is unavailable",
                     code="CAMPAIGN_FILE_MISSING",
                 )
+            existing = self.list(project, run_id)["submissions"]
+            code_identity = project_code_identity(configured)
+            for view in reversed(existing):
+                if not _reusable(view):
+                    continue
+                if not _prepared_matches_current_authored_state(
+                    view, revision, code_identity,
+                ):
+                    continue
+                existing_budget = view["preflight_summary"].get("max_gpu_hours")
+                if existing_budget is not None and float(existing_budget) != max_gpu_hours:
+                    raise ApplicationError(
+                        "an active submission exists with a different GPU-hour budget",
+                        code="SUBMISSION_INTENT_EXISTS",
+                    )
+                existing_cloud = bool(
+                    view.get("preflight_summary", {}).get("wandb_cloud_sync", False)
+                )
+                if existing_cloud != wandb_cloud_sync:
+                    raise ApplicationError(
+                        "an active submission exists with a different W&B Cloud policy",
+                        code="SUBMISSION_INTENT_EXISTS",
+                    )
+                view["reused"] = True
+                return view
             row = self.runtime.index.get_run(project, run_id)
             if row is not None:
                 state = str(row.scheduler_state or "NOT_SUBMITTED").upper()

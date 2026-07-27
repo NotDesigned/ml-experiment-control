@@ -35,6 +35,7 @@ class SubmissionController:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
         self.status_visible = True
+        self.git_commit: str | None = None
 
     def __call__(self, command, *, cwd, timeout):
         self.calls.append(list(command))
@@ -45,7 +46,7 @@ class SubmissionController:
                 Path(campaign["local_root"]) / "study" / "run-a" / "manifest.yaml"
             )
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
-            manifest_path.write_text(yaml.safe_dump({
+            manifest = {
                 "identity_version": 2,
                 "run_id": "run-a",
                 "source_id": "git:abc",
@@ -62,7 +63,10 @@ class SubmissionController:
                     "expected_first_minutes": 5,
                     "max_uncheckpointed_minutes": 10,
                 },
-            }))
+            }
+            if self.git_commit is not None:
+                manifest["git_commit"] = self.git_commit
+            manifest_path.write_text(yaml.safe_dump(manifest))
             return self._result([{
                 "run_id": "run-a", "manifest_path": str(manifest_path),
                 "scheduler_mutated": False,
@@ -653,6 +657,48 @@ def test_unmaterialized_experiment_has_first_class_submission_lifecycle(tmp_path
             call for call in runner.calls if call[3] == "submit" and "--dry-run" not in call
         ]
         assert len(live_submits) == 1
+
+
+def test_prepared_submission_is_not_reused_after_checkout_change(
+    tmp_path, monkeypatch,
+):
+    app, runner = _app(tmp_path)
+    current = {"commit": "a" * 40}
+    runner.git_commit = current["commit"]
+    monkeypatch.setattr(
+        "ml_exp_server.submissions.project_code_identity",
+        lambda _project: {
+            "repository": {
+                "kind": "git",
+                "commit": current["commit"],
+                "dirty": False,
+            },
+        },
+    )
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/api/experiments/demo/run-a/submissions/prepare",
+            json={"max_gpu_hours": 2},
+        ).json()
+        assert first["status"] == "PREPARED"
+
+        current["commit"] = "b" * 40
+        runner.git_commit = current["commit"]
+        second = client.post(
+            "/api/experiments/demo/run-a/submissions/prepare",
+            json={"max_gpu_hours": 2},
+        ).json()
+
+        assert second["submission_id"] != first["submission_id"]
+        assert second["reused"] is False
+        assert second["git_commit"] == current["commit"]
+        repeated = client.post(
+            "/api/experiments/demo/run-a/submissions/prepare",
+            json={"max_gpu_hours": 2},
+        ).json()
+        assert repeated["submission_id"] == second["submission_id"]
+        assert repeated["reused"] is True
 
 
 def test_uncertain_submission_reconciles_by_status_without_resubmitting(tmp_path):

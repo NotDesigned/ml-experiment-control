@@ -134,6 +134,40 @@ def _semantic_changes(before: Any, after: Any, prefix: str = "") -> list[dict[st
     }]
 
 
+def _missing_frozen_match_fields(manifest: dict[str, Any]) -> list[str]:
+    """Return comparison paths that claim frozen identity but are absent.
+
+    Runtime-observed fields such as ``environment.torch`` are intentionally
+    deferred until collection.  Fields rooted in the Run identity, however,
+    must exist in the preview manifest before scheduler authorization.
+    """
+    contract = manifest.get("research_contract")
+    contract = contract if isinstance(contract, dict) else {}
+    comparison = contract.get("comparison")
+    comparison = comparison if isinstance(comparison, dict) else {}
+    fields = comparison.get("match_fields")
+    if not isinstance(fields, list):
+        return []
+    frozen_roots = {
+        "source_id", "image_id", "config_path", "git_commit",
+        "resolved_config", "backend", "resources", "storage", "checkpoint",
+    }
+    missing: list[str] = []
+    for value in fields:
+        if not isinstance(value, str) or not value:
+            continue
+        parts = value.split(".")
+        if parts[0] not in frozen_roots:
+            continue
+        current: Any = manifest
+        for part in parts:
+            if not isinstance(current, dict) or part not in current:
+                missing.append(value)
+                break
+            current = current[part]
+    return missing
+
+
 def _gate(name: str, passed: bool, detail: str, *, warning: bool = False) -> dict[str, Any]:
     return {
         "name": name,
@@ -1154,6 +1188,15 @@ class ActionService:
                     else "canonical execution manifest identity conflicts with preview",
                 ),
             ])
+            missing_match_fields = _missing_frozen_match_fields(manifest)
+            gates.append(_gate(
+                "comparison_identity_fields",
+                not missing_match_fields,
+                "all frozen comparison match_fields exist in the Run manifest"
+                if not missing_match_fields
+                else "missing frozen comparison match_fields: "
+                + ", ".join(missing_match_fields),
+            ))
             if campaign_revision is not None:
                 gates.append(_gate(
                     "campaign_revision_binding",
@@ -1214,6 +1257,7 @@ class ActionService:
                 "source_id": manifest.get("source_id"),
                 "image_id": manifest.get("image_id"),
                 "config_path": manifest.get("config_path"),
+                "git_commit": manifest.get("git_commit"),
                 "campaign_id": manifest.get("campaign_id"),
                 "resolved_config": manifest.get("resolved_config"),
                 "backend": backend,

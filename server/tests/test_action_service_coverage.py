@@ -8,7 +8,10 @@ import pytest
 import yaml
 
 from ml_exp_server.actions.errors import ActionError
-from ml_exp_server.actions.service import ActionService
+from ml_exp_server.actions.service import (
+    ActionService,
+    _missing_frozen_match_fields,
+)
 from ml_exp_server.actions.store import ActionStore
 from ml_exp_server.intent_protocol import OperationIntent
 from ml_exp_server.schemas import (
@@ -50,6 +53,33 @@ def synthetic_plan(store, name, operation="SUBMIT_RUN", **extra):
 
 def execution_for(plan):
     return {**plan["execution"], "status": "EXECUTING"}
+
+
+def test_frozen_comparison_match_fields_must_exist_in_preview_manifest():
+    manifest = {
+        "source_id": "source.abc",
+        "backend": {"kind": "slurm"},
+        "resolved_config": {"steps": 100},
+        "research_contract": {
+            "comparison": {
+                "match_fields": [
+                    "source_id",
+                    "backend.kind",
+                    "resolved_config.steps",
+                    "resolved_config.training_curve_steps",
+                    # Runtime-observed fields are deliberately not submission
+                    # blockers.
+                    "environment.torch",
+                ],
+            },
+        },
+    }
+
+    assert _missing_frozen_match_fields(manifest) == [
+        "resolved_config.training_curve_steps",
+    ]
+    manifest["resolved_config"]["training_curve_steps"] = [0, 100]
+    assert _missing_frozen_match_fields(manifest) == []
 
 
 def test_manifest_path_and_prepare_dispatch_edges(tmp_path, monkeypatch):
