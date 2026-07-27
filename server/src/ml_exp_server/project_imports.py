@@ -18,7 +18,7 @@ import yaml
 from experiment_control.manifest import atomic_create, atomic_write
 
 from .application_errors import ApplicationError
-from .project_config import load_research_project
+from .project_config import ConfigError, load_research_project
 from .project_service import ProjectApplicationService
 from .runtime import ExperimentServerRuntime
 
@@ -376,7 +376,13 @@ class ProjectImportService:
                     code="PROJECT_IMPORT_BLOCKED",
                 ) from exc
             _validate_manifest_paths(root, manifest)
-            loaded = load_research_project(manifest_path)
+            try:
+                loaded = load_research_project(manifest_path)
+            except ConfigError as exc:
+                raise ApplicationError(
+                    f"existing Project manifest is invalid: {exc}",
+                    code="PROJECT_IMPORT_BLOCKED",
+                ) from exc
             if project is not None and loaded.project != project_id:
                 raise ApplicationError(
                     "existing manifest Project ID conflicts with requested project",
