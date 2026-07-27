@@ -682,6 +682,8 @@ class WydSlurmBackend:
             [self.rsync_bin, "-a", "--delete", "-e", transport,
              "--include=*/", "--include=manifest.yaml", "--include=status.json",
              "--include=backend.json", "--include=events.jsonl",
+             "--include=/summary.json",
+             f"--include=/{run['run_id']}.json",
              "--include=train_metrics.jsonl", "--include=metrics.jsonl",
              "--include=all_generated_*.jsonl",
              "--include=all_token_reconstructed_*.jsonl", "--exclude=*",

@@ -532,6 +532,9 @@ def test_slurm_collection_includes_sanitized_process_evidence(tmp_path):
     ])
     summary = WydSlurmBackend(services(tmp_path, fake)).collect({}, run)
     evidence = summary["process_evidence"]
+    collect_command = fake.commands[0]
+    assert "--include=/summary.json" in collect_command
+    assert "--include=/backend-run.json" in collect_command
     assert evidence["observed"] is True
     assert evidence["stdout_tail"] == []
     assert evidence["stderr_tail"] == [
