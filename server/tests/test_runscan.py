@@ -107,6 +107,24 @@ def test_collection_identity_metadata_is_not_reported_as_model_metrics(tmp_path)
     assert "collected_at" not in row.latest_metrics
 
 
+def test_aggregate_seeds_are_exposed_as_canonical_provenance(tmp_path):
+    run = tmp_path / "campaign" / "run-a"
+    run.mkdir(parents=True)
+    (run / "manifest.yaml").write_text(
+        "project: demo\ncampaign: campaign\nrun_id: run-a\n"
+        "source_id: source-1\nimage_id: image-1\nconfig_path: config.yml\n"
+        "resolved_config:\n  seeds: [601, 602, 603]\n",
+        encoding="utf-8",
+    )
+
+    row = scan_run_dir(run, "demo")
+
+    assert row.provenance["seed"] == [601, 602, 603]
+    assert row.provenance["resolved_config_excerpt"]["seeds"] == [
+        601, 602, 603,
+    ]
+
+
 def test_unbound_run_mirror_is_not_attributed_to_new_retry_attempt(tmp_path):
     run = tmp_path / "campaign" / "run-a"
     first = run / "attempts" / "attempt-001"

@@ -660,7 +660,8 @@ _ROLE_PATTERN = re.compile(r"^[a-z]+-([a-z]\d+)-")
 _PROVENANCE_KEYS = ("git_commit", "source_id", "image_id", "config_path", "seed",
                     "campaign_id", "runtime_tree_id", "created_at")
 _CONFIG_EXCERPT_KEYS = (
-    "seed", "max_length", "global_batch_size", "epochs", "grad_accum_steps",
+    "seed", "seeds", "max_length", "global_batch_size", "epochs",
+    "grad_accum_steps",
     "use_sentence_plan", "sentence_encoder_type", "sentence_encoder_grad",
     "plan_aux_passes", "plan_aux_token_context",
     "use_wandb", "wandb_base_url", "wandb_project", "wandb_entity",
@@ -1489,6 +1490,18 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
         provenance["resolved_config_excerpt"] = {
             k: resolved[k] for k in _CONFIG_EXCERPT_KEYS if k in resolved
         }
+    if "seed" not in provenance:
+        aggregate_seed = manifest.get("seeds")
+        if aggregate_seed is None and isinstance(resolved, dict):
+            aggregate_seed = (
+                resolved.get("seed")
+                if resolved.get("seed") is not None
+                else resolved.get("seeds")
+            )
+        if aggregate_seed is not None:
+            # Keep the canonical API key stable. Its value may be one seed or
+            # an immutable aggregate seed list, matching Attempt validation.
+            provenance["seed"] = aggregate_seed
     wandb = _wandb_provenance(run_dir, attempt_dir, manifest, collection)
     if wandb is not None:
         provenance["wandb"] = wandb

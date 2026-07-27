@@ -117,6 +117,38 @@ def test_run_validate_covers_binding_provenance_and_current_attempt(
         assert gates["run.current_attempt"]["status"] == "UNKNOWN"
 
 
+def test_run_validate_accepts_an_aggregate_seed_list(monkeypatch, tmp_path):
+    manifest = {
+        "project": "demo",
+        "run_id": "run-a",
+        "campaign": "study",
+        "source_id": "source-1",
+        "image_id": "image-1",
+        "config_path": "config.yml",
+        "resolved_config": {"seeds": [601, 602, 603]},
+    }
+    (tmp_path / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+    row = SimpleNamespace(
+        run_id="run-a",
+        run_dir=str(tmp_path),
+        campaign="study",
+        campaign_binding=Dump(relationship=CampaignRelationship.MATCHED),
+        attempts=[],
+    )
+    app = application()
+    app.resolve_scope = lambda *_args: (scope(), SimpleNamespace(), row)
+    app._attempt_validation_gates = lambda *_args, **_kwargs: []
+    monkeypatch.setattr(module, "preferred_attempt_id", lambda _path: None)
+
+    payload = app.run_validate("demo", "run-a")
+    gate = {
+        item["id"]: item for item in payload["gates"]
+    }["run.provenance"]
+
+    assert gate["status"] == "PASS"
+    assert gate["evidence"]["provenance"]["seed"] == [601, 602, 603]
+
+
 def retry_context(
     *, state="FAILED", decision=None, attempts=("attempt-001",), job=None,
     run_dir=None,

@@ -1931,6 +1931,10 @@ class ExperimentServerApplication:
         seed = manifest.get("seed")
         if seed is None and isinstance(resolved, dict):
             seed = resolved.get("seed")
+        if seed is None:
+            seed = manifest.get("seeds")
+        if seed is None and isinstance(resolved, dict):
+            seed = resolved.get("seeds")
         provenance = {
             "source_id": manifest.get("source_id") or manifest.get("git_commit"),
             "image_id": manifest.get("image_id"),
