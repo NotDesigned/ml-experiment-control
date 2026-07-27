@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from experiment_control.backends.sensecore import (
 )
 from experiment_control.backends.wyd import (
     WydSlurmBackend,
+    _source_stage_lock,
     log_probe_command,
     normalize_state as normalize_slurm_state,
     parse_accounting,
@@ -378,6 +380,46 @@ def test_slurm_stage_reuses_verified_source_and_image(tmp_path):
         {}, run, "source-fixed", SourceBundle(root=Path("/local/source")),
     ) is True
     assert len(fake.commands) == 3
+
+
+def test_slurm_source_stage_lock_serializes_same_immutable_source():
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+    worker_errors: list[BaseException] = []
+
+    def first_worker():
+        try:
+            with _source_stage_lock("relay", "/data/sources/source.fixed"):
+                first_entered.set()
+                if not release_first.wait(timeout=2):
+                    raise TimeoutError("test did not release first source-stage lock")
+        except BaseException as error:
+            worker_errors.append(error)
+
+    def second_worker():
+        try:
+            if not first_entered.wait(timeout=2):
+                raise TimeoutError("first source-stage lock was never acquired")
+            with _source_stage_lock("relay", "/data/sources/source.fixed"):
+                second_entered.set()
+        except BaseException as error:
+            worker_errors.append(error)
+
+    first = threading.Thread(target=first_worker)
+    second = threading.Thread(target=second_worker)
+    first.start()
+    second.start()
+    assert first_entered.wait(timeout=2)
+    assert not second_entered.wait(timeout=0.1)
+    release_first.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert second_entered.is_set()
+    assert worker_errors == []
 
 
 @pytest.mark.parametrize(

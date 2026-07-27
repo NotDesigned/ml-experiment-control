@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import os
 import re
 import shlex
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 from .services import BackendServices
@@ -81,6 +84,32 @@ def log_probe_command(paths: list[str], *, tail: int) -> str:
         f"tail -n {tail} -- \"$path\"; exit 0; "
         "fi; done; exit 1"
     )
+
+
+@contextmanager
+def _source_stage_lock(alias: str, source_dir: str) -> Iterator[None]:
+    """Serialize publication of one immutable source on the daemon host.
+
+    Actions execute project controllers in separate processes, so an
+    in-memory lock does not protect two runs that share a source revision.
+    Without this lock both processes can observe the marker as absent and run
+    ``rsync --delete`` into the same directory; one then deletes the other's
+    temporary files and rsync exits 23. ``flock`` is process-scoped and is
+    automatically released if a controller crashes.
+    """
+    identity = hashlib.sha256(
+        f"{alias}\0{source_dir}".encode("utf-8"),
+    ).hexdigest()
+    lock_path = (
+        Path(tempfile.gettempdir())
+        / f"ml-expd-source-stage-{identity}.lock"
+    )
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 _WANDB_URL_SCAN_LIMIT = 8 * 1024 * 1024
@@ -506,23 +535,34 @@ class WydSlurmBackend:
             backend["ssh_alias"],
             shlex.join(["mkdir", "-p", backend["source_dir"], str(Path(run["storage"]["run_dir"]).parent)]),
         )
-        staged = self._remote_predicate(
-            backend["ssh_alias"], f"test -f {shlex.quote(source_marker)}",
-            operation="staged source marker probe",
-        )
-        if not staged:
-            transport = self.ssh_transport()
-            command = [self.rsync_bin, "-a", "--delete", "-e", transport]
-            command.extend(
-                argument for pattern in source_bundle.excludes
-                for argument in ("--exclude", pattern)
+        # The marker probe must be inside the cross-process critical section.
+        # Probing first and locking only the rsync retains the classic TOCTOU
+        # race that this lock is meant to close.
+        with _source_stage_lock(
+            str(backend["ssh_alias"]),
+            str(backend["source_dir"]),
+        ):
+            staged = self._remote_predicate(
+                backend["ssh_alias"],
+                f"test -f {shlex.quote(source_marker)}",
+                operation="staged source marker probe",
             )
-            command.extend([
-                f"{source_bundle.root}/",
-                f"{backend['ssh_alias']}:{backend['source_dir']}/",
-            ])
-            self.s.run_command(command)
-            self.remote_exec(backend["ssh_alias"], shlex.join(["touch", source_marker]))
+            if not staged:
+                transport = self.ssh_transport()
+                command = [self.rsync_bin, "-a", "--delete", "-e", transport]
+                command.extend(
+                    argument for pattern in source_bundle.excludes
+                    for argument in ("--exclude", pattern)
+                )
+                command.extend([
+                    f"{source_bundle.root}/",
+                    f"{backend['ssh_alias']}:{backend['source_dir']}/",
+                ])
+                self.s.run_command(command)
+                self.remote_exec(
+                    backend["ssh_alias"],
+                    shlex.join(["touch", source_marker]),
+                )
         expected_image = str(run["image_id"])
         expected_sha = expected_image.removeprefix("sha256:")
         marker = f"{backend['sif_path']}.sha256-{expected_sha}.verified"
