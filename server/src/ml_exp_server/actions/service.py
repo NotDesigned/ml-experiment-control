@@ -161,6 +161,84 @@ class ActionService:
     def _local_actor() -> str:
         return f"local-process-owner:uid={os.getuid()}:{getpass.getuser()}@{socket.gethostname()}"
 
+    def _verified_submission_campaign(
+        self,
+        *,
+        project: str,
+        run_id: str,
+        attempt_id: str,
+        backend_job_id: str,
+    ) -> Path | None:
+        """Return the immutable Campaign that submitted an exact Attempt.
+
+        Cancellation must remain possible after the authored catalog replaces
+        or removes a Run.  Bind it to the already-VERIFIED submission Action,
+        exact Attempt and scheduler job instead of reopening mutable authored
+        science.
+        """
+        candidates: list[tuple[str, Path]] = []
+        for action in self.store.list_all():
+            if (
+                action.get("operation")
+                not in {"SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION"}
+                or action.get("run_id") != run_id
+                or action.get("attempt_id") != attempt_id
+            ):
+                continue
+            scope = action.get("scope")
+            execution = action.get("execution")
+            if (
+                not isinstance(scope, dict)
+                or scope.get("project") != project
+                or not isinstance(execution, dict)
+                or execution.get("status") != "VERIFIED"
+            ):
+                continue
+            result = execution.get("result")
+            submission = (
+                result.get("submission")
+                if isinstance(result, dict)
+                else None
+            )
+            observation = (
+                result.get("observation")
+                if isinstance(result, dict)
+                else None
+            )
+            bound_jobs = {
+                str(value.get("backend_job_id") or "")
+                for value in (submission, observation)
+                if isinstance(value, dict) and value.get("backend_job_id")
+            }
+            if str(backend_job_id) not in bound_jobs:
+                continue
+            action_id = str(action.get("action_id") or "")
+            try:
+                action_root = self.store.directory(action_id).resolve()
+                candidate = Path(
+                    str(action.get("execution_campaign_file") or ""),
+                )
+                if candidate.is_symlink():
+                    continue
+                campaign = candidate.resolve(strict=True)
+                campaign.relative_to(action_root)
+            except (FileNotFoundError, OSError, ValueError):
+                continue
+            if (
+                not campaign.is_file()
+                or action.get("execution_campaign_sha256")
+                != _file_sha(campaign)
+            ):
+                continue
+            candidates.append(
+                (str(action.get("created_at") or ""), campaign),
+            )
+        return (
+            max(candidates, key=lambda item: item[0])[1]
+            if candidates
+            else None
+        )
+
     def prepare(self, scope: OperationScope, project: ResearchProject,
                 intent: OperationIntent | dict[str, Any]) -> dict[str, Any]:
         # Preparation writes preview artifacts before the immutable plan.  Keep
@@ -842,6 +920,18 @@ class ActionService:
         actual_verb = "cancel" if operation == "CANCEL_RUN" else "submit"
         execution_campaign = campaign
         execution_payload = deepcopy(authored_campaign_payload)
+        if operation == "CANCEL_RUN":
+            frozen_campaign = self._verified_submission_campaign(
+                project=project.project,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                backend_job_id=str(spec.get("backend_job_id") or ""),
+            )
+            if frozen_campaign is not None:
+                execution_campaign = frozen_campaign
+                execution_payload = _parse_mapping(
+                    frozen_campaign.read_text(encoding="utf-8"),
+                )
         authored_revision_capability = bool(
             project.controller.capabilities.get("authored_campaign_revision")
         )
@@ -1159,7 +1249,8 @@ class ActionService:
         else:
             requested_job_id = spec.get("backend_job_id")
             status_call = self.controller.build(
-                project, campaign, "status", run_id, attempt_id=attempt_id,
+                project, execution_campaign, "status", run_id,
+                attempt_id=attempt_id,
             )
             status_gate, status_result = self._run_gate(
                 "current_scheduler_status", status_call.argv, status_call.cwd,

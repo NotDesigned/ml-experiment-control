@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -745,6 +746,74 @@ def test_attempt_scoped_cancel_must_target_exact_attempt(tmp_path):
 
     with pytest.raises(ActionError, match="must target the scoped attempt_id"):
         service.prepare(scope, project, operation_intent("CANCEL_RUN", draft))
+
+
+def test_cancel_uses_verified_campaign_after_authored_run_is_replaced(tmp_path):
+    project, campaign = controller_project(tmp_path)
+    project.controller.capabilities.update({
+        "authored_campaign_revision": True,
+        "cancel_outbox": True,
+    })
+    project.daemon_run_root = (tmp_path / "daemon-runs" / "demo").resolve()
+    project.daemon_run_root.mkdir(parents=True)
+    project.run_roots = [str(project.daemon_run_root)]
+    revision = SimpleNamespace(
+        file=str(campaign),
+        revision_id=(
+            "campaign."
+            + hashlib.sha256(campaign.read_bytes()).hexdigest()
+        ),
+    )
+    project.campaigns = [
+        SimpleNamespace(current_revision=revision),
+    ]
+    runner = FakeController()
+    service = ActionService(
+        ActionStore(tmp_path / "actions"),
+        ActionRuntimeConfig(allow_scheduler_mutations=True),
+        runner,
+        actor_provider=lambda: "trusted:pi",
+    )
+    submit = service.prepare(
+        OperationScope(project="demo", scope_type="run", object_id="run-a"),
+        project,
+        operation_intent(
+            "SUBMIT_RUN", submit_draft(campaign), "submit-before-replace",
+        ),
+    )
+    service.authorize(submit["action_id"], "reviewed")
+    service.execute(
+        submit["action_id"], f"EXECUTE {submit['action_id']}",
+    )
+    frozen = Path(submit["execution_campaign_file"])
+
+    authored = yaml.safe_load(campaign.read_text())
+    authored["runs"] = [{"run_id": "run-b"}]
+    campaign.write_text(yaml.safe_dump(authored), encoding="utf-8")
+    cancel_draft = yaml.safe_dump({
+        "campaign_file": str(campaign),
+        "run_id": "run-a",
+        "attempt_id": "attempt-001",
+        "backend_job_id": "job-123",
+    })
+    cancel = service.prepare(
+        OperationScope(
+            project="demo",
+            scope_type="attempt",
+            object_id="run-a::attempt-001",
+        ),
+        project,
+        operation_intent(
+            "CANCEL_RUN", cancel_draft, "cancel-after-replace",
+        ),
+    )
+
+    assert cancel["ready"] is True
+    assert Path(cancel["execution_campaign_file"]) == frozen
+    status_call = next(
+        call for call in reversed(runner.calls) if call[3] == "status"
+    )
+    assert Path(status_call[2]) == frozen
 
 
 def test_action_prepare_rejects_intent_kind_outside_exact_scope(tmp_path):
