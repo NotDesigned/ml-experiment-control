@@ -83,6 +83,30 @@ def test_nested_collection_latest_metric_is_exact_attempt_evidence(tmp_path):
     assert row.evidence.model.attempt_id == "attempt-002"
 
 
+def test_collection_identity_metadata_is_not_reported_as_model_metrics(tmp_path):
+    run = tmp_path / "campaign" / "run-a"
+    attempt = run / "attempts" / "attempt-001"
+    attempt.mkdir(parents=True)
+    (run / "manifest.yaml").write_text(
+        "project: demo\ncampaign: campaign\nrun_id: run-a\n", encoding="utf-8",
+    )
+    (run / "status.json").write_text(json.dumps({
+        "attempt_id": "attempt-001", "state": "CANCELLED",
+    }), encoding="utf-8")
+    (run / "collection.json").write_text(json.dumps({
+        "attempt_id": "attempt-001",
+        "backend_job_id": "9667",
+        "collected_at": "2026-07-28T00:00:00Z",
+        "process_state": "CANCELLED",
+        "model_state": "NOT_OBSERVED",
+    }), encoding="utf-8")
+
+    row = scan_run_dir(run, "demo", now=NOW)
+
+    assert "backend_job_id" not in row.latest_metrics
+    assert "collected_at" not in row.latest_metrics
+
+
 def test_unbound_run_mirror_is_not_attributed_to_new_retry_attempt(tmp_path):
     run = tmp_path / "campaign" / "run-a"
     first = run / "attempts" / "attempt-001"

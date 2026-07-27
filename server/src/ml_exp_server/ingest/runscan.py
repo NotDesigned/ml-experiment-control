@@ -40,7 +40,8 @@ from ..evidence_conflicts import classify_evidence_conflicts
 
 # collection.json keys that are operational rather than scientific metrics.
 _COLLECTION_NON_METRIC_KEYS = {
-    "attempt_id", "backend", "collected_from", "project", "run_dir", "run_id",
+    "attempt_id", "backend", "backend_job_id", "collected_at",
+    "collected_from", "project", "run_dir", "run_id",
     "state", "runtime_state", "scheduler_state", "worker_state", "process_state",
     "model_state", "evidence_outcome", "evidence_unavailable_reason",
     "metric_evidence", "evidence_conflicts", "artifacts", "warnings",
