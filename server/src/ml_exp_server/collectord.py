@@ -532,7 +532,27 @@ class Collector:
             }
             for row in self.index.list_runs(project.project):
                 if (row.scheduler_state or "").upper() in TERMINAL_RUN_STATES:
-                    continue
+                    # A scheduler observation can reach the index before the
+                    # project controller performs its final observe/collect
+                    # pass.  Do not strand an exact Attempt in QUEUED/RUNNING
+                    # merely because the aggregate Run state is already
+                    # terminal.  Once the exact Attempt is terminal too, the
+                    # normal no-more-polling invariant applies.
+                    attempt_id = self._current_attempt_id(row)
+                    attempt = next(
+                        (
+                            item
+                            for item in row.attempts
+                            if item.attempt_id == attempt_id
+                        ),
+                        None,
+                    )
+                    if (
+                        attempt is None
+                        or (attempt.state or "").upper()
+                        in TERMINAL_RUN_STATES
+                    ):
+                        continue
                 execution_campaign = self._verified_execution_campaign(
                     project, row,
                     actions_by_run.get((project.project, row.run_id), []),

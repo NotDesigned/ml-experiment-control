@@ -260,6 +260,53 @@ def test_matched_revision_prefers_daemon_execution_campaign(tmp_path):
 
     assert [call.verb for call in calls] == ["observe", "decide"]
     assert all(call.argv[2] == str(execution_campaign) for call in calls)
+
+
+def test_terminal_scheduler_state_gets_final_collection_when_attempt_is_stale(
+    tmp_path,
+):
+    """Scheduler completion must not outrun exact-Attempt collection."""
+    project = _project(tmp_path, "camp")
+    execution_source = tmp_path / "execution-source.yml"
+    execution_source.write_text(
+        "schema_version: 1\ncampaign: camp\nlocal_root: /daemon/runs\n"
+    )
+    execution_sha = hashlib.sha256(execution_source.read_bytes()).hexdigest()
+    authored_revision = "campaign." + "b" * 64
+    action_store, execution_campaign, _ = _verified_action_store(
+        tmp_path,
+        campaign=execution_source,
+        campaign_sha=execution_sha,
+        campaign_revision=authored_revision,
+    )
+    row = _drifted_row(tmp_path, execution_sha)
+    row.scheduler_state = "SUCCEEDED"
+    row.evidence.scheduler.state = "SUCCEEDED"
+    row.attempts[0].state = "QUEUED"
+    row.campaign_binding = CampaignBinding(
+        relationship=CampaignRelationship.MATCHED,
+        origin_project="elf",
+        origin_campaign="camp",
+        origin_revision=authored_revision,
+        current_revision=authored_revision,
+    )
+    index = RunIndex(tmp_path / "index.sqlite")
+    index.upsert_run(row)
+    collector = Collector(
+        index=index,
+        projects=[project],
+        action_store=action_store,
+        config=CollectorConfig(dry_run=True),
+    )
+
+    calls = collector.plan_cycle()
+
+    assert [call.verb for call in calls] == ["observe", "decide"]
+    assert all(call.argv[2] == str(execution_campaign) for call in calls)
+    assert all(
+        call.argv[call.argv.index("--attempt-id") + 1] == "attempt-001"
+        for call in calls
+    )
     assert all("--campaign-id" in call.argv for call in calls)
     assert all(
         call.argv[call.argv.index("--campaign-id") + 1] == authored_revision
