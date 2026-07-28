@@ -308,6 +308,13 @@ class ExperimentSubmissionService:
             self.application.execute_action(submission_id, confirmation),
         )
 
+    def begin_execute(self, submission_id: str, confirmation: str):
+        self._snapshot(submission_id)
+        snapshot, pending = self.application.begin_action_execution(
+            submission_id, confirmation,
+        )
+        return self._view(snapshot), pending
+
     def reconcile(self, submission_id: str) -> dict[str, Any]:
         self._snapshot(submission_id)
         return self._view(self.application.reconcile_action(submission_id))

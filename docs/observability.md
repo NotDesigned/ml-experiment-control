@@ -52,6 +52,18 @@ identity, and byte offset. Truncation or replacement starts a new source
 generation; it never silently reuses an old offset. Partial trailing lines are
 not archived or published until complete.
 
+For generic progress display, training code may append records such as:
+
+```json
+{"phase":"train","seed":7,"condition":"q3","step":400,"total_steps":1000,"loss":0.31,"eta_seconds":120,"timestamp":"2026-07-28T12:00:00Z"}
+```
+
+Fields are optional and forward-compatible. `phase`, `seed`, `condition`,
+`step`, `total_steps` (or `max_steps`), `progress`, `loss`, `metric`, `r2`,
+`eta_seconds`, and `timestamp`/`time` are the portable display vocabulary.
+Missing instrumentation is reported as unavailable rather than guessed from
+logs or process lifetime.
+
 Secrets are removed before daemon persistence. Raw external output must not be
 stored first and redacted later. Log redaction uses the server's credential and
 URL rules; metric/event payloads additionally reject secret-like keys and

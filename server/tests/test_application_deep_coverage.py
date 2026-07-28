@@ -981,11 +981,17 @@ def test_attempt_eval_uses_indexed_exact_snapshot_without_rescan(tmp_path, monke
 
 
 def test_metric_payload_one_point_missing_key_and_invalid_limit():
-    records = [{"step": 1, "loss": 3.0}, {"step": 2, "loss": 2.0}]
+    records = [
+        {"step": 1, "loss": 3.0, "phase": "warmup"},
+        {"step": 2, "loss": 2.0, "phase": "train"},
+    ]
     payload = ExperimentServerApplication._metric_payload(
-        records, keys="loss, absent", max_points=1, source=None, source_attempt_id=None,
+        records, keys="loss, phase, absent", max_points=1,
+        source=None, source_attempt_id=None,
     )
-    assert payload["points"] == [{"step": 2, "timestamp": None, "loss": 2.0}]
+    assert payload["points"] == [{
+        "step": 2, "timestamp": None, "loss": 2.0, "phase": "train",
+    }]
     assert payload["missing_keys"] == ["absent"]
     with pytest.raises(ApplicationError, match="max_points must be positive"):
         ExperimentServerApplication._metric_payload(

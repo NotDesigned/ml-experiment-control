@@ -99,6 +99,18 @@ NEW_ATTEMPT_ID = OperationParameter(
     "new_attempt_id", "New Attempt ID", required=False,
     placeholder="Optional attempt-NNN identity",
 )
+NEW_RUN_ID = OperationParameter(
+    "new_run_id", "New Run ID",
+    placeholder="Use {profile} when cloning more than one fallback profile",
+)
+RUN_PROFILES = OperationParameter(
+    "profiles", "Ordered profiles", required=False,
+    placeholder="Comma-separated profiles, for example h100,h200,l40s",
+)
+CONFIG_OVERRIDES = OperationParameter(
+    "config_overrides", "Config overrides", required=False,
+    placeholder='JSON list, for example ["train_steps=10000"]',
+)
 OPERATIONS: tuple[OperationDefinition, ...] = (
     OperationDefinition(
         "question.create", "Create Research Question file",
@@ -125,6 +137,14 @@ OPERATIONS: tuple[OperationDefinition, ...] = (
         "Prepare a client-authored Campaign/Run definition with immutable identities.",
         "Project code", (OperationScopeType.CAMPAIGN, OperationScopeType.RUN), "intent",
         "Prepare a reviewable Campaign write", "DERIVE_RUN_DRAFT", (REQUEST,), 30,
+    ),
+    OperationDefinition(
+        "run.clone", "Clone Run definition",
+        "Deterministically clone an authored Run in its current Campaign. "
+        "Multiple ordered profiles prepare a fallback family in one atomic update.",
+        "Project code", (OperationScopeType.RUN,), "direct",
+        "Prepare one reviewable Campaign update", "DERIVE_RUN_DRAFT",
+        (NEW_RUN_ID, RUN_PROFILES, CONFIG_OVERRIDES, REASON), 29,
     ),
     OperationDefinition(
         "object.archive", "Archive record",

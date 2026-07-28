@@ -25,7 +25,10 @@ Protocol version 1 currently guarantees these capability families:
 - `terminal-snapshot-limits.v1`
 - `project-lifecycle.v1`
 - `actions.v1`
+- `action-resolution.v1`
+- `async-actions.v1`
 - `submissions.v1`
+- `run-clone.v1`
 - `observability.v1`
 - `bearer-auth.v1` and `tls-bind.v1`
 
@@ -50,6 +53,41 @@ override those values through the generic operation endpoint. The prepared
 Action freezes requested resources, policy cap/mode, and the resulting budget
 gate for human approval. Explicit legacy submission endpoints retain their
 operator-facing parameters for protocol compatibility.
+
+## Asynchronous Action execution
+
+`POST /api/actions/execute` and the submission execute endpoint durably claim
+the exact Action, return an `EXECUTING` snapshot immediately, and continue the
+controller call in a daemon-owned executor. The HTTP client disconnecting or
+stopping its poll does not cancel the mutation. Clients inspect the durable
+state with `GET /api/actions/{action_id}`. A daemon restart converts an
+interrupted `EXECUTING` record to `RECONCILE_REQUIRED`; it never blindly
+reissues the mutation.
+
+Every execution snapshot makes retry semantics explicit:
+
+- `SUBMITTED`: the exact scheduler identity was observed; do not retry;
+- `FAILED_BEFORE_SUBMISSION`: the scheduler was not contacted; prepare a new
+  Action;
+- `NOT_SUBMITTED_SAFE_TO_RETRY`: read-only reconciliation proved no submission;
+- `STILL_IN_PROGRESS`: the daemon currently owns execution; wait;
+- `UNKNOWN_DO_NOT_RETRY`: the effect is uncertain; reconcile without replay.
+- `APPLIED`: a non-submission effect was verified;
+- `FAILED_BEFORE_EFFECT` or `NOT_APPLIED_SAFE_TO_RETRY`: a non-submission
+  effect was proved absent, so a new Action may be prepared.
+
+`safe_to_retry` and `next_action` are normative companions to `resolution`.
+They prevent clients from deriving safety from HTTP timeouts or generic failure
+text.
+
+## Deterministic Run derivation
+
+The direct `run.clone` operation prepares one campaign update Action. It copies
+an authored Run, applies explicit `KEY=VALUE` overrides, and optionally assigns
+one profile. Multiple ordered profiles require a `{profile}` placeholder in the
+new Run ID and produce an ordered fallback family in the same atomic diff.
+This is authoring support, not queue-aware automatic scheduling: selecting and
+submitting a fallback remains an explicit reviewed operation.
 
 Health also reports the daemon-owned publisher loop separately from individual
 outbox targets. `publisher.last_error`, `last_success_at`, and

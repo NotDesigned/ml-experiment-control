@@ -10,6 +10,7 @@ import os
 import re
 import socket
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -32,7 +33,7 @@ from ..schemas import (
 from ..storage import utc_now
 from .errors import ActionError
 from .files import file_sha as _file_sha
-from .policy import ActionExecutionPolicy
+from .policy import ActionExecutionPolicy, ExecutionDispatch
 from .project_writes import (
     ProjectWriteConflict,
     ProjectWriteError,
@@ -44,6 +45,15 @@ from .store import ActionStore
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CAMPAIGN_REVISION = re.compile(r"^campaign\.[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True)
+class PendingActionExecution:
+    """A durably claimed Action whose slow executor may run in the background."""
+
+    plan: dict[str, Any]
+    execution: dict[str, Any]
+    dispatch: ExecutionDispatch
 
 
 def _sha256(data: bytes) -> str:
@@ -432,17 +442,36 @@ class ActionService:
             and all(_SAFE_ID.fullmatch(item) for item in run_ids)
         )
         intent_kind = str(intent.get("kind") or "")
-        is_update = intent_kind == "UPDATE_CAMPAIGN_DRAFT"
-        root = (project.base_dir or Path(".")) / "experiments" / "campaigns"
+        experiments_root = (project.base_dir or Path(".")) / "experiments"
+        root = experiments_root / "campaigns"
         reference = next((item for item in project.campaigns if item.name == campaign_id), None)
+        is_update = (
+            intent_kind == "UPDATE_CAMPAIGN_DRAFT"
+            or (
+                intent_kind == "DERIVE_RUN_DRAFT"
+                and reference is not None
+                and reference.current_revision is not None
+            )
+        )
         if is_update and reference is not None and reference.current_revision is not None:
             target = Path(reference.current_revision.file).resolve()
         else:
             target = root.resolve() / f"{campaign_id}.yml"
-        if is_update and (
-            scope.scope_type != OperationScopeType.CAMPAIGN or scope.object_id != campaign_id
-        ):
-            raise ActionError("Campaign update must use the exact existing Campaign scope")
+        if is_update:
+            exact_campaign_scope = (
+                scope.scope_type == OperationScopeType.CAMPAIGN
+                and scope.object_id == campaign_id
+            )
+            exact_derived_run_scope = (
+                intent_kind == "DERIVE_RUN_DRAFT"
+                and scope.scope_type == OperationScopeType.RUN
+                and scope.object_id in run_ids
+            )
+            if not exact_campaign_scope and not exact_derived_run_scope:
+                raise ActionError(
+                    "Campaign update must use the exact existing Campaign scope "
+                    "or its source Run scope"
+                )
         proposed = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
         current_payload = _parse_mapping(target.read_text(encoding="utf-8")) if target.is_file() else {}
         canonical_memberships = all(
@@ -452,7 +481,11 @@ class ActionService:
         gates = [
             _gate("schema", payload.get("schema_version") == 1,
                   "campaign schema_version must equal 1"),
-            _gate("safe_target", _inside(target, root), str(target)),
+            _gate(
+                "safe_target",
+                _inside(target, experiments_root if is_update else root),
+                str(target),
+            ),
             _gate("operation_semantics",
                   target.is_file() if is_update else not target.exists() and reference is None,
                   "update requires an existing Campaign; create requires a new identity"),
@@ -1403,11 +1436,19 @@ class ActionService:
         except RuntimeError as exc:
             raise ActionError(str(exc)) from exc
 
-    def execute(self, action_id: str, confirmation: str) -> dict[str, Any]:
+    def begin_execute(
+        self, action_id: str, confirmation: str,
+    ) -> tuple[dict[str, Any], PendingActionExecution | None]:
+        """Claim an authorized Action without waiting for its slow executor.
+
+        The claim is committed before this method returns.  A caller may safely
+        return the EXECUTING snapshot to an HTTP client and run ``finish_execute``
+        in a daemon-owned background task.  VERIFIED Actions remain idempotent.
+        """
         snapshot = self.store.snapshot(action_id)
         execution = snapshot["execution"]
         if execution.get("status") == "VERIFIED":
-            return snapshot
+            return snapshot, None
         dispatch = self.execution_policy.validate(snapshot, confirmation)
         if dispatch.local_evidence_rebuild:
             collection_path = Path(str(snapshot.get("collection_path") or ""))
@@ -1424,14 +1465,35 @@ class ActionService:
                 raise ActionError(
                     f"approved private controller snapshot is invalid: {exc}"
                 ) from exc
-        execution.update({"status": "EXECUTING", "started_at": utc_now(), "error": None})
+        execution.update({
+            "status": "EXECUTING",
+            "started_at": utc_now(),
+            "error": None,
+            "resolution": "STILL_IN_PROGRESS",
+            "safe_to_retry": False,
+            "next_action": "WAIT",
+        })
         try:
             started = self.store.begin_execution(
                 action_id, execution, intent_digest=str(snapshot["intent_digest"]),
             )
         except RuntimeError as exc:
             raise ActionError(str(exc)) from exc
-        execution = started["execution"]
+        pending = PendingActionExecution(
+            plan=snapshot,
+            # The HTTP response and worker must not share a mutable execution
+            # mapping; a fast worker could otherwise rewrite EXECUTING to
+            # VERIFIED before response serialization.
+            execution=deepcopy(started["execution"]),
+            dispatch=dispatch,
+        )
+        return started, pending
+
+    def finish_execute(self, pending: PendingActionExecution) -> dict[str, Any]:
+        """Complete one previously claimed Action."""
+        snapshot = pending.plan
+        execution = pending.execution
+        dispatch = pending.dispatch
         if dispatch.project_write:
             return self._execute_write(snapshot, execution)
         if dispatch.internal_mutation:
@@ -1439,6 +1501,11 @@ class ActionService:
         if dispatch.local_evidence_rebuild:
             return self._execute_local_evidence_rebuild(snapshot, execution)
         return self._execute_controller(snapshot, execution)
+
+    def execute(self, action_id: str, confirmation: str) -> dict[str, Any]:
+        """Synchronous compatibility wrapper used outside the HTTP adapter."""
+        started, pending = self.begin_execute(action_id, confirmation)
+        return started if pending is None else self.finish_execute(pending)
 
     def _execute_internal(
         self, plan: dict[str, Any], execution: dict[str, Any],
@@ -1451,6 +1518,9 @@ class ActionService:
             execution.update({
                 "status": "RECONCILE_REQUIRED", "finished_at": utc_now(),
                 "error": type(exc).__name__, "result": None,
+                "resolution": "UNKNOWN_DO_NOT_RETRY",
+                "safe_to_retry": False,
+                "next_action": "RECONCILE",
             })
             return self.store.set_execution(
                 plan["action_id"], execution,
@@ -1459,6 +1529,9 @@ class ActionService:
         execution.update({
             "status": "VERIFIED", "finished_at": utc_now(),
             "error": None, "result": _redact(result),
+            "resolution": "APPLIED",
+            "safe_to_retry": False,
+            "next_action": "OBSERVE_RESULT",
         })
         return self.store.set_execution(
             plan["action_id"], execution, event="internal_execution_verified",
@@ -1540,6 +1613,9 @@ class ActionService:
                         "expected_new_collection_sha256"
                     ),
                 },
+                "resolution": "UNKNOWN_DO_NOT_RETRY",
+                "safe_to_retry": False,
+                "next_action": "RECONCILE",
             })
             return self.store.set_execution(
                 plan["action_id"], execution,
@@ -1548,6 +1624,9 @@ class ActionService:
         execution.update({
             "status": "VERIFIED", "finished_at": utc_now(), "error": None,
             "result": _redact(record),
+            "resolution": "APPLIED",
+            "safe_to_retry": False,
+            "next_action": "OBSERVE_RESULT",
         })
         return self.store.set_execution(
             plan["action_id"], execution,
@@ -1566,15 +1645,20 @@ class ActionService:
                     "sha256": only_file["sha256"],
                 }
         except ProjectWriteError as exc:
+            failed_cleanly = isinstance(exc, ProjectWriteConflict) and not exc.partial
             execution.update({
-                "status": (
-                    "FAILED"
-                    if isinstance(exc, ProjectWriteConflict) and not exc.partial
-                    else "RECONCILE_REQUIRED"
-                ),
+                "status": "FAILED" if failed_cleanly else "RECONCILE_REQUIRED",
                 "finished_at": utc_now(),
                 "last_reconciled_at": utc_now(),
                 "error": str(exc),
+                "resolution": (
+                    "FAILED_BEFORE_EFFECT"
+                    if failed_cleanly else "UNKNOWN_DO_NOT_RETRY"
+                ),
+                "safe_to_retry": failed_cleanly,
+                "next_action": (
+                    "PREPARE_NEW_ACTION" if failed_cleanly else "RECONCILE"
+                ),
             })
             return self.store.set_execution(
                 plan["action_id"], execution,
@@ -1594,6 +1678,9 @@ class ActionService:
                 "finished_at": utc_now(),
                 "last_reconciled_at": utc_now(),
                 "error": f"{type(exc).__name__}: {exc}"[:1000],
+                "resolution": "UNKNOWN_DO_NOT_RETRY",
+                "safe_to_retry": False,
+                "next_action": "RECONCILE",
             })
             return self.store.set_execution(
                 plan["action_id"], execution,
@@ -1604,6 +1691,9 @@ class ActionService:
             "last_reconciled_at": execution.get("last_reconciled_at"),
             "error": None,
             "result": result,
+            "resolution": "APPLIED",
+            "safe_to_retry": False,
+            "next_action": "OBSERVE_RESULT",
         })
         return self.store.set_execution(
             plan["action_id"], execution, event="project_write_verified",
@@ -1679,6 +1769,9 @@ class ActionService:
             execution.update({
                 "status": "VERIFIED", "finished_at": utc_now(),
                 "error": None, "result": result,
+                "resolution": "SUBMITTED",
+                "safe_to_retry": False,
+                "next_action": "MONITOR_RUN",
             })
             return self.store.set_execution(
                 plan["action_id"], execution, event="submission_verified",
@@ -1692,6 +1785,9 @@ class ActionService:
         execution.update({
             "status": "RECONCILE_REQUIRED", "finished_at": utc_now(),
             "error": error, "result": result,
+            "resolution": "UNKNOWN_DO_NOT_RETRY",
+            "safe_to_retry": False,
+            "next_action": "RECONCILE",
         })
         return self.store.set_execution(
             plan["action_id"], execution, event="execution_reconcile_required",
@@ -1702,6 +1798,12 @@ class ActionService:
         snapshot = self.store.snapshot(action_id)
         execution = snapshot["execution"]
         if execution.get("status") == "VERIFIED":
+            return snapshot
+        if execution.get("status") == "EXECUTING":
+            # In a live daemon, EXECUTING is owned by the background worker
+            # that durably claimed it.  Reconciliation must not race that
+            # worker.  Startup recovery converts abandoned claims to
+            # RECONCILE_REQUIRED before the API begins serving requests.
             return snapshot
         if snapshot.get("operation") == "REBUILD_LOCAL_EVIDENCE":
             if not self.config.allow_local_evidence_rebuild:
@@ -1726,6 +1828,9 @@ class ActionService:
                     "status": "VERIFIED", "finished_at": now,
                     "last_reconciled_at": now, "error": None,
                     "result": result,
+                    "resolution": "APPLIED",
+                    "safe_to_retry": False,
+                    "next_action": "OBSERVE_RESULT",
                 })
                 return self.store.set_execution(
                     action_id, execution,
@@ -1744,6 +1849,9 @@ class ActionService:
                         "the atomic local evidence write did not execute"
                     ),
                     "result": result,
+                    "resolution": "NOT_APPLIED_SAFE_TO_RETRY",
+                    "safe_to_retry": True,
+                    "next_action": "PREPARE_NEW_ACTION",
                 })
                 return self.store.set_execution(
                     action_id, execution,
@@ -1756,6 +1864,9 @@ class ActionService:
                     "the frozen expected new digest; manual investigation is required"
                 ),
                 "result": result,
+                "resolution": "UNKNOWN_DO_NOT_RETRY",
+                "safe_to_retry": False,
+                "next_action": "RECONCILE",
             })
             return self.store.set_execution(
                 action_id, execution,
@@ -1783,6 +1894,9 @@ class ActionService:
                     "inspect target status and prepare a new explicit Action if replay is needed"
                 ),
                 "result": result,
+                "resolution": "UNKNOWN_DO_NOT_RETRY",
+                "safe_to_retry": False,
+                "next_action": "PREPARE_NEW_ACTION",
             })
             return self.store.set_execution(
                 action_id, execution, event="observability_reconcile_requires_operator",
@@ -1813,6 +1927,9 @@ class ActionService:
                 "finished_at": utc_now() if verified else execution.get("finished_at"),
                 "error": None if verified else "cancellation is not yet terminal",
                 "result": {"observation": _redact(observed)},
+                "resolution": "APPLIED" if verified else "UNKNOWN_DO_NOT_RETRY",
+                "safe_to_retry": False,
+                "next_action": "OBSERVE_RESULT" if verified else "RECONCILE",
             })
             return self.store.set_execution(
                 action_id, execution,
@@ -1843,13 +1960,33 @@ class ActionService:
             execution.update({
                 "status": "VERIFIED", "finished_at": utc_now(),
                 "last_reconciled_at": utc_now(), "error": None, "result": result,
+                "resolution": "SUBMITTED",
+                "safe_to_retry": False,
+                "next_action": "MONITOR_RUN",
             })
             return self.store.set_execution(
                 action_id, execution, event="submission_reconciled",
             )
+        observed_state = (
+            str(observed.get("state") or "").upper()
+            if isinstance(observed, dict) else ""
+        )
+        confirmed_absent = expected_job_id is None and observed_state == "NOT_SUBMITTED"
         execution.update({
-            "status": "RECONCILE_REQUIRED", "last_reconciled_at": utc_now(),
-            "error": detail, "result": result,
+            "status": "FAILED" if confirmed_absent else "RECONCILE_REQUIRED",
+            "finished_at": utc_now() if confirmed_absent else execution.get("finished_at"),
+            "last_reconciled_at": utc_now(),
+            "error": (
+                "scheduler confirms that submission did not occur"
+                if confirmed_absent else detail
+            ),
+            "result": result,
+            "resolution": (
+                "NOT_SUBMITTED_SAFE_TO_RETRY"
+                if confirmed_absent else "UNKNOWN_DO_NOT_RETRY"
+            ),
+            "safe_to_retry": confirmed_absent,
+            "next_action": "PREPARE_NEW_ACTION" if confirmed_absent else "RECONCILE",
         })
         return self.store.set_execution(
             action_id, execution, event="submission_reconcile_pending",
@@ -1884,6 +2021,9 @@ class ActionService:
                     "status": "FAILED", "finished_at": utc_now(),
                     "error": f"imported source failed execution-time validation: {exc}",
                     "result": None,
+                    "resolution": "FAILED_BEFORE_SUBMISSION",
+                    "safe_to_retry": True,
+                    "next_action": "PREPARE_NEW_ACTION",
                 })
                 return self.store.set_execution(
                     plan["action_id"], execution,
@@ -1897,6 +2037,9 @@ class ActionService:
                     "status": "FAILED", "finished_at": utc_now(),
                     "error": "submission plan has no immutable source staging command",
                     "result": None,
+                    "resolution": "FAILED_BEFORE_SUBMISSION",
+                    "safe_to_retry": True,
+                    "next_action": "PREPARE_NEW_ACTION",
                 })
                 return self.store.set_execution(
                     plan["action_id"], execution, event="execution_stage_failed",
@@ -1921,6 +2064,9 @@ class ActionService:
                     "status": "FAILED", "finished_at": utc_now(),
                     "error": error,
                     "result": {"stage_command": _redact(stage_result)},
+                    "resolution": "FAILED_BEFORE_SUBMISSION",
+                    "safe_to_retry": True,
+                    "next_action": "PREPARE_NEW_ACTION",
                 })
                 return self.store.set_execution(
                     plan["action_id"], execution, event="execution_stage_failed",
@@ -1939,6 +2085,9 @@ class ActionService:
                 "status": "RECONCILE_REQUIRED", "finished_at": utc_now(),
                 "error": "controller timed out after execution intent; inspect status before retry",
                 "result": _redact(result),
+                "resolution": "UNKNOWN_DO_NOT_RETRY",
+                "safe_to_retry": False,
+                "next_action": "RECONCILE",
             })
             return self.store.set_execution(
                 plan["action_id"], execution, event="execution_reconcile_required",
@@ -1955,6 +2104,9 @@ class ActionService:
                 "status": "FAILED", "finished_at": utc_now(),
                 "error": str(result.get("stderr") or "controller failed")[:1000],
                 "result": _redact(result),
+                "resolution": "UNKNOWN_DO_NOT_RETRY",
+                "safe_to_retry": False,
+                "next_action": "RECONCILE",
             })
             return self.store.set_execution(plan["action_id"], execution, event="execution_failed")
         if is_submission:
@@ -1964,6 +2116,9 @@ class ActionService:
         payload = result.get("payload")
         execution.update({
             "status": "VERIFIED", "finished_at": utc_now(), "result": _redact(payload),
+            "resolution": "APPLIED",
+            "safe_to_retry": False,
+            "next_action": "OBSERVE_RESULT",
         })
         return self.store.set_execution(plan["action_id"], execution, event="execution_verified")
 
@@ -1983,13 +2138,39 @@ class ActionService:
                 **action,
                 "execution": {
                     **action["execution"],
-                    "error": (
-                        action["execution"].get("error")
-                        or "startup recovery is blocked because project writes are disabled"
-                    ),
+                    "error": "; ".join(filter(None, (
+                        str(action["execution"].get("error") or ""),
+                        "startup recovery is blocked because project writes are disabled",
+                    ))),
                 },
             } for action in pending]
         recovered: list[dict[str, Any]] = []
         for action in pending:
-            recovered.append(self.reconcile(str(action["action_id"])))
+            recovered.append(self._execute_write(
+                action, dict(action["execution"]),
+            ))
+        return recovered
+
+    def recover_interrupted_executions(self) -> list[dict[str, Any]]:
+        """Mark claims abandoned by a daemon restart as reconciliation-only."""
+        recovered: list[dict[str, Any]] = []
+        for action in self.store.list_all():
+            execution = action.get("execution")
+            execution = dict(execution) if isinstance(execution, dict) else {}
+            if execution.get("status") != "EXECUTING":
+                continue
+            execution.update({
+                "status": "RECONCILE_REQUIRED",
+                "error": (
+                    execution.get("error")
+                    or "daemon restarted after execution was claimed; observe effects before retry"
+                ),
+                "resolution": "UNKNOWN_DO_NOT_RETRY",
+                "safe_to_retry": False,
+                "next_action": "RECONCILE",
+            })
+            recovered.append(self.store.set_execution(
+                str(action["action_id"]), execution,
+                event="execution_interrupted_by_restart",
+            ))
         return recovered

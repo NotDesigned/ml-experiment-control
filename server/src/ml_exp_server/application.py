@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from typing import Any
 import yaml
 
 from .authored_runs import authored_run_placeholder
+from .actions.service import PendingActionExecution
 from .application_errors import ApplicationError
 from .campaign_lifecycle import campaign_snapshot
 from .code_identity import project_code_identity
@@ -711,12 +713,16 @@ class ExperimentServerApplication:
         if operation_id == "question.create":
             if not project.research_questions_dir:
                 reasons.append("Project does not declare research_questions_dir")
-        elif operation_id in {"campaign.create", "campaign.update", "run.derive"}:
+        elif operation_id in {
+            "campaign.create", "campaign.update", "run.derive", "run.clone",
+        }:
             if project.authored_file is None or not Path(project.authored_file).is_file():
                 reasons.append("Authored research_project catalog is unavailable")
             if operation_id == "campaign.update" and getattr(resolved, "current_revision", None) is None:
                 reasons.append("Campaign has no resolved current revision")
-            if operation_id == "run.derive" and scope.scope_type == OperationScopeType.RUN:
+            if operation_id in {"run.derive", "run.clone"} and (
+                scope.scope_type == OperationScopeType.RUN
+            ):
                 memberships = getattr(resolved, "campaign_memberships", []) or []
                 if not memberships and not getattr(resolved, "campaign", None):
                     reasons.append("Run has no authored Campaign context to derive from")
@@ -942,6 +948,15 @@ class ExperimentServerApplication:
             return self.prepare_local_evidence_rebuild(
                 project, object_id, reason=reason,
             )
+        if operation_id == "run.clone":
+            return self.prepare_run_clone(
+                project,
+                object_id,
+                new_run_id=str(parameters.get("new_run_id") or ""),
+                profiles=str(parameters.get("profiles") or ""),
+                config_overrides=str(parameters.get("config_overrides") or ""),
+                reason=reason,
+            )
         if operation_id == "run.submit":
             return self.prepare_run_submit(
                 project, object_id, max_gpu_hours=budget,
@@ -1015,6 +1030,156 @@ class ExperimentServerApplication:
             return self.runtime.action_service.prepare(scope, project, intent)
         except (RuntimeError, ValueError) as exc:
             raise ApplicationError(str(exc), code="ACTION_BLOCKED") from exc
+
+    def prepare_run_clone(
+        self, project: str, source_run_id: str, *, new_run_id: str,
+        profiles: str = "", config_overrides: str = "", reason: str = "",
+    ) -> dict[str, Any]:
+        """Prepare one deterministic Campaign update from an authored Run."""
+        self._require_operation_available(
+            "run.clone", project, OperationScopeType.RUN, source_run_id,
+        )
+        scope, configured, resolved = self.resolve_scope(
+            project, OperationScopeType.RUN, source_run_id,
+        )
+        materializers = [
+            binding for binding in getattr(resolved, "campaign_memberships", []) or []
+            if binding.membership.kind == "materialize"
+        ]
+        if len(materializers) != 1:
+            raise ApplicationError(
+                "source Run must have exactly one authored materializing Campaign",
+                code="RUN_NOT_CLONEABLE",
+            )
+        campaign_name = materializers[0].campaign
+        reference = next(
+            (item for item in configured.campaigns if item.name == campaign_name), None,
+        )
+        revision = reference.current_revision if reference is not None else None
+        if revision is None:
+            raise ApplicationError(
+                "source Campaign has no current authored revision",
+                code="CAMPAIGN_REVISION_MISSING",
+            )
+        campaign_path = Path(revision.file)
+        if not campaign_path.is_absolute():
+            campaign_path = (configured.base_dir or Path(".")) / campaign_path
+        try:
+            payload = yaml.safe_load(campaign_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise ApplicationError(
+                f"source Campaign is unreadable: {exc}", code="CAMPAIGN_FILE_MISSING",
+            ) from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("runs"), list):
+            raise ApplicationError(
+                "source Campaign has no materialized runs list",
+                code="RUN_NOT_CLONEABLE",
+            )
+        source = next((
+            item for item in payload["runs"]
+            if isinstance(item, dict) and item.get("run_id") == source_run_id
+        ), None)
+        if source is None:
+            raise ApplicationError(
+                "source Run is not a materialized Campaign entry",
+                code="RUN_NOT_CLONEABLE",
+            )
+
+        profile_names = [item.strip() for item in profiles.split(",") if item.strip()]
+        if any(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", item) is None
+            for item in profile_names
+        ):
+            raise ApplicationError(
+                "profiles must contain safe profile identities",
+                code="INVALID_OPERATION",
+            )
+        if len(profile_names) > 1 and "{profile}" not in new_run_id:
+            raise ApplicationError(
+                "new_run_id must contain {profile} when profiles contains multiple entries",
+                code="INVALID_OPERATION",
+            )
+        if not profile_names:
+            profile_names = [""]
+        try:
+            override_items = json.loads(config_overrides) if config_overrides.strip() else []
+        except json.JSONDecodeError as exc:
+            raise ApplicationError(
+                f"config_overrides must be a JSON list: {exc}",
+                code="INVALID_OPERATION",
+            ) from exc
+        if not isinstance(override_items, list):
+            raise ApplicationError(
+                "config_overrides must be a JSON list of KEY=VALUE strings",
+                code="INVALID_OPERATION",
+            )
+        normalized_overrides: list[str] = []
+        override_keys: set[str] = set()
+        for item in override_items:
+            key, separator, value = item.partition("=") if isinstance(item, str) else ("", "", "")
+            if (
+                not separator
+                or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", key) is None
+                or key in override_keys
+            ):
+                raise ApplicationError(
+                    "config_overrides must use unique safe KEY=VALUE strings",
+                    code="INVALID_OPERATION",
+                )
+            override_keys.add(key)
+            normalized_overrides.append(f"{key}={value}")
+
+        existing_ids = {
+            str(item.get("run_id") or "")
+            for item in payload["runs"] if isinstance(item, dict)
+        }
+        clones = []
+        for profile in profile_names:
+            clone_id = new_run_id.replace("{profile}", profile)
+            if (
+                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", clone_id) is None
+                or clone_id in existing_ids
+            ):
+                raise ApplicationError(
+                    f"derived Run ID is unsafe or already exists: {clone_id}",
+                    code="INVALID_OPERATION",
+                )
+            clone = deepcopy(source)
+            clone["run_id"] = clone_id
+            if profile:
+                clone["profile"] = [profile]
+            current_overrides = [
+                str(item) for item in clone.get("config_overrides") or []
+            ]
+            clone["config_overrides"] = [
+                item for item in current_overrides
+                if item.partition("=")[0] not in override_keys
+            ] + normalized_overrides
+            clones.append(clone)
+            existing_ids.add(clone_id)
+        payload["runs"] = [*payload["runs"], *clones]
+        action = self._prepare_action_intent(scope, configured, {
+            "kind": "DERIVE_RUN_DRAFT",
+            "title": f"Clone {source_run_id} into {len(clones)} authored Run(s)",
+            "target": f"campaign://{project}/{campaign_name}",
+            "change_summary": (
+                reason.strip()
+                or "clone an authored Run while preserving all unspecified identity fields"
+            ),
+            "resource_estimate": "none; this Action only updates the authored Campaign",
+            "rationale": reason.strip() or "prepare reviewable Run variants",
+            "risk": "new Run definitions become submit candidates after Campaign reindexing",
+            "draft": yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+            "evidence_digest": evidence_digest(
+                self.bounded_evidence(scope, configured, resolved),
+            ),
+        })
+        return {
+            "action": action,
+            "source_run_id": source_run_id,
+            "derived_run_ids": [str(item["run_id"]) for item in clones],
+            "profiles": profile_names,
+        }
 
     def prepare_campaign_archive(
         self, project: str, campaign: str, *, reason: str,
@@ -2424,9 +2589,20 @@ class ExperimentServerApplication:
                                    code="INVALID_MAX_POINTS")
         wanted = [key.strip() for key in keys.split(",") if key.strip()] if keys else None
         total = len(records)
-        available = sorted({key for record in records for key, value in record.items()
-                            if key not in ("step", "timestamp")
-                            and isinstance(value, (int, float))})
+        available = sorted({
+            key
+            for record in records
+            for key, value in record.items()
+            if key not in ("step", "timestamp")
+            and isinstance(value, (str, int, float, bool))
+        })
+        numeric_available = sorted({
+            key
+            for record in records
+            for key, value in record.items()
+            if key not in ("step", "timestamp")
+            and isinstance(value, (int, float))
+        })
         if total <= max_points:
             sampled = records
         elif max_points == 1:
@@ -2440,11 +2616,15 @@ class ExperimentServerApplication:
             point: dict[str, Any] = {"step": record.get("step"),
                                      "timestamp": record.get("timestamp")}
             for key in wanted or [k for k in record if k not in ("step", "timestamp")]:
-                if isinstance(record.get(key), (int, float)):
-                    point[key] = record[key]
+                value = record.get(key)
+                if (
+                    isinstance(value, (int, float))
+                    or wanted is not None and isinstance(value, (str, bool))
+                ):
+                    point[key] = value
             points.append(point)
         return {
-            "points": points, "keys": wanted or available,
+            "points": points, "keys": wanted or numeric_available,
             "missing_keys": [key for key in wanted or [] if key not in available],
             "total_records": total, "downsampled": total > len(sampled),
             "source": str(source) if source else None,
@@ -2528,6 +2708,49 @@ class ExperimentServerApplication:
                 str((result.get("execution") or {}).get("status") or "UNKNOWN"),
             )
             return result
+
+    def begin_action_execution(
+        self, action_id: str, confirmation: str,
+    ) -> tuple[dict[str, Any], PendingActionExecution | None]:
+        """Durably claim an Action and return before slow controller work."""
+        try:
+            return self.runtime.action_service.begin_execute(action_id, confirmation)
+        except FileNotFoundError as exc:
+            raise ApplicationError(
+                "action not found", status_code=404, code="UNKNOWN_ACTION",
+            ) from exc
+        except RuntimeError as exc:
+            raise ApplicationError(str(exc), code="ACTION_BLOCKED") from exc
+
+    def finish_action_execution(
+        self, pending: PendingActionExecution,
+    ) -> dict[str, Any]:
+        """Finish a background Action and refresh its exact project read model."""
+        action = pending.plan
+        try:
+            result = self.runtime.action_service.finish_execute(pending)
+        except Exception as exc:
+            # The Action is already durably EXECUTING.  Preserve uncertainty;
+            # reconciliation must observe effects instead of replaying them.
+            execution = self.runtime.action_store.execution(str(action["action_id"]))
+            execution.update({
+                "status": "RECONCILE_REQUIRED",
+                "finished_at": None,
+                "error": f"{type(exc).__name__}: {exc}"[:1000],
+                "resolution": "UNKNOWN_DO_NOT_RETRY",
+                "safe_to_retry": False,
+                "next_action": "RECONCILE",
+            })
+            result = self.runtime.action_store.set_execution(
+                str(action["action_id"]), execution,
+                event="background_execution_reconcile_required",
+            )
+        if action.get("operation") in {
+            "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION", "CANCEL_RUN",
+        } or result.get("execution", {}).get("status") == "VERIFIED":
+            self._refresh_action_project(action)
+        self._activate_observability_policy(action, result)
+        return result
 
     def reconcile_action(self, action_id: str) -> dict[str, Any]:
         """Resolve an uncertain scheduler submission through exact status only."""

@@ -19,12 +19,15 @@ VERSIONED_OPENAPI_PATH = "/api/v1/openapi.json"
 CLIENT_PROTOCOL_HEADER = "X-ML-Expd-Client-Protocol"
 
 SERVER_CAPABILITIES = (
+    "action-resolution.v1",
+    "async-actions.v1",
     "actions.v1",
     "bearer-auth.v1",
     "observability.v1",
     "project-lifecycle.v1",
     "project-import.v1",
     "project-source-locator.v1",
+    "run-clone.v1",
     "source-revision-import.v1",
     "submissions.v1",
     "terminal-snapshot.v1",
@@ -110,6 +113,24 @@ class ActionExecutionResponse(BaseModel):
     last_reconciled_at: str | None = None
     result: Any = None
     error: str | None = None
+    resolution: Literal[
+        "APPLIED",
+        "FAILED_BEFORE_EFFECT",
+        "FAILED_BEFORE_SUBMISSION",
+        "NOT_APPLIED_SAFE_TO_RETRY",
+        "NOT_SUBMITTED_SAFE_TO_RETRY",
+        "STILL_IN_PROGRESS",
+        "SUBMITTED",
+        "UNKNOWN_DO_NOT_RETRY",
+    ] | None = None
+    safe_to_retry: bool | None = None
+    next_action: Literal[
+        "MONITOR_RUN",
+        "OBSERVE_RESULT",
+        "PREPARE_NEW_ACTION",
+        "RECONCILE",
+        "WAIT",
+    ] | None = None
 
 
 class ActionSnapshotResponse(BaseModel):

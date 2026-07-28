@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 import yaml
+import pytest
 from fastapi.testclient import TestClient
 
 from ml_exp_server.authored_runs import authored_run_placeholder
@@ -36,6 +39,9 @@ class SubmissionController:
         self.calls: list[list[str]] = []
         self.status_visible = True
         self.git_commit: str | None = None
+        self.block_live_submit = False
+        self.live_submit_started = threading.Event()
+        self.live_submit_release = threading.Event()
 
     def __call__(self, command, *, cwd, timeout):
         self.calls.append(list(command))
@@ -72,6 +78,9 @@ class SubmissionController:
                 "scheduler_mutated": False,
             }])
         if verb == "submit":
+            self.live_submit_started.set()
+            if self.block_live_submit:
+                assert self.live_submit_release.wait(2), "test did not release submission"
             return self._result([{
                 "run_id": "run-a", "attempt_id": "attempt-001",
                 "backend_job_id": "job-42",
@@ -105,6 +114,7 @@ def _app(
         "project": "demo",
         "campaign": "study",
         "local_root": "outputs/runs",
+        "defaults": {"resources": {"gpus": 1, "cpus": 8}},
         "runs": [{"run_id": "run-a", "research_role": "candidate"}],
     }, sort_keys=False))
     project_file = experiments / "research_project.yaml"
@@ -160,6 +170,19 @@ def _app(
 
     app.state.runtime_initializers.append(configure_runtime)
     return app, runner
+
+
+def _action(client: TestClient, action_id: str) -> dict:
+    deadline = time.monotonic() + 2
+    while True:
+        response = client.get(f"/api/actions/{action_id}")
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        if payload["execution"]["status"] != "EXECUTING":
+            return payload
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"action remained EXECUTING: {action_id}")
+        time.sleep(0.01)
 
 
 def test_authored_unmaterialized_run_is_selectable_from_tui_read_model(tmp_path):
@@ -245,6 +268,58 @@ def test_authored_unmaterialized_run_is_selectable_from_tui_read_model(tmp_path)
         assert rows[0]["provenance"] == {"observed": True}
 
 
+def test_run_clone_prepares_one_atomic_fallback_family(tmp_path):
+    app, _ = _app(tmp_path)
+    with TestClient(app) as client:
+        prepared = client.post("/api/operations/direct", json={
+            "project": "demo",
+            "scope_type": "run",
+            "object_id": "run-a",
+            "operation_id": "run.clone",
+            "parameters": {
+                "new_run_id": "run-a-{profile}",
+                "profiles": "h100,h200",
+                "config_overrides": '["train_steps=10000"]',
+                "reason": "ordered hardware fallback",
+            },
+        })
+        assert prepared.status_code == 200, prepared.text
+        payload = prepared.json()
+        assert payload["derived_run_ids"] == ["run-a-h100", "run-a-h200"]
+        action = payload["action"]
+        assert action["ready"] is True
+        proposed = yaml.safe_load(action["proposed_content"])
+        clones = proposed["runs"][-2:]
+        assert [item["profile"] for item in clones] == [["h100"], ["h200"]]
+        assert all(
+            "train_steps=10000" in item["config_overrides"] for item in clones
+        )
+
+
+@pytest.mark.parametrize(("profiles", "overrides"), [
+    ("../../queue", "[]"),
+    ("h100", '["train_steps=1", "train_steps=2"]'),
+])
+def test_run_clone_rejects_unsafe_or_ambiguous_variant_inputs(
+    tmp_path, profiles, overrides,
+):
+    app, _ = _app(tmp_path)
+    with TestClient(app) as client:
+        response = client.post("/api/operations/direct", json={
+            "project": "demo",
+            "scope_type": "run",
+            "object_id": "run-a",
+            "operation_id": "run.clone",
+            "parameters": {
+                "new_run_id": "run-a-derived",
+                "profiles": profiles,
+                "config_overrides": overrides,
+            },
+        })
+        assert response.status_code == 409
+        assert response.headers["X-ML-Expd-Error-Code"] == "INVALID_OPERATION"
+
+
 def test_daemon_exact_resource_policy_is_read_only_to_generic_clients(tmp_path):
     app, _ = _app(
         tmp_path, resource_approval="review_exact", max_gpu_hours=None,
@@ -314,6 +389,8 @@ def test_cloud_ready_daemon_exposes_submission_option_without_secret_metadata(tm
             "action_id": action_id, "confirmation": f"EXECUTE {action_id}",
         })
         assert executed.status_code == 200, executed.text
+        assert executed.json()["execution"]["status"] == "EXECUTING"
+        assert _action(client, action_id)["execution"]["status"] == "VERIFIED"
         live_submit = next(
             call for call in runner.calls
             if call[3] == "submit" and "--dry-run" not in call
@@ -390,11 +467,43 @@ def test_reconcile_required_does_not_activate_cloud_target(tmp_path):
             json={"confirmation": f"EXECUTE {action_id}"},
         )
         assert result.status_code == 200
-        assert result.json()["status"] == "RECONCILE_REQUIRED"
+        assert result.json()["status"] == "EXECUTING"
+        assert _action(client, action_id)["execution"]["status"] == "RECONCILE_REQUIRED"
         targets = client.get(
             "/api/observability/attempts/demo/run-a/attempt-001",
         ).json()["targets"]
         assert targets == []
+
+
+def test_execute_response_is_not_blocked_by_live_submission(tmp_path):
+    app, runner = _app(tmp_path)
+    runner.block_live_submit = True
+    with TestClient(app) as client:
+        prepared = client.post(
+            "/api/experiments/demo/run-a/submissions/prepare",
+            json={"max_gpu_hours": 2},
+        ).json()
+        action_id = prepared["submission_id"]
+        client.post(
+            f"/api/submissions/{action_id}/authorize",
+            json={"note": "reviewed"},
+        )
+        try:
+            started = time.monotonic()
+            response = client.post(
+                f"/api/submissions/{action_id}/execute",
+                json={"confirmation": prepared["confirmation"]},
+            )
+            elapsed = time.monotonic() - started
+            assert response.status_code == 200
+            assert response.json()["status"] == "EXECUTING"
+            assert elapsed < 0.5
+            assert runner.live_submit_started.wait(0.5)
+            live = client.get(f"/api/actions/{action_id}").json()
+            assert live["execution"]["status"] == "EXECUTING"
+        finally:
+            runner.live_submit_release.set()
+        assert _action(client, action_id)["execution"]["status"] == "VERIFIED"
 
 
 def test_audited_observability_backfill_operation_rewinds_exact_attempt(tmp_path):
@@ -448,8 +557,10 @@ def test_audited_observability_backfill_operation_rewinds_exact_attempt(tmp_path
             "action_id": action_id, "confirmation": f"EXECUTE {action_id}",
         })
         assert executed.status_code == 200, executed.text
-        assert executed.json()["execution"]["status"] == "VERIFIED"
-        assert executed.json()["execution"]["result"] == {
+        assert executed.json()["execution"]["status"] == "EXECUTING"
+        completed = _action(client, action_id)
+        assert completed["execution"]["status"] == "VERIFIED"
+        assert completed["execution"]["result"] == {
             "target": "cloud", "attempt_count": 1, "rewound_attempts": 1,
         }
         assert app.state.runtime.observability_store.get_cursor(source) is None
@@ -651,8 +762,13 @@ def test_unmaterialized_experiment_has_first_class_submission_lifecycle(tmp_path
             f"/api/submissions/{submission['submission_id']}/execute",
             json={"confirmation": submission["confirmation"]},
         ).json()
-        assert executed["status"] == "VERIFIED"
-        assert executed["execution"]["result"]["observation"]["state"] == "QUEUED"
+        assert executed["status"] == "EXECUTING"
+        _action(client, submission["submission_id"])
+        completed = client.get(
+            f"/api/submissions/{submission['submission_id']}",
+        ).json()
+        assert completed["status"] == "VERIFIED"
+        assert completed["execution"]["result"]["observation"]["state"] == "QUEUED"
         live_submits = [
             call for call in runner.calls if call[3] == "submit" and "--dry-run" not in call
         ]
@@ -717,7 +833,10 @@ def test_uncertain_submission_reconciles_by_status_without_resubmitting(tmp_path
             f"/api/submissions/{prepared['submission_id']}/execute",
             json={"confirmation": prepared["confirmation"]},
         ).json()
-        assert uncertain["status"] == "RECONCILE_REQUIRED"
+        assert uncertain["status"] == "EXECUTING"
+        assert _action(
+            client, prepared["submission_id"],
+        )["execution"]["status"] == "RECONCILE_REQUIRED"
 
         runner.status_visible = True
         reconciled = client.post(
