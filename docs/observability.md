@@ -5,6 +5,10 @@ archival and W&B publication. W&B is a query and visualization mirror. Backend
 run files remain canonical for experiment identity, status, logs, metrics,
 events, checkpoints, and artifacts.
 
+The proposed metrics-only successor is documented in
+[wandb-simplification.md](wandb-simplification.md). That design has not replaced
+the current bridge described below.
+
 ## Data flow
 
 ```text

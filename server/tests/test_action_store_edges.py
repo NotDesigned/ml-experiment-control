@@ -9,7 +9,7 @@ import pytest
 from ml_exp_server.actions import store as store_module
 from ml_exp_server.actions.store import ActionStore
 from ml_exp_server.schemas import OperationScope, OperationScopeType
-from ml_exp_server.storage import DurableSnapshot, StorageError, TransitionConflict, atomic_json
+from ml_exp_server.storage import StorageError, TransitionConflict, atomic_json
 
 
 def _scope() -> OperationScope:
@@ -33,7 +33,7 @@ def _prepared(tmp_path):
 def test_execution_snapshot_without_plan_remains_empty(tmp_path):
     store = ActionStore(tmp_path / "actions")
     action_id = store.action_id(_scope(), "missing")
-    assert store._execution_snapshot(action_id).value == {}
+    assert store.execution(action_id) == {}
 
 
 def test_execution_snapshot_rejects_embedded_revision_drift(tmp_path):
@@ -106,10 +106,8 @@ def test_activity_errors_validate_phase_and_round_trip(tmp_path):
 def test_set_execution_maps_transition_conflict(monkeypatch, tmp_path):
     store, action_id = _prepared(tmp_path)
     current = store.execution(action_id)
-    state = store._execution_state(action_id)
-    monkeypatch.setattr(store, "_execution_state", lambda _action_id: state)
     monkeypatch.setattr(
-        state,
+        store.database,
         "commit",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             TransitionConflict("lost CAS")

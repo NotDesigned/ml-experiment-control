@@ -39,10 +39,6 @@ def test_action_store_is_immutable_claimed_once_and_fails_closed_on_corruption(t
     assert saved["execution"]["status"] == "BLOCKED"
     assert store.save_plan({**plan, "operation": "MUTATED"})["operation"] == "BLOCKED_TEST"
 
-    store.claim_execution(action_id)
-    with pytest.raises(RuntimeError, match="already been claimed"):
-        store.claim_execution(action_id)
-
     directory = store.directory(action_id)
     store.append_journal(action_id, "valid", {})
     assert store.snapshot(action_id)["journal"][-1]["event"] == "valid"

@@ -26,13 +26,25 @@ This change does not remove the long lock around remote prepare checks.
    revisions, execution results, and audit history on an isolated copy first.
 4. Start the new daemon and verify its authenticated read endpoints and logs.
 
-Legacy records are imported once per Action. Legacy journal repair runs on
-private temporary copies; original JSON/JSONL files are retained unchanged.
-Invalid state, revision drift, an incomplete journal history, or an unreadable
-plan stops explicit migration. An interrupted migration can be rerun: committed
-rows remain authoritative, and uncommitted rows are imported on the next try.
-The `.sqlite-authoritative` marker prevents silent fallback to stale files if
-the database disappears. Never delete the database to fix a failed migration.
+Legacy compatibility belongs only to the explicit migration command. The
+runtime reads and writes SQLite and refuses an unmigrated Action instead of
+reading its JSON or resetting its state. Unknown read-only queries do not create
+empty database records. A new plan interrupted before initial state creation
+can still be initialized when it has no legacy execution/journal files.
+
+The migration command imports all missing Action rows in one transaction and
+never overwrites an existing SQLite row. Legacy journal repair runs on private
+temporary copies; original JSON/JSONL files are retained unchanged. Invalid
+state, revision drift, incomplete journal history, or an unreadable plan aborts
+the import. An interrupted command can be rerun. The `.sqlite-authoritative`
+marker prevents silent fallback if the database disappears. Never delete the
+database to fix a failed migration.
+
+Status and caller revision checks live in the single database commit method.
+ActionStore delegates ordinary transitions and execution claims to this method;
+there is no per-Action SQLite wrapper or second file-based execution-claim API.
+The `execution.claim` file remains a best-effort audit artifact. SQLite state
+and the same-transaction audit event remain authoritative.
 
 New state changes do **not** update legacy `execution.json` or `journal.jsonl`.
 Use the API or ActionStore for current state. SQLite backups must use the backup
@@ -40,6 +52,10 @@ API or a stopped-service copy that includes WAL state; copying only an active
 `.sqlite3` file is insufficient.
 
 ## Roll back after new writes
+
+The simplified runtime retains schema version 1 and the same payload/event
+format. Returning to the preceding SQLite runtime does not need a data export.
+The following export is needed only for a version that reads legacy JSON.
 
 Stop the daemon and operator processes, keep a current database backup, then use
 the **new** environment to export all current state into a new directory:

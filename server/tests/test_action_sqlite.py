@@ -51,6 +51,7 @@ def test_migration_and_rollback_preserve_all_states_and_original_bytes(tmp_path)
         old = DurableJsonState(export / ACTION / 'execution.json', export / ACTION / 'journal.jsonl')
         assert old.snapshot({}).value == snapshot['execution']
         old.repair_journal(old.snapshot({}))
+        migrate(export)
         assert ActionStore(export).snapshot(ACTION) == snapshot
         with pytest.raises(FileExistsError):
             migrate(root, export)
@@ -63,6 +64,7 @@ def test_import_repairs_only_private_copy_and_never_reimports_stale_json(tmp_pat
     journal = directory / 'journal.jsonl'
     first = journal.read_bytes().splitlines(keepends=True)[0]
     journal.write_bytes(first + b'{"truncated":')
+    migrate(tmp_path)
     store = ActionStore(tmp_path)
     snapshot = store.snapshot(ACTION)
     assert len(snapshot['journal']) == 2
@@ -81,9 +83,12 @@ def test_corrupt_legacy_fails_closed_and_migration_can_resume(tmp_path):
     original = path.read_text()
     path.write_text('{broken')
     store = ActionStore(tmp_path)
-    with pytest.raises(StorageError, match='unreadable'):
+    with pytest.raises(StorageError, match='explicit migration'):
         store.snapshot(ACTION)
+    with pytest.raises(StorageError, match='unreadable'):
+        migrate(tmp_path)
     path.write_text(original)
+    migrate(tmp_path)
     assert store.snapshot(ACTION)['execution']['revision'] == 2
     bad = tmp_path / 'action-bad'
     bad.mkdir()
@@ -97,6 +102,7 @@ def test_legacy_without_metadata_and_missing_execution_are_distinct(tmp_path):
     directory = legacy(root)
     atomic_json(directory / 'execution.json', {'status': 'FAILED'})
     (directory / 'journal.jsonl').write_text('{"event":"old audit"}\n')
+    migrate(root)
     store = ActionStore(root)
     assert store.execution(ACTION) == {'status': 'FAILED', 'revision': 0}
     export = tmp_path / 'export'
@@ -106,14 +112,14 @@ def test_legacy_without_metadata_and_missing_execution_are_distinct(tmp_path):
     directory2 = legacy(root2)
     (directory2 / 'execution.json').unlink()
     with pytest.raises(StorageError, match='without execution'):
-        ActionStore(root2).execution(ACTION)
+        migrate(root2)
     root3 = tmp_path / 'drift'
     directory3 = legacy(root3)
     raw = json.loads((directory3 / 'execution.json').read_text())
     raw['revision'] = 99
     atomic_json(directory3 / 'execution.json', raw)
     with pytest.raises(StorageError, match='revision does not match'):
-        ActionStore(root3).execution(ACTION)
+        migrate(root3)
 
 
 def test_event_write_failure_rolls_back_state_and_revision(tmp_path):
@@ -126,11 +132,10 @@ def test_event_write_failure_rolls_back_state_and_revision(tmp_path):
     assert store.snapshot(ACTION) == before
     with store.database.transaction() as conn:
         conn.execute('DROP TRIGGER fail_event')
-    state = store._execution_state(ACTION)
-    with pytest.raises(TransitionConflict):
-        state.commit({'revision': 2}, event={}, expected_revision=0)
-    with pytest.raises(StorageError, match='committed revision'):
-        state.commit({'revision': 99}, event={}, expected_revision=1)
+    with pytest.raises(TransitionConflict, match='expected revision'):
+        store.database.commit(ACTION, {'revision': 0}, event={})
+    with pytest.raises(TransitionConflict, match='expected revision'):
+        store.database.commit(ACTION, {'revision': 99}, event={})
     assert store.snapshot(ACTION) == before
 
 
@@ -207,4 +212,54 @@ def test_legacy_journal_cannot_advance_without_authoritative_metadata(tmp_path):
     directory = legacy(tmp_path)
     atomic_json(directory / 'execution.json', {'status': 'AUTHORIZED'})
     with pytest.raises(StorageError, match='without authoritative metadata'):
-        ActionStore(tmp_path).execution(ACTION)
+        migrate(tmp_path)
+
+
+def test_runtime_refuses_legacy_state_and_reads_do_not_create_actions(tmp_path, monkeypatch):
+    directory = legacy(tmp_path)
+    originals = {p.name: p.read_bytes() for p in directory.iterdir()}
+    store = ActionStore(tmp_path)
+    with pytest.raises(StorageError, match='explicit migration'):
+        store.snapshot(ACTION)
+    assert {p.name: p.read_bytes() for p in directory.iterdir()} == originals
+    migrate(tmp_path)
+    # The runtime cannot decode or repair legacy JSON after explicit import.
+    monkeypatch.setattr(DurableJsonState, 'snapshot', lambda *_: pytest.fail('legacy code used'))
+    assert store.execution(ACTION)['status'] == 'RECONCILE_REQUIRED'
+    assert store.execution('action-unknown') == {}
+    assert store.database.journal('action-unknown') == []
+    with store.database.transaction() as connection:
+        assert connection.execute('SELECT count(*) FROM executions').fetchone()[0] == 1
+
+
+def test_explicit_import_is_all_or_nothing_and_preserves_committed_sqlite(tmp_path):
+    first = legacy(tmp_path)
+    broken = tmp_path / 'action-ffffffffffffffff'
+    broken.mkdir()
+    atomic_json(broken / 'plan.json', {'action_id': broken.name, 'ready': True})
+    (broken / 'execution.json').write_text('{broken')
+    with pytest.raises(StorageError, match='unreadable'):
+        migrate(tmp_path)
+    with sqlite3.connect(tmp_path / 'actions.sqlite3') as connection:
+        assert connection.execute('SELECT count(*) FROM executions').fetchone()[0] == 0
+        assert connection.execute('SELECT count(*) FROM events').fetchone()[0] == 0
+    (broken / 'execution.json').unlink()
+    assert migrate(tmp_path)['actions'] == 2
+    store = ActionStore(tmp_path)
+    before = store.snapshot(ACTION)
+    (first / 'execution.json').write_text('stale and broken')
+    assert migrate(tmp_path)['actions'] == 2
+    assert store.snapshot(ACTION) == before
+
+
+def test_single_transaction_checks_status_revision_and_keeps_caller_immutable(tmp_path):
+    store = prepared(tmp_path)
+    prepared_state = store.execution(ACTION)
+    proposed = {**prepared_state, 'status': 'AUTHORIZED'}
+    result = store.database.commit(ACTION, proposed, event={'event': 'authorized'}, expected_status='PREPARED')
+    assert result['revision'] == 2 and proposed['revision'] == 1
+    with pytest.raises(TransitionConflict, match='expected PREPARED, found AUTHORIZED'):
+        store.database.commit(ACTION, proposed, event={}, expected_status='PREPARED')
+    with pytest.raises(TransitionConflict, match='expected revision 1, found 2'):
+        store.database.commit(ACTION, proposed, event={})
+    assert store.execution(ACTION) == result
