@@ -31,7 +31,7 @@ class Store:
     def revive_terminal(self, target):
         self.calls.append(("revive", target))
 
-    def claim(self, target, worker, limit):
+    def claim(self, target, worker, limit, **kwargs):
         self.calls.append(("claim", target, limit))
         if target == "local":
             result, self.items = self.items, []
@@ -134,10 +134,10 @@ def test_publish_once_maps_unacknowledged_result(tmp_path):
     store = Store([outbox()])
     value = coordinator(tmp_path, store)
     value._target_config = lambda *_args: config(tmp_path)
-    value.publisher = SimpleNamespace(publish=lambda *_args: PublishResult(
+    value.publisher = SimpleNamespace(publish_batch=lambda *_args: [PublishResult(
         acknowledged=False, target=TargetKind.LOCAL, record_key="record",
         run_id="run", dashboard_url=None, error_class=None,
-    ))
+    )])
     value.publish_once()
     assert ("retry", 1, "PublisherError") in store.calls
 
@@ -159,10 +159,10 @@ def test_publish_once_acknowledgement_derives_target_state(
     store = Store([outbox()], statuses=[status])
     value = coordinator(tmp_path, store)
     value._target_config = lambda *_args: config(tmp_path)
-    value.publisher = SimpleNamespace(publish=lambda *_args: PublishResult(
+    value.publisher = SimpleNamespace(publish_batch=lambda *_args: [PublishResult(
         acknowledged=True, target=TargetKind.LOCAL, record_key="record",
         run_id="run", dashboard_url="http://dashboard",
-    ))
+    )])
     value.publish_once()
     assert ("ack", 1) in store.calls
     assert any(call[:3] == ("state", "local", expected) for call in store.calls)
@@ -172,10 +172,10 @@ def test_publish_once_acknowledgement_without_status_defaults_ready(tmp_path):
     store = Store([outbox()], statuses=[])
     value = coordinator(tmp_path, store)
     value._target_config = lambda *_args: config(tmp_path)
-    value.publisher = SimpleNamespace(publish=lambda *_args: PublishResult(
+    value.publisher = SimpleNamespace(publish_batch=lambda *_args: [PublishResult(
         acknowledged=True, target=TargetKind.LOCAL, record_key="record",
         run_id="run", dashboard_url=None,
-    ))
+    )])
     value.publish_once()
     assert any(call[:3] == ("state", "local", "READY") for call in store.calls)
 

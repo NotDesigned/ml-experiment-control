@@ -16,6 +16,7 @@ dependencies = [
     "opentelemetry-sdk>=1.39,<2",
     "pydantic>=2.5",
     "PyYAML>=6.0",
+    "sse-starlette>=3.5,<4",
     "uvicorn[standard]>=0.29",
     "wandb>=0.28.0",
 ]

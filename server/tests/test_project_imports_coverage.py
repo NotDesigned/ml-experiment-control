@@ -287,3 +287,14 @@ def test_existing_import_digest_check_remains_fail_closed(tmp_path, monkeypatch)
         )
         with pytest.raises(ApplicationError, match="manifest changed"):
             import_service.execute(plan["import_id"], plan["confirmation"])
+
+
+def test_invalid_existing_manifest_remains_a_structured_import_error(tmp_path):
+    repository = tmp_path / 'invalid-existing'
+    manifest = repository / 'experiments' / 'research_project.yaml'
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('schema_version: 1\nproject: valid-id\ntitle: Example\nrun_roots: []\ncampaigns: [{name: missing, file: missing.yaml}]\n')
+    with TestClient(create_app(config(tmp_path))) as client:
+        with pytest.raises(ApplicationError, match='existing Project manifest is invalid') as caught:
+            service(client).preview(repository)
+        assert caught.value.code == 'PROJECT_IMPORT_BLOCKED'

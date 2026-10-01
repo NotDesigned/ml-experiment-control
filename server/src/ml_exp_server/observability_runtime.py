@@ -120,71 +120,61 @@ class ObservabilityCoordinator:
             if not self._target_enabled(target):
                 continue
             self.store.revive_terminal(target.value)
-            # The store leases only the earliest undelivered item per Attempt,
-            # preserving strict W&B step order while allowing other Attempts
-            # to make progress independently.
-            items = self.store.claim(
-                target.value, self.worker_id, limit=limit_per_target,
-            )
-            for item in items:
-                self.store.set_target_state(item.attempt, target.value, "SYNCING")
-                config = self._target_config(target, item.attempt.project)
-                if config is None:
-                    self.store.retry(
-                        item.id, self.worker_id, "PublisherUnavailable",
-                    )
-                    self.store.set_target_state(
-                        item.attempt, target.value, "DEGRADED",
-                        error="PublisherUnavailable",
-                    )
-                    continue
-                identity = AttemptIdentity(*item.attempt.values())
-                kind = {"metrics": "metric", "events": "event", "log": "log"}.get(
-                    item.kind, item.kind,
+            remaining = limit_per_target
+            while remaining:
+                # Lease immediately before sending, never 50 slow processes
+                # ahead of their lease deadline. One batch has one Attempt.
+                items = self.store.claim(
+                    target.value, self.worker_id, limit=1,
+                    batch_size=min(remaining, 50), lease_seconds=60,
                 )
+                if not items:
+                    break
+                remaining -= len(items)
+                attempt = items[0].attempt
+                self.store.set_target_state(attempt, target.value, "SYNCING")
+                config = self._target_config(target, attempt.project)
+                error = None
+                dashboard_url = None
                 try:
-                    publication = PublicationItem(
-                        target=target,
-                        record_key=item.record_key,
-                        sequence=item.id,
-                        kind=kind,
-                        payload=item.payload,
-                        timestamp=item.observed_at,
-                    )
-                    result = self.publisher.publish(config, identity, publication)
+                    if config is None:
+                        error = "PublisherUnavailable"
+                    else:
+                        publications = tuple(PublicationItem(
+                            target=target, record_key=item.record_key,
+                            sequence=item.id,
+                            kind={"metrics": "metric", "events": "event"}.get(item.kind, item.kind),
+                            payload=item.payload, timestamp=item.observed_at,
+                        ) for item in items)
+                        results = self.publisher.publish_batch(
+                            config, AttemptIdentity(*attempt.values()), publications,
+                        )
+                        if len(results) != len(items) or any(
+                            result.record_key != item.record_key or result.target is not target
+                            for result, item in zip(results, items)
+                        ):
+                            raise ValueError("publisher batch acknowledgement mismatch")
+                        error = next((result.error_class or "PublisherError"
+                                      for result in results if not result.acknowledged), None)
+                        dashboard_url = results[-1].dashboard_url
                 except Exception as exc:
-                    terminal = self.store.retry(
-                        item.id, self.worker_id, type(exc).__name__,
-                    )
+                    error = type(exc).__name__
+                if error:
+                    terminal = False
+                    for item in items:
+                        terminal = self.store.retry(item.id, self.worker_id, error) or terminal
                     self.store.set_target_state(
-                        item.attempt, target.value,
-                        "FAILED" if terminal else "DEGRADED",
-                        error=type(exc).__name__,
-                    )
-                    continue
-                if result.acknowledged:
-                    self.store.acknowledge(item.id, self.worker_id)
-                    target_status = next((
-                        status for status in self.store.statuses(
-                            attempt=item.attempt, limit=10,
-                        ) if status.target == target.value
-                    ), None)
-                    remaining = target_status.pending if target_status else 0
-                    terminal = target_status.terminal if target_status else 0
-                    self.store.set_target_state(
-                        item.attempt, target.value,
-                        "FAILED" if terminal else "PENDING" if remaining else "READY",
-                        dashboard_url=result.dashboard_url,
+                        attempt, target.value, "FAILED" if terminal else "DEGRADED", error=error,
                     )
                 else:
-                    terminal = self.store.retry(
-                        item.id, self.worker_id,
-                        result.error_class or "PublisherError",
-                    )
+                    for item in items:
+                        self.store.acknowledge(item.id, self.worker_id)
+                    status = next((status for status in self.store.statuses(attempt=attempt, limit=10)
+                                   if status.target == target.value), None)
                     self.store.set_target_state(
-                        item.attempt, target.value,
-                        "FAILED" if terminal else "DEGRADED",
-                        error=result.error_class,
+                        attempt, target.value,
+                        "FAILED" if status and status.terminal else "PENDING" if status and status.pending else "READY",
+                        dashboard_url=dashboard_url,
                     )
 
     def _collect_source(self, source: ArchiveSource) -> None:

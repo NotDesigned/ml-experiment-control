@@ -231,8 +231,8 @@ def test_subprocess_adapter_passes_json_on_stdin_and_no_parent_environment(
     assert seen["cwd"] == str(configured.working_dir)
     assert seen["start_new_session"] is True
     assert seen["stdin"] is subprocess.PIPE
-    assert seen["stdout"] is subprocess.PIPE
-    assert seen["stderr"] is subprocess.PIPE
+    assert seen["stdout"] is subprocess.DEVNULL
+    assert seen["stderr"] is subprocess.DEVNULL
     assert configured.working_dir.stat().st_mode & 0o777 == 0o700
 
 
@@ -343,8 +343,8 @@ def test_worker_payload_supports_event_and_log_records(tmp_path: Path, identity)
     log = PublicationItem(
         TargetKind.LOCAL, "log-1", 9, "log", {"stream": "stderr", "text": "warning"}
     )
-    event_payload = PublishRequest(configured, identity, event).worker_payload()["item"]
-    log_payload = PublishRequest(configured, identity, log).worker_payload()["item"]
+    event_payload = PublishRequest(configured, identity, event).worker_payload()["items"][0]
+    log_payload = PublishRequest(configured, identity, log).worker_payload()["items"][0]
     assert '"event":"started"' in _worker_log_payload(event_payload)["_ml_expd/event"]
     assert _worker_log_payload(log_payload) == {
         "_ml_expd/record_key": "log-1",

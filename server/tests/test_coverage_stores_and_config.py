@@ -44,33 +44,20 @@ def test_action_store_is_immutable_claimed_once_and_fails_closed_on_corruption(t
         store.claim_execution(action_id)
 
     directory = store.directory(action_id)
-    (directory / "journal.jsonl").write_text(
-        "not-json\n" + json.dumps(["not", "mapping"]) + "\n" +
-        json.dumps({"event": "valid"}) + "\n", encoding="utf-8",
-    )
-    with pytest.raises(StorageError, match="invalid complete record"):
-        store.snapshot(action_id)
-    (directory / "journal.jsonl").write_text(
-        json.dumps({"event": "valid"}) + "\n", encoding="utf-8",
-    )
-    repaired = store.snapshot(action_id)["journal"]
-    assert repaired[0] == {"event": "valid"}
-    assert repaired[-1]["event"] == "action_prepared"
-    assert repaired[-1]["revision"] == 1
+    store.append_journal(action_id, "valid", {})
+    assert store.snapshot(action_id)["journal"][-1]["event"] == "valid"
     updated = store.set_execution(
         action_id, {
             **store.execution(action_id), "status": "FAILED", "error": "boom",
         }, event="failed",
     )
     assert updated["execution"]["status"] == "FAILED"
-    (directory / "execution.json").write_text("{broken", encoding="utf-8")
-    with pytest.raises(StorageError, match="durable JSON is unreadable"):
+    with store.database.transaction() as connection:
+        connection.execute("UPDATE executions SET revision=99 WHERE action_id=?", (action_id,))
+    with pytest.raises(StorageError, match="revision does not match"):
         store.execution(action_id)
-    with pytest.raises(StorageError, match="durable JSON is unreadable"):
-        store.set_execution(
-            action_id, {"revision": 2, "status": "FAILED", "error": "again"},
-            event="failed",
-        )
+    with pytest.raises(StorageError, match="revision does not match"):
+        store.set_execution(action_id, {"revision": 2, "status": "FAILED"}, event="failed")
 
     foreign = scope("other")
     foreign_id = store.action_id(foreign, "intent-b")
@@ -83,9 +70,10 @@ def test_action_store_is_immutable_claimed_once_and_fails_closed_on_corruption(t
     (malformed / "plan.json").write_text(json.dumps({
         "action_id": "not-valid", "scope": operation_scope.model_dump(mode="json"),
     }))
-    with pytest.raises(StorageError, match="durable JSON is unreadable"):
+    with pytest.raises(StorageError, match="revision does not match"):
         store.list_for_scope(operation_scope)
-    atomic_json(directory / "execution.json", {"status": "FAILED", "error": "repaired"})
+    with store.database.transaction() as connection:
+        connection.execute("UPDATE executions SET revision=2 WHERE action_id=?", (action_id,))
     assert [item["action_id"] for item in store.list_for_scope(operation_scope)] == [action_id]
     with pytest.raises(FileNotFoundError):
         store.snapshot("action-missing")

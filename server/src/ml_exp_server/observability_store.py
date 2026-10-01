@@ -590,12 +590,15 @@ class ObservabilityStore:
         *,
         limit: int = 100,
         lease_seconds: float = 60.0,
+        batch_size: int = 1,
         now: Optional[float] = None,
     ) -> list[OutboxItem]:
         """Lease available target work in FIFO order, including expired leases."""
         target = _validate_name(target, "target")
         worker_id = _validate_name(worker_id, "worker_id")
         bounded_limit = _bounded_limit(limit)
+        if not 1 <= batch_size <= 50:
+            raise ValueError("batch_size must be between 1 and 50")
         if lease_seconds <= 0 or not math.isfinite(lease_seconds):
             raise ValueError("lease_seconds must be finite and positive")
         timestamp = time.time() if now is None else now
@@ -615,6 +618,22 @@ class ObservabilityStore:
                     "ORDER BY o.id LIMIT ?",
                     (target, timestamp, timestamp, bounded_limit),
                 ).fetchall()]
+                if batch_size > 1:
+                    expanded = []
+                    for head_id in ids:
+                        candidates = self._conn.execute(
+                            "SELECT o.* FROM publication_outbox o JOIN publication_outbox h "
+                            "ON h.id=? AND o.workspace_id=h.workspace_id AND o.project=h.project "
+                            "AND o.run_id=h.run_id AND o.attempt_id=h.attempt_id AND o.target=h.target "
+                            "WHERE o.id>=h.id AND o.delivered_at IS NULL ORDER BY o.id LIMIT ?",
+                            (head_id, batch_size),
+                        ).fetchall()
+                        for row in candidates:
+                            if (row["terminal_at"] is not None or row["available_at"] > timestamp
+                                    or (row["lease_until"] is not None and row["lease_until"] > timestamp)):
+                                break
+                            expanded.append(row["id"])
+                    ids = expanded
                 if ids:
                     placeholders = ",".join("?" for _ in ids)
                     self._conn.execute(

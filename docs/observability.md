@@ -230,3 +230,28 @@ exceptions.
 - Local/Cloud historical publication is prepared and audited as an Action;
 - a fresh clone can install the pinned vendor commit and run all publisher
   tests without relying on globally installed `wandb`.
+
+## Ordered SDK batches
+
+The publisher uses the official W&B Python SDK. One isolated child process now
+opens one SDK run, logs up to 50 ordered records for the same Attempt and target,
+and calls `finish()` once. The SDK owns run resume, network transport/retries,
+and flushing; the daemon does not implement a second W&B uploader. The child
+still receives only the selected target's credentials, and its output goes to
+`DEVNULL` rather than accumulating an unbounded SDK output buffer.
+
+A batch is leased immediately before publishing (60 seconds), with a 20-second
+worker timeout in the production coordinator. Batches stop at the first leased,
+backed-off, or terminal record; later records cannot overtake it. Local and Cloud
+have independent batches and credentials. The default per-target cycle budget
+remains 50 records. Success is acknowledged only after the whole SDK worker
+succeeds; partial failures leave the batch retryable. Stable run IDs and explicit
+sequence steps are reused on retry. This is not a claim of remote exactly-once
+delivery; a worker can fail after the server has accepted a prefix.
+
+The sanitized archive, durable outbox, and target activation/backfill policy
+remain necessary for the current requirements: files are sanitized before
+persistence, experiments need not import W&B, and Local/Cloud can be enabled or
+retried independently. Directly uploading raw training directories with
+`wandb sync` would bypass these requirements and is not enabled. Both targets
+remain opt-in; changing the adapter does not enable them or send historical data.

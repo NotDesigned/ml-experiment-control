@@ -1,7 +1,7 @@
 """Isolated, target-specific publication of archived Attempt records to W&B.
 
 The publisher deliberately knows nothing about collection or SQLite.  Its
-input is one durable outbox item and its output is an acknowledgement suitable
+input is one ordered batch of durable outbox items and its output is an acknowledgement suitable
 for committing by the caller.  Backend files remain canonical.
 
 The production adapter invokes the W&B SDK in a short-lived child process with
@@ -82,8 +82,8 @@ class PublicationItem:
 
     ``sequence`` must be stable and monotonically increasing for one Attempt
     and target.  The adapter resumes the stable W&B run and logs at this exact
-    step, so replaying an unacknowledged item cannot create a second history
-    step.
+    step. Replays use the same IDs and steps; remote exactly-once delivery
+    is not assumed. The SDK owns resume, transport retry, and flushing.
     """
 
     target: TargetKind
@@ -146,11 +146,17 @@ class PublishRequest:
     target: TargetConfig
     identity: AttemptIdentity
     item: PublicationItem
+    following: tuple[PublicationItem, ...] = ()
+
+    @property
+    def items(self) -> tuple[PublicationItem, ...]:
+        return (self.item, *self.following)
 
     def worker_payload(self) -> dict[str, Any]:
         # Revalidate at the process boundary in case a caller mutated a nested
         # container after constructing the frozen top-level item.
-        _validate_payload(self.item.payload)
+        for item in self.items:
+            _validate_payload(item.payload)
         return {
             "target": {
                 "kind": self.target.kind.value,
@@ -167,13 +173,13 @@ class PublishRequest:
                 "wandb_run_id": self.identity.wandb_run_id,
                 "display_name": self.identity.display_name,
             },
-            "item": {
-                "record_key": self.item.record_key,
-                "sequence": self.item.sequence,
-                "kind": self.item.kind,
-                "payload": _json_copy(self.item.payload),
-                "timestamp": self.item.timestamp,
-            },
+            "items": [{
+                "record_key": item.record_key,
+                "sequence": item.sequence,
+                "kind": item.kind,
+                "payload": _json_copy(item.payload),
+                "timestamp": item.timestamp,
+            } for item in self.items],
         }
 
 
@@ -200,7 +206,7 @@ class PublishResult:
 
 
 class SubprocessWandbAdapter:
-    """Run one W&B SDK operation in an environment-isolated child process."""
+    """Run one ordered SDK batch in an environment-isolated child process."""
 
     def __init__(
         self,
@@ -222,8 +228,8 @@ class SubprocessWandbAdapter:
             process = self._runner(
                 [sys.executable, "-m", "ml_exp_server.wandb_publisher", "--worker"],
                 stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 text=True,
                 env=dict(environment),
                 cwd=str(request.target.working_dir),
@@ -253,7 +259,7 @@ class SubprocessWandbAdapter:
 
 
 class WandbPublisher:
-    """Publish one outbox item without coupling Local and Cloud target state."""
+    """Publish ordered batches without coupling Local and Cloud target state."""
 
     def __init__(
         self,
@@ -270,34 +276,46 @@ class WandbPublisher:
         identity: AttemptIdentity,
         item: PublicationItem,
     ) -> PublishResult:
-        if item.target is not target.kind:
-            return self._failure(target, identity, item, "TargetMismatch")
+        return self.publish_batch(target, identity, (item,))[0]
+
+    def publish_batch(
+        self, target: TargetConfig, identity: AttemptIdentity,
+        items: tuple[PublicationItem, ...],
+    ) -> list[PublishResult]:
+        if not 1 <= len(items) <= 50:
+            raise ValueError("publication batch must contain 1..50 items")
+        if any(item.target is not target.kind for item in items):
+            return [self._failure(target, identity, item, "TargetMismatch") for item in items]
+        if any(left.sequence >= right.sequence for left, right in zip(items, items[1:])):
+            raise ValueError("publication batch sequences must be strictly increasing")
+
+        def failed(error_class):
+            return [self._failure(target, identity, item, error_class) for item in items]
 
         api_key: Optional[str] = None
         if target.credential_ref is not None:
             if self._credential_provider is None:
-                return self._failure(target, identity, item, "CredentialUnavailable")
+                return failed("CredentialUnavailable")
             try:
                 api_key = self._credential_provider(target.credential_ref)
-            except Exception as exc:  # provider errors are an external boundary
-                return self._failure(target, identity, item, type(exc).__name__)
+            except Exception as exc:
+                return failed(type(exc).__name__)
             if not api_key:
-                return self._failure(target, identity, item, "CredentialUnavailable")
+                return failed("CredentialUnavailable")
 
         environment = build_publisher_environment(target, api_key=api_key)
-        request = PublishRequest(target=target, identity=identity, item=item)
+        request = PublishRequest(target, identity, items[0], items[1:])
         try:
             self._adapter.publish(request, environment=environment)
-        except Exception as exc:  # adapter errors must never leak raw messages
-            error_class = getattr(exc, "error_class", type(exc).__name__)
-            return self._failure(target, identity, item, error_class)
-        return PublishResult(
+        except Exception as exc:
+            return failed(getattr(exc, "error_class", type(exc).__name__))
+        return [PublishResult(
             acknowledged=True,
             target=target.kind,
             record_key=item.record_key,
             run_id=identity.wandb_run_id,
             dashboard_url=target.run_url(identity),
-        )
+        ) for item in items]
 
     @staticmethod
     def _failure(
@@ -428,7 +446,7 @@ def _run_worker(raw: str) -> int:
 
         target = data["target"]
         identity = data["identity"]
-        item = data["item"]
+        items = data["items"]
         run = wandb.init(
             project=target["project"],
             entity=target["entity"],
@@ -448,7 +466,8 @@ def _run_worker(raw: str) -> int:
         )
         if run is None:
             return 2
-        run.log(_worker_log_payload(item), step=item["sequence"], commit=True)
+        for item in items:
+            run.log(_worker_log_payload(item), step=item["sequence"], commit=True)
         run.finish(exit_code=0)
         return 0
     except Exception:

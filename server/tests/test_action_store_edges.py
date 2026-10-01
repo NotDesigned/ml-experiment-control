@@ -38,10 +38,8 @@ def test_execution_snapshot_without_plan_remains_empty(tmp_path):
 
 def test_execution_snapshot_rejects_embedded_revision_drift(tmp_path):
     store, action_id = _prepared(tmp_path)
-    path = store.directory(action_id) / "execution.json"
-    raw = json.loads(path.read_text())
-    raw["revision"] = 99
-    path.write_text(json.dumps(raw))
+    with store.database.transaction() as connection:
+        connection.execute("UPDATE executions SET payload=json_set(payload, '$.revision', 99)")
     with pytest.raises(StorageError, match="execution revision does not match"):
         store.execution(action_id)
 

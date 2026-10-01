@@ -147,3 +147,7 @@ uv run --package ml-experiment-server ml-expd --help
 uv run python examples/local_smoke.py
 uv build --all-packages
 ```
+
+Action migration and rollback: [action-storage.md](action-storage.md).
+SSE reconnect/resync contract: [sse.md](sse.md).
+W&B ordered batches: [observability.md](observability.md#ordered-sdk-batches).

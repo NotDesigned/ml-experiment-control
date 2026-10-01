@@ -10,13 +10,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from .database import ActionDatabase
 from ..schemas import OperationScope
 from ..storage import (
-    DurableJsonState,
-    DurableSnapshot,
-    StorageError,
     TransitionConflict,
-    _jsonl_mappings,
     atomic_json,
     exclusive_file_lock,
     read_json,
@@ -31,6 +28,7 @@ class ActionStore:
         self._lock = threading.RLock()
         self._lock_state = threading.local()
         self.lock_path = self.root / ".actions.lock"
+        self.database = ActionDatabase(self.root)
 
     @contextmanager
     def locked(self):
@@ -62,11 +60,9 @@ class ActionStore:
             raise ValueError("invalid action_id")
         return self.root / action_id
 
-    def _execution_state(self, action_id: str) -> DurableJsonState:
-        directory = self.directory(action_id)
-        return DurableJsonState(
-            directory / "execution.json", directory / "journal.jsonl",
-        )
+    def _execution_state(self, action_id: str):
+        self.directory(action_id)  # validate before using either store
+        return self.database.state(action_id)
 
     @staticmethod
     def _initial_execution(plan: dict[str, Any], *, revision: int) -> dict[str, Any]:
@@ -104,20 +100,6 @@ class ActionStore:
                     },
                 },
             )
-        else:
-            state.repair_journal(snapshot)
-            execution_revision = snapshot.value.get("revision")
-            if execution_revision is None:
-                snapshot = DurableSnapshot(
-                    value={**snapshot.value, "revision": snapshot.revision},
-                    revision=snapshot.revision,
-                    last_transition=snapshot.last_transition,
-                    journal_pending=snapshot.journal_pending,
-                )
-            elif execution_revision != snapshot.revision:
-                raise StorageError(
-                    f"execution revision does not match durable state: {action_id}"
-                )
         return snapshot
 
     def save_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
@@ -310,8 +292,7 @@ class ActionStore:
             if not plan:
                 raise FileNotFoundError(action_id)
             execution = self._execution_snapshot(action_id, plan).value
-            path = directory / "journal.jsonl"
-            journal = _jsonl_mappings(path)[-100:] if path.is_file() else []
+            journal = self._execution_state(action_id).journal()
             return {**plan, "execution": execution, "journal": journal}
 
     def list_for_scope(self, scope: OperationScope) -> list[dict[str, Any]]:

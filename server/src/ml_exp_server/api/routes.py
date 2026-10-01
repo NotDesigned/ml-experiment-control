@@ -7,7 +7,7 @@ from typing import Any, Literal, Optional
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from .sse import IndexEventResponse
 from pydantic import BaseModel, Field, model_validator
 
 from ..application import ApplicationError
@@ -959,4 +959,4 @@ def collector_status(request: Request):
 @router.get("/stream")
 async def stream(request: Request):
     broker = request.app.state.broker
-    return StreamingResponse(broker.stream(), media_type="text/event-stream")
+    return IndexEventResponse(broker.stream(), ping=15, send_timeout=15, sep="\n")
