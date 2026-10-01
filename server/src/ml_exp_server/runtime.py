@@ -26,9 +26,6 @@ from .schemas import (
 )
 from .source_revisions import resolve_source_tree
 from .telemetry import Telemetry, initialize_telemetry
-from .observability import WandbServiceManager
-from .observability_store import AttemptRef, ObservabilityStore
-from .observability_runtime import ObservabilityCoordinator
 
 
 def _load_registered_project(record: ProjectLifecycleRecord) -> ResearchProject:
@@ -59,10 +56,7 @@ class ExperimentServerRuntime:
     project_registry: ProjectRegistry
     telemetry: Telemetry
     workspace_id: str
-    wandb_service: WandbServiceManager
     credential_store: CredentialStore
-    observability_store: ObservabilityStore
-    observability: ObservabilityCoordinator
 
     @classmethod
     def create(
@@ -106,42 +100,8 @@ class ExperimentServerRuntime:
             run_index.on_update = notify
             telemetry = initialize_telemetry(config.telemetry)
             cleanup.callback(telemetry.shutdown)
-            wandb_service = WandbServiceManager(config.observability.local_wandb)
-            cleanup.callback(wandb_service.stop)
             workspace_id = workspace_identity(config)
-            credential_store = CredentialStore(
-                Path(config.observability.credential_root),
-            )
-            observability_store = ObservabilityStore(config.observability_db_path())
-            cleanup.callback(observability_store.close)
-            observability = ObservabilityCoordinator(
-                workspace_id=workspace_id,
-                archive_root=Path(config.observability.log_archive_root),
-                store=observability_store,
-                local=config.observability.local_wandb,
-                cloud=config.observability.wandb_cloud,
-                credential_provider=credential_store.resolve_wandb_api_key,
-            )
-
-            def execute_observability(plan: dict[str, object]) -> dict[str, object]:
-                scope = plan.get("scope")
-                if not isinstance(scope, dict):
-                    raise ValueError("observability plan has no scope")
-                project = str(scope.get("project") or "")
-                raw_attempts = plan.get("attempts")
-                if not isinstance(raw_attempts, list):
-                    raise ValueError("observability plan has no Attempts")
-                attempts = [
-                    AttemptRef(
-                        workspace_id, project,
-                        str(item.get("run_id") or ""),
-                        str(item.get("attempt_id") or ""),
-                    )
-                    for item in raw_attempts if isinstance(item, dict)
-                ]
-                return observability.backfill(
-                    str(plan.get("target_kind") or ""), attempts,
-                )
+            credential_store = CredentialStore(Path(config.tracking.credential_root))
 
             runtime = cls(
                 config=config,
@@ -150,7 +110,6 @@ class ExperimentServerRuntime:
                 action_store=action_store,
                 action_service=ActionService(
                     action_store, config.action_runtime,
-                    internal_executor=execute_observability,
                     source_resolver=lambda project, source_id: resolve_source_tree(
                         config, project, source_id,
                     ),
@@ -158,10 +117,7 @@ class ExperimentServerRuntime:
                 project_registry=project_registry,
                 telemetry=telemetry,
                 workspace_id=workspace_id,
-                wandb_service=wandb_service,
                 credential_store=credential_store,
-                observability_store=observability_store,
-                observability=observability,
             )
             cleanup.pop_all()
             return runtime
@@ -238,8 +194,6 @@ class ExperimentServerRuntime:
     def close(self) -> None:
         failures: list[Exception] = []
         for close in (
-            self.wandb_service.stop,
-            self.observability_store.close,
             self.index.close,
             self.telemetry.shutdown,
         ):

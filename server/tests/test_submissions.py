@@ -12,9 +12,6 @@ from ml_exp_server.authored_runs import authored_run_placeholder
 from ml_exp_server.actions.service import ActionService
 from ml_exp_server.api.app import create_app
 from ml_exp_server.application import ExperimentServerApplication
-from ml_exp_server.observability_store import (
-    AttemptRef, OutboxRecord, SourceRef,
-)
 from ml_exp_server.campaign_lifecycle import campaign_record_path
 from ml_exp_server.project_config import load_research_project
 from ml_exp_server.schemas import (
@@ -23,11 +20,10 @@ from ml_exp_server.schemas import (
     CampaignRef,
     CampaignRevision,
     CampaignRunMembership,
-    ObservabilityConfig,
+    TrackingConfig,
     ResearchProject,
     RunIndexRow,
     ServerConfig,
-    WandbCloudConfig,
 )
 
 
@@ -132,19 +128,10 @@ def _app(
         collector_enabled=False,
         action_runtime=ActionRuntimeConfig(
             allow_scheduler_mutations=True,
-            allow_observability_mutations=observability_mutations,
             scheduler_resource_approval=resource_approval,
             max_gpu_hours_per_action=max_gpu_hours,
         ),
-        observability=ObservabilityConfig(
-            credential_root=str(tmp_path / "credentials"),
-            log_archive_root=str(tmp_path / "archive"),
-            wandb_cloud=WandbCloudConfig(
-                enabled=cloud,
-                default_credential_ref="cloud-primary" if cloud else None,
-                entity="research-team" if cloud else None,
-            ),
-        ),
+        tracking=TrackingConfig(credential_root=str(tmp_path / "credentials")),
     )
     app = create_app(config, projects=[project])
     runner = SubmissionController()
@@ -155,7 +142,6 @@ def _app(
             config.action_runtime,
             runner,
             actor_provider=lambda: "trusted:operator",
-            internal_executor=runtime.action_service.internal_executor,
         )
 
     app.state.runtime_initializers.append(configure_runtime)
@@ -268,218 +254,6 @@ def test_daemon_exact_resource_policy_is_read_only_to_generic_clients(tmp_path):
         assert action["preflight_summary"]["max_gpu_hours"] is None
         budget_gate = next(gate for gate in action["gates"] if gate["name"] == "budget")
         assert budget_gate["status"] == "PASS"
-
-
-def test_cloud_ready_daemon_exposes_submission_option_without_secret_metadata(tmp_path):
-    app, runner = _app(tmp_path, cloud=True, max_gpu_hours=2.0)
-    with TestClient(app) as client:
-        client.app.state.runtime.credential_store.set_wandb_api_key(
-            "cloud-primary", "secret-cloud-key",
-        )
-        operations = client.get("/api/operations", params={
-            "project": "demo", "scope_type": "run", "object_id": "run-a",
-        }).json()
-        submit = next(item for item in operations
-                      if item["operation"]["operation_id"] == "run.submit")
-        parameters = {item["key"]: item for item in submit["operation"]["parameters"]}
-        assert set(parameters) == {"wandb_cloud_sync"}
-        assert submit["metadata"]["resource_policy"] == {
-            "approval": "budget_cap",
-            "max_gpu_hours": 2.0,
-            "owner": "daemon",
-        }
-        assert parameters["wandb_cloud_sync"]["default"] == "no"
-
-        prepared = client.post("/api/operations/direct", json={
-            "project": "demo",
-            "scope_type": "run",
-            "object_id": "run-a",
-            "operation_id": "run.submit",
-            "parameters": {"wandb_cloud_sync": "yes"},
-        })
-        assert prepared.status_code == 200
-        encoded = repr(prepared.json())
-        assert "secret-cloud-key" not in encoded
-        assert "cloud-primary" not in encoded
-        action_id = prepared.json()["action"]["action_id"]
-        # Preparing/authorizing the scheduler Action does not start a mirror.
-        assert client.get(
-            "/api/observability/attempts/demo/run-a/attempt-001",
-        ).json()["targets"] == []
-        authorized = client.post("/api/actions/authorize", json={
-            "action_id": action_id, "note": "reviewed",
-        })
-        assert authorized.status_code == 200
-        executed = client.post("/api/actions/execute", json={
-            "action_id": action_id, "confirmation": f"EXECUTE {action_id}",
-        })
-        assert executed.status_code == 200, executed.text
-        live_submit = next(
-            call for call in runner.calls
-            if call[3] == "submit" and "--dry-run" not in call
-        )
-        execution_campaign = yaml.safe_load(Path(live_submit[2]).read_text())
-        assert execution_campaign["local_root"] == str(tmp_path / "runs" / "demo")
-        authored_campaign = yaml.safe_load(
-            (tmp_path / "science" / "experiments" / "study.yml").read_text()
-        )
-        assert authored_campaign["local_root"] == "outputs/runs"
-        project = client.app.state.runtime.project("demo")
-        assert project.resolved_run_roots() == [
-            (tmp_path / "science" / "outputs" / "runs").resolve(),
-            (tmp_path / "runs" / "demo").resolve(),
-        ]
-        target = client.get(
-            "/api/observability/attempts/demo/run-a/attempt-001",
-        ).json()["targets"]
-        assert target[0]["target"] == "cloud"
-        assert target[0]["state"] == "PENDING"
-
-        # Restart reconciliation closes the crash window between persisting a
-        # VERIFIED Action and activating its target.
-        store = client.app.state.runtime.observability_store
-        with store._lock:
-            store._conn.execute("DELETE FROM publication_targets")
-            store._conn.commit()
-        ExperimentServerApplication(
-            client.app.state.runtime,
-        ).recover_observability_policies()
-        recovered = client.get(
-            "/api/observability/attempts/demo/run-a/attempt-001",
-        ).json()["targets"]
-        assert recovered[0]["target"] == "cloud"
-
-
-def test_active_submission_cannot_change_cloud_policy(tmp_path):
-    app, _ = _app(tmp_path, cloud=True)
-    with TestClient(app) as client:
-        client.app.state.runtime.credential_store.set_wandb_api_key(
-            "cloud-primary", "secret-cloud-key",
-        )
-        prepared = client.post(
-            "/api/experiments/demo/run-a/submissions/prepare",
-            json={"max_gpu_hours": 2, "wandb_cloud_sync": True},
-        )
-        assert prepared.status_code == 200
-        conflict = client.post(
-            "/api/experiments/demo/run-a/submissions/prepare",
-            json={"max_gpu_hours": 2, "wandb_cloud_sync": False},
-        )
-        assert conflict.status_code == 409
-        assert conflict.headers["X-ML-Expd-Error-Code"] == "SUBMISSION_INTENT_EXISTS"
-
-
-def test_reconcile_required_does_not_activate_cloud_target(tmp_path):
-    app, runner = _app(tmp_path, cloud=True)
-    with TestClient(app) as client:
-        client.app.state.runtime.credential_store.set_wandb_api_key(
-            "cloud-primary", "secret-cloud-key",
-        )
-        prepared = client.post(
-            "/api/experiments/demo/run-a/submissions/prepare",
-            json={"max_gpu_hours": 2, "wandb_cloud_sync": True},
-        ).json()
-        action_id = prepared["submission_id"]
-        client.post(
-            f"/api/submissions/{action_id}/authorize",
-            json={"note": "reviewed"},
-        )
-        runner.status_visible = False
-        result = client.post(
-            f"/api/submissions/{action_id}/execute",
-            json={"confirmation": f"EXECUTE {action_id}"},
-        )
-        assert result.status_code == 200
-        assert result.json()["status"] == "RECONCILE_REQUIRED"
-        targets = client.get(
-            "/api/observability/attempts/demo/run-a/attempt-001",
-        ).json()["targets"]
-        assert targets == []
-
-
-def test_audited_observability_backfill_operation_rewinds_exact_attempt(tmp_path):
-    app, _ = _app(
-        tmp_path, cloud=True, observability_mutations=True,
-    )
-    with TestClient(app) as client:
-        runtime = client.app.state.runtime
-        runtime.credential_store.set_wandb_api_key(
-            "cloud-primary", "secret-cloud-key",
-        )
-        attempt = AttemptRef(
-            runtime.workspace_id, "demo", "run-a", "attempt-001",
-        )
-        source = SourceRef(attempt, "metrics")
-        runtime.observability_store.enqueue_and_advance(
-            source, expected=None, generation="g", byte_offset=4,
-            records=[OutboxRecord("record-1", "metrics", {"step": 1})],
-            targets=[], now=1,
-        )
-        client.app.state.index.upsert_run(RunIndexRow(
-            project="demo", campaign="study", run_id="run-a",
-            run_dir=str(tmp_path / "run-a"), scheduler_state="SUCCEEDED",
-            attempts=[AttemptSummary(attempt_id="attempt-001", state="SUCCEEDED")],
-        ))
-        operations = client.get("/api/operations", params={
-            "project": "demo", "scope_type": "run", "object_id": "run-a",
-        }).json()
-        backfill = next(
-            item for item in operations
-            if item["operation"]["operation_id"] == "observability.backfill"
-        )
-        assert backfill["status"] == "AVAILABLE"
-        assert backfill["operation"]["parameters"][0]["choices"] == [
-            ["W&B Cloud", "cloud"],
-        ]
-        prepared = client.post("/api/operations/direct", json={
-            "project": "demo", "scope_type": "run", "object_id": "run-a",
-            "operation_id": "observability.backfill",
-            "parameters": {"target": "cloud", "reason": "publish historical evidence"},
-        })
-        assert prepared.status_code == 200
-        action_id = prepared.json()["action"]["action_id"]
-        assert prepared.json()["preflight"] == {
-            "target": "cloud", "attempt_count": 1,
-        }
-        assert client.post("/api/actions/authorize", json={
-            "action_id": action_id, "note": "approved historical publication",
-        }).status_code == 200
-        executed = client.post("/api/actions/execute", json={
-            "action_id": action_id, "confirmation": f"EXECUTE {action_id}",
-        })
-        assert executed.status_code == 200, executed.text
-        assert executed.json()["execution"]["status"] == "VERIFIED"
-        assert executed.json()["execution"]["result"] == {
-            "target": "cloud", "attempt_count": 1, "rewound_attempts": 1,
-        }
-        assert app.state.runtime.observability_store.get_cursor(source) is None
-        targets = client.get(
-            "/api/observability/attempts/demo/run-a/attempt-001",
-        ).json()["targets"]
-        assert targets[0]["target"] == "cloud"
-        assert targets[0]["state"] == "PENDING"
-
-
-def test_observability_backfill_defaults_closed_by_daemon_policy(tmp_path):
-    app, _ = _app(tmp_path, cloud=True)
-    with TestClient(app) as client:
-        client.app.state.runtime.credential_store.set_wandb_api_key(
-            "cloud-primary", "secret-cloud-key",
-        )
-        client.app.state.index.upsert_run(RunIndexRow(
-            project="demo", campaign="study", run_id="run-a",
-            run_dir=str(tmp_path / "run-a"), scheduler_state="SUCCEEDED",
-            attempts=[AttemptSummary(attempt_id="attempt-001", state="SUCCEEDED")],
-        ))
-        operations = client.get("/api/operations", params={
-            "project": "demo", "scope_type": "run", "object_id": "run-a",
-        }).json()
-    backfill = next(
-        item for item in operations
-        if item["operation"]["operation_id"] == "observability.backfill"
-    )
-    assert backfill["status"] == "BLOCKED"
-    assert "Observability mutations are disabled by daemon policy" in backfill["reasons"]
 
 
 def test_nested_materialized_run_replaces_placeholder_and_exposes_exact_cancel(
@@ -648,10 +422,10 @@ def test_unmaterialized_experiment_has_first_class_submission_lifecycle(tmp_path
         ).json()
         assert authorized["status"] == "AUTHORIZED"
         executed = client.post(
-            f"/api/submissions/{submission['submission_id']}/execute",
-            json={"confirmation": submission["confirmation"]},
+            "/api/actions/execute",
+            json={"action_id": submission["submission_id"], "confirmation": submission["confirmation"]},
         ).json()
-        assert executed["status"] == "VERIFIED"
+        assert executed["execution"]["status"] == "VERIFIED"
         assert executed["execution"]["result"]["observation"]["state"] == "QUEUED"
         live_submits = [
             call for call in runner.calls if call[3] == "submit" and "--dry-run" not in call

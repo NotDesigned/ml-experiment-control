@@ -439,9 +439,8 @@ def test_lease_loss_fails_before_runtime_construction(monkeypatch, tmp_path):
     config = ServerConfig(
         index_db=str(tmp_path / "index.sqlite"),
         action_root=str(tmp_path / "actions"),
-        observability={
+        tracking={
             "credential_root": str(tmp_path / "credentials"),
-            "log_archive_root": str(tmp_path / "logs"),
         },
         projects=[],
     )
@@ -495,15 +494,15 @@ def test_thread_start_failure_releases_workspace_lease(tmp_path, monkeypatch):
     original_start = api_app.threading.Thread.start
     failed_once = False
 
-    def fail_publisher_once(thread):
+    def fail_collector_once(thread):
         nonlocal failed_once
-        if thread.name == "wandb-publisher" and not failed_once:
+        if thread.name == "collectord" and not failed_once:
             failed_once = True
-            raise RuntimeError("publisher thread failed to start")
+            raise RuntimeError("collector thread failed to start")
         return original_start(thread)
 
-    monkeypatch.setattr(api_app.threading.Thread, "start", fail_publisher_once)
-    with pytest.raises(RuntimeError, match="publisher thread failed"):
+    monkeypatch.setattr(api_app.threading.Thread, "start", fail_collector_once)
+    with pytest.raises(RuntimeError, match="collector thread failed"):
         with TestClient(create_app(config)):
             pass
 

@@ -34,32 +34,11 @@ from .submission_routes import router as submission_router
 from .sse import EventBroker
 
 
-def _publisher_loop(app: FastAPI) -> None:
-    while not app.state._stop.is_set():
-        try:
-            app.state.runtime.observability.publish_once(limit_per_target=32)
-        except Exception as exc:
-            # Target-specific errors are retained in the outbox. Systemic loop
-            # errors must additionally be visible through health.
-            app.state.publisher_last_error = f"{type(exc).__name__}: {exc}"[:500]
-            app.state.publisher_consecutive_failures += 1
-        else:
-            app.state.publisher_last_success_at = time.time()
-            app.state.publisher_last_error = None
-            app.state.publisher_consecutive_failures = 0
-        if app.state._stop.wait(2.0):
-            break
-
-
 def _poll_loop(app: FastAPI, collector: Collector) -> None:
     while not app.state._stop.is_set():
         app.state.index.set_meta("collector_cycle_started_at", str(time.time()))
         try:
             collector.run_cycle()
-            for project in app.state.projects:
-                app.state.runtime.observability.collect_rows(
-                    app.state.index.list_runs(project.project),
-                )
             app.state.index.set_meta("collector_last_error", "")
         except Exception as exc:  # keep the loop alive; surface via meta
             app.state.index.set_meta("collector_last_error", str(exc)[:500])
@@ -80,13 +59,10 @@ async def _shutdown(app: FastAPI) -> None:
     if stop is not None:
         stop.set()
     thread = getattr(app.state, "_poll_thread", None)
-    publisher_thread = getattr(app.state, "_publisher_thread", None)
     if thread is not None:
         # The collector owns the index while a cycle is in flight. Do not close
         # the runtime until that owner has observed the stop signal.
         await asyncio.to_thread(thread.join, 5.0)
-    if publisher_thread is not None:
-        await asyncio.to_thread(publisher_thread.join, 45.0)
     lease = getattr(app.state, "collector_lease", None)
     runtime = getattr(app.state, "runtime", None)
     if runtime is None:
@@ -94,7 +70,7 @@ async def _shutdown(app: FastAPI) -> None:
             lease.release()
         return
     owner_threads = [
-        item for item in (thread, publisher_thread) if item is not None
+        item for item in (thread,) if item is not None
     ]
     if not any(item.is_alive() for item in owner_threads):
         try:
@@ -106,7 +82,6 @@ async def _shutdown(app: FastAPI) -> None:
         # Retain the lease until a long in-flight controller observation really
         # exits; otherwise another daemon could become owner while the prior
         # collector and its subprocesses are still alive.
-        runtime.wandb_service.stop()
 
         def finish_shutdown() -> None:
             for owner in owner_threads:
@@ -137,10 +112,6 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
         app.state.broker.bind_loop(loop)
         app.state._stop = threading.Event()
         app.state._poll_thread = None
-        app.state._publisher_thread = None
-        app.state.publisher_last_success_at = None
-        app.state.publisher_last_error = None
-        app.state.publisher_consecutive_failures = 0
         app.state.project_write_recovery_errors = []
         app.state.collector_owner = False
         app.state.workspace_owner = False
@@ -188,7 +159,6 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             app.state.projects = runtime.projects
             app.state.action_store = runtime.action_store
             app.state.action_service = runtime.action_service
-            app.state.observability = runtime.wandb_service.status()
             app.state.collector = (
                 Collector(
                     index=runtime.index,
@@ -212,18 +182,6 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             await loop.run_in_executor(None, initial_index)
             if collector is not None:
                 app.state.collector_owner = True
-                # Only the workspace lease owner may reconcile publisher
-                # targets or rewind collection cursors.
-                app.state.application.recover_observability_policies()
-                # Projection ownership follows the same workspace lease as
-                # canonical collection.  A second daemon must never spawn a
-                # duplicate local service.  Startup is bounded and degradable.
-                app.state.observability = await asyncio.to_thread(
-                    app.state.runtime.wandb_service.start,
-                )
-                app.state._publisher_thread = _start_daemon_thread(
-                    target=_publisher_loop, args=(app,), name="wandb-publisher",
-                )
                 app.state._poll_thread = _start_daemon_thread(
                     target=_poll_loop, args=(app, collector), name="collectord",
                 )
@@ -250,7 +208,6 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.state.workspace_owner = False
     app.state.collector_error = None
     app.state.collector_lease = None
-    app.state.observability = {"state": "NOT_STARTED"}
     app.state.auth_mode = "bearer" if bearer_token is not None else "none"
     app.state.runtime_initializers: list[
         Callable[[ExperimentServerRuntime], None]

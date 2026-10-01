@@ -610,7 +610,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sse-starlette", specifier = ">=3.5,<4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
-    { name = "wandb", specifier = ">=0.28.0" },
+    { name = "wandb", specifier = ">=0.28.0,<0.29" },
 ]
 
 [package.metadata.requires-dev]

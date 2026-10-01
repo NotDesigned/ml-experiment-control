@@ -61,16 +61,6 @@ def test_campaign_context_preserves_orphaned_membership():
     assert result[0]["orphaned_campaign"] is True
 
 
-def test_observability_policy_recovery_skips_unrelated_actions():
-    value = app(action_store=SimpleNamespace(
-        list_all=lambda: [{"operation": "CREATE_RESEARCH_QUESTION_DRAFT"}],
-    ))
-    value._activate_observability_policy = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("unrelated Actions must not activate publication policy"),
-    )
-    value.recover_observability_policies()
-
-
 def test_operation_availability_fails_closed_on_unavailable_evidence(monkeypatch):
     operation = module.OPERATIONS_BY_ID["run.submit"]
     value = app()
@@ -124,18 +114,6 @@ def test_operation_blocker_matrix(monkeypatch, tmp_path):
     record.write_text("archived: true\n")
     assert "already exists" in value._operation_blockers(
         "object.archive", scope(), project, object(),
-    )[0]
-
-    value._publication_targets_available = lambda: ("local",)
-    value._observability_attempts = lambda *_args: (_ for _ in ()).throw(ValueError())
-    assert "no observed Attempts" in value._operation_blockers(
-        "observability.backfill", scope(), project, object(),
-    )[0]
-    value._observability_attempts = lambda *_args: [
-        (f"run-{index}", "a1") for index in range(501)
-    ]
-    assert "500-Attempt" in value._operation_blockers(
-        "observability.backfill", scope(), project, object(),
     )[0]
 
     submitted = SimpleNamespace(has_submission=True)
@@ -298,7 +276,7 @@ def test_require_and_direct_operation_dispatch_edges(monkeypatch):
         return [SimpleNamespace(operation=operation)]
 
     value.operation_availability = lambda *_args: availability(
-        "run.submit", ("wandb_cloud_sync",),
+        "run.submit", (),
     )
     assert error_code(lambda: value.invoke_direct_operation(
         "run.submit", "demo", OperationScopeType.RUN, "run-a",
@@ -419,15 +397,6 @@ def test_archive_and_backfill_prepare_success_and_validation(tmp_path):
             "demo", kind, object_id, reason="retired",
         )
         assert result["action"]["kind"] == expected
-
-    value.resolve_scope = lambda *_args: (scope(), configured, object())
-    value._publication_targets_available = lambda: ("local",)
-    assert error_code(lambda: value.prepare_observability_backfill(
-        "demo", OperationScopeType.RUN, "run-a", target="cloud", reason="why",
-    )) == "PUBLISHER_UNAVAILABLE"
-    assert error_code(lambda: value.prepare_observability_backfill(
-        "demo", OperationScopeType.RUN, "run-a", target="local", reason=" ",
-    )) == "INVALID_BACKFILL_REASON"
 
 
 def test_run_attempts_and_failure_assessment_missing_current_attempt(monkeypatch, tmp_path):
@@ -719,11 +688,6 @@ def test_misc_read_model_and_observability_scope_edges(tmp_path):
         "demo", OperationScopeType.ATTEMPT, "run-a::a1",
     )["object"]["attempt_id"] == "a1"
 
-    assert value._observability_attempts(
-        scope(OperationScopeType.RESEARCH_QUESTION, "q1"),
-        SimpleNamespace(project="demo"), object(),
-    ) == []
-
     attempt_dir = tmp_path / "attempts/a1"
     attempt_dir.mkdir(parents=True)
     write_json(attempt_dir / "collection.json", {"artifacts": {"files": 1}})
@@ -777,24 +741,6 @@ def test_action_reconcile_refresh_policy_and_project_adapter_edges(monkeypatch):
     value._refresh_action_project({})
     value._refresh_action_project({"scope": {}})
     value._refresh_action_project({"scope": {"project": "missing"}})
-
-    enabled = []
-    value.runtime.observability.enable_cloud = lambda *args: enabled.append(args)
-    verified = {"execution": {"status": "VERIFIED"}}
-    value._activate_observability_policy(
-        {"preflight_summary": {"wandb_cloud_sync": True}}, verified,
-    )
-    value._activate_observability_policy({
-        "scope": {"project": "demo"},
-        "preflight_summary": {"wandb_cloud_sync": True, "run_id": "run-a"},
-    }, verified)
-    value._activate_observability_policy({
-        "scope": {"project": "demo"},
-        "preflight_summary": {
-            "wandb_cloud_sync": True, "run_id": "run-a", "attempt_id": "a1",
-        },
-    }, verified)
-    assert enabled == [("demo", "run-a", "a1")]
 
     application_error = ApplicationError("already mapped")
     value.runtime.action_store.snapshot = lambda _id: {}

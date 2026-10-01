@@ -93,3 +93,12 @@ Consumers should pin an immutable package commit. Before updating that pin:
 ELF is the reference downstream consumer. Its integration tests should exercise
 the public imports and direct `experiment-safe-sco` invocation against the
 candidate package before advancing `requirements.txt`.
+
+## Native tracking evidence
+
+`BackendServices.collection_includes` is an optional host callback returning
+rsync include patterns for the selected Campaign (default: empty). WYD uses it
+before its final exclude rule. ELF owns the native SDK paths in its adapter;
+no new ELF or W&B filename is embedded in the backend. Its integration tests
+exercise real offline SDK writes and these actual rsync filters. Existing
+immutable source snapshots and old host construction remain supported.

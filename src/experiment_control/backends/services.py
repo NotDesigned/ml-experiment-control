@@ -44,3 +44,5 @@ class BackendServices:
     parse_checkpoint: Callable[[Campaign, str], CheckpointRecord | None]
     atomic_write: AtomicWriter
     utc_now: Callable[[], str]
+    # Optional host-owned evidence patterns; old hosts keep their existing collection.
+    collection_includes: Callable[[Campaign], tuple[str, ...]] = lambda _campaign: ()

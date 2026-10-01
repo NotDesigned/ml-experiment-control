@@ -1,62 +1,28 @@
 schema_version: 1
 index_db: ~/.local/state/ml-expd/index.sqlite
-# Canonical Run/Attempt control metadata. Project source-tree run_roots are
-# compatibility read roots only; new submit/retry materialization goes here.
 run_root: ~/.local/state/ml-expd/runs
 project_registry_root: ~/.local/state/ml-expd/projects
-# Absolute daemon-host roots eligible for zero-config discovery. Empty keeps
-# path probing disabled even for authenticated clients.
 project_import_roots: []
 action_root: ~/.local/state/ml-expd/actions
-# Optional shared-host protection. Keep the secret in an owner-only 0600 file.
-# A non-loopback --host also requires --ssl-certfile and --ssl-keyfile.
 http_auth:
   bearer_token_file: null
 action_runtime:
   allow_project_writes: false
   allow_source_imports: false
   allow_scheduler_mutations: false
-  allow_observability_mutations: false
-  # TUI users approve or reject prepared exact resources; they do not set policy.
   scheduler_resource_approval: budget_cap
   max_gpu_hours_per_action: 1.0
   timeout_seconds: 300
   gate_ttl_seconds: 1800
 telemetry:
   enabled: false
-observability:
-  log_archive_root: ~/.local/state/ml-expd/logs
-  credential_root: ~/.local/state/ml-expd/credentials
-  local_wandb:
-    # Disabled by default. When enabled, the foreground command must bind all
-    # three placeholders so daemon ownership, storage, and readiness agree.
-    enabled: false
-    managed: true
-    bind_host: 127.0.0.1
-    port: 8080
-    data_dir: ~/.local/state/ml-expd/wandb
-    # Empty selects ml-expd's attached Docker wrapper. An explicit replacement
-    # must remain foreground and include all three placeholders.
-    command: []
-    docker_executable: /usr/bin/docker
-    # Prefer an immutable @sha256 digest in operational deployments.
-    image: wandb/local
-    container_uid: 999
-    # Publisher identity is separate from dashboard readiness. Set the W&B
-    # entity/team only after the local server account exists.
-    publisher_entity: null
-    # Publishing requires a local-account API key. Provision this reference
-    # through `ml-expd credential wandb set --stdin`; dashboard-only operation
-    # can leave it null.
-    publisher_credential_ref: null
-  wandb_cloud:
-    # Cloud sync is offered per submit/retry only when all three settings are
-    # present and the referenced daemon-host credential is configured.
-    enabled: false
-    default_credential_ref: wandb-cloud-default
-    entity: null
-    api_url: https://api.wandb.ai
-    dashboard_url: https://wandb.ai
 collector_enabled: true
 poll_interval_seconds: 20
 projects: []
+tracking:
+  credential_root: ~/.local/state/ml-expd/credentials
+  credential_ref: null
+  entity: null
+  project: null
+  api_url: https://api.wandb.ai
+  dashboard_url: https://wandb.ai

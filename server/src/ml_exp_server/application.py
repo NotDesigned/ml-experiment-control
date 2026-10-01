@@ -32,8 +32,6 @@ from .outward import attempt_dto, operational_decision, run_dto, sanitized_outwa
 from .operations import (
     GPU_BUDGET,
     RESOURCE_APPROVAL,
-    OBSERVABILITY_TARGET,
-    WANDB_CLOUD_SYNC,
     OPERATIONS_BY_ID,
     OperationAvailability,
     OperationParameter,
@@ -415,13 +413,6 @@ class ExperimentServerApplication:
             if complete_config else None
         )
 
-    def recover_observability_policies(self) -> None:
-        """Idempotently close the VERIFIED-action/target crash window."""
-        for action in self.runtime.action_store.list_all():
-            if str(action.get("operation") or "") in {
-                "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION",
-            }:
-                self._activate_observability_policy(action, action)
 
     # --------------------------------------------------------------- scopes
 
@@ -622,24 +613,9 @@ class ExperimentServerApplication:
         )
         result: list[OperationAvailability] = []
         for base_operation in operations_for_scope(scope.scope_type):
-            available_targets = self._publication_targets_available()
             parameters = tuple(
-                replace(
-                    parameter,
-                    choices=tuple(
-                        choice for choice in parameter.choices
-                        if choice[1] in available_targets
-                    ),
-                    default=(available_targets[0] if available_targets else None),
-                ) if parameter.key == OBSERVABILITY_TARGET.key else parameter
-                for parameter in base_operation.parameters
-                if (
-                    parameter.key not in {GPU_BUDGET.key, RESOURCE_APPROVAL.key}
-                    and (
-                        parameter.key != WANDB_CLOUD_SYNC.key
-                        or self._cloud_publication_available()
-                    )
-                )
+                parameter for parameter in base_operation.parameters
+                if parameter.key not in {GPU_BUDGET.key, RESOURCE_APPROVAL.key}
             )
             operation = replace(base_operation, parameters=parameters)
             try:
@@ -677,31 +653,6 @@ class ExperimentServerApplication:
             ))
         return result
 
-    def _cloud_publication_available(self) -> bool:
-        policy = self.runtime.config.observability.wandb_cloud
-        if not policy.enabled or not policy.default_credential_ref or not policy.entity:
-            return False
-        return self.runtime.credential_store.status(
-            policy.default_credential_ref,
-        ).configured
-
-    def _local_publication_available(self) -> bool:
-        policy = self.runtime.config.observability.local_wandb
-        return bool(
-            policy.enabled and policy.publisher_entity
-            and policy.publisher_credential_ref
-            and self.runtime.credential_store.status(
-                policy.publisher_credential_ref,
-            ).configured
-        )
-
-    def _publication_targets_available(self) -> tuple[str, ...]:
-        return tuple(
-            target for target, available in (
-                ("local", self._local_publication_available()),
-                ("cloud", self._cloud_publication_available()),
-            ) if available
-        )
 
     def _operation_blockers(
         self, operation_id: str, scope: OperationScope,
@@ -734,19 +685,6 @@ class ExperimentServerApplication:
                     record = root / "attempts" / f"{run_id}--{attempt_id}.yml"
                 if record.is_file():
                     reasons.append(f"Archive record already exists: {record}")
-        elif operation_id == "observability.backfill":
-            if not self.runtime.config.action_runtime.allow_observability_mutations:
-                reasons.append("Observability mutations are disabled by daemon policy")
-            if not self._publication_targets_available():
-                reasons.append("No authenticated W&B publisher target is available")
-            try:
-                attempts = self._observability_attempts(scope, project, resolved)
-            except (KeyError, ValueError):
-                attempts = []
-            if not attempts:
-                reasons.append("Scope has no observed Attempts to backfill")
-            elif len(attempts) > 500:
-                reasons.append("Scope exceeds the 500-Attempt backfill limit")
         elif operation_id == "evidence.rebuild_local":
             if not self.runtime.config.action_runtime.allow_local_evidence_rebuild:
                 reasons.append("Local evidence rebuild Actions are disabled by daemon policy")
@@ -909,11 +847,6 @@ class ExperimentServerApplication:
                 code="INVALID_OPERATION",
             )
         reason = str(parameters.get("reason") or "")
-        cloud_sync = str(parameters.get("wandb_cloud_sync") or "no").lower()
-        if cloud_sync not in {"yes", "no"}:
-            raise ApplicationError(
-                "wandb_cloud_sync must be 'yes' or 'no'", code="INVALID_OPERATION",
-            )
         resource_approval = "budget_cap"
         budget: float | None = None
         if operation_id in {"run.submit", "attempt.retry"}:
@@ -932,12 +865,6 @@ class ExperimentServerApplication:
             return self.prepare_object_archive(
                 project, scope.scope_type, object_id, reason=reason,
             )
-        if operation_id == "observability.backfill":
-            target = str(parameters.get("target") or "")
-            return self.prepare_observability_backfill(
-                project, scope.scope_type, object_id,
-                target=target, reason=reason,
-            )
         if operation_id == "evidence.rebuild_local":
             return self.prepare_local_evidence_rebuild(
                 project, object_id, reason=reason,
@@ -947,7 +874,6 @@ class ExperimentServerApplication:
                 project, object_id, max_gpu_hours=budget,
                 resource_approval=resource_approval,
                 reason=reason or "Requested from the scoped operation catalog",
-                wandb_cloud_sync=cloud_sync == "yes",
             )
         if operation_id == "attempt.retry":
             return self.prepare_attempt_retry(
@@ -958,7 +884,6 @@ class ExperimentServerApplication:
                 ),
                 max_gpu_hours=budget, reason=reason,
                 resource_approval=resource_approval,
-                wandb_cloud_sync=cloud_sync == "yes",
             )
         if operation_id == "attempt.cancel":
             return self.prepare_attempt_cancel(project, object_id, reason=reason)
@@ -1093,79 +1018,6 @@ class ExperimentServerApplication:
         })
         return {"action": action}
 
-    def _observability_attempts(
-        self, scope: OperationScope, project: ResearchProject, resolved: Any,
-    ) -> list[tuple[str, str]]:
-        if scope.scope_type == OperationScopeType.PROJECT:
-            rows = self.runtime.index.list_runs(project.project)
-        elif scope.scope_type == OperationScopeType.CAMPAIGN:
-            rows = self.runtime.index.list_runs(
-                project.project, campaign=scope.object_id,
-            )
-        elif scope.scope_type == OperationScopeType.RUN:
-            rows = [resolved]
-        elif scope.scope_type == OperationScopeType.ATTEMPT:
-            run_id, attempt_id = scope.object_id.rsplit("::", 1)
-            return [(run_id, attempt_id)]
-        else:
-            return []
-        return sorted({
-            (str(row.run_id), str(attempt.attempt_id))
-            for row in rows for attempt in (row.attempts or [])
-            if attempt.attempt_id
-        })
-
-    def prepare_observability_backfill(
-        self, project: str, scope_type: OperationScopeType | str,
-        object_id: str, *, target: str, reason: str,
-    ) -> dict[str, Any]:
-        self._require_operation_available(
-            "observability.backfill", project, scope_type, object_id,
-        )
-        scope, configured, resolved = self.resolve_scope(
-            project, scope_type, object_id,
-        )
-        available = self._publication_targets_available()
-        if target not in available:
-            raise ApplicationError(
-                f"publisher target {target!r} is unavailable",
-                code="PUBLISHER_UNAVAILABLE",
-            )
-        if not reason.strip():
-            raise ApplicationError(
-                "backfill reason is required", status_code=422,
-                code="INVALID_BACKFILL_REASON",
-            )
-        attempts = self._observability_attempts(scope, configured, resolved)
-        digest = evidence_digest(self.bounded_evidence(scope, configured, resolved))
-        action = self._prepare_action_intent(scope, configured, {
-            "kind": "OBSERVABILITY_BACKFILL",
-            "title": (
-                f"Backfill {len(attempts)} Attempts to {target} W&B"
-            ),
-            "target": f"wandb-{target}://{project}/{scope.object_id}",
-            "change_summary": (
-                f"enable {target} publication and replay sanitized history"
-            ),
-            "resource_estimate": f"{len(attempts)} Attempts",
-            "rationale": reason.strip(),
-            "risk": "external publication and potentially large durable backlog",
-            "draft": yaml.safe_dump({
-                "schema_version": 1,
-                "project": project,
-                "target": target,
-                "reason": reason.strip(),
-                "attempts": [
-                    {"run_id": run_id, "attempt_id": attempt_id}
-                    for run_id, attempt_id in attempts
-                ],
-            }, allow_unicode=True, sort_keys=False),
-            "evidence_digest": digest,
-        })
-        return {
-            "action": action,
-            "preflight": {"target": target, "attempt_count": len(attempts)},
-        }
 
     def _attempt_context(self, project: str, identity: str):
         scope, configured, attempt = self.resolve_scope(
@@ -2150,8 +2002,7 @@ class ExperimentServerApplication:
 
     def prepare_run_submit(self, project: str, run_id: str, *,
                            max_gpu_hours: float | None, reason: str = "",
-                           resource_approval: str = "budget_cap",
-                           wandb_cloud_sync: bool = False) -> dict[str, Any]:
+                           resource_approval: str = "budget_cap") -> dict[str, Any]:
         """Prepare a reviewable first-submission Action for an authored Run."""
         self._require_operation_available(
             "run.submit", project, OperationScopeType.RUN, run_id,
@@ -2193,7 +2044,6 @@ class ExperimentServerApplication:
         draft_payload = {
             "campaign_file": str(campaign), "run_id": row.run_id,
             "attempt_id": attempt_id, "resource_approval": resource_approval,
-            "wandb_cloud_sync": wandb_cloud_sync,
             **(
                 {"expected_source_id": row.provenance["source_id"]}
                 if row.provenance.get("source_binding") == "campaign_file" else {}
@@ -2234,8 +2084,7 @@ class ExperimentServerApplication:
     def prepare_attempt_retry(self, project: str, identity: str, *,
                               new_attempt_id: str | None,
                               max_gpu_hours: float | None, reason: str,
-                              resource_approval: str = "budget_cap",
-                              wandb_cloud_sync: bool = False) -> dict[str, Any]:
+                              resource_approval: str = "budget_cap") -> dict[str, Any]:
         if resource_approval not in {"budget_cap", "review_exact"}:
             raise ApplicationError("invalid resource approval mode", status_code=422,
                                    code="INVALID_GPU_BUDGET")
@@ -2287,7 +2136,6 @@ class ExperimentServerApplication:
             "campaign_file": str(campaign), "run_id": row.run_id,
             "source_attempt_id": attempt.attempt_id,
             "attempt_id": new_attempt_id, "resource_approval": resource_approval,
-            "wandb_cloud_sync": wandb_cloud_sync,
         }
         if reviewable_unknown_failure:
             draft_payload["failure_review"] = {
@@ -2544,7 +2392,6 @@ class ExperimentServerApplication:
             except RuntimeError as exc:
                 raise ApplicationError(str(exc), code="ACTION_BLOCKED") from exc
             self._refresh_action_project(action)
-            self._activate_observability_policy(action, result)
             span.set_attribute(
                 "research.status",
                 str((result.get("execution") or {}).get("status") or "UNKNOWN"),
@@ -2564,23 +2411,6 @@ class ExperimentServerApplication:
             return
         index_project(self.runtime.index, configured)
 
-    def _activate_observability_policy(
-        self, action: dict[str, Any], result: dict[str, Any],
-    ) -> None:
-        status = str((result.get("execution") or {}).get("status") or "")
-        if status != "VERIFIED":
-            return
-        preflight = action.get("preflight_summary")
-        if not isinstance(preflight, dict) or not preflight.get("wandb_cloud_sync"):
-            return
-        scope = action.get("scope")
-        if not isinstance(scope, dict):
-            return
-        project = str(scope.get("project") or "")
-        run_id = str(preflight.get("run_id") or "")
-        attempt_id = str(preflight.get("attempt_id") or "")
-        if project and run_id and attempt_id:
-            self.runtime.observability.enable_cloud(project, run_id, attempt_id)
 
     def _execute_action_local(self, action_id: str, confirmation: str) -> dict[str, Any]:
         try:
@@ -2600,7 +2430,6 @@ class ExperimentServerApplication:
             "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION", "CANCEL_RUN",
         } or result.get("execution", {}).get("status") == "VERIFIED":
             self._refresh_action_project(action)
-        self._activate_observability_policy(action, result)
         return result
 
     # ------------------------------------------------------------- projects

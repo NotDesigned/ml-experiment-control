@@ -21,7 +21,7 @@ CLIENT_PROTOCOL_HEADER = "X-ML-Expd-Client-Protocol"
 SERVER_CAPABILITIES = (
     "actions.v1",
     "bearer-auth.v1",
-    "observability.v1",
+    "tracking.v1",
     "project-lifecycle.v1",
     "project-import.v1",
     "project-source-locator.v1",
@@ -42,7 +42,7 @@ class ObservabilityHealth(BaseModel):
 
 
 class PublisherLoopHealth(BaseModel):
-    """Non-secret liveness state for the daemon-owned outbox loop."""
+    """Deprecated protocol-v1 fields; the daemon no longer owns a publisher."""
 
     last_success_at: float | None = None
     last_error: str | None = None

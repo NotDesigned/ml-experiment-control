@@ -723,6 +723,7 @@ class WydSlurmBackend:
              "--include=*/", "--include=manifest.yaml", "--include=status.json",
              "--include=backend.json", "--include=events.jsonl",
              "--include=/summary.json",
+             *("--include=" + pattern for pattern in self.s.collection_includes(campaign)),
              f"--include=/{run['run_id']}.json",
              "--include=train_metrics.jsonl", "--include=metrics.jsonl",
              "--include=all_generated_*.jsonl",

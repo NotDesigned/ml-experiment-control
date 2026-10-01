@@ -175,18 +175,7 @@ class ExperimentSubmissionService:
         """Prepare a first-Attempt intent without authorizing or scheduling it."""
         with self._prepare_lock:
             if wandb_cloud_sync:
-                policy = self.runtime.config.observability.wandb_cloud
-                if (
-                    not policy.enabled or not policy.default_credential_ref
-                    or not policy.entity
-                    or not self.runtime.credential_store.status(
-                        policy.default_credential_ref,
-                    ).configured
-                ):
-                    raise ApplicationError(
-                        "W&B Cloud publication is unavailable",
-                        code="PUBLISHER_UNAVAILABLE",
-                    )
+                raise ApplicationError("Daemon W&B publication has been retired", code="PUBLISHER_RETIRED")
             try:
                 configured = self.runtime.project(project)
             except KeyError as exc:

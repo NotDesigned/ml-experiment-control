@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -16,7 +18,7 @@ router = APIRouter(prefix="/api")
 class PrepareSubmissionRequest(BaseModel):
     max_gpu_hours: float = Field(gt=0)
     reason: str = Field(default="", max_length=4000)
-    wandb_cloud_sync: bool = False
+    wandb_cloud_sync: Literal[False] = False
 
 
 class AuthorizeSubmissionRequest(BaseModel):

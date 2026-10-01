@@ -102,181 +102,31 @@ class TelemetryConfig(BaseModel):
     capture_content: Literal[False] = False
 
 
-class LocalWandbConfig(BaseModel):
-    """Daemon-owned local W&B service configuration.
-
-    This is deliberately optional and degradable: the daemon remains the
-    source of truth when Docker/the W&B CLI is unavailable.
-    """
+class TrackingConfig(BaseModel):
+    """One external W&B endpoint; uploads are explicit operator commands."""
 
     model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = False
-    managed: bool = True
-    bind_host: str = "127.0.0.1"
-    port: int = Field(default=8080, ge=1, le=65535)
-    data_dir: str = "~/.local/state/ml-expd/wandb"
-    image: str = "wandb/local"
-    docker_executable: str = "/usr/bin/docker"
-    container_uid: int = Field(default=999, ge=1, le=2**31 - 1)
-    # A managed command must remain attached to the daemon. Empty selects the
-    # packaged foreground Docker wrapper; replacements retain explicit
-    # placeholders so ownership and storage remain reviewable.
-    command: list[str] = Field(default_factory=list, max_length=128)
-    environment_allowlist: list[str] = Field(default_factory=list, max_length=16)
-    startup_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
-    external_url: Optional[str] = None
-    publisher_entity: Optional[str] = None
-    publisher_credential_ref: Optional[str] = None
-
-    @field_validator("bind_host")
-    @classmethod
-    def _validate_bind_host(cls, value: str) -> str:
-        host = value.strip()
-        if not host or any(char in host for char in "/@?#") or any(char.isspace() for char in host):
-            raise ValueError("bind_host must be a hostname or IP address")
-        try:
-            ipaddress.ip_address(host)
-        except ValueError:
-            if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
-                raise ValueError("bind_host must be a hostname or IP address")
-        return host
-
-    @field_validator("external_url")
-    @classmethod
-    def _validate_external_url(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        parsed = urlsplit(value)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("external_url must be an absolute HTTP(S) URL")
-        if parsed.username is not None or parsed.password is not None:
-            raise ValueError("external_url must not contain user information")
-        if parsed.query or parsed.fragment:
-            raise ValueError("external_url must not contain a query or fragment")
-        if parsed.scheme == "http":
-            host = parsed.hostname or ""
-            try:
-                loopback = ipaddress.ip_address(host).is_loopback
-            except ValueError:
-                loopback = host.lower() == "localhost"
-            if not loopback:
-                raise ValueError("external_url must use HTTPS unless it is loopback")
-        try:
-            parsed.port
-        except ValueError as exc:
-            raise ValueError("external_url contains an invalid port") from exc
-        return value.rstrip("/")
-
-    @field_validator("environment_allowlist")
-    @classmethod
-    def _validate_environment_allowlist(cls, values: list[str]) -> list[str]:
-        safe = {"PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR", "DOCKER_HOST"}
-        invalid = sorted(set(values) - safe)
-        if invalid:
-            raise ValueError(f"environment_allowlist contains unsupported names: {', '.join(invalid)}")
-        return list(dict.fromkeys(values))
-
-    @model_validator(mode="after")
-    def _validate_lifecycle_contract(self) -> "LocalWandbConfig":
-        if not self.enabled:
-            return self
-        if self.managed:
-            if self.external_url is not None:
-                raise ValueError("managed local W&B cannot use external_url")
-            if self.bind_host not in {"127.0.0.1", "localhost", "::1"}:
-                raise ValueError("managed local W&B must bind to a loopback host")
-            if not re.fullmatch(r"[A-Za-z0-9_./:@-]+", self.image):
-                raise ValueError("local W&B image contains unsupported characters")
-            if not Path(self.docker_executable).is_absolute():
-                raise ValueError("docker_executable must be an absolute path")
-            if not self.command:
-                self.command = [
-                    sys.executable, "-m", "ml_exp_server.local_wandb_service",
-                    "--bind-host", "{bind_host}", "--port", "{port}",
-                    "--data-dir", "{data_dir}", "--image", "{image}",
-                    "--docker", "{docker}",
-                    "--container-uid", "{container_uid}",
-                ]
-            rendered = "\0".join(self.command)
-            missing = [
-                placeholder for placeholder in ("{bind_host}", "{port}", "{data_dir}")
-                if placeholder not in rendered
-            ]
-            if missing:
-                raise ValueError(
-                    "managed local W&B command is missing placeholders: " + ", ".join(missing)
-                )
-        elif self.external_url is None:
-            raise ValueError("external local W&B requires external_url")
-        return self
-
-    def url(self) -> str:
-        if self.external_url:
-            return self.external_url
-        host = f"[{self.bind_host}]" if ":" in self.bind_host else self.bind_host
-        return f"http://{host}:{self.port}"
-
-    def data_path(self) -> Path:
-        return Path(self.data_dir).expanduser().resolve()
-
-    def resolved_command(self) -> list[str]:
-        substitutions = {
-            "{bind_host}": self.bind_host,
-            "{port}": str(self.port),
-            "{data_dir}": str(self.data_path()),
-            "{image}": self.image,
-            "{docker}": self.docker_executable,
-            "{container_uid}": str(self.container_uid),
-        }
-        return [
-            _replace_placeholders(token, substitutions)
-            for token in self.command
-        ]
-
-
-def _replace_placeholders(value: str, substitutions: dict[str, str]) -> str:
-    for key, replacement in substitutions.items():
-        value = value.replace(key, replacement)
-    return value
-
-
-class WandbCloudConfig(BaseModel):
-    """Cloud publication policy; credentials are referenced, never embedded."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = False
-    default_credential_ref: Optional[str] = None
+    credential_root: str = "~/.local/state/ml-expd/credentials"
+    credential_ref: Optional[str] = None
     entity: Optional[str] = None
+    project: Optional[str] = None
     api_url: str = "https://api.wandb.ai"
     dashboard_url: str = "https://wandb.ai"
 
-    @model_validator(mode="after")
-    def _validate_cloud_policy(self) -> "WandbCloudConfig":
-        if self.enabled:
-            if not self.default_credential_ref:
-                raise ValueError(
-                    "enabled W&B Cloud publication requires default_credential_ref"
-                )
-        for label, value in (
-            ("api_url", self.api_url), ("dashboard_url", self.dashboard_url),
-        ):
-            parsed = urlsplit(value)
-            if parsed.scheme != "https" or not parsed.hostname:
-                raise ValueError(f"{label} must be an absolute HTTPS URL")
-            if parsed.username or parsed.password or parsed.query or parsed.fragment:
-                raise ValueError(f"{label} must not contain credentials, query, or fragment")
-        return self
+    @field_validator("api_url", "dashboard_url")
+    @classmethod
+    def endpoint(cls, value: str) -> str:
+        from .tracking import safe_url
+        if safe_url(value) is None:
+            raise ValueError("endpoint must be HTTPS or loopback HTTP without credentials/query")
+        return value.rstrip("/")
 
-
-class ObservabilityConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    log_archive_root: str = "~/.local/state/ml-expd/logs"
-    credential_root: str = "~/.local/state/ml-expd/credentials"
-    local_wandb: LocalWandbConfig = Field(default_factory=LocalWandbConfig)
-    wandb_cloud: WandbCloudConfig = Field(default_factory=WandbCloudConfig)
+    @field_validator("entity", "project")
+    @classmethod
+    def identifier(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
+            raise ValueError("invalid W&B identity")
+        return value
 
 
 class ActionRuntimeConfig(BaseModel):
@@ -287,7 +137,7 @@ class ActionRuntimeConfig(BaseModel):
     allow_project_writes: bool = False
     allow_source_imports: bool = False
     allow_scheduler_mutations: bool = False
-    allow_observability_mutations: bool = False
+    allow_observability_mutations: Literal[False] = False  # protocol-v1 config tombstone
     allow_local_evidence_rebuild: bool = False
     scheduler_resource_approval: Literal["budget_cap", "review_exact"] = "budget_cap"
     max_gpu_hours_per_action: Optional[float] = Field(default=1.0, gt=0)
@@ -523,7 +373,7 @@ class ServerConfig(BaseModel):
     http_auth: HttpAuthConfig = Field(default_factory=HttpAuthConfig)
     action_runtime: ActionRuntimeConfig = Field(default_factory=ActionRuntimeConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
-    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    tracking: TrackingConfig = Field(default_factory=TrackingConfig)
     # The daemon owns live collection by default. ``--snapshot`` is the
     # explicit offline opt-out.
     collector_enabled: bool = True
@@ -552,10 +402,6 @@ class ServerConfig(BaseModel):
 
     def project_import_root_paths(self) -> list[Path]:
         return [Path(item).expanduser().resolve() for item in self.project_import_roots]
-
-    def observability_db_path(self) -> Path:
-        index = self.index_db_path()
-        return index.with_name(f"{index.stem}.observability.sqlite")
 
 
 class EvidenceLayer(BaseModel):

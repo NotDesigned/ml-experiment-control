@@ -97,20 +97,9 @@ def test_manifest_path_and_prepare_dispatch_edges(tmp_path, monkeypatch):
     project = ResearchProject(project="demo", title="Demo", run_roots=[], base_dir=tmp_path)
     store = ActionStore(tmp_path / "actions")
     service = ActionService(store, ActionRuntimeConfig())
-    draft = {
-        "project": "demo", "target": "local", "reason": "repair",
-        "attempts": [{"run_id": "run-a", "attempt_id": "attempt-001"}],
-    }
-    first = service.prepare(scope(), project, intent("OBSERVABILITY_BACKFILL", draft))
-    assert first["ready"] is True
-    assert service.prepare(scope(), project, intent(
-        "OBSERVABILITY_BACKFILL", draft,
-    ))["action_id"] == first["action_id"]
-    generated = service.prepare(scope(), project, {
-        **intent("OBSERVABILITY_BACKFILL", draft, "temporary"),
-        "idempotency_key": None,
-    })
-    assert generated["intent_id"].startswith("intent-")
+    draft = {"project": "demo", "target": "local", "reason": "repair"}
+    with pytest.raises(ActionError):
+        service.prepare(scope(), project, intent("OBSERVABILITY_BACKFILL", draft))
 
     unknown = OperationIntent.model_construct(
         kind="UNKNOWN", title="unknown", draft="{}", idempotency_key="unknown",
@@ -125,9 +114,10 @@ def test_manifest_path_and_prepare_dispatch_edges(tmp_path, monkeypatch):
     monkeypatch.setattr(fresh.store, "save_plan", lambda plan: (_ for _ in ()).throw(
         RuntimeError("save conflict")
     ))
+    monkeypatch.setattr(fresh, "_prepare_object_archive", lambda *args: {"ready": False, "gates": []})
     with pytest.raises(ActionError, match="save conflict"):
         fresh.prepare(scope(), project, intent(
-            "OBSERVABILITY_BACKFILL", draft, "save-fails",
+            "ARCHIVE_RUN", draft, "save-fails",
         ))
 
 
@@ -144,6 +134,10 @@ def test_question_campaign_and_record_prepare_edges(tmp_path):
         "CREATE_RESEARCH_QUESTION_DRAFT", {"schema_version": 1, "id": "Q1", "title": "Q"},
     ))
     assert Path(plan["target_path"]) == questions / "Q1.yml"
+    repeated = service.prepare(scope(), project, intent(
+        "CREATE_RESEARCH_QUESTION_DRAFT", {"schema_version": 1, "id": "Q1", "title": "Q"},
+    ))
+    assert repeated["action_id"] == plan["action_id"]
 
     campaign = {
         "schema_version": 1, "project": "demo", "campaign": "study",
@@ -320,8 +314,8 @@ def test_gpu_hours_and_authorization_error_edges(tmp_path, monkeypatch):
 
 def test_execute_begin_and_internal_executor_edges(tmp_path, monkeypatch):
     store = ActionStore(tmp_path / "actions")
-    config = ActionRuntimeConfig(allow_observability_mutations=True)
-    action_id = synthetic_plan(store, "begin-fail", "OBSERVABILITY_BACKFILL")
+    config = ActionRuntimeConfig(allow_project_writes=True)
+    action_id = synthetic_plan(store, "begin-fail", "WRITE_RESEARCH_QUESTION")
     service = ActionService(store, config, actor_provider=lambda: "actor")
     service.authorize(action_id, "note")
     monkeypatch.setattr(store, "begin_execution", lambda *args, **kwargs: (
@@ -329,26 +323,6 @@ def test_execute_begin_and_internal_executor_edges(tmp_path, monkeypatch):
     ).throw(RuntimeError("stale execution")))
     with pytest.raises(ActionError, match="stale execution"):
         service.execute(action_id, f"EXECUTE {action_id}")
-
-    for name, executor, expected in (
-        ("missing", None, "unavailable"),
-        ("failure", lambda plan: (_ for _ in ()).throw(ValueError("boom")),
-         "RECONCILE_REQUIRED"),
-        ("success", lambda plan: {"token": "secret", "ok": True}, "VERIFIED"),
-    ):
-        store = ActionStore(tmp_path / f"actions-{name}")
-        action_id = synthetic_plan(store, name, "OBSERVABILITY_BACKFILL")
-        service = ActionService(
-            store, config, actor_provider=lambda: "actor", internal_executor=executor,
-        )
-        service.authorize(action_id, "note")
-        if executor is None:
-            with pytest.raises(ActionError, match=expected):
-                service.execute(action_id, f"EXECUTE {action_id}")
-        else:
-            assert service.execute(action_id, f"EXECUTE {action_id}")[
-                "execution"
-            ]["status"] == expected
 
 
 def test_execute_write_unexpected_validation_error(tmp_path, monkeypatch):
@@ -408,27 +382,8 @@ def test_reconcile_policy_and_controller_outcomes(tmp_path):
         write_bad_state.reconcile(write)
 
     internal = synthetic_plan(store, "internal", "OBSERVABILITY_BACKFILL")
-    with pytest.raises(ActionError, match="observability mutations are disabled"):
+    with pytest.raises(ActionError, match="backfill has been retired"):
         service.reconcile(internal)
-    with pytest.raises(ActionError, match="not awaiting reconciliation"):
-        ActionService(
-            store, ActionRuntimeConfig(allow_observability_mutations=True),
-            internal_executor=lambda plan: {},
-        ).reconcile(internal)
-    store.set_execution(
-        internal, {**store.execution(internal), "status": "RECONCILE_REQUIRED"},
-        event="test",
-    )
-    calls = []
-    reconciled = ActionService(
-        store, ActionRuntimeConfig(allow_observability_mutations=True),
-        internal_executor=lambda plan: calls.append(plan) or {"ok": True},
-    ).reconcile(internal)
-    assert reconciled["execution"]["status"] == "RECONCILE_REQUIRED"
-    assert reconciled["execution"]["result"]["reconciled_read_only"] is True
-    assert "cannot be replayed" in reconciled["execution"]["error"]
-    assert calls == []
-
     cancel = synthetic_plan(store, "cancel", "CANCEL_RUN")
     with pytest.raises(ActionError, match="not awaiting reconciliation"):
         service.reconcile(cancel)
@@ -639,7 +594,7 @@ def test_local_evidence_policy_execute_and_reconcile_rejections(tmp_path, monkey
         internal_store, ActionRuntimeConfig(), actor_provider=lambda: "actor",
     )
     internal_service.authorize(internal, "review")
-    with pytest.raises(ActionError, match="observability mutations are disabled"):
+    with pytest.raises(ActionError, match="backfill has been retired"):
         internal_service.execute(internal, f"EXECUTE {internal}")
 
     allowed = ActionService(

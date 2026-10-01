@@ -215,8 +215,8 @@ The daemon workspace's Project registry, `ACTIVE`/`PAUSED`/`ARCHIVED` state
 machine, collector effects, and non-destructive archive/unregister semantics
 are specified in [`docs/project_lifecycle.md`](docs/project_lifecycle.md).
 
-Daemon-owned incremental archival, Local/Cloud W&B target state, publisher
-durability, credential isolation, and client status boundaries are specified in
+Native project SDK metrics, one explicit W&B sync destination, credential
+isolation, and client tracking status are specified in
 [`docs/observability.md`](docs/observability.md).
 
 ## Backend lifecycle

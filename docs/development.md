@@ -41,7 +41,7 @@ derive scientific conclusions from metrics and evaluation records.
 Constructing the FastAPI object is side-effect free. Its lifespan first
 acquires the workspace lease and only then constructs SQLite stores,
 bootstraps the Project registry, indexes Projects, or starts
-publisher/collector threads. This ordering is part of the single-writer
+collector threads. This ordering is part of the single-writer
 contract, not an implementation detail. If the lease is already held, startup
 fails before runtime construction; the daemon does not provide a standby
 runtime with partially writable stores.
@@ -150,4 +150,4 @@ uv build --all-packages
 
 Action migration and rollback: [action-storage.md](action-storage.md).
 SSE reconnect/resync contract: [sse.md](sse.md).
-W&B ordered batches: [observability.md](observability.md#ordered-sdk-batches).
+Native W&B contract: [observability.md](observability.md).

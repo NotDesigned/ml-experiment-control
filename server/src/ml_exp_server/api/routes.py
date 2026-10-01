@@ -151,152 +151,58 @@ def health(request: Request) -> DaemonHealth:
         scheduler_mutations=(
             request.app.state.config.action_runtime.allow_scheduler_mutations
         ),
-        observability_mutations=(
-            request.app.state.config.action_runtime.allow_observability_mutations
-        ),
+        observability_mutations=False,
         local_evidence_rebuild=(
             request.app.state.config.action_runtime.allow_local_evidence_rebuild
         ),
         telemetry_enabled=request.app.state.runtime.telemetry.enabled,
-        observability=request.app.state.runtime.wandb_service.status(),
-        publisher={
-            "last_success_at": request.app.state.publisher_last_success_at,
-            "last_error": request.app.state.publisher_last_error,
-            "consecutive_failures": request.app.state.publisher_consecutive_failures,
-        },
+        observability={"state": "RETIRED"},
     )
 
 
-def _observability_payload(request: Request, targets, *, target_total: int):
-    runtime = request.app.state.runtime
-    local_config = runtime.config.observability.local_wandb
-    cloud_config = runtime.config.observability.wandb_cloud
-    cloud_configured = bool(
-        cloud_config.enabled
-        and cloud_config.default_credential_ref
-        and cloud_config.entity
-        and runtime.credential_store.status(
-            cloud_config.default_credential_ref,
-        ).configured
-    )
-    archive = runtime.observability_store.archive_summary()
-    def publisher_state(target: str, available: bool, enabled: bool) -> str:
-        if not enabled:
-            return "DISABLED"
-        if not available:
-            return "UNAVAILABLE"
-        states = [item.state for item in targets if item.target == target]
-        if not states:
-            return "PENDING"
-        for state in ("FAILED", "DEGRADED", "SYNCING", "PENDING"):
-            if state in states:
-                return state
-        return "READY" if all(state == "READY" for state in states) else "PENDING"
-
-    local_available = bool(
-        local_config.enabled and local_config.publisher_entity
-        and local_config.publisher_credential_ref
-        and runtime.credential_store.status(
-            local_config.publisher_credential_ref,
-        ).configured
-    )
+def _observability_payload(*args, **kwargs):
+    # Read-only protocol-v1 tombstone. No archive or publisher is opened.
     return {
-        "limits": {
-            "target_statuses": {
-                "returned": len(targets),
-                "total": target_total,
-                "limit": _TARGET_STATUS_LIMIT,
-                "truncated": target_total > len(targets),
-            },
-        },
-        "archive": {
-            "state": (
-                "STANDBY" if not bool(getattr(request.app.state, "collector_owner", False))
-                else "DEGRADED" if archive["degraded_sources"] else "READY"
-            ),
-            **archive,
-            "target_count": len(targets),
-            "pending_records": sum(item.pending for item in targets),
-            "failed_records": sum(item.terminal for item in targets),
-        },
-        "local_wandb": {
-            "service": runtime.wandb_service.status(),
-            "publisher_available": local_available,
-            "publisher_state": publisher_state(
-                "local", local_available, local_config.enabled,
-            ),
-            "targets": sum(item.target == "local" for item in targets),
-        },
-        "cloud": {
-            "publisher_available": cloud_configured,
-            "state": publisher_state(
-                "cloud", cloud_configured, cloud_config.enabled,
-            ),
-            "targets": sum(item.target == "cloud" for item in targets),
-        },
+        "state": "RETIRED", "replacement": "tracking.v1",
+        "archive": {"state": "RETIRED", "pending_records": 0, "failed_records": 0},
+        "local_wandb": {"service": {"state": "RETIRED"}, "publisher_available": False,
+                        "publisher_state": "DISABLED", "targets": 0},
+        "cloud": {"publisher_available": False, "state": "DISABLED", "targets": 0},
     }
 
 
-@router.get("/observability")
+@router.get("/observability", deprecated=True)
 def observability(request: Request, project: Optional[str] = None):
-    """Return bounded projection status without paths or credential metadata."""
-
-    store = request.app.state.runtime.observability_store
-    targets = store.statuses(project=project, limit=_TARGET_STATUS_LIMIT)
-    return _observability_payload(
-        request, targets, target_total=store.status_count(project=project),
-    )
+    return _observability_payload()
 
 
-def _target_payload(item) -> dict[str, Any]:
-    return {
-        "target": item.target,
-        "state": item.state,
-        "dashboard_url": _public_dashboard_url(item.dashboard_url),
-        "pending": item.pending,
-        "delivered": item.delivered,
-        "failed": item.terminal,
-        "updated_at": item.updated_at,
-        "error_class": item.last_error,
-    }
+@router.get("/observability/attempts/{project}/{run_id}/{attempt_id}", deprecated=True)
+def attempt_observability(project: str, run_id: str, attempt_id: str, request: Request):
+    return {"project": project, "run_id": run_id, "attempt_id": attempt_id,
+            "state": "RETIRED", "targets": []}
 
 
-def _public_dashboard_url(value: Any) -> str | None:
-    text = str(value or "").strip()
-    parsed = urlsplit(text)
-    if (
-        parsed.scheme not in {"http", "https"} or not parsed.hostname
-        or parsed.username is not None or parsed.password is not None
-        or parsed.query or parsed.fragment
-    ):
-        return None
-    try:
-        parsed.port
-    except ValueError:
-        return None
-    return text
+@router.get("/tracking")
+def tracking_configuration(request: Request):
+    runtime = request.app.state.runtime
+    config = runtime.config.tracking
+    return {"mode": "project-native", "automatic_upload": False,
+            "sync_configured": bool(config.entity and config.project and config.credential_ref),
+            "entity": config.entity, "project": config.project,
+            "api_url": config.api_url, "dashboard_url": config.dashboard_url,
+            "producer_env": {"WANDB_WORKSPACE_ID": runtime.workspace_id, "WANDB_MODE": "offline"}}
 
 
-@router.get("/observability/attempts/{project}/{run_id}/{attempt_id}")
-def attempt_observability(
-    project: str, run_id: str, attempt_id: str, request: Request,
-):
-    from ..observability_store import AttemptRef
-
-    reference = AttemptRef(
-        request.app.state.runtime.workspace_id, project, run_id, attempt_id,
-    )
-    return {
-        "project": project,
-        "run_id": run_id,
-        "attempt_id": attempt_id,
-        "targets": [
-            _target_payload(item)
-            for item in request.app.state.runtime.observability_store.statuses(
-                attempt=reference, limit=10,
-            )
-        ],
-    }
+@router.get("/tracking/attempts/{project}/{run_id}/{attempt_id}")
+def attempt_tracking(project: str, run_id: str, attempt_id: str, request: Request):
+    from ..tracking import read_tracking
+    runtime = request.app.state.runtime
+    row = runtime.index.get_run(project, run_id)
+    if row is None or not any(a.attempt_id == attempt_id for a in row.attempts):
+        raise HTTPException(status_code=404, detail="unknown Attempt")
+    return read_tracking(Path(row.run_dir) / "attempts" / attempt_id,
+                         runtime.workspace_id, project, run_id, attempt_id,
+                         runtime.config.tracking)
 
 
 def _state(request: Request) -> tuple[RunIndex, list[ResearchProject], Optional[Collector]]:
@@ -554,15 +460,10 @@ def terminal_snapshot(request: Request, project: Optional[str] = None):
         request.app.state.index,
         projects,
     ))
-    observability_store = request.app.state.runtime.observability_store
-    target_statuses = observability_store.statuses(
-        project=project, limit=_TARGET_STATUS_LIMIT,
-    )
-    target_total = observability_store.status_count(project=project)
-    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-    for item in target_statuses:
-        key = (item.attempt.project, item.attempt.run_id, item.attempt.attempt_id)
-        grouped.setdefault(key, []).append(_target_payload(item))
+    from ..tracking import read_tracking
+    runtime = request.app.state.runtime
+    target_statuses: list = []
+    target_total = 0
     for project_name, rows in payload["runs"].items():
         for row in rows:
             run_id = str(row.get("run_id") or "")
@@ -575,16 +476,13 @@ def terminal_snapshot(request: Request, project: Optional[str] = None):
             attempt_ids = {
                 str(item.get("attempt_id") or "") for item in row.get("attempts") or []
             }
-            attempt_ids.update(
-                attempt_id for (target_project, target_run, attempt_id) in grouped
-                if target_project == project_name and target_run == run_id
-            )
-            row["observability"] = {
-                "attempts": {
-                    attempt_id: grouped.get((project_name, run_id, attempt_id), [])
-                    for attempt_id in sorted(attempt_ids) if attempt_id
-                }
-            }
+            row["observability"] = {"attempts": {a: [] for a in sorted(attempt_ids) if a}}
+            row["tracking"] = {"attempts": {
+                a: read_tracking(Path(indexed_row.run_dir) / "attempts" / a,
+                                 runtime.workspace_id, project_name, run_id, a,
+                                 runtime.config.tracking)
+                for a in sorted(attempt_ids) if a and indexed_row is not None
+            }}
     payload["observability"] = _observability_payload(
         request, target_statuses, target_total=target_total,
     )

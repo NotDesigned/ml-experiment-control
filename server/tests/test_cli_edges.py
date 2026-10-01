@@ -22,7 +22,7 @@ def write_config(tmp_path: Path, extra: str = "") -> Path:
         f"index_db: {tmp_path / 'index.sqlite'}\n"
         f"action_root: {tmp_path / 'actions'}\n"
         f"project_registry_root: {tmp_path / 'registry'}\n"
-        "observability:\n"
+        "tracking:\n"
         f"  credential_root: {tmp_path / 'credentials'}\n"
         + extra,
     )
@@ -83,35 +83,12 @@ def test_credential_cli_clear_status_prompt_and_error(
     assert "credential error" in capsys.readouterr().err
 
 
-def test_doctor_covers_enabled_actions_managed_local_and_missing_reference(
-    tmp_path, capsys,
-):
-    docker = tmp_path / "docker"
-    docker.write_text("#!/bin/sh\n")
-    docker.chmod(0o700)
-    config = write_config(
-        tmp_path,
-        "  local_wandb:\n"
-        "    enabled: true\n"
-        "    managed: true\n"
-        f"    docker_executable: {docker}\n"
-        "    publisher_entity: local-team\n"
-        "  wandb_cloud:\n"
-        "    enabled: true\n"
-        "    entity: team\n"
-        "    default_credential_ref: cloud\n"
-        "action_runtime:\n"
-        "  allow_project_writes: true\n"
-        "  allow_scheduler_mutations: true\n"
-        "  allow_observability_mutations: true\n",
-    )
+def test_doctor_covers_enabled_actions_and_missing_reference(tmp_path, capsys):
+    config = write_config(tmp_path, "  entity: team\n  project: experiments\naction_runtime:\n  allow_project_writes: true\n")
     assert main(["--config", str(config), "doctor", "--json"]) == 1
-    report = json.loads(capsys.readouterr().out)
-    checks = {item["name"]: item for item in report["checks"]}
+    checks = {item["name"]: item for item in json.loads(capsys.readouterr().out)["checks"]}
     assert checks["action_runtime.allow_project_writes"]["status"] == "PASS"
-    assert checks["local W&B docker"]["status"] == "PASS"
-    assert checks["local W&B credential"]["status"] == "FAIL"
-    assert checks["W&B cloud credential"]["status"] == "FAIL"
+    assert checks["W&B sync credential"]["status"] == "FAIL"
 
 
 def test_doctor_reports_nonexecutable_docker_inactive_record_and_identity_drift(
@@ -123,21 +100,12 @@ def test_doctor_reports_nonexecutable_docker_inactive_record_and_identity_drift(
     project.write_text(
         "schema_version: 1\nproject: demo\ntitle: Demo\nrun_roots: []\n",
     )
-    config = write_config(
-        tmp_path,
-        "  local_wandb:\n"
-        "    enabled: true\n"
-        "    managed: true\n"
-        f"    docker_executable: {docker}\n",
-    )
+    config = write_config(tmp_path)
     registry = ProjectRegistry(tmp_path / "registry")
     registry.bootstrap([project])
     registry.transition("demo", ProjectLifecycleState.PAUSED)
-    assert main(["--config", str(config), "doctor", "--json"]) == 1
-    checks = json.loads(capsys.readouterr().out)["checks"]
-    assert next(item for item in checks if item["name"] == "local W&B docker")[
-        "status"
-    ] == "FAIL"
+    assert main(["--config", str(config), "doctor", "--json"]) == 0
+    capsys.readouterr()
 
     registry.transition("demo", ProjectLifecycleState.ACTIVE)
     project.write_text(

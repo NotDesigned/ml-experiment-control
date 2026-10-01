@@ -31,7 +31,7 @@ def test_credential_cli_reads_stdin_without_exposing_secret(tmp_path, monkeypatc
     config.write_text(
         "schema_version: 1\n"
         f"index_db: {tmp_path / 'index.sqlite'}\n"
-        "observability:\n"
+        "tracking:\n"
         f"  credential_root: {tmp_path / 'credentials'}\n",
         encoding="utf-8",
     )

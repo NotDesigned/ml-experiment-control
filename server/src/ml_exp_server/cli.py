@@ -89,6 +89,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", required=True, type=Path, help="server workspace YAML")
     subcommands = parser.add_subparsers(dest="command")
+    sync = subcommands.add_parser("tracking-sync", help="sync one completed native W&B Attempt")
+    sync.add_argument("project")
+    sync.add_argument("run_id")
+    sync.add_argument("attempt_id")
     credential = subcommands.add_parser(
         "credential", help="manage daemon-host publisher credentials",
     )
@@ -133,7 +137,7 @@ def _credential_command(args: argparse.Namespace) -> int:
     from .project_config import load_server_config
 
     config = load_server_config(args.config)
-    store = CredentialStore(Path(config.observability.credential_root))
+    store = CredentialStore(Path(config.tracking.credential_root))
     try:
         if args.credential_action == "set":
             secret = sys.stdin.read() if args.stdin else getpass.getpass("W&B API key: ")
@@ -301,13 +305,13 @@ def _doctor_command(args: argparse.Namespace) -> int:
                 ) if root_errors else None,
             ))
 
-        store = CredentialStore(Path(config.observability.credential_root))
+        store = CredentialStore(Path(config.tracking.credential_root))
 
         def credential_check(label: str, reference: str | None) -> None:
             if not reference:
                 checks.append((
                     label, False, "credential reference not set",
-                    "set the corresponding W&B credential reference in observability config",
+                    "set the corresponding W&B credential reference in tracking config",
                 ))
                 return
             try:
@@ -323,48 +327,11 @@ def _doctor_command(args: argparse.Namespace) -> int:
                     f"ml-expd --config ... credential wandb set {status.reference} --stdin",
                 ))
 
-        local = config.observability.local_wandb
-        if not local.enabled:
-            checks.append((
-                "local W&B", None, "disabled",
-                "set observability.local_wandb.enabled: true to publish locally",
-            ))
+        tracking = config.tracking
+        if tracking.entity and tracking.project:
+            credential_check("W&B sync credential", tracking.credential_ref)
         else:
-            if local.managed:
-                docker = Path(local.docker_executable)
-                if docker.is_file() and os.access(docker, os.X_OK):
-                    checks.append(("local W&B docker", True, str(docker), None))
-                else:
-                    checks.append((
-                        "local W&B docker", False, f"{docker} is not an executable file",
-                        "install Docker or point docker_executable at a working binary",
-                    ))
-            if not local.publisher_entity and not local.publisher_credential_ref:
-                checks.append((
-                    "local W&B publisher", None, "disabled (dashboard-only)",
-                    "set publisher_entity and publisher_credential_ref to mirror Attempts",
-                ))
-            else:
-                if not local.publisher_entity:
-                    checks.append((
-                        "local W&B entity", False, "publisher_entity not set",
-                        "set observability.local_wandb.publisher_entity",
-                    ))
-                credential_check("local W&B credential", local.publisher_credential_ref)
-
-        cloud = config.observability.wandb_cloud
-        if not cloud.enabled:
-            checks.append((
-                "W&B cloud", None, "disabled",
-                "set observability.wandb_cloud.enabled: true to publish to W&B Cloud",
-            ))
-        else:
-            if not cloud.entity:
-                checks.append((
-                    "W&B cloud entity", False, "entity not set",
-                    "set observability.wandb_cloud.entity",
-                ))
-            credential_check("W&B cloud credential", cloud.default_credential_ref)
+            checks.append(("W&B sync", None, "unconfigured; native offline files only", None))
 
         registry_root = config.project_registry_root_path()
         registry_path = registry_root / "registry.json"
@@ -424,6 +391,16 @@ def _doctor_command(args: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "tracking-sync":
+        from .project_config import load_server_config
+        from .tracking_sync import sync_attempt
+        try:
+            result = sync_attempt(load_server_config(args.config), args.project, args.run_id, args.attempt_id)
+        except Exception as exc:
+            print(json.dumps({"state": "SYNC_FAILED", "error_class": type(exc).__name__}))
+            return 1
+        print(json.dumps(result))
+        return 0 if result["state"] == "CLI_COMPLETED" else 1
     if args.command == "credential":
         return _credential_command(args)
     if args.command == "doctor":
