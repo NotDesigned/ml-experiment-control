@@ -147,7 +147,11 @@ class SourceImportService:
                 if not destination.exists():
                     atomic_json(temporary / "source.json", metadata)
                     seal_tree(temporary)
+                    # POSIX cross-parent directory rename needs owner write on
+                    # the moved directory. Its contents remain sealed throughout.
+                    temporary.chmod(0o700)
                     os.rename(temporary, destination)
+                    destination.chmod(0o500)
                     fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
                     try:
                         os.fsync(fd)

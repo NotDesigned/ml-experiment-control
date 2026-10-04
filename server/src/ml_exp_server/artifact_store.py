@@ -96,7 +96,9 @@ class ArtifactStore:
                     stream.seek(0)
                     unpack_source(stream, temporary, SimpleNamespace(max_source_bytes=self.limit, max_source_files=20000), allow_empty=True)
                 seal_tree(temporary)
+                temporary.chmod(0o700)
                 temporary.rename(destination)
+                destination.chmod(0o500)
             finally:
                 remove_staging(temporary)
 
@@ -142,11 +144,13 @@ class ArtifactStore:
                 receipt = {'sha256': digest, 'bytes': size, 'files': sorted(files, key=lambda f: f['path']),
                            'object_key': key, 'received_at': utc_now()}
                 seal_tree(temporary)
+                temporary.chmod(0o700)
                 destination = parent / 'uploaded_outputs'
                 if destination.exists():
                     # Recover the S3-write/local-rename/receipt-write interruption window.
                     remove_staging(destination)
                 temporary.rename(destination)
+                destination.chmod(0o500)
                 value['receipt'] = receipt
                 atomic_json(path, value)
                 return receipt
