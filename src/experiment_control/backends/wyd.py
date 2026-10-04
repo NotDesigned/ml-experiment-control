@@ -133,6 +133,9 @@ def render_job(
     execution = manifest["execution"]
     container_path = str(execution["source_mount"])
     workdir = str(execution["workdir"])
+    packaged_source = bool(backend.get("oci_image"))
+    source_check = "" if packaged_source else f"test -d {shlex.quote(source_dir)}\n"
+    source_bind = "" if packaged_source else f"  --bind {shlex.quote(source_dir)}:{shlex.quote(container_path)} \\\n"
     comment = shlex.quote(
         submission_marker(submission_token) if submission_token else "ml-exp-dry-run"
     )
@@ -161,12 +164,10 @@ attempt_log_dir={shlex.quote(f"{run_dir}/attempts/{manifest['attempt_id']}")}
 mkdir -p "$attempt_log_dir"
 exec > >(tee -a "$attempt_log_dir/slurm-$SLURM_JOB_ID.out") \\
      2> >(tee -a "$attempt_log_dir/slurm-$SLURM_JOB_ID.err" >&2)
-test -d {shlex.quote(source_dir)}
-test -s {shlex.quote(sif_path)}
+{source_check}test -s {shlex.quote(sif_path)}
 srun apptainer exec --nv \\
   --bind {shlex.quote(mount_root)}:{shlex.quote(mount_root)} \\
-  --bind {shlex.quote(source_dir)}:{shlex.quote(container_path)} \\
-  --pwd {shlex.quote(workdir)} \\
+{source_bind}  --pwd {shlex.quote(workdir)} \\
   {shlex.quote(sif_path)} \\
   {command}
 """
@@ -504,6 +505,11 @@ class WydSlurmBackend:
         expected_suffix = f"/sources/{source_id}"
         if not str(backend["source_dir"]).endswith(expected_suffix):
             raise ValueError(f"source_dir must end with {expected_suffix}")
+        if backend.get("oci_image"):
+            # The fixed runtime already contains /workspace. A second source
+            # bind masks that exact image and duplicates publication state.
+            self._stage_oci_image(run)
+            return True
         source_marker = f"{backend['source_dir']}/.source-complete"
         self.remote_exec(
             backend["ssh_alias"],
@@ -537,26 +543,23 @@ class WydSlurmBackend:
                     backend["ssh_alias"],
                     shlex.join(["touch", source_marker]),
                 )
-        if backend.get("oci_image"):
-            self._stage_oci_image(run)
-        else:
-            expected_image = str(run["image_id"])
-            expected_sha = expected_image.removeprefix("sha256:")
-            marker = f"{backend['sif_path']}.sha256-{expected_sha}.verified"
-            valid = self._remote_predicate(
+        expected_image = str(run["image_id"])
+        expected_sha = expected_image.removeprefix("sha256:")
+        marker = f"{backend['sif_path']}.sha256-{expected_sha}.verified"
+        valid = self._remote_predicate(
+            backend["ssh_alias"],
+            f"test -s {shlex.quote(backend['sif_path'])} -a -f {shlex.quote(marker)}",
+            operation="verified SIF marker probe",
+        )
+        if not valid:
+            verify = self.remote_exec(
                 backend["ssh_alias"],
-                f"test -s {shlex.quote(backend['sif_path'])} -a -f {shlex.quote(marker)}",
-                operation="verified SIF marker probe",
+                f"test -s {shlex.quote(backend['sif_path'])} && sha256sum {shlex.quote(backend['sif_path'])}",
             )
-            if not valid:
-                verify = self.remote_exec(
-                    backend["ssh_alias"],
-                    f"test -s {shlex.quote(backend['sif_path'])} && sha256sum {shlex.quote(backend['sif_path'])}",
-                )
-                actual_sha = verify.stdout.split()[0]
-                if expected_image.startswith("sha256:") and actual_sha != expected_sha:
-                    raise ValueError(f"SIF checksum mismatch: expected {expected_image}, got sha256:{actual_sha}")
-                self.remote_exec(backend["ssh_alias"], shlex.join(["touch", marker]))
+            actual_sha = verify.stdout.split()[0]
+            if expected_image.startswith("sha256:") and actual_sha != expected_sha:
+                raise ValueError(f"SIF checksum mismatch: expected {expected_image}, got sha256:{actual_sha}")
+            self.remote_exec(backend["ssh_alias"], shlex.join(["touch", marker]))
         for required_path in source_bundle.required_paths:
             relative = Path(required_path)
             if relative.is_absolute() or ".." in relative.parts:

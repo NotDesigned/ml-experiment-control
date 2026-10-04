@@ -752,3 +752,22 @@ def test_sensecore_worker_query_is_sanitized_and_normalized(
     result = backend.workers({}, sensecore_run())
     assert result["worker_state"] == expected
     assert "worker-list" in fake.commands[0][-1]
+
+
+def test_packaged_oci_source_is_not_staged_or_masked_by_host_files(tmp_path):
+    from experiment_control.backends.wyd import render_job
+    from experiment_control.project import SourceBundle
+    run = slurm_run()
+    run['backend']['oci_image'] = 'registry.example/runtime@sha256:'+'a'*64
+    backend = WydSlurmBackend(services(tmp_path, QueueRunner([])))
+    converted = []
+    backend._stage_oci_image = lambda selected: converted.append(selected['backend']['oci_image'])
+    source_id = run['backend']['source_dir'].rsplit('/',1)[-1]
+    assert backend.stage({}, run, source_id, SourceBundle(root=tmp_path/'missing-source'))
+    assert converted == [run['backend']['oci_image']]
+    manifest = {**run, 'attempt_id':'attempt-001', 'execution':{'source_mount':'/workspace','workdir':'/workspace'}, 'command':['python','train.py']}
+    packaged = render_job(manifest)
+    assert run['backend']['source_dir'] not in packaged
+    assert '--pwd /workspace' in packaged
+    run['backend'].pop('oci_image')
+    assert run['backend']['source_dir']+':/workspace' in render_job(manifest)

@@ -61,10 +61,12 @@ not infer the scientific meaning of those fields.
 
 ## Same execution on both backends
 
-SenseCore pulls the derived OCI image by digest. WYD stages the exact source,
-converts that same digest to SIF through Apptainer, and verifies an OCI/SIF
-receipt plus the actual SIF checksum before reusing a cached conversion. Its
-source bind mounts `/workspace`, matching the OCI image's copied source.
+SenseCore pulls the derived image by digest. WYD converts that same digest to
+SIF through Apptainer and verifies an OCI/SIF receipt plus the actual SIF
+checksum before reusing a cached conversion. Both use the source packaged at
+`/workspace` inside the image; WYD does not copy or mount a second checkout
+over it. Legacy projects with an authored SIF and source checkout retain their
+existing source staging behavior.
 The profile chooses the scheduler and storage layout; the scientific command
 is identical. Private registry access is an operator-owned prerequisite on
 both backends. Remote schedulers must pass their live preflight.
