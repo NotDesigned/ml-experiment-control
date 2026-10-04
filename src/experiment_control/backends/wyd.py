@@ -136,6 +136,7 @@ def render_job(
     packaged_source = bool(backend.get("oci_image"))
     source_check = "" if packaged_source else f"test -d {shlex.quote(source_dir)}\n"
     source_bind = "" if packaged_source else f"  --bind {shlex.quote(source_dir)}:{shlex.quote(container_path)} \\\n"
+    unsquash = " --unsquash" if backend.get("apptainer_unsquash") else ""
     comment = shlex.quote(
         submission_marker(submission_token) if submission_token else "ml-exp-dry-run"
     )
@@ -165,7 +166,7 @@ mkdir -p "$attempt_log_dir"
 exec > >(tee -a "$attempt_log_dir/slurm-$SLURM_JOB_ID.out") \\
      2> >(tee -a "$attempt_log_dir/slurm-$SLURM_JOB_ID.err" >&2)
 {source_check}test -s {shlex.quote(sif_path)}
-srun apptainer exec --nv \\
+srun apptainer exec --nv{unsquash} \\
   --bind {shlex.quote(mount_root)}:{shlex.quote(mount_root)} \\
 {source_bind}  --pwd {shlex.quote(workdir)} \\
   {shlex.quote(sif_path)} \\

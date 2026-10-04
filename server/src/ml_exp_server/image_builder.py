@@ -25,7 +25,7 @@ from .storage import atomic_json
 IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
 ID = re.compile(r"^[0-9a-f]{64}$")
 PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
-RECIPE = "source-copy-docker-v2-v1"
+RECIPE = "source-copy-docker-v2-v2"
 MANIFEST_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
 
 
@@ -78,6 +78,8 @@ class ImageBuilder:
                 raise ValueError("image bundle has not been published")
             if request.get("operation") != "build":
                 raise ValueError("unsupported image packaging operation")
+            if request.get("packaging_revision", RECIPE) != RECIPE:
+                raise ValueError("image packaging revision mismatch")
             prefixes = self.config.get("base_image_prefixes", [])
             if prefixes and not any(image.startswith(prefix) for prefix in prefixes):
                 raise ValueError("base image is outside packaging policy")
@@ -104,6 +106,7 @@ class ImageBuilder:
                     path.chmod(0o555 if path.is_dir() or path.stat().st_mode & 0o111 else 0o444)
                 (context / "source").chmod(0o555)
                 shutil.copyfile(Path(__file__).with_name("container_worker.py"), context / "worker.py")
+                (context / "worker.py").chmod(0o444)
                 recipe = (f"FROM {image}\nCOPY source/ /workspace/\nWORKDIR /workspace\n"
                           "COPY worker.py /usr/local/lib/ml-expd/worker.py\n"
                           f"LABEL org.ml-expd.source={source_id}\nENTRYPOINT []\nCMD [\"/bin/true\"]\n")

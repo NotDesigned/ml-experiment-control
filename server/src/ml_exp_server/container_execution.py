@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 import yaml
 
 from .application_errors import ApplicationError
-from .image_builder import IMAGE, builder_request
+from .image_builder import IMAGE, RECIPE, builder_request
 from .source_imports import IDENTITY, source_lock
 from .source_revisions import resolve_source_tree
 from .storage import DurableJsonState, atomic_text, utc_now
@@ -30,6 +30,14 @@ class RuntimeSpec(BaseModel):
     image: str
     entrypoint: list[str] = Field(min_length=1, max_length=128)
     workdir: str = "/workspace"
+    packaging_revision: str = RECIPE
+
+    @field_validator("packaging_revision")
+    @classmethod
+    def reviewed_recipe(cls, value: str) -> str:
+        if value != RECIPE:
+            raise ValueError("packaging_revision must match the current reviewed recipe")
+        return value
 
     @field_validator("image")
     @classmethod
@@ -182,7 +190,8 @@ class ContainerExecutionService:
                 raise ValueError("image packaging worker is not configured")
             resolve_source_tree(self.runtime.config, project, spec.source_id)
             result = builder_request(socket, {"operation": "get" if reconcile else "build", "project": project,
-                                              "source_id": spec.source_id, "base_image": spec.image})
+                                              "source_id": spec.source_id, "base_image": spec.image,
+                                              "packaging_revision": spec.packaging_revision})
             if (result.get("project") != project or result.get("source_id") != spec.source_id
                     or result.get("base_image") != spec.image or not IMAGE.fullmatch(result.get("image", ""))):
                 raise ValueError("image packaging result identity mismatch")

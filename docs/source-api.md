@@ -32,6 +32,9 @@ Every normal API call sends `Authorization: Bearer …` and
    launcher. The daemon uses a fixed FROM/COPY recipe, adds the reviewed upload
    launcher, and publishes a derived image. It never executes a project
    Dockerfile or installs arbitrary dependencies on the host.
+   The server supplies the reviewed `packaging_revision`; it is part of the
+   runtime identity, so a packaging repair creates a new runtime instead of
+   replacing an existing frozen image.
 4. Execute packaging with `POST /api/projects/my-study/runtimes/{runtime_id}/execute`
    and the exact `confirmation` returned by prepare. Poll the runtime until
    `READY`. Packaging does not allocate a GPU. `RECONCILE_REQUIRED` requires
@@ -67,6 +70,8 @@ checksum before reusing a cached conversion. Both use the source packaged at
 `/workspace` inside the image; WYD does not copy or mount a second checkout
 over it. Legacy projects with an authored SIF and source checkout retain their
 existing source staging behavior.
+The WYD profile enables `--unsquash` because its current environment denies
+FUSE mounts. The upload launcher is readable by the non-root compute user.
 The profile chooses the scheduler and storage layout; the scientific command
 is identical. Private registry access is an operator-owned prerequisite on
 both backends. Remote schedulers must pass their live preflight.

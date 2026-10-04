@@ -51,7 +51,7 @@ class Controller:
         spec = runtime_record.get("spec", {})
         if (runtime_record.get("status") != "READY" or runtime_record.get("project") != campaign["project"]
                 or runtime_record.get("image") != runtime["image"]
-                or any(spec.get(key) != runtime.get(key) for key in ("source_id", "entrypoint", "workdir"))
+                or any(spec.get(key) != runtime.get(key) for key in ("source_id", "entrypoint", "workdir", "packaging_revision"))
                 or self.run["source_id"] != runtime["source_id"]
                 or self.run["image_id"] != runtime["image"].split("@", 1)[1]):
             raise ValueError("controller runtime does not match its immutable definition")

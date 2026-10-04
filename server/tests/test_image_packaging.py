@@ -31,6 +31,7 @@ def test_builder_uses_fixed_recipe_and_copies_exact_readonly_source(tmp_path):
             assert 'COPY source/ /workspace/' in recipe and 'RUN ' not in recipe
             assert '--network=none' in args and 'COPY worker.py' in recipe
             assert (context/'source/train.py').read_text()=='print(1)\n'
+            assert (context/'worker.py').stat().st_mode & 0o777 == 0o444
         return ''
     builder._docker=docker
     manifest = json.dumps({'mediaType': MANIFEST_TYPE, 'config': {'digest': 'sha256:'+'a'*64}})

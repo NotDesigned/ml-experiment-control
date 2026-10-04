@@ -769,5 +769,7 @@ def test_packaged_oci_source_is_not_staged_or_masked_by_host_files(tmp_path):
     packaged = render_job(manifest)
     assert run['backend']['source_dir'] not in packaged
     assert '--pwd /workspace' in packaged
+    run['backend']['apptainer_unsquash'] = True
+    assert 'apptainer exec --nv --unsquash' in render_job(manifest)
     run['backend'].pop('oci_image')
     assert run['backend']['source_dir']+':/workspace' in render_job(manifest)
