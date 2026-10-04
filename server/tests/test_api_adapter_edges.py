@@ -185,25 +185,6 @@ def test_terminal_refresh_rejects_unknown_project():
         routes.terminal_refresh(routes.RefreshRequest(project="missing"), req)
 
 
-def test_observability_endpoint_and_attention_ignore_unmatched_collector_status():
-    store = SimpleNamespace(
-        statuses=lambda **_kwargs: [], status_count=lambda **_kwargs: 0,
-        archive_summary=lambda: {"degraded_sources": 0},
-    )
-    runtime = SimpleNamespace(
-        config=SimpleNamespace(observability=SimpleNamespace(
-            local_wandb=SimpleNamespace(
-                enabled=False, publisher_entity=None,
-                publisher_credential_ref=None,
-            ),
-            wandb_cloud=SimpleNamespace(
-                enabled=False, default_credential_ref=None, entity=None,
-            ),
-        )),
-        credential_store=SimpleNamespace(), observability_store=store,
-        wandb_service=SimpleNamespace(status=lambda: {"state": "DISABLED"}),
-    )
-    payload = routes.observability(request(runtime=runtime))
-    assert payload["state"] == "RETIRED"
+def test_attention_ignores_unmatched_collector_status():
     status = SimpleNamespace(run_id="missing", last_error="ignored")
     assert routes._attention([], [status]) == []

@@ -102,31 +102,6 @@ class TelemetryConfig(BaseModel):
     capture_content: Literal[False] = False
 
 
-class TrackingConfig(BaseModel):
-    """One external W&B endpoint; uploads are explicit operator commands."""
-
-    model_config = ConfigDict(extra="forbid")
-    credential_root: str = "~/.local/state/ml-expd/credentials"
-    credential_ref: Optional[str] = None
-    entity: Optional[str] = None
-    project: Optional[str] = None
-    api_url: str = "https://api.wandb.ai"
-    dashboard_url: str = "https://wandb.ai"
-
-    @field_validator("api_url", "dashboard_url")
-    @classmethod
-    def endpoint(cls, value: str) -> str:
-        from .tracking import safe_url
-        if safe_url(value) is None:
-            raise ValueError("endpoint must be HTTPS or loopback HTTP without credentials/query")
-        return value.rstrip("/")
-
-    @field_validator("entity", "project")
-    @classmethod
-    def identifier(cls, value: Optional[str]) -> Optional[str]:
-        if value is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
-            raise ValueError("invalid W&B identity")
-        return value
 
 
 class ActionRuntimeConfig(BaseModel):
@@ -137,7 +112,6 @@ class ActionRuntimeConfig(BaseModel):
     allow_project_writes: bool = False
     allow_source_imports: bool = False
     allow_scheduler_mutations: bool = False
-    allow_observability_mutations: Literal[False] = False  # protocol-v1 config tombstone
     allow_local_evidence_rebuild: bool = False
     scheduler_resource_approval: Literal["budget_cap", "review_exact"] = "budget_cap"
     max_gpu_hours_per_action: Optional[float] = Field(default=1.0, gt=0)
@@ -171,6 +145,21 @@ class HttpAuthConfig(BaseModel):
         if not self.enabled:
             return None
         return Path(str(self.bearer_token_file)).expanduser()
+
+
+class ContainerExecutionConfig(BaseModel):
+    """Daemon-owned execution profiles and bounded source import policy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profiles_file: Optional[str] = None
+    builder_socket: Optional[str] = None
+    artifact_store_file: Optional[str] = None
+    registry_pull_file: Optional[str] = None
+    git_hosts: list[str] = Field(default_factory=lambda: ["github.com", "gitlab.com"])
+    max_archive_bytes: int = Field(default=64 * 1024 * 1024, ge=1, le=512 * 1024 * 1024)
+    max_source_bytes: int = Field(default=256 * 1024 * 1024, ge=1, le=1024 * 1024 * 1024)
+    max_source_files: int = Field(default=20000, ge=1, le=100000)
 
 
 class CampaignRunMembership(BaseModel):
@@ -373,7 +362,7 @@ class ServerConfig(BaseModel):
     http_auth: HttpAuthConfig = Field(default_factory=HttpAuthConfig)
     action_runtime: ActionRuntimeConfig = Field(default_factory=ActionRuntimeConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
-    tracking: TrackingConfig = Field(default_factory=TrackingConfig)
+    container_execution: ContainerExecutionConfig = Field(default_factory=ContainerExecutionConfig)
     # The daemon owns live collection by default. ``--snapshot`` is the
     # explicit offline opt-out.
     collector_enabled: bool = True

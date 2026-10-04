@@ -412,7 +412,7 @@ class SenseCoreBackend:
         )
         command = [
             "env", f"BACKEND_JOB_ID={resource_name}",
-            *[str(value) for value in manifest["command"]],
+            *[str(value) for value in (self.s.dispatch_command(manifest) if submission_token else manifest["command"])],
         ]
         return [
             "timeout", f"{self.create_timeout_seconds()}s",

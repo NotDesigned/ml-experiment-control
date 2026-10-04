@@ -150,4 +150,4 @@ uv build --all-packages
 
 Action migration and rollback: [action-storage.md](action-storage.md).
 SSE reconnect/resync contract: [sse.md](sse.md).
-Native W&B contract: [observability.md](observability.md).
+Source/container/artifact contract: [source-api.md](source-api.md).

@@ -664,8 +664,6 @@ _CONFIG_EXCERPT_KEYS = (
     "grad_accum_steps",
     "use_sentence_plan", "sentence_encoder_type", "sentence_encoder_grad",
     "plan_aux_passes", "plan_aux_token_context",
-    "use_wandb", "wandb_base_url", "wandb_project", "wandb_entity",
-    "wandb_run_id", "wandb_run_name", "wandb_url",
     "depth", "device_batch_size",
 )
 
@@ -675,10 +673,6 @@ _CHECKPOINT_KEYS = (
     "checkpoint_exposure",
     "checkpoint_exposure_minutes",
 )
-_WANDB_INIT_PATTERN = re.compile(
-    r"wandb initialized:\s*(https?://[^\s)>\]\"'?#]+)", re.IGNORECASE
-)
-_WANDB_LOG_SCAN_LIMIT = 8 * 1024 * 1024
 
 
 def parse_iso_ts(value: Any) -> Optional[float]:
@@ -717,128 +711,12 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _safe_wandb_url(value: Any) -> Optional[str]:
-    if not isinstance(value, str) or len(value) > 2048:
-        return None
-    parsed = urlsplit(value)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-    ):
-        return None
-    return value
 
 
-def _wandb_url_in_text(value: str) -> Optional[str]:
-    match = _WANDB_INIT_PATTERN.search(value)
-    return _safe_wandb_url(match.group(1)) if match else None
 
 
-def _wandb_url_in_file(path: Path) -> Optional[str]:
-    if not path.is_file():
-        return None
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            return _wandb_url_in_text(handle.read(_WANDB_LOG_SCAN_LIMIT))
-    except OSError:
-        return None
 
 
-def _wandb_provenance(
-    run_dir: Path,
-    attempt_dir: Optional[Path],
-    manifest: dict[str, Any],
-    collection: dict[str, Any],
-) -> Optional[dict[str, Any]]:
-    """Resolve requested W&B identity and observed runtime URL from durable evidence."""
-    resolved = manifest.get("resolved_config")
-    resolved = resolved if isinstance(resolved, dict) else {}
-    requested = _truthy(resolved.get("use_wandb"))
-    result: dict[str, Any] = {
-        "requested": requested,
-        "enabled": requested,
-        "initialized": False,
-        "entity": resolved.get("wandb_entity"),
-        "project": resolved.get("wandb_project"),
-        "run_id": resolved.get("wandb_run_id") or manifest.get("run_id"),
-        "name": resolved.get("wandb_run_name") or manifest.get("run_id"),
-    }
-
-    attempt_collection = (
-        _load_json(attempt_dir / "collection.json") if attempt_dir is not None else {}
-    )
-    for source, payload in (
-        ("attempt.collection.wandb", attempt_collection.get("wandb")),
-        ("run.collection.wandb", collection.get("wandb")),
-    ):
-        observed = payload if isinstance(payload, dict) else {}
-        url = _safe_wandb_url(observed.get("url"))
-        if url is not None:
-            result.update({
-                "initialized": bool(observed.get("initialized", True)),
-                "url": url,
-                "evidence_source": observed.get("evidence_source") or source,
-            })
-            return result
-
-    roots = [path for path in (attempt_dir, run_dir) if path is not None]
-    structured_candidates = []
-    log_candidates = []
-    for root in roots:
-        structured_candidates.extend((
-            root / "wandb.json",
-            root / "collected_run" / "wandb.json",
-        ))
-        log_candidates.extend((
-            root / "stdout.log", root / "stderr.log",
-            root / "collected_run" / "stdout.log",
-            root / "collected_run" / "stderr.log",
-        ))
-
-    for path in structured_candidates:
-        observed = _load_json(path)
-        url = _safe_wandb_url(observed.get("url") or observed.get("run_url"))
-        if url is not None:
-            result.update({
-                "initialized": bool(observed.get("initialized", True)),
-                "url": url,
-                "evidence_source": str(path),
-            })
-            for key in ("entity", "project", "run_id", "name"):
-                if observed.get(key) is not None:
-                    result[key] = observed[key]
-            return result
-
-    for path in log_candidates:
-        url = _wandb_url_in_file(path)
-        if url:
-            result.update({
-                "initialized": True,
-                "url": url,
-                "evidence_source": str(path),
-            })
-            return result
-
-    process = collection.get("process_evidence")
-    process = process if isinstance(process, dict) else {}
-    for stream in ("stdout_tail", "stderr_tail"):
-        lines = process.get(stream)
-        if not isinstance(lines, list):
-            continue
-        url = _wandb_url_in_text("\n".join(str(item) for item in lines))
-        if url:
-            result.update({
-                "initialized": True,
-                "url": url,
-                "evidence_source": f"collection.process_evidence.{stream}",
-            })
-            return result
-
-    return result if requested else None
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -1502,9 +1380,6 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
             # Keep the canonical API key stable. Its value may be one seed or
             # an immutable aggregate seed list, matching Attempt validation.
             provenance["seed"] = aggregate_seed
-    wandb = _wandb_provenance(run_dir, attempt_dir, manifest, collection)
-    if wandb is not None:
-        provenance["wandb"] = wandb
 
     canonical_eval_variant_id = _canonical_eval_variant_id(eval_variants, contract)
     eval_metrics: dict[str, Any] = {}

@@ -6,7 +6,6 @@ import pytest
 
 from experiment_control.runner import CommandResult
 from ml_exp_server.cli import _require_loopback_host, _validate_bind_host, main
-from ml_exp_server.credentials import CredentialStore
 from ml_exp_server.project_registry import ProjectRegistry
 
 
@@ -15,8 +14,6 @@ def _write_config(tmp_path: Path, extra: str = "") -> Path:
     config.write_text(
         "schema_version: 1\n"
         f"index_db: {tmp_path / 'index.sqlite'}\n"
-        "tracking:\n"
-        f"  credential_root: {tmp_path / 'credentials'}\n"
         + extra,
         encoding="utf-8",
     )
@@ -30,7 +27,6 @@ def test_doctor_reports_defaults_as_informational_not_failing(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "✓ server config" in out
     assert "· action_runtime.allow_scheduler_mutations: disabled (default)" in out
-    assert "· W&B sync: unconfigured" in out
     assert "· projects: registry not initialized; 0 configured for bootstrap" in out
 
 
@@ -102,30 +98,12 @@ def test_doctor_reports_backend_probe_timeout_without_hanging(
     assert "safe-sco" in checks["backend.sensecore"]["detail"]
 
 
-def test_doctor_flags_missing_wandb_credentials_as_hard_failures(tmp_path, capsys):
-    config = _write_config(tmp_path, "  entity: team\n  project: experiments\n  credential_ref: cloud\n")
-    assert main(["--config", str(config), "doctor"]) == 1
-    assert "W&B sync credential: cloud not set" in capsys.readouterr().out
 
 
-def test_doctor_reports_configured_credentials_as_passing(tmp_path, capsys):
-    config = _write_config(tmp_path, "  entity: team\n  project: experiments\n  credential_ref: cloud\n")
-    CredentialStore(tmp_path / "credentials").set_wandb_api_key("cloud", "secret-value")
-    assert main(["--config", str(config), "doctor"]) == 0
-    out = capsys.readouterr().out
-    assert "W&B sync credential: cloud" in out and "secret-value" not in out
 
 
-def test_doctor_unconfigured_target_is_informational(tmp_path, capsys):
-    config = _write_config(tmp_path, "  credential_ref: cloud\n")
-    assert main(["--config", str(config), "doctor"]) == 0
-    assert "W&B sync: unconfigured" in capsys.readouterr().out
 
 
-def test_doctor_reports_invalid_credential_reference_without_crashing(tmp_path, capsys):
-    config = _write_config(tmp_path, "  entity: team\n  project: experiments\n  credential_ref: ../bad\n")
-    assert main(["--config", str(config), "doctor"]) == 1
-    assert "credential reference must use only" in capsys.readouterr().out
 
 
 def test_doctor_counts_durable_registry_instead_of_static_config(tmp_path, capsys):

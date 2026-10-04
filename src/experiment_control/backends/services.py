@@ -8,6 +8,7 @@ from typing import Callable, Mapping, Protocol, Sequence
 
 from ..contracts import (
     BackendRecord,
+    AttemptManifest,
     Campaign,
     CheckpointRecord,
     JsonValue,
@@ -46,3 +47,6 @@ class BackendServices:
     utc_now: Callable[[], str]
     # Optional host-owned evidence patterns; old hosts keep their existing collection.
     collection_includes: Callable[[Campaign], tuple[str, ...]] = lambda _campaign: ()
+    # Host-only credentials may be injected at dispatch, never into Run manifests.
+    dispatch_command: Callable[[AttemptManifest], list[str]] = lambda manifest: list(manifest["command"])
+    oci_pull_environment: Callable[[], dict[str, str]] = lambda: {}

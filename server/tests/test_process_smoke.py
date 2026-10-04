@@ -50,7 +50,7 @@ def test_real_daemon_process_serves_versioned_health(tmp_path):
             try:
                 request = Request(
                     f"http://127.0.0.1:{port}/api/health",
-                    headers={"X-ML-Expd-Client-Protocol": "1"},
+                    headers={"X-ML-Expd-Client-Protocol": "2"},
                 )
                 with urlopen(request, timeout=0.5) as response:
                     payload = json.loads(response.read())
@@ -59,7 +59,7 @@ def test_real_daemon_process_serves_versioned_health(tmp_path):
                 time.sleep(0.05)
         assert payload is not None, "ml-expd did not become healthy"
         assert payload["status"] == "ok"
-        assert payload["api_protocol_version"] == 1
+        assert payload["api_protocol_version"] == 2
         assert "terminal-snapshot.v1" in payload["capabilities"]
     finally:
         if process.poll() is None:

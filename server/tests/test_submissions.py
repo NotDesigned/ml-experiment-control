@@ -20,7 +20,6 @@ from ml_exp_server.schemas import (
     CampaignRef,
     CampaignRevision,
     CampaignRunMembership,
-    TrackingConfig,
     ResearchProject,
     RunIndexRow,
     ServerConfig,
@@ -131,7 +130,6 @@ def _app(
             scheduler_resource_approval=resource_approval,
             max_gpu_hours_per_action=max_gpu_hours,
         ),
-        tracking=TrackingConfig(credential_root=str(tmp_path / "credentials")),
     )
     app = create_app(config, projects=[project])
     runner = SubmissionController()

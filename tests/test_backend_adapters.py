@@ -22,8 +22,6 @@ from experiment_control.backends.sensecore import (
 )
 from experiment_control.backends.wyd import (
     WydSlurmBackend,
-    _safe_wandb_url,
-    wandb_url_probe_command,
 )
 from experiment_control.project import AssetProbe, AssetRequirement
 from experiment_control.runner import CommandResult
@@ -543,105 +541,14 @@ def test_slurm_collection_includes_sanitized_process_evidence(tmp_path):
     ]
 
 
-def test_slurm_collection_extracts_wandb_url_without_persisting_full_log(tmp_path):
-    run = slurm_run()
-    run["resolved_config"] = {"use_wandb": True}
-    run_dir = run["storage"]["run_dir"]
-    stdout = f"{run_dir}/attempts/attempt-001/slurm-1234.out"
-    fake = QueueRunner([
-        CommandResult(("collect-rsync",), 0),
-        CommandResult(("checkpoint-probe",), 0),
-        CommandResult(("stdout",), 0, f"{stdout}\nrecent training output\n"),
-        CommandResult(("stderr",), 1),
-        CommandResult(
-            ("wandb-probe",), 0,
-            f"{stdout}\nhttps://wandb.ai/team/project/runs/run-a\n",
-        ),
-    ])
-
-    summary = WydSlurmBackend(services(tmp_path, fake)).collect({}, run)
-
-    assert summary["wandb"] == {
-        "initialized": True,
-        "url": "https://wandb.ai/team/project/runs/run-a",
-        "evidence_source": stdout,
-    }
-    assert "recent training output" not in json.dumps(summary["wandb"])
 
 
-def test_slurm_collection_does_not_probe_wandb_when_disabled(tmp_path):
-    run = slurm_run()
-    run["resolved_config"] = {"use_wandb": False}
-    fake = QueueRunner([
-        CommandResult(("collect-rsync",), 0),
-        CommandResult(("checkpoint-probe",), 0),
-        CommandResult(("stdout",), 1),
-        CommandResult(("stderr",), 1),
-    ])
-
-    summary = WydSlurmBackend(services(tmp_path, fake)).collect({}, run)
-
-    assert "wandb" not in summary
-    assert len(fake.commands) == 4
 
 
-def test_slurm_collection_does_not_probe_wandb_without_log_sources(tmp_path):
-    run = slurm_run()
-    run["resolved_config"] = {"use_wandb": True}
-    fake = QueueRunner([
-        CommandResult(("collect-rsync",), 0),
-        CommandResult(("checkpoint-probe",), 0),
-        CommandResult(("stdout",), 1),
-        CommandResult(("stderr",), 1),
-    ])
-
-    summary = WydSlurmBackend(services(tmp_path, fake)).collect({}, run)
-
-    assert "wandb" not in summary
-    assert len(fake.commands) == 4
 
 
-@pytest.mark.parametrize(
-    ("source_matches", "url"),
-    [
-        (False, "https://wandb.ai/team/project/runs/run-a"),
-        (True, "https://user:secret@wandb.ai/runs/run-a"),
-        (True, "https://wandb.ai/runs/run-a?api_key=secret"),
-    ],
-)
-def test_slurm_collection_rejects_untrusted_wandb_probe_output(
-    tmp_path, source_matches, url,
-):
-    run = slurm_run()
-    run["resolved_config"] = {"use_wandb": True}
-    stdout = f"{run['storage']['run_dir']}/slurm-1234.out"
-    observed_source = stdout if source_matches else "/unexpected/path.log"
-    fake = QueueRunner([
-        CommandResult(("collect-rsync",), 0),
-        CommandResult(("checkpoint-probe",), 0),
-        CommandResult(
-            ("stdout",), 0, f"{stdout}\ntraining\n",
-        ),
-        CommandResult(("stderr",), 1),
-        CommandResult(("wandb-probe",), 0, f"{observed_source}\n{url}\n"),
-    ])
-
-    summary = WydSlurmBackend(services(tmp_path, fake)).collect({}, run)
-
-    assert "wandb" not in summary
 
 
-def test_wandb_url_probe_command_quotes_paths_and_bounds_reads():
-    command = wandb_url_probe_command(["/shared/run with spaces/stdout.log"])
-    assert "8388608" in command
-    assert "'/shared/run with spaces/stdout.log'" in command
-    assert "read(limit)" in command
-    assert "decode" in command
-    with pytest.raises(ValueError, match="between 1 and 8388608"):
-        wandb_url_probe_command(["/shared/stdout.log"], max_bytes=8 * 1024 * 1024 + 1)
-    with pytest.raises(ValueError, match="at least one log path"):
-        wandb_url_probe_command([])
-    assert not _safe_wandb_url("https://wandb.ai/" + "x" * 2049)
 
 
 def test_slurm_collection_reports_latest_completed_checkpoint(tmp_path):

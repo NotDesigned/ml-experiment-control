@@ -29,6 +29,7 @@ class LocalBackendConfig(_LocalBackendOptional):
 class _SlurmBackendOptional(TypedDict, total=False):
     apptainer_cache_dir: str
     apptainer_tmp_dir: str
+    oci_image: str
 
 
 class SlurmBackendConfig(_SlurmBackendOptional):

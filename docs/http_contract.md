@@ -3,7 +3,7 @@
 `GET /api/health` is the compatibility handshake for independently released
 clients. It returns `api_protocol_version`, `min_client_protocol_version`, the
 daemon package version, authentication/transport modes, a capability list, and
-the versioned OpenAPI path (`/api/v1/openapi.json`). Clients send
+the versioned OpenAPI path (`/api/v2/openapi.json`). Clients send
 `X-ML-Expd-Client-Protocol`; unsupported versions receive HTTP 426 with
 `INCOMPATIBLE_API_PROTOCOL` before any operation is dispatched.
 The header is mandatory for every API resource and mutation. A headerless

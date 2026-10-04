@@ -19,10 +19,3 @@ telemetry:
 collector_enabled: true
 poll_interval_seconds: 20
 projects: []
-tracking:
-  credential_root: ~/.local/state/ml-expd/credentials
-  credential_ref: null
-  entity: null
-  project: null
-  api_url: https://api.wandb.ai
-  dashboard_url: https://wandb.ai

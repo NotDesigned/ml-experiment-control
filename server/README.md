@@ -35,3 +35,7 @@ The full architecture, configuration, and verification contract is maintained
 in the repository root `README.md`, `docs/development.md`, and
 `docs/project_lifecycle.md`. Protocol negotiation and native bearer/TLS
 deployment are specified in `docs/http_contract.md`.
+
+New managed projects use [source imports, container execution and S3 artifact
+downloads](../docs/source-api.md). The current server is 0.2.0 / protocol 2;
+W&B support is removed.

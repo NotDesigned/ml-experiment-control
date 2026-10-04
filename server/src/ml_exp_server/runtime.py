@@ -14,7 +14,6 @@ from typing import Callable
 from .actions import ActionService, ActionStore
 from .ingest.indexer import RunIndex
 from .identity import workspace_identity
-from .credentials import CredentialStore
 from .project_config import load_research_project
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .schemas import (
@@ -56,7 +55,6 @@ class ExperimentServerRuntime:
     project_registry: ProjectRegistry
     telemetry: Telemetry
     workspace_id: str
-    credential_store: CredentialStore
 
     @classmethod
     def create(
@@ -101,7 +99,6 @@ class ExperimentServerRuntime:
             telemetry = initialize_telemetry(config.telemetry)
             cleanup.callback(telemetry.shutdown)
             workspace_id = workspace_identity(config)
-            credential_store = CredentialStore(Path(config.tracking.credential_root))
 
             runtime = cls(
                 config=config,
@@ -117,7 +114,6 @@ class ExperimentServerRuntime:
                 project_registry=project_registry,
                 telemetry=telemetry,
                 workspace_id=workspace_id,
-                credential_store=credential_store,
             )
             cleanup.pop_all()
             return runtime

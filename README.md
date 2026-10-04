@@ -19,6 +19,13 @@ polling, Project lifecycle, immutable operation intents, and gated Actions into
 one HTTP control-plane process. Goals, conversations, model turns, research
 analysis, reports, charts, and hypothesis conclusions belong to the client.
 
+## Source-to-container workflow
+
+Import source over HTTP, package it with a digest-pinned environment image and
+fixed argv, select a WYD or SenseCore executor, submit through the existing
+Action gates, then download exact-Attempt artifacts. New managed projects need
+no custom controller. See [the complete API workflow](docs/source-api.md).
+
 ## Audience
 
 This README is for maintainers integrating the core into a host controller and
@@ -63,7 +70,7 @@ plane on a shared host through `http_auth.bearer_token_file`; remote binds also
 require `--ssl-certfile` and `--ssl-keyfile`, so credentials are never exposed
 on a plaintext listener. See [`docs/http_contract.md`](docs/http_contract.md).
 Use `/api/health` for protocol/capability negotiation and follow its
-`openapi_path` (`/api/v1/openapi.json`) for the versioned API shape.
+`openapi_path` (`/api/v2/openapi.json`) for the versioned API shape.
 
 The daemon host owns controller/backend credentials, project checkouts, and
 Action state. Research Console and other clients fetch evidence and submit
@@ -215,9 +222,8 @@ The daemon workspace's Project registry, `ACTIVE`/`PAUSED`/`ARCHIVED` state
 machine, collector effects, and non-destructive archive/unregister semantics
 are specified in [`docs/project_lifecycle.md`](docs/project_lifecycle.md).
 
-Native project SDK metrics, one explicit W&B sync destination, credential
-isolation, and client tracking status are specified in
-[`docs/observability.md`](docs/observability.md).
+Source imports, frozen OCI execution, S3 artifact return and downloads are
+specified in [`docs/source-api.md`](docs/source-api.md). W&B support is removed.
 
 ## Backend lifecycle
 

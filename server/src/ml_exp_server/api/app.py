@@ -27,6 +27,7 @@ from ..project_config import load_server_config
 from ..runtime import ExperimentServerRuntime
 from ..schemas import ServerConfig, ResearchProject
 from ..submissions import ExperimentSubmissionService
+from ..artifact_store import TRANSFER_PATH
 from .routes import router
 from .action_routes import router as action_router
 from .operation_routes import router as operation_router
@@ -193,7 +194,8 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             else:
                 await _shutdown(app)
 
-    app = FastAPI(title="ml-expd", version="0.1.0", lifespan=lifespan)
+    from importlib.metadata import version
+    app = FastAPI(title="ml-expd", version=version("ml-experiment-server"), lifespan=lifespan)
     app.state.broker = EventBroker()
     app.state.config = config
     app.state.runtime = None
@@ -215,7 +217,8 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
 
     @app.middleware("http")
     async def enforce_http_boundary(request, call_next):
-        if bearer_token is not None:
+        worker_transfer = request.method == "PUT" and bool(TRANSFER_PATH.fullmatch(request.url.path))
+        if bearer_token is not None and not worker_transfer:
             scheme, separator, credential = request.headers.get(
                 "Authorization", "",
             ).partition(" ")
@@ -234,7 +237,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                     },
                 )
         client_protocol = request.headers.get(CLIENT_PROTOCOL_HEADER)
-        api_request = request.url.path == "/api" or request.url.path.startswith("/api/")
+        api_request = not worker_transfer and (request.url.path == "/api" or request.url.path.startswith("/api/"))
         protocol_bootstrap = (
             request.method in {"GET", "HEAD"}
             and request.url.path == "/api/health"
@@ -291,6 +294,8 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.include_router(action_router)
     app.include_router(operation_router)
     app.include_router(submission_router)
+    from .container_routes import router as container_router
+    app.include_router(container_router)
 
     @app.get(VERSIONED_OPENAPI_PATH, include_in_schema=False)
     async def versioned_openapi():

@@ -1002,14 +1002,16 @@ class ActionService:
                         "Campaign, and Run scope with an immutable campaign.<sha256> revision"
                     )
                 inherited_git_commit = str(canonical_manifest.get("git_commit") or "")
-                if re.fullmatch(r"[0-9a-f]{40}", inherited_git_commit) is None:
+                if (re.fullmatch(r"[0-9a-f]{40}", inherited_git_commit) is None
+                        and not project.controller.capabilities.get("container_execution")):
                     raise ActionError(
                         "canonical Run manifest has no valid immutable git_commit"
                     )
                 # The controller checkout may advance for operational fixes
                 # between Attempts.  Retry metadata must still identify the
                 # exact source commit frozen by the canonical scientific Run.
-                execution_payload["git_commit"] = inherited_git_commit
+                if inherited_git_commit:
+                    execution_payload["git_commit"] = inherited_git_commit
                 execution_campaign.write_text(
                     yaml.safe_dump(
                         execution_payload, allow_unicode=True, sort_keys=False,
@@ -1215,7 +1217,6 @@ class ActionService:
                 "requested_gpu_hours": requested_gpu_hours,
                 "max_gpu_hours": budget_limit,
                 "resource_approval": resource_approval,
-                "wandb_cloud_sync": bool(spec.get("wandb_cloud_sync", False)),
             })
             for name, verb, extra in (
                 ("preflight", "preflight", ["--scope", "submit"]),

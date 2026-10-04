@@ -170,12 +170,10 @@ class ExperimentSubmissionService:
 
     def prepare_first_attempt(
         self, project: str, run_id: str, *, max_gpu_hours: float,
-        reason: str, wandb_cloud_sync: bool = False,
+        reason: str,
     ) -> dict[str, Any]:
         """Prepare a first-Attempt intent without authorizing or scheduling it."""
         with self._prepare_lock:
-            if wandb_cloud_sync:
-                raise ApplicationError("Daemon W&B publication has been retired", code="PUBLISHER_RETIRED")
             try:
                 configured = self.runtime.project(project)
             except KeyError as exc:
@@ -228,14 +226,6 @@ class ExperimentSubmissionService:
                         "an active submission exists with a different GPU-hour budget",
                         code="SUBMISSION_INTENT_EXISTS",
                     )
-                existing_cloud = bool(
-                    view.get("preflight_summary", {}).get("wandb_cloud_sync", False)
-                )
-                if existing_cloud != wandb_cloud_sync:
-                    raise ApplicationError(
-                        "an active submission exists with a different W&B Cloud policy",
-                        code="SUBMISSION_INTENT_EXISTS",
-                    )
                 view["reused"] = True
                 return view
             row = self.runtime.index.get_run(project, run_id)
@@ -263,7 +253,6 @@ class ExperimentSubmissionService:
                 "run_id": run_id,
                 "attempt_id": attempt_id,
                 "max_gpu_hours": max_gpu_hours,
-                "wandb_cloud_sync": wandb_cloud_sync,
             }, sort_keys=False)
             digest = evidence_digest({
                 "project": project,

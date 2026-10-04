@@ -36,7 +36,6 @@ _KEY_METRIC_FIELDS = (
 )
 _KEY_EVAL_FIELDS = ("g_ppl", "oracle_plan_ppl", "shuffled_plan_ppl", "plan_ppl_gap",
                     "token_recon_ppl")
-_TARGET_STATUS_LIMIT = 500
 
 
 class ArchiveCampaignRequest(BaseModel):
@@ -151,58 +150,21 @@ def health(request: Request) -> DaemonHealth:
         scheduler_mutations=(
             request.app.state.config.action_runtime.allow_scheduler_mutations
         ),
-        observability_mutations=False,
         local_evidence_rebuild=(
             request.app.state.config.action_runtime.allow_local_evidence_rebuild
         ),
         telemetry_enabled=request.app.state.runtime.telemetry.enabled,
-        observability={"state": "RETIRED"},
     )
 
 
-def _observability_payload(*args, **kwargs):
-    # Read-only protocol-v1 tombstone. No archive or publisher is opened.
-    return {
-        "state": "RETIRED", "replacement": "tracking.v1",
-        "archive": {"state": "RETIRED", "pending_records": 0, "failed_records": 0},
-        "local_wandb": {"service": {"state": "RETIRED"}, "publisher_available": False,
-                        "publisher_state": "DISABLED", "targets": 0},
-        "cloud": {"publisher_available": False, "state": "DISABLED", "targets": 0},
-    }
 
 
-@router.get("/observability", deprecated=True)
-def observability(request: Request, project: Optional[str] = None):
-    return _observability_payload()
 
 
-@router.get("/observability/attempts/{project}/{run_id}/{attempt_id}", deprecated=True)
-def attempt_observability(project: str, run_id: str, attempt_id: str, request: Request):
-    return {"project": project, "run_id": run_id, "attempt_id": attempt_id,
-            "state": "RETIRED", "targets": []}
 
 
-@router.get("/tracking")
-def tracking_configuration(request: Request):
-    runtime = request.app.state.runtime
-    config = runtime.config.tracking
-    return {"mode": "project-native", "automatic_upload": False,
-            "sync_configured": bool(config.entity and config.project and config.credential_ref),
-            "entity": config.entity, "project": config.project,
-            "api_url": config.api_url, "dashboard_url": config.dashboard_url,
-            "producer_env": {"WANDB_WORKSPACE_ID": runtime.workspace_id, "WANDB_MODE": "offline"}}
 
 
-@router.get("/tracking/attempts/{project}/{run_id}/{attempt_id}")
-def attempt_tracking(project: str, run_id: str, attempt_id: str, request: Request):
-    from ..tracking import read_tracking
-    runtime = request.app.state.runtime
-    row = runtime.index.get_run(project, run_id)
-    if row is None or not any(a.attempt_id == attempt_id for a in row.attempts):
-        raise HTTPException(status_code=404, detail="unknown Attempt")
-    return read_tracking(Path(row.run_dir) / "attempts" / attempt_id,
-                         runtime.workspace_id, project, run_id, attempt_id,
-                         runtime.config.tracking)
 
 
 def _state(request: Request) -> tuple[RunIndex, list[ResearchProject], Optional[Collector]]:
@@ -460,10 +422,6 @@ def terminal_snapshot(request: Request, project: Optional[str] = None):
         request.app.state.index,
         projects,
     ))
-    from ..tracking import read_tracking
-    runtime = request.app.state.runtime
-    target_statuses: list = []
-    target_total = 0
     for project_name, rows in payload["runs"].items():
         for row in rows:
             run_id = str(row.get("run_id") or "")
@@ -473,32 +431,12 @@ def terminal_snapshot(request: Request, project: Optional[str] = None):
                 if indexed_row is not None else
                 {"failure_summary": None, "diagnostic_evidence": []}
             )
-            attempt_ids = {
-                str(item.get("attempt_id") or "") for item in row.get("attempts") or []
-            }
-            row["observability"] = {"attempts": {a: [] for a in sorted(attempt_ids) if a}}
-            row["tracking"] = {"attempts": {
-                a: read_tracking(Path(indexed_row.run_dir) / "attempts" / a,
-                                 runtime.workspace_id, project_name, run_id, a,
-                                 runtime.config.tracking)
-                for a in sorted(attempt_ids) if a and indexed_row is not None
-            }}
-    payload["observability"] = _observability_payload(
-        request, target_statuses, target_total=target_total,
-    )
     payload["scale"] = {
         "projects": len(payload["projects"]),
         "runs": sum(len(rows) for rows in payload["runs"].values()),
         "runs_by_project": {
             project: len(rows) for project, rows in payload["runs"].items()
         },
-        "target_statuses": {
-            "returned": len(target_statuses),
-            "total": target_total,
-            "limit": _TARGET_STATUS_LIMIT,
-            "truncated": target_total > len(target_statuses),
-        },
-        "project_filter": project,
     }
     return payload
 

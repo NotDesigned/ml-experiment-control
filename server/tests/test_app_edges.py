@@ -129,7 +129,7 @@ def test_http_boundary_rejects_bad_protocol_and_nonowner_mutation(tmp_path):
         client.app.state.workspace_owner = False
         blocked = client.post(
             "/api/terminal/refresh",
-            headers={CLIENT_PROTOCOL_HEADER: "1"},
+            headers={CLIENT_PROTOCOL_HEADER: "2"},
             json={},
         )
         assert blocked.status_code == 409

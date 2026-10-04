@@ -116,16 +116,6 @@ def test_submission_snapshot_rejects_non_submission_action():
     assert caught.value.code == "UNKNOWN_SUBMISSION"
 
 
-def test_prepare_rejects_unavailable_cloud_publication():
-    cloud = SimpleNamespace(
-        enabled=True, default_credential_ref="cloud", entity="team",
-    )
-    service = _service(_runtime(cloud=cloud, configured=False))
-    with pytest.raises(ApplicationError) as caught:
-        service.prepare_first_attempt(
-            "demo", "run-a", max_gpu_hours=1, reason="", wandb_cloud_sync=True,
-        )
-    assert caught.value.code == "PUBLISHER_RETIRED"
 
 
 def test_prepare_skips_expired_submission_then_reports_unknown_project():
@@ -249,15 +239,3 @@ def test_prepare_uses_last_unsubmitted_attempt_identity(tmp_path):
     import yaml
 
     assert yaml.safe_load(captured["intent"]["draft"])["attempt_id"] == "attempt-002"
-
-
-def test_legacy_cloud_authorization_is_not_silently_reused(tmp_path,monkeypatch):
-    from ml_exp_server import submissions as module
-    (tmp_path/'study.yml').write_text('campaign: study\n')
-    service=_service(_runtime(project=_project(tmp_path)))
-    service.list=lambda *args:{'submissions':[{'status':'VERIFIED','preflight_summary':{'wandb_cloud_sync':True}}]}
-    monkeypatch.setattr(module,'_prepared_matches_current_authored_state',lambda *args:True)
-    monkeypatch.setattr(module,'project_code_identity',lambda *args:{})
-    with pytest.raises(ApplicationError) as caught:
-        service.prepare_first_attempt('demo','run-a',max_gpu_hours=1,reason='')
-    assert caught.value.code=='SUBMISSION_INTENT_EXISTS'

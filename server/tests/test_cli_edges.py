@@ -22,8 +22,6 @@ def write_config(tmp_path: Path, extra: str = "") -> Path:
         f"index_db: {tmp_path / 'index.sqlite'}\n"
         f"action_root: {tmp_path / 'actions'}\n"
         f"project_registry_root: {tmp_path / 'registry'}\n"
-        "tracking:\n"
-        f"  credential_root: {tmp_path / 'credentials'}\n"
         + extra,
     )
     return path
@@ -69,26 +67,13 @@ def test_tls_pair_validation_requires_both_and_returns_resolved_paths(
     assert loaded["certfile"] == str(cert.resolve())
 
 
-def test_credential_cli_clear_status_prompt_and_error(
-    monkeypatch, tmp_path, capsys,
-):
-    config = write_config(tmp_path)
-    monkeypatch.setattr(cli.getpass, "getpass", lambda _prompt: "secret")
-    prefix = ["--config", str(config), "credential", "wandb"]
-    assert main([*prefix, "set", "cloud"]) == 0
-    assert main([*prefix, "status", "cloud"]) == 0
-    assert json.loads(capsys.readouterr().out.splitlines()[-1])["configured"] is True
-    assert main([*prefix, "clear", "cloud"]) == 0
-    assert main([*prefix, "status", "../invalid"]) == 2
-    assert "credential error" in capsys.readouterr().err
 
 
-def test_doctor_covers_enabled_actions_and_missing_reference(tmp_path, capsys):
-    config = write_config(tmp_path, "  entity: team\n  project: experiments\naction_runtime:\n  allow_project_writes: true\n")
-    assert main(["--config", str(config), "doctor", "--json"]) == 1
+def test_doctor_covers_enabled_actions(tmp_path, capsys):
+    config = write_config(tmp_path, "action_runtime:\n  allow_project_writes: true\n")
+    assert main(["--config", str(config), "doctor", "--json"]) == 0
     checks = {item["name"]: item for item in json.loads(capsys.readouterr().out)["checks"]}
     assert checks["action_runtime.allow_project_writes"]["status"] == "PASS"
-    assert checks["W&B sync credential"]["status"] == "FAIL"
 
 
 def test_doctor_reports_nonexecutable_docker_inactive_record_and_identity_drift(

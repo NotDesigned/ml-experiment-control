@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import ipaddress
 import json
 import os
@@ -89,30 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", required=True, type=Path, help="server workspace YAML")
     subcommands = parser.add_subparsers(dest="command")
-    sync = subcommands.add_parser("tracking-sync", help="sync one completed native W&B Attempt")
-    sync.add_argument("project")
-    sync.add_argument("run_id")
-    sync.add_argument("attempt_id")
-    credential = subcommands.add_parser(
-        "credential", help="manage daemon-host publisher credentials",
-    )
-    credential_kind = credential.add_subparsers(dest="credential_kind", required=True)
-    wandb = credential_kind.add_parser("wandb", help="manage a W&B API key")
-    wandb_action = wandb.add_subparsers(dest="credential_action", required=True)
-    set_command = wandb_action.add_parser("set")
-    set_command.add_argument("reference")
-    set_command.add_argument(
-        "--stdin", action="store_true",
-        help="read the API key from stdin instead of a hidden prompt",
-    )
-    for action in ("status", "clear"):
-        command = wandb_action.add_parser(action)
-        command.add_argument("reference")
     doctor = subcommands.add_parser(
         "doctor",
         help=(
-            "read-only checklist of config, backend availability, action gates, "
-            "and W&B credential state"
+            "read-only checklist of config, backend availability, and action gates"
         ),
     )
     doctor.add_argument(
@@ -132,39 +111,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _credential_command(args: argparse.Namespace) -> int:
-    from .credentials import CredentialError, CredentialStore
-    from .project_config import load_server_config
-
-    config = load_server_config(args.config)
-    store = CredentialStore(Path(config.tracking.credential_root))
-    try:
-        if args.credential_action == "set":
-            secret = sys.stdin.read() if args.stdin else getpass.getpass("W&B API key: ")
-            store.set_wandb_api_key(args.reference, secret)
-            result = {"configured": True, "reference": args.reference}
-        elif args.credential_action == "clear":
-            removed = store.clear_wandb_api_key(args.reference)
-            result = {
-                "configured": False, "reference": args.reference, "removed": removed,
-            }
-        else:
-            status = store.status(args.reference)
-            result = {
-                "configured": status.configured, "reference": status.reference,
-            }
-    except CredentialError as exc:
-        print(f"credential error: {exc}", file=sys.stderr)
-        return 2
-    print(json.dumps(result, sort_keys=True))
-    return 0
 
 
 def _doctor_command(args: argparse.Namespace) -> int:
     from experiment_control.backends import BackendServices, build_registry
     from experiment_control.runner import SubprocessRunner
 
-    from .credentials import CredentialError, CredentialStore
     from .http_auth import HttpAuthError, load_bearer_token
     from .project_config import ConfigError, load_research_project, load_server_config
     from .project_registry import ProjectRegistry, ProjectRegistryError
@@ -229,7 +181,7 @@ def _doctor_command(args: argparse.Namespace) -> int:
         runtime = config.action_runtime
         for flag in (
             "allow_project_writes", "allow_source_imports", "allow_scheduler_mutations",
-            "allow_observability_mutations", "allow_local_evidence_rebuild",
+            "allow_local_evidence_rebuild",
         ):
             if getattr(runtime, flag):
                 checks.append((f"action_runtime.{flag}", True, "enabled", None))
@@ -305,34 +257,6 @@ def _doctor_command(args: argparse.Namespace) -> int:
                 ) if root_errors else None,
             ))
 
-        store = CredentialStore(Path(config.tracking.credential_root))
-
-        def credential_check(label: str, reference: str | None) -> None:
-            if not reference:
-                checks.append((
-                    label, False, "credential reference not set",
-                    "set the corresponding W&B credential reference in tracking config",
-                ))
-                return
-            try:
-                status = store.status(reference)
-            except CredentialError as exc:
-                checks.append((label, False, str(exc), "use a valid credential reference"))
-                return
-            if status.configured:
-                checks.append((label, True, status.reference, None))
-            else:
-                checks.append((
-                    label, False, f"{status.reference} not set",
-                    f"ml-expd --config ... credential wandb set {status.reference} --stdin",
-                ))
-
-        tracking = config.tracking
-        if tracking.entity and tracking.project:
-            credential_check("W&B sync credential", tracking.credential_ref)
-        else:
-            checks.append(("W&B sync", None, "unconfigured; native offline files only", None))
-
         registry_root = config.project_registry_root_path()
         registry_path = registry_root / "registry.json"
         if not registry_path.is_file():
@@ -391,18 +315,6 @@ def _doctor_command(args: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.command == "tracking-sync":
-        from .project_config import load_server_config
-        from .tracking_sync import sync_attempt
-        try:
-            result = sync_attempt(load_server_config(args.config), args.project, args.run_id, args.attempt_id)
-        except Exception as exc:
-            print(json.dumps({"state": "SYNC_FAILED", "error_class": type(exc).__name__}))
-            return 1
-        print(json.dumps(result))
-        return 0 if result["state"] == "CLI_COMPLETED" else 1
-    if args.command == "credential":
-        return _credential_command(args)
     if args.command == "doctor":
         return _doctor_command(args)
     try:
