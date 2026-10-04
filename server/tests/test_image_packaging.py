@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ml_exp_server.image_builder import ImageBuilder
+from ml_exp_server.image_builder import ImageBuilder, MANIFEST_TYPE
 from ml_exp_server.source_revisions import _tree_digest
 from ml_exp_server.source_imports import seal_tree
 from experiment_control.backends.wyd import WydSlurmBackend
@@ -31,14 +31,21 @@ def test_builder_uses_fixed_recipe_and_copies_exact_readonly_source(tmp_path):
             assert 'COPY source/ /workspace/' in recipe and 'RUN ' not in recipe
             assert '--network=none' in args and 'COPY worker.py' in recipe
             assert (context/'source/train.py').read_text()=='print(1)\n'
-        if args[0]=='image':return json.dumps(['registry.example/results@sha256:'+'b'*64])
         return ''
     builder._docker=docker
+    manifest = json.dumps({'mediaType': MANIFEST_TYPE, 'config': {'digest': 'sha256:'+'a'*64}})
+    published_digest = 'sha256:'+hashlib.sha256(manifest.encode()).hexdigest()
+    def skopeo(args, **kwargs):
+        if args[0] == 'copy':
+            Path(args[args.index('--digestfile')+1]).write_text(published_digest)
+            return ''
+        return manifest
+    builder._skopeo=skopeo
     request={'operation':'build','project':'demo','source_id':source,'base_image':'registry.example/python@sha256:'+'a'*64}
     result=builder.request(request)
-    assert result['image'].endswith('b'*64)
+    assert result['image'].endswith(published_digest)
     assert builder.request({**request,'operation':'get'})==result
-    assert len(calls)==3
+    assert len(calls)==2
     with pytest.raises(ValueError):builder.request({**request,'base_image':'registry.example/python:latest'})
 
 
@@ -60,3 +67,29 @@ def test_slurm_conversion_uses_digest_and_repairs_tampered_cache(tmp_path):
     sif.write_text('tamper')
     backend._stage_oci_image(run)
     assert (tmp_path/'calls').read_text()=='buildbuild' and sif.read_text()=='image'
+
+
+@pytest.mark.parametrize("failure", ["unpublished", "wrong-digest", "changed-config", "wrong-format"])
+def test_publication_requires_matching_remote_manifest(tmp_path, failure):
+    builder = ImageBuilder({'state_root':str(tmp_path/'builds'), 'repository':'registry.example/results'})
+    builder._docker = lambda *args, **kwargs: ''
+    original = {'mediaType':MANIFEST_TYPE, 'config':{'digest':'sha256:'+'a'*64}}
+    remote = dict(original)
+    if failure == 'changed-config':
+        remote['config'] = {'digest':'sha256:'+'b'*64}
+    if failure == 'wrong-format':
+        remote['mediaType'] = 'application/vnd.oci.image.manifest.v1+json'
+    raw = json.dumps(remote)
+    digest = 'sha256:'+hashlib.sha256(raw.encode()).hexdigest()
+    def skopeo(args, **kwargs):
+        if args[0] == 'copy':
+            Path(args[args.index('--digestfile')+1]).write_text(digest)
+            return ''
+        if args[-1].startswith('docker-archive:'):
+            return json.dumps(original)
+        if failure == 'unpublished':
+            raise ValueError('remote image is absent')
+        return raw+' ' if failure == 'wrong-digest' else raw
+    builder._skopeo=skopeo
+    with pytest.raises(ValueError):
+        builder._publish('registry.example/results:bundle-test', tmp_path)

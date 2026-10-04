@@ -25,11 +25,13 @@ from .storage import atomic_json
 IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
 ID = re.compile(r"^[0-9a-f]{64}$")
 PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+RECIPE = "source-copy-docker-v2-v1"
+MANIFEST_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
 
 
 def bundle_id(project: str, source_id: str, base_image: str) -> str:
     worker_sha = hashlib.sha256(Path(__file__).with_name("container_worker.py").read_bytes()).hexdigest()
-    return hashlib.sha256(json.dumps([project, source_id, base_image, "source-copy-v1", worker_sha], separators=(",", ":")).encode()).hexdigest()
+    return hashlib.sha256(json.dumps([project, source_id, base_image, RECIPE, worker_sha], separators=(",", ":")).encode()).hexdigest()
 
 
 class UnixConnection(http.client.HTTPConnection):
@@ -107,19 +109,50 @@ class ImageBuilder:
                           f"LABEL org.ml-expd.source={source_id}\nENTRYPOINT []\nCMD [\"/bin/true\"]\n")
                 (context / "Dockerfile").write_text(recipe)
                 self._docker(["build", "--network=none", "--tag", tag, directory])
-                self._docker(["push", tag])
-            digests = json.loads(self._docker(["image", "inspect", tag, "--format", "{{json .RepoDigests}}"], capture=True))
-            references = [reference for reference in digests if reference.startswith(registry + "@sha256:")]
-            if len(references) != 1 or not IMAGE.fullmatch(references[0]):
-                raise ValueError("published image digest is unavailable")
+                published = self._publish(tag, context)
             result = {"bundle_id": identity, "project": project, "source_id": source_id,
-                      "base_image": image, "image": references[0], "recipe": "source-copy-v1"}
+                      "base_image": image, "image": published, "recipe": RECIPE,
+                      "manifest_type": MANIFEST_TYPE}
             atomic_json(metadata_path, result)
             return result
 
+    def _publish(self, tag: str, context: Path) -> str:
+        # Legacy Docker builds on the containerd store can produce mixed OCI /
+        # Docker layer media types. Use Docker's archive view and a reviewed
+        # format converter; do not trust a local RepoDigests entry as a receipt.
+        archive = context / "image.tar"
+        digest_file = context / "published.digest"
+        self._docker(["image", "save", "--output", str(archive), tag])
+        source = "docker-archive:" + str(archive)
+        original = json.loads(self._skopeo(["inspect", "--raw", source], capture=True))
+        auth = self.config.get("registry_auth_file", "/root/.docker/config.json")
+        self._skopeo(["copy", "--format", "v2s2", "--dest-precompute-digests", "--authfile", auth,
+                      "--digestfile", str(digest_file), source, "docker://" + tag])
+        digest = digest_file.read_text().strip()
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ValueError("published image digest is unavailable")
+        reference = self.config["repository"] + "@" + digest
+        raw = self._skopeo(["inspect", "--authfile", auth, "--raw", "docker://" + reference], capture=True)
+        manifest = json.loads(raw)
+        if ("sha256:" + hashlib.sha256(raw.encode()).hexdigest() != digest
+                or manifest.get("mediaType") != MANIFEST_TYPE
+                or manifest.get("config", {}).get("digest") != original.get("config", {}).get("digest")
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(manifest.get("config", {}).get("digest")))):
+            raise ValueError("published manifest does not match the fixed image")
+        return reference
+
     def _docker(self, arguments: list[str], *, capture: bool = False) -> str:
+        return self._command([self.config.get("docker", "/usr/bin/docker"), *arguments], capture=capture)
+
+    def _skopeo(self, arguments: list[str], *, capture: bool = False) -> str:
+        return self._command([self.config.get("skopeo", "/usr/bin/skopeo"),
+                              "--tmpdir", str(self.root),
+                              "--command-timeout", str(self.config.get("timeout_seconds", 600)) + "s",
+                              *arguments], capture=capture)
+
+    def _command(self, command: list[str], *, capture: bool = False) -> str:
         try:
-            result = subprocess.run([self.config.get("docker", "/usr/bin/docker"), *arguments],
+            result = subprocess.run(command,
                                     check=True, stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL, timeout=self.config.get("timeout_seconds", 600))
             return result.stdout.decode() if capture else ""

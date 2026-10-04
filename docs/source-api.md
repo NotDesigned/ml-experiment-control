@@ -75,6 +75,13 @@ HTTP daemon has no Docker socket permission. Image build outcomes are durable
 and keyed by source, base digest and upload-launcher revision. Interrupted
 packaging can be reconciled without starting an experiment.
 
+Publication uses Skopeo to normalize Docker's exported archive to Docker
+schema 2 for registry compatibility. It checks the remote manifest digest and
+retains the original image configuration digest; a local `RepoDigests` entry
+alone is not a publication receipt. Repeated publication precomputes layer
+digests to reuse existing registry blobs. The fixed source and command remain
+unchanged by this representation conversion.
+
 ## Artifacts and object storage
 
 This deployment uses [Garage S3](https://garagehq.deuxfleurs.fr/documentation/quick-start/),
