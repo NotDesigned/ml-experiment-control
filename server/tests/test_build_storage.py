@@ -16,7 +16,7 @@ def test_storage_checks_actual_builder_mount_before_creating_builder(tmp_path, m
     value = ImageBuilder({'state_root': str(tmp_path), 'build_storage_path': '/actual-docker-state',
                           'ephemeral_buildkit': True, 'buildkit_image': 'moby/buildkit@sha256:'+'a'*64,
                           'build_reserve_bytes': 1000, 'build_min_free_inodes': 10})
-    (tmp_path/'Dockerfile').write_text('FROM registry/base@sha256:'+'b'*64+'\nFROM scratch AS other\n')
+    (tmp_path/'Dockerfile').write_text('FROM registry/base@sha256:'+'b'*64+'\nFROM scratch AS other\nWORKDIR /workspace\n')
     seen = []
     def skopeo(args, **kwargs):
         seen.append(args)
