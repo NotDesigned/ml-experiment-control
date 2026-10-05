@@ -147,13 +147,15 @@ def test_builder_command_capture_and_configured_tools(builder):
     assert "inspect" in value._skopeo(["inspect"], capture=True)
 
 
-@pytest.mark.parametrize("case", ["authorized", "wrong-uid", "rejected-request", "bad-path", "empty", "oversized", "invalid-json"])
+@pytest.mark.parametrize("case", ["authorized", "storage", "wrong-uid", "rejected-request", "bad-path", "empty", "oversized", "invalid-json"])
 def test_unix_builder_accepts_only_authorized_bounded_requests(tmp_path, case):
     path = str(tmp_path / "builder.sock")
     server = BuilderServer(path, module.Handler)
     class Builder:
         config = {"client_uid": os.getuid() + (case == "wrong-uid")}
         def request(self, payload):
+            if case == "storage":
+                raise module.BuildStorageError("BUILD_STORAGE_INSUFFICIENT", {"available_bytes": 7, "required_bytes": 20})
             if case == "rejected-request":
                 raise ValueError("invalid packaging operation")
             return {"accepted": payload["operation"]}
@@ -161,9 +163,14 @@ def test_unix_builder_accepts_only_authorized_bounded_requests(tmp_path, case):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        if case in {"authorized", "rejected-request"}:
+        if case in {"authorized", "rejected-request", "storage"}:
             if case == "authorized":
                 assert builder_request(path, {"operation": "get"}) == {"accepted": "get"}
+            elif case == "storage":
+                with pytest.raises(module.BuildStorageError) as error:
+                    builder_request(path, {"operation": "build"})
+                assert error.value.code == "BUILD_STORAGE_INSUFFICIENT"
+                assert error.value.details == {"available_bytes": 7, "required_bytes": 20}
             else:
                 with pytest.raises(ValueError, match="packaging request failed"):
                     builder_request(path, {"operation": "get"})

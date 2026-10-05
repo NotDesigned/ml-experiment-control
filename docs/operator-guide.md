@@ -125,6 +125,10 @@ Keep a narrow base-image allowlist and a writable target registry repository.
 Provision Docker with Buildx on the builder host, Skopeo, and root registry
 authentication. Buildx uses Docker's native credential configuration; Skopeo
 uses `registry_auth_file`. Both must authorize the same publication workflow.
+Set `build_storage_path` to the filesystem that holds the builder's Docker state
+volumes; size the disk for compressed layers, unpacked CUDA libraries and build
+output. See [storage diagnostics](build-storage.md) for preflight budgets and
+explicit recovery after a capacity failure.
 The pull-only [registry-pull.json](../server/examples/registry-pull.json) is a
 separate credential used for WYD OCI conversion; it does not configure SCO's
 platform-side registry credentials.
@@ -137,8 +141,9 @@ Start the root-owned builder with the installed runtime:
 ```
 
 The worker creates a `0660` Unix socket, checks the caller's peer UID and only
-accepts the reviewed fixed packaging operation. It never executes a project
-Dockerfile. `publisher: buildkit` reuses registry blobs and emits Docker schema
+accepts only the authorized packaging operation. New Runtimes use the frozen
+client Dockerfile, validated pinned bases and managed worker contract, with
+`allow_dockerfile_builds: true`. `publisher: buildkit` reuses registry blobs and emits Docker schema
 2 without attestations; Skopeo verifies the remote manifest/config digests.
 `publisher: archive` retains the earlier Docker-archive/Skopeo path. Choose and
 verify the supported toolchain before enabling imports, rather than treating a

@@ -38,11 +38,11 @@ def parse_metric(_campaign, line: str) -> dict | None:
         return None
     if "name" in data:
         result = {key: data[key] for key in ("name", "value", "unit", "status", "error", "step", "epoch",
-                                            "timestamp", "checkpoint_id", "dataset_id", "protocol_id",
+                                            "timestamp", "checkpoint_id", "dataset_id", "protocol_id", "variant_id",
                                             "numerator", "denominator") if key in data
                   and (data[key] is None or isinstance(data[key], (str, int, float, bool)))}
         result.setdefault("name", None)
-        if any(key in data and key not in result for key in ("value", "unit", "status", "step", "epoch", "protocol_id", "checkpoint_id", "dataset_id", "numerator", "denominator")):
+        if any(key in data and key not in result for key in ("value", "unit", "status", "step", "epoch", "protocol_id", "checkpoint_id", "dataset_id", "variant_id", "numerator", "denominator")):
             result.update(status="FAILED", error="INVALID_METRIC_FIELD")
         for key, value in list(result.items()):
             if isinstance(value, float) and not math.isfinite(value):

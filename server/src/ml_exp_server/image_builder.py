@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 from contextvars import ContextVar
 import fcntl
 import hashlib
@@ -20,6 +21,8 @@ import subprocess
 import tempfile
 import uuid
 
+from dockerfile_parse import DockerfileParser
+
 from .source_revisions import _tree_digest
 from .storage import atomic_json
 from .environment_build import DEPENDENCY_RECIPE, dockerfile, inspect_requirements, installer_digest, requirements_path
@@ -36,6 +39,14 @@ MANIFEST_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
 BUILD_LOG = ContextVar("ml_exp_build_log", default=None)
 BUILD_PROGRESS = ContextVar("ml_exp_build_progress", default=None)
 BUILD_CACHE = ContextVar("ml_exp_build_cache", default=None)
+
+
+class BuildStorageError(ValueError):
+    """Only reviewed storage diagnostics may cross the private builder socket."""
+
+    def __init__(self, code: str, details: dict):
+        super().__init__(code)
+        self.code, self.details = code, details
 
 
 def bundle_id(project: str, source_id: str, base_image: str, requirements: str | None = None, *, dockerfile_path: str | None = None) -> str:
@@ -61,6 +72,8 @@ def builder_request(path: str, payload: dict, *, timeout: int = 600) -> dict:
         response = connection.getresponse()
         data = json.loads(response.read(65536))
         if response.status != 200:
+            if data.get("code") in {"BUILD_STORAGE_INSUFFICIENT", "BUILD_STORAGE_UNCHECKED", "BUILD_DISK_EXHAUSTED"}:
+                raise BuildStorageError(data["code"], data["details"])
             raise ValueError(data.get("error", "image packaging failed"))
         return data
     finally:
@@ -224,6 +237,7 @@ class ImageBuilder:
 
     def _publish_buildkit(self, tag: str, context: Path) -> str:
         if not self.config.get("ephemeral_buildkit", False):
+            self._storage_preflight(context)
             return self._buildkit_image(tag, context, "default")
         image = self.config.get("buildkit_image", "")
         if not IMAGE.fullmatch(image):
@@ -234,6 +248,7 @@ class ImageBuilder:
             self._progress("WAITING_BUILDER", "Waiting for the private image builder; no scheduler submission has occurred")
             fcntl.flock(lock, fcntl.LOCK_EX)
             self._recover_builder()
+            self._storage_preflight(context)
             name = "ml-expd-" + uuid.uuid4().hex
             atomic_json(self.root / "ephemeral-builder.json", {"name": name})
             try:
@@ -245,6 +260,45 @@ class ImageBuilder:
                 # volume. No --keep-state, host image load or shared prune.
                 self._remove_builder(name)
                 (self.root / "ephemeral-builder.json").unlink()
+
+    def _storage_preflight(self, context: Path) -> None:
+        # This must be Docker's real state-volume filesystem, not /tmp or a
+        # staging directory on another mount. The check runs under build lock.
+        path = self.config.get("build_storage_path")
+        if path is None:
+            return
+        self._progress("CHECKING_BUILD_STORAGE", "Checking builder bytes and inodes before downloading image layers")
+        try:
+            images = set()
+            for instruction in DockerfileParser(path=str(context)).structure:
+                if instruction["instruction"] == "FROM":
+                    images.update(re.findall(r"\S+@sha256:[0-9a-f]{64}", instruction["value"]))
+            compressed = 0
+            for image in sorted(images):
+                auth = self.config.get("registry_auth_file", "/root/.docker/config.json")
+                manifest = json.loads(self._skopeo(["inspect", "--authfile", auth, "--raw", "docker://" + image], capture=True))
+                if "manifests" in manifest:
+                    platform = next(item for item in manifest["manifests"]
+                                    if item.get("platform", {}).get("os") == "linux" and item.get("platform", {}).get("architecture") == "amd64")
+                    reference = image.split("@", 1)[0] + "@" + platform["digest"]
+                    manifest = json.loads(self._skopeo(["inspect", "--authfile", auth, "--raw", "docker://" + reference], capture=True))
+                compressed += sum(int(layer["size"]) for layer in manifest["layers"])
+            stats = os.statvfs(path)
+            context_bytes = sum(p.stat().st_size for p in context.rglob("*") if p.is_file())
+            factor = float(self.config.get("build_expansion_factor", 4))
+            reserve = int(self.config.get("build_reserve_bytes", 2 * 1024 ** 3))
+            required = int(compressed * factor) + 2 * context_bytes + reserve
+            details = {"available_bytes": stats.f_bavail * stats.f_frsize, "required_bytes": required,
+                       "available_inodes": stats.f_favail, "required_inodes": int(self.config.get("build_min_free_inodes", 100000)),
+                       "compressed_base_bytes": compressed, "expansion_factor": factor, "reserve_bytes": reserve,
+                       "estimate_kind": "conservative_compressed_layer_budget", "scheduler_submitted": False}
+        except (OSError, ValueError, KeyError, TypeError, StopIteration):
+            raise BuildStorageError("BUILD_STORAGE_UNCHECKED", {"scheduler_submitted": False}) from None
+        # Arbitrary RUN commands may grow beyond this estimate. Runtime ENOSPC
+        # still gets a distinct error and owned ephemeral-builder cleanup.
+        if details["available_bytes"] < required or details["available_inodes"] < details["required_inodes"]:
+            raise BuildStorageError("BUILD_STORAGE_INSUFFICIENT", details)
+        self._progress("BUILD_STORAGE_READY", "Builder storage preflight passed; Dockerfile growth remains bounded by disk capacity")
 
     def _remove_builder(self, name):
         names = self._docker(["buildx", "ls", "--format", "{{.Name}}"], capture=True).splitlines()
@@ -340,8 +394,9 @@ class ImageBuilder:
         temporary = self.root / "tmp"
         temporary.mkdir(exist_ok=True, mode=0o700)
         environment = {**os.environ, "TMPDIR": str(temporary)}
+        path = BUILD_LOG.get()
+        log_start = path.stat().st_size if path is not None and path.is_file() else 0
         try:
-            path = BUILD_LOG.get()
             if path is not None and not capture:
                 with path.open("ab") as log:
                     subprocess.run(command, check=True, stdout=log, stderr=log,
@@ -354,6 +409,13 @@ class ImageBuilder:
                                     stderr=subprocess.DEVNULL, timeout=self.config.get("timeout_seconds", 600))
             return result.stdout.decode() if capture else ""
         except (OSError, subprocess.SubprocessError) as exc:
+            tail = ""
+            if not capture and path is not None and path.is_file():
+                with path.open("rb") as log:
+                    log.seek(max(log_start, log.seek(0, 2) - 8192))
+                    tail = log.read().decode(errors="replace").lower()
+            if isinstance(exc, OSError) and exc.errno == errno.ENOSPC or "no space left on device" in tail:
+                raise BuildStorageError("BUILD_DISK_EXHAUSTED", {"publication_uncertain": True}) from None
             raise ValueError("OCI packaging failed; check registry access and base image availability") from exc
 
 
@@ -377,6 +439,8 @@ class Handler(BaseHTTPRequestHandler):
             self.connection.settimeout(15)
             payload = json.loads(self.rfile.read(size))
             result = self.server.builder.request(payload)
+        except BuildStorageError as exc:
+            status, result = 409, {"error": exc.code, "code": exc.code, "details": exc.details}
         except Exception:
             status, result = 409, {"error": "image packaging request failed"}
         encoded = json.dumps(result).encode()

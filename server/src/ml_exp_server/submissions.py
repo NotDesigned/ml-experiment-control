@@ -170,7 +170,25 @@ class ExperimentSubmissionService:
                              "estimated_start_at": None,
                              "estimate_unavailable_reason": "The backend does not provide a reliable start-time estimate"})
         if view["status"] == "VERIFIED" and state:
-            result["phase"] = state
+            # Submission clocks describe preparation, not GPU process progress.
+            result["submission_progress"] = {key: result[key] for key in (
+                "message", "phase_started_at", "last_progress_unix", "seconds_since_progress", "events")}
+            result.update(phase=state, message="Scheduler reports " + state + "; inspect worker and training evidence separately",
+                          phase_started_at=None, last_progress_unix=None, seconds_since_progress=None,
+                          phase_timeout_seconds=None, no_progress_warning=False, diagnostic=None)
+            result["scheduler_observed_at"] = scheduler.as_of if exact else None
+            evidence = {}
+            for name in ("worker", "process", "model"):
+                layer = getattr(row.evidence, name) if row is not None else None
+                bound = layer is not None and layer.attempt_id == view["attempt_id"] and layer.state is not None
+                evidence[name] = {"state": layer.state if bound else None,
+                                  "as_of": layer.as_of if bound else None,
+                                  "stale": layer.stale if bound else True,
+                                  "availability": "OBSERVED" if bound else "NOT_OBSERVED"}
+            result["workload_evidence"] = evidence
+            result["progress_availability"] = "NOT_OBSERVED"
+            if state in {"RUNNING", "STARTING"}:
+                result["diagnostic"] = "Scheduler state is not a training heartbeat; inspect data preparation and process logs"
         return result
 
     def list(self, project: str, run_id: str) -> dict[str, Any]:
