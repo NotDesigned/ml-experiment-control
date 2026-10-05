@@ -137,9 +137,7 @@ def _validate_manifest_paths(root: Path, manifest: Any) -> None:
     for index, value in enumerate(manifest.get("run_roots") or []):
         if isinstance(value, str):
             _safe_project_path(root, value, label=f"run_roots[{index}]")
-    questions = manifest.get("research_questions_dir")
-    if isinstance(questions, str):
-        _safe_project_path(root, questions, label="research_questions_dir")
+
     for index, campaign in enumerate(manifest.get("campaigns") or []):
         if isinstance(campaign, dict) and isinstance(campaign.get("file"), str):
             _safe_project_path(
@@ -424,9 +422,7 @@ class ProjectImportService:
                 warnings.append(
                     "controller entrypoint was detected but its capabilities require review"
                 )
-            questions = root / "experiments" / "research_questions"
-            if questions.is_dir() and not questions.is_symlink():
-                manifest["research_questions_dir"] = "experiments/research_questions"
+
             campaigns: list[dict[str, str]] = []
             campaign_root = root / "experiments" / "campaigns"
             if campaign_root.is_dir() and not campaign_root.is_symlink():

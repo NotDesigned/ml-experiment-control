@@ -69,7 +69,7 @@ A1 = "elf-a1-frozen-t5-l256-s42-h100-v1"
 def test_projects_list(client):
     payload = client.get("/api/projects").json()
     assert payload[0]["project"] == "elf"
-    assert payload[0]["research_question_count"] == 1
+    assert "research_question_count" not in payload[0]
     assert payload[0]["run_counts"].get("RUNNING") == 1  # A1
 
 
@@ -123,11 +123,7 @@ def test_tui_session_endpoints_are_server_owned(client):
 
 def test_overview_contains_research_question_and_attention(client):
     payload = client.get("/api/projects/elf/overview").json()
-    hyp = payload["research_questions"][0]
-    assert hyp["id"] == "H1" and hyp["status"] == "OPEN"
-    roles = {r["role"]: r for r in hyp["roles"]}
-    assert roles["a1"]["scheduler_state"] == "RUNNING"
-    assert roles["a1"]["stale"] is True  # worker evidence hours old
+    assert "research_questions" not in payload
     kinds = {item["kind"] for item in payload["attention"]}
     assert "stale_evidence" in kinds
     assert payload["collector"]["enabled"] is False
@@ -144,30 +140,6 @@ def test_campaign_lifecycle_endpoint(client):
     assert payload["runs"][0]["latest_metrics"]["step"] == 3700
 
 
-def test_research_question_detail_matrix(client):
-    payload = client.get("/api/research-questions/elf/H1").json()
-    campaign = payload["campaigns"][0]
-    role = next(r for r in campaign["roles"] if r["role"] == "a1")
-    assert role["role_note"] == "frozen Sentence-T5"
-    assert role["evidence"]["worker"]["stale"] is True
-    assert role["key_metrics"]["step"] == 3700
-    assert role["key_metrics"]["plan_ppl_gap"] > 0
-    assert role["evaluation_snapshot"]["latest_metric_complete"]["step"] == 2000
-    assert role["evaluation_snapshot"]["latest_metric_complete"]["metric_sources"][
-        "plan_ppl_gap"
-    ]["step"] == 2000
-    assert role["canonical_eval_variant_id"] is None
-    assert len(role["eval_variants"]) == 4
-    assert role["decision"]["action"] == "OBSERVE"
-    assert "failure_class" not in role["decision"]
-    assert role["failure_assessment"]["failure_summary"] is None
-    assert role["failure_assessment"]["diagnostic_evidence"][0][
-        "failure_class"
-    ] == "unknown"
-    assert all(
-        "failure_class" not in str(item.get("decision") or {})
-        for item in payload["decision_timeline"]
-    )
 
 
 def test_run_detail_five_layers(client):
@@ -259,11 +231,9 @@ def test_run_eval_variants_use_the_indexed_coherent_snapshot(client, monkeypatch
     assert oracle["history_limit"] == 32
     assert oracle["history_truncated"] is False
     assert oracle["history_omitted_records"] == 0
-    complete = payload["evaluation_snapshot"]["latest_metric_complete"]
-    assert complete["state"] == "COMPLETE"
-    assert complete["metric_sources"]["oracle_plan_ppl"]["variant_id"] == oracle[
-        "variant"
-    ]
+    assert payload["evaluation_snapshot"]["required_metrics"] == []
+    assert payload["evaluation_snapshot"]["latest_metric_complete"] is None
+    assert all(item["unit"] is None for item in payload["evaluation_snapshot"]["records"])
 
 
 def test_run_events_timeline(client):

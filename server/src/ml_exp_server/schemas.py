@@ -16,6 +16,7 @@ from typing import Any, Literal, Optional
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from .metric_contract import MetricSchema
 
 SCHEMA_VERSION = 1
 SAFE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
@@ -42,7 +43,6 @@ class OperationScopeType(str, Enum):
     """Object namespaces accepted by daemon read and mutation operations."""
 
     PROJECT = "project"
-    RESEARCH_QUESTION = "research_question"
     CAMPAIGN = "campaign"
     RUN = "run"
     ATTEMPT = "attempt"
@@ -236,29 +236,8 @@ class CampaignMembershipBinding(BaseModel):
     is_origin: bool = False
 
 
-class ResearchLinks(BaseModel):
-    campaigns: list[str] = Field(default_factory=list)
-    runs: list[str] = Field(default_factory=list)
-    evidence: list[str] = Field(default_factory=list)
 
 
-class ResearchQuestion(BaseModel):
-    """Optional research lens linking questions to campaigns, runs, and evidence."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: int = SCHEMA_VERSION
-    id: str
-    title: str
-    status: str = "OPEN"
-    summary: str = ""
-    notes: list[str] = Field(default_factory=list)
-    links: ResearchLinks = Field(default_factory=ResearchLinks)
-
-    @field_validator("id")
-    @classmethod
-    def validate_id(cls, value: str) -> str:
-        return _safe_identity("research question id", value)
 
 
 class ControllerExecutionBundle(BaseModel):
@@ -293,14 +272,13 @@ class ResearchProject(BaseModel):
     run_roots: list[str]
     controller: Optional[ControllerConfig] = None
     campaigns: list[CampaignRef] = Field(default_factory=list)
-    research_questions_dir: Optional[str] = None
+    metrics_schema: Optional[MetricSchema] = None
     # Resolved at load time; not part of the on-disk schema.
     base_dir: Optional[Path] = None
     authored_file: Optional[Path] = Field(default=None, exclude=True)
     # Daemon-owned canonical control-plane storage. This is injected by the
     # runtime and deliberately never serialized into the science repository.
     daemon_run_root: Optional[Path] = Field(default=None, exclude=True)
-    research_questions: list[ResearchQuestion] = Field(default_factory=list)
 
     @field_validator("project")
     @classmethod

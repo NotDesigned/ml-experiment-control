@@ -55,9 +55,7 @@ def test_git_identity_ignore_and_discovery_variants(tmp_path):
 
     assert plan["repository_identity"]["kind"] == "git"
     assert plan["repository_identity_without_manifest"]["kind"] == "git"
-    assert plan["manifest"]["research_questions_dir"].endswith(
-        "research_questions"
-    )
+    assert "research_questions_dir" not in plan["manifest"]
     assert plan["manifest"]["campaigns"] == [{
         "name": "study", "file": "experiments/campaigns/good.yml",
     }]

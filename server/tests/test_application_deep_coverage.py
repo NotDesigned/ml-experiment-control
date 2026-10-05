@@ -527,7 +527,6 @@ def test_terminal_infrastructure_causes_are_not_process_failures(states, domain,
     ("kind", "object_id", "code"),
     [
         (OperationScopeType.PROJECT, "other", "UNKNOWN_PROJECT"),
-        (OperationScopeType.RESEARCH_QUESTION, "missing", "UNKNOWN_RESEARCH_QUESTION"),
         (OperationScopeType.CAMPAIGN, "missing", "UNKNOWN_CAMPAIGN"),
         (OperationScopeType.RUN, "missing", "UNKNOWN_RUN"),
         (OperationScopeType.ATTEMPT, "invalid", "INVALID_ATTEMPT_ID"),
@@ -601,7 +600,6 @@ def test_bounded_evidence_all_scope_shapes(monkeypatch):
     )
     monkeypatch.setattr(module, "campaign_snapshot", lambda *args: {"lifecycle_state": "ACTIVE"})
     assert app.bounded_evidence(scope(OperationScopeType.PROJECT, "demo"), configured, configured)["runs"]
-    assert app.bounded_evidence(scope(OperationScopeType.RESEARCH_QUESTION, "q1"), configured, question)["runs"]
     assert app.bounded_evidence(scope(OperationScopeType.CAMPAIGN, "study"), configured, campaign)["runs"]
     assert app.bounded_evidence(scope(), configured, row)["run"]["run_id"] == "run-a"
     attempt = Dump(attempt_id="a1", state=None)
@@ -934,19 +932,6 @@ def test_run_agent_evidence_sanitizes_raw_failure_class_and_uses_assessment(tmp_
     assert assessment["diagnostic_evidence"][0]["source_binding"] \
         == "BOUND_BY_EXACT_ROOT_COLLECTION"
     assert "MUST NOT" in assessment["agent_instruction"]
-
-    row.campaign = "study"
-    row.campaign_memberships = []
-    app.runtime.index.list_runs = lambda *args, **kwargs: [row]
-    question = Dump(links=SimpleNamespace(campaigns=["study"]))
-    rq = app.bounded_evidence(
-        scope(OperationScopeType.RESEARCH_QUESTION, "q1"),
-        SimpleNamespace(project="demo"), question,
-    )
-    assert rq["runs"][0]["decision"] == {
-        "action": "OBSERVE", "reason": "run is nonterminal",
-    }
-    assert rq["runs"][0]["failure_assessment"]["failure_summary"] is None
 
 
 def test_attempt_eval_uses_indexed_exact_snapshot_without_rescan(tmp_path, monkeypatch):

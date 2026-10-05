@@ -80,3 +80,5 @@ uv run --package ml-experiment-server ml-expd \
 This binds to `127.0.0.1:8765`. The scaffold has no executors and disables
 mutations; it is not a complete remote experiment deployment. Follow the
 [operator guide](docs/operator-guide.md) before enabling submission.
+
+Project-defined metric names, units and frozen scoring protocols: [metrics contract](docs/metrics.md).

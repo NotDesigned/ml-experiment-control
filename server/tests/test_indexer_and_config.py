@@ -71,8 +71,7 @@ def test_load_research_project_and_research_questions(tmp_path):
     project = load_research_project(path)
     assert project.project == "elf"
     assert project.base_dir == tmp_path
-    assert [h.id for h in project.research_questions] == ["H1"]
-    assert project.research_questions[0].status == "OPEN"
+    assert not hasattr(project, "research_questions")
     assert [campaign.name for campaign in project.campaigns] == [
         "fusion-len256-gate-h100-20260711"
     ]
@@ -190,19 +189,12 @@ def test_campaign_catalog_identity_mismatch_is_rejected(
         load_research_project(project_path)
 
 
-def test_duplicate_research_question_id_rejected(tmp_path):
-    path = _make_project_files(tmp_path)
-    (tmp_path / "experiments" / "research_questions" / "h2.yml").write_text(
-        "schema_version: 1\nid: H1\ntitle: dup\n")
-    with pytest.raises(ConfigError, match="duplicate research question id"):
-        load_research_project(path)
 
 
 @pytest.mark.parametrize(("field", "value", "message"), [
     ("project", "../escape", "project"),
     ("campaign", "bad/name", "campaign name"),
     ("run_id", "bad/run", "run_id"),
-    ("question", "bad/question", "research question id"),
 ])
 def test_project_import_rejects_unsafe_authored_identities(tmp_path, field, value, message):
     path = _make_project_files(tmp_path)
@@ -223,11 +215,6 @@ def test_project_import_rejects_unsafe_authored_identities(tmp_path, field, valu
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
         payload["campaigns"] = [{"name": "study", "file": "experiments/campaign.yml"}]
         path.write_text(yaml.safe_dump(payload), encoding="utf-8")
-    else:
-        question = tmp_path / "experiments" / "research_questions" / "h1.yml"
-        payload = yaml.safe_load(question.read_text(encoding="utf-8"))
-        payload["id"] = value
-        question.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
     with pytest.raises(ConfigError, match=message):
         load_research_project(path)
@@ -263,8 +250,7 @@ def test_legacy_hypothesis_fields_are_rejected(tmp_path):
     question.write_text(
         "schema_version: 1\nid: H1\ntitle: old\nverdict: PENDING\n"
     )
-    with pytest.raises(ConfigError, match="verdict"):
-        load_research_project(path)
+    assert load_research_project(path).project == "elf"
 
 
 def test_server_config(tmp_path):

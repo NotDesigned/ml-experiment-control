@@ -179,3 +179,6 @@ Protocol 1 clients must upgrade to protocol 2 because the old health/tracking
 contract was removed. Existing Action SQLite schema and scheduler outboxes are
 unchanged. The root repository remains the reusable backend library; new
 managed projects need no project-specific controller implementation.
+
+Project-defined metric names, units, completeness and frozen scoring protocols:
+[metrics contract](metrics.md).

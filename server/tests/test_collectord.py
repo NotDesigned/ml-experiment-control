@@ -68,7 +68,7 @@ def test_collector_defaults_to_twenty_second_polling():
 def test_plan_cycle_targets_only_declared_nonterminal_runs(collector):
     # Execution discovery comes from the Project campaign catalog; this fixture
     # deliberately has no ResearchQuestion objects.
-    assert collector.projects[0].research_questions == []
+    assert not hasattr(collector.projects[0], "research_questions")
     calls = collector.plan_cycle()
     # A1 (RUNNING, campaign declared) gets observe+decide; the smoke run's
     # campaign is not declared in the project catalog → passive only.

@@ -22,7 +22,6 @@ class ActionExecutionPolicy:
     """Validate immutable authorization and choose one executor boundary."""
 
     PROJECT_WRITE_OPERATIONS = frozenset({
-        "WRITE_RESEARCH_QUESTION",
         "WRITE_CAMPAIGN",
         "WRITE_CAMPAIGN_ARCHIVE",
         "WRITE_RUN_ARCHIVE",
@@ -64,6 +63,8 @@ class ActionExecutionPolicy:
             raise ActionError("authorization does not match the gate bundle")
 
         operation = str(snapshot["operation"])
+        if operation == "WRITE_RESEARCH_QUESTION":
+            raise ActionError("research-question operations have been retired; historical Actions are read-only")
         project_write = operation in self.PROJECT_WRITE_OPERATIONS
         local_evidence_rebuild = operation == "REBUILD_LOCAL_EVIDENCE"
         if project_write and not self.config.allow_project_writes:

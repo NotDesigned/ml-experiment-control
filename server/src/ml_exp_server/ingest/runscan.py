@@ -37,6 +37,7 @@ from ..schemas import (
     RunIndexRow,
 )
 from ..evidence_conflicts import classify_evidence_conflicts
+from ..metric_contract import metric_result, finite
 
 # collection.json keys that are operational rather than scientific metrics.
 _COLLECTION_NON_METRIC_KEYS = {
@@ -48,583 +49,41 @@ _COLLECTION_NON_METRIC_KEYS = {
     "latest_completed_checkpoint",
 }
 
-_EVAL_METRIC_KEYS = (
-    "g_ppl", "oracle_plan_ppl", "shuffled_plan_ppl", "plan_ppl_gap",
-    "token_recon_ppl", "generation_mean_entropy", "generation_nonempty_fraction",
-    "val_bpb",
-)
-
-# Evaluation JSONL may contain arbitrary model outputs in addition to summary
-# metrics.  The read model intentionally projects only this small, stable set
-# and retains at most this many keyed checkpoints per variant.
 _EVAL_HISTORY_LIMIT = 32
-_EVAL_HISTORY_METRIC_KEYS = (
-    "g_ppl", "oracle_plan_ppl", "shuffled_plan_ppl", "plan_ppl_gap",
-    "token_recon_ppl", "ppl", "mean_entropy", "generation_mean_entropy",
-    "generation_nonempty_fraction", "val_bpb", "bleu", "rouge1", "rouge2",
-    "rougeL",
-)
-
-_EVAL_PRIMARY_METRICS_BY_MODE = {
-    "clean_token_reconstruction": "token_recon_ppl",
-    "generation_refine_decode": "g_ppl",
-    "oracle_plan_generation": "oracle_plan_ppl",
-    "shuffled_plan_generation": "shuffled_plan_ppl",
-}
-_EVAL_REQUIRED_PRIMARY_METRICS = tuple(_EVAL_PRIMARY_METRICS_BY_MODE.values())
-_EVAL_FAMILY_DIMENSION_KEYS = (
-    "sampling_method", "num_sampling_steps", "cfg", "self_cond_cfg_scale",
-    "time_schedule", "time_warp_gamma",
-)
 
 
-def _evaluation_family_dimensions(record: dict[str, Any]) -> dict[str, Any] | None:
-    """Read explicit producer-authored sampling identity without parsing labels."""
-    raw = record.get("sampling_config")
-    if not isinstance(raw, dict):
-        raw = record.get("variant_dimensions")
-    if not isinstance(raw, dict):
-        return None
-    dimensions: dict[str, Any] = {}
-    for key in _EVAL_FAMILY_DIMENSION_KEYS:
-        value = raw.get(key)
-        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-            return None
-        if isinstance(value, float) and not math.isfinite(value):
-            return None
-        dimensions[key] = value
-    return dimensions
-
-
-def _evaluation_family_id(dimensions: dict[str, Any]) -> str:
-    encoded = json.dumps(
-        dimensions, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-    )
-    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def _evaluation_record(record: dict[str, Any]) -> dict[str, Any]:
-    """Return the bounded, non-text projection exposed through read APIs."""
-    projected: dict[str, Any] = {}
-    for key in ("epoch", "step"):
-        value = record.get(key)
-        if isinstance(value, int) and not isinstance(value, bool):
-            projected[key] = value
-        elif (
-            isinstance(value, float) and math.isfinite(value)
-            and value.is_integer()
-        ):
-            projected[key] = int(value)
-    mode = record.get("mode")
-    if isinstance(mode, str) and len(mode) <= 128:
-        projected["mode"] = mode
-    dimensions = _evaluation_family_dimensions(record)
-    if dimensions is not None:
-        projected["sampling_dimensions"] = dimensions
-    for key in _EVAL_HISTORY_METRIC_KEYS:
-        value = record.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool) \
-                and math.isfinite(float(value)):
-            projected[key] = value
-    return projected
-
-
-def _evaluation_observation(value: Any) -> tuple[tuple[Any, ...], Any | None]:
-    """Return a comparison token and safe projected value for one raw metric."""
-    if (
-        isinstance(value, (int, float)) and not isinstance(value, bool)
-        and math.isfinite(float(value))
-    ):
-        return ("number", float(value)), value
-    if isinstance(value, float) and not math.isfinite(value):
-        return ("invalid", "nonfinite", repr(value)), None
-    return ("invalid", type(value).__name__, repr(value)), None
-
-
-def _evaluation_metric_observations(
-    record: dict[str, Any],
-) -> list[tuple[str, Any]]:
-    """Canonicalize literal and semantic aliases without hiding disagreement."""
-    observations = [
-        (key, record[key]) for key in _EVAL_HISTORY_METRIC_KEYS if key in record
-    ]
-    mode = record.get("mode")
-    primary = _EVAL_PRIMARY_METRICS_BY_MODE.get(mode)
-    # ``ppl`` is a semantic alias, not a lower-precedence escape hatch.  Keep
-    # both observations when a producer writes both spellings so a disagreeing
-    # pair becomes explicit conflict evidence; equal pairs remain idempotent.
-    if primary is not None and "ppl" in record:
-        observations.append((primary, record["ppl"]))
-    if mode == "generation_refine_decode" and "mean_entropy" in record:
-        observations.append(("generation_mean_entropy", record["mean_entropy"]))
-    return observations
+def metric_contract(run_dir: Path) -> dict[str, Any]:
+    value = _science_manifest(run_dir).get("evaluation")
+    return value if isinstance(value, dict) else {}
 
 
 def _evaluation_history(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build bounded history without treating conflicting rewrites as corrections."""
-    by_identity: dict[tuple[Any, Any], dict[str, Any]] = {}
-    observations: dict[tuple[Any, Any], dict[str, tuple[Any, ...]]] = {}
-    conflicts: dict[tuple[Any, Any], set[str]] = {}
-    skipped = 0
-    for record in records:
-        projected = _evaluation_record(record)
-        step = projected.get("step")
-        if step is None:
-            skipped += 1
-            continue
-        identity = (projected.get("epoch"), step)
-        merged = by_identity.setdefault(identity, {
-            **({"epoch": projected["epoch"]} if "epoch" in projected else {}),
-            "step": step,
-        })
-        seen = observations.setdefault(identity, {})
-        conflict_set = conflicts.setdefault(identity, set())
-
-        if "mode" in record:
-            mode_token = ("mode", type(record["mode"]).__name__, repr(record["mode"]))
-            previous_mode = seen.setdefault("mode", mode_token)
-            if previous_mode != mode_token:
-                conflict_set.add("mode")
-                merged.pop("mode", None)
-            elif "mode" in projected and "mode" not in conflict_set:
-                merged["mode"] = projected["mode"]
-
-        if "sampling_dimensions" in projected:
-            dimensions_token = (
-                "sampling_dimensions",
-                json.dumps(projected["sampling_dimensions"], sort_keys=True),
-            )
-            previous_dimensions = seen.setdefault(
-                "sampling_dimensions", dimensions_token,
-            )
-            if previous_dimensions != dimensions_token:
-                conflict_set.add("sampling_dimensions")
-                merged.pop("sampling_dimensions", None)
-            elif "sampling_dimensions" not in conflict_set:
-                merged["sampling_dimensions"] = projected["sampling_dimensions"]
-
-        for metric, raw_value in _evaluation_metric_observations(record):
-            token, safe_value = _evaluation_observation(raw_value)
-            previous = seen.setdefault(metric, token)
-            if previous != token:
-                conflict_set.add(metric)
-                merged.pop(metric, None)
-            elif metric not in conflict_set and safe_value is not None:
-                merged[metric] = safe_value
-
-    for identity, conflict_set in conflicts.items():
-        if conflict_set:
-            by_identity[identity]["conflicting_metrics"] = sorted(conflict_set)
-    ordered = sorted(
-        by_identity.values(),
-        key=lambda item: (
-            float(item.get("epoch", float("-inf"))),
-            float(item["step"]),
-        ),
-    )
-    total = len(ordered)
-    omitted = max(0, total - _EVAL_HISTORY_LIMIT)
-    return {
-        "history": ordered[-_EVAL_HISTORY_LIMIT:],
-        "history_total": total,
-        "history_limit": _EVAL_HISTORY_LIMIT,
-        "history_truncated": omitted > 0,
-        "history_omitted_records": omitted,
-        "history_skipped_records": skipped,
-    }
+    # Retain only scalar fields; arbitrary per-task arrays belong in artifacts.
+    if records and all(finite(record.get("step")) for record in records):
+        records = sorted(records, key=lambda record: (record.get("epoch") if finite(record.get("epoch")) else 0, record["step"]))
+    projected = [{key: value for key, value in record.items()
+                  if value is None or isinstance(value, (str, int, float, bool))}
+                 for record in records]
+    return {"history": projected[-_EVAL_HISTORY_LIMIT:],
+            "history_truncated": len(projected) > _EVAL_HISTORY_LIMIT,
+            "history_total": len(projected), "history_limit": _EVAL_HISTORY_LIMIT,
+            "history_omitted_records": max(0, len(projected) - _EVAL_HISTORY_LIMIT)}
 
 
-def _evaluation_variant_family(history: list[dict[str, Any]]) -> dict[str, Any]:
-    modes = [record.get("mode") for record in history]
-    if modes and all(mode == "clean_token_reconstruction" for mode in modes):
-        if any(record.get("sampling_dimensions") is not None for record in history):
-            return {
-                "status": "CONFLICTING",
-                "reason": "family-independent reconstruction carries sampling dimensions",
-                "required_producer_fields": list(_EVAL_FAMILY_DIMENSION_KEYS),
-            }
-        return {
-            "status": "RESOLVED",
-            "scope": "FAMILY_INDEPENDENT_RECONSTRUCTION",
-        }
-    sampling_modes = {
-        "generation_refine_decode", "oracle_plan_generation",
-        "shuffled_plan_generation",
-    }
-    if not modes or any(mode not in sampling_modes for mode in modes) \
-            or len(set(modes)) != 1:
-        return {
-            "status": "UNRESOLVED",
-            "reason": "one variant must contain exactly one recognized evaluation mode",
-            "required_producer_fields": list(_EVAL_FAMILY_DIMENSION_KEYS),
-        }
-    dimensions = [
-        record.get("sampling_dimensions") for record in history
-    ]
-    required = list(_EVAL_FAMILY_DIMENSION_KEYS)
-    if not dimensions or any(not isinstance(item, dict) for item in dimensions):
-        return {
-            "status": "UNRESOLVED",
-            "reason": "sampling family dimensions are not present in evaluation records",
-            "required_producer_fields": required,
-        }
-    identities = {
-        json.dumps(item, sort_keys=True, separators=(",", ":"))
-        for item in dimensions if isinstance(item, dict)
-    }
-    if len(identities) != 1:
-        return {
-            "status": "CONFLICTING",
-            "reason": "one variant contains multiple structured sampling identities",
-            "required_producer_fields": required,
-        }
-    normalized = dict(dimensions[0])
-    return {
-        "status": "RESOLVED",
-        "scope": "SAMPLING_FAMILY",
-        "family_id": _evaluation_family_id(normalized),
-        "dimensions": normalized,
-    }
-
-
-def _canonical_eval_variant_id(
-    variants: list[dict[str, Any]], contract: Optional[dict[str, Any]],
-) -> Optional[str]:
-    """Resolve a flat eval view only when its variant identity is unambiguous."""
-    declared = None
-    if isinstance(contract, dict):
-        declared = contract.get("canonical_eval_variant_id")
-        evaluation = contract.get("evaluation")
-        if declared is None and isinstance(evaluation, dict):
-            declared = evaluation.get("canonical_variant_id")
-    names = {str(item.get("variant")) for item in variants}
-    if isinstance(declared, str) and declared in names:
-        return declared
-    if len(variants) == 1:
-        return str(variants[0].get("variant"))
-    return None
-
-
-def _evaluation_checkpoint_snapshot(
-    identity: tuple[Any, Any],
-    variants: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Project scientific metrics that really belong to one checkpoint.
-
-    Variant JSONL files are written independently.  A checkpoint therefore
-    cannot be represented by taking the latest record from every file: during
-    an interleaved write those records commonly refer to different steps.
-    """
-    epoch, step = identity
-    candidates: dict[
-        str, dict[str, list[tuple[Any, dict[str, Any], dict[str, Any]]]]
-    ] = {}
-    conflicting_metrics: set[str] = set()
-    for variant in variants:
-        for record in variant.get("history") or []:
-            if not isinstance(record, dict):
-                continue
-            if (record.get("epoch"), record.get("step")) != identity:
-                continue
-            record_conflicts = record.get("conflicting_metrics")
-            if isinstance(record_conflicts, list):
-                conflicting_metrics.update(
-                    str(metric) for metric in record_conflicts
-                    if isinstance(metric, str)
-                )
-            mode = record.get("mode")
-            primary = _EVAL_PRIMARY_METRICS_BY_MODE.get(mode)
-            family = variant.get("evaluation_family")
-            family = family if isinstance(family, dict) else {}
-            dimensions = record.get("sampling_dimensions")
-            if family.get("scope") == "FAMILY_INDEPENDENT_RECONSTRUCTION":
-                family_matches = (
-                    mode == "clean_token_reconstruction" and dimensions is None
-                )
-            elif family.get("scope") == "SAMPLING_FAMILY":
-                family_matches = (
-                    isinstance(dimensions, dict)
-                    and dimensions == family.get("dimensions")
-                    and family.get("family_id") == _evaluation_family_id(dimensions)
-                )
-            else:
-                # Legacy single-family records have no structured dimensions.
-                family_matches = dimensions is None
-            if primary is None or not family_matches:
-                conflicting_metrics.add("mode" if primary is None else primary)
-                continue
-            metric_keys = [primary] if primary is not None else []
-            if mode == "generation_refine_decode":
-                if record.get("generation_mean_entropy") is not None:
-                    metric_keys.append("generation_mean_entropy")
-                elif record.get("mean_entropy") is not None:
-                    metric_keys.append("generation_mean_entropy")
-            for metric in metric_keys:
-                if "mode" in conflicting_metrics or metric in conflicting_metrics:
-                    continue
-                value = (
-                    record.get("mean_entropy")
-                    if metric == "generation_mean_entropy"
-                    and record.get("generation_mean_entropy") is None
-                    else record.get(metric)
-                )
-                if value is not None:
-                    variant_id = str(variant.get("variant") or "")
-                    candidates.setdefault(metric, {}).setdefault(
-                        variant_id, [],
-                    ).append((value, variant, record))
-
-    metrics: dict[str, Any] = {}
-    metric_sources: dict[str, Any] = {}
-    for metric, by_variant in sorted(candidates.items()):
-        if metric in conflicting_metrics:
-            continue
-        if len(by_variant) != 1:
-            conflicting_metrics.add(metric)
-            continue
-        observations = next(iter(by_variant.values()))
-        values = {float(value) for value, _, _ in observations}
-        modes = {record.get("mode") for _, _, record in observations}
-        if len(values) != 1 or len(modes) != 1:
-            conflicting_metrics.add(metric)
-            continue
-        value, variant, record = observations[0]
-        metrics[metric] = value
-        source = {
-            "variant_id": variant.get("variant"),
-            "mode": record.get("mode"),
-            "epoch": epoch,
-            "step": step,
-        }
-        metric_sources[metric] = {
-            key: value for key, value in source.items() if value is not None
-        }
-
-    if not conflicting_metrics and (
-        isinstance(metrics.get("oracle_plan_ppl"), (int, float))
-        and isinstance(metrics.get("shuffled_plan_ppl"), (int, float))
-    ):
-        metrics["plan_ppl_gap"] = (
-            metrics["shuffled_plan_ppl"] - metrics["oracle_plan_ppl"]
-        )
-        metric_sources["plan_ppl_gap"] = {
-            "derived_from": ["oracle_plan_ppl", "shuffled_plan_ppl"],
-            **({"epoch": epoch} if epoch is not None else {}),
-            "step": step,
-        }
-
-    missing = [
-        metric for metric in _EVAL_REQUIRED_PRIMARY_METRICS
-        if metric not in metrics
-    ]
-    return {
-        "state": "COMPLETE" if not missing and not conflicting_metrics else "PARTIAL",
-        **({"epoch": epoch} if epoch is not None else {}),
-        "step": step,
-        "metrics": metrics,
-        "metric_sources": metric_sources,
-        "missing_metrics": missing,
-        "conflicting_metrics": sorted(conflicting_metrics),
-    }
-
-
-def _evaluation_checkpoint_series(variants: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build checkpoint projections for one already-resolved family."""
-    identities = {
-        (record.get("epoch"), record.get("step"))
-        for variant in variants
-        for record in (variant.get("history") or [])
-        if isinstance(record, dict)
-        and record.get("epoch") is not None
-        and record.get("step") is not None
-    }
-    ordered = sorted(
-        identities,
-        key=lambda identity: (
-            float(identity[0]) if identity[0] is not None else float("-inf"),
-            float(identity[1]),
-        ),
-    )
-    checkpoints = [
-        _evaluation_checkpoint_snapshot(identity, variants) for identity in ordered
-    ]
-    current = checkpoints[-1] if checkpoints else {
-        "state": "NOT_OBSERVED",
-        "metrics": {},
-        "metric_sources": {},
-        "missing_metrics": list(_EVAL_REQUIRED_PRIMARY_METRICS),
-        "conflicting_metrics": [],
-    }
-    latest_complete = next(
-        (item for item in reversed(checkpoints) if item["state"] == "COMPLETE"),
-        None,
-    )
-    return {
-        "required_metrics": list(_EVAL_REQUIRED_PRIMARY_METRICS),
-        "current": current,
-        "latest_metric_complete": latest_complete,
-    }
-
-
-def _contract_evaluation(contract: Optional[dict[str, Any]]) -> dict[str, Any]:
-    if not isinstance(contract, dict):
-        return {}
-    evaluation = contract.get("evaluation")
-    return evaluation if isinstance(evaluation, dict) else contract
-
-
-def _declared_evaluation_family(
-    variants: list[dict[str, Any]], contract: Optional[dict[str, Any]],
-) -> tuple[str | None, str | None]:
-    """Return a canonical family declaration and any binding error."""
-    configured = _contract_evaluation(contract)
-    direct = configured.get("canonical_family_id")
-    canonical_family = configured.get("canonical_family")
-    if direct is None and isinstance(canonical_family, str):
-        direct = canonical_family
-    if direct is not None and not isinstance(direct, str):
-        return None, "canonical_family_id must be a string"
-    dimensions = configured.get("canonical_family_dimensions")
-    if dimensions is None and isinstance(canonical_family, dict):
-        dimensions = canonical_family
-    dimension_id: str | None = None
-    if dimensions is not None:
-        normalized = _evaluation_family_dimensions({"sampling_config": dimensions})
-        if normalized is None:
-            return None, "canonical_family_dimensions is incomplete or invalid"
-        dimension_id = _evaluation_family_id(normalized)
-    variant_id = (
-        configured.get("canonical_variant_id")
-        or (contract or {}).get("canonical_eval_variant_id")
-    )
-    variant_family: str | None = None
-    if variant_id is not None:
-        if not isinstance(variant_id, str):
-            return None, "canonical variant identity must be a string"
-        matched = next(
-            (item for item in variants if item.get("variant") == variant_id), None,
-        )
-        family = matched.get("evaluation_family") if isinstance(matched, dict) else None
-        if not isinstance(family, dict) or family.get("scope") != "SAMPLING_FAMILY":
-            return None, "canonical variant does not bind to a resolved sampling family"
-        variant_family = str(family.get("family_id"))
-    declared = [item for item in (direct, dimension_id, variant_family) if item]
-    if len(set(declared)) > 1:
-        return None, "canonical family and variant declarations do not bind consistently"
-    return (declared[0] if declared else None), None
-
-
-def evaluation_snapshot(
-    variants: list[dict[str, Any]], contract: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
-    """Build family-aware evaluation science without inferring family from labels."""
-    reconstruction = [
-        item for item in variants
-        if (item.get("evaluation_family") or {}).get("scope")
-        == "FAMILY_INDEPENDENT_RECONSTRUCTION"
-    ]
-    sampling = [item for item in variants if item not in reconstruction]
-    resolved: dict[str, list[dict[str, Any]]] = {}
-    unresolved: list[str] = []
-    for item in sampling:
-        family = item.get("evaluation_family")
-        family = family if isinstance(family, dict) else {}
-        family_id = family.get("family_id")
-        if family.get("status") == "RESOLVED" and isinstance(family_id, str):
-            resolved.setdefault(family_id, []).append(item)
-        else:
-            unresolved.append(str(item.get("variant") or "unknown"))
-
-    # A legacy four-slot set is unambiguous without pretending it has a stable
-    # family identity. Multiple observations of any conditioning mode require
-    # explicit producer-authored dimensions and therefore fail closed.
-    legacy_single = False
-    if sampling and not resolved:
-        mode_counts: dict[str, int] = {}
-        for item in sampling:
-            mode = (item.get("latest") or {}).get("mode")
-            if isinstance(mode, str):
-                mode_counts[mode] = mode_counts.get(mode, 0) + 1
-        legacy_single = (
-            len(reconstruction) == 1
-            and len(sampling) == 3
-            and mode_counts == {
-                "generation_refine_decode": 1,
-                "oracle_plan_generation": 1,
-                "shuffled_plan_generation": 1,
-            }
-        )
-
-    families: list[dict[str, Any]] = []
-    for family_id, members in sorted(resolved.items()):
-        dimensions = (members[0].get("evaluation_family") or {}).get("dimensions")
-        family_snapshot = _evaluation_checkpoint_series([*reconstruction, *members])
-        families.append({
-            "family_id": family_id,
-            "status": "RESOLVED",
-            "dimensions": dimensions,
-            "variant_ids": [str(item.get("variant")) for item in members],
-            "reconstruction_variant_ids": [
-                str(item.get("variant")) for item in reconstruction
-            ],
-            **family_snapshot,
-        })
-    if legacy_single:
-        families.append({
-            "family_id": None,
-            "status": "UNLABELED_SINGLE_FAMILY",
-            "dimensions": None,
-            "variant_ids": [str(item.get("variant")) for item in sampling],
-            "reconstruction_variant_ids": [
-                str(item.get("variant")) for item in reconstruction
-            ],
-            **_evaluation_checkpoint_series(variants),
-        })
-        unresolved = []
-
-    declared, declaration_error = _declared_evaluation_family(variants, contract)
-    selected: dict[str, Any] | None = None
-    if declaration_error:
-        family_state = "CANONICAL_BINDING_CONFLICT"
-    elif unresolved:
-        family_state = "UNRESOLVED"
-    elif declared is not None:
-        selected = next(
-            (item for item in families if item.get("family_id") == declared), None,
-        )
-        family_state = "DECLARED" if selected is not None else "CANONICAL_NOT_FOUND"
-    elif len(families) == 1:
-        selected = families[0]
-        family_state = "SINGLE_ELIGIBLE_FAMILY"
-    elif len(families) > 1:
-        family_state = "CANONICAL_NOT_DECLARED"
-    else:
-        family_state = "NOT_OBSERVED"
-
-    if selected is None:
-        current = {
-            "state": family_state,
-            "metrics": {}, "metric_sources": {},
-            "missing_metrics": list(_EVAL_REQUIRED_PRIMARY_METRICS),
-            "conflicting_metrics": [],
-        }
-        latest_complete = None
-    else:
-        current = selected["current"]
-        latest_complete = selected["latest_metric_complete"]
-
-    return {
-        "schema_version": 1,
-        "required_metrics": list(_EVAL_REQUIRED_PRIMARY_METRICS),
-        "family_state": family_state,
-        "required_family_dimension_fields": list(_EVAL_FAMILY_DIMENSION_KEYS),
-        "unresolved_variant_ids": unresolved,
-        "canonical_family_id": selected.get("family_id") if selected else None,
-        "canonical_declaration_error": declaration_error,
-        "families": families,
-        "current": current,
-        "latest_metric_complete": latest_complete,
-    }
+def evaluation_snapshot(variants: list[dict[str, Any]], contract=None) -> dict[str, Any]:
+    contract = contract or {}
+    records = [dict(record, variant_id=variant["variant"], _source_path=variant.get("source"))
+               for variant in variants for record in variant.get("history", [])]
+    result = metric_result(records, contract.get("metrics_schema"),
+                           protocol_id=contract.get("protocol_id"))
+    current = result["current"]
+    summary = {**(current["identity"] if current else {}),
+               "state": result["state"], "missing_metrics": result["missing_metrics"],
+               "metrics": {item["name"]: item["value"] for item in current["records"]
+                           if item["status"] == "VALID"} if current else {},
+               "metric_sources": {}}
+    return {"schema_version": 2, **result, "current": summary,
+            "latest_metric_complete": summary if summary["state"] == "COMPLETE" else None}
 
 
 def _bind_evaluation_snapshot_to_attempt(
@@ -642,6 +101,7 @@ def _bind_evaluation_snapshot_to_attempt(
     current = current if isinstance(current, dict) else {}
     return {
         **snapshot,
+        "state": "EXACT_ATTEMPT_NOT_BOUND",
         "attempt_binding_state": "EXACT_ATTEMPT_NOT_BOUND",
         "source_attempt_id": attempt_id,
         "unresolved_evidence": ["exact_attempt_binding"],
@@ -928,7 +388,7 @@ def evaluation_variants(
     train_sampling_eval/. Duplicate names are merged before checkpoint
     projection so identical observations remain idempotent while conflicting
     cross-source rewrites remain visible.
-    Each variant exposes a bounded, whitelisted epoch+step history; arbitrary
+    Each variant exposes a bounded scalar history; arbitrary
     JSONL fields are never copied into the read model. Exact Attempt roots are
     merged, while evidence is never merged across different Attempts.
     """
@@ -973,7 +433,6 @@ def evaluation_variants(
             "records": len(aggregate["records"]),
             "source": sources[0] if len(sources) == 1 else None,
             "sources": sources,
-            "evaluation_family": _evaluation_variant_family(bounded_history),
             **history,
         })
     return variants, selected_attempt
@@ -1138,7 +597,9 @@ def _latest_train_record(
     run_dir: Path,
 ) -> tuple[dict[str, Any], Optional[Path], Optional[str]]:
     records, path, attempt_id = train_metric_records(run_dir)
-    return (records[-1] if records else {}), path, attempt_id
+    record = records[-1] if records else {}
+    return {key: value if type(value) not in (int, float) or finite(value) else None
+            for key, value in record.items() if value is None or isinstance(value, (str, int, float, bool))}, path, attempt_id
 
 
 def _eval_layer(
@@ -1314,7 +775,7 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
         contract = None
     eval_variants, eval_attempt_id = evaluation_variants(run_dir)
     eval_snapshot = _bind_evaluation_snapshot_to_attempt(
-        evaluation_snapshot(eval_variants, contract),
+        evaluation_snapshot(eval_variants, metric_contract(run_dir)),
         attempt_id=eval_attempt_id,
         exact=(
             selected_attempt is not None
@@ -1325,32 +786,22 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
     harness_metrics = status.get("metrics") if isinstance(status.get("metrics"), dict) else {}
     if not harness_metrics and isinstance(attempt_summary.get("metrics"), dict):
         harness_metrics = attempt_summary["metrics"]
-    if harness_metrics.get("val_bpb") is not None:
-        evidence.evaluation = EvidenceLayer(
-            state="OBSERVED",
-            attempt_id=selected_attempt,
-            as_of=parse_iso_ts(attempt_summary.get("collected_at"))
-            or _mtime(attempt_dir / "summary.json"),
-            source=str(attempt_dir / "summary.json"),
-            detail={"val_bpb": harness_metrics.get("val_bpb")},
-        )
 
     latest_metrics: dict[str, Any] = {}
     for key, value in collection.items():
         if key in _COLLECTION_NON_METRIC_KEYS or not isinstance(value, (int, float, str, bool)):
             continue
-        if key not in _EVAL_METRIC_KEYS:
-            latest_metrics[key] = value
+        latest_metrics[key] = value if not isinstance(value, (int, float)) or finite(value) else None
     for key, value in collection_latest_metric(collection).items():
-        if key != "timestamp" and key not in _EVAL_METRIC_KEYS:
-            latest_metrics[key] = value
+        if key != "timestamp":
+            latest_metrics[key] = value if not isinstance(value, (int, float)) or finite(value) else None
     # train_metrics.jsonl is fresher than collection.json when both exist.
     for key, value in train_record.items():
         if key != "timestamp":
             latest_metrics[key] = value
     for key, value in harness_metrics.items():
-        if key not in _EVAL_METRIC_KEYS and isinstance(value, (int, float, str, bool)):
-            latest_metrics[key] = value
+        if isinstance(value, (int, float, str, bool)):
+            latest_metrics[key] = value if type(value) not in (int, float) or finite(value) else None
 
     provenance = {k: manifest[k] for k in _PROVENANCE_KEYS if manifest.get(k) is not None}
     source_identity = manifest.get("source")
@@ -1384,28 +835,9 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
             # an immutable aggregate seed list, matching Attempt validation.
             provenance["seed"] = aggregate_seed
 
-    canonical_eval_variant_id = _canonical_eval_variant_id(eval_variants, contract)
-    eval_metrics: dict[str, Any] = {}
+    canonical_eval_variant_id = None
     complete_eval = eval_snapshot.get("latest_metric_complete")
-    if isinstance(complete_eval, dict):
-        complete_metrics = complete_eval.get("metrics")
-        if isinstance(complete_metrics, dict):
-            eval_metrics = {
-                key: complete_metrics[key] for key in _EVAL_METRIC_KEYS
-                if complete_metrics.get(key) is not None
-            }
-    elif (
-        selected_attempt is not None
-        and not eval_variants
-        and not collection.get("evidence_conflicts")
-    ):
-        # Legacy collectors sometimes provide one unnamed eval record only.
-        eval_metrics = {
-            key: collection[key] for key in _EVAL_METRIC_KEYS
-            if isinstance(collection.get(key), (int, float, str, bool))
-        }
-        if harness_metrics.get("val_bpb") is not None:
-            eval_metrics["val_bpb"] = harness_metrics["val_bpb"]
+    eval_metrics = dict(complete_eval["metrics"]) if complete_eval else {}
     conflicts, reclassified_conflicts = classify_evidence_conflicts(
         collection.get("evidence_conflicts"),
         project=project, run_id=str(run_id), attempt_id=selected_attempt,
@@ -1418,14 +850,6 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
         warnings.append(
             "cross-variant or cross-family evaluation values retained as "
             "distinct evidence, not conflicts"
-        )
-    if eval_variants and eval_snapshot.get("family_state") in {
-        "UNRESOLVED", "CANONICAL_NOT_DECLARED", "CANONICAL_BINDING_CONFLICT",
-        "CANONICAL_NOT_FOUND",
-    }:
-        warnings.append(
-            "evaluation families are not canonical; flat eval_metrics suppressed: "
-            f"{eval_snapshot.get('family_state')}"
         )
     checkpoint = {
         key: collection[key] for key in _CHECKPOINT_KEYS

@@ -105,16 +105,9 @@ CONFIG_OVERRIDES = OperationParameter(
 )
 OPERATIONS: tuple[OperationDefinition, ...] = (
     OperationDefinition(
-        "question.create", "Create Research Question file",
-        "Prepare a project-file write from a client-authored question definition.",
-        "Project code", (OperationScopeType.PROJECT,), "intent",
-        "Prepare a reviewable project-file Action", "CREATE_RESEARCH_QUESTION_DRAFT",
-        (REQUEST,), 20,
-    ),
-    OperationDefinition(
         "campaign.create", "Create Campaign",
         "Prepare a Campaign file and catalog update from a client-authored definition.",
-        "Project code", (OperationScopeType.PROJECT, OperationScopeType.RESEARCH_QUESTION),
+        "Project code", (OperationScopeType.PROJECT,),
         "intent", "Prepare a reviewable Campaign write", "CREATE_CAMPAIGN_DRAFT",
         (REQUEST,), 20,
     ),
@@ -185,9 +178,8 @@ OPERATIONS: tuple[OperationDefinition, ...] = (
 OPERATIONS_BY_ID = {item.operation_id: item for item in OPERATIONS}
 
 INTENT_SCOPES: dict[str, tuple[OperationScopeType, ...]] = {
-    "CREATE_RESEARCH_QUESTION_DRAFT": (OperationScopeType.PROJECT,),
     "CREATE_CAMPAIGN_DRAFT": (
-        OperationScopeType.PROJECT, OperationScopeType.RESEARCH_QUESTION,
+        OperationScopeType.PROJECT,
     ),
     "UPDATE_CAMPAIGN_DRAFT": (OperationScopeType.CAMPAIGN,),
     "DERIVE_RUN_DRAFT": (OperationScopeType.CAMPAIGN, OperationScopeType.RUN),

@@ -12,7 +12,7 @@ Each registry record binds a stable Project identity to an absolute
 `research_project.yaml` path and records its lifecycle state, registration
 source, timestamps, and operator reason. The authored file remains the source
 of Project title, run roots, controller configuration, Campaign catalog, and
-research-question locations.
+legacy question files (which are not loaded).
 
 One daemon workspace has one registry. Two daemon workspaces may register the
 same Project independently and assign different lifecycle states. Operators

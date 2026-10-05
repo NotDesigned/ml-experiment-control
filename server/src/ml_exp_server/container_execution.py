@@ -24,6 +24,7 @@ from .source_revisions import resolve_source_tree
 from .storage import DurableJsonState, atomic_text, utc_now
 from .runtime_jobs import PendingRuntimeBuild
 from .worker_contract import CAPABILITIES, WORKER_CONTRACT
+from .metric_contract import MetricSchema, protocol_identity
 
 
 SECRET_KEY = re.compile(r"(?i)(?:^|_)(?:token|secret|password|credential|api_key|proxy|authorization)(?:$|_)")
@@ -134,6 +135,15 @@ class RunRequest(BaseModel):
     max_infra_retries: int = Field(default=1, ge=0, le=10)
     inputs: list[InputAsset] = Field(default_factory=list, max_length=32)
     checkpoint_upload: CheckpointUpload | None = None
+    metrics_schema: MetricSchema | None = None
+    evaluation: dict = Field(default_factory=dict)
+
+    @field_validator("evaluation")
+    @classmethod
+    def evaluation_context(cls, value):
+        if len(json.dumps(value, allow_nan=False).encode()) > 16384:
+            raise ValueError("evaluation context exceeds 16 KiB")
+        return value
 
     @field_validator("inputs")
     @classmethod
@@ -176,6 +186,24 @@ class ContainerExecutionService:
     def require_enabled(self):
         if not self.runtime.config.action_runtime.allow_project_writes:
             raise ApplicationError("project writes are disabled", code="CONTAINER_EXECUTION_BLOCKED")
+
+    def metrics_schema(self, project):
+        configured = self.runtime.project(project)
+        return {"project": project, "metrics_schema":
+                (configured.metrics_schema or MetricSchema()).model_dump(mode="json")}
+
+    def set_metrics_schema(self, project, schema):
+        self.require_enabled()
+        with source_lock(self.root, project):
+            configured = self.runtime.project(project)
+            path = configured.authored_file
+            if path is None:
+                raise ApplicationError("project manifest is unavailable", code="PROJECT_SCHEMA_UNAVAILABLE")
+            value = yaml.safe_load(Path(path).read_text())
+            value["metrics_schema"] = schema.model_dump(mode="json")
+            atomic_text(Path(path), yaml.safe_dump(value, sort_keys=False))
+            self.runtime.register_project(Path(path))
+        return self.metrics_schema(project)
 
     def profiles(self) -> dict:
         value = self.runtime.config.container_execution.profiles_file
@@ -419,6 +447,15 @@ class ContainerExecutionService:
             run["inputs"] = inputs
         if request.checkpoint_upload is not None:
             run["checkpoint_upload"] = request.checkpoint_upload.model_dump()
+        metric_schema = request.metrics_schema or getattr(configured, "metrics_schema", None)
+        if metric_schema is not None or request.evaluation:
+            context = {"source_id": source_id, "image": bundle["image"],
+                       "inputs": inputs, "evaluation": request.evaluation,
+                       "entrypoint": bundle["spec"]["entrypoint"], "arguments": request.arguments,
+                       "env": request.env,
+                       "metrics_schema": (metric_schema or MetricSchema()).model_dump(mode="json")}
+            run["evaluation"] = {"metrics_schema": context["metrics_schema"],
+                                 "protocol": context, "protocol_id": protocol_identity(context)}
         campaign = {"schema_version": 1, "project": project, "campaign": campaign_name,
                     "source_store": str(self.runtime.config.project_registry_root_path()),
                     "artifact_store": self.runtime.config.container_execution.artifact_store_file,
@@ -441,4 +478,4 @@ class ContainerExecutionService:
         return {"project": project, "run_id": request.run_id, "campaign": campaign_name,
                 "runtime_id": request.runtime_id, "source_id": source_id, "image": bundle["image"],
                 "entrypoint": [*bundle["spec"]["entrypoint"], *request.arguments], "executor": request.executor,
-                "resources": resources, "state": "NOT_SUBMITTED"}
+                "resources": resources, "state": "NOT_SUBMITTED", "evaluation": run.get("evaluation", {})}

@@ -161,3 +161,8 @@ uv build --all-packages
 Action migration and rollback: [action-storage.md](action-storage.md).
 SSE reconnect/resync contract: [sse.md](sse.md).
 Source/container/artifact contract: [source-api.md](source-api.md).
+
+CI uses Python 3.12 on PRs and main pushes. Feature-branch pushes do not duplicate
+PR runs; Python 3.10 remains the package compatibility floor, but is no longer a
+CI matrix target. For a focused edit, first run the affected pytest files; run
+the independent full coverage gates once before merging.

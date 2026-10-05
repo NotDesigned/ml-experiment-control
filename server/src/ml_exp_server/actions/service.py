@@ -21,13 +21,11 @@ from pydantic import ValidationError
 from ..campaign_lifecycle import campaign_record_path
 from ..controller_gateway import CommandRunner, ProjectControllerGateway, redact as _redact
 from ..intent_protocol import OperationIntent
-from ..project_config import load_research_question
 from ..operations import intent_scope_error
 from ..schemas import (
     ActionRuntimeConfig,
     OperationScope,
     OperationScopeType,
-    ResearchQuestion,
     ResearchProject,
 )
 from ..storage import utc_now
@@ -321,9 +319,7 @@ class ActionService:
                 )
             return existing
         kind = str(payload["kind"])
-        if kind == "CREATE_RESEARCH_QUESTION_DRAFT":
-            plan = self._prepare_research_question(action_id, scope, project, payload)
-        elif kind in {"CREATE_CAMPAIGN_DRAFT", "UPDATE_CAMPAIGN_DRAFT", "DERIVE_RUN_DRAFT"}:
+        if kind in {"CREATE_CAMPAIGN_DRAFT", "UPDATE_CAMPAIGN_DRAFT", "DERIVE_RUN_DRAFT"}:
             plan = self._prepare_campaign(action_id, scope, project, payload)
         elif kind == "ARCHIVE_CAMPAIGN":
             plan = self._prepare_campaign_record(action_id, scope, project, payload)
@@ -378,43 +374,6 @@ class ActionService:
             "created_at": utc_now(),
         }
 
-    def _prepare_research_question(self, action_id: str, scope: OperationScope,
-                            project: ResearchProject,
-                            intent: dict[str, Any]) -> dict[str, Any]:
-        payload = _parse_mapping(str(intent.get("draft", "")))
-        research_question_id = str(payload.get("id") or "")
-        if not _SAFE_ID.fullmatch(research_question_id):
-            raise ActionError("research_question id is not a safe file identity")
-        if not project.research_questions_dir:
-            raise ActionError("project has no research_questions_dir")
-        root = Path(project.research_questions_dir)
-        if not root.is_absolute():
-            root = (project.base_dir or Path(".")) / root
-        target = root.resolve() / f"{research_question_id}.yml"
-        schema_error = ""
-        try:
-            research_question = ResearchQuestion.model_validate(payload)
-        except ValidationError as exc:
-            research_question = None
-            schema_error = "; ".join(
-                f"{'.'.join(map(str, item['loc']))}: {item['msg']}" for item in exc.errors()
-            )
-        proposed = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
-        current_payload = _parse_mapping(target.read_text(encoding="utf-8")) if target.is_file() else {}
-        gates = [
-            _gate("schema", research_question is not None,
-                  "research_question YAML validates against schema v1" if research_question else schema_error),
-            _gate("safe_target", _inside(target, root), str(target)),
-        ]
-        plan = self._base_plan(action_id, scope, intent, "WRITE_RESEARCH_QUESTION")
-        plan.update({
-            "target_path": str(target), "expected_sha256": _file_sha(target),
-            "proposed_content": proposed, "diff": _unified_diff(target, proposed),
-            "semantic_changes": _semantic_changes(current_payload, payload),
-            "gates": gates, "ready": not any(g["status"] == "FAIL" for g in gates),
-            "command_preview": ["atomic-write", str(target)],
-        })
-        return plan
 
     def _prepare_campaign(self, action_id: str, scope: OperationScope,
                           project: ResearchProject,
@@ -1551,8 +1510,6 @@ class ActionService:
     def _execute_write(self, plan: dict[str, Any], execution: dict[str, Any]) -> dict[str, Any]:
         try:
             result = self.project_write_transaction.apply(plan)
-            if plan["operation"] == "WRITE_RESEARCH_QUESTION":
-                load_research_question(Path(plan["target_path"]))
             if not plan.get("files"):
                 only_file = result["files"][0]
                 result = {

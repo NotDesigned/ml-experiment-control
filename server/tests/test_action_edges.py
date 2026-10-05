@@ -626,9 +626,7 @@ def test_action_helper_and_prepare_error_branches(tmp_path):
         service.prepare(project_scope, project, {"status": "PENDING"})
     with pytest.raises(ActionError, match="invalid operation intent"):
         service.prepare(project_scope, project, operation_intent("ANALYSIS_ONLY", {}))
-    with pytest.raises(ActionError, match="safe file identity"):
-        service.prepare(project_scope, project, operation_intent("CREATE_RESEARCH_QUESTION_DRAFT", {"id": "bad/id"}))
-    with pytest.raises(ActionError, match="no research_questions_dir"):
+    with pytest.raises(ActionError, match="invalid operation intent"):
         service.prepare(project_scope, project, operation_intent("CREATE_RESEARCH_QUESTION_DRAFT", {"id": "Q1"}))
     for payload, message in (
         ({"campaign": "bad/id", "project": "demo", "run_refs": [{}]}, "safe campaign"),

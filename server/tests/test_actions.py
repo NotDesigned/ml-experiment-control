@@ -196,11 +196,13 @@ def test_multi_file_project_write_rolls_forward_after_interrupted_replace(
 
 def test_project_write_recovers_effect_to_state_crash_window(tmp_path, monkeypatch):
     root = tmp_path / "science"
-    (root / "experiments" / "research_questions").mkdir(parents=True)
+    (root / "experiments" / "campaigns").mkdir(parents=True)
     project = ResearchProject(
         project="demo", title="Demo", run_roots=[],
-        research_questions_dir="experiments/research_questions", base_dir=root,
+        authored_file=root / "experiments/research_project.yaml", base_dir=root,
     )
+    project.authored_file.parent.mkdir(parents=True, exist_ok=True)
+    project.authored_file.write_text(yaml.safe_dump({"schema_version": 1, "project": "demo", "title": "Demo", "run_roots": [], "campaigns": []}))
     scope = OperationScope(project="demo", scope_type="project", object_id="demo")
     store = ActionStore(tmp_path / "actions")
     service = ActionService(
@@ -208,8 +210,8 @@ def test_project_write_recovers_effect_to_state_crash_window(tmp_path, monkeypat
         actor_provider=lambda: "trusted:test",
     )
     plan = service.prepare(scope, project, operation_intent(
-        "CREATE_RESEARCH_QUESTION_DRAFT",
-        yaml.safe_dump({"schema_version": 1, "id": "Q1", "title": "Recover me"}),
+        "CREATE_CAMPAIGN_DRAFT",
+        yaml.safe_dump({"schema_version": 1, "project": "demo", "campaign": "study", "run_refs": [{"run_id": "run-a"}]}),
     ))
     service.authorize(plan["action_id"], "reviewed")
     real_set_execution = store.set_execution
@@ -249,7 +251,7 @@ def test_project_write_recovers_effect_to_state_crash_window(tmp_path, monkeypat
     ).recover_pending_project_writes()
 
     assert recovered[0]["execution"]["status"] == "VERIFIED"
-    assert yaml.safe_load(target.read_text(encoding="utf-8"))["title"] == "Recover me"
+    assert yaml.safe_load(target.read_text(encoding="utf-8"))["campaign"] == "study"
 
 
 def test_campaign_update_targets_catalog_file_and_changes_revision(tmp_path):
@@ -370,102 +372,33 @@ def test_run_and_attempt_archives_append_records_without_deleting_evidence(
     assert yaml.safe_load(target.read_text())["reason"] == "superseded evidence"
 
 
-def test_research_question_write_requires_bound_second_approval(tmp_path):
-    project_root = tmp_path / "science"
-    (project_root / "experiments" / "research_questions").mkdir(parents=True)
-    project = ResearchProject(
-        project="demo", title="Demo", run_roots=[],
-        research_questions_dir="experiments/research_questions", base_dir=project_root,
-    )
-    scope = OperationScope(
-        project="demo", scope_type=OperationScopeType.PROJECT, object_id="demo",
-    )
-    draft = yaml.safe_dump({
-        "schema_version": 1,
-        "id": "H2",
-        "title": "Capacity controls collapse",
-        "status": "OPEN",
-        "summary": "Separate capacity from objective effects",
-        "links": {"campaigns": ["h2-control"]},
-    })
-    service = ActionService(
-        ActionStore(tmp_path / "actions"),
-        ActionRuntimeConfig(allow_project_writes=True),
-        actor_provider=lambda: "trusted:test-researcher",
-    )
-    plan = service.prepare(scope, project, operation_intent(
-        "CREATE_RESEARCH_QUESTION_DRAFT", draft,
-    ))
-
-    assert plan["ready"] is True
-    assert "h2-control" in plan["diff"]
-    assert any(
-        change["category"] == "EXPERIMENT_DESIGN"
-        for change in plan["semantic_changes"]
-    )
-    assert plan["execution"]["status"] == "PREPARED"
-    with pytest.raises(ActionError, match="separate execution authorization"):
-        service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
-
-    authorized = service.authorize(plan["action_id"], "reviewed")
-    assert authorized["execution"]["authorization_actor"] == "trusted:test-researcher"
-    assert authorized["execution"]["authorized_intent_digest"] == plan["intent_digest"]
-    with pytest.raises(ActionError, match="confirmation must equal"):
-        service.execute(plan["action_id"], "yes")
-
-    result = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
-    target = project_root / "experiments" / "research_questions" / "H2.yml"
-    assert result["execution"]["status"] == "VERIFIED"
-    assert target.is_file()
-    assert yaml.safe_load(target.read_text())["id"] == "H2"
-    assert yaml.safe_load(target.read_text())["links"]["campaigns"] == ["h2-control"]
-
-    repeated = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
-    assert repeated["execution"]["result"] == result["execution"]["result"]
 
 
-def test_minimal_research_question_has_no_campaign_or_falsifiability_gate(tmp_path):
-    root = tmp_path / "science"
-    (root / "experiments" / "research_questions").mkdir(parents=True)
-    project = ResearchProject(
-        project="demo", title="Demo", run_roots=[],
-        research_questions_dir="experiments/research_questions", base_dir=root,
-    )
-    scope = OperationScope(project="demo", scope_type="project", object_id="demo")
-    service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig())
-
-    plan = service.prepare(scope, project, operation_intent(
-        "CREATE_RESEARCH_QUESTION_DRAFT",
-        yaml.safe_dump({"schema_version": 1, "id": "Q2", "title": "Open note"}),
-    ))
-
-    assert plan["ready"] is True
-    assert {gate["name"] for gate in plan["gates"]} == {"schema", "safe_target"}
 
 
 def test_target_change_after_diff_fails_closed(tmp_path):
     root = tmp_path / "science"
-    research_question_dir = root / "experiments" / "research_questions"
+    research_question_dir = root / "experiments" / "campaigns"
     research_question_dir.mkdir(parents=True)
     target = research_question_dir / "H2.yml"
     target.write_text("schema_version: 1\nid: H2\ntitle: old\n")
     project = ResearchProject(
         project="demo", title="Demo", run_roots=[],
-        research_questions_dir="experiments/research_questions", base_dir=root,
+        authored_file=root / "experiments/research_project.yaml", base_dir=root,
     )
-    scope = OperationScope(project="demo", scope_type="project", object_id="demo")
-    draft = yaml.safe_dump({
-        "schema_version": 1, "id": "H2", "title": "new",
-        "status": "OPEN", "summary": "m",
-        "links": {"campaigns": ["control"]},
-    })
+    project.authored_file.parent.mkdir(parents=True, exist_ok=True)
+    project.authored_file.write_text(yaml.safe_dump({"schema_version": 1, "project": "demo", "title": "Demo", "run_roots": [], "campaigns": []}))
+    from ml_exp_server.schemas import CampaignRef, CampaignRevision
+    project.campaigns = [CampaignRef(name="H2", current_revision=CampaignRevision(revision_id="campaign."+"a"*64, file=str(target), sha256="a"*64, campaign="H2", project="demo"))]
+    scope = OperationScope(project="demo", scope_type="campaign", object_id="H2")
+    draft = yaml.safe_dump({"schema_version": 1, "project": "demo", "campaign": "H2", "run_refs": [{"run_id": "run-a"}]})
     service = ActionService(
         ActionStore(tmp_path / "actions"),
         ActionRuntimeConfig(allow_project_writes=True),
         actor_provider=lambda: "trusted:test-researcher",
     )
     plan = service.prepare(scope, project, operation_intent(
-        "CREATE_RESEARCH_QUESTION_DRAFT", draft,
+        "UPDATE_CAMPAIGN_DRAFT", draft,
     ))
     service.authorize(plan["action_id"], "reviewed")
     target.write_text("schema_version: 1\nid: H2\ntitle: concurrent edit\n")
@@ -479,29 +412,6 @@ def test_target_change_after_diff_fails_closed(tmp_path):
     assert "concurrent edit" in target.read_text()
 
 
-def test_invalid_client_question_definition_becomes_blocked_action_plan(tmp_path):
-    root = tmp_path / "science"
-    (root / "experiments" / "research_questions").mkdir(parents=True)
-    project = ResearchProject(
-        project="demo", title="Demo", run_roots=[],
-        research_questions_dir="experiments/research_questions", base_dir=root,
-    )
-    scope = OperationScope(project="demo", scope_type="project", object_id="demo")
-    draft = yaml.safe_dump({
-        "schema_version": 1, "id": "H2", "title": "Structured falsifier",
-        "status": "OPEN", "summary": "m", "links": [],
-    })
-    service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig())
-
-    plan = service.prepare(scope, project, operation_intent(
-        "CREATE_RESEARCH_QUESTION_DRAFT", draft,
-    ))
-
-    assert plan["ready"] is False
-    schema = next(item for item in plan["gates"] if item["name"] == "schema")
-    assert schema["status"] == "FAIL"
-    assert "valid dictionary" in schema["detail"]
-    assert "links" in plan["diff"]
 
 
 class FakeController:
@@ -1620,15 +1530,11 @@ def test_action_api_prepares_client_intent_without_authorizing_execution(tmp_pat
             "project": "demo", "scope_type": "project", "object_id": "demo",
         }).json()
         intent = {
-            "kind": "CREATE_RESEARCH_QUESTION_DRAFT", "title": "H2",
+            "kind": "CREATE_CAMPAIGN_DRAFT", "title": "study",
             "target": "project://demo/research_questions/H2",
             "change_summary": "add H2", "resource_estimate": "none",
             "rationale": "new question", "risk": "review",
-            "draft": yaml.safe_dump({
-                "schema_version": 1, "id": "H2", "title": "New",
-                "status": "OPEN", "summary": "m",
-                "links": {"campaigns": ["control"]},
-            }),
+            "draft": yaml.safe_dump({"schema_version": 1, "project": "demo", "campaign": "study", "run_refs": [{"run_id": "run-a"}]}),
             "evidence_digest": object_payload["evidence_digest"],
             "idempotency_key": "intent-create-h2",
         }

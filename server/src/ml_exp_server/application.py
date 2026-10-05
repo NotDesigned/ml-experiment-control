@@ -20,6 +20,7 @@ from .code_identity import project_code_identity
 from .ingest.indexer import index_project
 from .ingest.runscan import (
     evaluation_snapshot,
+    metric_contract,
     parse_iso_ts,
     preferred_attempt_id,
     read_jsonl,
@@ -49,6 +50,7 @@ from .schemas import (
     TERMINAL_RUN_STATES,
 )
 from .telemetry import Telemetry
+from .metric_contract import metric_result, finite
 
 
 _OMITTED_EVIDENCE_KEYS = {
@@ -432,11 +434,6 @@ class ExperimentServerApplication:
                 raise ApplicationError("project object_id must equal project",
                                        status_code=404, code="UNKNOWN_PROJECT")
             resolved: Any = project
-        elif kind == OperationScopeType.RESEARCH_QUESTION:
-            resolved = next((item for item in project.research_questions if item.id == object_id), None)
-            if resolved is None:
-                raise ApplicationError(f"unknown research_question: {object_id}", status_code=404,
-                                       code="UNKNOWN_RESEARCH_QUESTION")
         elif kind == OperationScopeType.CAMPAIGN:
             resolved = next((
                 campaign for campaign in project.campaigns if campaign.name == object_id
@@ -550,10 +547,6 @@ class ExperimentServerApplication:
             rows = index.list_runs(project.project)
             return {
                 "project": project.project, "title": project.title,
-                "research_questions": [
-                    {"id": item.id, "title": item.title, "status": item.status}
-                    for item in project.research_questions
-                ],
                 "runs": [{
                     "run_id": row.run_id, "campaign": row.campaign, "role": row.role,
                     "campaign_relationship": row.campaign_binding.relationship.value,
@@ -568,16 +561,6 @@ class ExperimentServerApplication:
                     ],
                 } for row in rows],
             }
-        if scope.scope_type == OperationScopeType.RESEARCH_QUESTION:
-            names = set(resolved.links.campaigns)
-            rows = [
-                row for row in index.list_runs(project.project)
-                if row.campaign in names or any(
-                    binding.campaign in names for binding in row.campaign_memberships
-                )
-            ]
-            return {"research_question": resolved.model_dump(mode="json"),
-                    "runs": [self._agent_row_evidence(row) for row in rows]}
         if scope.scope_type == OperationScopeType.CAMPAIGN:
             rows = index.list_runs(project.project, campaign=scope.object_id)
             return {"campaign": resolved.model_dump(mode="json"),
@@ -661,10 +644,7 @@ class ExperimentServerApplication:
         project: ResearchProject, resolved: Any,
     ) -> list[str]:
         reasons: list[str] = []
-        if operation_id == "question.create":
-            if not project.research_questions_dir:
-                reasons.append("Project does not declare research_questions_dir")
-        elif operation_id in {
+        if operation_id in {
             "campaign.create", "campaign.update", "run.derive", "run.clone",
         }:
             if project.authored_file is None or not Path(project.authored_file).is_file():
@@ -2097,7 +2077,7 @@ class ExperimentServerApplication:
         )
         payload = self._metric_payload(
             records, keys=keys, max_points=max_points, source=source,
-            source_attempt_id=source_attempt_id,
+            source_attempt_id=source_attempt_id, contract=metric_contract(Path(row.run_dir)),
         )
         return {"project": project, "run_id": row.run_id,
                 "attempt_id": attempt.attempt_id, **payload}
@@ -2425,13 +2405,13 @@ class ExperimentServerApplication:
         records, source, source_attempt_id = train_metric_records(Path(row.run_dir))
         return self._metric_payload(
             records, keys=keys, max_points=max_points, source=source,
-            source_attempt_id=source_attempt_id,
+            source_attempt_id=source_attempt_id, contract=metric_contract(Path(row.run_dir)),
         )
 
     @staticmethod
     def _metric_payload(records: list[dict[str, Any]], *, keys: str | None,
                         max_points: int, source: Path | None,
-                        source_attempt_id: str | None) -> dict[str, Any]:
+                        source_attempt_id: str | None, contract: dict | None = None) -> dict[str, Any]:
         if max_points <= 0:
             raise ApplicationError("max_points must be positive", status_code=422,
                                    code="INVALID_MAX_POINTS")
@@ -2466,12 +2446,16 @@ class ExperimentServerApplication:
             for key in wanted or [k for k in record if k not in ("step", "timestamp")]:
                 value = record.get(key)
                 if (
-                    isinstance(value, (int, float))
+                    finite(value)
                     or wanted is not None and isinstance(value, (str, bool))
                 ):
                     point[key] = value
             points.append(point)
+        contract = contract or {}
+        result = metric_result(sampled, contract.get("metrics_schema"),
+                               protocol_id=contract.get("protocol_id"), source=str(source) if source else None)
         return {
+            "metrics": result, "evaluation": contract,
             "points": points, "keys": wanted or numeric_available,
             "missing_keys": [key for key in wanted or [] if key not in available],
             "total_records": total, "downsampled": total > len(sampled),

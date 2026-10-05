@@ -1,4 +1,4 @@
-"""Load daemon workspace, project catalog, and optional research questions."""
+"""Load daemon workspace, project catalog, and project configuration."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from .schemas import (
     CampaignRunMembership,
     ServerConfig,
     ResearchProject,
-    ResearchQuestion,
 )
 
 
@@ -92,15 +91,6 @@ def load_server_config(path: Path) -> ServerConfig:
     return config
 
 
-def load_research_question(path: Path) -> ResearchQuestion:
-    data = _load_yaml(path)
-    try:
-        question = ResearchQuestion.model_validate(data)
-    except ValidationError as exc:
-        raise ConfigError(f"invalid research question {path}: {exc}") from exc
-    if question.schema_version != 1:
-        raise ConfigError(f"unsupported schema_version in {path}: {question.schema_version}")
-    return question
 
 
 def _campaign_path(project: ResearchProject, ref: CampaignRef) -> Path:
@@ -247,8 +237,11 @@ def _load_campaign_revision(project: ResearchProject, ref: CampaignRef) -> Campa
 
 
 def load_research_project(path: Path) -> ResearchProject:
-    """Load a project-owned campaign catalog plus optional research questions."""
+    """Load a project-owned campaign catalog plus project configuration."""
     data = _load_yaml(path)
+    # Legacy files stay untouched; retired question metadata is no longer loaded.
+    data.pop("research_questions_dir", None)
+    data.pop("research_questions", None)
     try:
         project = ResearchProject.model_validate(data)
     except ValidationError as exc:
@@ -258,7 +251,7 @@ def load_research_project(path: Path) -> ResearchProject:
     project.base_dir = path.parent.parent if path.parent.name == "experiments" else path.parent
     project.authored_file = path.resolve()
     # Convention: research_project.yaml lives in <repo>/experiments/, and its
-    # run_roots / research_questions_dir are repo-relative. Fall back to the file's own
+    # run_roots are repo-relative. Fall back to the file's own
     # directory when the layout differs.
     campaign_names: set[str] = set()
     materialized_run_ids: dict[str, str] = {}
@@ -279,21 +272,6 @@ def load_research_project(path: Path) -> ResearchProject:
                     )
                 materialized_run_ids[membership.run_id] = ref.name
 
-    if project.research_questions_dir:
-        question_dir = Path(project.research_questions_dir)
-        if not question_dir.is_absolute():
-            question_dir = (project.base_dir / question_dir).resolve()
-        if question_dir.is_dir():
-            ids: set[str] = set()
-            paths = sorted(question_dir.glob("*.yml")) + sorted(question_dir.glob("*.yaml"))
-            for question_path in paths:
-                question = load_research_question(question_path)
-                if question.id in ids:
-                    raise ConfigError(
-                        f"duplicate research question id {question.id!r} in {question_path}"
-                    )
-                ids.add(question.id)
-                project.research_questions.append(question)
     return project
 
 

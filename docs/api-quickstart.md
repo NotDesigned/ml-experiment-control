@@ -126,3 +126,6 @@ directory. Archive, expanded-data and final-output limits default to 4 GiB;
 source is separate: 64 MiB archive/256 MiB expanded. Read actual deployment limits
 through `check` or `GET /api/storage-limits`.
 See [multipart uploads](multipart-uploads.md) and [storage lifecycle](storage-lifecycle.md).
+
+Project-defined metric names, units, completeness and frozen scoring protocols:
+[metrics contract](metrics.md).

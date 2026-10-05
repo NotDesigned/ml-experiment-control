@@ -13,7 +13,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 IntentKind = Literal[
-    "CREATE_RESEARCH_QUESTION_DRAFT",
     "CREATE_CAMPAIGN_DRAFT",
     "UPDATE_CAMPAIGN_DRAFT",
     "DERIVE_RUN_DRAFT",
