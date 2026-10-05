@@ -24,7 +24,7 @@ and code readable by its UID; keep token/credential files private.
 
 ## Install a reviewed revision
 
-On Linux, clone a revision containing server 0.2.0 / protocol 2. Pin the commit;
+On Linux, clone a revision containing server 0.2.1 / protocol 2. Pin the commit;
 do not assume an older `main` or release provides the source API. A source
 installation requires uv and Rust 1.85+ to build the packaged SCO sanitizer:
 

@@ -72,5 +72,6 @@ def managed_dockerfile(inspection: dict, source_id: str) -> str:
             f"COPY {INTERNAL}/source/ /workspace/\n"
             'RUN ["python3", "-c", "import sys; assert sys.version_info >= (3, 10)"]\n'
             "WORKDIR /workspace\n"
+            "ENV ML_EXPD_MULTIPART_UPLOAD=1\n"
             f"LABEL org.ml-expd.source={source_id}\n"
             "ENTRYPOINT []\nCMD [\"/bin/true\"]\n")

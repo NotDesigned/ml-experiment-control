@@ -1,6 +1,6 @@
 # Source-to-container API
 
-Protocol 2 / server 0.2.0. A remote client needs HTTPS and the existing ml-expd
+Protocol 2 / server 0.2.1. A remote client needs HTTPS and the existing ml-expd
 Bearer token; it does not need SSH, SCO, Apptainer, or a checkout on the daemon.
 Start with the [runnable API quickstart](api-quickstart.md); operators use
 [the deployment guide](operator-guide.md). Obtain the API URL from your operator.
@@ -134,8 +134,10 @@ exemption from authentication on the control API.
 The image launcher runs the fixed program, forwards termination signals and
 then uploads the declared regular files as a tar. Hidden paths and symlinks
 are excluded; the API also rejects credentials and escaping archive paths.
-The default total archive limit is 2 GiB / 20,000 entries; an operator can
-configure a smaller byte limit. The operator template uses 256 MiB. GNU timeout bounds the worker
+The default total archive limit is 4 GiB / 20,000 entries; an operator can
+configure a smaller byte limit. Newly built images support [resumable 16 MiB
+uploads](multipart-uploads.md); existing frozen images retain their original
+whole-archive launcher and use the configured total limit. GNU timeout bounds the worker
 including upload; a hard kill or lost network can prevent the final upload.
 The SenseCore [Dockerfile/data workflow](sensecore-user-workflow.md) adds optional
 live checkpoint publication using an atomic ready manifest. Legacy recipes

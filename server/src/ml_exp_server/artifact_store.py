@@ -33,7 +33,7 @@ class ArtifactStore:
         self.config = json.loads(config_file.read_text())
         self.root = registry_root / 'artifact-transfers'
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.limit = int(self.config.get('max_archive_bytes', 2 * 1024 ** 3))
+        self.limit = int(self.config.get('max_archive_bytes', 4 * 1024 ** 3))
 
     @contextmanager
     def record(self, project, run, attempt):

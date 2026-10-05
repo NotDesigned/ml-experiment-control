@@ -45,7 +45,7 @@ def dockerfile(image: str, source_id: str, requirements: str | None = None) -> s
                         'ENV PATH="/opt/ml-expd-venv/bin:${PATH}"\n'
                         'RUN ["python3", "/tmp/ml-expd-install.py"]\n')
     return (f"FROM {image}\n" + installation + "COPY source/ /workspace/\nWORKDIR /workspace\n"
-            "COPY worker.py /usr/local/lib/ml-expd/worker.py\n"
+            "COPY worker.py /usr/local/lib/ml-expd/worker.py\nENV ML_EXPD_MULTIPART_UPLOAD=1\n"
             f"LABEL org.ml-expd.source={source_id}\nENTRYPOINT []\nCMD [\"/bin/true\"]\n")
 
 

@@ -5,7 +5,7 @@ A standalone client for the ml-expd HTTP API. Requires Python 3.10+ and has
 Rust, SCO or Apptainer. The daemon owns those platform integrations.
 
 Distribution: `ml-experiment-client`; Python package: `ml_exp_client`;
-command: `ml-exp`. Client version 0.1.0 speaks protocol 2; client and server
+command: `ml-exp`. Client version 0.1.1 speaks protocol 2; client and server
 package versions are independent.
 
 ## Install only the client
@@ -53,7 +53,8 @@ ml-exp init ./my-study
 works offline and requires no token. The program writes metrics/summary under
 the backend-provided `OUTPUT_DIR`; replace it with your training code.
 `ML_EXPD_API_TOKEN` is also accepted. The client never prints credentials or
-automatically retries mutations, and rejects remote plaintext HTTP/redirects.
+rejects remote plaintext HTTP/redirects. Only resumable archive uploads retry
+transient failures; scheduler operations are never automatically replayed.
 
 The complete workflow is `pack` → `create` → `prepare` → `execute` → `watch`
 → `download`. `runtime` and `submission` inspect/reconcile existing work.
@@ -70,6 +71,13 @@ For SenseCore, `ml-exp pack --dockerfile Dockerfile` executes the uploaded
 Dockerfile in the server builder, `asset-upload` delivers independent data,
 and `create --inputs ... --checkpoint-interval ...` enables mounted inputs and
 live checkpoints. See the [complete workflow](../docs/sensecore-user-workflow.md).
+
+On servers advertising `multipart-upload.v1`, data uploads use 16 MiB parts
+and retain completed parts across disconnections. Resume the same unchanged
+directory with `ml-exp asset-upload --project PROJECT --directory ./data
+--state data.json --resume`. The saved archive identity must match; modifying
+the directory requires a new state file. The default archive and expanded-data
+limits are 4 GiB, not a per-part allowance. See [upload API](../docs/multipart-uploads.md).
 
 ## Python use
 

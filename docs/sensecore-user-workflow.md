@@ -51,11 +51,14 @@ The client streams a reproducible gzip-compressed tar without loading the datase
 The archive SHA256 is the upload's idempotency key and asset ID. An asset becomes
 READY after extraction/checksums, object-store publication and local metadata
 publication. Interrupted uploads can be checked by the saved ID; the same bytes
-can be uploaded again safely. Dataset bytes do not enter the source bundle or
+can be resumed with `asset-upload --resume` on supporting servers. Completed
+16 MiB parts are retained and skipped after reconnecting. Dataset bytes do not enter the source bundle or
 image. The service exposes actual archive/file/count limits and free local space
 at `GET /api/storage-limits`; a null storage quota means no configured overall
-quota, not infinite capacity. Data/archive/artifact defaults are 2 GiB and 20,000
+quota, not infinite capacity. Data/archive/artifact defaults are 4 GiB and 20,000
 files; source retains its separate 64 MiB upload and 256 MiB expanded limits.
+See [resumable upload API](multipart-uploads.md) for part checksums, completion,
+expiry, cancellation and worker checkpoint/final-output transfers.
 
 ## Create and run
 
