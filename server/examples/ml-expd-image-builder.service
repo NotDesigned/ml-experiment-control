@@ -1,0 +1,23 @@
+[Unit]
+Description=ML Expd fixed-recipe image builder
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+StateDirectory=ml-expd-builder
+StateDirectoryMode=0700
+RuntimeDirectory=ml-expd-builder
+RuntimeDirectoryMode=0750
+WorkingDirectory=/var/lib/ml-expd-builder
+Environment=PATH=/opt/ml-expd/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/ml-expd/venv/bin/python -m ml_exp_server.image_builder --config /etc/ml-expd/image-builder.json
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

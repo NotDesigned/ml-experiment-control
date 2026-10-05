@@ -94,11 +94,12 @@ ELF is the reference downstream consumer. Its integration tests should exercise
 the public imports and direct `experiment-safe-sco` invocation against the
 candidate package before advancing `requirements.txt`.
 
-## Native tracking evidence
+## Host-specific collection
 
 `BackendServices.collection_includes` is an optional host callback returning
 rsync include patterns for the selected Campaign (default: empty). WYD uses it
-before its final exclude rule. ELF owns the native SDK paths in its adapter;
-no new ELF or W&B filename is embedded in the backend. Its integration tests
-exercise real offline SDK writes and these actual rsync filters. Existing
-immutable source snapshots and old host construction remain supported.
+before its final exclude rule. A host can retain this hook for generic files;
+no training SDK or project-specific filename is embedded in the backend.
+Current daemon/ELF W&B support is removed. Historic snapshots and old frozen
+execution definitions remain historical data; they do not establish current
+SDK, publication or offline-sync support.

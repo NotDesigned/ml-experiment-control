@@ -3,14 +3,16 @@
 Install the package and development dependencies, then run the repository gates:
 
 ```bash
-uv sync --locked
+uv sync --locked --all-packages
 cargo fmt --manifest-path rust/Cargo.toml -- --check
 cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
 cargo test --locked --manifest-path rust/Cargo.toml
+uv run mypy
 uv run python tools/coverage_gate.py
+uv run --package ml-experiment-server python tools/coverage_gate.py --suite daemon
 uv run python tools/generate_cli_reference.py --check
 uv run python -m compileall -q src tests tools examples
-uv build
+uv build --all-packages
 ```
 
 Add runtime dependencies with `uv add <package>` and development dependencies
@@ -21,7 +23,7 @@ Rust 1.85 or newer is required to build the packaged `experiment-safe-sco`
 binary. Commit `rust/Cargo.lock` whenever Rust dependencies change.
 
 The coverage gate checks repository-wide line and branch coverage independently:
-100% line coverage and at least 95% branch coverage. See
+100% line and 100% branch coverage for both core and daemon. See
 [`docs/development.md`](docs/development.md) for the testing and generated CLI
 documentation policy.
 

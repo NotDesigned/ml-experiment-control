@@ -2,7 +2,8 @@
 
 Protocol 2 / server 0.2.0. A remote client needs HTTPS and the existing ml-expd
 Bearer token; it does not need SSH, SCO, Apptainer, or a checkout on the daemon.
-API entry on this server: `https://api.adscn.dev/ml-expd`.
+Start with the [runnable API quickstart](api-quickstart.md); operators use
+[the deployment guide](operator-guide.md). Obtain the API URL from your operator.
 Every normal API call sends `Authorization: Bearer …` and
 `X-ML-Expd-Client-Protocol: 2`. `GET /api/health` bootstraps negotiation;
 `GET /api/v2/openapi.json` is the authoritative schema.
@@ -15,7 +16,8 @@ Every normal API call sends `Authorization: Bearer …` and
    For private/local code, upload a tar or tar.gz rooted at the source directory:
    `POST /api/source-imports/archive?project=my-study&sha256=<archive SHA256>`
    with the archive as the raw body. The daemon rejects links, escaping paths,
-   credentials, and oversized archives. Defaults: 64 MiB upload, 256 MiB expanded,
+   credential-looking paths, and oversized archives. This is path filtering,
+   not a scan proving the contents contain no secrets. Defaults: 64 MiB upload, 256 MiB expanded,
    20,000 entries. Import creates a daemon-managed project when its ID is new.
    An existing project with its own controller is retained and cannot be silently
    converted. The returned `source_id` identifies immutable source content;
@@ -52,8 +54,9 @@ Every normal API call sends `Authorization: Bearer …` and
    `/api/submissions/{submission_id}/authorize`, then `/execute`, using the
    returned confirmation strings. The existing policy gates still apply.
    Preparation validates identity, source, image/staging and resource budget.
-   Execution durably claims the Action and returns `EXECUTING` while the backend
-   runs in the background. Poll `GET /api/submissions/{submission_id}` until
+   On servers advertising `async-actions.v1`, execution durably claims the
+   Action and returns `EXECUTING` while the backend runs in the background.
+   Older protocol-2 servers may return the terminal submission status directly. Poll `GET /api/submissions/{submission_id}` until
    `status` leaves `EXECUTING`; `VERIFIED` confirms the exact scheduler job was
    observed, and does not mean training has finished. The Action endpoint
    `GET /api/actions/{action_id}` exposes this state under `execution.status`.
@@ -79,8 +82,8 @@ checksum before reusing a cached conversion. Both use the source packaged at
 `/workspace` inside the image; WYD does not copy or mount a second checkout
 over it. Legacy projects with an authored SIF and source checkout retain their
 existing source staging behavior.
-The WYD profile enables `--unsquash` because its current environment denies
-FUSE mounts. The upload launcher is readable by the non-root compute user.
+A WYD environment that denies FUSE needs `apptainer_unsquash: true` in its
+backend profile. The upload launcher is readable by the non-root compute user.
 The profile chooses the scheduler and storage layout; the scientific command
 is identical. Private registry access is an operator-owned prerequisite on
 both backends. Remote schedulers must pass their live preflight.
@@ -91,7 +94,7 @@ HTTP daemon has no Docker socket permission. Image build outcomes are durable
 and keyed by source, base digest and upload-launcher revision. Interrupted
 packaging can be reconciled without starting an experiment.
 
-The production builder sets `publisher: buildkit` and uses BuildKit's image
+With `publisher: buildkit`, the builder uses BuildKit's image
 exporter with Docker schema 2, disabled attestations, and existing registry
 blob reuse. It avoids exporting and unpacking a second complete CUDA image.
 Skopeo verifies the exact remote manifest and configuration digests against
@@ -99,7 +102,7 @@ BuildKit's publication metadata. The earlier archive/Skopeo publisher remains
 available for rollback. A local `RepoDigests` entry alone is insufficient.
 
 `action_runtime.stage_timeout_seconds` optionally gives environment staging
-(including a first OCI-to-SIF conversion) its own timeout; production uses
+(including a first OCI-to-SIF conversion) its own timeout; the operator template uses
 1200 seconds. Scheduler submission still uses `timeout_seconds` (300 seconds),
 and actual GPU execution retains the frozen Run's `resources.max_time` limit.
 WYD bootstrap creates its cache and sandbox directories before Apptainer runs,
@@ -111,8 +114,8 @@ failed/cancelled/preempted scheduler Attempt, and no conflicting new job.
 
 ## Artifacts and object storage
 
-This deployment uses [Garage S3](https://garagehq.deuxfleurs.fr/documentation/quick-start/),
-listening only on `127.0.0.1:3900`. The S3 bucket credentials remain on the
+The operator template uses a loopback S3 endpoint, for example Garage on
+`127.0.0.1:3900`. An existing S3-compatible service is also supported. The bucket credentials remain on the
 server. At actual dispatch, the controller injects a separate write-only
 capability for one exact Run/Attempt, valid for seven days. It is absent from
 Run manifests, authored campaigns, preparation responses and the user program's
@@ -122,7 +125,8 @@ exemption from authentication on the control API.
 The image launcher runs the fixed program, forwards termination signals and
 then uploads the declared regular files as a tar. Hidden paths and symlinks
 are excluded; the API also rejects credentials and escaping archive paths.
-The total archive limit is 2 GiB / 20,000 entries. GNU timeout bounds the worker
+The default total archive limit is 2 GiB / 20,000 entries; an operator can
+configure a smaller byte limit. The operator template uses 256 MiB. GNU timeout bounds the worker
 including upload; a hard kill or lost network can prevent the final upload.
 There is no periodic live checkpoint upload in this version. A failed upload
 is visible as `ML_EXPD_ARTIFACT_UPLOAD=FAILED` and fails an otherwise successful
@@ -145,11 +149,9 @@ not claim the remote run produced nothing. Legacy WYD collection remains
 readable. Artifacts never fall back to a different Attempt or arbitrary host
 path. No automatic artifact or history deletion is enabled.
 
-Garage here is a single-node persistent store on this machine, not an off-host
-backup. Operator files: `/root/services/ml-expd-artifacts`; private S3 config:
-`/etc/ml-expd/artifact-store.json`; private packaging config:
-`/etc/ml-expd/image-builder.json`; backend profiles:
-`/etc/ml-expd/executors.yaml`. Never publish credential files or dispatch scripts.
+A single-node object store on the daemon machine is not an off-host backup.
+See [the operator guide](operator-guide.md) for component ownership and
+sanitized configuration templates. Never publish credential files or dispatch scripts.
 
 ## W&B removal and compatibility
 

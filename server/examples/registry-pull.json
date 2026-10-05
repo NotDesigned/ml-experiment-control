@@ -1,0 +1,5 @@
+{
+  "registry": "registry.example.org",
+  "username": "REPLACE_PULL_ONLY_USER",
+  "password": "REPLACE_PULL_ONLY_PASSWORD"
+}

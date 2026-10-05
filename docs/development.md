@@ -125,15 +125,15 @@ Changes to exported Python symbols or the Rust CLI must also update
 [`downstream_contract.md`](downstream_contract.md) and be validated against the
 ELF integration tests before a downstream commit pin advances.
 
-CI first runs `uv sync --locked`, then checks generated CLI documentation,
-Python compilation, and distribution construction with `uv build` on every
+CI first runs `uv sync --locked --all-packages`, then checks generated CLI documentation,
+Python compilation, and distribution construction with `uv build --all-packages` on every
 push and pull request. Update dependencies with `uv add` or `uv remove` and
 commit both `pyproject.toml` and `uv.lock`.
 
 ## Full verification
 
 ```bash
-uv sync --locked
+uv sync --locked --all-packages
 cargo fmt --manifest-path rust/Cargo.toml -- --check
 cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
 cargo test --locked --manifest-path rust/Cargo.toml
@@ -142,7 +142,7 @@ uv run python tools/coverage_gate.py
 uv run python tools/generate_cli_reference.py --check
 uv run python -m compileall -q src tests tools examples
 uv run --package ml-experiment-server python -m compileall -q server/src server/tests
-uv run --package ml-experiment-server pytest server/tests -q
+uv run --package ml-experiment-server python tools/coverage_gate.py --suite daemon
 uv run --package ml-experiment-server ml-expd --help
 uv run python examples/local_smoke.py
 uv build --all-packages
