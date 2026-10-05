@@ -9,12 +9,13 @@ import pytest
 import yaml
 
 from ml_exp_server import dependency_install as installer
+from ml_exp_server.worker_contract import CAPABILITIES, WORKER_CONTRACT, worker_digest
 from ml_exp_server.container_execution import RuntimeSpec
 from ml_exp_server.environment_build import DEPENDENCY_RECIPE, dockerfile, inspect_requirements, installer_digest
 from ml_exp_server.image_builder import ImageBuilder, MANIFEST_TYPE, bundle_id
 from ml_exp_server.source_imports import seal_tree
 from ml_exp_server.source_revisions import _tree_digest
-from tests.test_container_api import archive, client, import_source
+from tests.test_container_api import archive, client, import_source, wait_runtime
 
 
 BASE = "registry.example/base@sha256:" + "a" * 64
@@ -99,11 +100,19 @@ def test_missing_and_escaping_requirements_files(tmp_path):
         inspect_requirements(tmp_path, "directory/outside-requirements.txt")
 
 
+@pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.parametrize("tamper", [None, "dependencies", "dockerfile_sha256", "installer_sha256", "bundle_id"])
-def test_dependency_runtime_accepts_only_exact_build_receipt(client, monkeypatch, tamper):
+def test_dependency_runtime_accepts_only_exact_build_receipt(client, monkeypatch, tamper, legacy):
     response = prepare(client)
     assert response.status_code == 200, response.text
     value = response.json()
+    if legacy:
+        from ml_exp_server.container_execution import ContainerExecutionService
+        service = ContainerExecutionService(client.app.state.runtime)
+        with service.state("demo", value["runtime_id"]) as (store, snapshot):
+            old = dict(snapshot.value)
+            old.pop("worker_contract")
+            store.commit(old, expected_revision=snapshot.revision, event={"event": "legacy_fixture"})
     assert value["spec"]["packaging_revision"] == DEPENDENCY_RECIPE
     assert value["dependencies"]["sha256"] == hashlib.sha256(b"colorama==0.4.6\n").hexdigest()
     assert 'RUN ["python3"' in value["dockerfile"]
@@ -113,6 +122,7 @@ def test_dependency_runtime_accepts_only_exact_build_receipt(client, monkeypatch
                   "image": "registry.example/results@sha256:" + "b" * 64,
                   "bundle_id": bundle_id("demo", request["source_id"], BASE, request["requirements"]),
                   "dependencies": value["dependencies"], "installer_sha256": installer_digest(),
+                  "worker_contract": WORKER_CONTRACT, "worker_sha256": worker_digest(), "capabilities": list(CAPABILITIES),
                   "dockerfile_sha256": hashlib.sha256(value["dockerfile"].encode()).hexdigest()}
         if tamper:
             result[tamper] = "wrong"
@@ -120,7 +130,7 @@ def test_dependency_runtime_accepts_only_exact_build_receipt(client, monkeypatch
     monkeypatch.setattr("ml_exp_server.container_execution.builder_request", build)
     endpoint = "/api/projects/demo/runtimes/" + value["runtime_id"]
     client.post(endpoint + "/execute", json={"confirmation": value["confirmation"]})
-    completed = client.get(endpoint).json()
+    completed = wait_runtime(client, endpoint)
     assert completed["status"] == ("RECONCILE_REQUIRED" if tamper else "READY")
     if not tamper:
         for executor in ("gpu", "cloud"):

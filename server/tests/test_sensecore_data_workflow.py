@@ -17,7 +17,9 @@ from ml_exp_server.image_builder import ImageBuilder, MANIFEST_TYPE, bundle_id
 from ml_exp_server.source_imports import seal_tree
 from ml_exp_server.source_revisions import _tree_digest
 from ml_exp_server.schemas import RunIndexRow, AttemptSummary
-from tests.test_container_api import archive, client, import_source, runtime
+from tests.test_container_api import archive, client, import_source, wait_runtime, runtime
+
+from ml_exp_server.worker_contract import WORKER_CONTRACT
 
 BASE = "registry.example/base@sha256:" + "a" * 64
 
@@ -43,7 +45,7 @@ def stored(client, tmp_path, monkeypatch):
     return config, objects
 
 
-def custom_runtime(client, monkeypatch, *, text=None, tamper=None):
+def custom_runtime(client, monkeypatch, *, text=None, tamper=None, legacy=False):
     source = import_source(client, archive({"train.py": b"print('training')", "Dockerfile": (text or f"FROM {BASE}\nRUN echo configured\n").encode()}))
     def build(socket, payload):
         tree = Path(client.app.state.runtime.config.project_registry_root_path()) / "source-revisions/sources/demo" / source["source_id"] / "tree"
@@ -53,7 +55,7 @@ def custom_runtime(client, monkeypatch, *, text=None, tamper=None):
                   "bundle_id": bundle_id("demo", source["source_id"], BASE, dockerfile_path="Dockerfile"),
                   "dockerfile": {k: v for k, v in inspection.items() if k != "text"},
                   "dockerfile_sha256": hashlib.sha256(managed_dockerfile(inspection, source["source_id"]).encode()).hexdigest(),
-                  "worker_sha256": worker_digest(), "capabilities": ["data-assets.v1", "checkpoint-upload.v1"]}
+                  "worker_contract": WORKER_CONTRACT, "worker_sha256": worker_digest(), "capabilities": ["data-assets.v1", "checkpoint-upload.v1"]}
         if tamper:
             result[tamper] = "different"
         return result
@@ -61,9 +63,16 @@ def custom_runtime(client, monkeypatch, *, text=None, tamper=None):
     response = client.post("/api/projects/demo/runtimes/prepare", json={"source_id": source["source_id"], "dockerfile": "Dockerfile", "entrypoint": ["python3", "train.py"]})
     assert response.status_code == 200, response.text
     value = response.json()
+    if legacy:
+        from ml_exp_server.container_execution import ContainerExecutionService
+        service = ContainerExecutionService(client.app.state.runtime)
+        with service.state("demo", value["runtime_id"]) as (store, snapshot):
+            old = dict(snapshot.value)
+            old.pop("worker_contract")
+            store.commit(old, expected_revision=snapshot.revision, event={"event": "legacy_fixture"})
     endpoint = "/api/projects/demo/runtimes/" + value["runtime_id"]
     assert client.post(endpoint + "/execute", json={"confirmation": value["confirmation"]}).status_code == 202
-    return client.get(endpoint).json()
+    return wait_runtime(client, endpoint)
 
 
 def controller(client, bundle, **extra):
@@ -121,9 +130,10 @@ def test_client_can_upload_mount_publish_and_reuse_checkpoint(client, stored, mo
     assert ctl.store.load_manifest()["assets"][-1]["identity"] == asset["asset_id"]
 
 
-@pytest.mark.parametrize("tamper", ["dockerfile", "dockerfile_sha256", "worker_sha256", "bundle_id"])
-def test_tampered_build_receipt_cannot_become_ready(client, monkeypatch, tamper):
-    assert custom_runtime(client, monkeypatch, tamper=tamper)["status"] == "RECONCILE_REQUIRED"
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("tamper", [None, "dockerfile", "dockerfile_sha256", "worker_sha256", "bundle_id", "capabilities"])
+def test_tampered_build_receipt_cannot_become_ready(client, monkeypatch, tamper, legacy):
+    assert custom_runtime(client, monkeypatch, tamper=tamper, legacy=legacy)["status"] == ("RECONCILE_REQUIRED" if tamper else "READY")
 
 
 @pytest.mark.parametrize("changes", [{"image": BASE}, {"environment_id": "torch"}, {"requirements": "requirements.txt"}, {"dockerfile": "../Dockerfile"}])
@@ -157,6 +167,13 @@ def test_asset_upload_limits_hash_and_symlinks(client, stored):
 
 def test_inputs_require_a_ready_managed_worker_and_known_assets(client, stored):
     legacy = runtime(client)
+    from ml_exp_server.container_execution import ContainerExecutionService
+    service = ContainerExecutionService(client.app.state.runtime)
+    with service.state("demo", legacy["runtime_id"]) as (store, snapshot):
+        old = dict(snapshot.value)
+        old.pop("capabilities")
+        old.pop("worker_contract")
+        store.commit(old, expected_revision=snapshot.revision, event={"event": "legacy_fixture"})
     definition = {"run_id": "no-worker", "runtime_id": legacy["runtime_id"], "executor": "cloud", "inputs": [{"asset_id": "asset." + "a" * 64, "mount_path": "/inputs/data"}]}
     assert client.post("/api/projects/demo/runs", json=definition).status_code == 409
     definition["inputs"][0]["mount_path"] = "/etc"

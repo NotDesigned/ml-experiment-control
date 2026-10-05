@@ -24,6 +24,7 @@ from .source_revisions import _tree_digest
 from .storage import atomic_json
 from .environment_build import DEPENDENCY_RECIPE, dockerfile, inspect_requirements, installer_digest, requirements_path
 from .dockerfile_build import DOCKERFILE_RECIPE, INTERNAL, inspect_dockerfile, managed_dockerfile, worker_digest
+from .worker_contract import CAPABILITIES, WORKER_CONTRACT, install_workers, recipe_digest
 
 
 IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
@@ -35,8 +36,7 @@ BUILD_LOG = ContextVar("ml_exp_build_log", default=None)
 
 
 def bundle_id(project: str, source_id: str, base_image: str, requirements: str | None = None, *, dockerfile_path: str | None = None) -> str:
-    worker_sha = hashlib.sha256(Path(__file__).with_name("container_worker.py").read_bytes()).hexdigest()
-    fields = [project, source_id, base_image, RECIPE, worker_sha]
+    fields = [project, source_id, base_image, RECIPE, WORKER_CONTRACT, worker_digest(), recipe_digest()]
     if requirements is not None:
         fields.extend([DEPENDENCY_RECIPE, requirements_path(requirements), installer_digest()])
     if dockerfile_path is not None:
@@ -89,6 +89,18 @@ class ImageBuilder:
         identity = bundle_id(project, source_id, image, requirements, dockerfile_path=custom_path)
         metadata_path = self.root / f"{identity}.json"
         if request.get("operation") == "logs":
+            pinned = request.get("bundle_id", identity)
+            if not isinstance(pinned, str) or not ID.fullmatch(pinned):
+                raise ValueError("invalid frozen build identity")
+            if pinned != identity:
+                receipt = self.root / f"{pinned}.json"
+                if not receipt.is_file():
+                    raise ValueError("historical packaging receipt is unavailable")
+                value = json.loads(receipt.read_text())
+                if any(value.get(key) != expected for key, expected in (
+                        ("bundle_id", pinned), ("project", project), ("source_id", source_id), ("base_image", image))):
+                    raise ValueError("historical packaging receipt identity mismatch")
+            identity = pinned
             path = self.root / f"{identity}.log"
             content = ""
             if path.exists():
@@ -145,8 +157,7 @@ class ImageBuilder:
                     path.chmod(0o555 if path.is_dir() or path.stat().st_mode & 0o111 else 0o444)
                 copied.chmod(0o555)
                 if inspection is None:
-                    shutil.copyfile(Path(__file__).with_name("container_worker.py"), context / "worker.py")
-                    (context / "worker.py").chmod(0o444)
+                    install_workers(context)
                 else:
                     shutil.copytree(tree, context, dirs_exist_ok=True, symlinks=False)
                     # copytree preserves sealed source permissions. Only these
@@ -165,8 +176,7 @@ class ImageBuilder:
                     if specific_ignore.exists():
                         with specific_ignore.open("a") as output:
                             output.write(f"\n!{INTERNAL}/\n!{INTERNAL}/**\n")
-                    shutil.copyfile(Path(__file__).with_name("managed_worker.py"), context / INTERNAL / "worker.py")
-                    shutil.copyfile(Path(__file__).with_name("container_worker.py"), context / INTERNAL / "legacy_worker.py")
+                    install_workers(context / INTERNAL)
                 if dependencies is not None:
                     shutil.copyfile(tree / requirements, context / "requirements.txt")
                     shutil.copyfile(Path(__file__).with_name("dependency_install.py"), context / "dependency_install.py")
@@ -183,14 +193,13 @@ class ImageBuilder:
                     BUILD_LOG.reset(log_context)
             result = {"bundle_id": identity, "project": project, "source_id": source_id,
                       "base_image": image, "image": published, "recipe": recipe_version,
-                      "manifest_type": MANIFEST_TYPE}
+                      "manifest_type": MANIFEST_TYPE, "worker_contract": WORKER_CONTRACT,
+                      "worker_sha256": worker_digest(), "capabilities": list(CAPABILITIES),
+                      "dockerfile_sha256": hashlib.sha256(recipe.encode()).hexdigest()}
             if dependencies is not None:
-                result.update(dependencies=dependencies, dockerfile_sha256=hashlib.sha256(recipe.encode()).hexdigest(),
-                              installer_sha256=installer_digest())
+                result.update(dependencies=dependencies, installer_sha256=installer_digest())
             if inspection is not None:
-                result.update(dockerfile={k: v for k, v in inspection.items() if k != "text"},
-                              dockerfile_sha256=hashlib.sha256(recipe.encode()).hexdigest(),
-                              worker_sha256=worker_digest(), capabilities=["data-assets.v1", "checkpoint-upload.v1"])
+                result["dockerfile"] = {k: v for k, v in inspection.items() if k != "text"}
             atomic_json(metadata_path, result)
             return result
 

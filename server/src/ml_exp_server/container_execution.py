@@ -22,6 +22,8 @@ from .data_assets import AssetStore
 from .source_imports import IDENTITY, source_lock
 from .source_revisions import resolve_source_tree
 from .storage import DurableJsonState, atomic_text, utc_now
+from .runtime_jobs import PendingRuntimeBuild
+from .worker_contract import CAPABILITIES, WORKER_CONTRACT
 
 
 SECRET_KEY = re.compile(r"(?i)(?:^|_)(?:token|secret|password|credential|api_key|proxy|authorization)(?:$|_)")
@@ -236,7 +238,8 @@ class ContainerExecutionService:
                 return snapshot.value
             value = {"project": project, "runtime_id": runtime_id, "spec": frozen,
                      "status": "PREPARED", "confirmation": "BUILD " + runtime_id,
-                     "created_at": utc_now(), "image": None, "build_bundle_id": build_id}
+                     "created_at": utc_now(), "image": None, "build_bundle_id": build_id,
+                     "worker_contract": WORKER_CONTRACT}
             value.update(dockerfile=dockerfile(spec.image, spec.source_id, spec.requirements))
             if inspection is not None:
                 value.update(dockerfile=managed_dockerfile(inspection, spec.source_id),
@@ -264,25 +267,33 @@ class ContainerExecutionService:
                 raise ApplicationError("packaging implementation changed; prepare a new Runtime", code="CONTAINER_EXECUTION_BLOCKED")
 
     def execute(self, project: str, runtime_id: str, confirmation: str, *, reconcile: bool = False) -> dict:
+        pending = self.begin_execute(project, runtime_id, confirmation, reconcile=reconcile)
+        return self.finish_execute(pending) if pending is not None else self.read(project, runtime_id)
+
+    def begin_execute(self, project: str, runtime_id: str, confirmation: str, *, reconcile: bool = False) -> PendingRuntimeBuild | None:
         self.require_enabled()
         with self.state(project, runtime_id) as (store, snapshot):
             value = dict(snapshot.value)
             if not value or confirmation != value["confirmation"]:
                 raise ApplicationError("runtime confirmation mismatch", code="CONTAINER_EXECUTION_BLOCKED")
             if value["status"] == "READY":
-                return value
+                return None
             if value["status"] == "EXECUTING" and not reconcile:
                 raise ApplicationError("runtime packaging is already executing; inspect or reconcile", code="CONTAINER_EXECUTION_BLOCKED")
             self.require_current_build(project, value)
             value.update(status="EXECUTING", error=None)
             executing = store.commit(value, expected_revision=snapshot.revision, event={"event": "runtime_execution_started", "timestamp": utc_now()})
-        spec = RuntimeSpec.model_validate(value["spec"])
+        return PendingRuntimeBuild(project, runtime_id, value, executing.revision, reconcile)
+
+    def finish_execute(self, pending: PendingRuntimeBuild) -> dict:
+        project, runtime_id, value = pending.project, pending.runtime_id, dict(pending.value)
         socket = self.runtime.config.container_execution.builder_socket
         try:
+            spec = RuntimeSpec.model_validate(value["spec"])
             if not socket:
                 raise ValueError("image packaging worker is not configured")
             resolve_source_tree(self.runtime.config, project, spec.source_id)
-            payload = {"operation": "get" if reconcile else "build", "project": project,
+            payload = {"operation": "get" if pending.reconcile else "build", "project": project,
                                               "source_id": spec.source_id, "base_image": value.get("base_image", spec.image),
                                               "packaging_revision": spec.packaging_revision}
             if spec.requirements is not None:
@@ -295,27 +306,38 @@ class ContainerExecutionService:
                 raise ValueError("image packaging result identity mismatch")
             if "build_bundle_id" in value and result.get("bundle_id") != value["build_bundle_id"]:
                 raise ValueError("image packaging result does not match the prepared build identity")
+            if "worker_contract" in value and (result.get("worker_contract") != WORKER_CONTRACT
+                    or result.get("worker_sha256") != worker_digest()
+                    or result.get("capabilities") != CAPABILITIES
+                    or result.get("dockerfile_sha256") != hashlib.sha256(value["dockerfile"].encode()).hexdigest()):
+                raise ValueError("managed worker receipt does not match the prepared contract")
+            if "worker_contract" not in value and (spec.requirements is not None or spec.dockerfile is not None) and (
+                    result.get("dockerfile_sha256") != hashlib.sha256(value["dockerfile"].encode()).hexdigest()):
+                raise ValueError("legacy build receipt does not match the prepared recipe")
             if spec.requirements is not None and (result.get("dependencies") != value["dependencies"]
-                    or result.get("dockerfile_sha256") != hashlib.sha256(value["dockerfile"].encode()).hexdigest()
-                    or result.get("installer_sha256") != installer_digest()
-                    or result.get("bundle_id") != bundle_id(project, spec.source_id, spec.image, spec.requirements)):
+                    or result.get("installer_sha256") != installer_digest()):
                 raise ValueError("dependency build receipt does not match the prepared recipe")
             if spec.dockerfile is not None and (result.get("dockerfile") != value["client_dockerfile"]
-                    or result.get("dockerfile_sha256") != hashlib.sha256(value["dockerfile"].encode()).hexdigest()
-                    or result.get("worker_sha256") != worker_digest()
-                    or result.get("capabilities") != ["data-assets.v1", "checkpoint-upload.v1"]
-                    or result.get("bundle_id") != bundle_id(project, spec.source_id, value["base_image"], dockerfile_path=spec.dockerfile)):
+                    or "worker_contract" not in value and (result.get("worker_sha256") != worker_digest()
+                    or result.get("capabilities") != CAPABILITIES)):
                 raise ValueError("Dockerfile build receipt does not match the frozen definition")
             value.update(status="READY", image=result["image"], bundle_id=result["bundle_id"], completed_at=utc_now())
-            if spec.dockerfile is not None:
+            if spec.dockerfile is not None or "worker_contract" in value:
                 value["capabilities"] = result["capabilities"]
         except Exception:
             value.update(status="RECONCILE_REQUIRED", error="image packaging failed or is uncertain; inspect worker and reconcile")
-        with self.state(project, runtime_id) as (store, snapshot):
-            if snapshot.revision != executing.revision:
+        return self.finish_state(pending, value)
+
+    def finish_state(self, pending: PendingRuntimeBuild, value: dict) -> dict:
+        with self.state(pending.project, pending.runtime_id) as (store, snapshot):
+            if snapshot.revision != pending.revision:
                 return snapshot.value
-            store.commit(value, expected_revision=executing.revision, event={"event": "runtime_execution_finished", "timestamp": utc_now()})
+            store.commit(value, expected_revision=pending.revision, event={"event": "runtime_execution_finished", "timestamp": utc_now()})
         return value
+
+    def submission_failed(self, pending: PendingRuntimeBuild) -> None:
+        self.finish_state(pending, {**pending.value, "status": "RECONCILE_REQUIRED",
+                                   "error": "packaging could not be queued; inspect or reconcile"})
 
     def create_run(self, project: str, request: RunRequest) -> dict:
         self.require_enabled()
@@ -326,7 +348,7 @@ class ContainerExecutionService:
         if request.inputs or request.checkpoint_upload:
             config = self.runtime.config.container_execution.artifact_store_file
             if not config or "data-assets.v1" not in bundle.get("capabilities", []):
-                raise ApplicationError("data/checkpoint delivery requires object storage and a Dockerfile runtime with the managed worker", code="CONTAINER_EXECUTION_BLOCKED")
+                raise ApplicationError("data/checkpoint delivery requires object storage and a runtime with the managed worker", code="CONTAINER_EXECUTION_BLOCKED")
             assets = AssetStore(Path(config), self.runtime.config.project_registry_root_path())
             for binding in request.inputs:
                 asset = assets.read(project, binding.asset_id)
@@ -379,6 +401,8 @@ class ContainerExecutionService:
                "arguments": request.arguments, "env": request.env, "outputs": request.outputs,
                "checkpoint": request.checkpoint, "max_infra_retries": request.max_infra_retries,
                "artifact_ssh": profile.get("artifact_ssh")}
+        if "worker_contract" in bundle:
+            run["container"]["worker_contract"] = bundle["worker_contract"]
         if inputs:
             run["inputs"] = inputs
         if request.checkpoint_upload is not None:

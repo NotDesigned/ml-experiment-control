@@ -10,16 +10,11 @@ import shlex
 from dockerfile_parse import DockerfileParser
 
 from .environment_build import requirements_path
+from .worker_contract import worker_digest, worker_dockerfile
 
 DOCKERFILE_RECIPE = "source-dockerfile-assets-v1"
 PINNED_IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
 INTERNAL = "ml-expd-build-internal"
-
-
-def worker_digest() -> str:
-    root = Path(__file__).parent
-    return hashlib.sha256(b"".join((root / name).read_bytes() for name in
-                                  ("managed_worker.py", "container_worker.py"))).hexdigest()
 
 
 def inspect_dockerfile(tree: Path, name: str) -> dict:
@@ -67,11 +62,7 @@ def inspect_dockerfile(tree: Path, name: str) -> dict:
 
 def managed_dockerfile(inspection: dict, source_id: str) -> str:
     return (inspection["text"].rstrip() + "\n\n# ML-Expd managed execution contract\n"
-            f"COPY {INTERNAL}/worker.py /usr/local/lib/ml-expd/worker.py\n"
-            f"COPY {INTERNAL}/legacy_worker.py /usr/local/lib/ml-expd/legacy_worker.py\n"
             f"COPY {INTERNAL}/source/ /workspace/\n"
             'RUN ["python3", "-c", "import sys; assert sys.version_info >= (3, 10)"]\n'
             "WORKDIR /workspace\n"
-            "ENV ML_EXPD_MULTIPART_UPLOAD=1\n"
-            f"LABEL org.ml-expd.source={source_id}\n"
-            "ENTRYPOINT []\nCMD [\"/bin/true\"]\n")
+            + worker_dockerfile(source_id, INTERNAL + "/"))

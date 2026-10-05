@@ -26,6 +26,7 @@ from experiment_control.runner import SubprocessRunner
 from .schemas import ServerConfig
 from .source_revisions import resolve_source_tree, _tree_digest
 from .storage import read_json
+from .worker_contract import managed_io
 
 
 def parse_metric(_campaign, line: str) -> dict | None:
@@ -53,6 +54,7 @@ class Controller:
         if (runtime_record.get("status") != "READY" or runtime_record.get("project") != campaign["project"]
                 or runtime_record.get("image") != runtime["image"]
                 or any(spec.get(key) != runtime.get(key) for key in ("source_id", "entrypoint", "workdir", "packaging_revision", "dockerfile", "requirements"))
+                or runtime_record.get("worker_contract") != runtime.get("worker_contract")
                 or self.run["source_id"] != runtime["source_id"]
                 or self.run["image_id"] != runtime["image"].split("@", 1)[1]):
             raise ValueError("controller runtime does not match its immutable definition")
@@ -93,7 +95,7 @@ class Controller:
                        "OUTPUT_DIR": output, "PROJECT_NAME": self.campaign["project"],
                        "RUN_ID": self.run["run_id"], "ATTEMPT_ID": attempt_id,
                        "SOURCE_ID": self.run["source_id"]}
-        if runtime.get("dockerfile"):
+        if managed_io(runtime):
             environment["INPUTS_DIR"] = "/inputs"
         duration = self.run["resources"]["max_time"].split(":")
         seconds = sum(int(value) * multiplier for value, multiplier in zip(duration, (3600, 60, 1)))
@@ -153,7 +155,7 @@ class Controller:
             backend=self.run["backend"], resources=self.run["resources"], storage=self.run["storage"],
             command=self.command("{attempt_id}"),
             execution={"source_mount": "/workspace", "workdir": self.run["container"]["workdir"],
-                       **({"managed_io": True} if self.run["container"].get("dockerfile") and self.run["backend"]["kind"] == "slurm" else {})},
+                       **({"managed_io": True} if managed_io(self.run["container"]) and self.run["backend"]["kind"] == "slurm" else {})},
             assets=[{"kind": "source", "identity": self.run["source_id"]},
                     {"kind": "runtime_image", "identity": self.run["container"]["image"]},
                     *[{"kind": "data_asset", "identity": item["asset_id"], "mount_path": item["mount_path"]}

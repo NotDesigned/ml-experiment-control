@@ -22,6 +22,8 @@ from ml_exp_server.artifact_store import ArtifactStore
 from ml_exp_server.container_controller import Controller
 from ml_exp_server.container_worker import archive_outputs
 from ml_exp_server.image_builder import bundle_id
+from ml_exp_server.environment_build import dockerfile
+from ml_exp_server.worker_contract import WORKER_CONTRACT, CAPABILITIES, worker_digest
 from ml_exp_server.schemas import AttemptSummary, RunIndexRow, ServerConfig
 from tests.test_submissions import _app
 
@@ -94,7 +96,9 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
         calls.append(request)
         return {"project": request["project"], "source_id": request["source_id"],
                 "base_image": request["base_image"], "image": "registry.example/team/run@sha256:" + "b" * 64,
-                "bundle_id": bundle_id(request["project"], request["source_id"], request["base_image"])}
+                "bundle_id": bundle_id(request["project"], request["source_id"], request["base_image"]),
+                "worker_contract": WORKER_CONTRACT, "worker_sha256": worker_digest(), "capabilities": list(CAPABILITIES),
+                "dockerfile_sha256": hashlib.sha256(dockerfile(request["base_image"], request["source_id"]).encode()).hexdigest()}
     monkeypatch.setattr("ml_exp_server.container_execution.builder_request", build)
     objects = {}
     class Body(io.BytesIO):

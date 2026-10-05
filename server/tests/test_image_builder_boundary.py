@@ -96,6 +96,35 @@ def test_buildkit_source_packaging_and_receipt_binding(builder):
         value.request(request)
 
 
+def test_frozen_log_lookup_survives_worker_recipe_upgrade(builder, monkeypatch):
+    value, request, _ = builder
+    old = value.request(request)
+    (value.root / (old["bundle_id"] + ".log")).write_text("original build output\n")
+    monkeypatch.setattr(module, "bundle_id", lambda *args, **kwargs: "e" * 64)
+    assert value.request({**request, "operation": "logs"})["lines"] == []
+    logs = value.request({**request, "operation": "logs", "bundle_id": old["bundle_id"]})
+    assert logs["bundle_id"] == old["bundle_id"] and logs["lines"] == ["original build output"]
+    assert not logs["truncated"]
+
+
+@pytest.mark.parametrize("pinned", [None, "../private", "a" * 64])
+def test_frozen_log_lookup_rejects_invalid_or_unpublished_identity(builder, pinned):
+    value, request, _ = builder
+    with pytest.raises(ValueError):
+        value.request({**request, "operation": "logs", "bundle_id": pinned})
+
+
+@pytest.mark.parametrize("field", ["bundle_id", "project", "source_id", "base_image"])
+def test_frozen_log_lookup_checks_published_receipt_identity(builder, monkeypatch, field):
+    value, request, _ = builder
+    old = value.request(request)
+    receipt = value.root / (old["bundle_id"] + ".json")
+    receipt.write_text(json.dumps({**old, field: "wrong"}))
+    monkeypatch.setattr(module, "bundle_id", lambda *args, **kwargs: "e" * 64)
+    with pytest.raises(ValueError, match="identity mismatch"):
+        value.request({**request, "operation": "logs", "bundle_id": old["bundle_id"]})
+
+
 @pytest.mark.parametrize("failure", ["missing-command", "nonzero", "timeout"])
 def test_builder_command_failures_never_echo_command_or_credentials(builder, monkeypatch, failure):
     value, _, _ = builder

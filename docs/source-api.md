@@ -48,9 +48,15 @@ Every normal API call sends `Authorization: Bearer …` and
    replacing an existing frozen image.
 4. Execute packaging with `POST /api/projects/my-study/runtimes/{runtime_id}/execute`
    and the exact `confirmation` returned by prepare. Poll the runtime until
-   `READY`. Packaging does not allocate a GPU. `RECONCILE_REQUIRED` requires
-   `/reconcile`, which reads the packaging receipt; it cannot submit a job.
+   `READY`. The API durably claims the build before returning HTTP 202;
+   the daemon owns its background execution independently of the request.
+   Packaging does not allocate a GPU. After a daemon restart, interrupted builds
+   become `RECONCILE_REQUIRED`. `/reconcile` only reads the packaging receipt;
+   it cannot start a build or submit a job. If no receipt exists, the Runtime
+   stays uncertain; inspect build logs before explicitly retrying `/execute`.
    Run only after `READY`; retain the returned final immutable OCI digest.
+   Build logs use the Runtime's frozen bundle ID, so published historical logs
+   remain readable after launcher or recipe upgrades.
 5. `POST /api/projects/my-study/runs` with
    `{"run_id":"trial-001","runtime_id":"runtime.…","executor":"wyd-l40s","arguments":["--epochs","1"],"resources":{"gpus":1,"cpus":8,"memory_gb":32,"max_time":"00:10:00"},"outputs":["**/*"]}`.
    `run_id` cannot be rebound to another definition. Source, derived image,
@@ -139,9 +145,12 @@ configure a smaller byte limit. Newly built images support [resumable 16 MiB
 uploads](multipart-uploads.md); existing frozen images retain their original
 whole-archive launcher and use the configured total limit. GNU timeout bounds the worker
 including upload; a hard kill or lost network can prevent the final upload.
-The SenseCore [Dockerfile/data workflow](sensecore-user-workflow.md) adds optional
-live checkpoint publication using an atomic ready manifest. Legacy recipes
-still upload outputs at process exit. A failed upload
+All newly built source, dependency and Dockerfile images use `managed-worker.v1`
+and support input assets and optional live checkpoint publication using an
+atomic ready manifest. See the [data workflow](sensecore-user-workflow.md).
+The exact launcher and recipe fingerprints participate in the Runtime identity
+and the verified builder receipt. Existing READY images and frozen Runs retain
+their original capabilities; rebuilding creates a new Runtime. A failed upload
 is visible as `ML_EXPD_ARTIFACT_UPLOAD=FAILED` and fails an otherwise successful
 worker. Scientific program failure is preserved even when its artifacts upload.
 

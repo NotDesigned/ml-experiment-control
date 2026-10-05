@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import tarfile
+import time
 
 from fastapi.testclient import TestClient
 import pytest
@@ -13,6 +14,8 @@ import yaml
 from ml_exp_server.api.app import create_app
 from ml_exp_server.container_controller import Controller
 from ml_exp_server.image_builder import bundle_id
+from ml_exp_server.environment_build import dockerfile
+from ml_exp_server.worker_contract import CAPABILITIES, WORKER_CONTRACT, worker_digest
 from ml_exp_server.schemas import ServerConfig, RunIndexRow, AttemptSummary
 
 
@@ -44,7 +47,9 @@ def client(tmp_path, monkeypatch):
     def build(_socket, request):
         return {"project": request["project"], "source_id": request["source_id"],
                 "base_image": request["base_image"], "image": "registry.example/lab/project@sha256:" + "b" * 64,
-                "bundle_id": bundle_id(request["project"], request["source_id"], request["base_image"])}
+                "bundle_id": bundle_id(request["project"], request["source_id"], request["base_image"]),
+                "worker_contract": WORKER_CONTRACT, "worker_sha256": worker_digest(), "capabilities": list(CAPABILITIES),
+                "dockerfile_sha256": hashlib.sha256(dockerfile(request["base_image"], request["source_id"]).encode()).hexdigest()}
     monkeypatch.setattr("ml_exp_server.container_execution.builder_request", build)
     with TestClient(create_app(config, poll=False)) as value:
         yield value
@@ -57,6 +62,16 @@ def import_source(client, data=None, project="demo"):
     return response.json()
 
 
+def wait_runtime(client, endpoint):
+    deadline = time.monotonic() + 5
+    while True:
+        value = client.get(endpoint).json()
+        if value["status"] != "EXECUTING":
+            return value
+        assert time.monotonic() < deadline, value
+        time.sleep(0.01)
+
+
 def runtime(client, source=None):
     source = import_source(client) if source is None else source
     prepared = client.post("/api/projects/demo/runtimes/prepare", json={
@@ -66,7 +81,7 @@ def runtime(client, source=None):
     value = prepared.json()
     endpoint = "/api/projects/demo/runtimes/" + value["runtime_id"]
     assert client.post(endpoint + "/execute", json={"confirmation": value["confirmation"]}).status_code == 202
-    completed = client.get(endpoint).json()
+    completed = wait_runtime(client, endpoint)
     assert completed["status"] == "READY"
     return completed
 
@@ -112,6 +127,7 @@ def test_fixed_recipe_build_receipt_and_legacy_runtime_compatibility(client, mon
         with service.state("demo", value["runtime_id"]) as (store, snapshot):
             old = dict(snapshot.value)
             old.pop("build_bundle_id")
+            old.pop("worker_contract")
             store.commit(old, expected_revision=snapshot.revision, event={"event": "legacy_fixture"})
     else:
         monkeypatch.setattr("ml_exp_server.container_execution.builder_request", lambda *args: {

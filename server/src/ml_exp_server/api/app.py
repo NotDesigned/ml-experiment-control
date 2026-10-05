@@ -30,6 +30,8 @@ from ..schemas import ServerConfig, ResearchProject
 from ..submissions import ExperimentSubmissionService
 from ..artifact_store import TRANSFER_PATH
 from ..data_assets import WORKER_PATH
+from ..container_execution import ContainerExecutionService
+from ..runtime_jobs import recover_interrupted_builds
 from .routes import router
 from .action_routes import router as action_router
 from .operation_routes import router as operation_router
@@ -65,7 +67,7 @@ async def _shutdown(app: FastAPI) -> None:
     thread = getattr(app.state, "_poll_thread", None)
     action_executor = getattr(app.state, "action_executor", None)
     if action_executor is not None:
-        # Stop accepting new work. Already claimed actions retain ownership of
+        # Stop accepting new work. Claimed actions and image builds retain ownership of
         # the runtime until their durable terminal state has been recorded.
         action_executor.shutdown(wait=False)
     with getattr(app.state, "_action_futures_lock", threading.Lock()):
@@ -90,7 +92,7 @@ async def _shutdown(app: FastAPI) -> None:
             if lease is not None:
                 lease.release()
     else:
-        # Retain the lease until a long in-flight controller observation really
+        # Retain the lease until in-flight controller observations and builds really
         # exits; otherwise another daemon could become owner while the prior
         # collector and its subprocesses are still alive.
 
@@ -166,10 +168,8 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                 initializer(runtime)
             app.state.application = ExperimentServerApplication(runtime)
 
-            def submit_action(pending) -> None:
-                future = app.state.action_executor.submit(
-                    app.state.application.finish_action_execution, pending,
-                )
+            def submit_job(call, pending):
+                future = app.state.action_executor.submit(call, pending)
                 with app.state._action_futures_lock:
                     app.state._action_futures.add(future)
 
@@ -178,8 +178,11 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                         app.state._action_futures.discard(item)
 
                 future.add_done_callback(completed)
+                return future
 
-            app.state.submit_action = submit_action
+            app.state.submit_job = submit_job
+            app.state.submit_action = lambda pending: submit_job(app.state.application.finish_action_execution, pending)
+            app.state.recovered_runtime_builds = recover_interrupted_builds(ContainerExecutionService(runtime))
             runtime.action_service.recover_interrupted_executions()
             # Complete any previously authorized project-file transaction
             # before indexing those files into the server read model.
@@ -244,6 +247,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.state.submission_service = None
     app.state.action_executor = None
     app.state.submit_action = None
+    app.state.submit_job = None
     app.state.index = None
     app.state.projects = []
     app.state.action_store = None
