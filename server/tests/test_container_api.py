@@ -160,6 +160,27 @@ def test_slurm_submission_uploads_canonical_run_manifest_from_attempt_scope(clie
     assert [command[-2] for command in calls if command[0]=='rsync'][0] == str(controller.store.manifest_path)
 
 
+@pytest.mark.parametrize('failure', [None,'manifest-conflict','missing-prior-job','new-job-exists'])
+def test_retry_identity_allows_only_matching_manifest_and_terminal_prior_attempt(client, failure):
+    from types import SimpleNamespace
+    from experiment_control.identity import IdentityReport
+    bundle = runtime(client)
+    client.post('/api/projects/demo/runs',json={'run_id':'gpu','runtime_id':bundle['runtime_id'],'executor':'gpu'})
+    root = Path(client.app.state.runtime.project('demo').base_dir)
+    campaign = yaml.safe_load((root/'experiments/campaigns/run-gpu.yaml').read_text())
+    campaign['local_root'] = str(client.app.state.runtime.config.project_run_root_path('demo'))
+    prior = Controller(campaign,'gpu','attempt-001')
+    prior.prepare()
+    prior.store.begin_submission(project='demo',run_id='gpu',attempt_id='attempt-001',backend='slurm',request={'scheduler_name':'gpu--attempt-001'})
+    if failure != 'missing-prior-job':prior.store.reconcile_submission(project='demo',run_id='gpu',attempt_id='attempt-001',backend_job_id='1234',state='FAILED')
+    controller = Controller(campaign,'gpu','attempt-002')
+    report = IdentityReport(available=False,ambiguous=False,remote_manifest_exists=True,remote_manifest_matches=failure!='manifest-conflict',scheduler_job_ids=('5555',) if failure=='new-job-exists' else ())
+    controller.backend = SimpleNamespace(identity=lambda *args:report)
+    if failure:
+        with pytest.raises(ValueError):controller.check_identity()
+    else:controller.check_identity()
+
+
 @pytest.mark.parametrize("name", ["../escape", "/absolute", ".env", ".ssh/id_rsa", "nested/../escape"])
 def test_archive_paths_fail_before_registration(client, name):
     data = archive({name: b"value"})

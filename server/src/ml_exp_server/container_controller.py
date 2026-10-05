@@ -10,6 +10,7 @@ import argparse
 import json
 import math
 from pathlib import Path
+import re
 import shlex
 import sys
 
@@ -196,6 +197,27 @@ class Controller:
         self.store.write_status_payload(self.attempt_id, result)
         return result
 
+    def check_identity(self):
+        record = self.store.read_submission(self.attempt_id)
+        identity = self.backend.identity(self.campaign, self.run, self.attempt_id)
+        if record or identity.ambiguous or identity.scheduler_job_ids:
+            raise ValueError("Run/Attempt identity has already been consumed")
+        if identity.available:
+            return
+        # A new Attempt legitimately shares its frozen Run manifest. Require
+        # an exact remote digest and prior terminal scheduler evidence.
+        attempts = self.root / "attempts"
+        prior_terminal = False
+        for path in attempts.iterdir() if attempts.is_dir() else ():
+            if path.name == self.attempt_id or not re.fullmatch(r"attempt-[0-9]{3,}", path.name):
+                continue
+            previous = self.store.load_backend(path.name) or {}
+            state = self.store.load_status_payload(path.name) or {}
+            if previous.get("backend_job_id") and state.get("state") in {"FAILED", "PREEMPTED", "CANCELLED"}:
+                prior_terminal = True
+        if not (prior_terminal and identity.remote_manifest_exists and identity.remote_manifest_matches is True):
+            raise ValueError("remote Run identity is unavailable or conflicts with the frozen retry")
+
     def summarize(self, _campaign, root: Path) -> dict:
         records = []
         for path in sorted(root.rglob("metrics.jsonl")):
@@ -281,10 +303,7 @@ def cli(argv=None):
             controller.source(args.source_root)
             result = {"missing": [], "verification": "immutable-source-and-runtime"}
         elif args.verb == "check-identity":
-            record = controller.store.read_submission(args.attempt_id)
-            identity = controller.backend.identity(campaign, controller.run, args.attempt_id)
-            if record or not identity.available or identity.ambiguous:
-                raise ValueError("Run/Attempt identity has already been consumed")
+            controller.check_identity()
             result = {"available": True}
         elif args.verb in {"status", "observe"}:
             result = controller.status()

@@ -96,6 +96,12 @@ available for rollback. A local `RepoDigests` entry alone is insufficient.
 (including a first OCI-to-SIF conversion) its own timeout; production uses
 1200 seconds. Scheduler submission still uses `timeout_seconds` (300 seconds),
 and actual GPU execution retains the frozen Run's `resources.max_time` limit.
+WYD bootstrap creates its cache and sandbox directories before Apptainer runs,
+and Slurm writes stdout/stderr directly into the exact Attempt directory so
+startup errors survive. Managed terminal jobs get a final collection even if
+they completed before the first polling cycle. API retries use a new Attempt
+and accept an existing Run manifest only with an exact digest match, a prior
+failed/cancelled/preempted scheduler Attempt, and no conflicting new job.
 
 ## Artifacts and object storage
 
