@@ -19,134 +19,10 @@ DIMENSIONS = {
 }
 
 
-def test_evaluation_projection_and_history_edge_cases():
-    assert runscan._evaluation_family_dimensions({
-        "variant_dimensions": {**DIMENSIONS, "cfg": True},
-    }) is None
-    assert runscan._evaluation_family_dimensions({
-        "sampling_config": {**DIMENSIONS, "cfg": float("inf")},
-    }) is None
-    assert runscan._evaluation_record({"epoch": 1.0, "step": 2.0}) == {
-        "epoch": 1, "step": 2,
-    }
-
-    history = runscan._evaluation_history([
-        {"epoch": 0, "mode": "ignored"},
-        {"epoch": 0, "step": 1, "mode": "oracle_plan_generation",
-         "sampling_config": DIMENSIONS, "oracle_plan_ppl": 2.0},
-        {"epoch": 0, "step": 1, "mode": "shuffled_plan_generation",
-         "sampling_config": {**DIMENSIONS, "cfg": 2.0},
-         "oracle_plan_ppl": 2.0},
-        {"epoch": 0, "step": 1, "mode": "oracle_plan_generation",
-         "sampling_config": DIMENSIONS, "oracle_plan_ppl": 2.0},
-    ])
-    assert history["history_skipped_records"] == 1
-    assert history["history"][0]["conflicting_metrics"] == [
-        "mode", "sampling_dimensions",
-    ]
-    metric_conflict = runscan._evaluation_history([
-        {"step": 1, "oracle_plan_ppl": 2.0},
-        {"step": 1, "oracle_plan_ppl": 3.0},
-        {"step": 1, "oracle_plan_ppl": 2.0},
-    ])
-    assert metric_conflict["history"][0]["conflicting_metrics"] == [
-        "oracle_plan_ppl",
-    ]
 
 
-def test_evaluation_family_and_canonical_declaration_edges():
-    clean_with_dimensions = [{
-        "step": 1, "mode": "clean_token_reconstruction",
-        "sampling_dimensions": DIMENSIONS,
-    }]
-    assert runscan._evaluation_variant_family(clean_with_dimensions)["status"] == (
-        "CONFLICTING"
-    )
-    conflicting_dimensions = [
-        {"step": 1, "mode": "oracle_plan_generation",
-         "sampling_dimensions": DIMENSIONS},
-        {"step": 2, "mode": "oracle_plan_generation",
-         "sampling_dimensions": {**DIMENSIONS, "cfg": 2.0}},
-    ]
-    assert runscan._evaluation_variant_family(conflicting_dimensions)["status"] == (
-        "CONFLICTING"
-    )
-
-    variant = {
-        "variant": "only", "evaluation_family": {
-            "status": "RESOLVED", "scope": "SAMPLING_FAMILY",
-            "family_id": "family-a", "dimensions": DIMENSIONS,
-        },
-    }
-    assert runscan._canonical_eval_variant_id(
-        [variant], {"evaluation": {"canonical_variant_id": "only"}},
-    ) == "only"
-    assert runscan._canonical_eval_variant_id([variant], None) == "only"
-
-    assert runscan._declared_evaluation_family(
-        [variant], {"canonical_family": "family-a"},
-    ) == ("family-a", None)
-    assert "must be a string" in runscan._declared_evaluation_family(
-        [variant], {"canonical_family_id": 7},
-    )[1]
-    assert "incomplete or invalid" in runscan._declared_evaluation_family(
-        [variant], {"canonical_family_dimensions": {}},
-    )[1]
-    assert "must be a string" in runscan._declared_evaluation_family(
-        [variant], {"canonical_variant_id": 7},
-    )[1]
 
 
-def test_checkpoint_projection_defensive_and_conflict_edges():
-    family = {"scope": "SAMPLING_FAMILY", "family_id": "wrong",
-              "dimensions": DIMENSIONS}
-    records = [
-        "not-a-record",
-        {"epoch": 0, "step": 1, "mode": "generation_refine_decode",
-         "sampling_dimensions": DIMENSIONS, "g_ppl": 1.0,
-         "mean_entropy": 0.5},
-        {"epoch": 0, "step": 1, "mode": "oracle_plan_generation",
-         "sampling_dimensions": DIMENSIONS, "oracle_plan_ppl": 2.0,
-         "conflicting_metrics": ["oracle_plan_ppl", 7]},
-    ]
-    snapshot = runscan._evaluation_checkpoint_snapshot((0, 1), [{
-        "variant": "v", "evaluation_family": family, "history": records,
-    }])
-    assert set(snapshot["conflicting_metrics"]) >= {"g_ppl", "oracle_plan_ppl"}
-
-    legacy = {"variant": "v", "evaluation_family": {}, "history": [
-        {"epoch": 0, "step": 1, "mode": "generation_refine_decode",
-         "g_ppl": 1.0, "mean_entropy": 0.5},
-        {"epoch": 0, "step": 1, "mode": "generation_refine_decode",
-         "g_ppl": 2.0, "mean_entropy": 0.5},
-    ]}
-    snapshot = runscan._evaluation_checkpoint_snapshot((0, 1), [legacy])
-    assert "g_ppl" in snapshot["conflicting_metrics"]
-
-    preconflicted = {"variant": "v", "evaluation_family": {}, "history": [{
-        "epoch": 0, "step": 1, "mode": "generation_refine_decode",
-        "g_ppl": None, "mean_entropy": 0.5,
-        "conflicting_metrics": ["mode", "generation_mean_entropy"],
-    }]}
-    snapshot = runscan._evaluation_checkpoint_snapshot((0, 1), [preconflicted])
-    assert snapshot["metrics"] == {}
-
-    none_value = {"variant": "v", "evaluation_family": {}, "history": [{
-        "epoch": 0, "step": 1, "mode": "generation_refine_decode",
-        "g_ppl": None,
-    }]}
-    assert runscan._evaluation_checkpoint_snapshot(
-        (0, 1), [none_value],
-    )["metrics"] == {}
-
-    late_conflict = {"variant": "v", "evaluation_family": {}, "history": [
-        {"epoch": 0, "step": 1, "mode": "generation_refine_decode",
-         "g_ppl": 1.0},
-        {"epoch": 0, "step": 1, "mode": "generation_refine_decode",
-         "g_ppl": 1.0, "conflicting_metrics": ["g_ppl"]},
-    ]}
-    snapshot = runscan._evaluation_checkpoint_snapshot((0, 1), [late_conflict])
-    assert "g_ppl" in snapshot["conflicting_metrics"]
 
 
 def test_invalid_yaml_loader(tmp_path, monkeypatch):
@@ -301,7 +177,8 @@ def test_scan_run_dir_remaining_evidence_and_projection_edges(tmp_path, monkeypa
     assert row.evidence.worker.state == "ALIVE"
     assert row.evidence.process.state == "RUNNING"
     assert row.evidence.model.state == "TRAINING"
-    assert row.evidence.evaluation.detail == {"val_bpb": 1.2}
+    assert row.evidence.evaluation.detail == {}
+    assert row.latest_metrics["val_bpb"] == 1.2
     assert row.provenance["resolved_config_excerpt"] == {"depth": 12}
     assert row.campaign_binding.relationship.value == "PROJECT_MISMATCH"
     assert any("differs from configured project" in item for item in row.warnings)
@@ -315,13 +192,6 @@ def test_scan_run_dir_remaining_evidence_and_projection_edges(tmp_path, monkeypa
     )
     row = runscan.scan_run_dir(run_dir, "demo", campaign="argument")
     assert any("cross-variant or cross-family" in item for item in row.warnings)
-
-    monkeypatch.setattr(runscan, "evaluation_snapshot", lambda *args, **kwargs: {
-        "required_metrics": [], "family_state": "NOT_OBSERVED",
-        "current": {}, "latest_metric_complete": {"metrics": "bad"},
-    })
-    row = runscan.scan_run_dir(run_dir, "demo", campaign="argument")
-    assert row.eval_metrics == {}
 
 
 def test_scan_without_manifest_warns(tmp_path):

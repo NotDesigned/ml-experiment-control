@@ -124,20 +124,8 @@ def test_manifest_path_and_prepare_dispatch_edges(tmp_path, monkeypatch):
 def test_question_campaign_and_record_prepare_edges(tmp_path):
     from ml_exp_server.actions import service as module
 
-    questions = tmp_path / "questions"
-    project = ResearchProject(
-        project="demo", title="Demo", run_roots=[], base_dir=tmp_path,
-        research_questions_dir="questions",
-    )
+    project = ResearchProject(project="demo", title="Demo", run_roots=[], base_dir=tmp_path)
     service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig())
-    plan = service.prepare(scope(), project, intent(
-        "CREATE_RESEARCH_QUESTION_DRAFT", {"schema_version": 1, "id": "Q1", "title": "Q"},
-    ))
-    assert Path(plan["target_path"]) == questions / "Q1.yml"
-    repeated = service.prepare(scope(), project, intent(
-        "CREATE_RESEARCH_QUESTION_DRAFT", {"schema_version": 1, "id": "Q1", "title": "Q"},
-    ))
-    assert repeated["action_id"] == plan["action_id"]
 
     campaign = {
         "schema_version": 1, "project": "demo", "campaign": "study",
@@ -152,15 +140,6 @@ def test_question_campaign_and_record_prepare_edges(tmp_path):
         service.prepare(scope("campaign", "other"), project, intent(
             "UPDATE_CAMPAIGN_DRAFT", campaign, "wrong-update-scope",
         ))
-
-    absolute_project = ResearchProject(
-        project="demo", title="Demo", run_roots=[], base_dir=tmp_path,
-        research_questions_dir=str(questions),
-    )
-    assert service.prepare(scope(), absolute_project, intent(
-        "CREATE_RESEARCH_QUESTION_DRAFT",
-        {"schema_version": 1, "id": "Q2", "title": "Q"}, "absolute-question",
-    ))["target_path"].endswith("Q2.yml")
 
     bogus = OperationIntent.model_construct(
         kind="BOGUS", title="bogus", draft=yaml.safe_dump({
@@ -315,7 +294,7 @@ def test_gpu_hours_and_authorization_error_edges(tmp_path, monkeypatch):
 def test_execute_begin_and_internal_executor_edges(tmp_path, monkeypatch):
     store = ActionStore(tmp_path / "actions")
     config = ActionRuntimeConfig(allow_project_writes=True)
-    action_id = synthetic_plan(store, "begin-fail", "WRITE_RESEARCH_QUESTION")
+    action_id = synthetic_plan(store, "begin-fail", "WRITE_CAMPAIGN")
     service = ActionService(store, config, actor_provider=lambda: "actor")
     service.authorize(action_id, "note")
     monkeypatch.setattr(store, "begin_execution", lambda *args, **kwargs: (
@@ -327,13 +306,13 @@ def test_execute_begin_and_internal_executor_edges(tmp_path, monkeypatch):
 
 def test_execute_write_unexpected_validation_error(tmp_path, monkeypatch):
     store = ActionStore(tmp_path / "actions")
-    action_id = synthetic_plan(store, "write", "WRITE_RESEARCH_QUESTION",
-                               target_path=str(tmp_path / "bad.yml"))
+    action_id = synthetic_plan(store, "write", "WRITE_CAMPAIGN",
+                               target_path=str(tmp_path / "bad.yml"), project_file=str(tmp_path / "bad.yml"))
     plan = store.snapshot(action_id)
     service = ActionService(store, ActionRuntimeConfig())
     service.project_write_transaction = type("Tx", (), {
         "apply": lambda self, plan: {
-            "files": [{"path": plan["target_path"], "sha256": "sha256:x"}],
+            "files": [],
         },
     })()
     result = service._execute_write(plan, execution_for(plan))
@@ -630,3 +609,26 @@ def test_local_evidence_executor_allowlist_and_snapshot_exception(tmp_path):
     result = service._execute_local_evidence_rebuild(plan, execution)
     assert result["execution"]["status"] == "RECONCILE_REQUIRED"
     assert "execution snapshot failed" in result["execution"]["error"]
+
+
+def test_campaign_prepare_repeated_intent_is_idempotent(tmp_path):
+    project = ResearchProject(project="demo", title="Demo", run_roots=[], base_dir=tmp_path)
+    service = ActionService(ActionStore(tmp_path / "actions"), ActionRuntimeConfig())
+    request = intent("CREATE_CAMPAIGN_DRAFT", {"schema_version": 1, "project": "demo", "campaign": "study", "run_refs": [{"run_id": "r"}]})
+    first = service.prepare(scope(), project, request)
+    assert service.prepare(scope(), project, request)["action_id"] == first["action_id"]
+
+
+def test_generic_project_write_keeps_authorization_confirmation_and_retirement_guards(tmp_path):
+    store = ActionStore(tmp_path / "actions")
+    service = ActionService(store, ActionRuntimeConfig(allow_project_writes=True, allow_scheduler_mutations=True))
+    identity = synthetic_plan(store, "authorization", "WRITE_CAMPAIGN")
+    with pytest.raises(ActionError, match="separate execution authorization"):
+        service.execute(identity, "EXECUTE "+identity)
+    service.authorize(identity, "review")
+    with pytest.raises(ActionError, match="confirmation must equal"):
+        service.execute(identity, "yes")
+    legacy = synthetic_plan(store, "retired-question", "WRITE_RESEARCH_QUESTION")
+    service.authorize(legacy, "readable history")
+    with pytest.raises(ActionError, match="retired"):
+        service.execute(legacy, "EXECUTE "+legacy)

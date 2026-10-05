@@ -36,6 +36,19 @@ def parse_metric(_campaign, line: str) -> dict | None:
         return None
     if not isinstance(data, dict):
         return None
+    if "name" in data:
+        result = {key: data[key] for key in ("name", "value", "unit", "status", "error", "step", "epoch",
+                                            "timestamp", "checkpoint_id", "dataset_id", "protocol_id",
+                                            "numerator", "denominator") if key in data
+                  and (data[key] is None or isinstance(data[key], (str, int, float, bool)))}
+        result.setdefault("name", None)
+        if any(key in data and key not in result for key in ("value", "unit", "status", "step", "epoch", "protocol_id", "checkpoint_id", "dataset_id", "numerator", "denominator")):
+            result.update(status="FAILED", error="INVALID_METRIC_FIELD")
+        for key, value in list(result.items()):
+            if isinstance(value, float) and not math.isfinite(value):
+                result[key] = None
+                result.update(status="FAILED", error="NONFINITE_VALUE")
+        return result
     result = {key: value for key, value in data.items()
               if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)}
     if "global_step" in result and "step" not in result:
@@ -161,6 +174,7 @@ class Controller:
                     *[{"kind": "data_asset", "identity": item["asset_id"], "mount_path": item["mount_path"]}
                       for item in self.run.get("inputs", [])]],
             checkpoint=self.run.get("checkpoint", {}),
+            evaluation=self.run.get("evaluation", {}),
         )
         if self.store.manifest_path.exists():
             frozen = self.store.load_manifest()

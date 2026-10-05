@@ -20,6 +20,7 @@ from ..artifact_store import ArtifactStore
 from ..container_execution import ContainerExecutionService, RunRequest, DockerfileRuntimeSpec
 from ..image_builder import builder_request
 from ..source_imports import SourceImportService
+from ..metric_contract import MetricSchema
 from .errors import application_http_error
 
 
@@ -88,6 +89,16 @@ async def executors(request: Request):
 @router.get("/environments")
 async def environments(request: Request):
     return await invoke(ContainerExecutionService(request.app.state.runtime).environments)
+
+
+@router.get("/projects/{project}/metrics-schema")
+async def project_metrics_schema(project: str, request: Request):
+    return await invoke(ContainerExecutionService(request.app.state.runtime).metrics_schema, project)
+
+
+@router.put("/projects/{project}/metrics-schema")
+async def set_project_metrics_schema(project: str, data: MetricSchema, request: Request):
+    return await invoke(ContainerExecutionService(request.app.state.runtime).set_metrics_schema, project, data)
 
 
 @router.post("/projects/{project}/runtimes/prepare")

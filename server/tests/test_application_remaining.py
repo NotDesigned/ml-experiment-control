@@ -85,11 +85,8 @@ def test_operation_blocker_matrix(monkeypatch, tmp_path):
     )
     value = ExperimentServerApplication(runtime)
     project = SimpleNamespace(
-        project="demo", research_questions_dir=None, authored_file=None,
+        project="demo", authored_file=None,
         base_dir=tmp_path, controller=None,
-    )
-    assert value._operation_blockers(
-        "question.create", scope(OperationScopeType.PROJECT, "demo"), project, object(),
     )
     assert value._operation_blockers(
         "campaign.create", scope(OperationScopeType.PROJECT, "demo"), project, object(),
@@ -320,9 +317,9 @@ def test_require_and_direct_operation_dispatch_edges(monkeypatch):
         ) == expected
 
     value.resolve_scope = lambda *_args: (scope(), SimpleNamespace(), object())
-    value.operation_availability = lambda *_args: availability("question.create")
+    value.operation_availability = lambda *_args: availability("campaign.create")
     assert error_code(lambda: value.invoke_direct_operation(
-        "question.create", "demo", OperationScopeType.RUN, "run-a",
+        "campaign.create", "demo", OperationScopeType.RUN, "run-a",
     )) == "INVALID_OPERATION"
 
 
@@ -700,20 +697,6 @@ def test_misc_read_model_and_observability_scope_edges(tmp_path):
     )["summary"] == {"files": 1}
 
 
-def test_resolve_scope_returns_existing_research_question():
-    question = SimpleNamespace(id="q1")
-    project = SimpleNamespace(
-        project="demo", research_questions=[question], campaigns=[],
-    )
-    value = app(
-        project=lambda _name: project,
-        index=SimpleNamespace(get_run=lambda *_args: None),
-    )
-    resolved_scope, _, resolved = value.resolve_scope(
-        "demo", OperationScopeType.RESEARCH_QUESTION, "q1",
-    )
-    assert resolved_scope.object_id == "q1"
-    assert resolved is question
 
 
 def test_action_reconcile_refresh_policy_and_project_adapter_edges(monkeypatch):

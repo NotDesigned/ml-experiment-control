@@ -54,7 +54,7 @@ def test_action_adapter_maps_application_errors():
     prepare = action_routes.PrepareActionRequest(
         **scope,
         intent={
-            "kind": "CREATE_RESEARCH_QUESTION_DRAFT",
+            "kind": "CREATE_CAMPAIGN_DRAFT",
             "title": "Question",
             "draft": "id: Q1\ntitle: Question\n",
         },

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from ml_exp_server.api.app import create_app
 from ml_exp_server.operations import OPERATIONS
-from ml_exp_server.schemas import ProjectRef, ResearchQuestion, ServerConfig
+from ml_exp_server.schemas import ProjectRef, ServerConfig
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -73,15 +73,3 @@ def test_server_config_rejects_removed_agent_state_root():
         assert "agent_root" in str(exc)
     else:  # pragma: no cover - protects the architectural boundary
         raise AssertionError("ServerConfig unexpectedly accepted agent_root")
-
-
-def test_research_question_cannot_persist_client_scientific_assessment():
-    try:
-        ResearchQuestion.model_validate({
-            "id": "Q1", "title": "Question",
-            "assessments": [{"outcome": "SUPPORTED"}],
-        })
-    except ValueError as exc:
-        assert "assessments" in str(exc)
-    else:  # pragma: no cover - protects the architectural boundary
-        raise AssertionError("daemon accepted a client-owned scientific assessment")

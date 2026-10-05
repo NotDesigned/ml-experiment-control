@@ -30,14 +30,6 @@ from .errors import application_http_error
 
 router = APIRouter(prefix="/api")
 
-_KEY_METRIC_FIELDS = (
-    "step", "train_loss", "train_plan_emb_batch_var", "train_plan_emb_norm",
-    "steps_per_sec",
-)
-_KEY_EVAL_FIELDS = ("g_ppl", "oracle_plan_ppl", "shuffled_plan_ppl", "plan_ppl_gap",
-                    "token_recon_ppl")
-
-
 class ArchiveCampaignRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=4000)
 
@@ -398,7 +390,6 @@ def list_projects(request: Request):
             "project": project.project,
             "title": project.title,
             "run_counts": counts,
-            "research_question_count": len(project.research_questions),
             "attention_count": len(_attention(rows, statuses, assessments)),
         })
     return payload
@@ -502,22 +493,6 @@ def project_overview(project_name: str, request: Request):
         for row in rows
     }
 
-    research_questions = []
-    for research_question in project.research_questions:
-        campaign_names = set(research_question.links.campaigns)
-        hyp_rows = [
-            row for row in rows
-            if any(_belongs_to_campaign(row, name) for name in campaign_names)
-        ]
-        research_questions.append({
-            "id": research_question.id,
-            "title": research_question.title,
-            "status": research_question.status,
-            "summary": research_question.summary,
-            "links": research_question.links.model_dump(mode="json"),
-            "roles": _role_summaries(hyp_rows),
-        })
-
     campaigns = []
     for campaign in project.campaigns:
         campaign_rows = [row for row in rows if _belongs_to_campaign(row, campaign.name)]
@@ -547,7 +522,6 @@ def project_overview(project_name: str, request: Request):
     return {
         "project": project.project,
         "title": project.title,
-        "research_questions": research_questions,
         "campaigns": campaigns,
         "run_states": counts,
         "attention": _attention(rows, statuses, assessments),
@@ -561,81 +535,6 @@ def project_overview(project_name: str, request: Request):
     }
 
 
-@router.get("/research-questions/{project_name}/{research_question_id}")
-def research_question_detail(project_name: str, research_question_id: str, request: Request):
-    index, projects, _ = _state(request)
-    project = _find_project(projects, project_name)
-    research_question = next((h for h in project.research_questions if h.id == research_question_id), None)
-    if research_question is None:
-        raise HTTPException(status_code=404,
-                            detail=f"unknown research_question: {project_name}/{research_question_id}")
-
-    rows = index.list_runs(project.project)
-    application = request.app.state.application
-    campaigns = []
-    timeline: list[dict[str, Any]] = []
-    linked = set(research_question.links.campaigns)
-    for campaign in (item for item in project.campaigns if item.name in linked):
-        campaign_rows = [r for r in rows if _belongs_to_campaign(r, campaign.name)]
-        roles = []
-        for row in sorted(campaign_rows, key=lambda r: (r.role or "~", r.run_id)):
-            failure_assessment = application.run_failure_assessment(row)
-            membership = _campaign_membership(row, campaign.name)
-            role = membership.role if membership and membership.role else row.role
-            metrics = {k: row.latest_metrics.get(k) for k in _KEY_METRIC_FIELDS
-                       if row.latest_metrics.get(k) is not None}
-            complete = row.evaluation_snapshot.get("latest_metric_complete")
-            scientific_metrics = (
-                complete.get("metrics", {}) if isinstance(complete, dict) else {}
-            )
-            metrics.update({k: scientific_metrics.get(k) for k in _KEY_EVAL_FIELDS
-                            if scientific_metrics.get(k) is not None})
-            role_payload = sanitized_outward({
-                "role": role,
-                "role_note": campaign.role_notes.get(role or "", ""),
-                "role_source": "campaign_membership" if membership else row.role_source,
-                "run_id": row.run_id,
-                "evidence": row.evidence.model_dump(),
-                "key_metrics": metrics,
-                "eval_variants": row.eval_variants,
-                "evaluation_snapshot": row.evaluation_snapshot,
-                "canonical_eval_variant_id": row.canonical_eval_variant_id,
-                "checkpoint": row.checkpoint,
-                "artifacts": row.artifacts,
-                "decision": operational_decision(row.decision),
-            })
-            role_payload["failure_assessment"] = failure_assessment
-            roles.append(role_payload)
-            for snapshot in row.decision_history:
-                timeline.append(sanitized_outward({
-                    "run_id": row.run_id, **snapshot,
-                }))
-
-        campaigns.append({
-            "name": campaign.name,
-            "current_revision_id": (
-                campaign.current_revision.revision_id
-                if campaign.current_revision else None
-            ),
-            "declared_memberships": (
-                [item.model_dump(mode="json")
-                 for item in campaign.current_revision.memberships]
-                if campaign.current_revision else []
-            ),
-            "roles": roles,
-        })
-
-    timeline.sort(key=lambda item: item["ts"] or 0)
-    return {
-        "id": research_question.id,
-        "title": research_question.title,
-        "status": research_question.status,
-        "summary": research_question.summary,
-        "notes": research_question.notes,
-        "links": research_question.links.model_dump(mode="json"),
-        "campaigns": campaigns,
-        "decision_timeline": timeline,
-    }
 
 
 @router.get("/runs/{project_name}/{run_id}")

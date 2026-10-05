@@ -120,3 +120,31 @@ def test_pending_progress_timeout_does_not_cancel_or_reexecute(monkeypatch):
     with pytest.raises(ClientError, match="never resubmit"):
         wait_resource(Waiting(), "/api/submissions/saved", 0)
     assert calls == ["/api/submissions/saved", "/api/submissions/saved/progress"]
+
+
+@pytest.mark.parametrize("extra", [
+    {"metrics_schema": []}, {"metrics_schema": {"schema_version": 2}},
+    {"metrics_schema": {"unknown": True}}, {"metrics_schema": {"definitions": []}},
+    {"metrics_schema": {"definitions": {"loss": {"unit": ""}}}},
+    {"metrics_schema": {"definitions": {"loss": {"unit": "nats/token", "required": "yes"}}}},
+    {"metrics_schema": {"definitions": {"bad\nname": {"unit": "nats/token"}}}},
+    {"evaluation": []}, {"evaluation": {"value": float("nan")}},
+    {"evaluation": {"value": "x" * 16384}},
+])
+def test_metric_and_evaluation_errors_fail_before_source_upload(configuration, extra):
+    value = json.loads(configuration.read_text()); value.update(extra)
+    configuration.write_text(json.dumps(value))
+    api = API()
+    with pytest.raises(ClientError):experiment(api, HEALTH, configuration, configuration.with_name("state.json"))
+    assert api.calls == []
+
+
+def test_one_config_transports_project_schema_and_scoring_protocol(configuration):
+    value = json.loads(configuration.read_text())
+    value.update(metrics_schema={"definitions": {"validation_loss": {"unit": "nats/token", "required": True}}},
+                 evaluation={"D_FT": 0, "context_tokens": 1024})
+    configuration.write_text(json.dumps(value))
+    api = API(); experiment(api, HEALTH, configuration, configuration.with_name("state.json"))
+    definition = next(kwargs["data"] for endpoint, kwargs in api.calls if endpoint.endswith("/runs"))
+    assert definition["metrics_schema"] == value["metrics_schema"]
+    assert definition["evaluation"] == value["evaluation"]

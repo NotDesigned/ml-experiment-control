@@ -43,9 +43,28 @@ def validate_dockerfile(source: Path, name: str):
 def read_config(path: Path):
     value = json.loads(path.read_text())
     allowed = {"project", "run_id", "source", "dockerfile", "entrypoint", "workdir", "executor",
-               "arguments", "env", "resources", "outputs", "inputs", "checkpoint_upload", "max_gpu_hours"}
+               "arguments", "env", "resources", "outputs", "inputs", "checkpoint_upload", "max_gpu_hours", "metrics_schema", "evaluation"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise ClientError("experiment config contains unknown fields")
+    evaluation = value.get("evaluation", {})
+    try:
+        valid_evaluation = isinstance(evaluation, dict) and len(json.dumps(evaluation, allow_nan=False).encode()) <= 16384
+    except ValueError:
+        valid_evaluation = False
+    if not valid_evaluation:
+        raise ClientError("evaluation must be a finite JSON object of at most 16 KiB")
+    schema = value.get("metrics_schema", {})
+    if not isinstance(schema, dict) or set(schema) - {"schema_version", "definitions"} or schema.get("schema_version", 1) != 1:
+        raise ClientError("metrics_schema must use schema_version 1 and definitions")
+    definitions = schema.get("definitions", {})
+    if not isinstance(definitions, dict) or len(definitions) > 256:
+        raise ClientError("metrics_schema supports at most 256 definitions")
+    for name, definition in definitions.items():
+        if (not isinstance(name, str) or not name.strip() or len(name) > 128 or any(ord(c) < 32 for c in name) or
+                not isinstance(definition, dict) or set(definition) - {"unit", "required", "description", "aggregation", "numerator_unit", "denominator_unit"} or
+                not isinstance(definition.get("unit"), str) or not definition["unit"].strip() or len(definition["unit"]) > 128 or any(ord(c) < 32 for c in definition["unit"]) or
+                "required" in definition and not isinstance(definition["required"], bool)):
+            raise ClientError("each metric definition needs a valid name, explicit unit and optional boolean required")
     for key in ("project", "run_id", "executor"):
         if not isinstance(value.get(key), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value[key]):
             raise ClientError("experiment needs valid project, run_id and executor")
@@ -177,7 +196,7 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
     state["input_bindings"] = bindings
     save(state_path, state)
     if "run" not in state:
-        definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "checkpoint_upload") if key in config}
+        definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "checkpoint_upload", "metrics_schema", "evaluation") if key in config}
         definition.update(runtime_id=runtime["runtime_id"], inputs=bindings)
         state["run"] = client.call(f"/api/projects/{project}/runs", data=definition)
         save(state_path, state)

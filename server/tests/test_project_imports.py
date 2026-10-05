@@ -433,7 +433,6 @@ def test_preview_rejects_manifest_symlink_and_out_of_repository_references(tmp_p
 
     cases = [
         ({"run_roots": ["../outside"]}, "run_roots[0]"),
-        ({"research_questions_dir": str(outside)}, "research_questions_dir"),
         ({"campaigns": [{"name": "escaped", "file": str(outside / "x.yaml")}]},
          "campaigns[0].file"),
         ({"controller": {"python": "python3", "experimentctl": "tool.py",

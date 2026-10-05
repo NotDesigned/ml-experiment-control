@@ -21,6 +21,7 @@ CLIENT_PROTOCOL_HEADER = "X-ML-Expd-Client-Protocol"
 SERVER_CAPABILITIES = (
     "execution-progress.v1",
     "dockerfile-only.v1",
+    "project-metrics-schema.v1",
     "managed-worker.v1",
     "multipart-upload.v1",
     "direct-object-download.v1",

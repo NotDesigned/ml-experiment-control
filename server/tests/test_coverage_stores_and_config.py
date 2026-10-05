@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from ml_exp_server.actions.store import ActionStore
-from ml_exp_server.project_config import ConfigError, load_server_config, load_projects, load_research_project, load_research_question
+from ml_exp_server.project_config import ConfigError, load_server_config, load_projects, load_research_project
 from ml_exp_server.schemas import OperationScope, OperationScopeType, ServerConfig, ProjectRef
 from ml_exp_server.storage import StorageError, atomic_json, atomic_text, read_json
 
@@ -264,13 +264,6 @@ def test_server_config_failure_matrix(tmp_path, body, message):
 def test_project_and_question_schema_version_and_missing_file_failures(tmp_path):
     with pytest.raises(ConfigError, match="not found"):
         load_research_project(tmp_path / "missing.yml")
-    question = tmp_path / "q.yml"
-    question.write_text("schema_version: 2\nid: Q\ntitle: Question\n")
-    with pytest.raises(ConfigError, match="unsupported schema_version"):
-        load_research_question(question)
-    question.write_text("schema_version: 1\nid: []\n")
-    with pytest.raises(ConfigError, match="invalid research question"):
-        load_research_question(question)
     project = write_project(tmp_path, "schema_version: 2\nproject: demo\ntitle: Demo\nrun_roots: []\n")
     with pytest.raises(ConfigError, match="unsupported schema_version"):
         load_research_project(project)
@@ -398,7 +391,7 @@ def test_absolute_empty_research_question_directory_is_supported(tmp_path):
         "schema_version: 1\nproject: demo\ntitle: Demo\nrun_roots: []\n"
         f"research_questions_dir: {questions}\n",
     )
-    assert load_research_project(project).research_questions == []
+    assert not hasattr(load_research_project(project), "research_questions")
 
 
 def test_missing_research_question_directory_is_ignored(tmp_path):
@@ -407,4 +400,4 @@ def test_missing_research_question_directory_is_ignored(tmp_path):
         "schema_version: 1\nproject: demo\ntitle: Demo\nrun_roots: []\n"
         "research_questions_dir: missing-questions\n",
     )
-    assert load_research_project(project).research_questions == []
+    assert not hasattr(load_research_project(project), "research_questions")
