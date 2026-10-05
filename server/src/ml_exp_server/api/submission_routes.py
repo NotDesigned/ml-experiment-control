@@ -63,6 +63,14 @@ def get_submission(submission_id: str, request: Request):
         raise application_http_error(exc) from exc
 
 
+@router.get("/submissions/{submission_id}/progress")
+def submission_progress(submission_id: str, request: Request):
+    try:
+        return _service(request).progress(submission_id)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
 @router.post("/submissions/{submission_id}/authorize")
 def authorize_submission(
     submission_id: str, data: AuthorizeSubmissionRequest, request: Request,

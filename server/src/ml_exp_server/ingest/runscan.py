@@ -1240,7 +1240,7 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
             as_of=parse_iso_ts(status.get("updated_at")) or _mtime(run_dir / "status.json"),
             source=str(run_dir / "status.json"),
             detail={k: status[k] for k in ("raw_state", "backend", "backend_job_id",
-                                           "partition", "elapsed", "exit_code")
+                                           "partition", "elapsed", "exit_code", "reason")
                     if status.get(k) is not None},
         )
 

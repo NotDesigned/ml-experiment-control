@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 
 from . import __version__
 from .api import Client, ClientError, data_archive, download, save, segment, source_archive, upload_asset_parts
+from .workflow import experiment, validate_dockerfile, report
 
 
 def parser():
@@ -23,16 +24,20 @@ def parser():
     commands = value.add_subparsers(dest="command", required=True)
     initialize = commands.add_parser("init", help="write a small source project; no API connection")
     initialize.add_argument("directory", type=Path, help="new source directory")
+    initialize.add_argument("--base-image", help="approved sha256-pinned base; see ml-exp check")
+    workflow = commands.add_parser("experiment", help="validate one JSON config, build, prepare, optionally execute and download")
+    workflow.add_argument("config", type=Path)
+    workflow.add_argument("--state", type=Path, required=True)
+    workflow.add_argument("--resume", action="store_true", help="continue the same identities; never replay uncertain scheduler requests")
+    workflow.add_argument("--execute", action="store_true", help="authorize and execute the prepared submission within its GPU-hour budget")
+    workflow.add_argument("--seconds", type=int, default=1800)
+    workflow.add_argument("--download-to", type=Path)
     check = commands.add_parser("check", help="GET health, policy, executors and optionally schema")
     check.add_argument("--schema", type=Path)
     pack = commands.add_parser("pack", help="import source and package image; allocates no GPU")
     pack.add_argument("--project", required=True)
     pack.add_argument("--source", type=Path, required=True)
-    environment = pack.add_mutually_exclusive_group(required=True)
-    environment.add_argument("--image", help="immutable base image digest")
-    environment.add_argument("--environment", help="ID from the server environment catalogue")
-    environment.add_argument("--dockerfile", help="Dockerfile path inside the uploaded source; external FROM images must be digest-pinned")
-    pack.add_argument("--requirements", help="pinned dependency file inside the uploaded source")
+    pack.add_argument("--dockerfile", default="Dockerfile", help="path inside source; external FROM images must be digest-pinned (default: Dockerfile)")
     pack.add_argument("--entrypoint", nargs="+", default=["python", "train.py"])
     pack.add_argument("--state", type=Path, required=True)
     create = commands.add_parser("create", help="freeze a Run; does not submit it")
@@ -91,6 +96,8 @@ def main(argv=None):
             args.directory.mkdir(parents=True, exist_ok=False)
             template = files("ml_exp_client").joinpath("templates", "train.py.txt")
             (args.directory / "train.py").write_bytes(template.read_bytes())
+            base = args.base_image or "REPLACE_WITH_APPROVED_BASE@sha256:" + "0" * 64
+            (args.directory / "Dockerfile").write_text(f"FROM {base}\nWORKDIR /workspace\n", encoding="utf-8")
             print(json.dumps({"source_dir": str(args.directory), "entrypoint": ["python", "train.py"]}, indent=2))
             return 0
         token = os.environ.get("ML_EXPD_API_TOKEN", "")
@@ -98,6 +105,10 @@ def main(argv=None):
             token = Path(os.environ["ML_EXPD_API_TOKEN_FILE"]).read_text().strip()
         client = Client(args.url or "", token)
         health = client.negotiate()
+        def wait(endpoint, **kwargs):
+            if "execution-progress.v1" in health.get("capabilities", []):
+                kwargs["observer"] = lambda value: report(client.call(endpoint + "/progress"))
+            return client.wait(endpoint, **kwargs)
         if args.command == "check":
             result = {"health": health, "policy": client.call("/api/actions/policy"),
                       "executors": client.call("/api/executors")}
@@ -107,33 +118,28 @@ def main(argv=None):
                 result["storage_limits"] = client.call("/api/storage-limits")
             if args.schema:
                 save(args.schema, client.call(health["openapi_path"]))
+        elif args.command == "experiment":
+            result = experiment(client, health, args.config, args.state, resume=args.resume,
+                                execute=args.execute, seconds=args.seconds, out=args.download_to)
         elif args.command == "pack":
             if args.state.exists():
                 raise ClientError("state file exists; inspect it with runtime instead of replaying pack")
-            if (args.environment and "environments.v1" not in health.get("capabilities", [])
-                    or args.requirements and "dependency-build.v1" not in health.get("capabilities", [])
-                    or args.dockerfile and "dockerfile-build.v1" not in health.get("capabilities", [])):
-                raise ClientError("server does not advertise the requested environment/dependency build capability")
+            if "dockerfile-build.v1" not in health.get("capabilities", []):
+                raise ClientError("server does not advertise the Dockerfile build capability")
+            validate_dockerfile(args.source, args.dockerfile)
             source = source_archive(args.source)
             query = urlencode({"project": args.project, "sha256": hashlib.sha256(source).hexdigest()})
             imported = client.call("/api/source-imports/archive?" + query, raw=source)
             save(args.state, imported)
             endpoint = "/api/projects/" + segment(args.project) + "/runtimes"
             definition = {"source_id": imported["source_id"], "entrypoint": args.entrypoint}
-            if args.dockerfile:
-                if args.requirements:
-                    raise ClientError("install dependencies in the Dockerfile when using --dockerfile")
-                definition["dockerfile"] = args.dockerfile
-            else:
-                definition["image" if args.image else "environment_id"] = args.image or args.environment
-            if args.requirements:
-                definition["requirements"] = args.requirements
+            definition["dockerfile"] = args.dockerfile
             result = client.call(endpoint + "/prepare", data=definition)
             save(args.state, result)  # Recovery identity is saved before starting packaging.
             endpoint += "/" + segment(result["runtime_id"])
             if result["status"] == "PREPARED":
                 client.call(endpoint + "/execute", data={"confirmation": result["confirmation"]})
-            result = client.wait(endpoint, pending=("PREPARED", "EXECUTING"))
+            result = wait(endpoint, pending=("PREPARED", "EXECUTING"))
             save(args.state, result)
             if result["status"] != "READY":
                 raise ClientError("packaging requires inspection; use runtime --state FILE --reconcile")
@@ -143,7 +149,7 @@ def main(argv=None):
             result = client.call(endpoint)
             if args.reconcile and result["status"] in {"RECONCILE_REQUIRED", "EXECUTING"}:
                 client.call(endpoint + "/reconcile", data={"confirmation": result["confirmation"]})
-            result = client.wait(endpoint)
+            result = wait(endpoint)
             save(args.state, result)
             if args.logs:
                 result = {"runtime": result, "build_logs": client.call(endpoint + "/logs")}
@@ -202,7 +208,7 @@ def main(argv=None):
                     client.call(endpoint + "/execute", data={"confirmation": args.confirm})
             elif args.reconcile and result["status"] == "RECONCILE_REQUIRED":
                 client.call(endpoint + "/reconcile", data={})
-            result = client.wait(endpoint)
+            result = wait(endpoint)
             if saved:
                 save(args.state, result)
         elif args.command == "watch":

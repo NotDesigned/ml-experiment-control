@@ -29,23 +29,26 @@ source archive, packages a digest-pinned dependency image, freezes a Run for one
 executor, prepares its review gates, submits only on explicit confirmation,
 and verifies downloaded files against the uploaded archive's SHA256.
 
-Clients submit source, argv and optionally a pinned requirements file. The
-server generates the Dockerfile and installs binary Python dependencies inside
-the build container, preserving the approved base GPU framework. A new source or
-command creates a new immutable execution definition. A retry creates another
-Attempt of the same Run. Runtime `READY`, submission `VERIFIED`, scheduler
-`SUCCEEDED`, and available artifacts are separate states.
+Clients upload source containing a Dockerfile. The server builds and pushes an
+exact image to CCR, then WYD converts that digest to a verified reusable SIF;
+SenseCore runs the digest directly. Dataset assets stay outside the source/image
+and are mounted under `/inputs`. Outputs and atomic checkpoints are returned
+through scoped object-storage transfers.
 
-Ask the operator for the URL, Bearer token and resource budget. The API lists
-executor profiles and approved environments (`GET /api/environments`). Select
-an environment ID or supply an approved base-image digest; the generated
-Dockerfile and dependency SHA256 are available in Runtime preparation.
+Use `ml-exp experiment experiment.json --state trial.json` to validate, upload,
+build, freeze a Run and prepare its gates. Add `--execute --download-to results`
+to authorize scheduling within the config's GPU-hour budget and retrieve verified
+outputs. `--resume` observes the same identities after interruption; it never
+replays an uncertain scheduler request. See the [API quickstart](docs/api-quickstart.md).
 
-SenseCore also supports a [client Dockerfile and independent data-asset workflow](docs/sensecore-user-workflow.md):
-the server builds/pushes the image, the job delivers verified inputs to NAS,
-and explicit atomic checkpoints can be published during training and reused in
-a new Run. The standalone client uploads code/environment/data and downloads
-results entirely through HTTPS APIs.
+New builds use Dockerfile only. Old READY images and immutable Runs remain usable.
+The base-image catalogue at `GET /api/environments` supplies approved digest pins
+for `FROM`; it is not a second build mechanism. Runtime READY, submission VERIFIED,
+scheduler SUCCEEDED and available verified artifacts remain separate states.
+Progress endpoints expose phase, real last progress time, diagnostic messages,
+build logs and available exact-Attempt queue reasons. Unknown start times stay
+unknown. Registry-backed build cache and digest-bound WYD SIFs are reused while
+the API host removes transient BuildKit state after every build.
 
 ## API and deployment status
 

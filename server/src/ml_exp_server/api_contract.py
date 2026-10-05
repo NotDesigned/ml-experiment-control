@@ -19,6 +19,8 @@ VERSIONED_OPENAPI_PATH = "/api/v2/openapi.json"
 CLIENT_PROTOCOL_HEADER = "X-ML-Expd-Client-Protocol"
 
 SERVER_CAPABILITIES = (
+    "execution-progress.v1",
+    "dockerfile-only.v1",
     "managed-worker.v1",
     "multipart-upload.v1",
     "direct-object-download.v1",
@@ -26,7 +28,6 @@ SERVER_CAPABILITIES = (
     "data-assets.v1",
     "checkpoint-upload.v1",
     "environments.v1",
-    "dependency-build.v1",
     "source-import.v1",
     "container-execution.v1",
     "artifact-download.v1",

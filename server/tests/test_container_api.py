@@ -19,6 +19,20 @@ from ml_exp_server.worker_contract import CAPABILITIES, WORKER_CONTRACT, worker_
 from ml_exp_server.schemas import ServerConfig, RunIndexRow, AttemptSummary
 
 
+def legacy_prepare(api, definition):
+    """Seed a historical recipe through the domain service, not the new API."""
+    import httpx
+    from ml_exp_server.container_execution import ContainerExecutionService, RuntimeSpec
+    from ml_exp_server.application_errors import ApplicationError
+    try:
+        value = ContainerExecutionService(api.app.state.runtime).prepare("demo", RuntimeSpec.model_validate(definition))
+        return httpx.Response(200, json=value)
+    except ApplicationError as exc:
+        return httpx.Response(exc.status_code, json={"error": str(exc)})
+    except ValueError as exc:
+        return httpx.Response(422 if "validation error" in str(exc) else 409, json={"error": str(exc)})
+
+
 def archive(files=None):
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w:gz") as output:
@@ -74,7 +88,7 @@ def wait_runtime(client, endpoint):
 
 def runtime(client, source=None):
     source = import_source(client) if source is None else source
-    prepared = client.post("/api/projects/demo/runtimes/prepare", json={
+    prepared = legacy_prepare(client, {
         "source_id": source["source_id"], "image": "registry.example/python@sha256:" + "a" * 64,
         "entrypoint": ["python", "train.py"]})
     assert prepared.status_code == 200, prepared.text

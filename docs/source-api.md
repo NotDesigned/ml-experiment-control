@@ -27,25 +27,14 @@ Every normal API call sends `Authorization: Bearer …` and
    mount definitions, cluster partitions, and registry credentials stay on the
    daemon. SenseCore fixed worker allocations are reported in `capacity`;
    the Run records the actual allocation, which may exceed a minimum request.
-3. `POST /api/projects/my-study/runtimes/prepare` with
-   `{"source_id":"source.…","image":"registry/repository@sha256:64-hex-digest","entrypoint":["python","train.py"],"workdir":"/workspace"}`.
-   The image is a prepared dependency environment, pinned by OCI digest. It
-   must provide Python 3, `/bin/sh` and GNU `timeout` for the stdlib upload
-   launcher. Alternatively select `environment_id` from `GET /api/environments`
-   instead of `image`. Add `requirements`, a relative path inside the imported
-   source, to install exact pinned Python dependencies. Prepare returns the
-   generated Dockerfile and dependency-file SHA256 for review. The builder runs
-   the reviewed installer in a dedicated Python virtual environment inside a
-   BuildKit container before copying source,
-   preserves the base GPU framework, checks dependency consistency, and records
-   actual versions at `/usr/local/share/ml-expd/environment.json` in the image.
-   Requirements use `package==version` and optionally complete SHA256 hashes;
-   URLs, includes, pip options, markers and source builds are unsupported.
-   The daemon does not execute project code or install dependencies on
-   the control-plane host. The original FROM/COPY-only recipe remains available.
-   The server supplies the reviewed `packaging_revision`; it is part of the
-   runtime identity, so a packaging repair creates a new runtime instead of
-   replacing an existing frozen image.
+3. `POST /api/projects/my-study/runtimes/prepare` with `source_id`, `dockerfile`
+   (default `Dockerfile`), argv `entrypoint`, and optional `/workspace` workdir.
+   New builds accept only Dockerfile; dependency installation belongs in that
+   file. Base images must be approved digest pins, obtainable from
+   `GET /api/environments`. Old READY Runtime/Run identities remain usable.
+   Execute the returned exact BUILD confirmation, then poll the Runtime and
+   `/progress` endpoint. A matching READY Runtime is reused without rebuilding.
+
 4. Execute packaging with `POST /api/projects/my-study/runtimes/{runtime_id}/execute`
    and the exact `confirmation` returned by prepare. Poll the runtime until
    `READY`. The API durably claims the build before returning HTTP 202;

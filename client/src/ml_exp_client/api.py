@@ -101,12 +101,14 @@ class Client:
             raise ClientError("daemon does not support protocol 2")
         return health
 
-    def wait(self, path: str, *, pending=("EXECUTING",), seconds=900, interval=2):
+    def wait(self, path: str, *, pending=("EXECUTING",), seconds=900, interval=2, observer=None):
         deadline = time.monotonic() + seconds
         while True:
             value = self.call(path)
             if value["status"] not in pending:
                 return value
+            if observer is not None:
+                observer(value)
             if time.monotonic() >= deadline:
                 raise ClientError(f"poll timed out: GET {path}; execution continues on the server")
             time.sleep(interval)

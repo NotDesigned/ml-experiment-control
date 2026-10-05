@@ -15,7 +15,7 @@ from ml_exp_server.environment_build import DEPENDENCY_RECIPE, dockerfile, inspe
 from ml_exp_server.image_builder import ImageBuilder, MANIFEST_TYPE, bundle_id
 from ml_exp_server.source_imports import seal_tree
 from ml_exp_server.source_revisions import _tree_digest
-from tests.test_container_api import archive, client, import_source, wait_runtime
+from tests.test_container_api import legacy_prepare, archive, client, import_source, wait_runtime
 
 
 BASE = "registry.example/base@sha256:" + "a" * 64
@@ -33,7 +33,7 @@ def prepare(client, content=b"colorama==0.4.6\n", **changes):
     source = import_source(client, archive({"train.py": b"print('training')\n", "requirements.txt": content}))
     definition = {"source_id": source["source_id"], "image": BASE,
                   "requirements": "requirements.txt", "entrypoint": ["python3", "train.py"], **changes}
-    return client.post("/api/projects/demo/runtimes/prepare", json=definition)
+    return legacy_prepare(client, definition)
 
 
 def test_catalogue_and_environment_resolution_freeze_actual_image(client, tmp_path):
@@ -43,7 +43,8 @@ def test_catalogue_and_environment_resolution_freeze_actual_image(client, tmp_pa
     assert entries == [{"id": "torch", "image": BASE, "versions": {"torch": "2.10.0+cu126"}}]
     source = import_source(client)
     request = {"source_id": source["source_id"], "environment_id": "torch", "entrypoint": ["python3", "train.py"]}
-    response = client.post("/api/projects/demo/runtimes/prepare", json=request)
+    assert client.post("/api/projects/demo/runtimes/prepare", json=request).status_code == 422
+    response = legacy_prepare(client, request)
     assert response.status_code == 200, response.text
     value = response.json()
     assert value["spec"]["image"] == BASE and "environment_id" not in value["spec"]
@@ -52,7 +53,7 @@ def test_catalogue_and_environment_resolution_freeze_actual_image(client, tmp_pa
     endpoint = "/api/projects/demo/runtimes/" + value["runtime_id"]
     client.post(endpoint + "/execute", json={"confirmation": value["confirmation"]})
     assert client.get(endpoint).json()["spec"]["image"] == BASE
-    assert client.post("/api/projects/demo/runtimes/prepare", json={**request, "environment_id": "missing"}).status_code == 404
+    assert legacy_prepare(client, {**request, "environment_id": "missing"}).status_code == 404
 
 
 @pytest.mark.parametrize("payload", [[], {"environments": []}, {"environments": {"../bad": {"image": BASE}}},

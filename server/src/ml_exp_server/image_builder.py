@@ -25,6 +25,7 @@ from .storage import atomic_json
 from .environment_build import DEPENDENCY_RECIPE, dockerfile, inspect_requirements, installer_digest, requirements_path
 from .dockerfile_build import DOCKERFILE_RECIPE, INTERNAL, inspect_dockerfile, managed_dockerfile, worker_digest
 from .worker_contract import CAPABILITIES, WORKER_CONTRACT, install_workers, recipe_digest
+from .execution_progress import record_progress, progress_view
 
 
 IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
@@ -33,6 +34,8 @@ PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 RECIPE = "source-copy-docker-v2-v2"
 MANIFEST_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
 BUILD_LOG = ContextVar("ml_exp_build_log", default=None)
+BUILD_PROGRESS = ContextVar("ml_exp_build_progress", default=None)
+BUILD_CACHE = ContextVar("ml_exp_build_cache", default=None)
 
 
 def bundle_id(project: str, source_id: str, base_image: str, requirements: str | None = None, *, dockerfile_path: str | None = None) -> str:
@@ -88,7 +91,7 @@ class ImageBuilder:
             raise ValueError("image packaging revision mismatch")
         identity = bundle_id(project, source_id, image, requirements, dockerfile_path=custom_path)
         metadata_path = self.root / f"{identity}.json"
-        if request.get("operation") == "logs":
+        if request.get("operation") in {"logs", "progress"}:
             pinned = request.get("bundle_id", identity)
             if not isinstance(pinned, str) or not ID.fullmatch(pinned):
                 raise ValueError("invalid frozen build identity")
@@ -107,7 +110,13 @@ class ImageBuilder:
                 with path.open("rb") as log:
                     log.seek(max(0, path.stat().st_size - 8192))
                     content = log.read().decode("utf-8", errors="replace")
-            return {"bundle_id": identity, "lines": content.splitlines(), "truncated": path.exists() and path.stat().st_size > 8192}
+            result = {"bundle_id": identity, "lines": content.splitlines(), "truncated": path.exists() and path.stat().st_size > 8192}
+            if request["operation"] == "progress":
+                status = "READY" if (self.root / f"{identity}.json").exists() else "EXECUTING"
+                result["progress"] = progress_view(self.root / f"{identity}.progress.json", status,
+                                                   active=status == "EXECUTING",
+                                                   last_activity=path.stat().st_mtime if path.exists() else None)
+            return result
         with (self.root / f"{identity}.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             if metadata_path.exists():
@@ -147,6 +156,8 @@ class ImageBuilder:
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]+", registry):
                 raise ValueError("invalid image packaging repository")
             tag = registry + ":bundle-" + identity
+            progress_path = self.root / f"{identity}.progress.json"
+            record_progress(progress_path, "PREPARING_CONTEXT", "Validating and preparing the frozen source build context")
             with tempfile.TemporaryDirectory(prefix="build-", dir=self.root) as directory:
                 context = Path(directory)
                 copied = context / "source" if inspection is None else context / INTERNAL / "source"
@@ -183,6 +194,11 @@ class ImageBuilder:
                 recipe = dockerfile(image, source_id, requirements) if inspection is None else managed_dockerfile(inspection, source_id)
                 (context / "Dockerfile").write_text(recipe)
                 log_context = BUILD_LOG.set(self.root / f"{identity}.log")
+                progress_context = BUILD_PROGRESS.set(progress_path)
+                # One mutable acceleration tag per project; not part of source,
+                # Docker context, execution identity or local persistent storage.
+                cache_context = BUILD_CACHE.set(registry + ":buildcache-" + hashlib.sha256(project.encode()).hexdigest()[:24]
+                                               if self.config.get("registry_cache", False) else None)
                 try:
                     if self.config.get("publisher", "archive") == "buildkit":
                         published = self._publish_buildkit(tag, context)
@@ -191,6 +207,8 @@ class ImageBuilder:
                         published = self._publish(tag, context)
                 finally:
                     BUILD_LOG.reset(log_context)
+                    BUILD_PROGRESS.reset(progress_context)
+                    BUILD_CACHE.reset(cache_context)
             result = {"bundle_id": identity, "project": project, "source_id": source_id,
                       "base_image": image, "image": published, "recipe": recipe_version,
                       "manifest_type": MANIFEST_TYPE, "worker_contract": WORKER_CONTRACT,
@@ -201,6 +219,7 @@ class ImageBuilder:
             if inspection is not None:
                 result["dockerfile"] = {k: v for k, v in inspection.items() if k != "text"}
             atomic_json(metadata_path, result)
+            record_progress(progress_path, "READY", "Published image manifest and worker identity verified")
             return result
 
     def _publish_buildkit(self, tag: str, context: Path) -> str:
@@ -212,6 +231,7 @@ class ImageBuilder:
         # Serialize this application's transient CUDA layers without touching
         # the host's default builder or any other workload's cache.
         with (self.root / "ephemeral-buildkit.lock").open("a") as lock:
+            self._progress("WAITING_BUILDER", "Waiting for the private image builder; no scheduler submission has occurred")
             fcntl.flock(lock, fcntl.LOCK_EX)
             self._recover_builder()
             name = "ml-expd-" + uuid.uuid4().hex
@@ -246,11 +266,17 @@ class ImageBuilder:
         # blobs. Exporting a complete CUDA image twice exhausts small servers.
         metadata = context / "buildkit.json"
         network = "default" if (context / "requirements.txt").exists() or (context / INTERNAL).exists() else "none"
+        cache = []
+        if BUILD_CACHE.get() is not None:
+            reference = BUILD_CACHE.get()
+            cache = ["--cache-from", "type=registry,ref=" + reference,
+                     "--cache-to", "type=registry,ref=" + reference + ",mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true"]
+        self._progress("BUILDING_AND_PUSHING", "Building Dockerfile and publishing image; detailed output is in build logs")
         self._docker(["buildx", "build", "--builder", builder, "--progress=plain", "--network=" + network,
                       "--provenance=false", "--sbom=false", "--tag", tag,
                       "--metadata-file", str(metadata), "--output",
                       "type=image,push=true,oci-mediatypes=false,compression=gzip",
-                      str(context)])
+                      *cache, str(context)])
         value = json.loads(metadata.read_text())
         digest = value.get("containerimage.digest", "")
         config_digest = value.get("containerimage.config.digest", "")
@@ -258,6 +284,7 @@ class ImageBuilder:
                    for item in (digest, config_digest)):
             raise ValueError("BuildKit publication identity is unavailable")
         reference = self.config["repository"] + "@" + digest
+        self._progress("VERIFYING_IMAGE", "Checking the remote manifest against the build's exact image and config digests")
         raw = self._skopeo(["inspect", "--authfile",
                             self.config.get("registry_auth_file", "/root/.docker/config.json"),
                             "--raw", "docker://" + reference], capture=True)
@@ -267,6 +294,11 @@ class ImageBuilder:
                 or manifest.get("config", {}).get("digest") != config_digest):
             raise ValueError("published manifest does not match the BuildKit image")
         return reference
+
+    def _progress(self, phase, message):
+        path = BUILD_PROGRESS.get()
+        if path is not None:
+            record_progress(path, phase, message, timeout_seconds=self.config.get("timeout_seconds", 600))
 
     def _publish(self, tag: str, context: Path) -> str:
         # Legacy Docker builds on the containerd store can produce mixed OCI /

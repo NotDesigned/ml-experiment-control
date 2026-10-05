@@ -81,7 +81,7 @@ def test_builder_rejects_invalid_or_changed_definitions(builder, tmp_path, monke
         monkeypatch.setattr(module.shutil, "copytree", changed_copy)
     with pytest.raises((ValueError, FileNotFoundError)):
         value.request(request)
-    assert not list(value.root.glob("*.json"))
+    assert not [path for path in value.root.glob("*.json") if not path.name.endswith(".progress.json")]
 
 
 def test_buildkit_source_packaging_and_receipt_binding(builder):

@@ -62,7 +62,7 @@ def inspect_dockerfile(tree: Path, name: str) -> dict:
 
 def managed_dockerfile(inspection: dict, source_id: str) -> str:
     return (inspection["text"].rstrip() + "\n\n# ML-Expd managed execution contract\n"
-            f"COPY {INTERNAL}/source/ /workspace/\n"
             'RUN ["python3", "-c", "import sys; assert sys.version_info >= (3, 10)"]\n'
+            f"COPY {INTERNAL}/source/ /workspace/\n"
             "WORKDIR /workspace\n"
             + worker_dockerfile(source_id, INTERNAL + "/"))
