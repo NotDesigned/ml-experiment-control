@@ -172,7 +172,7 @@ def test_builder_installs_dependencies_before_copying_source_and_verifies_regist
 def test_installer_runs_only_inside_container_and_preserves_gpu_framework(tmp_path, monkeypatch, case):
     calls = []
     distributions = [SimpleNamespace(metadata={"Name": name}, version=version) for name, version in
-                     (("torch", "2.10.0+cu126"), ("nvidia-cublas-cu12", "12.6"), ("", "ignored"), ("other_pkg", "1"))]
+                     (("torch", "2.10.0+cu126"), ("nvidia-cublas-cu12", "12.6"), ("", "ignored"), ("other_pkg", "1"), ("other_pkg", "0"))]
     count = 0
     def installed():
         nonlocal count
@@ -210,3 +210,4 @@ def test_installer_runs_only_inside_container_and_preserves_gpu_framework(tmp_pa
         metadata = json.loads((tmp_path / "usr/local/share/ml-expd/environment.json").read_text())
         assert metadata["packages"]["torch"] == "2.10.0+cu126"
         assert "other-pkg" in metadata["packages"]
+        assert metadata["packages"]["other-pkg"] == "1"

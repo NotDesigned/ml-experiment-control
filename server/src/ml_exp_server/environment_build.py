@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path, PurePosixPath
 import re
 
-DEPENDENCY_RECIPE = "source-python-dependencies-v1"
+DEPENDENCY_RECIPE = "source-python-dependencies-v3"
 PIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,.-]+\])?==[A-Za-z0-9][A-Za-z0-9.!+_-]*(?:\s+--hash=sha256:[0-9a-f]{64})*")
 
 
@@ -41,6 +41,8 @@ def dockerfile(image: str, source_id: str, requirements: str | None = None) -> s
     if requirements is not None:
         installation = ("COPY requirements.txt /tmp/ml-expd-requirements.txt\n"
                         "COPY dependency_install.py /tmp/ml-expd-install.py\n"
+                        'RUN ["python3", "-m", "venv", "--without-pip", "--system-site-packages", "/opt/ml-expd-venv"]\n'
+                        'ENV PATH="/opt/ml-expd-venv/bin:${PATH}"\n'
                         'RUN ["python3", "/tmp/ml-expd-install.py"]\n')
     return (f"FROM {image}\n" + installation + "COPY source/ /workspace/\nWORKDIR /workspace\n"
             "COPY worker.py /usr/local/lib/ml-expd/worker.py\n"

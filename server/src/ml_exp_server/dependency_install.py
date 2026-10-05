@@ -11,8 +11,9 @@ import sys
 
 
 def installed() -> dict[str, str]:
+    # A venv overlay wins over the inherited system distribution with this name.
     return {d.metadata["Name"].lower().replace("_", "-"): d.version
-            for d in importlib.metadata.distributions() if d.metadata["Name"]}
+            for d in reversed(list(importlib.metadata.distributions())) if d.metadata["Name"]}
 
 
 def main():

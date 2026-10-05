@@ -35,7 +35,8 @@ Every normal API call sends `Authorization: Bearer …` and
    instead of `image`. Add `requirements`, a relative path inside the imported
    source, to install exact pinned Python dependencies. Prepare returns the
    generated Dockerfile and dependency-file SHA256 for review. The builder runs
-   the reviewed installer inside a BuildKit container before copying source,
+   the reviewed installer in a dedicated Python virtual environment inside a
+   BuildKit container before copying source,
    preserves the base GPU framework, checks dependency consistency, and records
    actual versions at `/usr/local/share/ml-expd/environment.json` in the image.
    Requirements use `package==version` and optionally complete SHA256 hashes;
