@@ -54,7 +54,7 @@ def test_readme_routes_api_users_operators_and_integrators_to_their_guides():
     for guide in ("api-quickstart.md", "operator-guide.md", "library-integration.md"):
         assert f"docs/{guide}" in readme
         assert (ROOT / "docs" / guide).is_file()
-    assert "examples/api_client.py" in readme
+    assert "client/README.md" in readme
     library = (ROOT / "docs" / "library-integration.md").read_text(encoding="utf-8")
     assert "examples/local_smoke.py" in library
     for command in ("cargo clippy", "tools/coverage_gate.py", "uv build"):

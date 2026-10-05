@@ -6,12 +6,15 @@ container environment, freeze a Run, submit it, inspect progress, and download
 results from an exact Attempt. The same source, image and command work across
 both platforms; operator-defined profiles supply their different infrastructure.
 
-The repository also contains the reusable `ml-experiment-control` Python core.
+The client (`client/`, command `ml-exp`) and server (`server/`, command
+`ml-expd`) are independently installable distributions. The client communicates
+only over HTTP and has no runtime dependencies. The server also uses the
+reusable `ml-experiment-control` Python core.
 Choose the path that matches your task:
 
 | Task | Start here | Required locally |
 | --- | --- | --- |
-| Use an existing API from another computer | [API quickstart](docs/api-quickstart.md) | Python 3.10+, API URL and token |
+| Use an existing API from another computer | [API quickstart](docs/api-quickstart.md) | Standalone client, Python 3.10+, API URL and token |
 | Deploy your own service | [Operator guide](docs/operator-guide.md) | Linux, daemon, image builder, backend credentials and object storage |
 | Embed backend/state primitives in a controller | [Library integration](docs/library-integration.md) | Core package and a host-owned `ProjectAdapter` |
 | Contribute to this repository | [Development](docs/development.md) | uv, Rust 1.85+, repository tests |
@@ -19,8 +22,9 @@ Choose the path that matches your task:
 ## First experiment through HTTP
 
 Follow the [API quickstart](docs/api-quickstart.md). It includes the complete
-[standard-library client](examples/api_client.py) and a tiny
-[output/metrics program](examples/api_project/train.py). The client imports a
+[standalone client package](client/README.md), installed with
+`python3 -m pip install ./client`. Its `ml-exp` command includes an offline
+`init` template for a tiny output/metrics project. The client imports a
 source archive, packages a digest-pinned dependency image, freezes a Run for one
 executor, prepares its review gates, submits only on explicit confirmation,
 and verifies downloaded files against the uploaded archive's SHA256.

@@ -37,9 +37,17 @@ jobs:
           uv run --package ml-experiment-server python tools/coverage_gate.py
           --suite daemon
       - run: uv run --package ml-experiment-server ml-expd --help
+      - run: uv run --package ml-experiment-client pytest client/tests -q
+      - run: uv run --package ml-experiment-client python -m compileall -q client/src client/tests
       - run: uv build --all-packages
+      - name: Test standalone client wheel without server or core
+        run: |
+          uv venv .client-wheel-smoke
+          uv pip install --python .client-wheel-smoke/bin/python --no-deps dist/ml_experiment_client-*.whl
+          .client-wheel-smoke/bin/python tools/client_wheel_smoke.py
       - name: Test installed wheels and entry points
         run: |
           uv venv .wheel-smoke
           uv pip install --python .wheel-smoke/bin/python dist/*.whl
           .wheel-smoke/bin/ml-expd --help
+          .wheel-smoke/bin/ml-exp --help

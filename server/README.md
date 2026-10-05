@@ -3,7 +3,10 @@
 `ml-expd` is the independent HTTP daemon shipped by the
 `ml-experiment-control` workspace. It owns Project lifecycle, evidence
 indexing, backend polling, immutable operation intents, gated Actions, and
-backend reconciliation. Research goals, conversations, model calls, hypothesis
+backend reconciliation. Install the independent
+[client package](../client/README.md) on remote machines; its `ml-exp` command
+communicates only through HTTP. The server runtime does not depend on it.
+Research goals, conversations, model calls, hypothesis
 analysis, reports, charts, and scientific verdicts run in a separate client.
 
 Run from the repository root:

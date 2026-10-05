@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -8,6 +8,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "ml-experiment-client",
     "ml-experiment-control",
     "ml-experiment-server",
 ]
@@ -563,6 +564,21 @@ wheels = [
 ]
 
 [[package]]
+name = "ml-experiment-client"
+version = "0.1.0"
+source = { editable = "client" }
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.0" }]
+
+[[package]]
 name = "ml-experiment-control"
 version = "0.1.0"
 source = { editable = "." }
@@ -608,6 +624,7 @@ dependencies = [
 dev = [
     { name = "httpx" },
     { name = "httpx2" },
+    { name = "ml-experiment-client" },
     { name = "pytest" },
     { name = "pytest-cov" },
 ]
@@ -630,6 +647,7 @@ requires-dist = [
 dev = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "httpx2", specifier = ">=0.0.4" },
+    { name = "ml-experiment-client", editable = "client" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-cov", specifier = ">=6.0" },
 ]

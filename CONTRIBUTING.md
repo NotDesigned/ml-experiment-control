@@ -10,6 +10,7 @@ cargo test --locked --manifest-path rust/Cargo.toml
 uv run mypy
 uv run python tools/coverage_gate.py
 uv run --package ml-experiment-server python tools/coverage_gate.py --suite daemon
+uv run --package ml-experiment-client pytest client/tests -q
 uv run python tools/generate_cli_reference.py --check
 uv run python -m compileall -q src tests tools examples
 uv build --all-packages

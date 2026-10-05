@@ -36,14 +36,17 @@ uv sync --locked --all-packages
 uv run --package ml-experiment-server ml-expd --help
 ```
 
-For an installed deployment, build both distributions with `uv build
---all-packages`, then install both wheels into a dedicated runtime environment.
+For an installed deployment, build the core and server distributions, then
+install those two wheels into a dedicated runtime environment. The independent
+client wheel is installed on client machines, not required by the daemon.
 For the paths used by these templates:
 
 ```bash
-uv build --all-packages
+uv build --package ml-experiment-control
+uv build --package ml-experiment-server
 uv venv /opt/ml-expd/venv
-uv pip install --python /opt/ml-expd/venv/bin/python dist/*.whl
+uv pip install --python /opt/ml-expd/venv/bin/python \
+  dist/ml_experiment_control-*.whl dist/ml_experiment_server-*.whl
 ```
 
 Its `ml-expd` and `experiment-safe-sco` entry points must be on the service PATH.
@@ -209,11 +212,12 @@ both `--ssl-certfile` and `--ssl-keyfile` plus Bearer auth; plaintext remote
 binding is refused. Never remove auth to make the stock Swagger UI work; fetch
 the authenticated schema as described in [the HTTP contract](http_contract.md).
 
-With mutations still disabled, run the read-only operator checklist:
+With mutations still disabled, run the read-only operator checklist. Run the
+`ml-exp` check from a separate machine/environment with the client installed:
 
 ```bash
 /opt/ml-expd/venv/bin/ml-expd --config /etc/ml-expd/ml-expd.yaml doctor --json
-python3 examples/api_client.py check --schema openapi.json
+ml-exp check --schema openapi.json
 ```
 
 Doctor verifies generic host availability and policy; it does not validate all

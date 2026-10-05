@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ml-experiment-client"
+version = "0.1.0"
+description = "Standalone HTTP client for ml-expd experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/NotDesigned/ml-experiment-control"
+Issues = "https://github.com/NotDesigned/ml-experiment-control/issues"
+
+[project.scripts]
+ml-exp = "ml_exp_client.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ml_exp_client = ["templates/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -31,6 +31,14 @@ uv run --package ml-experiment-server pytest server/tests -q
 uv run --package ml-experiment-server ml-expd --help
 ```
 
+`client/` is the independent `ml-experiment-client` distribution. It has no
+runtime dependency on the server/core or third-party libraries. Build it with
+`uv build --package ml-experiment-client`; run its tests with
+`uv run --package ml-experiment-client pytest client/tests -q`. Its `ml-exp`
+entry point and `python -m ml_exp_client` work outside a repository checkout.
+Daemon integration tests depend on the client only through the server's dev
+group; this is not a server runtime dependency.
+
 Daemon modules may depend on the core package, never the reverse. FastAPI
 belongs only in `server/api`; `runtime.py` is the composition root;
 `controller_gateway.py` is the sole legacy `experimentctl` subprocess
@@ -141,9 +149,11 @@ uv run mypy
 uv run python tools/coverage_gate.py
 uv run python tools/generate_cli_reference.py --check
 uv run python -m compileall -q src tests tools examples
-uv run --package ml-experiment-server python -m compileall -q server/src server/tests
+uv run --package ml-experiment-server python -m compileall -q server/src server/tests client/src client/tests
 uv run --package ml-experiment-server python tools/coverage_gate.py --suite daemon
 uv run --package ml-experiment-server ml-expd --help
+uv run --package ml-experiment-client pytest client/tests -q
+uv run --package ml-experiment-client ml-exp --help
 uv run python examples/local_smoke.py
 uv build --all-packages
 ```

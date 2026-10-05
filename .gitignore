@@ -6,7 +6,9 @@
 .coverage
 coverage.json
 server-coverage.json
+client-coverage.json
 htmlcov/
 *.egg-info/
 __pycache__/
 **/__pycache__/
+/.client-wheel-smoke/

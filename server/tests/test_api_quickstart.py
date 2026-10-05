@@ -1,7 +1,6 @@
 """Run the shipped stdlib CLI against real loopback HTTP, never live schedulers."""
 from contextlib import contextmanager
 import hashlib
-import importlib.util
 import io
 import json
 import os
@@ -17,6 +16,7 @@ import pytest
 import uvicorn
 import yaml
 
+from ml_exp_client import api as client_module
 from ml_exp_server.api.app import create_app
 from ml_exp_server.artifact_store import ArtifactStore
 from ml_exp_server.container_controller import Controller
@@ -27,9 +27,6 @@ from tests.test_submissions import _app
 
 
 ROOT = Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location("quickstart_client", ROOT / "examples/api_client.py")
-client_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(client_module)
 
 
 @contextmanager
@@ -64,7 +61,7 @@ def http_server(app):
 def cli(base, token_file, *arguments, success=True):
     env = dict(os.environ, ML_EXPD_API_URL=base, ML_EXPD_API_TOKEN_FILE=str(token_file))
     env.pop("ML_EXPD_API_TOKEN", None)
-    result = subprocess.run([sys.executable, str(ROOT / "examples/api_client.py"), *map(str, arguments)],
+    result = subprocess.run([sys.executable, "-m", "ml_exp_client", *map(str, arguments)],
                             env=env, capture_output=True, text=True, timeout=30)
     assert token_file.read_text().strip() not in result.stdout + result.stderr
     if success:
@@ -117,12 +114,15 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
         assert check["health"]["api_protocol_version"] == 2
         assert len(check["executors"]["executors"]) == 2
         assert "/api/source-imports/archive" in json.loads(schema.read_text())["paths"]
+        source = tmp_path / "source"
+        initialized = cli(base, auth, "init", source)
+        assert initialized["entrypoint"] == ["python", "train.py"]
         state = tmp_path / "runtime.json"
-        runtime = cli(base, auth, "pack", "--project", "quickstart", "--source", ROOT / "examples/api_project",
+        runtime = cli(base, auth, "pack", "--project", "quickstart", "--source", source,
                       "--image", "registry.example/team/base@sha256:" + "a" * 64, "--state", state)
         assert runtime["status"] == "READY" and len(calls) == 1
         assert cli(base, auth, "runtime", "--state", state)["runtime_id"] == runtime["runtime_id"]
-        assert "state file exists" in cli(base, auth, "pack", "--project", "quickstart", "--source", ROOT / "examples/api_project",
+        assert "state file exists" in cli(base, auth, "pack", "--project", "quickstart", "--source", source,
                                         "--image", "unused", "--state", state, success=False).stderr
         for name in ("wyd-l40s", "sensecore-1gpu"):
             frozen = cli(base, auth, "create", "--runtime-state", state, "--run", name, "--executor", name)
@@ -136,7 +136,7 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
         outputs = run_root / "attempts/attempt-001/outputs"
         env = dict(os.environ, OUTPUT_DIR=str(outputs), PROJECT_NAME="quickstart", RUN_ID="wyd-l40s",
                    ATTEMPT_ID="attempt-001", SOURCE_ID=runtime["spec"]["source_id"])
-        program = subprocess.run([sys.executable, str(ROOT / "examples/api_project/train.py"), "--steps", "4"],
+        program = subprocess.run([sys.executable, str(source / "train.py"), "--steps", "4"],
                                  env=env, capture_output=True, text=True, check=True)
         assert json.loads(program.stdout)["steps"] == 4
         assert len((outputs / "metrics.jsonl").read_text().splitlines()) == 4
@@ -217,7 +217,7 @@ def test_examples_and_new_documentation_are_consistent():
     builder = json.loads((ROOT / "server/examples/image-builder.json").read_text())
     assert builder["source_root"] == config.project_registry_root + "/source-revisions/sources"
     assert builder["socket"] == config.container_execution.builder_socket
-    for name in ("README.md", "docs/api-quickstart.md", "docs/operator-guide.md", "docs/library-integration.md",
+    for name in ("README.md", "client/README.md", "docs/api-quickstart.md", "docs/operator-guide.md", "docs/library-integration.md",
                  "docs/source-api.md", "docs/http_contract.md", "docs/development.md", "CONTRIBUTING.md"):
         path = ROOT / name
         for link in re.findall(r"\]\(([^)]+)\)", path.read_text()):

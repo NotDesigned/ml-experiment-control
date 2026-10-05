@@ -23,6 +23,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "ml-experiment-client",
     "httpx>=0.27",
     "httpx2>=0.0.4",
     "pytest>=8.0",
@@ -49,3 +50,4 @@ precision = 1
 
 [tool.uv.sources]
 ml-experiment-control = { workspace = true }
+ml-experiment-client = { workspace = true }

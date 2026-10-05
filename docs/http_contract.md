@@ -137,7 +137,7 @@ The schema describes route bodies and responses. Authentication and protocol
 headers are enforced by middleware and are not currently represented as
 OpenAPI security schemes/parameters. `/docs` also requires Bearer auth; its
 stock Swagger page neither supplies these headers nor preserves every reverse
-proxy prefix. Use the authenticated schema and the [API client](../examples/api_client.py)
+proxy prefix. Use the authenticated schema and the [client package](../client/README.md)
 for a working external workflow. This UI limitation does not weaken API auth.
 No `/api/guide` endpoint is currently provided; [the quickstart](api-quickstart.md)
 is the usage guide.

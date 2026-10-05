@@ -21,17 +21,18 @@ If a dependency is missing, first ask the operator for a new environment image.
 
 ## Connect and inspect
 
-Download [api_client.py](../examples/api_client.py) and the source files in
-[api_project](../examples/api_project/train.py), or clone this repository. The
-client uses only the Python standard library. Commands below assume the
-repository root. If only downloading files, preserve the shown relative paths.
+Install the standalone [client package](../client/README.md). From a repository
+checkout, `python3 -m pip install ./client` installs only the client; a client
+wheel can also be installed without a checkout. No server/core package or Rust
+build is involved. The command is `ml-exp`; `python -m ml_exp_client` is its
+module entry point. The distribution has no runtime dependencies.
 Obtain the revision containing these examples from the operator while the
 source API changes are still under review.
 
 ```bash
 export ML_EXPD_API_URL='https://api.example.org/ml-expd'
 export ML_EXPD_API_TOKEN_FILE="$HOME/.config/ml-expd/client.token"
-python3 examples/api_client.py check --schema openapi.json
+ml-exp check --schema openapi.json
 ```
 
 Put the token received from the operator into that local file with mode `0600`;
@@ -49,16 +50,18 @@ Submission preparation supplies the actual preflight gates.
 
 ## Import source and package a Runtime
 
-The supplied program writes three numeric metrics and a summary. It is an
-output/transport smoke, not a model-quality or GPU benchmark. Replace it with
+The offline `init` command creates a program that writes three numeric metrics
+and a summary. It needs no API connection and is included in the client wheel.
+It is an output/transport smoke, not a model-quality or GPU benchmark. Replace it with
 your training code once the workflow works. It needs only Python; the common
 managed Run resource schema still requires at least one GPU on these executors.
 
 ```bash
 export ML_EXPD_BASE_IMAGE='registry.example.org/team/python@sha256:<operator-provided-digest>'
 export PROJECT="hello-$(date -u +%Y%m%dT%H%M%SZ)"
-python3 examples/api_client.py pack \
-  --project "$PROJECT" --source examples/api_project \
+ml-exp init ./my-study
+ml-exp pack \
+  --project "$PROJECT" --source ./my-study \
   --image "$ML_EXPD_BASE_IMAGE" --state runtime.json
 ```
 
@@ -82,10 +85,10 @@ not accept client Git credentials.
 Select an ID from `check`'s executor list. Here `wyd-l40s` is illustrative.
 
 ```bash
-python3 examples/api_client.py create --runtime-state runtime.json \
+ml-exp create --runtime-state runtime.json \
   --run trial-wyd --executor wyd-l40s \
   --arguments '["--steps","3"]' --max-time 00:05:00
-python3 examples/api_client.py prepare --project "$PROJECT" --run trial-wyd \
+ml-exp prepare --project "$PROJECT" --run trial-wyd \
   --max-gpu-hours 0.1 --state submission-wyd.json
 ```
 
@@ -100,9 +103,9 @@ The next command authorizes and executes the exact saved Submission, and **can
 allocate paid GPU resources**. Supply the exact confirmation printed by prepare:
 
 ```bash
-python3 examples/api_client.py execute --state submission-wyd.json \
+ml-exp execute --state submission-wyd.json \
   --confirm 'EXECUTE <submission_id-from-prepare>'
-python3 examples/api_client.py watch --project "$PROJECT" --run trial-wyd
+ml-exp watch --project "$PROJECT" --run trial-wyd
 ```
 
 `VERIFIED` means the exact scheduler job ID was observed. It does not mean
@@ -128,7 +131,7 @@ an experiment supports a hypothesis.
 Use the exact Attempt you inspected, not an assumed latest Attempt:
 
 ```bash
-python3 examples/api_client.py download --project "$PROJECT" --run trial-wyd \
+ml-exp download --project "$PROJECT" --run trial-wyd \
   --attempt attempt-001 --out results-wyd
 ```
 
@@ -154,10 +157,10 @@ Reuse the same Runtime, create a **different** Run ID, select the SenseCore
 executor returned by `check`, then repeat prepare/execute/watch/download:
 
 ```bash
-python3 examples/api_client.py create --runtime-state runtime.json \
+ml-exp create --runtime-state runtime.json \
   --run trial-sensecore --executor sensecore-1gpu \
   --arguments '["--steps","3"]' --max-time 00:05:00
-python3 examples/api_client.py prepare --project "$PROJECT" --run trial-sensecore \
+ml-exp prepare --project "$PROJECT" --run trial-sensecore \
   --max-gpu-hours 0.1 --state submission-sensecore.json
 ```
 
