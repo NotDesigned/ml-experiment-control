@@ -157,6 +157,38 @@ def test_checkpoint_archive_has_exact_declared_bytes_and_manifest(tmp_path):
         assert json.load(archive.extractfile("checkpoint.ready.json")) == ready
 
 
+def test_published_checkpoint_reuses_verified_cache_without_network(tmp_path, monkeypatch):
+    root = tmp_path / "outputs"
+    root.mkdir()
+    checkpoint(root)
+    stream = io.BytesIO()
+    worker.checkpoint_archive(root, stream)
+    data = stream.getvalue()
+    cache = tmp_path / "cache"
+    destination = worker.cache_checkpoint(stream, cache)
+    files = {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    item = input_item(data, files)
+    def forbidden(*args):
+        pytest.fail("same-backend checkpoint recovery must not download the archive")
+    monkeypatch.setattr(worker, "fetch", forbidden)
+    assert worker.deliver(item, "capability", cache) == destination
+    assert worker.cache_checkpoint(stream, cache) == destination
+    weights = destination / "checkpoints/step-1/model.pt"
+    weights.chmod(0o644)
+    weights.write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="checksum"):
+        worker.deliver(item, "capability", cache)
+
+
+def test_local_checkpoint_archive_mismatch_is_not_cached(tmp_path):
+    data = tar_bytes({"x": b"bytes"})
+    item = input_item(data, {"x": b"bytes"})
+    with pytest.raises(ValueError, match="local checkpoint"):
+        worker.deliver(item, None, tmp_path / "cache", archive_stream=io.BytesIO(b"changed archive"))
+    assert not (tmp_path / "cache" / item["asset_id"]).exists()
+    assert not list((tmp_path / "cache").glob(".input-*"))
+
+
 @pytest.mark.parametrize("case", ["large-manifest", "empty", "many", "duplicate", "reserved", "wrong-sha", "wrong-size", "file-link", "parent-link", "fifo", "limit", "changing"])
 def test_checkpoint_publication_rejects_incomplete_mutable_or_escaping_files(tmp_path, monkeypatch, case):
     ready, file = checkpoint(tmp_path)
@@ -205,7 +237,13 @@ def test_managed_worker_hides_capabilities_publishes_live_checkpoint_and_preserv
         monkeypatch.setenv(key, value)
     linked, published, delivered = [], [], []
     monkeypatch.setattr(worker, "link_path", lambda target, path: linked.append(str(path)))
-    monkeypatch.setattr(worker, "deliver", lambda item, token, cache: delivered.append(token) or tmp_path)
+    deliver = worker.deliver
+    def delivery(item, token, cache, **kwargs):
+        if kwargs:
+            return deliver(item, token, cache, **kwargs)
+        delivered.append(token)
+        return tmp_path
+    monkeypatch.setattr(worker, "deliver", delivery)
     class Child:
         pid = 12345
         calls = 0
@@ -223,6 +261,10 @@ def test_managed_worker_hides_capabilities_publishes_live_checkpoint_and_preserv
     def upload(url, token, stream, length):
         if upload_fail: raise OSError("upload unavailable")
         assert token == "private-capability" and length > 0
+        if url.endswith("snapshot"):
+            stream.seek(0)
+            digest, _ = worker.digest_stream(stream)
+            assert (root.parents[4] / "data-assets" / ("asset." + digest)).is_dir()
         published.append(url)
     monkeypatch.setattr(worker, "upload", upload)
     assert worker.main(["python3", "train.py"]) == expected
@@ -253,7 +295,7 @@ def test_delivery_failure_prevents_training_and_worker_entrypoints(tmp_path, mon
     assert result.value.code == 0
 
 
-@pytest.mark.parametrize("mode", ["disabled", "not-ready", "later", "snapshot-overhead", "marker-race", "final-overhead"])
+@pytest.mark.parametrize("mode", ["disabled", "not-ready", "later", "snapshot-overhead", "marker-race", "final-overhead", "cache-failure"])
 def test_worker_checkpoint_options_and_archive_overhead_limits(tmp_path, monkeypatch, mode, capsys):
     root=tmp_path/"outputs"; root.mkdir()
     for key,value in {"OUTPUT_DIR":str(root),"ML_EXPD_UPLOAD_URL":"https://api.example/final","ML_EXPD_UPLOAD_TOKEN":"private","ML_EXPD_UPLOAD_LIMIT":str(2*1024**2)}.items(): monkeypatch.setenv(key,value)
@@ -270,6 +312,9 @@ def test_worker_checkpoint_options_and_archive_overhead_limits(tmp_path, monkeyp
             self.calls+=1; return None if self.calls==1 else 0
     monkeypatch.setattr(worker.subprocess,"Popen",lambda *a,**k:Child())
     monkeypatch.setattr(worker,"upload",lambda *a:None)
+    def cache(*args):
+        if mode == "cache-failure": raise OSError("cache disk unavailable")
+    monkeypatch.setattr(worker,"cache_checkpoint",cache)
     if mode == "snapshot-overhead":
         def oversized(root,stream,limit): stream.write(b"x"*(limit+1)); return hashlib.sha256(worker.read_checkpoint_ready(root)).hexdigest()
         monkeypatch.setattr(worker,"checkpoint_archive",oversized)
@@ -279,3 +324,6 @@ def test_worker_checkpoint_options_and_archive_overhead_limits(tmp_path, monkeyp
         monkeypatch.setattr(worker,"archive_outputs",oversized)
     assert worker.main(["train"]) == (74 if mode=="final-overhead" else 0)
     if mode in {"snapshot-overhead","marker-race"}: assert "CHECKPOINT_UPLOAD=FAILED" in capsys.readouterr().err
+    if mode == "cache-failure":
+        captured = capsys.readouterr()
+        assert "CHECKPOINT_CACHE=FAILED" in captured.err and "CHECKPOINT_UPLOAD=COMPLETE" in captured.out

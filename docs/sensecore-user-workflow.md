@@ -103,7 +103,7 @@ Delivery currently occurs inside the allocated job, so its time counts against
 the task's wall-clock/GPU budget. Logs report delivery completion/time/failure.
 The aggregate frozen input manifest has a 32 KiB scheduler-command limit.
 
-All newly built source, requirements and Dockerfile runtimes share the same
+New Dockerfile runtimes use the same
 managed data/checkpoint worker and support SenseCore and WYD.
 WYD converts the pinned OCI image to SIF, downloads approved data into its shared
 `/datapool` project cache, and binds per-Attempt directories at `/inputs` and
@@ -134,7 +134,15 @@ ml-exp snapshots --project my-training --run trial --attempt attempt-001
 ```
 
 Snapshots are available during training and survive job termination after a
-successful upload. Select a snapshot's `asset_id`, create a new Run using the same
+successful upload. Before publishing, the worker also seeds a separate,
+checksum-verified copy in that project's shared data-asset cache. A new Run on
+the same backend reuses it after verifying every file, avoiding another download
+of model weights over the control server's network. The object-store asset and
+its upload receipt remain authoritative; a failed local cache does not prevent
+publication. Another backend, a cleared cache, or old workers still download the
+asset normally. Cache copies consume backend storage and share the dataset cache
+retention policy; they do not keep training images on the control server.
+Select a snapshot's `asset_id`, create a new Run using the same
 runtime/data plus that asset at `/inputs/resume`, and pass its checkpoint path to
 the program. Application code restores its own model, optimizer and RNG state.
 ML-Expd does not interpret or unpickle training checkpoints on the server.
