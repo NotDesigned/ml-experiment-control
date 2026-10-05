@@ -77,6 +77,16 @@ def test_ephemeral_builder_rejects_mutable_runtime_before_creation(tmp_path):
         value._publish_buildkit("registry/image:bundle", tmp_path)
 
 
+def test_builder_tool_temporary_files_use_writable_state_not_readonly_host_tmp(tmp_path, monkeypatch):
+    import os
+    import subprocess
+    monkeypatch.setenv("TMPDIR", "/read-only-host-tmp")
+    builder = ImageBuilder({"state_root": str(tmp_path / "state")})
+    path = builder._command(["/usr/bin/python3", "-c", "import tempfile; print(tempfile.mkdtemp())"], capture=True).strip()
+    assert Path(path).parent == builder.root / "tmp"
+    assert os.environ["TMPDIR"] == "/read-only-host-tmp"  # Scope override to the tool.
+
+
 def test_legacy_publisher_removes_only_verified_output_tag(tmp_path):
     from ml_exp_server.image_builder import MANIFEST_TYPE
     builder = ImageBuilder({"state_root": str(tmp_path), "repository": "registry/image", "cleanup_published_image": True})

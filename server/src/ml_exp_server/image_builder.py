@@ -296,15 +296,20 @@ class ImageBuilder:
                               *arguments], capture=capture)
 
     def _command(self, command: list[str], *, capture: bool = False) -> str:
+        temporary = self.root / "tmp"
+        temporary.mkdir(exist_ok=True, mode=0o700)
+        environment = {**os.environ, "TMPDIR": str(temporary)}
         try:
             path = BUILD_LOG.get()
             if path is not None and not capture:
                 with path.open("ab") as log:
                     subprocess.run(command, check=True, stdout=log, stderr=log,
+                                   env=environment,
                                    timeout=self.config.get("timeout_seconds", 600))
                 return ""
             result = subprocess.run(command,
                                     check=True, stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                                    env=environment,
                                     stderr=subprocess.DEVNULL, timeout=self.config.get("timeout_seconds", 600))
             return result.stdout.decode() if capture else ""
         except (OSError, subprocess.SubprocessError) as exc:

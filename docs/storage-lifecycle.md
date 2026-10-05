@@ -14,6 +14,9 @@ receipts/logs remain. Builds are serialized to limit transient disk pressure;
 temporary layers still require free disk during the build. The pinned BuildKit
 tool image itself remains a reusable service dependency.
 
+Build tools use `state_root/tmp` for transient client configuration; a service
+may keep the host `/tmp` read-only without preventing BuildKit bootstrap.
+
 A private `ephemeral-builder.json` records the exact owner before creation.
 The next builder startup/build cleans up that recorded builder after interruption.
 Failed cleanup blocks publication and retains the recovery record. No default
