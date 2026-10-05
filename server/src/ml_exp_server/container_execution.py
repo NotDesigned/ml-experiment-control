@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 import yaml
 
 from .application_errors import ApplicationError
-from .image_builder import IMAGE, RECIPE, builder_request, bundle_id
+from .image_builder import IMAGE, RECIPE, builder_request, bundle_id, BuildStorageError
 from .environment_build import DEPENDENCY_RECIPE, dockerfile, inspect_requirements, requirements_path, installer_digest
 from .dockerfile_build import DOCKERFILE_RECIPE, inspect_dockerfile, managed_dockerfile, worker_digest
 from .data_assets import AssetStore
@@ -318,7 +318,7 @@ class ContainerExecutionService:
             if value["status"] == "EXECUTING" and not reconcile:
                 raise ApplicationError("runtime packaging is already executing; inspect or reconcile", code="CONTAINER_EXECUTION_BLOCKED")
             self.require_current_build(project, value)
-            value.update(status="EXECUTING", error=None)
+            value.update(status="EXECUTING", error=None, build_error=None)
             from .execution_progress import record_progress
             record_progress(self.root / project / (runtime_id + ".progress.json"), "WAITING_BUILD_WORKER",
                             "Build claimed by daemon; waiting for builder request or receipt reconciliation")
@@ -364,6 +364,10 @@ class ContainerExecutionService:
             value.update(status="READY", image=result["image"], bundle_id=result["bundle_id"], completed_at=utc_now())
             if spec.dockerfile is not None or "worker_contract" in value:
                 value["capabilities"] = result["capabilities"]
+        except BuildStorageError as exc:
+            value.update(status="RECONCILE_REQUIRED", error=exc.code,
+                         build_error={"code": exc.code, "details": exc.details,
+                                      "retry_safe": exc.code in {"BUILD_STORAGE_INSUFFICIENT", "BUILD_STORAGE_UNCHECKED"}})
         except Exception:
             value.update(status="RECONCILE_REQUIRED", error="image packaging failed or is uncertain; inspect worker and reconcile")
         return self.finish_state(pending, value)

@@ -152,6 +152,7 @@ async def runtime_build_observation(project, runtime_id, request, operation):
     result = await invoke(builder_request, service.runtime.config.container_execution.builder_socket, payload)
     if operation == "progress":
         result.update(runtime_id=runtime_id, status=value["status"])
+        result["build_error"] = value.get("build_error")
         if not result["progress"].get("events"):
             from ..execution_progress import progress_view
             result["progress"] = progress_view(service.root / project / (runtime_id + ".progress.json"), value["status"], active=value["status"] == "EXECUTING")

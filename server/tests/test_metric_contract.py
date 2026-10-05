@@ -267,3 +267,31 @@ def test_controller_does_not_replace_malformed_unit_or_status_with_schema_defaul
     for invalid in ({"unit": []}, {"status": {}}, {"name": []}):
         parsed = parse_metric(None, json.dumps(row(**invalid)))
         assert metric_result([parsed], SCHEMA)["state"] == "FAILED"
+
+
+def test_stdout_and_jsonl_keep_separate_variants_and_true_conflicts():
+    from ml_exp_server.container_controller import parse_metric
+    records = [row(value=2, variant_id="a", checkpoint_id="c", dataset_id="d"),
+               row(value=3, variant_id="b", checkpoint_id="c", dataset_id="d")]
+    stdout = [parse_metric(None, json.dumps(item)) for item in records]
+    assert stdout == records
+    result = metric_result(stdout, SCHEMA)
+    assert result == metric_result(records, SCHEMA)
+    assert len(result["contexts"]) == 2
+    assert all(context["state"] == "COMPLETE" for context in result["contexts"])
+    assert result["current"] is None  # No cross-variant best-model selection.
+    conflict = metric_result([*stdout, row(value=4, variant_id="a", checkpoint_id="c", dataset_id="d")], SCHEMA)
+    assert next(c for c in conflict["contexts"] if c["identity"]["variant_id"] == "a")["state"] == "FAILED"
+    assert next(c for c in conflict["contexts"] if c["identity"]["variant_id"] == "b")["state"] == "COMPLETE"
+
+
+@pytest.mark.parametrize("variant", [[], {}, True, 1, 1.5, "", " ", "bad\nvariant", "x" * 2001])
+def test_malformed_variants_fail_in_both_ingestion_paths(variant):
+    from ml_exp_server.container_controller import parse_metric
+    raw = row(variant_id=variant)
+    for item in (raw, parse_metric(None, json.dumps(raw))):
+        assert metric_result([item], SCHEMA)["state"] == "FAILED"
+
+
+def test_missing_and_null_variant_remain_valid():
+    assert metric_result([row(variant_id=None)], SCHEMA)["state"] == "COMPLETE"

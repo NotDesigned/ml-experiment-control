@@ -128,6 +128,10 @@ def test_submission_progress_tracks_stage_and_keeps_exact_queue_evidence(tmp_pat
         _action(api, prepared["submission_id"])
         result = api.get(endpoint + "/progress").json()
         assert result["phase"] == "QUEUED" and result["queue"]["estimated_start_at"] is None
+        assert result["message"] != "Verifying the exact Attempt and scheduler job identity"
+        assert result["seconds_since_progress"] is None and result["phase_started_at"] is None
+        assert result["submission_progress"]["seconds_since_progress"] is not None
+        assert result["workload_evidence"]["process"]["availability"] == "NOT_OBSERVED"
         assert [e["phase"] for e in result["events"]] == ["VALIDATING_SOURCE", "STAGING", "SCHEDULER_SUBMITTING", "VERIFYING_SUBMISSION"]
         for attempt, reason in (("attempt-002", None), ("attempt-001", "Resources")):
             api.app.state.index.upsert_run(RunIndexRow(project="demo", run_id="run-a", run_dir=str(tmp_path),
@@ -135,3 +139,24 @@ def test_submission_progress_tracks_stage_and_keeps_exact_queue_evidence(tmp_pat
             result = api.get(endpoint + "/progress").json()
             assert result["queue"]["reason"] == reason
         assert api.get("/api/submissions/action-unknown/progress").status_code == 404
+
+
+@pytest.mark.parametrize("state", ["STARTING", "RUNNING", "SUCCEEDED"])
+def test_verified_progress_distinguishes_scheduler_observation_and_model_evidence(tmp_path, state):
+    app, _ = _app(tmp_path)
+    with TestClient(app) as api:
+        prepared = api.post("/api/experiments/demo/run-a/submissions/prepare", json={"max_gpu_hours": 2}).json()
+        endpoint = "/api/submissions/"+prepared['submission_id']
+        api.post(endpoint+'/authorize', json={'note': 'test'})
+        api.post(endpoint+'/execute', json={'confirmation': prepared['confirmation']})
+        _action(api, prepared['submission_id'])
+        for attempt in ('attempt-002', 'attempt-001'):
+            app.state.index.upsert_run(RunIndexRow(project='demo', run_id='run-a', run_dir=str(tmp_path),
+                evidence={'scheduler': {'state': state, 'attempt_id': 'attempt-001', 'as_of': 1000},
+                          'model': {'state': 'step 3', 'attempt_id': attempt, 'as_of': 900},
+                          'worker': {'state': 'PENDING', 'attempt_id': attempt, 'as_of': 800}}))
+            result = api.get(endpoint+'/progress').json()
+            assert result['scheduler_observed_at'] == 1000
+            assert result['last_progress_unix'] is None
+            assert result['diagnostic'] is not None if state != 'SUCCEEDED' else result['diagnostic'] is None
+            assert result['workload_evidence']['model']['state'] == ('step 3' if attempt == 'attempt-001' else None)

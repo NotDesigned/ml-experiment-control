@@ -98,3 +98,11 @@ selection is performed merely because both names contain `loss`.
 Historical ELF JSONL/artifacts remain available. The generic read model no
 longer derives `plan_ppl_gap`, promotes an alias to a scientific metric, or
 requires a four-mode evaluation family.
+# Realtime and uploaded metric identities
+
+Named stdout JSON records and uploaded JSONL preserve `variant_id` alongside
+protocol, checkpoint, dataset, epoch and step. Different variants form separate
+contexts; their different values are not conflicting rewrites. Rewriting the
+same context with a different value still fails. A present `variant_id` must be
+a nonempty printable string of at most 2000 characters; missing/null remains
+valid. The platform does not select a winner across variants.

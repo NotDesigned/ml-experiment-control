@@ -61,6 +61,9 @@ def observations(record, schema, *, protocol_id=None, source=None):
     bad_context = context is not None and (not isinstance(context, str) or len(context) > 2000)
     if bad_context:
         context = None
+    variant = record.get("variant_id")
+    bad_variant = variant is not None and (not isinstance(variant, str) or not variant.strip()
+                                          or len(variant) > 2000 or any(ord(c) < 32 for c in variant))
     if "name" in record:
         if not isinstance(record["name"], str) or not record["name"].strip() or len(record["name"]) > 128 or any(ord(c) < 32 for c in record["name"]):
             return [{"name": None, "value": None, "unit": None, "status": "FAILED",
@@ -97,6 +100,9 @@ def observations(record, schema, *, protocol_id=None, source=None):
         if bad_context:
             state, error = "FAILED", "INVALID_PROTOCOL_ID"
             errors.append(error)
+        if bad_variant:
+            state, error = "FAILED", "INVALID_VARIANT_ID"
+            errors.append(error)
         if protocol_id is not None and context != protocol_id:
             state, error = "FAILED", "PROTOCOL_MISMATCH"
             errors.append(error)
@@ -114,7 +120,7 @@ def observations(record, schema, *, protocol_id=None, source=None):
             errors.append(error)
         results.append({**common, "name": name, "value": value if valid_number else None, "unit": unit,
                         "invalid_value": str(value)[:128] if value is not None and not valid_number else None,
-                        "variant_id": record.get("variant_id") if isinstance(record.get("variant_id"), str) else None,
+                        "variant_id": variant if not bad_variant else None,
                         "protocol_id": context, "status": state, "error": str(error)[:2000] if error is not None else None,
                         "source": source or record.get("_source_path"), "errors": errors, **sums})
     return results
