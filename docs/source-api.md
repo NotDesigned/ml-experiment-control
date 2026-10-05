@@ -31,9 +31,17 @@ Every normal API call sends `Authorization: Bearer …` and
    `{"source_id":"source.…","image":"registry/repository@sha256:64-hex-digest","entrypoint":["python","train.py"],"workdir":"/workspace"}`.
    The image is a prepared dependency environment, pinned by OCI digest. It
    must provide Python 3, `/bin/sh` and GNU `timeout` for the stdlib upload
-   launcher. The daemon uses a fixed FROM/COPY recipe, adds the reviewed upload
-   launcher, and publishes a derived image. It never executes a project
-   Dockerfile or installs arbitrary dependencies on the host.
+   launcher. Alternatively select `environment_id` from `GET /api/environments`
+   instead of `image`. Add `requirements`, a relative path inside the imported
+   source, to install exact pinned Python dependencies. Prepare returns the
+   generated Dockerfile and dependency-file SHA256 for review. The builder runs
+   the reviewed installer inside a BuildKit container before copying source,
+   preserves the base GPU framework, checks dependency consistency, and records
+   actual versions at `/usr/local/share/ml-expd/environment.json` in the image.
+   Requirements use `package==version` and optionally complete SHA256 hashes;
+   URLs, includes, pip options, markers and source builds are unsupported.
+   The daemon never executes a project Dockerfile or installs dependencies on
+   the control-plane host. The original FROM/COPY-only recipe remains available.
    The server supplies the reviewed `packaging_revision`; it is part of the
    runtime identity, so a packaging repair creates a new runtime instead of
    replacing an existing frozen image.

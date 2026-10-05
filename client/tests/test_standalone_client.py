@@ -9,6 +9,7 @@ import io
 
 from ml_exp_client import source_archive, __version__
 from ml_exp_client.cli import main
+import pytest
 
 
 def test_client_distribution_has_no_runtime_dependencies():
@@ -64,3 +65,47 @@ def test_client_configuration_errors_are_local_and_do_not_print_tokens(monkeypat
     monkeypatch.delenv("ML_EXPD_API_TOKEN_FILE", raising=False)
     assert main(["check"]) == 2
     assert "set ML_EXPD_API_TOKEN" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("selector", ["image", "environment"])
+def test_pack_sends_pinned_requirements_and_selected_environment(tmp_path, monkeypatch, capsys, selector):
+    calls = []
+    class API:
+        def __init__(self, *args):
+            pass
+        def negotiate(self):
+            return {"capabilities": ["environments.v1", "dependency-build.v1"]}
+        def call(self, path, **kwargs):
+            calls.append((path, kwargs))
+            if "source-imports" in path:
+                return {"source_id": "source." + "a" * 64}
+            if path.endswith("prepare"):
+                return {"project": "demo", "runtime_id": "runtime." + "b" * 64,
+                        "status": "PREPARED", "confirmation": "BUILD example"}
+            return {}
+        def wait(self, *args, **kwargs):
+            return {"project": "demo", "runtime_id": "runtime." + "b" * 64, "status": "READY"}
+    monkeypatch.setattr("ml_exp_client.cli.Client", API)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "requirements.txt").write_text("colorama==0.4.6\n")
+    selected = "torch" if selector == "environment" else "registry.example/base@sha256:" + "a" * 64
+    arguments = ["pack", "--project", "demo", "--source", str(source), "--state", str(tmp_path / "runtime.json"),
+                 "--" + selector, selected, "--requirements", "requirements.txt"]
+    assert main(arguments) == 0
+    definition = next(options["data"] for path, options in calls if path.endswith("prepare"))
+    assert definition["requirements"] == "requirements.txt"
+    assert definition["environment_id" if selector == "environment" else "image"] == selected
+    assert "READY" in capsys.readouterr().out
+
+
+def test_new_build_options_require_server_capabilities_before_upload(tmp_path, monkeypatch, capsys):
+    class API:
+        def __init__(self, *args):
+            pass
+        def negotiate(self):
+            return {"capabilities": []}
+    monkeypatch.setattr("ml_exp_client.cli.Client", API)
+    assert main(["pack", "--project", "demo", "--source", str(tmp_path), "--state", str(tmp_path / "runtime.json"),
+                 "--environment", "torch"]) == 2
+    assert "capability" in capsys.readouterr().err and not (tmp_path / "runtime.json").exists()

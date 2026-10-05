@@ -83,6 +83,11 @@ async def executors(request: Request):
     return await invoke(ContainerExecutionService(request.app.state.runtime).public_profiles)
 
 
+@router.get("/environments")
+async def environments(request: Request):
+    return await invoke(ContainerExecutionService(request.app.state.runtime).environments)
+
+
 @router.post("/projects/{project}/runtimes/prepare")
 async def runtime_prepare(project: str, data: RuntimeSpec, request: Request):
     return await invoke(ContainerExecutionService(request.app.state.runtime).prepare, project, data)

@@ -7,6 +7,7 @@
   "repository": "registry.example.org/team/ml-expd-runtime",
   "base_image_prefixes": ["registry.example.org/team/base@sha256:"],
   "publisher": "buildkit",
+  "allow_dependency_builds": false,
   "registry_auth_file": "/root/.docker/config.json",
   "docker": "/usr/bin/docker",
   "skopeo": "/usr/bin/skopeo",

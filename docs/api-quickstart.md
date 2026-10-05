@@ -10,14 +10,25 @@ Ask the operator for:
 | --- | --- |
 | API base URL, including any proxy prefix | For example `https://api.example.org/ml-expd` |
 | Bearer token | This grants access to the configured control plane; keep it private |
-| Approved base image as `repository@sha256:<64 hex>` | Contains Python, your dependencies, `/bin/sh` and GNU `timeout` |
+| Environment ID from `GET /api/environments`, or approved image digest | Contains Python, the GPU framework, `/bin/sh` and GNU `timeout` |
 | Executor ID and allowed resources/budget | Profiles describe WYD or SenseCore infrastructure |
 | Dataset location and access convention | Large data is provisioned by the operator, outside source upload |
 
-There is no API for listing approved base images or building an environment
-from `requirements.txt`. A client submits source and argv, not a Dockerfile.
-The server packages source into the supplied environment with a fixed recipe.
-If a dependency is missing, first ask the operator for a new environment image.
+On servers advertising `environments.v1` and `dependency-build.v1`, `ml-exp check`
+lists approved base environments. Submit source, a pinned dependency file and
+argv; the server generates the Dockerfile, installs dependencies inside its
+build container, packages code and publishes to its configured registry.
+For SenseCore this deployment uses CCR; WYD converts the same image to SIF.
+A project Dockerfile is not executed. Older servers still accept an approved
+image digest with all dependencies already installed.
+
+Each dependency line uses `package==version`. Full-line comments and continued
+`--hash=sha256:...` lines are accepted; a hashed lock must cover every dependency.
+URLs, includes, pip options and environment markers are not supported. This
+first recipe uses binary wheels from PyPI and preserves the base environment's
+PyTorch/CUDA packages. Native builds and GPU-framework upgrades require a
+different approved base environment. Exact declared pins do not alone lock
+transitive dependencies; use a complete hash-locked file for strict repeatability.
 
 ## Connect and inspect
 
@@ -64,6 +75,22 @@ ml-exp pack \
   --project "$PROJECT" --source ./my-study \
   --image "$ML_EXPD_BASE_IMAGE" --state runtime.json
 ```
+
+If the server lists environments and supports dependency builds, replace the
+`pack` command above with this variant (choose the ID from `ml-exp check`):
+
+```bash
+export ENVIRONMENT_ID='ID-returned-by-check'
+# Include a requirements.txt with exact pins, for example tiktoken==0.12.0.
+ml-exp pack --project "$PROJECT" --source ./my-study \
+  --environment "$ENVIRONMENT_ID" --requirements requirements.txt --state runtime.json
+```
+
+`requirements.txt` must be inside `./my-study`. Omit `--requirements` when the
+selected base already contains everything. The saved Runtime includes the
+server-generated Dockerfile and requirements SHA256. The builder installs
+dependencies before copying application code, allowing the dependency layer
+to be reused across code revisions. GPU validation is separate from `READY`.
 
 Replace the image placeholder with an actual approved digest. `pack` uploads a
 tar.gz and its SHA256, prepares an immutable Runtime with `python train.py`,

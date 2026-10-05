@@ -11,11 +11,12 @@ from pathlib import Path, PurePosixPath
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import yaml
 
 from .application_errors import ApplicationError
-from .image_builder import IMAGE, RECIPE, builder_request
+from .image_builder import IMAGE, RECIPE, builder_request, bundle_id
+from .environment_build import DEPENDENCY_RECIPE, dockerfile, inspect_requirements, requirements_path, installer_digest
 from .source_imports import IDENTITY, source_lock
 from .source_revisions import resolve_source_tree
 from .storage import DurableJsonState, atomic_text, utc_now
@@ -27,7 +28,9 @@ SECRET_KEY = re.compile(r"(?i)(?:^|_)(?:token|secret|password|credential|api_key
 class RuntimeSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_id: str = Field(pattern=r"^source\.[0-9a-f]{64}$")
-    image: str
+    image: str | None = None
+    environment_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+    requirements: str | None = None
     entrypoint: list[str] = Field(min_length=1, max_length=128)
     workdir: str = "/workspace"
     packaging_revision: str = RECIPE
@@ -35,16 +38,31 @@ class RuntimeSpec(BaseModel):
     @field_validator("packaging_revision")
     @classmethod
     def reviewed_recipe(cls, value: str) -> str:
-        if value != RECIPE:
+        if value not in {RECIPE, DEPENDENCY_RECIPE}:
             raise ValueError("packaging_revision must match the current reviewed recipe")
         return value
 
     @field_validator("image")
     @classmethod
-    def immutable_image(cls, value: str) -> str:
-        if not IMAGE.fullmatch(value):
+    def immutable_image(cls, value: str | None) -> str | None:
+        if value is not None and not IMAGE.fullmatch(value):
             raise ValueError("image must be a registry reference pinned by sha256 digest")
         return value
+
+    @field_validator("requirements")
+    @classmethod
+    def relative_requirements(cls, value: str | None) -> str | None:
+        return requirements_path(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def build_definition(self):
+        if (self.image is None) == (self.environment_id is None):
+            raise ValueError("provide exactly one of image or environment_id")
+        if self.requirements is not None:
+            self.packaging_revision = DEPENDENCY_RECIPE
+        elif self.packaging_revision == DEPENDENCY_RECIPE:
+            raise ValueError("dependency recipe requires a requirements file")
+        return self
 
     @field_validator("entrypoint")
     @classmethod
@@ -135,6 +153,20 @@ class ContainerExecutionService:
                                 "artifact_transport": bool(self.runtime.config.container_execution.artifact_store_file or profile.get("artifact_ssh") or profile["backend"]["kind"] == "slurm")}
                                for name, profile in sorted(self.profiles().items())]}
 
+    def environments(self) -> dict:
+        path = self.runtime.config.container_execution.environments_file
+        data = yaml.safe_load(Path(path).read_text()) if path else {}
+        entries = data.get("environments", {}) if isinstance(data, dict) else {}
+        if not isinstance(entries, dict):
+            raise ValueError("invalid environment catalogue")
+        result = []
+        for name, entry in sorted(entries.items()):
+            if not IDENTITY.fullmatch(name) or not isinstance(entry, dict) or not IMAGE.fullmatch(entry.get("image", "")):
+                raise ValueError("invalid environment catalogue entry")
+            result.append({"id": name, **{k: entry[k] for k in
+                           ("title", "image", "versions", "validation", "description") if k in entry}})
+        return {"environments": result}
+
     @contextmanager
     def state(self, project: str, runtime_id: str):
         if not IDENTITY.fullmatch(project) or not re.fullmatch(r"runtime\.[0-9a-f]{64}", runtime_id):
@@ -153,15 +185,28 @@ class ContainerExecutionService:
         configured = self.runtime.project(project)
         if not configured.controller or not configured.controller.capabilities.get("container_execution"):
             raise ApplicationError("project uses its own controller; container import requires a managed project", code="CONTAINER_EXECUTION_BLOCKED")
-        resolve_source_tree(self.runtime.config, project, spec.source_id)
-        identity = hashlib.sha256(json.dumps([project, spec.model_dump()], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        environment = None
+        if spec.environment_id is not None:
+            environment = next((e for e in self.environments()["environments"] if e["id"] == spec.environment_id), None)
+            if environment is None:
+                raise ApplicationError("unknown environment", status_code=404, code="UNKNOWN_ENVIRONMENT")
+            spec = RuntimeSpec.model_validate({**spec.model_dump(exclude_none=True), "image": environment["image"], "environment_id": None})
+        tree = resolve_source_tree(self.runtime.config, project, spec.source_id)
+        dependencies = inspect_requirements(tree, spec.requirements) if spec.requirements is not None else None
+        frozen = spec.model_dump(exclude_none=True)
+        identity = hashlib.sha256(json.dumps([project, frozen], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         runtime_id = "runtime." + identity
         with self.state(project, runtime_id) as (store, snapshot):
             if snapshot.value:
                 return snapshot.value
-            value = {"project": project, "runtime_id": runtime_id, "spec": spec.model_dump(),
+            value = {"project": project, "runtime_id": runtime_id, "spec": frozen,
                      "status": "PREPARED", "confirmation": "BUILD " + runtime_id,
                      "created_at": utc_now(), "image": None}
+            value.update(dockerfile=dockerfile(spec.image, spec.source_id, spec.requirements))
+            if dependencies is not None:
+                value["dependencies"] = dependencies
+            if environment is not None:
+                value["environment"] = environment
             store.commit(value, expected_revision=snapshot.revision, event={"event": "runtime_prepared", "timestamp": utc_now()})
             return value
 
@@ -189,12 +234,20 @@ class ContainerExecutionService:
             if not socket:
                 raise ValueError("image packaging worker is not configured")
             resolve_source_tree(self.runtime.config, project, spec.source_id)
-            result = builder_request(socket, {"operation": "get" if reconcile else "build", "project": project,
+            payload = {"operation": "get" if reconcile else "build", "project": project,
                                               "source_id": spec.source_id, "base_image": spec.image,
-                                              "packaging_revision": spec.packaging_revision})
+                                              "packaging_revision": spec.packaging_revision}
+            if spec.requirements is not None:
+                payload["requirements"] = spec.requirements
+            result = builder_request(socket, payload)
             if (result.get("project") != project or result.get("source_id") != spec.source_id
                     or result.get("base_image") != spec.image or not IMAGE.fullmatch(result.get("image", ""))):
                 raise ValueError("image packaging result identity mismatch")
+            if spec.requirements is not None and (result.get("dependencies") != value["dependencies"]
+                    or result.get("dockerfile_sha256") != hashlib.sha256(value["dockerfile"].encode()).hexdigest()
+                    or result.get("installer_sha256") != installer_digest()
+                    or result.get("bundle_id") != bundle_id(project, spec.source_id, spec.image, spec.requirements)):
+                raise ValueError("dependency build receipt does not match the prepared recipe")
             value.update(status="READY", image=result["image"], bundle_id=result["bundle_id"], completed_at=utc_now())
         except Exception:
             value.update(status="RECONCILE_REQUIRED", error="image packaging failed or is uncertain; inspect worker and reconcile")

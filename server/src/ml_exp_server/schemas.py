@@ -154,6 +154,7 @@ class ContainerExecutionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profiles_file: Optional[str] = None
+    environments_file: Optional[str] = None
     builder_socket: Optional[str] = None
     artifact_store_file: Optional[str] = None
     registry_pull_file: Optional[str] = None

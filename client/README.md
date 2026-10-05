@@ -60,8 +60,12 @@ The complete workflow is `pack` → `create` → `prepare` → `execute` → `wa
 `execute` requires the exact saved Submission's confirmation and can allocate
 GPU resources. Read [the complete API quickstart](../docs/api-quickstart.md)
 for commands, resource policy, result integrity and uncertain-effect recovery.
-Source is uploaded over HTTP; the environment is an approved registry image
-reference, not an uploaded Dockerfile or a dependency-install request.
+Source is uploaded over HTTP. `check` lists environments on supporting servers;
+`pack --environment <ID> --requirements requirements.txt` asks the server to
+generate a Dockerfile, install pinned binary Python dependencies, and package
+source. `--image <repository@sha256:...>` remains available instead of the
+environment ID. The requirements path is relative to the uploaded source.
+Project Dockerfiles are not executed; see the quickstart for supported pins.
 
 ## Python use
 

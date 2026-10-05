@@ -20,6 +20,7 @@ import tempfile
 
 from .source_revisions import _tree_digest
 from .storage import atomic_json
+from .environment_build import DEPENDENCY_RECIPE, dockerfile, inspect_requirements, installer_digest, requirements_path
 
 
 IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
@@ -29,9 +30,12 @@ RECIPE = "source-copy-docker-v2-v2"
 MANIFEST_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
 
 
-def bundle_id(project: str, source_id: str, base_image: str) -> str:
+def bundle_id(project: str, source_id: str, base_image: str, requirements: str | None = None) -> str:
     worker_sha = hashlib.sha256(Path(__file__).with_name("container_worker.py").read_bytes()).hexdigest()
-    return hashlib.sha256(json.dumps([project, source_id, base_image, RECIPE, worker_sha], separators=(",", ":")).encode()).hexdigest()
+    fields = [project, source_id, base_image, RECIPE, worker_sha]
+    if requirements is not None:
+        fields.extend([DEPENDENCY_RECIPE, requirements_path(requirements), installer_digest()])
+    return hashlib.sha256(json.dumps(fields, separators=(",", ":")).encode()).hexdigest()
 
 
 class UnixConnection(http.client.HTTPConnection):
@@ -65,7 +69,11 @@ class ImageBuilder:
         if (not PROJECT.fullmatch(project) or not re.fullmatch(r"source\.[0-9a-f]{64}", source_id)
                 or not IMAGE.fullmatch(image)):
             raise ValueError("invalid image packaging identity")
-        identity = bundle_id(project, source_id, image)
+        requirements = request.get("requirements")
+        recipe_version = DEPENDENCY_RECIPE if requirements is not None else RECIPE
+        if request.get("packaging_revision", recipe_version) != recipe_version:
+            raise ValueError("image packaging revision mismatch")
+        identity = bundle_id(project, source_id, image, requirements)
         metadata_path = self.root / f"{identity}.json"
         with (self.root / f"{identity}.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -78,8 +86,9 @@ class ImageBuilder:
                 raise ValueError("image bundle has not been published")
             if request.get("operation") != "build":
                 raise ValueError("unsupported image packaging operation")
-            if request.get("packaging_revision", RECIPE) != RECIPE:
-                raise ValueError("image packaging revision mismatch")
+            if requirements is not None and (not self.config.get("allow_dependency_builds")
+                                             or self.config.get("publisher") != "buildkit"):
+                raise ValueError("dependency builds require an enabled BuildKit publisher")
             prefixes = self.config.get("base_image_prefixes", [])
             if prefixes and not any(image.startswith(prefix) for prefix in prefixes):
                 raise ValueError("base image is outside packaging policy")
@@ -93,6 +102,7 @@ class ImageBuilder:
                 raise ValueError("source packaging identity mismatch")
             if _tree_digest(tree, require_read_only=True) != expected:
                 raise ValueError("source changed before packaging")
+            dependencies = inspect_requirements(tree, requirements) if requirements is not None else None
             registry = self.config["repository"]
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]+", registry):
                 raise ValueError("invalid image packaging repository")
@@ -107,9 +117,10 @@ class ImageBuilder:
                 (context / "source").chmod(0o555)
                 shutil.copyfile(Path(__file__).with_name("container_worker.py"), context / "worker.py")
                 (context / "worker.py").chmod(0o444)
-                recipe = (f"FROM {image}\nCOPY source/ /workspace/\nWORKDIR /workspace\n"
-                          "COPY worker.py /usr/local/lib/ml-expd/worker.py\n"
-                          f"LABEL org.ml-expd.source={source_id}\nENTRYPOINT []\nCMD [\"/bin/true\"]\n")
+                if dependencies is not None:
+                    shutil.copyfile(tree / requirements, context / "requirements.txt")
+                    shutil.copyfile(Path(__file__).with_name("dependency_install.py"), context / "dependency_install.py")
+                recipe = dockerfile(image, source_id, requirements)
                 (context / "Dockerfile").write_text(recipe)
                 if self.config.get("publisher", "archive") == "buildkit":
                     published = self._publish_buildkit(tag, context)
@@ -117,8 +128,11 @@ class ImageBuilder:
                     self._docker(["build", "--network=none", "--tag", tag, directory])
                     published = self._publish(tag, context)
             result = {"bundle_id": identity, "project": project, "source_id": source_id,
-                      "base_image": image, "image": published, "recipe": RECIPE,
+                      "base_image": image, "image": published, "recipe": recipe_version,
                       "manifest_type": MANIFEST_TYPE}
+            if dependencies is not None:
+                result.update(dependencies=dependencies, dockerfile_sha256=hashlib.sha256(recipe.encode()).hexdigest(),
+                              installer_sha256=installer_digest())
             atomic_json(metadata_path, result)
             return result
 
@@ -126,7 +140,8 @@ class ImageBuilder:
         # BuildKit streams new layers to the registry and reuses existing base
         # blobs. Exporting a complete CUDA image twice exhausts small servers.
         metadata = context / "buildkit.json"
-        self._docker(["buildx", "build", "--builder", "default", "--network=none",
+        network = "default" if (context / "requirements.txt").exists() else "none"
+        self._docker(["buildx", "build", "--builder", "default", "--network=" + network,
                       "--provenance=false", "--sbom=false", "--tag", tag,
                       "--metadata-file", str(metadata), "--output",
                       "type=image,push=true,oci-mediatypes=false,compression=gzip",

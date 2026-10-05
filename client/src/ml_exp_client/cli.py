@@ -27,7 +27,10 @@ def parser():
     pack = commands.add_parser("pack", help="import source and package image; allocates no GPU")
     pack.add_argument("--project", required=True)
     pack.add_argument("--source", type=Path, required=True)
-    pack.add_argument("--image", required=True)
+    environment = pack.add_mutually_exclusive_group(required=True)
+    environment.add_argument("--image", help="immutable base image digest")
+    environment.add_argument("--environment", help="ID from the server environment catalogue")
+    pack.add_argument("--requirements", help="pinned dependency file inside the uploaded source")
     pack.add_argument("--entrypoint", nargs="+", default=["python", "train.py"])
     pack.add_argument("--state", type=Path, required=True)
     create = commands.add_parser("create", help="freeze a Run; does not submit it")
@@ -82,18 +85,26 @@ def main(argv=None):
         if args.command == "check":
             result = {"health": health, "policy": client.call("/api/actions/policy"),
                       "executors": client.call("/api/executors")}
+            if "environments.v1" in health.get("capabilities", []):
+                result["environments"] = client.call("/api/environments")
             if args.schema:
                 save(args.schema, client.call(health["openapi_path"]))
         elif args.command == "pack":
             if args.state.exists():
                 raise ClientError("state file exists; inspect it with runtime instead of replaying pack")
+            if (args.environment and "environments.v1" not in health.get("capabilities", [])
+                    or args.requirements and "dependency-build.v1" not in health.get("capabilities", [])):
+                raise ClientError("server does not advertise the requested environment/dependency build capability")
             source = source_archive(args.source)
             query = urlencode({"project": args.project, "sha256": hashlib.sha256(source).hexdigest()})
             imported = client.call("/api/source-imports/archive?" + query, raw=source)
             save(args.state, imported)
             endpoint = "/api/projects/" + segment(args.project) + "/runtimes"
-            result = client.call(endpoint + "/prepare", data={"source_id": imported["source_id"],
-                                 "image": args.image, "entrypoint": args.entrypoint})
+            definition = {"source_id": imported["source_id"], "entrypoint": args.entrypoint}
+            definition["image" if args.image else "environment_id"] = args.image or args.environment
+            if args.requirements:
+                definition["requirements"] = args.requirements
+            result = client.call(endpoint + "/prepare", data=definition)
             save(args.state, result)  # Recovery identity is saved before starting packaging.
             endpoint += "/" + segment(result["runtime_id"])
             if result["status"] == "PREPARED":
