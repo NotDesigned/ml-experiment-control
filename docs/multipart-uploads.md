@@ -62,6 +62,10 @@ Worker retries reissue create to recover committed parts, then continue only
 missing ones. Existing frozen images remain unchanged and use their legacy
 whole-body upload with the new configured cap. To use multipart workers, build
 a new Runtime and freeze a new Run against it; a running image is not modified.
+Runtime identity includes the worker/build fingerprint, so preparing the same
+source and image after a worker upgrade produces a new Runtime. Existing READY
+Runtimes remain readable and immutable. An unbuilt Runtime prepared against a
+different implementation must be prepared again before building.
 New worker images require a server advertising this capability. Job wall-clock
 and GPU budgets still include transfer time; a hard kill can leave an incomplete
 session, not a recoverable published checkpoint.

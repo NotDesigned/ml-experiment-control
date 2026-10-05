@@ -227,14 +227,16 @@ class ContainerExecutionService:
         dependencies = inspect_requirements(tree, spec.requirements) if spec.requirements is not None else None
         inspection = inspect_dockerfile(tree, spec.dockerfile) if spec.dockerfile is not None else None
         frozen = spec.model_dump(exclude_none=True)
-        identity = hashlib.sha256(json.dumps([project, frozen], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        build_id = bundle_id(project, spec.source_id, inspection["base_images"][-1] if inspection else spec.image,
+                             spec.requirements, dockerfile_path=spec.dockerfile)
+        identity = hashlib.sha256(json.dumps([project, frozen, build_id], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         runtime_id = "runtime." + identity
         with self.state(project, runtime_id) as (store, snapshot):
             if snapshot.value:
                 return snapshot.value
             value = {"project": project, "runtime_id": runtime_id, "spec": frozen,
                      "status": "PREPARED", "confirmation": "BUILD " + runtime_id,
-                     "created_at": utc_now(), "image": None}
+                     "created_at": utc_now(), "image": None, "build_bundle_id": build_id}
             value.update(dockerfile=dockerfile(spec.image, spec.source_id, spec.requirements))
             if inspection is not None:
                 value.update(dockerfile=managed_dockerfile(inspection, spec.source_id),
@@ -253,6 +255,14 @@ class ContainerExecutionService:
                 raise ApplicationError("unknown runtime", status_code=404, code="UNKNOWN_RUNTIME")
             return snapshot.value
 
+    def require_current_build(self, project: str, value: dict):
+        if "build_bundle_id" in value:
+            prepared = RuntimeSpec.model_validate(value["spec"])
+            current = bundle_id(project, prepared.source_id, value.get("base_image", prepared.image),
+                                prepared.requirements, dockerfile_path=prepared.dockerfile)
+            if value["build_bundle_id"] != current:
+                raise ApplicationError("packaging implementation changed; prepare a new Runtime", code="CONTAINER_EXECUTION_BLOCKED")
+
     def execute(self, project: str, runtime_id: str, confirmation: str, *, reconcile: bool = False) -> dict:
         self.require_enabled()
         with self.state(project, runtime_id) as (store, snapshot):
@@ -263,6 +273,7 @@ class ContainerExecutionService:
                 return value
             if value["status"] == "EXECUTING" and not reconcile:
                 raise ApplicationError("runtime packaging is already executing; inspect or reconcile", code="CONTAINER_EXECUTION_BLOCKED")
+            self.require_current_build(project, value)
             value.update(status="EXECUTING", error=None)
             executing = store.commit(value, expected_revision=snapshot.revision, event={"event": "runtime_execution_started", "timestamp": utc_now()})
         spec = RuntimeSpec.model_validate(value["spec"])
@@ -282,6 +293,8 @@ class ContainerExecutionService:
             if (result.get("project") != project or result.get("source_id") != spec.source_id
                     or result.get("base_image") != value.get("base_image", spec.image) or not IMAGE.fullmatch(result.get("image", ""))):
                 raise ValueError("image packaging result identity mismatch")
+            if "build_bundle_id" in value and result.get("bundle_id") != value["build_bundle_id"]:
+                raise ValueError("image packaging result does not match the prepared build identity")
             if spec.requirements is not None and (result.get("dependencies") != value["dependencies"]
                     or result.get("dockerfile_sha256") != hashlib.sha256(value["dockerfile"].encode()).hexdigest()
                     or result.get("installer_sha256") != installer_digest()
