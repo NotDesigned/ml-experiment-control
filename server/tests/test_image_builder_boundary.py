@@ -59,6 +59,8 @@ def test_builder_rejects_invalid_or_changed_definitions(builder, tmp_path, monke
     elif failure in {"source-symlink", "tree-symlink", "metadata-symlink"}:
         target = source if failure == "source-symlink" else source / ("tree" if failure == "tree-symlink" else "source.json")
         target.parent.chmod(0o700)
+        if target.is_dir():
+            target.chmod(0o700)
         moved = tmp_path / "moved"
         target.rename(moved)
         target.symlink_to(moved, target_is_directory=moved.is_dir())
@@ -158,6 +160,8 @@ def test_builder_entrypoint_creates_private_socket_and_serves_request(tmp_path, 
     config.write_text(json.dumps({"socket": str(socket), "state_root": str(tmp_path / "state"),
                                  "client_uid": os.getuid(), "client_gid": os.getgid()}))
     results = []
+    ownership = []
+    monkeypatch.setattr(os, "chown", lambda path, uid, gid: ownership.append((Path(path), uid, gid)))
     def one_request(server):
         def client_request():
             try:
@@ -174,3 +178,4 @@ def test_builder_entrypoint_creates_private_socket_and_serves_request(tmp_path, 
     with pytest.warns(RuntimeWarning, match="found in sys.modules"):
         runpy.run_module(module.__name__, run_name="__main__")
     assert results == ["unpublished"] and socket.stat().st_mode & 0o777 == 0o660
+    assert ownership == [(socket.parent, 0, os.getgid()), (socket, 0, os.getgid())]
