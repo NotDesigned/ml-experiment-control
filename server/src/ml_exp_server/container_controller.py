@@ -225,6 +225,7 @@ class Controller:
                              f"{alias}:{remote}", str(mirror) + "/"], timeout_seconds=120)
         result.update(project=self.campaign["project"], run_id=self.run["run_id"],
                       attempt_id=self.attempt_id, collected_at=utc_now())
+        result["scheduler_state"] = (self.store.load_status_payload(self.attempt_id) or {}).get("state")
         atomic_write(self.attempt / "collection.json", result)
         logs = self.backend.logs(self.campaign, self.run, tail=1000)
         for key in ("stdout", "stderr", "lines"):

@@ -153,8 +153,8 @@ def render_job(
 #SBATCH --time={backend['time']}
 #SBATCH --job-name={job_name}
 #SBATCH --comment={comment}
-#SBATCH --output=/dev/null
-#SBATCH --error=/dev/null
+#SBATCH --output={shlex.quote(f"{run_dir}/attempts/{manifest['attempt_id']}/slurm-%j.out")}
+#SBATCH --error={shlex.quote(f"{run_dir}/attempts/{manifest['attempt_id']}/slurm-%j.err")}
 
 set -euo pipefail
 export APPTAINER_CACHEDIR={shlex.quote(cache)}
@@ -163,8 +163,6 @@ export BACKEND_JOB_ID="$SLURM_JOB_ID"
 mkdir -p {shlex.quote(run_dir)}
 attempt_log_dir={shlex.quote(f"{run_dir}/attempts/{manifest['attempt_id']}")}
 mkdir -p "$attempt_log_dir"
-exec > >(tee -a "$attempt_log_dir/slurm-$SLURM_JOB_ID.out") \\
-     2> >(tee -a "$attempt_log_dir/slurm-$SLURM_JOB_ID.err" >&2)
 {source_check}test -s {shlex.quote(sif_path)}
 srun apptainer exec --nv{unsquash} \\
   --bind {shlex.quote(mount_root)}:{shlex.quote(mount_root)} \\
@@ -682,7 +680,7 @@ mv -f "$receipt.tmp.$$" "$receipt"
         claim_dir = f"{run['storage']['run_dir']}/.submission-{manifest['attempt_id']}"
         claim = self.remote_exec(
             backend["ssh_alias"],
-            f"{shlex.join(['mkdir', '-p', run['storage']['run_dir']])} && "
+            f"{shlex.join(['mkdir', '-p', run['storage']['run_dir'], run['storage']['run_dir'] + '/attempts/' + manifest['attempt_id']])} && "
             f"{shlex.join(['mkdir', claim_dir])}",
             check=False,
         )

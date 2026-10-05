@@ -547,12 +547,21 @@ class Collector:
                         ),
                         None,
                     )
-                    if (
-                        attempt is None
-                        or (attempt.state or "").upper()
-                        in TERMINAL_RUN_STATES
-                    ):
-                        continue
+                    if attempt is None or (attempt.state or "").upper() in TERMINAL_RUN_STATES:
+                        # Managed runs may finish between execute verification
+                        # and the first collector cycle. Their terminal snapshot
+                        # must include a successful final collect, not just sacct.
+                        managed = bool(project.controller and project.controller.capabilities.get("container_execution"))
+                        final = {}
+                        if managed and attempt is not None:
+                            try:
+                                final = json.loads((Path(row.run_dir) / "attempts" / attempt_id / "collection.json").read_text())
+                            except (OSError, ValueError):
+                                pass
+                        if (not managed or attempt is None or
+                                (isinstance(final, dict) and final.get("attempt_id") == attempt_id
+                                 and str(final.get("scheduler_state") or "").upper() == str(row.scheduler_state).upper())):
+                            continue
                 execution_campaign = self._verified_execution_campaign(
                     project, row,
                     actions_by_run.get((project.project, row.run_id), []),
