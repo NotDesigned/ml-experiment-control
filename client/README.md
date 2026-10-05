@@ -67,10 +67,18 @@ generate a Dockerfile, install pinned binary Python dependencies, and package
 source. `--image <repository@sha256:...>` remains available instead of the
 environment ID. The requirements path is relative to the uploaded source.
 The generated recipe uses the supported pin format in the quickstart.
-For SenseCore, `ml-exp pack --dockerfile Dockerfile` executes the uploaded
-Dockerfile in the server builder, `asset-upload` delivers independent data,
-and `create --inputs ... --checkpoint-interval ...` enables mounted inputs and
-live checkpoints. See the [complete workflow](../docs/sensecore-user-workflow.md).
+`ml-exp pack --dockerfile Dockerfile` executes the uploaded Dockerfile in the
+server builder. All new source, requirements and Dockerfile builds on a server
+advertising `managed-worker.v1` support `asset-upload` and
+`create --inputs ... --checkpoint-interval ...` for input assets and live
+checkpoints on WYD and SenseCore. Old immutable images keep their original
+capabilities. See the [complete workflow](../docs/sensecore-user-workflow.md).
+
+Local state saves use a private, unique temporary file and atomic replacement;
+an abandoned `.tmp` file cannot block later saves. After a server restart,
+use `ml-exp runtime --state runtime.json --reconcile` to look up the published
+receipt. This also works for an interrupted legacy `EXECUTING` state and never
+starts a build. If no receipt exists, inspect logs before an explicit build retry.
 
 On servers advertising `multipart-upload.v1`, data uploads use 16 MiB parts
 and retain completed parts across disconnections. Resume the same unchanged

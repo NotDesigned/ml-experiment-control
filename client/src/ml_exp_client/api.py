@@ -14,6 +14,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import tarfile
+import tempfile
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
@@ -113,12 +114,24 @@ class Client:
 
 def save(path: Path, value):
     # State contains recovery IDs and sanitized API responses, never auth headers.
-    temporary = path.with_name(path.name + ".tmp")
-    with temporary.open("x", encoding="utf-8") as output:
-        os.chmod(temporary, 0o600)
-        json.dump(value, output, indent=2)
-        output.write("\n")
-    temporary.replace(path)
+    output = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix="." + path.name + ".", delete=False)
+    temporary = Path(output.name)
+    try:
+        with output:
+            json.dump(value, output, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        temporary.replace(path)
+        if os.name != "nt":
+            directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def source_archive(directory: Path) -> bytes:

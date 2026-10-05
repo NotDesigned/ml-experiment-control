@@ -102,11 +102,13 @@ Delivery currently occurs inside the allocated job, so its time counts against
 the task's wall-clock/GPU budget. Logs report delivery completion/time/failure.
 The aggregate frozen input manifest has a 32 KiB scheduler-command limit.
 
-The same managed Dockerfile/data/checkpoint runtime supports SenseCore and WYD.
+All newly built source, requirements and Dockerfile runtimes share the same
+managed data/checkpoint worker and support SenseCore and WYD.
 WYD converts the pinned OCI image to SIF, downloads approved data into its shared
 `/datapool` project cache, and binds per-Attempt directories at `/inputs` and
-`/outputs` through Apptainer. The original source-copy/dependency recipes remain
-available. API executor entries advertise `dockerfile_execution` and
+`/outputs` through Apptainer. Existing fixed images and frozen Runs keep their
+original behavior; prepare/build a new Runtime to obtain the common contract.
+API executor entries advertise `dockerfile_execution` and
 `data_asset_transport`. Transfer time is charged on both backends; compression
 helps compressible data, while already compressed datasets may still need a
 larger wall-clock budget. A 221 MB zero-filled transfer probe does not benchmark

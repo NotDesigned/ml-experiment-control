@@ -178,8 +178,9 @@ A terminal scheduler state can precede final collection. If files or the
 archive are unavailable, inspect the exact Attempt and wait for collection;
 do not start another experiment to repair a download. Writes under
 `OUTPUT_DIR` are uploaded after the program exits. A hard kill or upload failure
-can prevent results from arriving. The generated recipe uploads at exit;
-the SenseCore Dockerfile workflow can additionally publish live checkpoints.
+can prevent results from arriving. All newly built source, requirements and
+Dockerfile images can additionally publish live checkpoints when enabled;
+old fixed images retain their original final-upload-only capability.
 
 ## Repeat on SenseCore
 

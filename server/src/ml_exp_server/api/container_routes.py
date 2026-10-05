@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
@@ -101,18 +102,20 @@ async def runtime_read(project: str, runtime_id: str, request: Request):
 
 @router.post("/projects/{project}/runtimes/{runtime_id}/execute", status_code=202)
 async def runtime_execute(project: str, runtime_id: str, data: ConfirmRequest,
-                          request: Request, tasks: BackgroundTasks):
+                          request: Request):
     service = ContainerExecutionService(request.app.state.runtime)
-    value = await invoke(service.read, project, runtime_id)
-    if data.confirmation != value["confirmation"]:
-        raise HTTPException(status_code=409, detail="runtime confirmation mismatch")
-    if value["status"] == "EXECUTING":
-        raise HTTPException(status_code=409, detail="runtime packaging is already executing")
-    if value["status"] != "READY":
-        await invoke(service.require_enabled)
-        await invoke(service.require_current_build, project, value)
-        tasks.add_task(service.execute, project, runtime_id, data.confirmation)
-    return {"runtime_id": runtime_id, "status": value["status"], "accepted": True}
+    pending = await invoke(service.begin_execute, project, runtime_id, data.confirmation)
+    if pending is not None:
+        await enqueue_build(request, service, pending)
+    return {"runtime_id": runtime_id, "status": "EXECUTING" if pending is not None else "READY", "accepted": True}
+
+
+async def enqueue_build(request, service, pending):
+    try:
+        return request.app.state.submit_job(service.finish_execute, pending)
+    except RuntimeError as exc:
+        await invoke(service.submission_failed, pending)
+        raise HTTPException(status_code=503, detail="packaging executor is unavailable; inspect saved Runtime") from exc
 
 
 @router.get("/projects/{project}/runtimes/{runtime_id}/logs")
@@ -128,8 +131,13 @@ async def runtime_logs(project: str, runtime_id: str, request: Request):
 
 @router.post("/projects/{project}/runtimes/{runtime_id}/reconcile")
 async def runtime_reconcile(project: str, runtime_id: str, data: ConfirmRequest, request: Request):
-    return await invoke(ContainerExecutionService(request.app.state.runtime).execute,
-                        project, runtime_id, data.confirmation, reconcile=True)
+    service = ContainerExecutionService(request.app.state.runtime)
+    pending = await invoke(service.begin_execute, project, runtime_id, data.confirmation, reconcile=True)
+    if pending is None:
+        return await invoke(service.read, project, runtime_id)
+    future = await enqueue_build(request, service, pending)
+    # A client disconnect cannot cancel durable ownership of receipt recovery.
+    return await asyncio.shield(asyncio.wrap_future(future))
 
 
 @router.post("/projects/{project}/runs")

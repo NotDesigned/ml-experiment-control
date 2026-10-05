@@ -141,7 +141,7 @@ def main(argv=None):
             saved = json.loads(args.state.read_text())
             endpoint = f"/api/projects/{segment(saved['project'])}/runtimes/{segment(saved['runtime_id'])}"
             result = client.call(endpoint)
-            if args.reconcile and result["status"] == "RECONCILE_REQUIRED":
+            if args.reconcile and result["status"] in {"RECONCILE_REQUIRED", "EXECUTING"}:
                 client.call(endpoint + "/reconcile", data={"confirmation": result["confirmation"]})
             result = client.wait(endpoint)
             save(args.state, result)

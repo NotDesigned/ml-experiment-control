@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path, PurePosixPath
 import re
+from .worker_contract import worker_dockerfile
 
 DEPENDENCY_RECIPE = "source-python-dependencies-v3"
 PIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,.-]+\])?==[A-Za-z0-9][A-Za-z0-9.!+_-]*(?:\s+--hash=sha256:[0-9a-f]{64})*")
@@ -45,8 +46,7 @@ def dockerfile(image: str, source_id: str, requirements: str | None = None) -> s
                         'ENV PATH="/opt/ml-expd-venv/bin:${PATH}"\n'
                         'RUN ["python3", "/tmp/ml-expd-install.py"]\n')
     return (f"FROM {image}\n" + installation + "COPY source/ /workspace/\nWORKDIR /workspace\n"
-            "COPY worker.py /usr/local/lib/ml-expd/worker.py\nENV ML_EXPD_MULTIPART_UPLOAD=1\n"
-            f"LABEL org.ml-expd.source={source_id}\nENTRYPOINT []\nCMD [\"/bin/true\"]\n")
+            + worker_dockerfile(source_id))
 
 
 def installer_digest() -> str:
