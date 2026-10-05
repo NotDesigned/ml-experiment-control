@@ -775,3 +775,26 @@ def test_packaged_oci_source_is_not_staged_or_masked_by_host_files(tmp_path):
     assert 'apptainer exec --nv --unsquash' in render_job(manifest)
     run['backend'].pop('oci_image')
     assert run['backend']['source_dir']+':/workspace' in render_job(manifest)
+
+
+def test_slurm_bootstrap_creates_apptainer_cache_and_sandbox_directories(tmp_path):
+    import os
+    from experiment_control.backends.wyd import render_job
+    run = slurm_run()
+    root = tmp_path/'data'
+    root.mkdir()
+    sif = root/'image.sif'
+    sif.write_text('fixture')
+    run['storage']['run_dir'] = str(root/'run')
+    run['storage']['project_data_root'] = str(root)
+    run['backend'].update(oci_image='registry.example/runtime@sha256:'+'a'*64,sif_path=str(sif),mount_root=str(root))
+    manifest = {**run,'attempt_id':'attempt-002','execution':{'source_mount':'/workspace','workdir':'/workspace'},'command':['true']}
+    binpath = tmp_path/'bin'
+    binpath.mkdir()
+    srun = binpath/'srun'
+    srun.write_text('#!/bin/sh\ntest -d "$APPTAINER_CACHEDIR" && test -d "$APPTAINER_TMPDIR"\n')
+    srun.chmod(0o755)
+    script = tmp_path/'job.sh'
+    script.write_text(render_job(manifest))
+    subprocess.run(['bash',str(script)],check=True,env={**os.environ,'SLURM_JOB_ID':'1234','PATH':str(binpath)+':/usr/bin:/bin'})
+    assert (root/'apptainer/tmp').is_dir() and (root/'apptainer/cache').is_dir()

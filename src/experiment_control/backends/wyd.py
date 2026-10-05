@@ -160,7 +160,7 @@ set -euo pipefail
 export APPTAINER_CACHEDIR={shlex.quote(cache)}
 export APPTAINER_TMPDIR={shlex.quote(temp)}
 export BACKEND_JOB_ID="$SLURM_JOB_ID"
-mkdir -p {shlex.quote(run_dir)}
+mkdir -p {shlex.quote(run_dir)} {shlex.quote(cache)} {shlex.quote(temp)}
 attempt_log_dir={shlex.quote(f"{run_dir}/attempts/{manifest['attempt_id']}")}
 mkdir -p "$attempt_log_dir"
 {source_check}test -s {shlex.quote(sif_path)}
