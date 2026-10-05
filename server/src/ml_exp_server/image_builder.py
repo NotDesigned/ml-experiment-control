@@ -111,13 +111,42 @@ class ImageBuilder:
                           "COPY worker.py /usr/local/lib/ml-expd/worker.py\n"
                           f"LABEL org.ml-expd.source={source_id}\nENTRYPOINT []\nCMD [\"/bin/true\"]\n")
                 (context / "Dockerfile").write_text(recipe)
-                self._docker(["build", "--network=none", "--tag", tag, directory])
-                published = self._publish(tag, context)
+                if self.config.get("publisher", "archive") == "buildkit":
+                    published = self._publish_buildkit(tag, context)
+                else:
+                    self._docker(["build", "--network=none", "--tag", tag, directory])
+                    published = self._publish(tag, context)
             result = {"bundle_id": identity, "project": project, "source_id": source_id,
                       "base_image": image, "image": published, "recipe": RECIPE,
                       "manifest_type": MANIFEST_TYPE}
             atomic_json(metadata_path, result)
             return result
+
+    def _publish_buildkit(self, tag: str, context: Path) -> str:
+        # BuildKit streams new layers to the registry and reuses existing base
+        # blobs. Exporting a complete CUDA image twice exhausts small servers.
+        metadata = context / "buildkit.json"
+        self._docker(["buildx", "build", "--builder", "default", "--network=none",
+                      "--provenance=false", "--sbom=false", "--tag", tag,
+                      "--metadata-file", str(metadata), "--output",
+                      "type=image,push=true,oci-mediatypes=false,compression=gzip",
+                      str(context)])
+        value = json.loads(metadata.read_text())
+        digest = value.get("containerimage.digest", "")
+        config_digest = value.get("containerimage.config.digest", "")
+        if not all(re.fullmatch(r"sha256:[0-9a-f]{64}", item)
+                   for item in (digest, config_digest)):
+            raise ValueError("BuildKit publication identity is unavailable")
+        reference = self.config["repository"] + "@" + digest
+        raw = self._skopeo(["inspect", "--authfile",
+                            self.config.get("registry_auth_file", "/root/.docker/config.json"),
+                            "--raw", "docker://" + reference], capture=True)
+        manifest = json.loads(raw)
+        if ("sha256:" + hashlib.sha256(raw.encode()).hexdigest() != digest
+                or manifest.get("mediaType") != MANIFEST_TYPE
+                or manifest.get("config", {}).get("digest") != config_digest):
+            raise ValueError("published manifest does not match the BuildKit image")
+        return reference
 
     def _publish(self, tag: str, context: Path) -> str:
         # Legacy Docker builds on the containerd store can produce mixed OCI /

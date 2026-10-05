@@ -94,3 +94,30 @@ def test_publication_requires_matching_remote_manifest(tmp_path, failure):
     builder._skopeo=skopeo
     with pytest.raises(ValueError):
         builder._publish('registry.example/results:bundle-test', tmp_path)
+
+
+@pytest.mark.parametrize('failure', [None, 'wrong-digest', 'changed-config', 'wrong-format', 'missing-config'])
+def test_buildkit_streaming_publication_verifies_exact_remote_identity(tmp_path, failure):
+    builder = ImageBuilder({'state_root':str(tmp_path/'builds'), 'repository':'registry.example/results'})
+    config_digest = 'sha256:'+'a'*64
+    remote = {'mediaType':MANIFEST_TYPE, 'config':{'digest':config_digest}}
+    if failure == 'changed-config':remote['config'] = {'digest':'sha256:'+'b'*64}
+    if failure == 'wrong-format':remote['mediaType'] = 'application/vnd.oci.image.manifest.v1+json'
+    raw = json.dumps(remote)
+    digest = 'sha256:'+hashlib.sha256(raw.encode()).hexdigest()
+    def docker(args, **kwargs):
+        assert args[:2] == ['buildx', 'build']
+        assert '--provenance=false' in args and '--network=none' in args
+        assert 'type=image,push=true,oci-mediatypes=false,compression=gzip' in args
+        Path(args[args.index('--metadata-file')+1]).write_text(json.dumps({
+            'containerimage.digest':digest,
+            'containerimage.config.digest': '' if failure == 'missing-config' else config_digest,
+        }))
+        return ''
+    builder._docker = docker
+    builder._skopeo = lambda *args, **kwargs: raw+' ' if failure == 'wrong-digest' else raw
+    if failure:
+        with pytest.raises(ValueError):builder._publish_buildkit('registry.example/results:bundle-test',tmp_path)
+    else:
+        assert builder._publish_buildkit('registry.example/results:bundle-test',tmp_path).endswith(digest)
+    assert not (tmp_path/'image.tar').exists()
