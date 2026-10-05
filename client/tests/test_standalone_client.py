@@ -40,7 +40,7 @@ def test_offline_init_creates_runnable_source_and_preserves_existing_directory(t
     metrics = [json.loads(line) for line in (output / "metrics.jsonl").read_text().splitlines()]
     assert [item["step"] for item in metrics] == [1, 2, 3, 4]
     with tarfile.open(fileobj=io.BytesIO(source_archive(source)), mode="r:gz") as archive:
-        assert archive.getnames() == ["train.py"]
+        assert archive.getnames() == ["Dockerfile", "train.py"]
         assert archive.extractfile("train.py").read() == program
 
 
@@ -67,35 +67,23 @@ def test_client_configuration_errors_are_local_and_do_not_print_tokens(monkeypat
     assert "set ML_EXPD_API_TOKEN" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("selector", ["image", "environment"])
-def test_pack_sends_pinned_requirements_and_selected_environment(tmp_path, monkeypatch, capsys, selector):
+def test_pack_uses_only_dockerfile_and_checks_it_before_upload(tmp_path, monkeypatch, capsys):
     calls = []
     class API:
-        def __init__(self, *args):
-            pass
-        def negotiate(self):
-            return {"capabilities": ["environments.v1", "dependency-build.v1"]}
+        def __init__(self, *args): pass
+        def negotiate(self): return {"capabilities": ["dockerfile-build.v1"]}
         def call(self, path, **kwargs):
             calls.append((path, kwargs))
-            if "source-imports" in path:
-                return {"source_id": "source." + "a" * 64}
-            if path.endswith("prepare"):
-                return {"project": "demo", "runtime_id": "runtime." + "b" * 64,
-                        "status": "PREPARED", "confirmation": "BUILD example"}
+            if "source-imports" in path: return {"source_id": "source." + "a" * 64}
+            if path.endswith("prepare"): return {"project": "demo", "runtime_id": "runtime." + "b" * 64, "status": "PREPARED", "confirmation": "BUILD example"}
             return {}
-        def wait(self, *args, **kwargs):
-            return {"project": "demo", "runtime_id": "runtime." + "b" * 64, "status": "READY"}
+        def wait(self, *args, **kwargs): return {"project": "demo", "runtime_id": "runtime." + "b" * 64, "status": "READY"}
     monkeypatch.setattr("ml_exp_client.cli.Client", API)
-    source = tmp_path / "source"
-    source.mkdir()
-    (source / "requirements.txt").write_text("colorama==0.4.6\n")
-    selected = "torch" if selector == "environment" else "registry.example/base@sha256:" + "a" * 64
-    arguments = ["pack", "--project", "demo", "--source", str(source), "--state", str(tmp_path / "runtime.json"),
-                 "--" + selector, selected, "--requirements", "requirements.txt"]
-    assert main(arguments) == 0
-    definition = next(options["data"] for path, options in calls if path.endswith("prepare"))
-    assert definition["requirements"] == "requirements.txt"
-    assert definition["environment_id" if selector == "environment" else "image"] == selected
+    (tmp_path / "Dockerfile").write_text("FROM registry.example/python@sha256:" + "a" * 64 + "\n")
+    state = tmp_path / "runtime.json"
+    assert main(["pack", "--project", "demo", "--source", str(tmp_path), "--state", str(state)]) == 0
+    prepared = next(kwargs["data"] for path, kwargs in calls if path.endswith("prepare"))
+    assert prepared["dockerfile"] == "Dockerfile" and "image" not in prepared
     assert "READY" in capsys.readouterr().out
 
 
@@ -107,7 +95,7 @@ def test_new_build_options_require_server_capabilities_before_upload(tmp_path, m
             return {"capabilities": []}
     monkeypatch.setattr("ml_exp_client.cli.Client", API)
     assert main(["pack", "--project", "demo", "--source", str(tmp_path), "--state", str(tmp_path / "runtime.json"),
-                 "--environment", "torch"]) == 2
+                 "--dockerfile", "Dockerfile"]) == 2
     assert "capability" in capsys.readouterr().err and not (tmp_path / "runtime.json").exists()
 
 
@@ -127,7 +115,7 @@ def test_dockerfile_data_upload_and_input_binding_use_only_http(tmp_path,monkeyp
             return {}
         def wait(self,*a,**k):return {"project":"demo","runtime_id":"runtime."+"c"*64,"status":"READY"}
     monkeypatch.setattr("ml_exp_client.cli.Client",API)
-    source=tmp_path/"source";source.mkdir();(source/"Dockerfile").write_text("FROM pinned")
+    source=tmp_path/"source";source.mkdir();(source/"Dockerfile").write_text("FROM registry.example/python@sha256:" + "a" * 64)
     runtime=tmp_path/"runtime.json"
     assert main(["pack","--project","demo","--source",str(source),"--dockerfile","Dockerfile","--state",str(runtime)])==0
     prepared=next(kwargs["data"] for path,kwargs in calls if path.endswith("prepare"))

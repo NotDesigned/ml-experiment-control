@@ -1668,6 +1668,7 @@ class ActionService:
         submit_result: dict[str, Any], *, submit_error: str | None = None,
         stage_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        self._execution_progress(plan, "VERIFYING_SUBMISSION", "Verifying the exact Attempt and scheduler job identity")
         submitted = self._single_status_record(submit_result.get("payload"))
         expected_job_id = str((submitted or {}).get("backend_job_id") or "") or None
         verified, observed, verification_result, detail = self._verify_submission(
@@ -1887,6 +1888,7 @@ class ActionService:
         )
 
     def _execute_controller(self, plan: dict[str, Any], execution: dict[str, Any]) -> dict[str, Any]:
+        self._execution_progress(plan, "VALIDATING_SOURCE", "Checking the approved immutable source and execution command")
         command = [str(item) for item in plan["command_preview"]]
         is_submission = plan["operation"] in {
             "SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION",
@@ -1938,6 +1940,7 @@ class ActionService:
                 return self.store.set_execution(
                     plan["action_id"], execution, event="execution_stage_failed",
                 )
+            self._execution_progress(plan, "STAGING", "Preparing source and converting or reusing the pinned image on the backend", timeout_seconds=self.config.stage_timeout_seconds or self.config.timeout_seconds)
             stage_result = self.controller.execute_command(
                 stage_command,
                 cwd=Path(str(stage_cwd)),
@@ -1965,6 +1968,7 @@ class ActionService:
                 return self.store.set_execution(
                     plan["action_id"], execution, event="execution_stage_failed",
                 )
+        self._execution_progress(plan, "SCHEDULER_SUBMITTING", "Requesting the scheduler job; an uncertain result must be reconciled, never resubmitted", timeout_seconds=self.config.timeout_seconds)
         result = self.controller.execute_command(
             command, cwd=Path(plan["cwd"]), timeout=self.config.timeout_seconds,
         )
@@ -2015,6 +2019,10 @@ class ActionService:
             "next_action": "OBSERVE_RESULT",
         })
         return self.store.set_execution(plan["action_id"], execution, event="execution_verified")
+
+    def _execution_progress(self, plan, phase, message, *, timeout_seconds=None):
+        from ..execution_progress import record_progress
+        record_progress(self.store.directory(plan["action_id"]) / "progress.json", phase, message, timeout_seconds=timeout_seconds)
 
     def recover_pending_project_writes(self) -> list[dict[str, Any]]:
         """Roll forward authorized write transactions after daemon restart."""

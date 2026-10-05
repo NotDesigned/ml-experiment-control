@@ -10,7 +10,15 @@ Set `ephemeral_buildkit: true` and `buildkit_image` to an approved
 uses its own `docker-container` driver with `default-load=false`, pushes directly
 to the registry, and verifies the remote manifest/config digest. The builder is
 removed with its dedicated cache/state volume on success or failure. Only small
-receipts/logs remain. Builds are serialized to limit transient disk pressure;
+receipts/logs/progress records remain. With `registry_cache: true`, intermediate
+build layers are cached in the registry under one stable `buildcache-<project-hash>`
+tag per project. Cache imports/exports do not change the independently verified
+image identity. A missing cache does not block a cold build; failed cache exports
+do not invalidate a verified image. Registry storage and old unreferenced layer
+garbage collection remain operator responsibilities. See the official
+[Docker registry cache contract](https://docs.docker.com/build/cache/backends/registry/).
+Place dependency installation before copying frequently changed code in the
+client Dockerfile to enable layer reuse. Builds are serialized to limit transient disk pressure;
 temporary layers still require free disk during the build. The pinned BuildKit
 tool image itself remains a reusable service dependency.
 

@@ -13,12 +13,12 @@ import yaml
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.container_execution import ContainerExecutionService, RuntimeSpec
 from ml_exp_server.source_imports import SourceImportService, source_lock, unpack_source, seal_tree
-from tests.test_container_api import archive, client, import_source, runtime
+from tests.test_container_api import legacy_prepare, archive, client, import_source, runtime
 
 
 def prepared(client):
     source = import_source(client)
-    return client.post("/api/projects/demo/runtimes/prepare", json={"source_id": source["source_id"],
+    return legacy_prepare(client, {"source_id": source["source_id"],
         "image": "registry.example/base@sha256:" + "a" * 64, "entrypoint": ["python", "train.py"]}).json()
 
 

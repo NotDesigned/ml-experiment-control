@@ -19,7 +19,7 @@ ml-exp pack --project my-training --source ./source --dockerfile Dockerfile \
 ml-exp runtime --state runtime.json --logs
 ```
 
-`--dockerfile` is exclusive with `--image`, `--environment`, and `--requirements`.
+New builds use Dockerfile only (`--dockerfile Dockerfile` is the default).
 Install dependencies in the Dockerfile. External `FROM` images must use SHA256
 digests; previous named/numeric stages are supported. This first recipe uses the
 default Dockerfile frontend and supports normal `RUN`/`COPY` instructions;
@@ -32,11 +32,12 @@ after operator opt-in `allow_dockerfile_builds: true` in the private builder.
 
 The receipt binds the frozen source, original Dockerfile SHA, all external base
 digests, generated Dockerfile SHA, launcher SHA and published OCI digest.
-Existing source-copy/dependency recipes and old frozen Runs remain valid.
+Existing READY source-copy/dependency images and old frozen Runs remain valid;
+new Runtime preparation rejects those ordinary environment selectors.
 
 Production can use disposable BuildKit: CCR keeps the published digest while
-the API host deletes the build cache and never loads the training image into
-Docker. WYD retains the required SIF and removes the temporary conversion cache.
+the API host deletes its local build cache and never loads the training image into
+Docker. `registry_cache: true` keeps one reusable cache tag per project in CCR. WYD retains the required SIF and removes the temporary conversion cache.
 See [storage lifecycle](storage-lifecycle.md).
 
 ## Upload data independently

@@ -8,7 +8,7 @@ from ml_exp_server.container_controller import Controller
 from ml_exp_server.container_execution import ContainerExecutionService
 from ml_exp_server.image_builder import ImageBuilder
 from ml_exp_server.worker_contract import CAPABILITIES, WORKER_CONTRACT, managed_io
-from tests.test_container_api import archive, client, import_source, runtime, wait_runtime
+from tests.test_container_api import legacy_prepare, archive, client, import_source, runtime, wait_runtime
 from tests.test_sensecore_data_workflow import stored, put_asset
 
 
@@ -36,7 +36,7 @@ def test_all_recipes_share_worker_receipt_data_mounts_and_checkpoint_support(cli
     spec = {"source_id": source["source_id"], "entrypoint": ["python3", "train.py"]}
     spec.update({"dockerfile": "Dockerfile"} if recipe == "dockerfile" else {"image": base})
     if recipe == "requirements": spec["requirements"] = "requirements.txt"
-    value = client.post("/api/projects/demo/runtimes/prepare", json=spec).json()
+    value = (client.post("/api/projects/demo/runtimes/prepare", json=spec) if recipe == "dockerfile" else legacy_prepare(client, spec)).json()
     endpoint = "/api/projects/demo/runtimes/" + value["runtime_id"]
     assert client.post(endpoint + "/execute", json={"confirmation": value["confirmation"]}).status_code == 202
     ready = wait_runtime(client, endpoint)
@@ -77,7 +77,7 @@ def test_generated_recipe_rejects_forged_worker_capabilities(client, monkeypatch
         result[tamper] = "wrong"
         return result
     monkeypatch.setattr("ml_exp_server.container_execution.builder_request", forged)
-    value = client.post("/api/projects/demo/runtimes/prepare", json={"source_id": source["source_id"],
+    value = legacy_prepare(client, {"source_id": source["source_id"],
         "image": "registry.example/python@sha256:" + "a" * 64, "entrypoint": ["python3", "train.py"]}).json()
     assert service.execute("demo", value["runtime_id"], value["confirmation"])["status"] == "RECONCILE_REQUIRED"
 

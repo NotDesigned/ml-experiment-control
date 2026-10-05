@@ -151,6 +151,28 @@ class ExperimentSubmissionService:
     def get(self, submission_id: str) -> dict[str, Any]:
         return self._view(self._snapshot(submission_id))
 
+    def progress(self, submission_id: str) -> dict[str, Any]:
+        from .execution_progress import progress_view
+        view = self.get(submission_id)
+        result = progress_view(self.runtime.action_store.directory(submission_id) / "progress.json",
+                               view["status"], active=view["status"] == "EXECUTING")
+        row = self.runtime.index.get_run(view["project"], view["run_id"])
+        observed = (view["execution"].get("result") or {}).get("observation") or {}
+        scheduler = row.evidence.scheduler if row is not None else None
+        exact = scheduler is not None and scheduler.attempt_id == view["attempt_id"]
+        state = scheduler.state if exact else observed.get("state")
+        reason = scheduler.detail.get("reason") or scheduler.detail.get("pending_reason") if exact else observed.get("reason")
+        result.update(submission_id=submission_id, run_id=view["run_id"], attempt_id=view["attempt_id"],
+                      scheduler_state=state,
+                      queue={"reason": str(reason)[:512] if reason else None,
+                             "as_of": scheduler.as_of if exact else None,
+                             "stale": scheduler.stale if exact else True,
+                             "estimated_start_at": None,
+                             "estimate_unavailable_reason": "The backend does not provide a reliable start-time estimate"})
+        if view["status"] == "VERIFIED" and state:
+            result["phase"] = state
+        return result
+
     def list(self, project: str, run_id: str) -> dict[str, Any]:
         # Authored Runs are submit candidates before a run directory exists,
         # so listing submissions must not require RunIndex resolution.

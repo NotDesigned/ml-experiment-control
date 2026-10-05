@@ -17,7 +17,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from ..application_errors import ApplicationError
 from ..artifacts import ArtifactService
 from ..artifact_store import ArtifactStore
-from ..container_execution import ContainerExecutionService, RunRequest, RuntimeSpec
+from ..container_execution import ContainerExecutionService, RunRequest, DockerfileRuntimeSpec
 from ..image_builder import builder_request
 from ..source_imports import SourceImportService
 from .errors import application_http_error
@@ -91,7 +91,7 @@ async def environments(request: Request):
 
 
 @router.post("/projects/{project}/runtimes/prepare")
-async def runtime_prepare(project: str, data: RuntimeSpec, request: Request):
+async def runtime_prepare(project: str, data: DockerfileRuntimeSpec, request: Request):
     return await invoke(ContainerExecutionService(request.app.state.runtime).prepare, project, data)
 
 
@@ -120,16 +120,33 @@ async def enqueue_build(request, service, pending):
 
 @router.get("/projects/{project}/runtimes/{runtime_id}/logs")
 async def runtime_logs(project: str, runtime_id: str, request: Request):
+    return await runtime_build_observation(project, runtime_id, request, "logs")
+
+
+@router.get("/projects/{project}/runtimes/{runtime_id}/progress")
+async def runtime_progress(project: str, runtime_id: str, request: Request):
+    return await runtime_build_observation(project, runtime_id, request, "progress")
+
+
+async def runtime_build_observation(project, runtime_id, request, operation):
     service = ContainerExecutionService(request.app.state.runtime)
     value = await invoke(service.read, project, runtime_id)
     spec = value["spec"]
-    payload = {"operation": "logs", "project": project, "source_id": spec["source_id"],
+    payload = {"operation": operation, "project": project, "source_id": spec["source_id"],
                "base_image": value.get("base_image", spec.get("image")), "packaging_revision": spec["packaging_revision"]}
     payload.update({key: spec[key] for key in ("requirements", "dockerfile") if key in spec})
     pinned = value.get("bundle_id", value.get("build_bundle_id"))
     if pinned is not None:
         payload["bundle_id"] = pinned
-    return await invoke(builder_request, service.runtime.config.container_execution.builder_socket, payload)
+    result = await invoke(builder_request, service.runtime.config.container_execution.builder_socket, payload)
+    if operation == "progress":
+        result.update(runtime_id=runtime_id, status=value["status"])
+        if not result["progress"].get("events"):
+            from ..execution_progress import progress_view
+            result["progress"] = progress_view(service.root / project / (runtime_id + ".progress.json"), value["status"], active=value["status"] == "EXECUTING")
+        if value["status"] != "EXECUTING":
+            result["progress"].update(status=value["status"], phase=value["status"], no_progress_warning=False, diagnostic=None)
+    return result
 
 
 @router.post("/projects/{project}/runtimes/{runtime_id}/reconcile")

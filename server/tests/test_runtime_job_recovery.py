@@ -11,12 +11,12 @@ from ml_exp_server.api.app import create_app
 from ml_exp_server.container_execution import ContainerExecutionService
 from ml_exp_server.runtime_jobs import recover_interrupted_builds
 from ml_exp_server.collectord import CollectorLease
-from tests.test_container_api import client, import_source, runtime, wait_runtime
+from tests.test_container_api import legacy_prepare, client, import_source, runtime, wait_runtime
 
 
 def prepared(api, entrypoint=None):
     source = import_source(api)
-    return api.post("/api/projects/demo/runtimes/prepare", json={
+    return legacy_prepare(api, {
         "source_id": source["source_id"], "image": "registry.example/python@sha256:" + "a" * 64,
         "entrypoint": entrypoint or ["python3", "train.py"]}).json()
 

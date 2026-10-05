@@ -23,6 +23,7 @@ from ml_exp_server.container_controller import Controller
 from ml_exp_server.container_worker import archive_outputs
 from ml_exp_server.image_builder import bundle_id
 from ml_exp_server.environment_build import dockerfile
+from ml_exp_server.dockerfile_build import managed_dockerfile, inspect_dockerfile
 from ml_exp_server.worker_contract import WORKER_CONTRACT, CAPABILITIES, worker_digest
 from ml_exp_server.schemas import AttemptSummary, RunIndexRow, ServerConfig
 from tests.test_submissions import _app
@@ -93,13 +94,16 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
                           "artifact_store_file": str(s3_file), "builder_socket": "injected-builder.sock"})
     calls = []
     def build(_socket, request):
+        if request["operation"] == "progress":
+            return {"progress": {"phase": "BUILDING_AND_PUSHING"}, "lines": []}
         calls.append(request)
         return {"project": request["project"], "source_id": request["source_id"],
                 "base_image": request["base_image"], "image": "registry.example/team/run@sha256:" + "b" * 64,
-                "bundle_id": bundle_id(request["project"], request["source_id"], request["base_image"]),
+                "bundle_id": bundle_id(request["project"], request["source_id"], request["base_image"], dockerfile_path=request.get("dockerfile")),
                 "worker_contract": WORKER_CONTRACT, "worker_sha256": worker_digest(), "capabilities": list(CAPABILITIES),
-                "dockerfile_sha256": hashlib.sha256(dockerfile(request["base_image"], request["source_id"]).encode()).hexdigest()}
+                "dockerfile_sha256": hashlib.sha256(managed_dockerfile(inspect_dockerfile(config.project_registry_root_path() / "source-revisions/sources" / request["project"] / request["source_id"] / "tree", request["dockerfile"]), request["source_id"]).encode()).hexdigest(), "dockerfile": {k: v for k, v in inspect_dockerfile(config.project_registry_root_path() / "source-revisions/sources" / request["project"] / request["source_id"] / "tree", request["dockerfile"]).items() if k != "text"}}
     monkeypatch.setattr("ml_exp_server.container_execution.builder_request", build)
+    monkeypatch.setattr("ml_exp_server.api.container_routes.builder_request", build)
     objects = {}
     class Body(io.BytesIO):
         def iter_chunks(self, chunk_size):
@@ -119,15 +123,15 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
         assert len(check["executors"]["executors"]) == 2
         assert "/api/source-imports/archive" in json.loads(schema.read_text())["paths"]
         source = tmp_path / "source"
-        initialized = cli(base, auth, "init", source)
+        initialized = cli(base, auth, "init", source, "--base-image", "registry.example/team/base@sha256:" + "a" * 64)
         assert initialized["entrypoint"] == ["python", "train.py"]
         state = tmp_path / "runtime.json"
         runtime = cli(base, auth, "pack", "--project", "quickstart", "--source", source,
-                      "--image", "registry.example/team/base@sha256:" + "a" * 64, "--state", state)
+                      "--dockerfile", "Dockerfile", "--state", state)
         assert runtime["status"] == "READY" and len(calls) == 1
         assert cli(base, auth, "runtime", "--state", state)["runtime_id"] == runtime["runtime_id"]
         assert "state file exists" in cli(base, auth, "pack", "--project", "quickstart", "--source", source,
-                                        "--image", "unused", "--state", state, success=False).stderr
+                                        "--dockerfile", "unused", "--state", state, success=False).stderr
         for name in ("wyd-l40s", "sensecore-1gpu"):
             frozen = cli(base, auth, "create", "--runtime-state", state, "--run", name, "--executor", name)
             assert frozen["state"] == "NOT_SUBMITTED" and frozen["image"] == runtime["image"]

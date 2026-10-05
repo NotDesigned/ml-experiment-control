@@ -1,0 +1,227 @@
+"""One JSON experiment, resumable API preparation, explicit scheduler execution."""
+from __future__ import annotations
+
+import gzip
+import hashlib
+import json
+import math
+from pathlib import Path, PurePosixPath
+import re
+import sys
+import tempfile
+import time
+from urllib.parse import urlencode
+
+from .api import ClientError, data_archive, download, save, segment, source_archive, upload_asset_parts
+
+
+TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "PREEMPTED", "TIMEOUT"}
+
+
+def validate_dockerfile(source: Path, name: str):
+    relative = PurePosixPath(name)
+    path = source / name
+    if (relative.is_absolute() or ".." in relative.parts or "\\" in name or
+            not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(source.resolve())):
+        raise ClientError("Dockerfile must be a regular file inside the source directory")
+    stages = set()
+    number = 0
+    for line in path.read_text().splitlines():
+        if re.match(r"(?i)^\s*FROM\s", line):
+            parts = line.split()
+            image = parts[1] if len(parts) > 1 else ""
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}", image) and image not in stages:
+                raise ClientError("Dockerfile FROM must use an approved sha256-pinned base image or an earlier stage")
+            stages.add(str(number))
+            number += 1
+            if len(parts) == 4 and parts[2].upper() == "AS":
+                stages.add(parts[3])
+    if not stages:
+        raise ClientError("Dockerfile needs a digest-pinned FROM instruction")
+
+
+def read_config(path: Path):
+    value = json.loads(path.read_text())
+    allowed = {"project", "run_id", "source", "dockerfile", "entrypoint", "workdir", "executor",
+               "arguments", "env", "resources", "outputs", "inputs", "checkpoint_upload", "max_gpu_hours"}
+    if not isinstance(value, dict) or set(value) - allowed:
+        raise ClientError("experiment config contains unknown fields")
+    for key in ("project", "run_id", "executor"):
+        if not isinstance(value.get(key), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value[key]):
+            raise ClientError("experiment needs valid project, run_id and executor")
+    if not isinstance(value.get("source"), str) or type(value.get("max_gpu_hours")) not in (int, float) or not math.isfinite(value["max_gpu_hours"]) or value["max_gpu_hours"] <= 0:
+        raise ClientError("experiment needs source and a positive max_gpu_hours budget")
+    source = (path.parent / value["source"]).resolve()
+    validate_dockerfile(source, value.get("dockerfile", "Dockerfile"))
+    workdir = value.get("workdir", "/workspace")
+    if not isinstance(workdir, str) or PurePosixPath(workdir).parts[:2] != ("/", "workspace") or ".." in PurePosixPath(workdir).parts or "\x00" in workdir:
+        raise ClientError("workdir must stay within /workspace")
+    for key in ("entrypoint", "arguments"):
+        items = value.get(key, ["python3", "train.py"] if key == "entrypoint" else [])
+        if not isinstance(items, list) or key == "entrypoint" and not items or any(not isinstance(i, str) or not i or "\x00" in i for i in items):
+            raise ClientError("entrypoint and arguments must be argv arrays")
+    env = value.get("env", {})
+    if not isinstance(env, dict) or any(not isinstance(item, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", key) or
+            re.search(r"TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY|PROXY|AUTHORIZATION", key) or key.startswith("ML_EXPD_") or
+            key in {"OUTPUT_DIR", "INPUTS_DIR", "PROJECT_NAME", "RUN_ID", "ATTEMPT_ID", "SOURCE_ID", "BACKEND_JOB_ID"} for key, item in env.items()):
+        raise ClientError("environment contains a reserved or credential-bearing field")
+    inputs = value.get("inputs", [])
+    if not isinstance(inputs, list) or len(inputs) > 32:
+        raise ClientError("inputs must be an array of at most 32 data bindings")
+    mounts = set()
+    for item in inputs:
+        if (not isinstance(item, dict) or set(item) - {"directory", "asset_id", "mount_path"} or
+                ("directory" in item) == ("asset_id" in item) or
+                not re.fullmatch(r"/inputs/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", str(item.get("mount_path", ""))) or item["mount_path"] in mounts):
+            raise ClientError("each input needs directory or asset_id and a distinct /inputs/name mount_path")
+        mounts.add(item["mount_path"])
+        if "asset_id" in item and not re.fullmatch(r"asset\.[0-9a-f]{64}", str(item["asset_id"])):
+            raise ClientError("invalid data asset identity")
+        if "directory" in item:
+            if not isinstance(item["directory"], str):
+                raise ClientError("input directory must be a path")
+            directory = (path.parent / item["directory"]).resolve()
+            if not directory.is_dir() or directory.is_relative_to(source):
+                raise ClientError("data must be a separate existing directory outside source")
+    resources = value.get("resources", {})
+    if not isinstance(resources, dict) or set(resources) - {"gpus", "cpus", "memory_gb", "max_time"}:
+        raise ClientError("invalid resources")
+    for key, limit in (("gpus", 64), ("cpus", 512), ("memory_gb", 4096)):
+        if key in resources and (type(resources[key]) is not int or not 1 <= resources[key] <= limit):
+            raise ClientError("resources exceed supported bounds")
+    if "max_time" in resources and not re.fullmatch(r"[0-9]{2,3}:[0-5][0-9]:[0-5][0-9]", str(resources["max_time"])):
+        raise ClientError("max_time must be HH:MM:SS")
+    checkpoint = value.get("checkpoint_upload")
+    if checkpoint is not None and (not isinstance(checkpoint, dict) or set(checkpoint) != {"interval_seconds"} or type(checkpoint["interval_seconds"]) is not int or not 5 <= checkpoint["interval_seconds"] <= 3600):
+        raise ClientError("checkpoint_upload requires interval_seconds between 5 and 3600")
+    return value, source
+
+
+def report(value):
+    progress = value.get("progress", value)
+    print(json.dumps({key: progress.get(key) for key in ("phase", "message", "seconds_since_progress", "diagnostic", "queue")}), file=sys.stderr)
+
+
+def wait_resource(client, endpoint, seconds, *, pending=("EXECUTING",)):
+    deadline = time.monotonic() + seconds
+    while True:
+        value = client.call(endpoint)
+        if value["status"] not in pending:
+            return value
+        report(client.call(endpoint + "/progress"))
+        if time.monotonic() >= deadline:
+            raise ClientError("waiting timed out; execution continues; resume to inspect saved IDs, never resubmit")
+        time.sleep(5)
+
+
+def experiment(client, health, config_path, state_path, *, resume=False, execute=False, seconds=1800, out=None):
+    config, source = read_config(config_path)
+    if "dockerfile-only.v1" not in health.get("capabilities", []):
+        raise ClientError("server lacks dockerfile-only.v1; upgrade before using the experiment workflow")
+    if state_path.resolve().is_relative_to(source):
+        raise ClientError("save workflow state outside the uploaded source directory")
+    fingerprint = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+    state = json.loads(state_path.read_text()) if state_path.exists() else {"config_sha256": fingerprint}
+    if state_path.exists() and not resume:
+        raise ClientError("state file exists; use --resume to inspect and continue the same experiment")
+    if state.get("config_sha256") != fingerprint:
+        raise ClientError("resume configuration changed; use a new Run and state file")
+    # Fail locally/against the catalogue before transferring bytes or building.
+    executors = client.call("/api/executors")["executors"]
+    if not any(item["id"] == config["executor"] for item in executors):
+        raise ClientError("executor is not in the server catalogue")
+    payload = source_archive(source)
+    source_hash = hashlib.sha256(gzip.decompress(payload)).hexdigest()
+    if state.get("source_archive_content_sha256", source_hash) != source_hash:
+        raise ClientError("resume source changed; use a new Run and state file")
+    state["source_archive_content_sha256"] = source_hash
+    save(state_path, state)
+    project = segment(config["project"])
+    if "source_id" not in state:
+        query = urlencode({"project": config["project"], "sha256": hashlib.sha256(payload).hexdigest()})
+        state["source_id"] = client.call("/api/source-imports/archive?" + query, raw=payload)["source_id"]
+        save(state_path, state)
+    if "runtime" not in state:
+        definition = {key: config[key] for key in ("dockerfile", "entrypoint", "workdir") if key in config}
+        definition.update(source_id=state["source_id"], entrypoint=config.get("entrypoint", ["python3", "train.py"]))
+        state["runtime"] = client.call(f"/api/projects/{project}/runtimes/prepare", data=definition)
+        save(state_path, state)
+    runtime = state["runtime"]
+    endpoint = f"/api/projects/{project}/runtimes/{segment(runtime['runtime_id'])}"
+    runtime = client.call(endpoint)
+    if runtime["status"] == "PREPARED":
+        if state.get("build_requested"):
+            raise ClientError("build request outcome is uncertain; inspect saved Runtime before explicitly executing it")
+        state["build_requested"] = True
+        save(state_path, state)
+        client.call(endpoint + "/execute", data={"confirmation": runtime["confirmation"]})
+    runtime = wait_resource(client, endpoint, seconds)
+    state["runtime"] = runtime
+    save(state_path, state)
+    if runtime["status"] != "READY":
+        raise ClientError("Runtime requires inspection or receipt-only reconciliation; never rebuild automatically")
+    bindings = []
+    for number, item in enumerate(config.get("inputs", [])):
+        asset_id = item.get("asset_id")
+        if not asset_id:
+            upload_state = state_path.with_name(state_path.name + f".asset-{number}.json")
+            with tempfile.TemporaryFile() as stream:
+                digest, length = data_archive((config_path.parent / item["directory"]).resolve(), stream)
+                if "input_bindings" in state and state["input_bindings"][number]["asset_id"] != "asset." + digest:
+                    raise ClientError("resume data changed; use a new Run and state file")
+                limits = client.call("/api/storage-limits")
+                if length > limits["asset_archive_bytes"]:
+                    raise ClientError("data archive exceeds server upload limit")
+                asset_id = upload_asset_parts(client, config["project"], stream, digest, length, upload_state)["asset_id"]
+        bindings.append({"asset_id": asset_id, "mount_path": item["mount_path"]})
+    state["input_bindings"] = bindings
+    save(state_path, state)
+    if "run" not in state:
+        definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "checkpoint_upload") if key in config}
+        definition.update(runtime_id=runtime["runtime_id"], inputs=bindings)
+        state["run"] = client.call(f"/api/projects/{project}/runs", data=definition)
+        save(state_path, state)
+    if "submission" not in state:
+        state["submission"] = client.call(f"/api/experiments/{project}/{segment(config['run_id'])}/submissions/prepare",
+                                           data={"max_gpu_hours": config["max_gpu_hours"], "reason": "single-config experiment workflow"})
+        save(state_path, state)
+    submission = state["submission"]
+    endpoint = "/api/submissions/" + segment(submission["submission_id"])
+    submission = client.call(endpoint)
+    if execute:
+        if submission["status"] == "PREPARED" and submission["ready"]:
+            submission = client.call(endpoint + "/authorize", data={"note": "explicit ml-exp experiment --execute"})
+        if submission["status"] == "AUTHORIZED":
+            if state.get("scheduler_requested"):
+                raise ClientError("scheduler request outcome is uncertain; inspect saved Submission before explicit execution")
+            state["scheduler_requested"] = True
+            save(state_path, state)
+            client.call(endpoint + "/execute", data={"confirmation": submission["confirmation"]})
+        submission = wait_resource(client, endpoint, seconds)
+    state["submission"] = submission
+    save(state_path, state)
+    if not execute:
+        return state
+    if submission["status"] != "VERIFIED":
+        raise ClientError("submission was not verified; inspect gates/progress or reconcile; do not resubmit")
+    endpoint = f"/api/runs/{project}/{segment(config['run_id'])}"
+    deadline = time.monotonic() + seconds
+    while True:
+        result = client.call(endpoint)
+        report(client.call("/api/submissions/" + segment(submission["submission_id"]) + "/progress"))
+        if result["scheduler_state"] in TERMINAL:
+            attempts = client.call(endpoint + "/attempts")
+            if attempts["current_attempt_id"] != submission["attempt_id"]:
+                raise ClientError("Run now refers to a different Attempt; inspect the saved exact submission")
+            state["result"] = result
+            save(state_path, state)
+            break
+        if time.monotonic() >= deadline:
+            raise ClientError("training wait timed out; resume observes the same job and never creates a new Attempt")
+        time.sleep(5)
+    if out is not None and "download" not in state:
+        state["download"] = download(client, config["project"], config["run_id"], submission["attempt_id"], out)
+        save(state_path, state)
+    if result["scheduler_state"] != "SUCCEEDED":
+        raise ClientError("training ended unsuccessfully; saved state and artifacts are available for diagnosis")
+    return state

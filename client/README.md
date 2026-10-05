@@ -5,7 +5,7 @@ A standalone client for the ml-expd HTTP API. Requires Python 3.10+ and has
 Rust, SCO or Apptainer. The daemon owns those platform integrations.
 
 Distribution: `ml-experiment-client`; Python package: `ml_exp_client`;
-command: `ml-exp`. Client version 0.1.1 speaks protocol 2; client and server
+command: `ml-exp`. Client version 0.1.3 speaks protocol 2; client and server
 package versions are independent.
 
 ## Install only the client
@@ -49,30 +49,35 @@ ml-exp check --schema openapi.json
 ml-exp init ./my-study
 ```
 
-`init` writes a tiny dependency-free `train.py` into a **new** directory. It
+`init` writes a tiny dependency-free `train.py` and Dockerfile into a **new** directory. It
 works offline and requires no token. The program writes metrics/summary under
 the backend-provided `OUTPUT_DIR`; replace it with your training code.
 `ML_EXPD_API_TOKEN` is also accepted. The client never prints credentials or
 rejects remote plaintext HTTP/redirects. Only resumable archive uploads retry
 transient failures; scheduler operations are never automatically replayed.
 
-The complete workflow is `pack` → `create` → `prepare` → `execute` → `watch`
-→ `download`. `runtime` and `submission` inspect/reconcile existing work.
-`execute` requires the exact saved Submission's confirmation and can allocate
-GPU resources. Read [the complete API quickstart](../docs/api-quickstart.md)
-for commands, resource policy, result integrity and uncertain-effect recovery.
-Source is uploaded over HTTP. `check` lists environments on supporting servers;
-`pack --environment <ID> --requirements requirements.txt` asks the server to
-generate a Dockerfile, install pinned binary Python dependencies, and package
-source. `--image <repository@sha256:...>` remains available instead of the
-environment ID. The requirements path is relative to the uploaded source.
-The generated recipe uses the supported pin format in the quickstart.
-`ml-exp pack --dockerfile Dockerfile` executes the uploaded Dockerfile in the
-server builder. All new source, requirements and Dockerfile builds on a server
-advertising `managed-worker.v1` support `asset-upload` and
-`create --inputs ... --checkpoint-interval ...` for input assets and live
-checkpoints on WYD and SenseCore. Old immutable images keep their original
-capabilities. See the [complete workflow](../docs/sensecore-user-workflow.md).
+Use one JSON config with `ml-exp experiment experiment.json --state trial.json`.
+It checks code/Dockerfile/data binding/executor configuration, uploads separate
+source/data assets, builds or reuses a Runtime, freezes a Run and prepares its
+Submission. It allocates no GPU by default. Add `--execute --download-to results`
+to authorize that exact submission within the config's GPU-hour budget, watch
+real progress and retrieve verified artifacts. Use `--resume` with the unchanged
+config/source to continue the same IDs. Uncertain build/scheduler requests require
+inspection or explicit receipt-only reconciliation; they are never replayed.
+
+The lower-level `pack` → `create` → `prepare` → `execute` → `watch` → `download`
+commands remain available. New `pack` uses `Dockerfile` by default. Install your
+dependencies in that file, using approved digest-pinned FROM images from
+`ml-exp check`. The ordinary image/environment/requirements selectors have been
+removed from new builds. The catalogue still helps choose a base image. Existing
+READY Runtime IDs and immutable Runs remain usable with their original capabilities.
+
+`init --base-image <approved-digest> DIRECTORY` writes train.py and Dockerfile.
+Without a base argument, replace the Dockerfile placeholder before building.
+Data is uploaded separately and mounted under `/inputs`; it never belongs inside
+source or the image. Current builds support atomic live checkpoints on both
+backends. See the [single-config quickstart](../docs/api-quickstart.md) and
+[checkpoint recovery walkthrough](../docs/sensecore-user-workflow.md).
 
 Local state saves use a private, unique temporary file and atomic replacement;
 an abandoned `.tmp` file cannot block later saves. After a server restart,

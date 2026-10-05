@@ -93,6 +93,15 @@ class RuntimeSpec(BaseModel):
         return value
 
 
+class DockerfileRuntimeSpec(RuntimeSpec):
+    """New public builds have one path. RuntimeSpec still reads frozen history."""
+    image: None = None
+    environment_id: None = None
+    requirements: None = None
+    dockerfile: str = "Dockerfile"
+    packaging_revision: Literal[DOCKERFILE_RECIPE] = DOCKERFILE_RECIPE
+
+
 class Resources(BaseModel):
     model_config = ConfigDict(extra="forbid")
     gpus: int = Field(default=1, ge=1, le=64)
@@ -282,6 +291,9 @@ class ContainerExecutionService:
                 raise ApplicationError("runtime packaging is already executing; inspect or reconcile", code="CONTAINER_EXECUTION_BLOCKED")
             self.require_current_build(project, value)
             value.update(status="EXECUTING", error=None)
+            from .execution_progress import record_progress
+            record_progress(self.root / project / (runtime_id + ".progress.json"), "WAITING_BUILD_WORKER",
+                            "Build claimed by daemon; waiting for builder request or receipt reconciliation")
             executing = store.commit(value, expected_revision=snapshot.revision, event={"event": "runtime_execution_started", "timestamp": utc_now()})
         return PendingRuntimeBuild(project, runtime_id, value, executing.revision, reconcile)
 
