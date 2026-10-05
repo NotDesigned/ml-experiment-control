@@ -60,8 +60,16 @@ The complete workflow is `pack` → `create` → `prepare` → `execute` → `wa
 `execute` requires the exact saved Submission's confirmation and can allocate
 GPU resources. Read [the complete API quickstart](../docs/api-quickstart.md)
 for commands, resource policy, result integrity and uncertain-effect recovery.
-Source is uploaded over HTTP; the environment is an approved registry image
-reference, not an uploaded Dockerfile or a dependency-install request.
+Source is uploaded over HTTP. `check` lists environments on supporting servers;
+`pack --environment <ID> --requirements requirements.txt` asks the server to
+generate a Dockerfile, install pinned binary Python dependencies, and package
+source. `--image <repository@sha256:...>` remains available instead of the
+environment ID. The requirements path is relative to the uploaded source.
+The generated recipe uses the supported pin format in the quickstart.
+For SenseCore, `ml-exp pack --dockerfile Dockerfile` executes the uploaded
+Dockerfile in the server builder, `asset-upload` delivers independent data,
+and `create --inputs ... --checkpoint-interval ...` enables mounted inputs and
+live checkpoints. See the [complete workflow](../docs/sensecore-user-workflow.md).
 
 ## Python use
 
@@ -85,6 +93,11 @@ with `/api/`. Auth/protocol headers and reverse-proxy prefixes are handled by
 the client. Synchronous and asynchronous protocol-2 submissions are supported.
 CLI state files retain recovery IDs; a disconnected client does not cancel the
 server's job.
+
+`download` uses a short-lived object-storage link on supporting deployments.
+It downloads the archive once, verifies SHA256/size and unpacks expected files
+locally. The object request has no API token; signed URLs are neither printed nor
+saved. HTTP 404 falls back to legacy downloads. See [storage lifecycle](../docs/storage-lifecycle.md).
 
 ## Build and test independently
 

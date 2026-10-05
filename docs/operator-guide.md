@@ -9,7 +9,7 @@ not a request to modify a running production workspace.
 | Component | Responsibility | Privileges/credentials |
 | --- | --- | --- |
 | `ml-expd` | HTTP, source import, immutable definitions, Actions, collection | Dedicated service UID; workspace writes; native SSH/SCO and server S3 credentials |
-| Image builder | Fixed FROM/COPY packaging and registry publication | Root-owned Unix socket worker; Docker/Buildx and registry push access |
+| Image builder | Generated Dockerfile, optional pinned dependency installation and registry publication | Root-owned Unix socket worker; Docker/Buildx and registry push access |
 | WYD | Slurm allocation and Apptainer conversion/execution | Daemon user's SSH config/keys; registry pull credential |
 | SenseCore | SCO worker execution | Daemon user's SCO login; platform registry pull authorization |
 | S3-compatible storage | Sealed per-Attempt archives | Bucket access on server only |
@@ -144,6 +144,29 @@ Dockerfile. `publisher: buildkit` reuses registry blobs and emits Docker schema
 verify the supported toolchain before enabling imports, rather than treating a
 local image tag or RepoDigests entry as a publication receipt.
 
+To enable Python dependency builds, explicitly set
+`allow_dependency_builds: true` with `publisher: buildkit` in its JSON config.
+Only this recipe enables build-container networking to PyPI; source-only
+packaging retains `--network=none`. The reviewed installer uses binary wheels,
+base-framework constraints, `pip check`, and a version manifest. Requirements
+cannot supply indexes, URLs, includes or commands. Registry credentials stay
+with the publisher and are not passed into installation commands.
+
+Set `container_execution.environments_file` to an operator-owned YAML file:
+
+```yaml
+environments:
+  torch-example:
+    title: Approved PyTorch environment
+    image: registry.example.org/team/base@sha256:<64 hex characters>
+    versions: {torch: "operator-verified version", cuda: "operator-verified version"}
+    validation: {wyd-l40s: "not-tested", sensecore-1gpu: "not-tested"}
+```
+
+The API exposes only approved public catalogue fields. Selecting an ID freezes
+its current image digest; later catalogue edits do not rebind a Runtime.
+Record actual GPU validation separately from successful image publication.
+
 Run the builder under its own systemd unit with its writable state and runtime
 directory. Do not apply the daemon's restrictive UID or sandbox blindly to
 this root/Docker worker. Runtime/source permissions and allowlist entries are
@@ -229,6 +252,10 @@ Run still has prepare/authorize/execute gates. Restart after config changes;
 profile changes do not rebind existing immutable Runs.
 
 ## Acceptance and maintenance
+
+Configure [temporary build storage and direct downloads](storage-lifecycle.md)
+to prevent training images accumulating on the API host. This also describes
+the boundary between local Garage and external S3 storage.
 
 Use a **new** project/Run definition for acceptance. Run the quickstart first,
 then a small real training task on each intended executor. Verify independently:

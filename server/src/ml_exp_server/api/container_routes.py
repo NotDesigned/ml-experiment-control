@@ -11,12 +11,13 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from ..application_errors import ApplicationError
 from ..artifacts import ArtifactService
 from ..artifact_store import ArtifactStore
 from ..container_execution import ContainerExecutionService, RunRequest, RuntimeSpec
+from ..image_builder import builder_request
 from ..source_imports import SourceImportService
 from .errors import application_http_error
 
@@ -83,6 +84,11 @@ async def executors(request: Request):
     return await invoke(ContainerExecutionService(request.app.state.runtime).public_profiles)
 
 
+@router.get("/environments")
+async def environments(request: Request):
+    return await invoke(ContainerExecutionService(request.app.state.runtime).environments)
+
+
 @router.post("/projects/{project}/runtimes/prepare")
 async def runtime_prepare(project: str, data: RuntimeSpec, request: Request):
     return await invoke(ContainerExecutionService(request.app.state.runtime).prepare, project, data)
@@ -106,6 +112,17 @@ async def runtime_execute(project: str, runtime_id: str, data: ConfirmRequest,
         await invoke(service.require_enabled)
         tasks.add_task(service.execute, project, runtime_id, data.confirmation)
     return {"runtime_id": runtime_id, "status": value["status"], "accepted": True}
+
+
+@router.get("/projects/{project}/runtimes/{runtime_id}/logs")
+async def runtime_logs(project: str, runtime_id: str, request: Request):
+    service = ContainerExecutionService(request.app.state.runtime)
+    value = await invoke(service.read, project, runtime_id)
+    spec = value["spec"]
+    payload = {"operation": "logs", "project": project, "source_id": spec["source_id"],
+               "base_image": value.get("base_image", spec.get("image")), "packaging_revision": spec["packaging_revision"]}
+    payload.update({key: spec[key] for key in ("requirements", "dockerfile") if key in spec})
+    return await invoke(builder_request, service.runtime.config.container_execution.builder_socket, payload)
 
 
 @router.post("/projects/{project}/runtimes/{runtime_id}/reconcile")
@@ -171,6 +188,22 @@ async def artifact_archive(project: str, run_id: str, attempt_id: str, request: 
                              headers={"Content-Length": str(receipt["bytes"]), "ETag": '"' + receipt["sha256"] + '"',
                                       "Content-Disposition": "attachment; filename*=UTF-8''" + name},
                              background=BackgroundTask(stream.close))
+
+
+@router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/artifacts/download")
+async def artifact_download_link(project: str, run_id: str, attempt_id: str, request: Request):
+    runtime = request.app.state.runtime
+    row = runtime.index.get_run(project, run_id)
+    if row is None or attempt_id not in {a.attempt_id for a in row.attempts}:
+        raise HTTPException(status_code=404, detail="unknown Run/Attempt")
+    config = runtime.config.container_execution.artifact_store_file
+    if not config:
+        raise HTTPException(status_code=404, detail="object storage is not configured")
+    store = ArtifactStore(Path(config), runtime.config.project_registry_root_path())
+    if not store.config.get("public_endpoint"):
+        raise HTTPException(status_code=404, detail="direct downloads are not configured")
+    value = await invoke(store.artifact_download, project, run_id, attempt_id)
+    return JSONResponse(value, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/files/{path:path}")

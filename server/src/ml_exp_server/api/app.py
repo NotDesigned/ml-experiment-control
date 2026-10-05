@@ -29,6 +29,7 @@ from ..runtime import ExperimentServerRuntime
 from ..schemas import ServerConfig, ResearchProject
 from ..submissions import ExperimentSubmissionService
 from ..artifact_store import TRANSFER_PATH
+from ..data_assets import WORKER_PATH
 from .routes import router
 from .action_routes import router as action_router
 from .operation_routes import router as operation_router
@@ -259,6 +260,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     @app.middleware("http")
     async def enforce_http_boundary(request, call_next):
         worker_transfer = request.method == "PUT" and bool(TRANSFER_PATH.fullmatch(request.url.path))
+        worker_transfer = worker_transfer or (request.method in {"GET", "PUT"} and bool(WORKER_PATH.fullmatch(request.url.path)))
         if bearer_token is not None and not worker_transfer:
             scheme, separator, credential = request.headers.get(
                 "Authorization", "",
@@ -337,6 +339,8 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.include_router(submission_router)
     from .container_routes import router as container_router
     app.include_router(container_router)
+    from .asset_routes import router as asset_router
+    app.include_router(asset_router)
 
     @app.get(VERSIONED_OPENAPI_PATH, include_in_schema=False)
     async def versioned_openapi():

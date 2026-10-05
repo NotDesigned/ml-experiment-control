@@ -9,6 +9,7 @@ from __future__ import annotations
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 from typing import Callable
 
 from .actions import ActionService, ActionStore
@@ -42,6 +43,14 @@ def _bind_daemon_run_root(config: ServerConfig, project: ResearchProject) -> Res
     root = config.project_run_root_path(project.project).resolve()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     project.daemon_run_root = root
+    # Generated container projects belong to the daemon. Their controller must
+    # follow its installed runtime instead of the Python path saved at creation.
+    managed = config.project_registry_root_path() / "managed" / project.project
+    if (project.base_dir is not None and project.base_dir.resolve() == managed.resolve()
+            and project.controller is not None
+            and project.controller.capabilities.get("container_execution")
+            and project.controller.experimentctl == "tools/experimentctl.py"):
+        project.controller.python = sys.executable
     return project
 
 

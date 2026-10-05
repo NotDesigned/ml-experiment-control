@@ -1,8 +1,9 @@
-"""Private OCI packaging worker: fixed FROM/COPY recipe, no project build scripts."""
+"""Private OCI publisher with fixed recipes and an opt-in client Dockerfile recipe."""
 
 from __future__ import annotations
 
 import argparse
+from contextvars import ContextVar
 import fcntl
 import hashlib
 import http.client
@@ -17,9 +18,12 @@ import socketserver
 import struct
 import subprocess
 import tempfile
+import uuid
 
 from .source_revisions import _tree_digest
 from .storage import atomic_json
+from .environment_build import DEPENDENCY_RECIPE, dockerfile, inspect_requirements, installer_digest, requirements_path
+from .dockerfile_build import DOCKERFILE_RECIPE, INTERNAL, inspect_dockerfile, managed_dockerfile, worker_digest
 
 
 IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
@@ -27,11 +31,17 @@ ID = re.compile(r"^[0-9a-f]{64}$")
 PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 RECIPE = "source-copy-docker-v2-v2"
 MANIFEST_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
+BUILD_LOG = ContextVar("ml_exp_build_log", default=None)
 
 
-def bundle_id(project: str, source_id: str, base_image: str) -> str:
+def bundle_id(project: str, source_id: str, base_image: str, requirements: str | None = None, *, dockerfile_path: str | None = None) -> str:
     worker_sha = hashlib.sha256(Path(__file__).with_name("container_worker.py").read_bytes()).hexdigest()
-    return hashlib.sha256(json.dumps([project, source_id, base_image, RECIPE, worker_sha], separators=(",", ":")).encode()).hexdigest()
+    fields = [project, source_id, base_image, RECIPE, worker_sha]
+    if requirements is not None:
+        fields.extend([DEPENDENCY_RECIPE, requirements_path(requirements), installer_digest()])
+    if dockerfile_path is not None:
+        fields.extend([DOCKERFILE_RECIPE, requirements_path(dockerfile_path), worker_digest()])
+    return hashlib.sha256(json.dumps(fields, separators=(",", ":")).encode()).hexdigest()
 
 
 class UnixConnection(http.client.HTTPConnection):
@@ -59,14 +69,33 @@ class ImageBuilder:
         self.config = config
         self.root = Path(config["state_root"])
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if self.config.get("ephemeral_buildkit"):
+            with (self.root / "ephemeral-buildkit.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                self._recover_builder()
 
     def request(self, request: dict) -> dict:
         project, source_id, image = (request.get(k, "") for k in ("project", "source_id", "base_image"))
         if (not PROJECT.fullmatch(project) or not re.fullmatch(r"source\.[0-9a-f]{64}", source_id)
                 or not IMAGE.fullmatch(image)):
             raise ValueError("invalid image packaging identity")
-        identity = bundle_id(project, source_id, image)
+        requirements = request.get("requirements")
+        custom_path = request.get("dockerfile")
+        if custom_path is not None and requirements is not None:
+            raise ValueError("Dockerfile and generated dependency recipes are mutually exclusive")
+        recipe_version = DOCKERFILE_RECIPE if custom_path is not None else DEPENDENCY_RECIPE if requirements is not None else RECIPE
+        if request.get("packaging_revision", recipe_version) != recipe_version:
+            raise ValueError("image packaging revision mismatch")
+        identity = bundle_id(project, source_id, image, requirements, dockerfile_path=custom_path)
         metadata_path = self.root / f"{identity}.json"
+        if request.get("operation") == "logs":
+            path = self.root / f"{identity}.log"
+            content = ""
+            if path.exists():
+                with path.open("rb") as log:
+                    log.seek(max(0, path.stat().st_size - 8192))
+                    content = log.read().decode("utf-8", errors="replace")
+            return {"bundle_id": identity, "lines": content.splitlines(), "truncated": path.exists() and path.stat().st_size > 8192}
         with (self.root / f"{identity}.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             if metadata_path.exists():
@@ -78,8 +107,12 @@ class ImageBuilder:
                 raise ValueError("image bundle has not been published")
             if request.get("operation") != "build":
                 raise ValueError("unsupported image packaging operation")
-            if request.get("packaging_revision", RECIPE) != RECIPE:
-                raise ValueError("image packaging revision mismatch")
+            if requirements is not None and (not self.config.get("allow_dependency_builds")
+                                             or self.config.get("publisher") != "buildkit"):
+                raise ValueError("dependency builds require an enabled BuildKit publisher")
+            if custom_path is not None and (not self.config.get("allow_dockerfile_builds")
+                                           or self.config.get("publisher") != "buildkit"):
+                raise ValueError("Dockerfile builds require an enabled BuildKit publisher")
             prefixes = self.config.get("base_image_prefixes", [])
             if prefixes and not any(image.startswith(prefix) for prefix in prefixes):
                 raise ValueError("base image is outside packaging policy")
@@ -93,40 +126,118 @@ class ImageBuilder:
                 raise ValueError("source packaging identity mismatch")
             if _tree_digest(tree, require_read_only=True) != expected:
                 raise ValueError("source changed before packaging")
+            dependencies = inspect_requirements(tree, requirements) if requirements is not None else None
+            inspection = inspect_dockerfile(tree, custom_path) if custom_path is not None else None
+            if inspection is not None and (image != inspection["base_images"][-1] or
+                    prefixes and any(not any(base.startswith(prefix) for prefix in prefixes) for base in inspection["base_images"])):
+                raise ValueError("Dockerfile base images do not match packaging policy")
             registry = self.config["repository"]
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]+", registry):
                 raise ValueError("invalid image packaging repository")
             tag = registry + ":bundle-" + identity
             with tempfile.TemporaryDirectory(prefix="build-", dir=self.root) as directory:
                 context = Path(directory)
-                shutil.copytree(tree, context / "source", symlinks=False)
-                if _tree_digest(context / "source") != expected:
+                copied = context / "source" if inspection is None else context / INTERNAL / "source"
+                shutil.copytree(tree, copied, symlinks=False)
+                if _tree_digest(copied) != expected:
                     raise ValueError("source changed while preparing packaging context")
-                for path in (context / "source").rglob("*"):
+                for path in copied.rglob("*"):
                     path.chmod(0o555 if path.is_dir() or path.stat().st_mode & 0o111 else 0o444)
-                (context / "source").chmod(0o555)
-                shutil.copyfile(Path(__file__).with_name("container_worker.py"), context / "worker.py")
-                (context / "worker.py").chmod(0o444)
-                recipe = (f"FROM {image}\nCOPY source/ /workspace/\nWORKDIR /workspace\n"
-                          "COPY worker.py /usr/local/lib/ml-expd/worker.py\n"
-                          f"LABEL org.ml-expd.source={source_id}\nENTRYPOINT []\nCMD [\"/bin/true\"]\n")
-                (context / "Dockerfile").write_text(recipe)
-                if self.config.get("publisher", "archive") == "buildkit":
-                    published = self._publish_buildkit(tag, context)
+                copied.chmod(0o555)
+                if inspection is None:
+                    shutil.copyfile(Path(__file__).with_name("container_worker.py"), context / "worker.py")
+                    (context / "worker.py").chmod(0o444)
                 else:
-                    self._docker(["build", "--network=none", "--tag", tag, directory])
-                    published = self._publish(tag, context)
+                    shutil.copytree(tree, context, dirs_exist_ok=True, symlinks=False)
+                    # copytree preserves sealed source permissions. Only these
+                    # temporary generated build-control files need to be writable.
+                    context.chmod(0o700)
+                    for name in ("Dockerfile", ".dockerignore", "Dockerfile.dockerignore"):
+                        control = context / name
+                        if control.exists():
+                            control.chmod(0o600)
+                    # A client .dockerignore may exclude everything; the managed
+                    # runtime and complete frozen source are always included.
+                    ignore = context / ".dockerignore"
+                    with ignore.open("a") as output:
+                        output.write(f"\n!{INTERNAL}/\n!{INTERNAL}/**\n")
+                    specific_ignore = context / "Dockerfile.dockerignore"
+                    if specific_ignore.exists():
+                        with specific_ignore.open("a") as output:
+                            output.write(f"\n!{INTERNAL}/\n!{INTERNAL}/**\n")
+                    shutil.copyfile(Path(__file__).with_name("managed_worker.py"), context / INTERNAL / "worker.py")
+                    shutil.copyfile(Path(__file__).with_name("container_worker.py"), context / INTERNAL / "legacy_worker.py")
+                if dependencies is not None:
+                    shutil.copyfile(tree / requirements, context / "requirements.txt")
+                    shutil.copyfile(Path(__file__).with_name("dependency_install.py"), context / "dependency_install.py")
+                recipe = dockerfile(image, source_id, requirements) if inspection is None else managed_dockerfile(inspection, source_id)
+                (context / "Dockerfile").write_text(recipe)
+                log_context = BUILD_LOG.set(self.root / f"{identity}.log")
+                try:
+                    if self.config.get("publisher", "archive") == "buildkit":
+                        published = self._publish_buildkit(tag, context)
+                    else:
+                        self._docker(["build", "--network=none", "--tag", tag, directory])
+                        published = self._publish(tag, context)
+                finally:
+                    BUILD_LOG.reset(log_context)
             result = {"bundle_id": identity, "project": project, "source_id": source_id,
-                      "base_image": image, "image": published, "recipe": RECIPE,
+                      "base_image": image, "image": published, "recipe": recipe_version,
                       "manifest_type": MANIFEST_TYPE}
+            if dependencies is not None:
+                result.update(dependencies=dependencies, dockerfile_sha256=hashlib.sha256(recipe.encode()).hexdigest(),
+                              installer_sha256=installer_digest())
+            if inspection is not None:
+                result.update(dockerfile={k: v for k, v in inspection.items() if k != "text"},
+                              dockerfile_sha256=hashlib.sha256(recipe.encode()).hexdigest(),
+                              worker_sha256=worker_digest(), capabilities=["data-assets.v1", "checkpoint-upload.v1"])
             atomic_json(metadata_path, result)
             return result
 
     def _publish_buildkit(self, tag: str, context: Path) -> str:
+        if not self.config.get("ephemeral_buildkit", False):
+            return self._buildkit_image(tag, context, "default")
+        image = self.config.get("buildkit_image", "")
+        if not IMAGE.fullmatch(image):
+            raise ValueError("ephemeral BuildKit requires a pinned builder image")
+        # Serialize this application's transient CUDA layers without touching
+        # the host's default builder or any other workload's cache.
+        with (self.root / "ephemeral-buildkit.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self._recover_builder()
+            name = "ml-expd-" + uuid.uuid4().hex
+            atomic_json(self.root / "ephemeral-builder.json", {"name": name})
+            try:
+                self._docker(["buildx", "create", "--name", name, "--driver", "docker-container",
+                              "--driver-opt", "image=" + image, "--driver-opt", "default-load=false"])
+                return self._buildkit_image(tag, context, name)
+            finally:
+                # Removing this exact builder also removes its dedicated state
+                # volume. No --keep-state, host image load or shared prune.
+                self._remove_builder(name)
+                (self.root / "ephemeral-builder.json").unlink()
+
+    def _remove_builder(self, name):
+        names = self._docker(["buildx", "ls", "--format", "{{.Name}}"], capture=True).splitlines()
+        if name in names:
+            self._docker(["buildx", "rm", "--force", name])
+
+    def _recover_builder(self):
+        path = self.root / "ephemeral-builder.json"
+        if not path.exists():
+            return
+        name = json.loads(path.read_text())["name"]
+        if not re.fullmatch(r"ml-expd-[0-9a-f]{32}", name):
+            raise ValueError("invalid ephemeral builder recovery identity")
+        self._remove_builder(name)
+        path.unlink()
+
+    def _buildkit_image(self, tag: str, context: Path, builder: str) -> str:
         # BuildKit streams new layers to the registry and reuses existing base
         # blobs. Exporting a complete CUDA image twice exhausts small servers.
         metadata = context / "buildkit.json"
-        self._docker(["buildx", "build", "--builder", "default", "--network=none",
+        network = "default" if (context / "requirements.txt").exists() or (context / INTERNAL).exists() else "none"
+        self._docker(["buildx", "build", "--builder", builder, "--progress=plain", "--network=" + network,
                       "--provenance=false", "--sbom=false", "--tag", tag,
                       "--metadata-file", str(metadata), "--output",
                       "type=image,push=true,oci-mediatypes=false,compression=gzip",
@@ -171,6 +282,8 @@ class ImageBuilder:
                 or manifest.get("config", {}).get("digest") != original.get("config", {}).get("digest")
                 or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(manifest.get("config", {}).get("digest")))):
             raise ValueError("published manifest does not match the fixed image")
+        if self.config.get("cleanup_published_image", False):
+            self._docker(["image", "rm", tag])
         return reference
 
     def _docker(self, arguments: list[str], *, capture: bool = False) -> str:
@@ -183,9 +296,20 @@ class ImageBuilder:
                               *arguments], capture=capture)
 
     def _command(self, command: list[str], *, capture: bool = False) -> str:
+        temporary = self.root / "tmp"
+        temporary.mkdir(exist_ok=True, mode=0o700)
+        environment = {**os.environ, "TMPDIR": str(temporary)}
         try:
+            path = BUILD_LOG.get()
+            if path is not None and not capture:
+                with path.open("ab") as log:
+                    subprocess.run(command, check=True, stdout=log, stderr=log,
+                                   env=environment,
+                                   timeout=self.config.get("timeout_seconds", 600))
+                return ""
             result = subprocess.run(command,
                                     check=True, stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                                    env=environment,
                                     stderr=subprocess.DEVNULL, timeout=self.config.get("timeout_seconds", 600))
             return result.stdout.decode() if capture else ""
         except (OSError, subprocess.SubprocessError) as exc:

@@ -29,15 +29,23 @@ source archive, packages a digest-pinned dependency image, freezes a Run for one
 executor, prepares its review gates, submits only on explicit confirmation,
 and verifies downloaded files against the uploaded archive's SHA256.
 
-Clients submit source and argv, not a Dockerfile. Python dependencies must
-already be installed in an operator-approved base image. A new source or
+Clients submit source, argv and optionally a pinned requirements file. The
+server generates the Dockerfile and installs binary Python dependencies inside
+the build container, preserving the approved base GPU framework. A new source or
 command creates a new immutable execution definition. A retry creates another
 Attempt of the same Run. Runtime `READY`, submission `VERIFIED`, scheduler
 `SUCCEEDED`, and available artifacts are separate states.
 
-Ask the operator for the URL, Bearer token, approved base-image digest,
-executor profile and resource budget. The API lists profiles; it does not
-currently list approved base images or build dependency environments.
+Ask the operator for the URL, Bearer token and resource budget. The API lists
+executor profiles and approved environments (`GET /api/environments`). Select
+an environment ID or supply an approved base-image digest; the generated
+Dockerfile and dependency SHA256 are available in Runtime preparation.
+
+SenseCore also supports a [client Dockerfile and independent data-asset workflow](docs/sensecore-user-workflow.md):
+the server builds/pushes the image, the job delivers verified inputs to NAS,
+and explicit atomic checkpoints can be published during training and reused in
+a new Run. The standalone client uploads code/environment/data and downloads
+results entirely through HTTPS APIs.
 
 ## API and deployment status
 
