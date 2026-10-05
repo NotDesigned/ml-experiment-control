@@ -134,7 +134,7 @@ configure a smaller byte limit. Newly built images support [resumable 16 MiB
 uploads](multipart-uploads.md); existing frozen images retain their original
 whole-archive launcher and use the configured total limit. GNU timeout bounds the worker
 including upload; a hard kill or lost network can prevent the final upload.
-All newly built source, dependency and Dockerfile images use `managed-worker.v1`
+New Dockerfile images use `managed-worker.v1`
 and support input assets and optional live checkpoint publication using an
 atomic ready manifest. See the [data workflow](sensecore-user-workflow.md).
 The exact launcher and recipe fingerprints participate in the Runtime identity

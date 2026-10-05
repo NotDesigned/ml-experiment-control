@@ -79,7 +79,7 @@ def fetch(url, token, stream, expected_sha, expected_size):
         connection.close()
 
 
-def deliver(item, token, cache):
+def deliver(item, token, cache, *, archive_stream=None):
     asset_id = item["asset_id"]
     if asset_id != "asset." + item["sha256"]:
         raise ValueError("input asset identity differs")
@@ -93,7 +93,14 @@ def deliver(item, token, cache):
                 expected = {f["path"]: f for f in item["files"]}
                 seen = set()
                 with tempfile.TemporaryFile(dir=cache) as stream:
-                    fetch(item["url"], token, stream, item["sha256"], item["archive_bytes"])
+                    if archive_stream is None:
+                        fetch(item["url"], token, stream, item["sha256"], item["archive_bytes"])
+                    else:
+                        archive_stream.seek(0)
+                        digest, length = digest_stream(archive_stream, stream)
+                        if digest != item["sha256"] or length != item["archive_bytes"]:
+                            raise ValueError("local checkpoint archive differs")
+                        stream.seek(0)
                     with tarfile.open(fileobj=stream, mode="r:*") as archive:
                         for member in archive:
                             if member.isdir() and member.name in {".", "./"}:
@@ -195,6 +202,19 @@ def checkpoint_archive(root, stream, limit=4 * 1024 ** 3):
     return hashlib.sha256(ready).hexdigest()
 
 
+def cache_checkpoint(stream, cache):
+    """Seed the same verified asset cache before publishing the upload receipt."""
+    stream.seek(0)
+    digest, length = digest_stream(stream)
+    stream.seek(0)
+    with tarfile.open(fileobj=stream, mode="r:") as archive:
+        ready = archive.extractfile("checkpoint.ready.json").read()
+    files = json.loads(ready)["files"] + [{"path": "checkpoint.ready.json", "bytes": len(ready),
+                                         "sha256": hashlib.sha256(ready).hexdigest()}]
+    item = {"asset_id": "asset." + digest, "sha256": digest, "archive_bytes": length, "files": files}
+    return deliver(item, None, cache, archive_stream=stream)
+
+
 def main(argv=None):
     url = os.environ.pop("ML_EXPD_UPLOAD_URL")
     token = os.environ.pop("ML_EXPD_UPLOAD_TOKEN")
@@ -239,6 +259,12 @@ def main(argv=None):
                             length = stream.tell()
                             if length > limit:
                                 raise ValueError("checkpoint archive exceeds upload limit")
+                            try:
+                                cache_checkpoint(stream, root.parents[4] / "data-assets")
+                                print("ML_EXPD_CHECKPOINT_CACHE=READY", flush=True)
+                            except Exception:
+                                # A cache is optional. Upload remains authoritative.
+                                print("ML_EXPD_CHECKPOINT_CACHE=FAILED", file=sys.stderr, flush=True)
                             upload(snapshot_url, token, stream, length)
                             previous = marker
                             print("ML_EXPD_CHECKPOINT_UPLOAD=COMPLETE", flush=True)
