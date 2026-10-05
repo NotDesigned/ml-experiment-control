@@ -144,6 +144,13 @@ class ImageBuilder:
                     (context / "worker.py").chmod(0o444)
                 else:
                     shutil.copytree(tree, context, dirs_exist_ok=True, symlinks=False)
+                    # copytree preserves sealed source permissions. Only these
+                    # temporary generated build-control files need to be writable.
+                    context.chmod(0o700)
+                    for name in ("Dockerfile", ".dockerignore", "Dockerfile.dockerignore"):
+                        control = context / name
+                        if control.exists():
+                            control.chmod(0o600)
                     # A client .dockerignore may exclude everything; the managed
                     # runtime and complete frozen source are always included.
                     ignore = context / ".dockerignore"

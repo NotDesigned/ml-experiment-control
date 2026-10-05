@@ -83,6 +83,7 @@ def test_delivery_verifies_bytes_reuses_nas_cache_and_detects_changes(tmp_path, 
     destination = worker.deliver(item, "exact-capability", tmp_path / "cache")
     assert worker.deliver(item, "exact-capability", tmp_path / "cache") == destination and fetches == ["exact-capability"]
     assert (destination / "nested/tokens.bin").stat().st_mode & 0o777 == 0o444
+    (destination / "nested/tokens.bin").chmod(0o644)
     (destination / "nested/tokens.bin").write_bytes(b"corrupted")
     with pytest.raises(ValueError, match="checksum"): worker.deliver(item, "exact-capability", tmp_path / "cache")
     item["asset_id"] = "asset." + "a" * 64
