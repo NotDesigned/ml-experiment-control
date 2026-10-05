@@ -50,3 +50,4 @@ class BackendServices:
     # Host-only credentials may be injected at dispatch, never into Run manifests.
     dispatch_command: Callable[[AttemptManifest], list[str]] = lambda manifest: list(manifest["command"])
     oci_pull_environment: Callable[[], dict[str, str]] = lambda: {}
+    run_manifest_path: Callable[[Campaign, RunSpec], Path] | None = None

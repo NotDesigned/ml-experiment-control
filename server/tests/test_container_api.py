@@ -88,6 +88,8 @@ def test_import_runtime_and_backends_share_frozen_execution(client):
     campaign["local_root"] = str(client.app.state.runtime.config.project_run_root_path("demo"))
     controller = Controller(campaign, "gpu", "attempt-001")
     prepared = controller.prepare("campaign." + "c" * 64)
+    assert controller.backend.s.run_manifest_path(campaign, controller.run) == controller.store.manifest_path
+    assert controller.backend.s.run_manifest_path(campaign, controller.run).is_file()
     manifest = controller.store.load_manifest()
     assert manifest["identity_version"] == 2 and manifest["source_id"] == source["source_id"]
     assert manifest["image_id"] == "sha256:" + "b" * 64
@@ -110,6 +112,52 @@ def test_import_runtime_and_backends_share_frozen_execution(client):
     campaign["runs"][0]["container"]["entrypoint"] = ["sh", "different.sh"]
     with pytest.raises(ValueError, match="immutable definition"):
         Controller(campaign, "gpu", "attempt-003")
+
+
+@pytest.mark.parametrize('job', [None, '1234'])
+def test_status_recovers_pending_outbox_without_submitting(client, job):
+    from types import SimpleNamespace
+    bundle = runtime(client)
+    client.post('/api/projects/demo/runs', json={'run_id':'gpu','runtime_id':bundle['runtime_id'],'executor':'gpu'})
+    root = Path(client.app.state.runtime.project('demo').base_dir)
+    campaign = yaml.safe_load((root/'experiments/campaigns/run-gpu.yaml').read_text())
+    campaign['local_root'] = str(client.app.state.runtime.config.project_run_root_path('demo'))
+    controller = Controller(campaign, 'gpu', 'attempt-001')
+    controller.prepare()
+    intent = controller.store.begin_submission(project='demo',run_id='gpu',attempt_id='attempt-001',backend='slurm',request={'scheduler_name':'gpu--attempt-001'})
+    recovered = []
+    def recover(run, observed, attempt):
+        assert observed == intent and attempt == 'attempt-001'
+        recovered.append(True)
+        return job
+    controller.backend = SimpleNamespace(kind='slurm',recover_submission=recover,status=lambda *args: {'state':'SUCCEEDED','backend_job_id':job})
+    status = controller.status()
+    assert recovered == [True]
+    assert status['backend_job_id'] == job
+    assert status['state'] == ('SUCCEEDED' if job else 'SUBMITTING')
+    if job is None:assert status['submission_recovery'] == 'NOT_FOUND'
+
+
+def test_slurm_submission_uploads_canonical_run_manifest_from_attempt_scope(client):
+    from experiment_control.runner import CommandResult
+    bundle = runtime(client)
+    client.post('/api/projects/demo/runs',json={'run_id':'gpu','runtime_id':bundle['runtime_id'],'executor':'gpu'})
+    root = Path(client.app.state.runtime.project('demo').base_dir)
+    campaign = yaml.safe_load((root/'experiments/campaigns/run-gpu.yaml').read_text())
+    campaign['local_root'] = str(client.app.state.runtime.config.project_run_root_path('demo'))
+    calls = []
+    class Runner:
+        def run(self, command, **kwargs):
+            calls.append(command)
+            if command[0] == 'rsync':assert Path(command[-2]).is_file()
+            return CommandResult(tuple(command),0,'1234\n' if 'sbatch --parsable' in command[-1] else '')
+    controller = Controller(campaign,'gpu','attempt-001',runner=Runner())
+    controller.prepare()
+    controller.backend.validate_live = lambda run: {}
+    intent = controller.store.begin_submission(project='demo',run_id='gpu',attempt_id='attempt-001',backend='slurm',request=controller.backend.submission_request(campaign,controller.run,'attempt-001'))
+    result = controller.backend.submit(campaign,controller.run,controller.store.load_attempt('attempt-001'),dry_run=False,intent=intent)
+    assert result == '1234'
+    assert [command[-2] for command in calls if command[0]=='rsync'][0] == str(controller.store.manifest_path)
 
 
 @pytest.mark.parametrize("name", ["../escape", "/absolute", ".env", ".ssh/id_rsa", "nested/../escape"])

@@ -74,6 +74,7 @@ class Controller:
             ),
             dispatch_command=self.dispatch_command,
             oci_pull_environment=self.oci_pull_environment,
+            run_manifest_path=lambda _campaign, _run: self.store.manifest_path,
         )).get(self.run["backend"]["kind"])
 
     def source(self, source_root: str | None = None) -> Path:
@@ -177,6 +178,16 @@ class Controller:
 
     def status(self):
         record = self.store.load_backend(self.attempt_id)
+        intent = self.store.read_submission(self.attempt_id)
+        if intent and (not record or not record.get("backend_job_id")):
+            recovered = self.backend.recover_submission(self.run, intent, self.attempt_id)
+            if recovered is None:
+                return {"run_id": self.run["run_id"], "attempt_id": self.attempt_id,
+                        "backend": self.backend.kind, "backend_job_id": None,
+                        "state": "SUBMITTING", "submission_recovery": "NOT_FOUND"}
+            self.store.reconcile_submission(project=self.campaign["project"], run_id=self.run["run_id"],
+                                            attempt_id=self.attempt_id, backend_job_id=recovered)
+            record = self.store.load_backend(self.attempt_id)
         if not record or not record.get("backend_job_id"):
             return {"run_id": self.run["run_id"], "attempt_id": self.attempt_id,
                     "backend": self.backend.kind, "backend_job_id": None, "state": "NOT_SUBMITTED"}

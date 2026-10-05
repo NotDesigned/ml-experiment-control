@@ -464,7 +464,8 @@ class WydSlurmBackend:
         )
         manifest_matches: bool | None = None
         if manifest_exists:
-            local_manifest = self.s.local_run_dir(campaign, run) / "manifest.yaml"
+            local_manifest = (self.s.run_manifest_path(campaign, run) if self.s.run_manifest_path
+                              else self.s.local_run_dir(campaign, run) / "manifest.yaml")
             if local_manifest.is_file():
                 expected_sha = hashlib.sha256(local_manifest.read_bytes()).hexdigest()
                 remote_manifest = f"{str(run['storage']['run_dir'])}/manifest.yaml"
@@ -673,6 +674,10 @@ mv -f "$receipt.tmp.$$" "$receipt"
         script_path.chmod(0o600)
         backend = run["backend"]
         self.validate_live(run)
+        local_manifest = (self.s.run_manifest_path(campaign, run) if self.s.run_manifest_path
+                          else local_dir / "manifest.yaml")
+        if self.s.run_manifest_path and not local_manifest.is_file():
+            raise FileNotFoundError("canonical Run manifest is unavailable before dispatch")
         remote_script = f"{run['storage']['run_dir']}/controller-{manifest['attempt_id']}.sbatch"
         claim_dir = f"{run['storage']['run_dir']}/.submission-{manifest['attempt_id']}"
         claim = self.remote_exec(
@@ -692,7 +697,7 @@ mv -f "$receipt.tmp.$$" "$receipt"
         transport = self.ssh_transport()
         self.s.run_command([
             self.rsync_bin, "-a", "-e", transport,
-            str(local_dir / "manifest.yaml"),
+            str(local_manifest),
             f"{backend['ssh_alias']}:{run['storage']['run_dir']}/manifest.yaml",
         ])
         self.s.run_command([self.rsync_bin, "-a", "-e", transport, str(script_path), f"{backend['ssh_alias']}:{remote_script}"])
