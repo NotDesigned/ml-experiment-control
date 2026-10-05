@@ -809,6 +809,9 @@ def evidence_sources(run_dir: Path, *, attempt_id: Optional[str] = None,
         attempt_root = run_dir / "attempts" / selected
         # ``selected`` is returned only by ``_safe_attempt_id``, which already
         # verifies that the resolved Attempt directory exists and is contained.
+        uploaded = attempt_root / "uploaded_outputs"
+        if uploaded.is_dir() and not uploaded.is_symlink():
+            sources.append(EvidenceSource(uploaded, selected, "attempt_uploaded"))
         sources.extend([
             EvidenceSource(attempt_root / "collected_run", selected,
                            "attempt_collected"),

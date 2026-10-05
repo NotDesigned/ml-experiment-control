@@ -16,6 +16,27 @@ from tests.conftest import A1_SCHEDULER_TS, A1_WORKER_TS, FIXTURES
 NOW = A1_SCHEDULER_TS + 10 * 60  # ten minutes after the last scheduler poll
 
 
+def test_uploaded_metric_history_wins_over_last_point_and_stays_attempt_scoped(tmp_path):
+    run = tmp_path / 'run'
+    current = run / 'attempts/attempt-002'
+    uploaded = current / 'uploaded_outputs'
+    uploaded.mkdir(parents=True)
+    (current / 'observed_train_metrics.jsonl').write_text('{"step": 3}\n')
+    history = [{'step': n, 'accuracy': n / 10} for n in [1, 2, 3]]
+    path = uploaded / 'metrics.jsonl'
+    path.write_text(''.join(json.dumps(row)+'\n' for row in history))
+    previous = run / 'attempts/attempt-001/uploaded_outputs'
+    previous.mkdir(parents=True)
+    (previous / 'metrics.jsonl').write_text('{"step": 999}\n')
+    records, source, attempt = train_metric_records(run, attempt_id='attempt-002', exact_attempt=True)
+    assert (records, source, attempt) == (history, path, 'attempt-002')
+    assert train_metric_records(run, attempt_id='attempt-003', exact_attempt=True)[0] == []
+    path.unlink()
+    uploaded.rmdir()
+    uploaded.symlink_to(previous, target_is_directory=True)
+    assert train_metric_records(run, attempt_id='attempt-002', exact_attempt=True)[0] == [{'step': 3}]
+
+
 def test_parse_iso_ts():
     assert parse_iso_ts("2026-07-11T14:31:48.755999Z") == A1_SCHEDULER_TS
     assert parse_iso_ts(None) is None

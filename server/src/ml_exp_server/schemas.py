@@ -116,6 +116,7 @@ class ActionRuntimeConfig(BaseModel):
     scheduler_resource_approval: Literal["budget_cap", "review_exact"] = "budget_cap"
     max_gpu_hours_per_action: Optional[float] = Field(default=1.0, gt=0)
     timeout_seconds: int = 300
+    stage_timeout_seconds: Optional[int] = Field(default=None, gt=0, le=3600)
     gate_ttl_seconds: int = 1800
 
     @model_validator(mode="after")

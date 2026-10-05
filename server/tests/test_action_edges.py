@@ -206,6 +206,20 @@ def test_submission_execution_requires_frozen_stage_command(tmp_path):
     assert "no immutable source staging command" in result["execution"]["error"]
 
 
+def test_image_staging_timeout_does_not_expand_submission_timeout(tmp_path):
+    store = ActionStore(tmp_path / 'actions')
+    action_id = synthetic_plan(store, 'long-stage')
+    plan = store.snapshot(action_id)
+    calls = []
+    def runner(command, **kwargs):
+        calls.append((command[-1], kwargs['timeout']))
+        return {'timeout': False, 'returncode': 0, 'payload': [{'backend_job_id': 'job-1'}]}
+    service = ActionService(store, ActionRuntimeConfig(timeout_seconds=300, stage_timeout_seconds=1200), runner=runner)
+    result = service._execute_controller(plan, plan['execution'])
+    assert result['execution']['status'] == 'VERIFIED'
+    assert calls == [('stage', 1200), ('submit', 300), ('status', 300)]
+
+
 def test_cancel_preparation_binds_live_backend_job_and_capability(tmp_path):
     experiments = tmp_path / "experiments"
     experiments.mkdir()

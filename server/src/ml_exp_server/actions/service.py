@@ -1807,7 +1807,7 @@ class ActionService:
             stage_result = self.controller.execute_command(
                 stage_command,
                 cwd=Path(str(stage_cwd)),
-                timeout=self.config.timeout_seconds,
+                timeout=self.config.stage_timeout_seconds or self.config.timeout_seconds,
             )
             if stage_result.get("timeout") or stage_result.get("returncode") != 0:
                 detail = str(

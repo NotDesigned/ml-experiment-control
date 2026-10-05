@@ -61,6 +61,9 @@ metrics under `OUTPUT_DIR`. Paths are separate for each Attempt; a local
 relative output directory outside it is not uploaded. `metrics.jsonl` supports
 finite numeric fields (`global_step` is normalized to `step`). The daemon does
 not infer the scientific meaning of those fields.
+Once an Attempt uploads its outputs, the metrics API reads the complete
+`metrics.jsonl` from that exact Attempt before falling back to sampled
+collector observations. It never substitutes a previous Attempt's history.
 
 ## Same execution on both backends
 
@@ -82,12 +85,17 @@ HTTP daemon has no Docker socket permission. Image build outcomes are durable
 and keyed by source, base digest and upload-launcher revision. Interrupted
 packaging can be reconciled without starting an experiment.
 
-Publication uses Skopeo to normalize Docker's exported archive to Docker
-schema 2 for registry compatibility. It checks the remote manifest digest and
-retains the original image configuration digest; a local `RepoDigests` entry
-alone is not a publication receipt. Repeated publication precomputes layer
-digests to reuse existing registry blobs. The fixed source and command remain
-unchanged by this representation conversion.
+The production builder sets `publisher: buildkit` and uses BuildKit's image
+exporter with Docker schema 2, disabled attestations, and existing registry
+blob reuse. It avoids exporting and unpacking a second complete CUDA image.
+Skopeo verifies the exact remote manifest and configuration digests against
+BuildKit's publication metadata. The earlier archive/Skopeo publisher remains
+available for rollback. A local `RepoDigests` entry alone is insufficient.
+
+`action_runtime.stage_timeout_seconds` optionally gives environment staging
+(including a first OCI-to-SIF conversion) its own timeout; production uses
+1200 seconds. Scheduler submission still uses `timeout_seconds` (300 seconds),
+and actual GPU execution retains the frozen Run's `resources.max_time` limit.
 
 ## Artifacts and object storage
 
