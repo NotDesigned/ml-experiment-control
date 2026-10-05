@@ -112,7 +112,8 @@ def test_registry_cache_flags_and_phase_steps_do_not_change_image_verification(t
     finally:
         BUILD_CACHE.reset(cache); BUILD_PROGRESS.reset(progress)
     assert "--cache-from" in commands[0] and "--cache-to" in commands[0]
-    assert "ignore-error=true" in commands[0][commands[0].index("--cache-to") + 1]
+    assert commands[0][commands[0].index("--cache-to") + 1] == "type=inline"
+    assert "registry.example/runtime:cache" in commands[0]
     assert [e["phase"] for e in progress_view(tmp_path / "progress.json", "EXECUTING", active=True)["events"]] == ["BUILDING_AND_PUSHING", "VERIFYING_IMAGE"]
 
 
