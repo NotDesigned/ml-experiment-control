@@ -144,3 +144,14 @@ def test_dockerfile_data_upload_and_input_binding_use_only_http(tmp_path,monkeyp
     assert main(["snapshots","--project","demo","--run","trial","--attempt","attempt-001"])==0
     assert main(["asset-upload","--project","demo","--directory",str(data),"--state",str(asset)])==2
     assert "state file exists" in capsys.readouterr().err
+
+
+def test_data_archives_are_compressed_reproducible_and_preserve_file_hashes(tmp_path):
+    from ml_exp_client.api import data_archive
+    data=tmp_path/"data";data.mkdir();body=b"training data\n"*10000
+    (data/"tokens.txt").write_bytes(body)
+    first=io.BytesIO();second=io.BytesIO()
+    one=data_archive(data,first);two=data_archive(data,second)
+    assert one==two and first.getvalue()==second.getvalue() and one[1]<len(body)/10
+    with tarfile.open(fileobj=first,mode="r:gz") as archive:
+        assert archive.getnames()==["tokens.txt"] and archive.extractfile("tokens.txt").read()==body

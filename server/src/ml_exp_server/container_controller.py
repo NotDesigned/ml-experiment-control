@@ -152,7 +152,8 @@ class Controller:
             run_dir=self.run["storage"]["run_dir"], max_infra_retries=self.run.get("max_infra_retries", 1),
             backend=self.run["backend"], resources=self.run["resources"], storage=self.run["storage"],
             command=self.command("{attempt_id}"),
-            execution={"source_mount": "/workspace", "workdir": self.run["container"]["workdir"]},
+            execution={"source_mount": "/workspace", "workdir": self.run["container"]["workdir"],
+                       **({"managed_io": True} if self.run["container"].get("dockerfile") and self.run["backend"]["kind"] == "slurm" else {})},
             assets=[{"kind": "source", "identity": self.run["source_id"]},
                     {"kind": "runtime_image", "identity": self.run["container"]["image"]},
                     *[{"kind": "data_asset", "identity": item["asset_id"], "mount_path": item["mount_path"]}

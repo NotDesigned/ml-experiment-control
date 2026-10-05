@@ -773,6 +773,12 @@ def test_packaged_oci_source_is_not_staged_or_masked_by_host_files(tmp_path):
     assert '/attempts/attempt-001/slurm-%j.err' in packaged
     run['backend']['apptainer_unsquash'] = True
     assert 'apptainer exec --nv --unsquash' in render_job(manifest)
+    manifest['execution']['managed_io'] = True
+    managed = render_job(manifest)
+    assert run['storage']['run_dir']+'/attempts/attempt-001/inputs:/inputs' in managed
+    assert run['storage']['run_dir']+'/attempts/attempt-001/outputs:/outputs' in managed
+    assert 'mkdir -p '+run['storage']['run_dir']+'/attempts/attempt-001/inputs' in managed
+    manifest['execution'].pop('managed_io')
     run['backend'].pop('oci_image')
     assert run['backend']['source_dir']+':/workspace' in render_job(manifest)
 

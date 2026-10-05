@@ -62,7 +62,7 @@ def main():
     parser.add_argument("--pause-after-checkpoint", type=int, default=0)
     args = parser.parse_args()
     output = Path(os.environ["OUTPUT_DIR"])
-    assert Path("/outputs").resolve() == output.resolve()
+    assert Path("/outputs").samefile(output)
     assert torch.cuda.is_available(), "CUDA is required; CPU fallback is forbidden"
     assert not any(k.startswith("ML_EXPD_") for k in os.environ), "transfer credentials leaked to user process"
     import colorama

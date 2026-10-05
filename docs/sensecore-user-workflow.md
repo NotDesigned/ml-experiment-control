@@ -42,7 +42,7 @@ ml-exp assets --project my-training
 ```
 
 Assets contain regular files, not links or hidden/credential-looking files.
-The client streams an uncompressed tar without loading the dataset into memory.
+The client streams a reproducible gzip-compressed tar without loading the dataset into memory.
 The archive SHA256 is the upload's idempotency key and asset ID. An asset becomes
 READY after extraction/checksums, object-store publication and local metadata
 publication. Interrupted uploads can be checked by the saved ID; the same bytes
@@ -89,10 +89,15 @@ Delivery currently occurs inside the allocated job, so its time counts against
 the task's wall-clock/GPU budget. Logs report delivery completion/time/failure.
 The aggregate frozen input manifest has a 32 KiB scheduler-command limit.
 
-This stage enables the managed Dockerfile/data/checkpoint runtime for SenseCore
-executors. WYD's existing source-copy/dependency execution stays available;
-its native data binding is a separate implementation stage. API executor entries
-advertise `dockerfile_execution` and `data_asset_transport`.
+The same managed Dockerfile/data/checkpoint runtime supports SenseCore and WYD.
+WYD converts the pinned OCI image to SIF, downloads approved data into its shared
+`/datapool` project cache, and binds per-Attempt directories at `/inputs` and
+`/outputs` through Apptainer. The original source-copy/dependency recipes remain
+available. API executor entries advertise `dockerfile_execution` and
+`data_asset_transport`. Transfer time is charged on both backends; compression
+helps compressible data, while already compressed datasets may still need a
+larger wall-clock budget. A 221 MB zero-filled transfer probe does not benchmark
+network throughput for real training data.
 
 ## Publish and reuse checkpoints
 

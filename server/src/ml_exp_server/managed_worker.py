@@ -128,9 +128,9 @@ def deliver(item, token, cache):
 
 def link_path(target, path):
     path.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and path.exists() and path.samefile(target):
+        return
     if path.is_symlink():
-        if path.resolve() == target.resolve():
-            return
         raise ValueError("container path is already bound to another location")
     path.symlink_to(target, target_is_directory=True)
 
@@ -210,6 +210,7 @@ def main(argv=None):
         link_path(root, Path("/outputs"))
         for item in inputs:
             cache = root.parents[4] / "data-assets"
+            print("ML_EXPD_INPUT_ASSET=START " + item["asset_id"] + " archive_bytes=" + str(item["archive_bytes"]), flush=True)
             location = deliver(item, token, cache)
             link_path(location, Path(item["mount_path"]))
             print("ML_EXPD_INPUT_ASSET=READY " + item["asset_id"], flush=True)

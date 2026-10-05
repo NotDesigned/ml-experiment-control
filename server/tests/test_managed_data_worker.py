@@ -90,6 +90,16 @@ def test_delivery_verifies_bytes_reuses_nas_cache_and_detects_changes(tmp_path, 
     with pytest.raises(ValueError, match="identity"): worker.deliver(item, "exact-capability", tmp_path / "cache")
 
 
+def test_existing_bind_mount_is_accepted_without_replacing_directory(tmp_path):
+    directory=tmp_path/"outputs"; directory.mkdir()
+    worker.link_path(directory,directory)
+    assert directory.is_dir() and not directory.is_symlink()
+    other=tmp_path/"other";other.mkdir()
+    link=tmp_path/"alias";link.symlink_to(other)
+    with pytest.raises(ValueError,match="already bound"):
+        worker.link_path(directory,link)
+
+
 @pytest.mark.parametrize("case", ["missing", "unexpected", "size", "symlink", "duplicate"])
 def test_delivery_rejects_tar_manifest_mismatches(tmp_path, monkeypatch, case):
     files = {"nested/x.bin": b"expected"}
@@ -191,7 +201,7 @@ def test_managed_worker_hides_capabilities_publishes_live_checkpoint_and_preserv
     root = tmp_path / "project/runs/trial/attempts/attempt-001/outputs"; root.mkdir(parents=True)
     checkpoint(root)
     for key, value in {"OUTPUT_DIR": str(root), "ML_EXPD_UPLOAD_URL": "https://api.example/final", "ML_EXPD_UPLOAD_TOKEN": "private-capability", "ML_EXPD_UPLOAD_LIMIT": str(2 * 1024 ** 2),
-                       "ML_EXPD_INPUT_ASSETS": '[{"asset_id":"test","mount_path":"/inputs/data"}]', "ML_EXPD_SNAPSHOT_URL": "https://api.example/snapshot", "ML_EXPD_SNAPSHOT_INTERVAL": "5"}.items():
+                       "ML_EXPD_INPUT_ASSETS": '[{"asset_id":"test","mount_path":"/inputs/data","archive_bytes":10240}]', "ML_EXPD_SNAPSHOT_URL": "https://api.example/snapshot", "ML_EXPD_SNAPSHOT_INTERVAL": "5"}.items():
         monkeypatch.setenv(key, value)
     linked, published, delivered = [], [], []
     monkeypatch.setattr(worker, "link_path", lambda target, path: linked.append(str(path)))

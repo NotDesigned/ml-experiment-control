@@ -137,6 +137,14 @@ def render_job(
     source_check = "" if packaged_source else f"test -d {shlex.quote(source_dir)}\n"
     source_bind = "" if packaged_source else f"  --bind {shlex.quote(source_dir)}:{shlex.quote(container_path)} \\\n"
     unsquash = " --unsquash" if backend.get("apptainer_unsquash") else ""
+    managed_dirs = ""
+    managed_binds = ""
+    if execution.get("managed_io"):
+        io_root = f"{run_dir}/attempts/{manifest['attempt_id']}"
+        inputs, outputs = io_root + "/inputs", io_root + "/outputs"
+        managed_dirs = "mkdir -p " + shlex.quote(inputs) + " " + shlex.quote(outputs) + "\n"
+        managed_binds = (f"  --bind {shlex.quote(inputs)}:/inputs \\\n"
+                         f"  --bind {shlex.quote(outputs)}:/outputs \\\n")
     comment = shlex.quote(
         submission_marker(submission_token) if submission_token else "ml-exp-dry-run"
     )
@@ -163,10 +171,10 @@ export BACKEND_JOB_ID="$SLURM_JOB_ID"
 mkdir -p {shlex.quote(run_dir)} {shlex.quote(cache)} {shlex.quote(temp)}
 attempt_log_dir={shlex.quote(f"{run_dir}/attempts/{manifest['attempt_id']}")}
 mkdir -p "$attempt_log_dir"
-{source_check}test -s {shlex.quote(sif_path)}
+{managed_dirs}{source_check}test -s {shlex.quote(sif_path)}
 srun apptainer exec --nv{unsquash} \\
   --bind {shlex.quote(mount_root)}:{shlex.quote(mount_root)} \\
-{source_bind}  --pwd {shlex.quote(workdir)} \\
+{source_bind}{managed_binds}  --pwd {shlex.quote(workdir)} \\
   {shlex.quote(sif_path)} \\
   {command}
 """

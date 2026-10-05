@@ -5,6 +5,7 @@ No request is retried automatically. See docs/api-quickstart.md.
 from __future__ import annotations
 
 import hashlib
+import gzip
 import io
 import ipaddress
 import json
@@ -192,7 +193,8 @@ def copy_stream(source, target=None):
 def data_archive(directory: Path, stream):
     if not directory.is_dir() or directory.is_symlink():
         raise ClientError("data asset must be a regular directory")
-    with tarfile.open(fileobj=stream, mode="w") as archive:
+    with gzip.GzipFile(filename="", fileobj=stream, mode="wb", mtime=0) as compressed, \
+            tarfile.open(fileobj=compressed, mode="w") as archive:
         for path in sorted(directory.rglob("*")):
             relative = path.relative_to(directory)
             if path.is_symlink() or not (path.is_dir() or path.is_file()):

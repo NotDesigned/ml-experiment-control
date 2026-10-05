@@ -180,8 +180,8 @@ class ContainerExecutionService:
         return {"executors": [{"id": name, "title": profile.get("title", name),
                                 "kind": profile["backend"]["kind"],
                                 "capacity": profile.get("capacity"),
-                                "dockerfile_execution": profile["backend"]["kind"] == "sensecore",
-                                "data_asset_transport": "worker-http-nas" if profile["backend"]["kind"] == "sensecore" else None,
+                                "dockerfile_execution": True,
+                                "data_asset_transport": "worker-http-shared-storage",
                                 "artifact_transport": bool(self.runtime.config.container_execution.artifact_store_file or profile.get("artifact_ssh") or profile["backend"]["kind"] == "slurm")}
                                for name, profile in sorted(self.profiles().items())]}
 
@@ -326,8 +326,6 @@ class ContainerExecutionService:
         profile = copy.deepcopy(self.profiles().get(request.executor))
         if not profile:
             raise ApplicationError("unknown execution profile", status_code=404, code="UNKNOWN_EXECUTOR")
-        if bundle["spec"].get("dockerfile") and profile["backend"]["kind"] != "sensecore":
-            raise ApplicationError("client Dockerfile runtimes currently require a SenseCore executor", code="CONTAINER_EXECUTION_BLOCKED")
         configured = self.runtime.project(project)
         if not configured.controller or not configured.controller.capabilities.get("container_execution"):
             raise ApplicationError("project is not container-managed", code="CONTAINER_EXECUTION_BLOCKED")
