@@ -253,6 +253,10 @@ profile changes do not rebind existing immutable Runs.
 
 ## Acceptance and maintenance
 
+Configure [temporary build storage and direct downloads](storage-lifecycle.md)
+to prevent training images accumulating on the API host. This also describes
+the boundary between local Garage and external S3 storage.
+
 Use a **new** project/Run definition for acceptance. Run the quickstart first,
 then a small real training task on each intended executor. Verify independently:
 

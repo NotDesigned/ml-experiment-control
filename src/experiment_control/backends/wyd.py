@@ -603,7 +603,11 @@ if test -s "$sif" && test -s "$receipt"; then
   if test "$previous" = "$image" && test "$digest" = "$actual"; then exit 0; fi
 fi
 temporary="$sif.tmp.$$"
-trap 'rm -f "$temporary" "$receipt.tmp.$$"' EXIT
+cache=$(mktemp -d "${sif}.cache.XXXXXX")
+trap 'rm -f "$temporary" "$receipt.tmp.$$"; rm -rf "$cache"' EXIT
+export APPTAINER_CACHEDIR="$cache"
+export APPTAINER_TMPDIR="$cache/tmp"
+mkdir -p "$APPTAINER_TMPDIR"
 apptainer build --force "$temporary" "docker://$image"
 actual=$(sha256sum "$temporary")
 actual=${actual%% *}

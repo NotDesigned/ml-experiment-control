@@ -34,6 +34,11 @@ The receipt binds the frozen source, original Dockerfile SHA, all external base
 digests, generated Dockerfile SHA, launcher SHA and published OCI digest.
 Existing source-copy/dependency recipes and old frozen Runs remain valid.
 
+Production can use disposable BuildKit: CCR keeps the published digest while
+the API host deletes the build cache and never loads the training image into
+Docker. WYD retains the required SIF and removes the temporary conversion cache.
+See [storage lifecycle](storage-lifecycle.md).
+
 ## Upload data independently
 
 ```bash
@@ -65,6 +70,11 @@ ml-exp execute --state submission.json --confirm 'COPY_THE_EXACT_PREPARE_CONFIRM
 ml-exp watch --project my-training --run trial
 ml-exp download --project my-training --run trial --attempt attempt-001 --out ./result
 ```
+
+On a server with a public object-storage endpoint, the current client obtains
+a short-lived API link, downloads the archive once, then verifies and unpacks
+results locally. The object request carries no API token. Legacy servers keep
+the original proxy download.
 
 Replace the asset placeholder with `data.json`'s actual `asset_id`. Use an unused
 Run ID and a new client state/output directory. Preparing and creating do not

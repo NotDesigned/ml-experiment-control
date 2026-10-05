@@ -20,7 +20,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 class ClientError(RuntimeError):
-    pass
+    def __init__(self, message, *, status=None):
+        super().__init__(message)
+        self.status = status
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -71,13 +73,24 @@ class Client:
         except HTTPError as exc:
             code = exc.headers.get("X-ML-Expd-Error-Code", "API_ERROR")
             exc.close()
-            raise ClientError(f"{method} {path}: HTTP {exc.code} {code}; inspect saved IDs before retrying") from None
+            raise ClientError(f"{method} {path}: HTTP {exc.code} {code}; inspect saved IDs before retrying", status=exc.code) from None
         except (URLError, TimeoutError, OSError):
             raise ClientError(f"{method} {path}: connection failed; inspect saved IDs before retrying") from None
 
     def call(self, path: str, **kwargs):
         with self.open(path, **kwargs) as response:
             return json.load(response)
+
+    def open_object(self, url: str):
+        target = urlsplit(url)
+        if (target.scheme != "https" or not target.hostname or target.username or target.password or target.fragment):
+            raise ClientError("object storage download must use HTTPS")
+        try:
+            # The signed URL is the only credential. Do not forward API Bearer
+            # headers or follow redirects; never echo the URL in errors/state.
+            return self.opener.open(Request(url), timeout=self.timeout)
+        except (HTTPError, URLError, TimeoutError, OSError):
+            raise ClientError("object storage download failed; request a fresh download link") from None
 
     def negotiate(self):
         health = self.call("/api/health")
@@ -130,6 +143,57 @@ def source_archive(directory: Path) -> bytes:
 
 
 def download(client: Client, project: str, run: str, attempt: str, out: Path):
+    endpoint = f"/api/runs/{segment(project)}/{segment(run)}/attempts/{segment(attempt)}"
+    try:
+        ticket = client.call(endpoint + "/artifacts/download")
+    except ClientError as exc:
+        if exc.status != 404:
+            raise
+        return _download_proxy(client, project, run, attempt, out)
+    return _download_object(client, project, run, attempt, out, ticket)
+
+
+def _download_object(client, project, run, attempt, out, ticket):
+    if ticket.get("transport") != "s3-presigned-get" or not re.fullmatch(r"[0-9a-f]{64}", ticket.get("sha256", "")):
+        raise ClientError("invalid object storage download receipt")
+    expected = {}
+    for item in ticket["files"]:
+        path = PurePosixPath(item["path"])
+        if (not path.parts or path.is_absolute() or ".." in path.parts or "\\" in item["path"]
+                or any(p.startswith(".") for p in path.parts) or path.as_posix() in expected):
+            raise ClientError("download receipt contains an unsafe or duplicate path")
+        expected[path.as_posix()] = item
+    out.mkdir(parents=True, exist_ok=False)
+    with client.open_object(ticket["url"]) as response, (out / "artifacts.tar").open("xb") as output:
+        digest, size = copy_stream(response, output)
+    if digest != ticket["sha256"] or size != ticket["bytes"]:
+        raise ClientError("artifact archive differs from download receipt")
+    downloaded = {}
+    with tarfile.open(out / "artifacts.tar", mode="r:") as archive:
+        for member in archive:
+            if member.isdir():
+                continue
+            path = PurePosixPath(member.name)
+            name = path.as_posix()
+            if not member.isfile() or name not in expected or name in downloaded:
+                raise ClientError("archive contains an unexpected or duplicate file")
+            target = out / "outputs" / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.extractfile(member) as body, target.open("xb") as output:
+                sha, count = copy_stream(body, output)
+            if count != expected[name]["bytes"] or expected[name].get("sha256", sha) != sha:
+                raise ClientError("artifact file differs from download receipt")
+            downloaded[name] = {"sha256": sha, "bytes": count}
+    if set(downloaded) != set(expected):
+        raise ClientError("archive and download receipt file sets differ")
+    report = {"project": project, "run_id": run, "attempt_id": attempt,
+              "archive_sha256": digest, "archive_bytes": size, "transport": "s3-presigned-get",
+              "files": {"outputs/" + name: value for name, value in downloaded.items()}}
+    save(out / "verification.json", report)
+    return report
+
+
+def _download_proxy(client: Client, project: str, run: str, attempt: str, out: Path):
     endpoint = f"/api/runs/{segment(project)}/{segment(run)}/attempts/{segment(attempt)}"
     listing = client.call(endpoint + "/files")
     if not listing["files"] or listing.get("truncated"):

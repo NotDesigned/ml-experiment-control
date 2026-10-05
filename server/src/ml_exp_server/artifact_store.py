@@ -12,6 +12,7 @@ import re
 import secrets
 import tempfile
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 from .source_imports import IDENTITY, unpack_source, seal_tree, remove_staging
 from .storage import atomic_json, utc_now
@@ -70,13 +71,35 @@ class ArtifactStore:
                 raise ValueError('expired transfer capability')
             return value
 
-    def client(self):
+    def client(self, *, public=False):
         import boto3
         from botocore.config import Config
-        return boto3.client('s3', endpoint_url=self.config['endpoint'], region_name=self.config.get('region', 'garage'),
+        return boto3.client('s3', endpoint_url=self.config['public_endpoint'] if public else self.config['endpoint'], region_name=self.config.get('region', 'garage'),
                             aws_access_key_id=self.config['access_key'], aws_secret_access_key=self.config['secret_key'],
                             config=Config(signature_version='s3v4', connect_timeout=10, read_timeout=120,
                                           retries={'max_attempts': 3}, s3={'addressing_style': 'path'}))
+
+    def download(self, key, digest, size, *, files=None):
+        endpoint = urlsplit(self.config.get('public_endpoint', ''))
+        if (endpoint.scheme != 'https' or not endpoint.hostname or endpoint.username or endpoint.password
+                or endpoint.path not in {'', '/'} or endpoint.query or endpoint.fragment):
+            raise ValueError('direct downloads require a public HTTPS object storage endpoint')
+        seconds = int(self.config.get('download_url_seconds', 300))
+        if not 30 <= seconds <= 3600:
+            raise ValueError('invalid download URL lifetime')
+        url = self.client(public=True).generate_presigned_url('get_object',
+            Params={'Bucket': self.config['bucket'], 'Key': key}, ExpiresIn=seconds)
+        return {'transport': 's3-presigned-get', 'url': url, 'sha256': digest, 'bytes': size,
+                'expires_at': (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(),
+                'files': files}
+
+    def artifact_download(self, project, run, attempt):
+        with self.record(project, run, attempt) as (_, value):
+            if not value or not value.get('receipt'):
+                from .application_errors import ApplicationError
+                raise ApplicationError('Attempt artifacts have not been uploaded', status_code=404, code='ARTIFACT_UNAVAILABLE')
+            receipt = value['receipt']
+        return self.download(receipt['object_key'], receipt['sha256'], receipt['bytes'], files=receipt['files'])
 
     def restore_cache(self, project, run, attempt):
         with self.record(project, run, attempt) as (_, value):
@@ -139,7 +162,9 @@ class ArtifactStore:
                         relative = file.relative_to(temporary).as_posix()
                         if not any(fnmatch.fnmatch(relative, p) or (p.startswith('**/') and fnmatch.fnmatch(relative, p[3:])) for p in value['outputs']):
                             raise ValueError('artifact is outside declared outputs')
-                        files.append({'path': relative, 'bytes': file.stat().st_size})
+                        with file.open('rb') as body:
+                            file_sha = stream_digest(body)
+                        files.append({'path': relative, 'bytes': file.stat().st_size, 'sha256': file_sha})
                 stream.seek(0)
                 key = '/'.join([project, run, attempt, digest + '.tar'])
                 self.client().upload_fileobj(stream, self.config['bucket'], key,

@@ -8,7 +8,7 @@ import tempfile
 from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from ..artifacts import ArtifactService
 from ..container_execution import ContainerExecutionService
@@ -94,6 +94,14 @@ async def stream_archive(service, project, asset_id):
 @router.get("/projects/{project}/assets/{asset_id}/archive")
 async def asset_archive(project: str, asset_id: str, request: Request):
     return await stream_archive(store(request), project, asset_id)
+
+
+@router.get("/projects/{project}/assets/{asset_id}/download")
+async def asset_download_link(project: str, asset_id: str, request: Request):
+    service = store(request)
+    if not service.objects.config.get("public_endpoint"):
+        raise HTTPException(status_code=404, detail="direct downloads are not configured")
+    return JSONResponse(await invoke(service.download, project, asset_id), headers={"Cache-Control": "no-store"})
 
 
 @router.get("/asset-transfers/{project}/{run_id}/{attempt_id}/{asset_id}", include_in_schema=False)

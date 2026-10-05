@@ -94,6 +94,11 @@ the client. Synchronous and asynchronous protocol-2 submissions are supported.
 CLI state files retain recovery IDs; a disconnected client does not cancel the
 server's job.
 
+`download` uses a short-lived object-storage link on supporting deployments.
+It downloads the archive once, verifies SHA256/size and unpacks expected files
+locally. The object request has no API token; signed URLs are neither printed nor
+saved. HTTP 404 falls back to legacy downloads. See [storage lifecycle](../docs/storage-lifecycle.md).
+
 ## Build and test independently
 
 ```bash

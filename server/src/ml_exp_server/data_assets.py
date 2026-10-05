@@ -65,6 +65,11 @@ class AssetStore:
                 "storage_quota_bytes": self.objects.config.get("storage_quota_bytes"),
                 "checkpoint_publication": "atomic-ready-manifest", "input_write_protection": "file-permissions"}
 
+    def download(self, project: str, asset_id: str):
+        value = self.read(project, asset_id)
+        return self.objects.download('/'.join(['data-assets', project, asset_id + '.tar']),
+                                     value['sha256'], value['archive_bytes'], files=value['files'])
+
     def receive(self, project: str, stream, digest: str, size: int, *, provenance: dict | None = None):
         if not SHA256.fullmatch(digest) or not 0 < size <= self.limit:
             raise ValueError("invalid data asset digest or archive size")

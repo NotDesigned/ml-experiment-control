@@ -18,6 +18,7 @@ import socketserver
 import struct
 import subprocess
 import tempfile
+import uuid
 
 from .source_revisions import _tree_digest
 from .storage import atomic_json
@@ -68,6 +69,10 @@ class ImageBuilder:
         self.config = config
         self.root = Path(config["state_root"])
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if self.config.get("ephemeral_buildkit"):
+            with (self.root / "ephemeral-buildkit.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                self._recover_builder()
 
     def request(self, request: dict) -> dict:
         project, source_id, image = (request.get(k, "") for k in ("project", "source_id", "base_image"))
@@ -190,11 +195,49 @@ class ImageBuilder:
             return result
 
     def _publish_buildkit(self, tag: str, context: Path) -> str:
+        if not self.config.get("ephemeral_buildkit", False):
+            return self._buildkit_image(tag, context, "default")
+        image = self.config.get("buildkit_image", "")
+        if not IMAGE.fullmatch(image):
+            raise ValueError("ephemeral BuildKit requires a pinned builder image")
+        # Serialize this application's transient CUDA layers without touching
+        # the host's default builder or any other workload's cache.
+        with (self.root / "ephemeral-buildkit.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self._recover_builder()
+            name = "ml-expd-" + uuid.uuid4().hex
+            atomic_json(self.root / "ephemeral-builder.json", {"name": name})
+            try:
+                self._docker(["buildx", "create", "--name", name, "--driver", "docker-container",
+                              "--driver-opt", "image=" + image, "--driver-opt", "default-load=false"])
+                return self._buildkit_image(tag, context, name)
+            finally:
+                # Removing this exact builder also removes its dedicated state
+                # volume. No --keep-state, host image load or shared prune.
+                self._remove_builder(name)
+                (self.root / "ephemeral-builder.json").unlink()
+
+    def _remove_builder(self, name):
+        names = self._docker(["buildx", "ls", "--format", "{{.Name}}"], capture=True).splitlines()
+        if name in names:
+            self._docker(["buildx", "rm", "--force", name])
+
+    def _recover_builder(self):
+        path = self.root / "ephemeral-builder.json"
+        if not path.exists():
+            return
+        name = json.loads(path.read_text())["name"]
+        if not re.fullmatch(r"ml-expd-[0-9a-f]{32}", name):
+            raise ValueError("invalid ephemeral builder recovery identity")
+        self._remove_builder(name)
+        path.unlink()
+
+    def _buildkit_image(self, tag: str, context: Path, builder: str) -> str:
         # BuildKit streams new layers to the registry and reuses existing base
         # blobs. Exporting a complete CUDA image twice exhausts small servers.
         metadata = context / "buildkit.json"
         network = "default" if (context / "requirements.txt").exists() or (context / INTERNAL).exists() else "none"
-        self._docker(["buildx", "build", "--builder", "default", "--progress=plain", "--network=" + network,
+        self._docker(["buildx", "build", "--builder", builder, "--progress=plain", "--network=" + network,
                       "--provenance=false", "--sbom=false", "--tag", tag,
                       "--metadata-file", str(metadata), "--output",
                       "type=image,push=true,oci-mediatypes=false,compression=gzip",
@@ -239,6 +282,8 @@ class ImageBuilder:
                 or manifest.get("config", {}).get("digest") != original.get("config", {}).get("digest")
                 or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(manifest.get("config", {}).get("digest")))):
             raise ValueError("published manifest does not match the fixed image")
+        if self.config.get("cleanup_published_image", False):
+            self._docker(["image", "rm", tag])
         return reference
 
     def _docker(self, arguments: list[str], *, capture: bool = False) -> str:

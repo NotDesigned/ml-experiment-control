@@ -11,7 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from ..application_errors import ApplicationError
 from ..artifacts import ArtifactService
@@ -188,6 +188,22 @@ async def artifact_archive(project: str, run_id: str, attempt_id: str, request: 
                              headers={"Content-Length": str(receipt["bytes"]), "ETag": '"' + receipt["sha256"] + '"',
                                       "Content-Disposition": "attachment; filename*=UTF-8''" + name},
                              background=BackgroundTask(stream.close))
+
+
+@router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/artifacts/download")
+async def artifact_download_link(project: str, run_id: str, attempt_id: str, request: Request):
+    runtime = request.app.state.runtime
+    row = runtime.index.get_run(project, run_id)
+    if row is None or attempt_id not in {a.attempt_id for a in row.attempts}:
+        raise HTTPException(status_code=404, detail="unknown Run/Attempt")
+    config = runtime.config.container_execution.artifact_store_file
+    if not config:
+        raise HTTPException(status_code=404, detail="object storage is not configured")
+    store = ArtifactStore(Path(config), runtime.config.project_registry_root_path())
+    if not store.config.get("public_endpoint"):
+        raise HTTPException(status_code=404, detail="direct downloads are not configured")
+    value = await invoke(store.artifact_download, project, run_id, attempt_id)
+    return JSONResponse(value, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/files/{path:path}")
