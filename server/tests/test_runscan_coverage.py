@@ -149,49 +149,11 @@ def test_checkpoint_projection_defensive_and_conflict_edges():
     assert "g_ppl" in snapshot["conflicting_metrics"]
 
 
-def test_loaders_and_wandb_io_edges(tmp_path, monkeypatch):
+def test_invalid_yaml_loader(tmp_path, monkeypatch):
     bad_yaml = tmp_path / "bad.yaml"
     bad_yaml.write_text("[", encoding="utf-8")
     assert runscan._load_yaml(bad_yaml) == {}
 
-    log = tmp_path / "stdout.log"
-    log.write_text("wandb initialized: https://wandb.ai/e/p/r", encoding="utf-8")
-    real_open = Path.open
-
-    def denied_open(path, *args, **kwargs):
-        if path == log:
-            raise OSError("denied")
-        return real_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", denied_open)
-    assert runscan._wandb_url_in_file(log) is None
-
-
-def test_wandb_structured_and_process_tail_evidence(tmp_path):
-    attempt = tmp_path / "attempt"
-    attempt.mkdir()
-    (attempt / "wandb.json").write_text(json.dumps({
-        "run_url": "https://wandb.ai/entity/project/runs/id",
-        "initialized": False, "entity": "observed", "project": None,
-        "run_id": "id", "name": None,
-    }), encoding="utf-8")
-    observed = runscan._wandb_provenance(
-        tmp_path, attempt, {"run_id": "run", "resolved_config": {}}, {},
-    )
-    assert observed["initialized"] is False
-    assert observed["entity"] == "observed"
-
-    (attempt / "wandb.json").unlink()
-    tailed = runscan._wandb_provenance(
-        tmp_path, None,
-        {"run_id": "run", "resolved_config": {"use_wandb": True}},
-        {"process_evidence": {
-            "stdout_tail": ["no URL here"],
-            "stderr_tail": ["Wandb initialized: https://wandb.ai/e/p/runs/id"],
-        }},
-    )
-    assert tailed["initialized"] is True
-    assert tailed["evidence_source"].endswith("stderr_tail")
 
 
 def test_jsonl_attempt_and_evidence_source_edges(tmp_path, monkeypatch):

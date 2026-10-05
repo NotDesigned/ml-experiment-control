@@ -3,13 +3,14 @@
 `GET /api/health` is the compatibility handshake for independently released
 clients. It returns `api_protocol_version`, `min_client_protocol_version`, the
 daemon package version, authentication/transport modes, a capability list, and
-the versioned OpenAPI path (`/api/v1/openapi.json`). Clients send
+the versioned OpenAPI path (`/api/v2/openapi.json`). Clients send
 `X-ML-Expd-Client-Protocol`; unsupported versions receive HTTP 426 with
 `INCOMPATIBLE_API_PROTOCOL` before any operation is dispatched.
 The header is mandatory for every API resource and mutation. A headerless
 `GET /api/health` is the only bootstrap exception, so an operator can discover
 the supported range before selecting a client; supplying an invalid header to
-that endpoint still fails with HTTP 426.
+that endpoint still fails with HTTP 426. This exception concerns the protocol
+header only: health still requires the configured Bearer authentication.
 
 Each Action execution envelope also carries a monotonic `revision`. The daemon
 uses that revision as a compare-and-set token, so a late execute or reconcile
@@ -19,32 +20,32 @@ operation-specific reconciliation must observe durable effects without
 reissuing them, or fail closed as `RECONCILE_REQUIRED` when no read-only proof
 exists.
 
-Protocol version 1 currently guarantees these capability families:
+Protocol version 2 provides source/container execution and artifact downloads.
+The current implementation advertises these capability families:
 
-- `terminal-snapshot.v1`
-- `terminal-snapshot-limits.v1`
-- `project-lifecycle.v1`
-- `actions.v1`
-- `action-resolution.v1`
-- `async-actions.v1`
-- `submissions.v1`
-- `run-clone.v1`
-- `observability.v1`
-- `bearer-auth.v1` and `tls-bind.v1`
+- `source-import.v1`, `container-execution.v1`, `artifact-download.v1`
+- `terminal-snapshot.v1`, `terminal-snapshot-limits.v1`
+- `project-lifecycle.v1`, `project-import.v1`, `project-source-locator.v1`
+- `source-revision-import.v1`
+- `actions.v1`, `submissions.v1`
+- `action-resolution.v1`, `async-actions.v1`, `run-clone.v1`
+- `bearer-auth.v1`, `tls-bind.v1`
+
+The last three Action capabilities are optional on older protocol-2 deployments.
+Read the live health response. A compatible synchronous submission may return
+`VERIFIED` immediately; an async submission returns `EXECUTING` and needs polling.
+Protocol 1 is rejected. W&B tracking/observability routes have been removed.
 
 Adding an optional response field or capability does not require a protocol
 bump. Removing or changing a required field, route meaning, identity rule, or
 mutation lifecycle does. A client pin must pass the real subprocess
 compatibility smoke before its submodule gitlink advances.
 
-Terminal snapshots remain a complete run read model in protocol v1. Their
-`scale` object reports Project and Run counts plus the bounded observability
-target page's `returned`, `total`, `limit`, and `truncated` fields. A client
-must not interpret a 500-target projection as complete when `truncated=true`.
-The same target-page metadata is returned by `/api/observability`.
-Callers that need one Project can pass `project=<id>` to the terminal snapshot;
-the daemon then avoids loading and serializing unrelated Projects and target
-statuses. An unknown filter returns 404 rather than an ambiguous empty view.
+Terminal snapshots expose Project/Run read models and a `scale` object with
+`projects`, `runs`, and `runs_by_project`. There is no observability target page.
+Callers can pass `project=<id>` to avoid loading unrelated Projects. An unknown
+filter returns 404 rather than an ambiguous empty view. Preserve per-layer
+freshness fields; a terminal response does not make every observation current.
 
 Generic Submit/Retry operations use daemon-owned scheduler resource policy from
 `action_runtime.scheduler_resource_approval` and `max_gpu_hours_per_action`.
@@ -56,7 +57,8 @@ operator-facing parameters for protocol compatibility.
 
 ## Asynchronous Action execution
 
-`POST /api/actions/execute` and the submission execute endpoint durably claim
+On servers advertising `async-actions.v1`, `POST /api/actions/execute` and the
+submission execute endpoint durably claim
 the exact Action, return an `EXECUTING` snapshot immediately, and continue the
 controller call in a daemon-owned executor. The HTTP client disconnecting or
 stopping its poll does not cancel the mutation. Clients inspect the durable
@@ -64,7 +66,8 @@ state with `GET /api/actions/{action_id}`. A daemon restart converts an
 interrupted `EXECUTING` record to `RECONCILE_REQUIRED`; it never blindly
 reissues the mutation.
 
-Every execution snapshot makes retry semantics explicit:
+On servers advertising `action-resolution.v1`, execution snapshots make retry
+semantics explicit:
 
 - `SUBMITTED`: the exact scheduler identity was observed; do not retry;
 - `FAILED_BEFORE_SUBMISSION`: the scheduler was not contacted; prepare a new
@@ -82,18 +85,16 @@ text.
 
 ## Deterministic Run derivation
 
-The direct `run.clone` operation prepares one campaign update Action. It copies
+On servers advertising `run-clone.v1`, the direct `run.clone` operation prepares
+one campaign update Action. It copies
 an authored Run, applies explicit `KEY=VALUE` overrides, and optionally assigns
 one profile. Multiple ordered profiles require a `{profile}` placeholder in the
 new Run ID and produce an ordered fallback family in the same atomic diff.
 This is authoring support, not queue-aware automatic scheduling: selecting and
 submitting a fallback remains an explicit reviewed operation.
 
-Health also reports the daemon-owned publisher loop separately from individual
-outbox targets. `publisher.last_error`, `last_success_at`, and
-`consecutive_failures` expose systemic loop failure; reviewed project writes
-that could not be rolled forward during startup appear in
-`project_write_recovery_errors`.
+Reviewed project writes that could not be rolled forward during startup appear
+in health's `project_write_recovery_errors`. There is no W&B publisher loop.
 
 ## Authentication and binding
 
@@ -102,6 +103,7 @@ an owner-only token and configure it without placing the secret in YAML:
 
 ```bash
 umask 077
+mkdir -p ~/.config/ml-expd
 python -c 'import secrets; print(secrets.token_urlsafe(48))' \
   > ~/.config/ml-expd/http.token
 ```
@@ -119,3 +121,23 @@ over a remotely reachable plaintext listener. An authenticated local tunnel or
 reverse proxy bound to loopback remains a valid deployment boundary.
 
 The API never returns the token, its path, hashes, or authorization header.
+
+## Retrieve the schema from the API
+
+With a base URL that may include a reverse-proxy prefix:
+
+```bash
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer $ML_EXPD_API_TOKEN" \
+  -H 'X-ML-Expd-Client-Protocol: 2' \
+  "$ML_EXPD_API_URL/api/v2/openapi.json" > openapi.json
+```
+
+The schema describes route bodies and responses. Authentication and protocol
+headers are enforced by middleware and are not currently represented as
+OpenAPI security schemes/parameters. `/docs` also requires Bearer auth; its
+stock Swagger page neither supplies these headers nor preserves every reverse
+proxy prefix. Use the authenticated schema and the [client package](../client/README.md)
+for a working external workflow. This UI limitation does not weaken API auth.
+No `/api/guide` endpoint is currently provided; [the quickstart](api-quickstart.md)
+is the usage guide.

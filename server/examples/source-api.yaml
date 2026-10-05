@@ -1,0 +1,33 @@
+# Operator template, not a ready-to-submit deployment. See docs/operator-guide.md.
+schema_version: 1
+index_db: /var/lib/ml-expd/index.sqlite
+run_root: /var/lib/ml-expd/runs
+project_registry_root: /srv/ml-expd/projects
+action_root: /var/lib/ml-expd/actions
+project_import_roots: []
+http_auth:
+  bearer_token_file: /etc/ml-expd/http.token
+action_runtime:
+  allow_project_writes: false
+  allow_source_imports: false
+  allow_scheduler_mutations: false
+  allow_local_evidence_rebuild: false
+  scheduler_resource_approval: budget_cap
+  max_gpu_hours_per_action: 1.0
+  timeout_seconds: 300
+  stage_timeout_seconds: 1200
+  gate_ttl_seconds: 1800
+container_execution:
+  profiles_file: /etc/ml-expd/executors.yaml
+  builder_socket: /run/ml-expd-builder/builder.sock
+  artifact_store_file: /etc/ml-expd/artifact-store.json
+  registry_pull_file: /etc/ml-expd/registry-pull.json
+  git_hosts: [github.com, gitlab.com]
+  max_archive_bytes: 67108864
+  max_source_bytes: 268435456
+  max_source_files: 20000
+telemetry:
+  enabled: false
+collector_enabled: true
+poll_interval_seconds: 20
+projects: []

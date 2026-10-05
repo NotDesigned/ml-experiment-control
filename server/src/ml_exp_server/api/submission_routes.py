@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..application import ApplicationError
@@ -14,9 +15,9 @@ router = APIRouter(prefix="/api")
 
 
 class PrepareSubmissionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     max_gpu_hours: float = Field(gt=0)
     reason: str = Field(default="", max_length=4000)
-    wandb_cloud_sync: bool = False
 
 
 class AuthorizeSubmissionRequest(BaseModel):
@@ -49,7 +50,6 @@ async def prepare_submission(
             project, run_id,
             max_gpu_hours=data.max_gpu_hours,
             reason=data.reason,
-            wandb_cloud_sync=data.wandb_cloud_sync,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

@@ -87,14 +87,6 @@ RESOURCE_APPROVAL = OperationParameter(
         ("Review exact dry-run resources", "review_exact"),
     ),
 )
-WANDB_CLOUD_SYNC = OperationParameter(
-    "wandb_cloud_sync", "Publish this Attempt to W&B Cloud", kind="enum",
-    required=False, default="no", choices=(("No", "no"), ("Yes", "yes")),
-)
-OBSERVABILITY_TARGET = OperationParameter(
-    "target", "Publication target", kind="enum",
-    choices=(("Local W&B", "local"), ("W&B Cloud", "cloud")),
-)
 NEW_ATTEMPT_ID = OperationParameter(
     "new_attempt_id", "New Attempt ID", required=False,
     placeholder="Optional attempt-NNN identity",
@@ -153,15 +145,6 @@ OPERATIONS: tuple[OperationDefinition, ...] = (
         "direct", "Prepare an archive Action", None, (REASON,), 40,
     ),
     OperationDefinition(
-        "observability.backfill", "Enable and backfill W&B",
-        "Prepare an audited historical publication for every Attempt in scope.",
-        "Observability", (
-            OperationScopeType.PROJECT, OperationScopeType.CAMPAIGN,
-            OperationScopeType.RUN, OperationScopeType.ATTEMPT,
-        ), "direct", "Enable one publisher target and replay sanitized history",
-        "OBSERVABILITY_BACKFILL", (OBSERVABILITY_TARGET, REASON), 32,
-    ),
-    OperationDefinition(
         "evidence.rebuild_local", "Rebuild local Attempt evidence",
         "Recompute one terminal Attempt collection from already-local durable artifacts. "
         "The reviewed Action cannot query a scheduler, contact a backend, or start work.",
@@ -173,14 +156,14 @@ OPERATIONS: tuple[OperationDefinition, ...] = (
         "run.submit", "Submit first Attempt",
         "Prepare the first scheduler submission for an authored Run.", "Execution",
         (OperationScopeType.RUN,), "direct", "Prepare a scheduler Action", "SUBMIT_RUN",
-        (GPU_BUDGET, RESOURCE_APPROVAL, WANDB_CLOUD_SYNC), 30,
+        (GPU_BUDGET, RESOURCE_APPROVAL), 30,
     ),
     OperationDefinition(
         "attempt.retry", "Retry as new Attempt",
         "Prepare a retry without reusing an immutable Attempt identity.", "Execution",
         (OperationScopeType.ATTEMPT,), "direct", "Prepare a scheduler Action",
         "RETRY_ATTEMPT", (
-            REASON, GPU_BUDGET, RESOURCE_APPROVAL, NEW_ATTEMPT_ID, WANDB_CLOUD_SYNC,
+            REASON, GPU_BUDGET, RESOURCE_APPROVAL, NEW_ATTEMPT_ID,
         ), 30,
     ),
     OperationDefinition(
@@ -215,10 +198,6 @@ INTENT_SCOPES: dict[str, tuple[OperationScopeType, ...]] = {
     "ARCHIVE_CAMPAIGN": (OperationScopeType.CAMPAIGN,),
     "ARCHIVE_RUN": (OperationScopeType.RUN,),
     "ARCHIVE_ATTEMPT": (OperationScopeType.ATTEMPT,),
-    "OBSERVABILITY_BACKFILL": (
-        OperationScopeType.PROJECT, OperationScopeType.CAMPAIGN,
-        OperationScopeType.RUN, OperationScopeType.ATTEMPT,
-    ),
     "REBUILD_LOCAL_EVIDENCE": (OperationScopeType.ATTEMPT,),
 }
 

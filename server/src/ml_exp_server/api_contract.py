@@ -13,17 +13,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from .schemas import ProjectLifecycleRecord
 
 
-API_PROTOCOL_VERSION = 1
-MIN_CLIENT_PROTOCOL_VERSION = 1
-VERSIONED_OPENAPI_PATH = "/api/v1/openapi.json"
+API_PROTOCOL_VERSION = 2
+MIN_CLIENT_PROTOCOL_VERSION = 2
+VERSIONED_OPENAPI_PATH = "/api/v2/openapi.json"
 CLIENT_PROTOCOL_HEADER = "X-ML-Expd-Client-Protocol"
 
 SERVER_CAPABILITIES = (
+    "source-import.v1",
+    "container-execution.v1",
+    "artifact-download.v1",
     "action-resolution.v1",
     "async-actions.v1",
     "actions.v1",
     "bearer-auth.v1",
-    "observability.v1",
     "project-lifecycle.v1",
     "project-import.v1",
     "project-source-locator.v1",
@@ -36,20 +38,8 @@ SERVER_CAPABILITIES = (
 )
 
 
-class ObservabilityHealth(BaseModel):
-    """Bounded service health; publishers may add non-secret counters."""
-
-    model_config = ConfigDict(extra="allow")
-
-    state: str = "UNKNOWN"
 
 
-class PublisherLoopHealth(BaseModel):
-    """Non-secret liveness state for the daemon-owned outbox loop."""
-
-    last_success_at: float | None = None
-    last_error: str | None = None
-    consecutive_failures: int = Field(default=0, ge=0)
 
 
 class DaemonHealth(BaseModel):
@@ -72,11 +62,8 @@ class DaemonHealth(BaseModel):
     project_writes: bool
     source_imports: bool
     scheduler_mutations: bool
-    observability_mutations: bool
     local_evidence_rebuild: bool
     telemetry_enabled: bool
-    observability: ObservabilityHealth
-    publisher: PublisherLoopHealth = Field(default_factory=PublisherLoopHealth)
 
 
 class InitialIndexResult(BaseModel):

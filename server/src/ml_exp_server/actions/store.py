@@ -10,13 +10,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from .database import ActionDatabase
 from ..schemas import OperationScope
 from ..storage import (
-    DurableJsonState,
-    DurableSnapshot,
-    StorageError,
-    TransitionConflict,
-    _jsonl_mappings,
     atomic_json,
     exclusive_file_lock,
     read_json,
@@ -31,6 +27,7 @@ class ActionStore:
         self._lock = threading.RLock()
         self._lock_state = threading.local()
         self.lock_path = self.root / ".actions.lock"
+        self.database = ActionDatabase(self.root)
 
     @contextmanager
     def locked(self):
@@ -62,16 +59,10 @@ class ActionStore:
             raise ValueError("invalid action_id")
         return self.root / action_id
 
-    def _execution_state(self, action_id: str) -> DurableJsonState:
-        directory = self.directory(action_id)
-        return DurableJsonState(
-            directory / "execution.json", directory / "journal.jsonl",
-        )
-
     @staticmethod
-    def _initial_execution(plan: dict[str, Any], *, revision: int) -> dict[str, Any]:
+    def _initial_execution(plan: dict[str, Any]) -> dict[str, Any]:
         return {
-            "revision": revision,
+            "revision": 0,
             "status": "PREPARED" if plan.get("ready") else "BLOCKED",
             "authorized_at": None,
             "authorization_note": "",
@@ -81,44 +72,19 @@ class ActionStore:
             "error": None,
         }
 
-    def _execution_snapshot(self, action_id: str, plan: dict[str, Any] | None = None):
-        state = self._execution_state(action_id)
-        snapshot = state.snapshot({})
-        if not snapshot.value:
-            resolved_plan = plan or read_json(
-                self.directory(action_id) / "plan.json", {},
-            )
-            if not resolved_plan:
-                return snapshot
-            snapshot = state.commit(
-                self._initial_execution(
-                    resolved_plan, revision=snapshot.revision + 1,
-                ),
-                expected_revision=snapshot.revision,
-                event={
-                    "timestamp": utc_now(),
-                    "event": "action_prepared",
-                    "payload": {
-                        "ready": resolved_plan.get("ready"),
-                        "operation": resolved_plan.get("operation"),
+    def _execution(self, action_id: str, plan: dict[str, Any] | None = None):
+        directory = self.directory(action_id)
+        execution = self.database.read(action_id)
+        if not execution:
+            plan = plan or read_json(directory / "plan.json", {})
+            if plan:
+                execution = self.database.commit(
+                    action_id, self._initial_execution(plan), event={
+                        "timestamp": utc_now(), "event": "action_prepared",
+                        "payload": {"ready": plan.get("ready"), "operation": plan.get("operation")},
                     },
-                },
-            )
-        else:
-            state.repair_journal(snapshot)
-            execution_revision = snapshot.value.get("revision")
-            if execution_revision is None:
-                snapshot = DurableSnapshot(
-                    value={**snapshot.value, "revision": snapshot.revision},
-                    revision=snapshot.revision,
-                    last_transition=snapshot.last_transition,
-                    journal_pending=snapshot.journal_pending,
                 )
-            elif execution_revision != snapshot.revision:
-                raise StorageError(
-                    f"execution revision does not match durable state: {action_id}"
-                )
-        return snapshot
+        return execution
 
     def save_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
         with self.locked():
@@ -130,10 +96,8 @@ class ActionStore:
                     raise RuntimeError(
                         "idempotency_key is already bound to a different operation intent"
                     )
-                self._execution_snapshot(str(plan["action_id"]), existing)
                 return self.snapshot(str(plan["action_id"]))
             atomic_json(directory / "plan.json", plan)
-            self._execution_snapshot(str(plan["action_id"]), plan)
             return self.snapshot(plan["action_id"])
 
     def append_journal(
@@ -141,13 +105,14 @@ class ActionStore:
         event_id: str | None = None,
     ) -> None:
         with self.locked():
-            self._execution_state(action_id).append_event({
+            self.directory(action_id)
+            self.database.append_event(action_id, {
                 "timestamp": utc_now(), "event": event, "payload": payload,
             }, event_id=event_id)
 
     def execution(self, action_id: str) -> dict[str, Any]:
         with self.locked():
-            return self._execution_snapshot(action_id).value
+            return self._execution(action_id)
 
     def write_command(
         self, action_id: str, phase: str, payload: dict[str, Any],
@@ -210,96 +175,35 @@ class ActionStore:
             self.directory(action_id) / "activity_errors" / f"{phase}.json", {},
         )
 
+    def _transition(self, action_id, payload, *, event, expected_status=None,
+                    timestamp=None, details=None):
+        self._execution(action_id)  # finish an interrupted initial plan write
+        self.database.commit(action_id, payload, expected_status=expected_status, event={
+            "timestamp": timestamp or utc_now(), "event": event,
+            "payload": {"status": payload.get("status"), "error": payload.get("error"),
+                        **(details or {})},
+        })
+
     def set_execution(self, action_id: str, payload: dict[str, Any],
                       *, event: str, expected_status: str | None = None) -> dict[str, Any]:
         with self.locked():
-            state = self._execution_state(action_id)
-            current = self._execution_snapshot(action_id)
-            if expected_status is not None:
-                if current.value.get("status") != expected_status:
-                    raise RuntimeError(
-                        f"action state changed; expected {expected_status}, "
-                        f"found {current.value.get('status')}"
-                    )
-            caller_revision = payload.get("revision")
-            if caller_revision != current.revision:
-                raise RuntimeError(
-                    "action state changed; expected revision "
-                    f"{caller_revision}, found {current.revision}"
-                )
-            try:
-                committed_payload = {
-                    **payload, "revision": current.revision + 1,
-                }
-                state.commit(
-                    committed_payload,
-                    expected_revision=current.revision,
-                    event={
-                        "timestamp": utc_now(), "event": event,
-                        "payload": {
-                            "status": committed_payload.get("status"),
-                            "error": committed_payload.get("error"),
-                        },
-                    },
-                )
-            except TransitionConflict as exc:
-                raise RuntimeError(str(exc)) from exc
+            self._transition(action_id, payload, event=event, expected_status=expected_status)
             return self.snapshot(action_id)
-
-    def claim_execution(self, action_id: str) -> None:
-        """Cross-process, create-once claim for one immutable action intent."""
-        with self.locked():
-            path = self.directory(action_id) / "execution.claim"
-            try:
-                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            except FileExistsError as exc:
-                raise RuntimeError("execution intent has already been claimed") from exc
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(json.dumps({"claimed_at": utc_now(), "pid": os.getpid()}) + "\n")
 
     def begin_execution(
         self, action_id: str, payload: dict[str, Any], *, intent_digest: str,
     ) -> dict[str, Any]:
-        """Move AUTHORIZED to EXECUTING before writing audit claim metadata."""
+        """Claim execution with the same SQLite CAS used by all transitions."""
         with self.locked():
-            state = self._execution_state(action_id)
-            current = self._execution_snapshot(action_id)
-            if current.value.get("status") != "AUTHORIZED":
-                raise RuntimeError(
-                    "action state changed; expected AUTHORIZED, "
-                    f"found {current.value.get('status')}"
-                )
-            caller_revision = payload.get("revision")
-            if caller_revision != current.revision:
-                raise RuntimeError(
-                    "action state changed; expected revision "
-                    f"{caller_revision}, found {current.revision}"
-                )
-            claim = {
-                "claimed_at": utc_now(), "pid": os.getpid(),
-                "intent_digest": intent_digest,
-            }
-            committed_payload = {
-                **payload, "revision": current.revision + 1,
-            }
-            state.commit(
-                committed_payload,
-                expected_revision=current.revision,
-                event={
-                    "timestamp": claim["claimed_at"],
-                    "event": "execution_started",
-                    "payload": {
-                        "status": committed_payload.get("status"),
-                        "error": committed_payload.get("error"),
-                        "intent_digest": intent_digest,
-                    },
-                },
+            claim = {"claimed_at": utc_now(), "pid": os.getpid(), "intent_digest": intent_digest}
+            self._transition(
+                action_id, payload, event="execution_started", expected_status="AUTHORIZED",
+                timestamp=claim["claimed_at"], details={"intent_digest": intent_digest},
             )
             try:
                 atomic_json(self.directory(action_id) / "execution.claim", claim)
             except OSError:
-                # The CAS state and journal already contain the immutable
-                # claim identity.  This compatibility artifact is best-effort.
+                # State and audit already contain the authoritative claim.
                 pass
             return self.snapshot(action_id)
 
@@ -309,9 +213,8 @@ class ActionStore:
             plan = read_json(directory / "plan.json", {})
             if not plan:
                 raise FileNotFoundError(action_id)
-            execution = self._execution_snapshot(action_id, plan).value
-            path = directory / "journal.jsonl"
-            journal = _jsonl_mappings(path)[-100:] if path.is_file() else []
+            execution = self._execution(action_id, plan)
+            journal = self.database.journal(action_id)
             return {**plan, "execution": execution, "journal": journal}
 
     def list_for_scope(self, scope: OperationScope) -> list[dict[str, Any]]:

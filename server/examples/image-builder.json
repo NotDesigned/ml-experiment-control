@@ -1,0 +1,14 @@
+{
+  "socket": "/run/ml-expd-builder/builder.sock",
+  "client_uid": 10000,
+  "client_gid": 10000,
+  "state_root": "/var/lib/ml-expd-builder",
+  "source_root": "/srv/ml-expd/projects/source-revisions/sources",
+  "repository": "registry.example.org/team/ml-expd-runtime",
+  "base_image_prefixes": ["registry.example.org/team/base@sha256:"],
+  "publisher": "buildkit",
+  "registry_auth_file": "/root/.docker/config.json",
+  "docker": "/usr/bin/docker",
+  "skopeo": "/usr/bin/skopeo",
+  "timeout_seconds": 600
+}

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import ipaddress
 import json
 import os
@@ -89,26 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", required=True, type=Path, help="server workspace YAML")
     subcommands = parser.add_subparsers(dest="command")
-    credential = subcommands.add_parser(
-        "credential", help="manage daemon-host publisher credentials",
-    )
-    credential_kind = credential.add_subparsers(dest="credential_kind", required=True)
-    wandb = credential_kind.add_parser("wandb", help="manage a W&B API key")
-    wandb_action = wandb.add_subparsers(dest="credential_action", required=True)
-    set_command = wandb_action.add_parser("set")
-    set_command.add_argument("reference")
-    set_command.add_argument(
-        "--stdin", action="store_true",
-        help="read the API key from stdin instead of a hidden prompt",
-    )
-    for action in ("status", "clear"):
-        command = wandb_action.add_parser(action)
-        command.add_argument("reference")
     doctor = subcommands.add_parser(
         "doctor",
         help=(
-            "read-only checklist of config, backend availability, action gates, "
-            "and W&B credential state"
+            "read-only checklist of config, backend availability, and action gates"
         ),
     )
     doctor.add_argument(
@@ -128,39 +111,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _credential_command(args: argparse.Namespace) -> int:
-    from .credentials import CredentialError, CredentialStore
-    from .project_config import load_server_config
-
-    config = load_server_config(args.config)
-    store = CredentialStore(Path(config.observability.credential_root))
-    try:
-        if args.credential_action == "set":
-            secret = sys.stdin.read() if args.stdin else getpass.getpass("W&B API key: ")
-            store.set_wandb_api_key(args.reference, secret)
-            result = {"configured": True, "reference": args.reference}
-        elif args.credential_action == "clear":
-            removed = store.clear_wandb_api_key(args.reference)
-            result = {
-                "configured": False, "reference": args.reference, "removed": removed,
-            }
-        else:
-            status = store.status(args.reference)
-            result = {
-                "configured": status.configured, "reference": status.reference,
-            }
-    except CredentialError as exc:
-        print(f"credential error: {exc}", file=sys.stderr)
-        return 2
-    print(json.dumps(result, sort_keys=True))
-    return 0
 
 
 def _doctor_command(args: argparse.Namespace) -> int:
     from experiment_control.backends import BackendServices, build_registry
     from experiment_control.runner import SubprocessRunner
 
-    from .credentials import CredentialError, CredentialStore
     from .http_auth import HttpAuthError, load_bearer_token
     from .project_config import ConfigError, load_research_project, load_server_config
     from .project_registry import ProjectRegistry, ProjectRegistryError
@@ -225,7 +181,7 @@ def _doctor_command(args: argparse.Namespace) -> int:
         runtime = config.action_runtime
         for flag in (
             "allow_project_writes", "allow_source_imports", "allow_scheduler_mutations",
-            "allow_observability_mutations", "allow_local_evidence_rebuild",
+            "allow_local_evidence_rebuild",
         ):
             if getattr(runtime, flag):
                 checks.append((f"action_runtime.{flag}", True, "enabled", None))
@@ -301,71 +257,6 @@ def _doctor_command(args: argparse.Namespace) -> int:
                 ) if root_errors else None,
             ))
 
-        store = CredentialStore(Path(config.observability.credential_root))
-
-        def credential_check(label: str, reference: str | None) -> None:
-            if not reference:
-                checks.append((
-                    label, False, "credential reference not set",
-                    "set the corresponding W&B credential reference in observability config",
-                ))
-                return
-            try:
-                status = store.status(reference)
-            except CredentialError as exc:
-                checks.append((label, False, str(exc), "use a valid credential reference"))
-                return
-            if status.configured:
-                checks.append((label, True, status.reference, None))
-            else:
-                checks.append((
-                    label, False, f"{status.reference} not set",
-                    f"ml-expd --config ... credential wandb set {status.reference} --stdin",
-                ))
-
-        local = config.observability.local_wandb
-        if not local.enabled:
-            checks.append((
-                "local W&B", None, "disabled",
-                "set observability.local_wandb.enabled: true to publish locally",
-            ))
-        else:
-            if local.managed:
-                docker = Path(local.docker_executable)
-                if docker.is_file() and os.access(docker, os.X_OK):
-                    checks.append(("local W&B docker", True, str(docker), None))
-                else:
-                    checks.append((
-                        "local W&B docker", False, f"{docker} is not an executable file",
-                        "install Docker or point docker_executable at a working binary",
-                    ))
-            if not local.publisher_entity and not local.publisher_credential_ref:
-                checks.append((
-                    "local W&B publisher", None, "disabled (dashboard-only)",
-                    "set publisher_entity and publisher_credential_ref to mirror Attempts",
-                ))
-            else:
-                if not local.publisher_entity:
-                    checks.append((
-                        "local W&B entity", False, "publisher_entity not set",
-                        "set observability.local_wandb.publisher_entity",
-                    ))
-                credential_check("local W&B credential", local.publisher_credential_ref)
-
-        cloud = config.observability.wandb_cloud
-        if not cloud.enabled:
-            checks.append((
-                "W&B cloud", None, "disabled",
-                "set observability.wandb_cloud.enabled: true to publish to W&B Cloud",
-            ))
-        else:
-            if not cloud.entity:
-                checks.append((
-                    "W&B cloud entity", False, "entity not set",
-                    "set observability.wandb_cloud.entity",
-                ))
-            credential_check("W&B cloud credential", cloud.default_credential_ref)
-
         registry_root = config.project_registry_root_path()
         registry_path = registry_root / "registry.json"
         if not registry_path.is_file():
@@ -424,8 +315,6 @@ def _doctor_command(args: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.command == "credential":
-        return _credential_command(args)
     if args.command == "doctor":
         return _doctor_command(args)
     try:

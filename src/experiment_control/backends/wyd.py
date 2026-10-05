@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import fcntl
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -12,7 +13,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Iterator
-from urllib.parse import urlsplit
 
 from .services import BackendServices
 from ..contracts import (
@@ -112,43 +112,10 @@ def _source_stage_lock(alias: str, source_dir: str) -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-_WANDB_URL_SCAN_LIMIT = 8 * 1024 * 1024
 
 
-def _safe_wandb_url(value: str) -> bool:
-    if len(value) > 2048:
-        return False
-    parsed = urlsplit(value)
-    return (
-        parsed.scheme in {"http", "https"}
-        and bool(parsed.hostname)
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.query
-        and not parsed.fragment
-    )
 
 
-def wandb_url_probe_command(
-    paths: list[str], *, max_bytes: int = _WANDB_URL_SCAN_LIMIT,
-) -> str:
-    """Build a bounded remote probe that returns only W&B URL evidence."""
-    if not paths:
-        raise ValueError("at least one log path is required")
-    if not 1 <= max_bytes <= _WANDB_URL_SCAN_LIMIT:
-        raise ValueError("max_bytes must be between 1 and 8388608")
-    code = (
-        "import re,sys; limit=int(sys.argv[1]); "
-        "pattern=re.compile(r'wandb initialized:\\s*(https?://[^\\s)>\\]\\\"\\\'?#]+)', re.I);"
-        "\nfor path in sys.argv[2:]:\n"
-        " try:\n"
-        "  with open(path,'rb') as handle: text=handle.read(limit).decode('utf-8','replace')\n"
-        " except OSError: continue\n"
-        " match=pattern.search(text)\n"
-        " if match: print(path); print(match.group(1)); raise SystemExit(0)\n"
-        "raise SystemExit(1)"
-    )
-    return shlex.join(["python3", "-c", code, str(max_bytes), *paths])
 
 
 def render_job(
@@ -166,10 +133,15 @@ def render_job(
     execution = manifest["execution"]
     container_path = str(execution["source_mount"])
     workdir = str(execution["workdir"])
+    packaged_source = bool(backend.get("oci_image"))
+    source_check = "" if packaged_source else f"test -d {shlex.quote(source_dir)}\n"
+    source_bind = "" if packaged_source else f"  --bind {shlex.quote(source_dir)}:{shlex.quote(container_path)} \\\n"
+    unsquash = " --unsquash" if backend.get("apptainer_unsquash") else ""
     comment = shlex.quote(
         submission_marker(submission_token) if submission_token else "ml-exp-dry-run"
     )
     job_name = scheduler_job_name(str(manifest["run_id"]), str(manifest["attempt_id"]))
+    memory_directive = ("#SBATCH --mem=" + str(int(resources["memory_gb"])) + "G\n") if resources.get("memory_gb") else ""
     return f"""#!/usr/bin/env bash
 #SBATCH --partition={backend['partition']}
 #SBATCH --account={backend['account']}
@@ -177,28 +149,24 @@ def render_job(
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task={int(resources.get('cpus', 8))}
-#SBATCH --gres={backend['gres']}
+{memory_directive}#SBATCH --gres={backend['gres']}
 #SBATCH --time={backend['time']}
 #SBATCH --job-name={job_name}
 #SBATCH --comment={comment}
-#SBATCH --output=/dev/null
-#SBATCH --error=/dev/null
+#SBATCH --output={shlex.quote(f"{run_dir}/attempts/{manifest['attempt_id']}/slurm-%j.out")}
+#SBATCH --error={shlex.quote(f"{run_dir}/attempts/{manifest['attempt_id']}/slurm-%j.err")}
 
 set -euo pipefail
 export APPTAINER_CACHEDIR={shlex.quote(cache)}
 export APPTAINER_TMPDIR={shlex.quote(temp)}
 export BACKEND_JOB_ID="$SLURM_JOB_ID"
-mkdir -p {shlex.quote(run_dir)}
+mkdir -p {shlex.quote(run_dir)} {shlex.quote(cache)} {shlex.quote(temp)}
 attempt_log_dir={shlex.quote(f"{run_dir}/attempts/{manifest['attempt_id']}")}
 mkdir -p "$attempt_log_dir"
-exec > >(tee -a "$attempt_log_dir/slurm-$SLURM_JOB_ID.out") \\
-     2> >(tee -a "$attempt_log_dir/slurm-$SLURM_JOB_ID.err" >&2)
-test -d {shlex.quote(source_dir)}
-test -s {shlex.quote(sif_path)}
-srun apptainer exec --nv \\
+{source_check}test -s {shlex.quote(sif_path)}
+srun apptainer exec --nv{unsquash} \\
   --bind {shlex.quote(mount_root)}:{shlex.quote(mount_root)} \\
-  --bind {shlex.quote(source_dir)}:{shlex.quote(container_path)} \\
-  --pwd {shlex.quote(workdir)} \\
+{source_bind}  --pwd {shlex.quote(workdir)} \\
   {shlex.quote(sif_path)} \\
   {command}
 """
@@ -338,7 +306,13 @@ class WydSlurmBackend:
                 f"run {run['run_id']} Slurm backend currently requires resources.nodes=1"
             )
         if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", str(run["image_id"])):
-            raise ValueError(f"run {run['run_id']} Slurm image_id must be a SIF sha256 digest")
+            raise ValueError(f"run {run['run_id']} Slurm image_id must be an immutable sha256 digest")
+        image = backend.get("oci_image")
+        if image is not None and (
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}", str(image))
+            or str(image).split("@", 1)[1] != run["image_id"]
+        ):
+            raise ValueError("Slurm OCI image must match the frozen image digest")
         for field in ("partition", "account", "qos"):
             if not re.fullmatch(r"[A-Za-z0-9_.-]+", str(backend[field])):
                 raise ValueError(f"run {run['run_id']} has invalid Slurm {field}: {backend[field]!r}")
@@ -488,7 +462,8 @@ class WydSlurmBackend:
         )
         manifest_matches: bool | None = None
         if manifest_exists:
-            local_manifest = self.s.local_run_dir(campaign, run) / "manifest.yaml"
+            local_manifest = (self.s.run_manifest_path(campaign, run) if self.s.run_manifest_path
+                              else self.s.local_run_dir(campaign, run) / "manifest.yaml")
             if local_manifest.is_file():
                 expected_sha = hashlib.sha256(local_manifest.read_bytes()).hexdigest()
                 remote_manifest = f"{str(run['storage']['run_dir'])}/manifest.yaml"
@@ -530,6 +505,11 @@ class WydSlurmBackend:
         expected_suffix = f"/sources/{source_id}"
         if not str(backend["source_dir"]).endswith(expected_suffix):
             raise ValueError(f"source_dir must end with {expected_suffix}")
+        if backend.get("oci_image"):
+            # The fixed runtime already contains /workspace. A second source
+            # bind masks that exact image and duplicates publication state.
+            self._stage_oci_image(run)
+            return True
         source_marker = f"{backend['source_dir']}/.source-complete"
         self.remote_exec(
             backend["ssh_alias"],
@@ -596,6 +576,49 @@ class WydSlurmBackend:
                 )
         return True
 
+    def _stage_oci_image(self, run: RunSpec) -> None:
+        """Convert the exact OCI digest once; verify the cached SIF on every use."""
+        backend = run["backend"]
+        image = str(backend["oci_image"])
+        sif = str(backend["sif_path"])
+        # Arguments stay outside the shell program. The image and paths were
+        # validated by validate(); only the conversion receipt permits cache reuse.
+        script = r'''
+set -eu
+sif=$1
+image=$2
+receipt="$sif.oci"
+if test -s "$sif" && test -s "$receipt"; then
+  read -r previous digest < "$receipt"
+  actual=$(sha256sum "$sif")
+  actual=${actual%% *}
+  if test "$previous" = "$image" && test "$digest" = "$actual"; then exit 0; fi
+fi
+temporary="$sif.tmp.$$"
+trap 'rm -f "$temporary" "$receipt.tmp.$$"' EXIT
+apptainer build --force "$temporary" "docker://$image"
+actual=$(sha256sum "$temporary")
+actual=${actual%% *}
+mv -f "$temporary" "$sif"
+printf '%s %s\n' "$image" "$actual" > "$receipt.tmp.$$"
+mv -f "$receipt.tmp.$$" "$receipt"
+'''
+        parent = str(Path(sif).parent)
+        self.remote_exec(backend["ssh_alias"], shlex.join(["mkdir", "-p", parent]))
+        arguments = ["flock", sif + ".lock", "sh", "-c", script, "ml-expd", sif, image]
+        environment = self.s.oci_pull_environment() if hasattr(self, "s") else {}
+        if environment:
+            # Private stdin avoids credentials in SSH argv, scripts and manifests.
+            launcher = ("import json,os,subprocess,sys; credentials=json.load(sys.stdin); "
+                        "allowed={'APPTAINER_DOCKER_USERNAME','APPTAINER_DOCKER_PASSWORD'}; "
+                        "assert set(credentials)<=allowed; "
+                        "sys.exit(subprocess.call(sys.argv[1:],env={**os.environ,**credentials}))")
+            self.s.run_command([self.ssh_bin, "-o", "BatchMode=yes", backend["ssh_alias"],
+                                shlex.join(["python3", "-c", launcher, *arguments])],
+                               input_text=json.dumps(environment))
+        else:
+            self.remote_exec(backend["ssh_alias"], shlex.join(arguments))
+
     def render(self, manifest: AttemptManifest) -> str:
         return render_job(manifest)
 
@@ -644,15 +667,20 @@ class WydSlurmBackend:
         if request.get("scheduler_name") != expected_request["scheduler_name"]:
             raise RuntimeError("Slurm submission intent has a conflicting scheduler name")
         script_path.write_text(
-            render_job(manifest, submission_token=token), encoding="utf-8"
+            render_job({**manifest, "command": self.s.dispatch_command(manifest)}, submission_token=token), encoding="utf-8"
         )
+        script_path.chmod(0o600)
         backend = run["backend"]
         self.validate_live(run)
+        local_manifest = (self.s.run_manifest_path(campaign, run) if self.s.run_manifest_path
+                          else local_dir / "manifest.yaml")
+        if self.s.run_manifest_path and not local_manifest.is_file():
+            raise FileNotFoundError("canonical Run manifest is unavailable before dispatch")
         remote_script = f"{run['storage']['run_dir']}/controller-{manifest['attempt_id']}.sbatch"
         claim_dir = f"{run['storage']['run_dir']}/.submission-{manifest['attempt_id']}"
         claim = self.remote_exec(
             backend["ssh_alias"],
-            f"{shlex.join(['mkdir', '-p', run['storage']['run_dir']])} && "
+            f"{shlex.join(['mkdir', '-p', run['storage']['run_dir'], run['storage']['run_dir'] + '/attempts/' + manifest['attempt_id']])} && "
             f"{shlex.join(['mkdir', claim_dir])}",
             check=False,
         )
@@ -667,7 +695,7 @@ class WydSlurmBackend:
         transport = self.ssh_transport()
         self.s.run_command([
             self.rsync_bin, "-a", "-e", transport,
-            str(local_dir / "manifest.yaml"),
+            str(local_manifest),
             f"{backend['ssh_alias']}:{run['storage']['run_dir']}/manifest.yaml",
         ])
         self.s.run_command([self.rsync_bin, "-a", "-e", transport, str(script_path), f"{backend['ssh_alias']}:{remote_script}"])
@@ -723,6 +751,7 @@ class WydSlurmBackend:
              "--include=*/", "--include=manifest.yaml", "--include=status.json",
              "--include=backend.json", "--include=events.jsonl",
              "--include=/summary.json",
+             *("--include=" + pattern for pattern in self.s.collection_includes(campaign)),
              f"--include=/{run['run_id']}.json",
              "--include=train_metrics.jsonl", "--include=metrics.jsonl",
              "--include=all_generated_*.jsonl",
@@ -750,32 +779,6 @@ class WydSlurmBackend:
             "stdout_tail": diagnostics["stdout"],
             "stderr_tail": diagnostics["stderr"],
         }
-        resolved = run.get("resolved_config")
-        resolved = resolved if isinstance(resolved, dict) else {}
-        if str(resolved.get("use_wandb", "")).strip().lower() in {
-            "1", "true", "yes", "on",
-        }:
-            paths = [
-                str(path) for path in diagnostics["sources"].values() if path
-            ]
-            if paths:
-                observed = self.remote_exec(
-                    backend["ssh_alias"], wandb_url_probe_command(paths), check=False,
-                )
-                lines = [
-                    line.strip() for line in observed.stdout.splitlines() if line.strip()
-                ]
-                if (
-                    observed.returncode == 0
-                    and len(lines) >= 2
-                    and lines[0] in paths
-                    and _safe_wandb_url(lines[1])
-                ):
-                    summary["wandb"] = {
-                        "initialized": True,
-                        "url": lines[1],
-                        "evidence_source": lines[0],
-                    }
         return summary
 
     def logs(self, campaign, run, *, tail: int) -> StreamBackendLogs:

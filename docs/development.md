@@ -31,6 +31,14 @@ uv run --package ml-experiment-server pytest server/tests -q
 uv run --package ml-experiment-server ml-expd --help
 ```
 
+`client/` is the independent `ml-experiment-client` distribution. It has no
+runtime dependency on the server/core or third-party libraries. Build it with
+`uv build --package ml-experiment-client`; run its tests with
+`uv run --package ml-experiment-client pytest client/tests -q`. Its `ml-exp`
+entry point and `python -m ml_exp_client` work outside a repository checkout.
+Daemon integration tests depend on the client only through the server's dev
+group; this is not a server runtime dependency.
+
 Daemon modules may depend on the core package, never the reverse. FastAPI
 belongs only in `server/api`; `runtime.py` is the composition root;
 `controller_gateway.py` is the sole legacy `experimentctl` subprocess
@@ -41,7 +49,7 @@ derive scientific conclusions from metrics and evaluation records.
 Constructing the FastAPI object is side-effect free. Its lifespan first
 acquires the workspace lease and only then constructs SQLite stores,
 bootstraps the Project registry, indexes Projects, or starts
-publisher/collector threads. This ordering is part of the single-writer
+collector threads. This ordering is part of the single-writer
 contract, not an implementation detail. If the lease is already held, startup
 fails before runtime construction; the daemon does not provide a standby
 runtime with partially writable stores.
@@ -125,15 +133,15 @@ Changes to exported Python symbols or the Rust CLI must also update
 [`downstream_contract.md`](downstream_contract.md) and be validated against the
 ELF integration tests before a downstream commit pin advances.
 
-CI first runs `uv sync --locked`, then checks generated CLI documentation,
-Python compilation, and distribution construction with `uv build` on every
+CI first runs `uv sync --locked --all-packages`, then checks generated CLI documentation,
+Python compilation, and distribution construction with `uv build --all-packages` on every
 push and pull request. Update dependencies with `uv add` or `uv remove` and
 commit both `pyproject.toml` and `uv.lock`.
 
 ## Full verification
 
 ```bash
-uv sync --locked
+uv sync --locked --all-packages
 cargo fmt --manifest-path rust/Cargo.toml -- --check
 cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
 cargo test --locked --manifest-path rust/Cargo.toml
@@ -141,9 +149,15 @@ uv run mypy
 uv run python tools/coverage_gate.py
 uv run python tools/generate_cli_reference.py --check
 uv run python -m compileall -q src tests tools examples
-uv run --package ml-experiment-server python -m compileall -q server/src server/tests
-uv run --package ml-experiment-server pytest server/tests -q
+uv run --package ml-experiment-server python -m compileall -q server/src server/tests client/src client/tests
+uv run --package ml-experiment-server python tools/coverage_gate.py --suite daemon
 uv run --package ml-experiment-server ml-expd --help
+uv run --package ml-experiment-client pytest client/tests -q
+uv run --package ml-experiment-client ml-exp --help
 uv run python examples/local_smoke.py
 uv build --all-packages
 ```
+
+Action migration and rollback: [action-storage.md](action-storage.md).
+SSE reconnect/resync contract: [sse.md](sse.md).
+Source/container/artifact contract: [source-api.md](source-api.md).

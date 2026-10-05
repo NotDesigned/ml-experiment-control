@@ -95,69 +95,43 @@ def test_runtime_constructor_failure_closes_every_acquired_resource(monkeypatch,
         def shutdown(self):
             closed.append("telemetry")
 
-    class FakeWandbService:
-        def __init__(self, config):
-            pass
-
-        def stop(self):
-            closed.append("wandb")
-
-    class FakeObservabilityStore:
-        def __init__(self, path):
-            pass
-
-        def close(self):
-            closed.append("observability")
-
     monkeypatch.setattr(runtime_module, "RunIndex", lambda path: FakeIndex())
     monkeypatch.setattr(
         runtime_module, "initialize_telemetry", lambda config: FakeTelemetry(),
     )
-    monkeypatch.setattr(runtime_module, "WandbServiceManager", FakeWandbService)
-    monkeypatch.setattr(runtime_module, "ObservabilityStore", FakeObservabilityStore)
     monkeypatch.setattr(
-        runtime_module, "ObservabilityCoordinator",
-        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("coordinator failed")),
+        runtime_module, "ActionService",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("coordinator failed")),
     )
 
     with pytest.raises(RuntimeError, match="coordinator failed"):
         ExperimentServerRuntime.create(console_config(tmp_path), projects=[])
 
-    assert closed == ["observability", "wandb", "telemetry", "index"]
+    assert closed == ["telemetry", "index"]
 
 
 def test_runtime_close_attempts_all_resources_after_one_failure(monkeypatch, tmp_path):
     runtime = ExperimentServerRuntime.create(console_config(tmp_path), projects=[])
     closed = []
-    real_observability_close = runtime.observability_store.close
     real_index_close = runtime.index.close
     real_telemetry_shutdown = runtime.telemetry.shutdown
-
-    def fail_wandb_stop():
-        closed.append("wandb")
-        raise RuntimeError("stop failed")
-
-    def close_observability():
-        closed.append("observability")
-        real_observability_close()
 
     def close_index():
         closed.append("index")
         real_index_close()
+        raise RuntimeError("stop failed")
 
     def close_telemetry():
         closed.append("telemetry")
         real_telemetry_shutdown()
 
-    monkeypatch.setattr(runtime.wandb_service, "stop", fail_wandb_stop)
-    monkeypatch.setattr(runtime.observability_store, "close", close_observability)
     monkeypatch.setattr(runtime.index, "close", close_index)
     monkeypatch.setattr(runtime.telemetry, "shutdown", close_telemetry)
 
     with pytest.raises(RuntimeError, match="runtime cleanup failed.*stop failed"):
         runtime.close()
 
-    assert closed == ["wandb", "observability", "index", "telemetry"]
+    assert closed == ["index", "telemetry"]
 
 
 class FailingApplication:
@@ -234,38 +208,6 @@ def test_app_poll_loop_records_success_and_failure(monkeypatch, tmp_path):
             import time
             time.sleep(0.002)
         assert app.state.index.get_meta("collector_cycle_started_at") == ""
-
-
-def test_publisher_loop_exposes_systemic_failure_in_health(monkeypatch, tmp_path):
-    class QuietCollector:
-        def __init__(self, **kwargs):
-            self.config = SimpleNamespace(poll_interval_seconds=10)
-
-        def run_cycle(self):
-            pass
-
-    def fail_publish(*, limit_per_target):
-        raise RuntimeError("publisher database unavailable")
-
-    monkeypatch.setattr(api_app, "Collector", QuietCollector)
-    app = api_app.create_app(console_config(tmp_path), poll=True, projects=[])
-    app.state.runtime_initializers.append(
-        lambda runtime: setattr(runtime.observability, "publish_once", fail_publish),
-    )
-    with TestClient(app) as client:
-        import time
-
-        for _ in range(100):
-            payload = client.get("/api/health").json()
-            if payload["publisher"]["last_error"]:
-                break
-            time.sleep(0.005)
-
-        assert payload["publisher"]["last_error"] == (
-            "RuntimeError: publisher database unavailable"
-        )
-        assert payload["publisher"]["consecutive_failures"] >= 1
-        assert payload["publisher"]["last_success_at"] is None
 
 
 def test_health_exposes_collector_loop_failure(monkeypatch, tmp_path):

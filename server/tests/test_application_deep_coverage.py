@@ -218,13 +218,13 @@ def test_prepare_attempt_retry_generates_valid_identity_and_prepares_action():
 
     result = app.prepare_attempt_retry(
         "demo", "run-a::attempt-001", new_attempt_id=None,
-        max_gpu_hours=1.5, reason="retry", wandb_cloud_sync=True,
+        max_gpu_hours=1.5, reason="retry",
     )
 
     draft = yaml.safe_load(result["action"]["draft"])
     assert result["action"]["kind"] == "RETRY_ATTEMPT"
     assert draft["attempt_id"] == "attempt-010"
-    assert draft["wandb_cloud_sync"] is True
+    assert "wandb_cloud_sync" not in draft
 
 
 def test_prepare_attempt_retry_review_exact_preserves_legacy_root_without_budget():

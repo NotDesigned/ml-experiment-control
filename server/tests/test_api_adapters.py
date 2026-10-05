@@ -116,26 +116,11 @@ def test_event_broker_threadsafe_publish_and_stream():
         await asyncio.sleep(0)
         broker.publish_threadsafe({"run_id": "run-a"})
         event = await asyncio.wait_for(pending, timeout=1)
-        assert event == 'data: {"run_id": "run-a"}\n\n'
+        assert event == {'data': '{"run_id": "run-a"}'}
         await stream.aclose()
         assert not broker._subscribers
 
         broker._loop = SimpleNamespace(is_closed=lambda: True)
         broker.publish_threadsafe({"ignored": True})
-
-    asyncio.run(scenario())
-
-
-def test_event_broker_emits_keepalive(monkeypatch):
-    async def timeout(awaitable, *args, **kwargs):
-        awaitable.close()
-        raise asyncio.TimeoutError
-
-    async def scenario():
-        broker = EventBroker()
-        monkeypatch.setattr(asyncio, "wait_for", timeout)
-        stream = broker.stream()
-        assert await anext(stream) == ": keepalive\n\n"
-        await stream.aclose()
 
     asyncio.run(scenario())

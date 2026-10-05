@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from ml_exp_server.api import app as app_module
 from ml_exp_server.api.app import (
-    _poll_loop, _publisher_loop, _shutdown, _start_daemon_thread, create_app,
+    _poll_loop, _shutdown, _start_daemon_thread, create_app,
 )
 from ml_exp_server.api_contract import CLIENT_PROTOCOL_HEADER
 from ml_exp_server.schemas import ServerConfig
@@ -92,7 +92,7 @@ def test_shutdown_defers_close_until_live_owner_exits():
         wandb_service=SimpleNamespace(stop=lambda: stopped.append(True)),
     )
     asyncio.run(_shutdown(app))
-    assert stopped == [True]
+    assert stopped == []
     deadline = time.time() + 1
     while not closed and time.time() < deadline:
         time.sleep(0.01)
@@ -129,7 +129,7 @@ def test_http_boundary_rejects_bad_protocol_and_nonowner_mutation(tmp_path):
         client.app.state.workspace_owner = False
         blocked = client.post(
             "/api/terminal/refresh",
-            headers={CLIENT_PROTOCOL_HEADER: "1"},
+            headers={CLIENT_PROTOCOL_HEADER: "2"},
             json={},
         )
         assert blocked.status_code == 409
@@ -198,15 +198,6 @@ def test_background_loops_continue_once_then_finish(tmp_path):
     app.state.publisher_consecutive_failures = 0
     app.state.projects = [SimpleNamespace(project="demo")]
     app.state.index = index
-    app.state.runtime = SimpleNamespace(
-        observability=SimpleNamespace(
-            publish_once=lambda **_kwargs: published.append(True),
-            collect_rows=lambda _rows: None,
-        ),
-    )
-    _publisher_loop(app)
-    assert published == [True]
-    event.reset()
     collector = SimpleNamespace(
         run_cycle=lambda: None,
         config=SimpleNamespace(poll_interval_seconds=1),
@@ -216,7 +207,6 @@ def test_background_loops_continue_once_then_finish(tmp_path):
 
     stopped = SimpleNamespace(is_set=lambda: True)
     app.state._stop = stopped
-    _publisher_loop(app)
     _poll_loop(app, collector)
 
 

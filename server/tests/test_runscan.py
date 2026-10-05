@@ -16,6 +16,27 @@ from tests.conftest import A1_SCHEDULER_TS, A1_WORKER_TS, FIXTURES
 NOW = A1_SCHEDULER_TS + 10 * 60  # ten minutes after the last scheduler poll
 
 
+def test_uploaded_metric_history_wins_over_last_point_and_stays_attempt_scoped(tmp_path):
+    run = tmp_path / 'run'
+    current = run / 'attempts/attempt-002'
+    uploaded = current / 'uploaded_outputs'
+    uploaded.mkdir(parents=True)
+    (current / 'observed_train_metrics.jsonl').write_text('{"step": 3}\n')
+    history = [{'step': n, 'accuracy': n / 10} for n in [1, 2, 3]]
+    path = uploaded / 'metrics.jsonl'
+    path.write_text(''.join(json.dumps(row)+'\n' for row in history))
+    previous = run / 'attempts/attempt-001/uploaded_outputs'
+    previous.mkdir(parents=True)
+    (previous / 'metrics.jsonl').write_text('{"step": 999}\n')
+    records, source, attempt = train_metric_records(run, attempt_id='attempt-002', exact_attempt=True)
+    assert (records, source, attempt) == (history, path, 'attempt-002')
+    assert train_metric_records(run, attempt_id='attempt-003', exact_attempt=True)[0] == []
+    path.unlink()
+    uploaded.rmdir()
+    uploaded.symlink_to(previous, target_is_directory=True)
+    assert train_metric_records(run, attempt_id='attempt-002', exact_attempt=True)[0] == [{'step': 3}]
+
+
 def test_parse_iso_ts():
     assert parse_iso_ts("2026-07-11T14:31:48.755999Z") == A1_SCHEDULER_TS
     assert parse_iso_ts(None) is None
@@ -824,109 +845,10 @@ def test_smoke_run_created_state_not_flagged(smoke_run_dir):
     assert row.provenance["git_commit"]
 
 
-def test_wandb_identity_is_exposed_only_as_run_provenance(tmp_path):
-    run_dir = tmp_path / "wandb-run"
-    attempt_dir = run_dir / "attempts" / "attempt-001"
-    attempt_dir.mkdir(parents=True)
-    (run_dir / "manifest.yaml").write_text(
-        "project: demo\n"
-        "run_id: wandb-run\n"
-        "resolved_config:\n"
-        "  use_wandb: true\n"
-        "  wandb_project: demo-metrics\n"
-        "  wandb_entity: research-team\n"
-        "  wandb_run_id: stable-run-id\n",
-        encoding="utf-8",
-    )
-
-    row = scan_run_dir(run_dir, "demo", now=NOW)
-
-    assert row.provenance["resolved_config_excerpt"] == {
-        "use_wandb": True,
-        "wandb_project": "demo-metrics",
-        "wandb_entity": "research-team",
-        "wandb_run_id": "stable-run-id",
-    }
-    assert row.provenance["wandb"] == {
-        "requested": True,
-        "enabled": True,
-        "initialized": False,
-        "entity": "research-team",
-        "project": "demo-metrics",
-        "run_id": "stable-run-id",
-        "name": "wandb-run",
-    }
-
-    stdout = attempt_dir / "stdout.log"
-    stdout.write_text(
-        "startup\nWandb initialized: https://wandb.ai/research-team/"
-        "demo-metrics/runs/stable-run-id (resume=allow, id=stable-run-id)\n",
-        encoding="utf-8",
-    )
-    observed = scan_run_dir(run_dir, "demo", now=NOW)
-    assert observed.provenance["wandb"]["initialized"] is True
-    assert observed.provenance["wandb"]["url"] == (
-        "https://wandb.ai/research-team/demo-metrics/runs/stable-run-id"
-    )
-    assert observed.provenance["wandb"]["evidence_source"] == str(stdout)
 
 
-def test_wandb_url_prefers_attempt_collection_structured_evidence(tmp_path):
-    run_dir = tmp_path / "wandb-run"
-    attempt_dir = run_dir / "attempts" / "attempt-001"
-    attempt_dir.mkdir(parents=True)
-    (run_dir / "manifest.yaml").write_text(
-        "project: demo\nrun_id: wandb-run\n"
-        "resolved_config:\n  use_wandb: true\n",
-        encoding="utf-8",
-    )
-    (attempt_dir / "collection.json").write_text(json.dumps({
-        "wandb": {
-            "initialized": True,
-            "url": "https://wandb.ai/team/project/runs/wandb-run",
-            "evidence_source": "/remote/stdout.log",
-        },
-    }))
-
-    row = scan_run_dir(run_dir, "demo", now=NOW)
-
-    assert row.provenance["wandb"]["initialized"] is True
-    assert row.provenance["wandb"]["url"] == (
-        "https://wandb.ai/team/project/runs/wandb-run"
-    )
-    assert row.provenance["wandb"]["evidence_source"] == "/remote/stdout.log"
 
 
-def test_wandb_url_consumes_root_collection_and_rejects_secret_urls(tmp_path):
-    run_dir = tmp_path / "wandb-run"
-    run_dir.mkdir()
-    (run_dir / "manifest.yaml").write_text(
-        "project: demo\nrun_id: wandb-run\n"
-        "resolved_config:\n  use_wandb: true\n",
-        encoding="utf-8",
-    )
-    (run_dir / "collection.json").write_text(json.dumps({
-        "wandb": {
-            "initialized": True,
-            "url": "https://wandb.ai/team/project/runs/wandb-run",
-            "evidence_source": "/remote/stdout.log",
-        },
-    }))
-
-    observed = scan_run_dir(run_dir, "demo", now=NOW)
-
-    assert observed.provenance["wandb"]["initialized"] is True
-    assert observed.provenance["wandb"]["url"].endswith("/runs/wandb-run")
-
-    (run_dir / "collection.json").write_text(json.dumps({
-        "wandb": {
-            "initialized": True,
-            "url": "https://user:secret@wandb.ai/runs/wandb-run",
-        },
-    }))
-    rejected = scan_run_dir(run_dir, "demo", now=NOW)
-    assert rejected.provenance["wandb"]["initialized"] is False
-    assert "url" not in rejected.provenance["wandb"]
 
 
 def test_terminal_runs_are_never_stale(tmp_path):

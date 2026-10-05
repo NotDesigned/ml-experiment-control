@@ -81,12 +81,9 @@ def test_terminal_snapshot_is_server_read_model(client):
     assert "loaded_at" in payload
     assert payload["scale"]["projects"] == 1
     assert payload["scale"]["runs"] == len(payload["runs"]["elf"])
-    assert payload["scale"]["target_statuses"] == {
-        "returned": 0, "total": 0, "limit": 500, "truncated": False,
-    }
     filtered = client.get("/api/terminal/snapshot", params={"project": "elf"})
     assert filtered.status_code == 200
-    assert filtered.json()["scale"]["project_filter"] == "elf"
+    assert [p["project"] for p in filtered.json()["projects"]] == ["elf"]
     assert client.get(
         "/api/terminal/snapshot", params={"project": "missing"},
     ).status_code == 404
@@ -373,20 +370,20 @@ def test_health_negotiates_versioned_protocol_and_native_bearer_auth(tmp_path):
         assert missing.headers["X-ML-Expd-Error-Code"] == "AUTHENTICATION_REQUIRED"
         headers = {
             "Authorization": f"Bearer {token}",
-            "X-ML-Expd-Client-Protocol": "1",
+            "X-ML-Expd-Client-Protocol": "2",
         }
         health = authenticated.get("/api/health", headers=headers)
         payload = health.json()
         assert health.status_code == 200
-        assert health.headers["X-ML-Expd-Protocol"] == "1"
-        assert payload["api_protocol_version"] == 1
+        assert health.headers["X-ML-Expd-Protocol"] == "2"
+        assert payload["api_protocol_version"] == 2
         assert payload["authentication"] == "bearer"
         assert "actions.v1" in payload["capabilities"]
-        assert payload["openapi_path"] == "/api/v1/openapi.json"
+        assert payload["openapi_path"] == "/api/v2/openapi.json"
         assert authenticated.get(payload["openapi_path"], headers=headers).status_code == 200
 
         incompatible = authenticated.get("/api/health", headers={
-            **headers, "X-ML-Expd-Client-Protocol": "2",
+            **headers, "X-ML-Expd-Client-Protocol": "3",
         })
         assert incompatible.status_code == 426
         assert incompatible.headers["X-ML-Expd-Error-Code"] == "INCOMPATIBLE_API_PROTOCOL"
@@ -439,10 +436,6 @@ def test_lease_loss_fails_before_runtime_construction(monkeypatch, tmp_path):
     config = ServerConfig(
         index_db=str(tmp_path / "index.sqlite"),
         action_root=str(tmp_path / "actions"),
-        observability={
-            "credential_root": str(tmp_path / "credentials"),
-            "log_archive_root": str(tmp_path / "logs"),
-        },
         projects=[],
     )
     project = ResearchProject(project="demo", title="Demo", run_roots=[])
@@ -495,15 +488,15 @@ def test_thread_start_failure_releases_workspace_lease(tmp_path, monkeypatch):
     original_start = api_app.threading.Thread.start
     failed_once = False
 
-    def fail_publisher_once(thread):
+    def fail_collector_once(thread):
         nonlocal failed_once
-        if thread.name == "wandb-publisher" and not failed_once:
+        if thread.name == "collectord" and not failed_once:
             failed_once = True
-            raise RuntimeError("publisher thread failed to start")
+            raise RuntimeError("collector thread failed to start")
         return original_start(thread)
 
-    monkeypatch.setattr(api_app.threading.Thread, "start", fail_publisher_once)
-    with pytest.raises(RuntimeError, match="publisher thread failed"):
+    monkeypatch.setattr(api_app.threading.Thread, "start", fail_collector_once)
+    with pytest.raises(RuntimeError, match="collector thread failed"):
         with TestClient(create_app(config)):
             pass
 

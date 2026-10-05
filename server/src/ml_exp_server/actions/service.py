@@ -190,7 +190,6 @@ class ActionService:
     def __init__(self, store: ActionStore, config: ActionRuntimeConfig,
                  runner: Callable[..., dict[str, Any]] | None = None,
                  actor_provider: Callable[[], str] | None = None,
-                 internal_executor: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
                  source_resolver: Callable[[str, str], Path] | None = None):
         self.store = store
         self.config = config
@@ -198,7 +197,6 @@ class ActionService:
         self.execution_policy = ActionExecutionPolicy(config)
         self.project_write_transaction = ProjectWriteTransaction(store)
         self.actor_provider = actor_provider or self._local_actor
-        self.internal_executor = internal_executor
         self.source_resolver = source_resolver
 
     @staticmethod
@@ -333,10 +331,6 @@ class ActionService:
             plan = self._prepare_controller(action_id, scope, project, payload)
         elif kind in {"ARCHIVE_RUN", "ARCHIVE_ATTEMPT"}:
             plan = self._prepare_object_archive(action_id, scope, project, payload)
-        elif kind == "OBSERVABILITY_BACKFILL":
-            plan = self._prepare_observability_backfill(
-                action_id, scope, project, payload,
-            )
         elif kind == "REBUILD_LOCAL_EVIDENCE":
             plan = self._prepare_local_evidence_rebuild(
                 action_id, scope, project, payload,
@@ -622,55 +616,6 @@ class ActionService:
         })
         return plan
 
-    def _prepare_observability_backfill(
-        self, action_id: str, scope: OperationScope,
-        project: ResearchProject, intent: dict[str, Any],
-    ) -> dict[str, Any]:
-        payload = _parse_mapping(str(intent.get("draft", "")))
-        target_kind = str(payload.get("target") or "")
-        attempts = payload.get("attempts")
-        reason = str(payload.get("reason") or "").strip()
-        valid_attempts = (
-            isinstance(attempts, list) and 0 < len(attempts) <= 500
-            and all(
-                isinstance(item, dict)
-                and _SAFE_ID.fullmatch(str(item.get("run_id") or "")) is not None
-                and _SAFE_ID.fullmatch(str(item.get("attempt_id") or "")) is not None
-                for item in attempts
-            )
-        )
-        identities = [
-            {"run_id": str(item["run_id"]), "attempt_id": str(item["attempt_id"])}
-            for item in attempts or [] if isinstance(item, dict)
-        ] if valid_attempts else []
-        gates = [
-            _gate("exact_project", payload.get("project") == project.project,
-                  project.project),
-            _gate("target", target_kind in {"local", "cloud"}, target_kind),
-            _gate("bounded_attempts", bool(valid_attempts),
-                  f"attempt_count={len(attempts) if isinstance(attempts, list) else 0}; max=500"),
-            _gate("reason", bool(reason), "backfill reason is required"),
-            _gate("evidence_reference", bool(intent.get("evidence_digest")),
-                  "intent is bound to bounded scope evidence"),
-        ]
-        plan = self._base_plan(
-            action_id, scope, intent, "OBSERVABILITY_BACKFILL",
-        )
-        plan.update({
-            "target_kind": target_kind,
-            "attempts": identities,
-            "reason": reason,
-            "gates": gates,
-            "ready": all(item["status"] != "FAIL" for item in gates),
-            "preflight_summary": {
-                "target": target_kind, "attempt_count": len(identities),
-            },
-            "command_preview": [
-                "daemon-observability-backfill", target_kind,
-                f"attempts={len(identities)}",
-            ],
-        })
-        return plan
 
     def _run_gate(self, name: str, command: list[str], cwd: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         result = self.controller.execute_command(
@@ -1090,14 +1035,16 @@ class ActionService:
                         "Campaign, and Run scope with an immutable campaign.<sha256> revision"
                     )
                 inherited_git_commit = str(canonical_manifest.get("git_commit") or "")
-                if re.fullmatch(r"[0-9a-f]{40}", inherited_git_commit) is None:
+                if (re.fullmatch(r"[0-9a-f]{40}", inherited_git_commit) is None
+                        and not project.controller.capabilities.get("container_execution")):
                     raise ActionError(
                         "canonical Run manifest has no valid immutable git_commit"
                     )
                 # The controller checkout may advance for operational fixes
                 # between Attempts.  Retry metadata must still identify the
                 # exact source commit frozen by the canonical scientific Run.
-                execution_payload["git_commit"] = inherited_git_commit
+                if inherited_git_commit:
+                    execution_payload["git_commit"] = inherited_git_commit
                 execution_campaign.write_text(
                     yaml.safe_dump(
                         execution_payload, allow_unicode=True, sort_keys=False,
@@ -1303,7 +1250,6 @@ class ActionService:
                 "requested_gpu_hours": requested_gpu_hours,
                 "max_gpu_hours": budget_limit,
                 "resource_approval": resource_approval,
-                "wandb_cloud_sync": bool(spec.get("wandb_cloud_sync", False)),
             })
             for name, verb, extra in (
                 ("preflight", "preflight", ["--scope", "submit"]),
@@ -1496,8 +1442,6 @@ class ActionService:
         dispatch = pending.dispatch
         if dispatch.project_write:
             return self._execute_write(snapshot, execution)
-        if dispatch.internal_mutation:
-            return self._execute_internal(snapshot, execution)
         if dispatch.local_evidence_rebuild:
             return self._execute_local_evidence_rebuild(snapshot, execution)
         return self._execute_controller(snapshot, execution)
@@ -1507,35 +1451,6 @@ class ActionService:
         started, pending = self.begin_execute(action_id, confirmation)
         return started if pending is None else self.finish_execute(pending)
 
-    def _execute_internal(
-        self, plan: dict[str, Any], execution: dict[str, Any],
-    ) -> dict[str, Any]:
-        if self.internal_executor is None:
-            raise ActionError("daemon internal executor is unavailable")
-        try:
-            result = self.internal_executor(plan)
-        except Exception as exc:
-            execution.update({
-                "status": "RECONCILE_REQUIRED", "finished_at": utc_now(),
-                "error": type(exc).__name__, "result": None,
-                "resolution": "UNKNOWN_DO_NOT_RETRY",
-                "safe_to_retry": False,
-                "next_action": "RECONCILE",
-            })
-            return self.store.set_execution(
-                plan["action_id"], execution,
-                event="internal_execution_reconcile_required",
-            )
-        execution.update({
-            "status": "VERIFIED", "finished_at": utc_now(),
-            "error": None, "result": _redact(result),
-            "resolution": "APPLIED",
-            "safe_to_retry": False,
-            "next_action": "OBSERVE_RESULT",
-        })
-        return self.store.set_execution(
-            plan["action_id"], execution, event="internal_execution_verified",
-        )
 
     def _execute_local_evidence_rebuild(
         self, plan: dict[str, Any], execution: dict[str, Any],
@@ -1879,28 +1794,7 @@ class ActionService:
                 raise ActionError("project write is not awaiting reconciliation")
             return self._execute_write(snapshot, execution)
         if snapshot.get("operation") == "OBSERVABILITY_BACKFILL":
-            if not self.config.allow_observability_mutations:
-                raise ActionError("observability mutations are disabled by daemon policy")
-            if execution.get("status") not in {"EXECUTING", "RECONCILE_REQUIRED"}:
-                raise ActionError("observability action is not awaiting reconciliation")
-            previous = execution.get("result")
-            result = dict(previous) if isinstance(previous, dict) else {}
-            result["reconciled_read_only"] = True
-            execution.update({
-                "status": "RECONCILE_REQUIRED",
-                "last_reconciled_at": utc_now(),
-                "error": (
-                    "observability backfill cannot be replayed during reconciliation; "
-                    "inspect target status and prepare a new explicit Action if replay is needed"
-                ),
-                "result": result,
-                "resolution": "UNKNOWN_DO_NOT_RETRY",
-                "safe_to_retry": False,
-                "next_action": "PREPARE_NEW_ACTION",
-            })
-            return self.store.set_execution(
-                action_id, execution, event="observability_reconcile_requires_operator",
-            )
+            raise ActionError("W&B backfill has been retired; historical Actions are read-only")
         if snapshot.get("operation") == "CANCEL_RUN":
             if execution.get("status") not in {"EXECUTING", "RECONCILE_REQUIRED"}:
                 raise ActionError("cancellation is not awaiting reconciliation")
@@ -2047,7 +1941,7 @@ class ActionService:
             stage_result = self.controller.execute_command(
                 stage_command,
                 cwd=Path(str(stage_cwd)),
-                timeout=self.config.timeout_seconds,
+                timeout=self.config.stage_timeout_seconds or self.config.timeout_seconds,
             )
             if stage_result.get("timeout") or stage_result.get("returncode") != 0:
                 detail = str(

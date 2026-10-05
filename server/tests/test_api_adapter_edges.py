@@ -137,68 +137,6 @@ class Status:
         self.terminal = 0
 
 
-@pytest.mark.parametrize(("states", "expected"), [
-    ([], "PENDING"),
-    ([Status("local", "FAILED")], "FAILED"),
-    ([Status("local", "READY")], "READY"),
-    ([Status("local", "OTHER")], "PENDING"),
-])
-def test_observability_payload_publisher_state_matrix(states, expected):
-    local = SimpleNamespace(
-        enabled=True, publisher_entity="team", publisher_credential_ref="local",
-        url=lambda: "http://127.0.0.1:8080",
-    )
-    cloud = SimpleNamespace(
-        enabled=False, default_credential_ref=None, entity=None,
-        dashboard_url="https://wandb.ai",
-    )
-    store = SimpleNamespace(archive_summary=lambda: {"degraded_sources": 0})
-    runtime = SimpleNamespace(
-        config=SimpleNamespace(observability=SimpleNamespace(
-            local_wandb=local, wandb_cloud=cloud,
-        )),
-        credential_store=SimpleNamespace(
-            status=lambda _ref: SimpleNamespace(configured=True),
-        ),
-        observability_store=store,
-        wandb_service=SimpleNamespace(status=lambda: {"state": "READY"}),
-    )
-    payload = routes._observability_payload(
-        request(runtime=runtime), states, target_total=len(states),
-    )
-    assert payload["local_wandb"]["publisher_state"] == expected
-    assert payload["cloud"]["state"] == "DISABLED"
-
-
-def test_observability_payload_unavailable_and_dashboard_url_validation():
-    assert routes._public_dashboard_url("http://example.com:bad") is None
-    assert routes._public_dashboard_url("https://example.com/dashboard") == (
-        "https://example.com/dashboard"
-    )
-    runtime = SimpleNamespace(
-        config=SimpleNamespace(observability=SimpleNamespace(
-            local_wandb=SimpleNamespace(
-                enabled=True, publisher_entity="team",
-                publisher_credential_ref="local", url=lambda: "http://localhost",
-            ),
-            wandb_cloud=SimpleNamespace(
-                enabled=True, default_credential_ref="cloud", entity="team",
-                dashboard_url="https://wandb.ai",
-            ),
-        )),
-        credential_store=SimpleNamespace(
-            status=lambda _ref: SimpleNamespace(configured=False),
-        ),
-        observability_store=SimpleNamespace(
-            archive_summary=lambda: {"degraded_sources": 0},
-        ),
-        wandb_service=SimpleNamespace(status=lambda: {"state": "READY"}),
-    )
-    payload = routes._observability_payload(request(runtime=runtime), [], target_total=0)
-    assert payload["local_wandb"]["publisher_state"] == "UNAVAILABLE"
-    assert payload["cloud"]["state"] == "UNAVAILABLE"
-
-
 def test_route_error_adapters_and_attempt_view_dispatch():
     req = request()
     with pytest.raises(HTTPException) as missing:
@@ -247,63 +185,6 @@ def test_terminal_refresh_rejects_unknown_project():
         routes.terminal_refresh(routes.RefreshRequest(project="missing"), req)
 
 
-def test_observability_endpoint_and_attention_ignore_unmatched_collector_status():
-    store = SimpleNamespace(
-        statuses=lambda **_kwargs: [], status_count=lambda **_kwargs: 0,
-        archive_summary=lambda: {"degraded_sources": 0},
-    )
-    runtime = SimpleNamespace(
-        config=SimpleNamespace(observability=SimpleNamespace(
-            local_wandb=SimpleNamespace(
-                enabled=False, publisher_entity=None,
-                publisher_credential_ref=None,
-            ),
-            wandb_cloud=SimpleNamespace(
-                enabled=False, default_credential_ref=None, entity=None,
-            ),
-        )),
-        credential_store=SimpleNamespace(), observability_store=store,
-        wandb_service=SimpleNamespace(status=lambda: {"state": "DISABLED"}),
-    )
-    payload = routes.observability(request(runtime=runtime))
-    assert payload["limits"]["target_statuses"]["returned"] == 0
+def test_attention_ignores_unmatched_collector_status():
     status = SimpleNamespace(run_id="missing", last_error="ignored")
     assert routes._attention([], [status]) == []
-
-
-def test_terminal_snapshot_groups_target_status(monkeypatch):
-    target = SimpleNamespace(
-        attempt=SimpleNamespace(project="demo", run_id="run-a", attempt_id="a1"),
-        target="local", state="READY", dashboard_url="https://example.com",
-        pending=0, delivered=1, terminal=0, updated_at=1, last_error=None,
-    )
-    payload = {"projects": [], "runs": {"demo": [{
-        "run_id": "run-a", "attempts": [],
-    }]}}
-    monkeypatch.setattr(routes, "build_snapshot", lambda *_args: object())
-    monkeypatch.setattr(routes, "snapshot_payload", lambda _snapshot: payload)
-    store = SimpleNamespace(
-        statuses=lambda **_kwargs: [target], status_count=lambda **_kwargs: 1,
-        archive_summary=lambda: {"degraded_sources": 0},
-    )
-    runtime = SimpleNamespace(
-        observability_store=store,
-        config=SimpleNamespace(observability=SimpleNamespace(
-            local_wandb=SimpleNamespace(
-                enabled=False, publisher_entity=None, publisher_credential_ref=None,
-            ),
-            wandb_cloud=SimpleNamespace(
-                enabled=False, default_credential_ref=None, entity=None,
-            ),
-        )),
-        credential_store=SimpleNamespace(),
-        wandb_service=SimpleNamespace(status=lambda: {"state": "DISABLED"}),
-    )
-    req = request(
-        runtime=runtime, projects=[SimpleNamespace(project="demo")],
-        index=SimpleNamespace(get_run=lambda *_args: None),
-    )
-    result = routes.terminal_snapshot(req)
-    assert result["runs"]["demo"][0]["observability"]["attempts"]["a1"][0][
-        "state"
-    ] == "READY"

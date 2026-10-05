@@ -30,10 +30,13 @@ def _expiry(delta: int) -> str:
     ({"status": "VERIFIED"}, True),
     ({"status": "PREPARED"}, False),
     ({"status": "AUTHORIZED", "gate_expires_at": "invalid"}, False),
-    ({"status": "PREPARED", "gate_expires_at": _expiry(-10)}, False),
-    ({"status": "AUTHORIZED", "gate_expires_at": _expiry(60)}, True),
+    ({"status": "PREPARED", "gate_expires_at": -10}, False),
+    ({"status": "AUTHORIZED", "gate_expires_at": 60}, True),
 ])
 def test_reusable_submission_state_matrix(view, expected):
+    view = dict(view)
+    if isinstance(view.get("gate_expires_at"), int):
+        view["gate_expires_at"] = _expiry(view["gate_expires_at"])
     assert _reusable(view) is expected
 
 
@@ -116,16 +119,6 @@ def test_submission_snapshot_rejects_non_submission_action():
     assert caught.value.code == "UNKNOWN_SUBMISSION"
 
 
-def test_prepare_rejects_unavailable_cloud_publication():
-    cloud = SimpleNamespace(
-        enabled=True, default_credential_ref="cloud", entity="team",
-    )
-    service = _service(_runtime(cloud=cloud, configured=False))
-    with pytest.raises(ApplicationError) as caught:
-        service.prepare_first_attempt(
-            "demo", "run-a", max_gpu_hours=1, reason="", wandb_cloud_sync=True,
-        )
-    assert caught.value.code == "PUBLISHER_UNAVAILABLE"
 
 
 def test_prepare_skips_expired_submission_then_reports_unknown_project():

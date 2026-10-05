@@ -1,0 +1,31 @@
+# Replace backend identifiers and paths with operator-provisioned values.
+executors:
+  wyd-l40s:
+    title: WYD L40S
+    storage_root: /data/ml-expd
+    data_root: /data
+    backend:
+      kind: slurm
+      ssh_alias: wyd-cluster
+      partition: gpu
+      account: lab
+      qos: normal
+      gres: gpu:l40s:1
+      mount_root: /data
+      apptainer_unsquash: true
+  sensecore-1gpu:
+    title: SenseCore 1 GPU
+    storage_root: /data/ml-expd
+    data_root: /data
+    gpus: 1
+    capacity:
+      gpus: 1
+      cpus: 8
+      memory_gb: 128
+    backend:
+      kind: sensecore
+      workspace: REPLACE_WORKSPACE
+      aec2: REPLACE_AEC2
+      worker_spec: REPLACE_ONE_GPU_SPEC
+      quota_type: spot
+      storage_mount: REPLACE_VOLUME:/data

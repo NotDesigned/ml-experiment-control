@@ -115,19 +115,6 @@ def test_runtime_registered_project_identity_drift_is_rejected(monkeypatch):
         runtime_module._load_registered_project(record)
 
 
-def test_runtime_observability_executor_validates_plan_shape(tmp_path):
-    runtime = ExperimentServerRuntime.create(_config(tmp_path), projects=[])
-    try:
-        execute = runtime.action_service.internal_executor
-        assert execute is not None
-        with pytest.raises(ValueError, match="no scope"):
-            execute({})
-        with pytest.raises(ValueError, match="no Attempts"):
-            execute({"scope": {"project": "demo"}, "attempts": "invalid"})
-    finally:
-        runtime.close()
-
-
 def test_runtime_cannot_activate_unknown_registered_project(tmp_path):
     runtime = ExperimentServerRuntime.create(_config(tmp_path), projects=[])
     try:
@@ -152,7 +139,7 @@ def test_action_policy_blocks_disabled_internal_observability_mutation():
         },
     }
 
-    with pytest.raises(ActionError, match="observability mutations are disabled"):
+    with pytest.raises(ActionError, match="backfill has been retired"):
         ActionExecutionPolicy(ActionRuntimeConfig()).validate(
             snapshot, "EXECUTE action-a",
         )

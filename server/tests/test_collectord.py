@@ -319,6 +319,28 @@ def test_terminal_scheduler_state_gets_final_collection_when_attempt_is_stale(
     )
 
 
+def test_managed_terminal_attempt_collects_once_even_when_verification_is_terminal(tmp_path):
+    project = _project(tmp_path, 'camp')
+    project.controller.capabilities['container_execution'] = True
+    source = tmp_path / 'execution.yml'
+    source.write_text('schema_version: 1\ncampaign: camp\nlocal_root: /daemon/runs\n')
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    action_store, _, _ = _verified_action_store(tmp_path,campaign=source,campaign_sha=digest)
+    row = _drifted_row(tmp_path,digest)
+    row.scheduler_state = 'FAILED'
+    row.attempts[0].state = 'FAILED'
+    index = RunIndex(tmp_path/'index.sqlite')
+    index.upsert_run(row)
+    collector = Collector(index=index,projects=[project],action_store=action_store,config=CollectorConfig(dry_run=True))
+    assert [c.verb for c in collector.plan_cycle()] == ['observe','decide']
+    path = Path(row.run_dir)/'attempts/attempt-001/collection.json'
+    path.parent.mkdir(parents=True,exist_ok=True)
+    path.write_text(json.dumps({'attempt_id':'attempt-001','scheduler_state':'RUNNING'}))
+    assert [c.verb for c in collector.plan_cycle()] == ['observe','decide']
+    path.write_text(json.dumps({'attempt_id':'attempt-001','scheduler_state':'FAILED'}))
+    assert collector.plan_cycle() == []
+
+
 def test_direct_import_polls_canonical_run_through_private_campaign(tmp_path):
     campaign_name = "imported-campaign"
     run_id = "imported-run"
