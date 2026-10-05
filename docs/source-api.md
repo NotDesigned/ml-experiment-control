@@ -55,6 +55,8 @@ Every normal API call sends `Authorization: Bearer …` and
    it cannot start a build or submit a job. If no receipt exists, the Runtime
    stays uncertain; inspect build logs before explicitly retrying `/execute`.
    Run only after `READY`; retain the returned final immutable OCI digest.
+   Build logs use the Runtime's frozen bundle ID, so published historical logs
+   remain readable after launcher or recipe upgrades.
 5. `POST /api/projects/my-study/runs` with
    `{"run_id":"trial-001","runtime_id":"runtime.…","executor":"wyd-l40s","arguments":["--epochs","1"],"resources":{"gpus":1,"cpus":8,"memory_gb":32,"max_time":"00:10:00"},"outputs":["**/*"]}`.
    `run_id` cannot be rebound to another definition. Source, derived image,

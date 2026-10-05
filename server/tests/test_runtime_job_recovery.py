@@ -124,6 +124,21 @@ def test_executor_rejection_leaves_inspectable_runtime(client, monkeypatch):
     assert client.get(endpoint).json()["status"] == "RECONCILE_REQUIRED"
 
 
+def test_legacy_prepared_runtime_logs_can_fall_back_to_current_recipe(client, monkeypatch):
+    value = prepared(client)
+    service = ContainerExecutionService(client.app.state.runtime)
+    with service.state("demo", value["runtime_id"]) as (store, snapshot):
+        legacy = dict(snapshot.value)
+        legacy.pop("build_bundle_id")
+        store.commit(legacy, expected_revision=snapshot.revision, event={"event": "legacy_fixture"})
+    def logs(socket, payload):
+        assert payload["operation"] == "logs" and "bundle_id" not in payload
+        return {"lines": []}
+    monkeypatch.setattr("ml_exp_server.api.container_routes.builder_request", logs)
+    endpoint = "/api/projects/demo/runtimes/" + value["runtime_id"] + "/logs"
+    assert client.get(endpoint).json() == {"lines": []}
+
+
 def test_shutdown_keeps_exclusive_workspace_until_image_build_finishes(tmp_path, monkeypatch):
     fixture = client.__wrapped__(tmp_path, monkeypatch)
     api = next(fixture)

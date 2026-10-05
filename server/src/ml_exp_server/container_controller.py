@@ -26,6 +26,7 @@ from experiment_control.runner import SubprocessRunner
 from .schemas import ServerConfig
 from .source_revisions import resolve_source_tree, _tree_digest
 from .storage import read_json
+from .worker_contract import managed_io
 
 
 def parse_metric(_campaign, line: str) -> dict | None:
@@ -40,9 +41,6 @@ def parse_metric(_campaign, line: str) -> dict | None:
     if "global_step" in result and "step" not in result:
         result["step"] = result.pop("global_step")
     return result or None
-
-
-from .worker_contract import managed_io
 
 
 class Controller:

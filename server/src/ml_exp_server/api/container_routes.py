@@ -126,6 +126,9 @@ async def runtime_logs(project: str, runtime_id: str, request: Request):
     payload = {"operation": "logs", "project": project, "source_id": spec["source_id"],
                "base_image": value.get("base_image", spec.get("image")), "packaging_revision": spec["packaging_revision"]}
     payload.update({key: spec[key] for key in ("requirements", "dockerfile") if key in spec})
+    pinned = value.get("bundle_id", value.get("build_bundle_id"))
+    if pinned is not None:
+        payload["bundle_id"] = pinned
     return await invoke(builder_request, service.runtime.config.container_execution.builder_socket, payload)
 
 

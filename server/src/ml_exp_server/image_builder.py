@@ -89,6 +89,18 @@ class ImageBuilder:
         identity = bundle_id(project, source_id, image, requirements, dockerfile_path=custom_path)
         metadata_path = self.root / f"{identity}.json"
         if request.get("operation") == "logs":
+            pinned = request.get("bundle_id", identity)
+            if not isinstance(pinned, str) or not ID.fullmatch(pinned):
+                raise ValueError("invalid frozen build identity")
+            if pinned != identity:
+                receipt = self.root / f"{pinned}.json"
+                if not receipt.is_file():
+                    raise ValueError("historical packaging receipt is unavailable")
+                value = json.loads(receipt.read_text())
+                if any(value.get(key) != expected for key, expected in (
+                        ("bundle_id", pinned), ("project", project), ("source_id", source_id), ("base_image", image))):
+                    raise ValueError("historical packaging receipt identity mismatch")
+            identity = pinned
             path = self.root / f"{identity}.log"
             content = ""
             if path.exists():
