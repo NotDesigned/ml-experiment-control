@@ -19,7 +19,9 @@ lists approved base environments. Submit source, a pinned dependency file and
 argv; the server generates the Dockerfile, installs dependencies inside its
 build container, packages code and publishes to its configured registry.
 For SenseCore this deployment uses CCR; WYD converts the same image to SIF.
-A project Dockerfile is not executed. Older servers still accept an approved
+The generated recipe does not execute a project Dockerfile. SenseCore also
+supports an [uploaded Dockerfile, independent data assets and live checkpoints](sensecore-user-workflow.md).
+Older servers still accept an approved
 image digest with all dependencies already installed.
 
 Each dependency line uses `package==version`. Full-line comments and continued
@@ -176,7 +178,8 @@ A terminal scheduler state can precede final collection. If files or the
 archive are unavailable, inspect the exact Attempt and wait for collection;
 do not start another experiment to repair a download. Writes under
 `OUTPUT_DIR` are uploaded after the program exits. A hard kill or upload failure
-can prevent results from arriving. There is no periodic live checkpoint upload.
+can prevent results from arriving. The generated recipe uploads at exit;
+the SenseCore Dockerfile workflow can additionally publish live checkpoints.
 
 ## Repeat on SenseCore
 

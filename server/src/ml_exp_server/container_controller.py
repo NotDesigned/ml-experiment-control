@@ -52,7 +52,7 @@ class Controller:
         spec = runtime_record.get("spec", {})
         if (runtime_record.get("status") != "READY" or runtime_record.get("project") != campaign["project"]
                 or runtime_record.get("image") != runtime["image"]
-                or any(spec.get(key) != runtime.get(key) for key in ("source_id", "entrypoint", "workdir", "packaging_revision"))
+                or any(spec.get(key) != runtime.get(key) for key in ("source_id", "entrypoint", "workdir", "packaging_revision", "dockerfile", "requirements"))
                 or self.run["source_id"] != runtime["source_id"]
                 or self.run["image_id"] != runtime["image"].split("@", 1)[1]):
             raise ValueError("controller runtime does not match its immutable definition")
@@ -93,6 +93,8 @@ class Controller:
                        "OUTPUT_DIR": output, "PROJECT_NAME": self.campaign["project"],
                        "RUN_ID": self.run["run_id"], "ATTEMPT_ID": attempt_id,
                        "SOURCE_ID": self.run["source_id"]}
+        if runtime.get("dockerfile"):
+            environment["INPUTS_DIR"] = "/inputs"
         duration = self.run["resources"]["max_time"].split(":")
         seconds = sum(int(value) * multiplier for value, multiplier in zip(duration, (3600, 60, 1)))
         return ["env", *[f"{key}={value}" for key, value in sorted(environment.items())],
@@ -107,10 +109,21 @@ class Controller:
             from .artifact_store import ArtifactStore
             transfer = ArtifactStore(Path(self.campaign["artifact_store"]), Path(self.campaign["source_store"]))
             url, token, limit = transfer.issue(self.campaign["project"], self.run["run_id"],
-                                               manifest["attempt_id"], self.root, self.run["outputs"])
+                                               manifest["attempt_id"], self.root, self.run["outputs"],
+                                               **({"checkpoint_upload": True} if self.run.get("checkpoint_upload") else {}))
             command = ["env", f"ML_EXPD_UPLOAD_URL={url}", f"ML_EXPD_UPLOAD_TOKEN={token}",
                        f"ML_EXPD_UPLOAD_LIMIT={limit}",
                        "ML_EXPD_OUTPUT_PATTERNS=" + json.dumps(self.run["outputs"]), *command]
+            if self.run.get("inputs"):
+                prefix = transfer.config["public_transfer_base"].rstrip("/").rsplit("/", 1)[0]
+                base = prefix + "/asset-transfers/" + "/".join([self.campaign["project"], self.run["run_id"], manifest["attempt_id"]])
+                inputs = [{**item, "url": base + "/" + item["asset_id"]} for item in self.run["inputs"]]
+                command = ["env", "ML_EXPD_INPUT_ASSETS=" + json.dumps(inputs), *command]
+            if self.run.get("checkpoint_upload"):
+                prefix = transfer.config["public_transfer_base"].rstrip("/").rsplit("/", 1)[0]
+                url = prefix + "/snapshot-transfers/" + "/".join([self.campaign["project"], self.run["run_id"], manifest["attempt_id"]])
+                command = ["env", f"ML_EXPD_SNAPSHOT_URL={url}",
+                           "ML_EXPD_SNAPSHOT_INTERVAL=" + str(self.run["checkpoint_upload"]["interval_seconds"]), *command]
         return command
 
     def oci_pull_environment(self):
@@ -128,6 +141,7 @@ class Controller:
         source = self.source()
         metadata = json.loads((source.parent / "source.json").read_text())
         resolved = {key: self.run[key] for key in ("container", "arguments", "env", "outputs")}
+        resolved.update({key: self.run[key] for key in ("inputs", "checkpoint_upload") if key in self.run})
         manifest = build_run_manifest(
             project=self.campaign["project"], run_id=self.run["run_id"], created_at=utc_now(),
             config_path="container_execution", resolved_config=resolved,
@@ -140,7 +154,9 @@ class Controller:
             command=self.command("{attempt_id}"),
             execution={"source_mount": "/workspace", "workdir": self.run["container"]["workdir"]},
             assets=[{"kind": "source", "identity": self.run["source_id"]},
-                    {"kind": "runtime_image", "identity": self.run["container"]["image"]}],
+                    {"kind": "runtime_image", "identity": self.run["container"]["image"]},
+                    *[{"kind": "data_asset", "identity": item["asset_id"], "mount_path": item["mount_path"]}
+                      for item in self.run.get("inputs", [])]],
             checkpoint=self.run.get("checkpoint", {}),
         )
         if self.store.manifest_path.exists():
@@ -302,6 +318,14 @@ def cli(argv=None):
         elif args.verb == "assets-verify":
             controller.source(args.source_root)
             result = {"missing": [], "verification": "immutable-source-and-runtime"}
+            if controller.run.get("inputs"):
+                from .data_assets import AssetStore
+                assets = AssetStore(Path(campaign["artifact_store"]), Path(campaign["source_store"]))
+                for item in controller.run["inputs"]:
+                    value = assets.read(campaign["project"], item["asset_id"])
+                    if any(value[key] != item[key] for key in ("sha256", "archive_bytes", "files")):
+                        raise ValueError("input asset differs from the frozen Run")
+                result.update(verification="immutable-input-assets; backend-delivery-verified-by-worker", inputs=len(controller.run["inputs"]))
         elif args.verb == "check-identity":
             controller.check_identity()
             result = {"available": True}

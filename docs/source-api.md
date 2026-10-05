@@ -41,7 +41,7 @@ Every normal API call sends `Authorization: Bearer …` and
    actual versions at `/usr/local/share/ml-expd/environment.json` in the image.
    Requirements use `package==version` and optionally complete SHA256 hashes;
    URLs, includes, pip options, markers and source builds are unsupported.
-   The daemon never executes a project Dockerfile or installs dependencies on
+   The daemon does not execute project code or install dependencies on
    the control-plane host. The original FROM/COPY-only recipe remains available.
    The server supplies the reviewed `packaging_revision`; it is part of the
    runtime identity, so a packaging repair creates a new runtime instead of
@@ -137,7 +137,9 @@ are excluded; the API also rejects credentials and escaping archive paths.
 The default total archive limit is 2 GiB / 20,000 entries; an operator can
 configure a smaller byte limit. The operator template uses 256 MiB. GNU timeout bounds the worker
 including upload; a hard kill or lost network can prevent the final upload.
-There is no periodic live checkpoint upload in this version. A failed upload
+The SenseCore [Dockerfile/data workflow](sensecore-user-workflow.md) adds optional
+live checkpoint publication using an atomic ready manifest. Legacy recipes
+still upload outputs at process exit. A failed upload
 is visible as `ML_EXPD_ARTIFACT_UPLOAD=FAILED` and fails an otherwise successful
 worker. Scientific program failure is preserved even when its artifacts upload.
 

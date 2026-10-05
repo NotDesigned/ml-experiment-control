@@ -17,6 +17,7 @@ from ..application_errors import ApplicationError
 from ..artifacts import ArtifactService
 from ..artifact_store import ArtifactStore
 from ..container_execution import ContainerExecutionService, RunRequest, RuntimeSpec
+from ..image_builder import builder_request
 from ..source_imports import SourceImportService
 from .errors import application_http_error
 
@@ -111,6 +112,17 @@ async def runtime_execute(project: str, runtime_id: str, data: ConfirmRequest,
         await invoke(service.require_enabled)
         tasks.add_task(service.execute, project, runtime_id, data.confirmation)
     return {"runtime_id": runtime_id, "status": value["status"], "accepted": True}
+
+
+@router.get("/projects/{project}/runtimes/{runtime_id}/logs")
+async def runtime_logs(project: str, runtime_id: str, request: Request):
+    service = ContainerExecutionService(request.app.state.runtime)
+    value = await invoke(service.read, project, runtime_id)
+    spec = value["spec"]
+    payload = {"operation": "logs", "project": project, "source_id": spec["source_id"],
+               "base_image": value.get("base_image", spec.get("image")), "packaging_revision": spec["packaging_revision"]}
+    payload.update({key: spec[key] for key in ("requirements", "dockerfile") if key in spec})
+    return await invoke(builder_request, service.runtime.config.container_execution.builder_socket, payload)
 
 
 @router.post("/projects/{project}/runtimes/{runtime_id}/reconcile")

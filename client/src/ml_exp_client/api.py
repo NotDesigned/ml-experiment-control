@@ -50,7 +50,7 @@ class Client:
         self.base, self.token, self.timeout = base.rstrip("/"), token, timeout
         self.opener = build_opener(NoRedirect())
 
-    def open(self, path: str, *, data=None, raw: bytes | None = None):
+    def open(self, path: str, *, data=None, raw=None, length: int | None = None):
         if not path.startswith("/api/") or "\x00" in path:
             raise ClientError("request must stay within /api/")
         headers = {"Authorization": "Bearer " + self.token,
@@ -61,6 +61,8 @@ class Client:
             headers["Content-Type"] = "application/json"
         elif raw is not None:
             headers["Content-Type"] = "application/octet-stream"
+            if length is not None:
+                headers["Content-Length"] = str(length)
         method = "GET" if body is None else "POST"
         try:
             return self.opener.open(Request(self.base + path, body, headers, method=method),
@@ -185,3 +187,27 @@ def copy_stream(source, target=None):
         if target is not None:
             target.write(chunk)
     return digest.hexdigest(), size
+
+
+def data_archive(directory: Path, stream):
+    if not directory.is_dir() or directory.is_symlink():
+        raise ClientError("data asset must be a regular directory")
+    with tarfile.open(fileobj=stream, mode="w") as archive:
+        for path in sorted(directory.rglob("*")):
+            relative = path.relative_to(directory)
+            if path.is_symlink() or not (path.is_dir() or path.is_file()):
+                raise ClientError("data asset contains a link or special file")
+            if any(p.startswith(".") for p in relative.parts) or path.suffix.lower() in {".pem", ".key", ".p12", ".pfx"}:
+                raise ClientError("data asset contains a hidden or credential-looking path")
+            if path.is_file():
+                member = archive.gettarinfo(str(path), arcname=relative.as_posix())
+                member.uid = member.gid = member.mtime = 0
+                member.uname = member.gname = ""
+                member.mode = 0o400
+                with path.open("rb") as body:
+                    archive.addfile(member, body)
+    length = stream.tell()
+    stream.seek(0)
+    digest, _ = copy_stream(stream)
+    stream.seek(0)
+    return digest, length

@@ -109,3 +109,38 @@ def test_new_build_options_require_server_capabilities_before_upload(tmp_path, m
     assert main(["pack", "--project", "demo", "--source", str(tmp_path), "--state", str(tmp_path / "runtime.json"),
                  "--environment", "torch"]) == 2
     assert "capability" in capsys.readouterr().err and not (tmp_path / "runtime.json").exists()
+
+
+def test_dockerfile_data_upload_and_input_binding_use_only_http(tmp_path,monkeypatch,capsys):
+    calls=[]
+    class API:
+        def __init__(self,*a):pass
+        def negotiate(self):return {"capabilities":["dockerfile-build.v1","data-assets.v1"]}
+        def call(self,path,**kwargs):
+            calls.append((path,kwargs))
+            if path=="/api/storage-limits":return {"asset_archive_bytes":1000000}
+            if path.startswith("/api/assets/archive"):
+                assert hasattr(kwargs["raw"],"read") and kwargs["length"]>0
+                return {"project":"demo","asset_id":"asset."+"a"*64,"status":"READY"}
+            if "source-imports" in path:return {"project":"demo","source_id":"source."+"b"*64}
+            if path.endswith("prepare"):return {"project":"demo","runtime_id":"runtime."+"c"*64,"status":"PREPARED","confirmation":"BUILD test"}
+            return {}
+        def wait(self,*a,**k):return {"project":"demo","runtime_id":"runtime."+"c"*64,"status":"READY"}
+    monkeypatch.setattr("ml_exp_client.cli.Client",API)
+    source=tmp_path/"source";source.mkdir();(source/"Dockerfile").write_text("FROM pinned")
+    runtime=tmp_path/"runtime.json"
+    assert main(["pack","--project","demo","--source",str(source),"--dockerfile","Dockerfile","--state",str(runtime)])==0
+    prepared=next(kwargs["data"] for path,kwargs in calls if path.endswith("prepare"))
+    assert prepared["dockerfile"]=="Dockerfile" and "image" not in prepared
+    data=tmp_path/"data";data.mkdir();(data/"tokens.bin").write_bytes(b"tokens")
+    asset=tmp_path/"data.json"
+    assert main(["asset-upload","--project","demo","--directory",str(data),"--state",str(asset)])==0
+    assert json.loads(asset.read_text())["status"]=="READY"
+    bindings=json.dumps([{"asset_id":"asset."+"a"*64,"mount_path":"/inputs/data"}])
+    assert main(["create","--runtime-state",str(runtime),"--run","trial","--executor","sensecore-1gpu","--inputs",bindings,"--checkpoint-interval","5"])==0
+    definition=next(kwargs["data"] for path,kwargs in calls if path.endswith("/runs"))
+    assert definition["inputs"]==json.loads(bindings) and definition["checkpoint_upload"]=={"interval_seconds":5}
+    assert main(["assets","--project","demo"])==0
+    assert main(["snapshots","--project","demo","--run","trial","--attempt","attempt-001"])==0
+    assert main(["asset-upload","--project","demo","--directory",str(data),"--state",str(asset)])==2
+    assert "state file exists" in capsys.readouterr().err

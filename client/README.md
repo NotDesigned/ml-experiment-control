@@ -65,7 +65,11 @@ Source is uploaded over HTTP. `check` lists environments on supporting servers;
 generate a Dockerfile, install pinned binary Python dependencies, and package
 source. `--image <repository@sha256:...>` remains available instead of the
 environment ID. The requirements path is relative to the uploaded source.
-Project Dockerfiles are not executed; see the quickstart for supported pins.
+The generated recipe uses the supported pin format in the quickstart.
+For SenseCore, `ml-exp pack --dockerfile Dockerfile` executes the uploaded
+Dockerfile in the server builder, `asset-upload` delivers independent data,
+and `create --inputs ... --checkpoint-interval ...` enables mounted inputs and
+live checkpoints. See the [complete workflow](../docs/sensecore-user-workflow.md).
 
 ## Python use
 
