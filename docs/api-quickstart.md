@@ -12,14 +12,14 @@ Ask the operator for:
 | Bearer token | This grants access to the configured control plane; keep it private |
 | Environment ID from `GET /api/environments`, or approved image digest | Contains Python, the GPU framework, `/bin/sh` and GNU `timeout` |
 | Executor ID and allowed resources/budget | Profiles describe WYD or SenseCore infrastructure |
-| Dataset location and access convention | Large data is provisioned by the operator, outside source upload |
+| Dataset asset or operator-provided location | Upload data independently through the asset API, or use the existing operator-provided dataset |
 
 On servers advertising `environments.v1` and `dependency-build.v1`, `ml-exp check`
 lists approved base environments. Submit source, a pinned dependency file and
 argv; the server generates the Dockerfile, installs dependencies inside its
 build container, packages code and publishes to its configured registry.
 For SenseCore this deployment uses CCR; WYD converts the same image to SIF.
-The generated recipe does not execute a project Dockerfile. SenseCore also
+The generated recipe does not execute a project Dockerfile. WYD and SenseCore also
 supports an [uploaded Dockerfile, independent data assets and live checkpoints](sensecore-user-workflow.md).
 Older servers still accept an approved
 image digest with all dependencies already installed.

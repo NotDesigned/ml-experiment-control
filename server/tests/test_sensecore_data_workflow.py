@@ -85,9 +85,10 @@ def put_asset(client, data=None, **params):
 
 
 def test_client_can_upload_mount_publish_and_reuse_checkpoint(client, stored, monkeypatch):
-    asset = put_asset(client).json()
+    data = archive({"tokens.bin": b"tokens for a separate data asset"})
+    asset = put_asset(client, data).json()
     assert asset["status"] == "READY" and asset["files"][0]["sha256"] == hashlib.sha256(b"tokens for a separate data asset").hexdigest()
-    assert put_asset(client).json() == asset
+    assert put_asset(client, data).json() == asset
     assert client.get("/api/projects/demo/assets").json()["assets"] == [asset]
     assert client.get("/api/projects/demo/assets/" + asset["asset_id"]).json() == asset
     bundle = custom_runtime(client, monkeypatch)
