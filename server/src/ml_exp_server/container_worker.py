@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import http.client
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import stat
@@ -14,6 +16,8 @@ import tarfile
 import tempfile
 import time
 from urllib.parse import urlsplit
+
+MULTIPART_UPLOAD = os.environ.pop('ML_EXPD_MULTIPART_UPLOAD', '0') == '1'
 
 
 def archive_outputs(root: Path, stream, limit: int, patterns: list[str]) -> int:
@@ -49,6 +53,74 @@ def archive_outputs(root: Path, stream, limit: int, patterns: list[str]) -> int:
 
 
 def upload(url: str, token: str, stream, length: int):
+    if MULTIPART_UPLOAD:
+        return upload_parts(url, token, stream, length)
+    return legacy_upload(url, token, stream, length)
+
+
+def upload_request(target, method, path, token, data=b''):
+    connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=300)
+    try:
+        connection.request(method, path, body=data, headers={'Authorization': 'Bearer ' + token,
+            'Content-Type': 'application/json' if method == 'POST' else 'application/octet-stream'})
+        response = connection.getresponse()
+        body = response.read(4 * 1024 ** 2)
+        if response.status >= 500 or response.status == 429:
+            raise OSError('multipart archive transfer temporarily unavailable')
+        if response.status != 200:
+            raise ValueError('multipart archive transfer rejected (HTTP ' + str(response.status) + ')')
+        return json.loads(body)
+    finally:
+        connection.close()
+
+
+def upload_parts(url, token, stream, length):
+    target = urlsplit(url)
+    if target.scheme != 'https' or target.username or target.password or target.query or target.fragment:
+        raise ValueError('artifact transfer requires a fixed HTTPS endpoint')
+    marker = '/snapshot-transfers/' if '/snapshot-transfers/' in target.path else '/artifact-transfers/'
+    kind = 'checkpoint' if marker == '/snapshot-transfers/' else 'artifacts'
+    if marker not in target.path:
+        raise ValueError('invalid worker upload endpoint')
+    endpoint = target.path.replace(marker, '/attempt-uploads/', 1) + '/' + kind
+    digest = hashlib.sha256()
+    stream.seek(0)
+    while data := stream.read(1024 ** 2):
+        digest.update(data)
+    identity = json.dumps({'sha256': digest.hexdigest(), 'bytes': length}).encode()
+    # Reissuing create returns the same durable session. On a lost response or
+    # transient connection failure, only missing parts are resent.
+    attempt = 0
+    while True:
+        try:
+            value = upload_request(target, 'POST', endpoint, token, identity)
+            if (not 1024 <= value['part_bytes'] <= 64 * 1024 ** 2 or value['sha256'] != digest.hexdigest() or value['bytes'] != length
+                    or value['part_count'] != (length + value['part_bytes'] - 1) // value['part_bytes']
+                    or not re.fullmatch(r'upload\.[0-9a-f]{64}', value['upload_id'])):
+                raise ValueError('invalid multipart upload receipt')
+            if value['status'] == 'COMPLETED':
+                return
+            root = endpoint + '/' + value['upload_id']
+            stream.seek(0)
+            for number in range(value['part_count']):
+                data = stream.read(value['part_bytes'])
+                part_sha = hashlib.sha256(data).hexdigest()
+                previous = value['parts'].get(str(number))
+                if previous:
+                    if previous != {'sha256': part_sha, 'bytes': len(data)}:
+                        raise ValueError('sealed upload part differs')
+                    continue
+                upload_request(target, 'PUT', root + '/parts/' + str(number) + '?sha256=' + part_sha, token, data)
+            upload_request(target, 'POST', root + '/complete', token)
+            return
+        except (OSError, http.client.HTTPException):
+            if attempt == 2:
+                raise
+            time.sleep(2 ** attempt)
+            attempt += 1
+
+
+def legacy_upload(url: str, token: str, stream, length: int):
     target = urlsplit(url)
     if target.scheme != 'https' or target.username or target.password or target.query or target.fragment:
         raise ValueError('artifact transfer requires a fixed HTTPS endpoint')

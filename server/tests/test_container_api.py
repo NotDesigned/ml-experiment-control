@@ -71,6 +71,56 @@ def runtime(client, source=None):
     return completed
 
 
+def test_worker_upgrade_creates_new_runtime_and_preserves_ready_identity(client, monkeypatch):
+    from ml_exp_server.container_execution import ContainerExecutionService, RuntimeSpec
+    original = runtime(client)
+    service = ContainerExecutionService(client.app.state.runtime)
+    spec = RuntimeSpec.model_validate(original["spec"])
+    assert service.prepare("demo", spec) == original
+    monkeypatch.setattr("ml_exp_server.container_execution.bundle_id", lambda *args, **kwargs: "d" * 64)
+    new = service.prepare("demo", spec)
+    assert new["runtime_id"] != original["runtime_id"] and new["build_bundle_id"] == "d" * 64
+    assert service.read("demo", original["runtime_id"]) == original
+    assert service.execute("demo", original["runtime_id"], original["confirmation"]) == original
+
+
+def test_unbuilt_runtime_rejects_changed_build_implementation(client, monkeypatch):
+    from ml_exp_server.application_errors import ApplicationError
+    from ml_exp_server.container_execution import ContainerExecutionService, RuntimeSpec
+    source = import_source(client)
+    service = ContainerExecutionService(client.app.state.runtime)
+    value = service.prepare("demo", RuntimeSpec(source_id=source["source_id"],
+                            image="registry.example/python@sha256:" + "a" * 64, entrypoint=["python", "train.py"]))
+    monkeypatch.setattr("ml_exp_server.container_execution.bundle_id", lambda *args, **kwargs: "d" * 64)
+    monkeypatch.setattr("ml_exp_server.container_execution.builder_request", lambda *args: pytest.fail("must not submit a changed build"))
+    with pytest.raises(ApplicationError, match="prepare a new Runtime"):
+        service.execute("demo", value["runtime_id"], value["confirmation"])
+    response = client.post("/api/projects/demo/runtimes/" + value["runtime_id"] + "/execute",
+                           json={"confirmation": value["confirmation"]})
+    assert response.status_code == 409 and "prepare a new Runtime" in response.text
+    assert service.read("demo", value["runtime_id"]) == value
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_fixed_recipe_build_receipt_and_legacy_runtime_compatibility(client, monkeypatch, legacy):
+    from ml_exp_server.container_execution import ContainerExecutionService, RuntimeSpec
+    source = import_source(client)
+    service = ContainerExecutionService(client.app.state.runtime)
+    value = service.prepare("demo", RuntimeSpec(source_id=source["source_id"],
+                            image="registry.example/python@sha256:" + "a" * 64, entrypoint=["python", "train.py"]))
+    if legacy:
+        with service.state("demo", value["runtime_id"]) as (store, snapshot):
+            old = dict(snapshot.value)
+            old.pop("build_bundle_id")
+            store.commit(old, expected_revision=snapshot.revision, event={"event": "legacy_fixture"})
+    else:
+        monkeypatch.setattr("ml_exp_server.container_execution.builder_request", lambda *args: {
+            "project": "demo", "source_id": source["source_id"], "base_image": value["spec"]["image"],
+            "image": "registry.example/result@sha256:" + "b" * 64, "bundle_id": "e" * 64})
+    result = service.execute("demo", value["runtime_id"], value["confirmation"])
+    assert result["status"] == ("READY" if legacy else "RECONCILE_REQUIRED")
+
+
 def test_import_runtime_and_backends_share_frozen_execution(client):
     source = import_source(client)
     assert source["source_id"] == import_source(client)["source_id"]

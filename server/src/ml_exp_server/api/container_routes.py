@@ -110,6 +110,7 @@ async def runtime_execute(project: str, runtime_id: str, data: ConfirmRequest,
         raise HTTPException(status_code=409, detail="runtime packaging is already executing")
     if value["status"] != "READY":
         await invoke(service.require_enabled)
+        await invoke(service.require_current_build, project, value)
         tasks.add_task(service.execute, project, runtime_id, data.confirmation)
     return {"runtime_id": runtime_id, "status": value["status"], "accepted": True}
 

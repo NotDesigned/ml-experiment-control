@@ -61,6 +61,8 @@ class AssetStore:
                 "asset_file_bytes": self.expanded_limit, "asset_files": self.file_limit,
                 "artifact_archive_bytes": self.objects.limit,
                 "artifact_files": 20000, "local_storage_free_bytes": shutil.disk_usage(self.root).free,
+                "upload_part_bytes": int(self.objects.config.get("upload_part_bytes", 16 * 1024 ** 2)),
+                "upload_session_seconds": int(self.objects.config.get("upload_session_seconds", 86400)),
                 "scheduler_input_manifest_bytes": 32768,
                 "storage_quota_bytes": self.objects.config.get("storage_quota_bytes"),
                 "checkpoint_publication": "atomic-ready-manifest", "input_write_protection": "file-permissions"}

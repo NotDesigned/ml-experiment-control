@@ -1,6 +1,7 @@
 """Protocol-2 HTTP transport, source packaging and verified artifact retrieval.
 
-No request is retried automatically. See docs/api-quickstart.md.
+Only resumable archive transfers retry transient failures. Scheduler operations
+are never replayed automatically. See docs/api-quickstart.md.
 """
 from __future__ import annotations
 
@@ -20,9 +21,10 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 class ClientError(RuntimeError):
-    def __init__(self, message, *, status=None):
+    def __init__(self, message, *, status=None, retryable=False):
         super().__init__(message)
         self.status = status
+        self.retryable = retryable
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -53,7 +55,7 @@ class Client:
         self.base, self.token, self.timeout = base.rstrip("/"), token, timeout
         self.opener = build_opener(NoRedirect())
 
-    def open(self, path: str, *, data=None, raw=None, length: int | None = None):
+    def open(self, path: str, *, data=None, raw=None, length: int | None = None, method=None):
         if not path.startswith("/api/") or "\x00" in path:
             raise ClientError("request must stay within /api/")
         headers = {"Authorization": "Bearer " + self.token,
@@ -66,7 +68,7 @@ class Client:
             headers["Content-Type"] = "application/octet-stream"
             if length is not None:
                 headers["Content-Length"] = str(length)
-        method = "GET" if body is None else "POST"
+        method = method or ("GET" if body is None else "POST")
         try:
             return self.opener.open(Request(self.base + path, body, headers, method=method),
                                     timeout=self.timeout)
@@ -75,7 +77,7 @@ class Client:
             exc.close()
             raise ClientError(f"{method} {path}: HTTP {exc.code} {code}; inspect saved IDs before retrying", status=exc.code) from None
         except (URLError, TimeoutError, OSError):
-            raise ClientError(f"{method} {path}: connection failed; inspect saved IDs before retrying") from None
+            raise ClientError(f"{method} {path}: connection failed; inspect saved IDs before retrying", retryable=True) from None
 
     def call(self, path: str, **kwargs):
         with self.open(path, **kwargs) as response:
@@ -277,3 +279,35 @@ def data_archive(directory: Path, stream):
     digest, _ = copy_stream(stream)
     stream.seek(0)
     return digest, length
+
+
+def upload_asset_parts(client, project, stream, digest, length, state):
+    endpoint = f"/api/projects/{segment(project)}/asset-uploads"
+    for attempt in range(3):
+        try:
+            value = client.call(endpoint, data={"sha256": digest, "bytes": length})
+            part_bytes = value["part_bytes"]
+            if (not 1024 <= part_bytes <= 64 * 1024 ** 2 or value["sha256"] != digest or value["bytes"] != length
+                    or value["part_count"] != (length + part_bytes - 1) // part_bytes
+                    or not re.fullmatch(r"upload\.[0-9a-f]{64}", value["upload_id"])):
+                raise ClientError("invalid multipart upload receipt")
+            if value["status"] == "COMPLETED":
+                return value["result"]
+            save(state, {"project": project, "asset_id": "asset." + digest, "archive_bytes": length,
+                         "upload_id": value["upload_id"], "status": "UPLOADING"})
+            root = endpoint + "/" + value["upload_id"]
+            stream.seek(0)
+            for number in range(value["part_count"]):
+                data = stream.read(part_bytes)
+                sha = hashlib.sha256(data).hexdigest()
+                previous = value["parts"].get(str(number))
+                if previous:
+                    if previous != {"sha256": sha, "bytes": len(data)}:
+                        raise ClientError("sealed upload part differs from the local archive")
+                    continue
+                client.call(root + "/parts/" + str(number) + "?sha256=" + sha, raw=data, method="PUT")
+            return client.call(root + "/complete", data={})
+        except ClientError as exc:
+            if attempt == 2 or not (exc.retryable or exc.status == 429 or exc.status is not None and exc.status >= 500):
+                raise
+            time.sleep(2 ** attempt)

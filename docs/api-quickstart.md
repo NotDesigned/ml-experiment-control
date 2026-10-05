@@ -202,7 +202,10 @@ the retry endpoint prepares an Action and still requires authorization/execution
 
 ## Recover without duplicate submission
 
-The client never automatically retries a mutation. A connection timeout or
+The client never automatically retries a scheduler mutation. Resumable archive
+uploads alone retry transient failures and skip already sealed parts; use
+`asset-upload --resume` with the same directory and state to resume after exit.
+See [multipart uploads](multipart-uploads.md). A connection timeout or
 interrupted client process is not proof that the server did nothing.
 
 | Situation | Next operation |

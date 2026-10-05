@@ -5,5 +5,9 @@
   "access_key": "REPLACE_S3_ACCESS_KEY",
   "secret_key": "REPLACE_S3_SECRET_KEY",
   "public_transfer_base": "https://api.example.org/ml-expd/api/artifact-transfers",
-  "max_archive_bytes": 268435456
+  "max_archive_bytes": 4294967296,
+  "max_asset_archive_bytes": 4294967296,
+  "max_asset_bytes": 4294967296,
+  "upload_part_bytes": 16777216,
+  "upload_session_seconds": 86400
 }

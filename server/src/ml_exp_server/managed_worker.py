@@ -160,7 +160,7 @@ def read_checkpoint_ready(root):
     return ready
 
 
-def checkpoint_archive(root, stream, limit=2 * 1024 ** 3):
+def checkpoint_archive(root, stream, limit=4 * 1024 ** 3):
     ready = read_checkpoint_ready(root)
     document = json.loads(ready)
     files = document["files"]
