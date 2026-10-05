@@ -234,10 +234,14 @@ def test_project_write_recovers_effect_to_state_crash_window(tmp_path, monkeypat
     assert transaction["phase"] == "APPLIED"
 
     monkeypatch.setattr(store, "set_execution", real_set_execution)
-    blocked = ActionService(
+    restarted = ActionService(
         store, ActionRuntimeConfig(allow_project_writes=False),
-    ).recover_pending_project_writes()
-    assert blocked[0]["execution"]["status"] == "EXECUTING"
+    )
+    interrupted = restarted.recover_interrupted_executions()
+    assert interrupted[0]["execution"]["status"] == "RECONCILE_REQUIRED"
+    assert interrupted[0]["execution"]["resolution"] == "UNKNOWN_DO_NOT_RETRY"
+    blocked = restarted.recover_pending_project_writes()
+    assert blocked[0]["execution"]["status"] == "RECONCILE_REQUIRED"
     assert "project writes are disabled" in blocked[0]["execution"]["error"]
     recovered = ActionService(
         store, ActionRuntimeConfig(allow_project_writes=True),
@@ -359,6 +363,8 @@ def test_run_and_attempt_archives_append_records_without_deleting_evidence(
     service.authorize(plan["action_id"], "reviewed archive")
     result = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
     assert result["execution"]["status"] == "VERIFIED"
+    assert result["execution"]["resolution"] == "APPLIED"
+    assert result["execution"]["safe_to_retry"] is False
     target = Path(plan["target_path"])
     assert target.is_file()
     assert yaml.safe_load(target.read_text())["reason"] == "superseded evidence"
@@ -467,6 +473,8 @@ def test_target_change_after_diff_fails_closed(tmp_path):
     result = service.execute(plan["action_id"], f"EXECUTE {plan['action_id']}")
 
     assert result["execution"]["status"] == "FAILED"
+    assert result["execution"]["resolution"] == "FAILED_BEFORE_EFFECT"
+    assert result["execution"]["safe_to_retry"] is True
     assert "target changed" in result["execution"]["error"]
     assert "concurrent edit" in target.read_text()
 
@@ -947,6 +955,9 @@ def test_submit_stage_failure_never_mutates_scheduler(tmp_path, timeout):
 
     assert result["execution"]["status"] == "FAILED"
     assert "staging" in result["execution"]["error"]
+    assert result["execution"]["resolution"] == "FAILED_BEFORE_SUBMISSION"
+    assert result["execution"]["safe_to_retry"] is True
+    assert result["execution"]["next_action"] == "PREPARE_NEW_ACTION"
     assert not [
         item for item in runner.calls
         if item[3] == "submit" and "--dry-run" not in item

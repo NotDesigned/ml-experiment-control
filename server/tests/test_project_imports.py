@@ -59,6 +59,27 @@ def test_preview_discovers_minimal_manifest_without_writing(tmp_path):
     assert not (repository / "experiments" / "research_project.yaml").exists()
 
 
+def test_preview_maps_invalid_existing_manifest_to_stable_client_error(tmp_path):
+    repository = tmp_path / "demo"
+    campaign = repository / "experiments" / "campaigns" / "missing.yml"
+    manifest = repository / "experiments" / "research_project.yaml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "project": "demo",
+        "title": "Demo",
+        "run_roots": [],
+        "campaigns": [{"name": "missing", "file": str(campaign)}],
+    }), encoding="utf-8")
+
+    with TestClient(create_app(config(tmp_path))) as client:
+        response = preview(client, repository)
+
+    assert response.status_code == 409
+    assert response.headers["X-ML-Expd-Error-Code"] == "PROJECT_IMPORT_BLOCKED"
+    assert "campaign file not found" in response.json()["detail"]
+
+
 def test_generated_manifest_requires_policy_and_exact_confirmation(tmp_path):
     repository = tmp_path / "demo"
     repository.mkdir()

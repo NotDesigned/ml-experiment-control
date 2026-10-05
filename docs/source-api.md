@@ -47,12 +47,18 @@ Every normal API call sends `Authorization: Bearer …` and
    declarations are frozen together. A retry creates another Attempt using
    this same definition. New source or commands require a new Run.
 6. Submit entirely over HTTP:
-   `POST /api/experiments/my-study/trial-001/submissions/prepare`, then
+   `POST /api/experiments/my-study/trial-001/submissions/prepare` with
+   `{"max_gpu_hours":1,"reason":"run the frozen trial"}`, then
    `/api/submissions/{submission_id}/authorize`, then `/execute`, using the
    returned confirmation strings. The existing policy gates still apply.
    Preparation validates identity, source, image/staging and resource budget.
-   Execution persists a submission outbox before the scheduler call and verifies
-   the exact job. An uncertain result requires `/reconcile`; do not resubmit.
+   Execution durably claims the Action and returns `EXECUTING` while the backend
+   runs in the background. Poll `GET /api/submissions/{submission_id}` until
+   `status` leaves `EXECUTING`; `VERIFIED` confirms the exact scheduler job was
+   observed, and does not mean training has finished. The Action endpoint
+   `GET /api/actions/{action_id}` exposes this state under `execution.status`.
+   Execution persists a submission outbox before the scheduler call. Only
+   `RECONCILE_REQUIRED` needs `/reconcile`; do not resubmit an uncertain Action.
    List/status/logs/cancel/retry remain the existing Run/Attempt/Action APIs.
 
 The `OUTPUT_DIR`, `PROJECT_NAME`, `RUN_ID`, `ATTEMPT_ID`, `SOURCE_ID` variables

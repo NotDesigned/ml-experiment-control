@@ -52,6 +52,18 @@ def list_actions(request: Request, project: str, scope_type: OperationScopeType,
         raise application_http_error(exc) from exc
 
 
+@router.get("/{action_id}", response_model=ActionSnapshotResponse)
+def get_action(action_id: str, request: Request):
+    try:
+        return request.app.state.runtime.action_store.snapshot(action_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise application_http_error(
+            ApplicationError(
+                "action not found", status_code=404, code="UNKNOWN_ACTION",
+            ),
+        ) from exc
+
+
 @router.post("/prepare", response_model=ActionSnapshotResponse)
 async def prepare_action(data: PrepareActionRequest, request: Request):
     try:
@@ -73,14 +85,18 @@ def authorize_action(data: AuthorizeActionRequest, request: Request):
 
 
 @router.post("/execute", response_model=ActionSnapshotResponse)
-async def execute_action(data: ExecuteActionRequest, request: Request):
+async def execute_action(
+    data: ExecuteActionRequest, request: Request,
+):
     try:
-        result = await run_in_threadpool(
-            request.app.state.application.execute_action,
+        result, pending = await run_in_threadpool(
+            request.app.state.application.begin_action_execution,
             data.action_id, data.confirmation,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
+    if pending is not None:
+        request.app.state.submit_action(pending)
     return result
 
 

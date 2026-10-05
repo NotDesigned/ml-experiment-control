@@ -30,10 +30,13 @@ def _expiry(delta: int) -> str:
     ({"status": "VERIFIED"}, True),
     ({"status": "PREPARED"}, False),
     ({"status": "AUTHORIZED", "gate_expires_at": "invalid"}, False),
-    ({"status": "PREPARED", "gate_expires_at": _expiry(-10)}, False),
-    ({"status": "AUTHORIZED", "gate_expires_at": _expiry(60)}, True),
+    ({"status": "PREPARED", "gate_expires_at": -10}, False),
+    ({"status": "AUTHORIZED", "gate_expires_at": 60}, True),
 ])
 def test_reusable_submission_state_matrix(view, expected):
+    view = dict(view)
+    if isinstance(view.get("gate_expires_at"), int):
+        view["gate_expires_at"] = _expiry(view["gate_expires_at"])
     assert _reusable(view) is expected
 
 

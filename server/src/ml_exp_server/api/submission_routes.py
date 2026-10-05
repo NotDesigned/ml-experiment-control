@@ -78,11 +78,14 @@ async def execute_submission(
     submission_id: str, data: ExecuteSubmissionRequest, request: Request,
 ):
     try:
-        return await run_in_threadpool(
-            _service(request).execute, submission_id, data.confirmation,
+        result, pending = await run_in_threadpool(
+            _service(request).begin_execute, submission_id, data.confirmation,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
+    if pending is not None:
+        request.app.state.submit_action(pending)
+    return result
 
 
 @router.post("/submissions/{submission_id}/reconcile")

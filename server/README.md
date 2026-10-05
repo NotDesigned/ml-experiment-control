@@ -22,8 +22,10 @@ POST /api/submissions/{submission_id}/reconcile  # only when uncertain
 ```
 
 Preparation is non-mutating and supports authored Runs that have not yet been
-materialized. Execution confirms the exact backend job through `status` before
-reporting `VERIFIED`; reconciliation never resubmits.
+materialized. Execution returns `EXECUTING` after durably claiming the Action.
+Poll `GET /api/submissions/{submission_id}` until it leaves that state;
+`VERIFIED` confirms the exact backend job through `status`, before training
+completion. Use reconciliation only for `RECONCILE_REQUIRED`; it never resubmits.
 
 For other mutations, clients submit a complete `OperationIntent` to
 `POST /api/actions/prepare`, then authorize and execute the returned Action.

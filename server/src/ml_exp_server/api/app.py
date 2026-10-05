@@ -6,6 +6,7 @@ import asyncio
 import hmac
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Optional
@@ -60,6 +61,13 @@ async def _shutdown(app: FastAPI) -> None:
     if stop is not None:
         stop.set()
     thread = getattr(app.state, "_poll_thread", None)
+    action_executor = getattr(app.state, "action_executor", None)
+    if action_executor is not None:
+        # Stop accepting new work. Already claimed actions retain ownership of
+        # the runtime until their durable terminal state has been recorded.
+        action_executor.shutdown(wait=False)
+    with getattr(app.state, "_action_futures_lock", threading.Lock()):
+        action_futures = tuple(getattr(app.state, "_action_futures", ()))
     if thread is not None:
         # The collector owns the index while a cycle is in flight. Do not close
         # the runtime until that owner has observed the stop signal.
@@ -73,7 +81,7 @@ async def _shutdown(app: FastAPI) -> None:
     owner_threads = [
         item for item in (thread,) if item is not None
     ]
-    if not any(item.is_alive() for item in owner_threads):
+    if not any(item.is_alive() for item in owner_threads) and not action_futures:
         try:
             runtime.close()
         finally:
@@ -87,6 +95,15 @@ async def _shutdown(app: FastAPI) -> None:
         def finish_shutdown() -> None:
             for owner in owner_threads:
                 owner.join()
+            for future in action_futures:
+                try:
+                    future.result()
+                except Exception:
+                    # finish_action_execution records unexpected failures in
+                    # the action journal; shutdown must still release owners.
+                    pass
+            if action_executor is not None:
+                action_executor.shutdown(wait=True)
             try:
                 runtime.close()
             finally:
@@ -113,6 +130,11 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
         app.state.broker.bind_loop(loop)
         app.state._stop = threading.Event()
         app.state._poll_thread = None
+        app.state.action_executor = ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="action-executor",
+        )
+        app.state._action_futures: set[Future[object]] = set()
+        app.state._action_futures_lock = threading.Lock()
         app.state.project_write_recovery_errors = []
         app.state.collector_owner = False
         app.state.workspace_owner = False
@@ -141,6 +163,22 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             for initializer in tuple(app.state.runtime_initializers):
                 initializer(runtime)
             app.state.application = ExperimentServerApplication(runtime)
+
+            def submit_action(pending) -> None:
+                future = app.state.action_executor.submit(
+                    app.state.application.finish_action_execution, pending,
+                )
+                with app.state._action_futures_lock:
+                    app.state._action_futures.add(future)
+
+                def completed(item: Future[object]) -> None:
+                    with app.state._action_futures_lock:
+                        app.state._action_futures.discard(item)
+
+                future.add_done_callback(completed)
+
+            app.state.submit_action = submit_action
+            runtime.action_service.recover_interrupted_executions()
             # Complete any previously authorized project-file transaction
             # before indexing those files into the server read model.
             recovered_writes = runtime.action_service.recover_pending_project_writes()
@@ -189,6 +227,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             yield
         finally:
             if getattr(app.state, "runtime", None) is None:
+                app.state.action_executor.shutdown(wait=False, cancel_futures=True)
                 if lease_acquired:
                     lease.release()
             else:
@@ -201,6 +240,8 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.state.runtime = None
     app.state.application = None
     app.state.submission_service = None
+    app.state.action_executor = None
+    app.state.submit_action = None
     app.state.index = None
     app.state.projects = []
     app.state.action_store = None
