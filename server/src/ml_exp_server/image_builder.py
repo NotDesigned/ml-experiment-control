@@ -270,7 +270,7 @@ class ImageBuilder:
         if BUILD_CACHE.get() is not None:
             reference = BUILD_CACHE.get()
             cache = ["--cache-from", "type=registry,ref=" + reference,
-                     "--cache-to", "type=registry,ref=" + reference + ",mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true"]
+                     "--cache-to", "type=inline", "--tag", reference]
         self._progress("BUILDING_AND_PUSHING", "Building Dockerfile and publishing image; detailed output is in build logs")
         self._docker(["buildx", "build", "--builder", builder, "--progress=plain", "--network=" + network,
                       "--provenance=false", "--sbom=false", "--tag", tag,
