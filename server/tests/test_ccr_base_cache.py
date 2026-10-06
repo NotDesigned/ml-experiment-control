@@ -69,7 +69,7 @@ def test_unavailable_cache_or_http_preconditions_use_original_tls(adapter, tmp_p
 
 
 @pytest.mark.parametrize('case', ['valid', 'wrong-hash', 'short', 'budget'])
-def test_writer_verifies_before_atomic_visibility_and_removes_incomplete_files(tmp_path, case):
+def test_writer_verifies_before_visibility_and_keeps_only_resumable_prefixes(tmp_path, case):
     tool = module('prewarm_ccr')
     data = b'model layer' * 100000
     digest = hashlib.sha256(data).hexdigest()
@@ -86,10 +86,53 @@ def test_writer_verifies_before_atomic_visibility_and_removes_incomplete_files(t
         assert (tmp_path / digest).stat().st_mode & 0o777 == 0o444
     else:
         assert child.returncode != 0 and not (tmp_path / expected).exists()
-    assert not list(tmp_path.glob('.partial-*'))
+    if case == 'short':
+        assert (tmp_path / ('.partial-' + expected)).read_bytes() == payload
+    else:
+        assert not list(tmp_path.glob('.partial-*'))
 
 
-@pytest.mark.parametrize('case', ['valid', 'corrupt', 'short-once'])
+@pytest.mark.parametrize('corrupt', [False, True])
+def test_interrupted_writer_resumes_under_same_budget_and_verifies_entire_prefix(tmp_path, corrupt):
+    tool = module('prewarm_ccr')
+    data = b'layer' * 300000; offset = 123457
+    digest = hashlib.sha256(data).hexdigest()
+    partial = tmp_path / ('.partial-' + digest)
+    args = [sys.executable, '-c', tool.WRITER, digest, str(len(data)), str(len(data))]
+    env = {**os.environ, 'CCR_BLOB_CACHE': str(tmp_path)}
+    first = subprocess.run(args, input=data[:offset], capture_output=True, env=env, timeout=10)
+    assert first.returncode != 0 and partial.read_bytes() == data[:offset]
+    assert not (tmp_path / digest).exists()
+    if corrupt: partial.write_bytes(b'x' + data[1:offset])
+    second = subprocess.run(args, input=data[offset:], capture_output=True, env=env, timeout=10)
+    assert (second.returncode == 0) == (not corrupt)
+    if not corrupt:
+        assert (tmp_path / digest).read_bytes() == data
+        assert json.loads(second.stdout) == {'sha256': digest, 'bytes': len(data)}
+    else:
+        assert not (tmp_path / digest).exists()
+    assert not partial.exists()
+
+
+@pytest.mark.parametrize('kind', ['symlink', 'fifo', 'hardlink', 'oversize', 'changed-offset'])
+def test_unsafe_partial_identity_cannot_be_written_or_published(tmp_path, kind):
+    tool = module('prewarm_ccr'); digest = 'a' * 64
+    partial = tmp_path / ('.partial-' + digest)
+    if kind in {'symlink', 'hardlink'}:
+        target = tmp_path / 'untouched'; target.write_bytes(b'private')
+        if kind == 'symlink': partial.symlink_to(target)
+        else: os.link(target, partial)
+    elif kind == 'fifo': os.mkfifo(partial)
+    else: partial.write_bytes(b'x' * (11 if kind == 'oversize' else 2))
+    args = [sys.executable, '-c', tool.WRITER, digest, '10', '1024']
+    if kind == 'changed-offset': args.append('1')
+    child = subprocess.run(args, input=b'data', capture_output=True,
+                           env={**os.environ, 'CCR_BLOB_CACHE': str(tmp_path)}, timeout=10)
+    assert child.returncode != 0 and not (tmp_path / digest).exists()
+    if kind in {'symlink', 'hardlink'}: assert target.read_bytes() == b'private'
+
+
+@pytest.mark.parametrize('case', ['valid', 'corrupt', 'short-once', 'resumed'])
 def test_remote_downloader_keeps_large_bytes_off_ssh_and_checks_whole_layer(tmp_path, case):
     tool = module('prewarm_ccr')
     body = b'layer-content' * 700000  # More than two ranges.
@@ -114,6 +157,9 @@ def test_remote_downloader_keeps_large_bytes_off_ssh_and_checks_whole_layer(tmp_
         control = {'digest': digest, 'size': len(body), 'limit': 16 * 1024 ** 3,
                    'url': 'signed-upstream-test-secret', 'token': 'test-private-token',
                    'relay': f'http://127.0.0.1:{server.server_port}/ml-expd-builder-relay'}
+        if case == 'resumed':
+            control['offset'] = 123457
+            (tmp_path / ('.partial-' + digest)).write_bytes(body[:control['offset']])
         payload = json.dumps(control).encode() + b'\n'
         assert len(payload) < 1024
         result = subprocess.run([sys.executable, '-c', tool.DOWNLOADER + tool.WRITER], input=payload,
@@ -123,8 +169,14 @@ def test_remote_downloader_keeps_large_bytes_off_ssh_and_checks_whole_layer(tmp_
             assert json.loads(result.stdout.splitlines()[-1]) == {'sha256': digest, 'bytes': len(body)}
         else:
             assert result.returncode != 0 and not (tmp_path / digest).exists()
-        expected = [(start, min(len(body) - 1, start + 2097151)) for start in range(0, len(body), 2097152)]
+        expected = [(start, min(len(body) - 1, start + 2097151))
+                    for start in range(control.get('offset', 0), len(body), 2097152)]
         if case == 'short-once': expected.append((0, 2097151))
+        if case == 'short-once':
+            diagnostics = [json.loads(line)['range_error'] for line in result.stdout.splitlines()
+                           if 'range_error' in json.loads(line)]
+            assert diagnostics == [{'start': 0, 'end': 2097151, 'attempt': 1,
+                                    'error_class': 'OSError', 'http_status': None}]
         assert sorted(ranges) == sorted(expected)
         assert b'test-private-token' not in result.stdout and b'test-secret' not in result.stdout
         assert not list(tmp_path.glob('.partial-*'))
@@ -269,6 +321,22 @@ def test_build_request_wait_does_not_expire_before_private_900_second_builder(mo
     assert seen == [1200]
     image_builder.builder_request('/private.sock', {'operation': 'logs'}, timeout=15)
     assert seen == [1200, 15]
+
+
+def test_insufficient_prewarm_memory_fails_before_credentials_or_remote_writes(monkeypatch):
+    tool = module('prewarm_ccr')
+    raw = json.dumps({'layers': [{'digest': 'sha256:' + 'a' * 64, 'size': 10}]}).encode()
+    image = tool.REGISTRY + '/ccr-zhicheng-02/elf@sha256:' + hashlib.sha256(raw).hexdigest()
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(stdout=raw if command[0] == '/usr/bin/skopeo' else b'134217728\n')
+    monkeypatch.setattr(tool.subprocess, 'run', run)
+    monkeypatch.setattr(tool.subprocess, 'Popen', lambda *a, **kw: pytest.fail('must not write with an insufficient memory budget'))
+    with pytest.raises(MemoryError):
+        tool.prewarm({'docker_host': 'unix:///run/private/docker.sock'}, image, 1024,
+                     'https://api.example/ml-expd-builder-relay', 'x' * 64)
+    assert calls[-1][-4:] == ['inspect', '--format', '{{.HostConfig.Memory}}', 'ml-expd-ccr-https']
 
 
 @pytest.mark.parametrize('host,cert,key', [('0.0.0.0', None, None), ('::', None, None),
