@@ -92,6 +92,74 @@ and logs no signed URLs. Set `buildkit_network` to that network's name and
 proxy and does not change immutable image identities. The small tool container
 remains running; transient BuildKit caches are still removed after each build.
 
+## Prewarm slow CCR base layers
+
+Registry inline build cache does not eliminate the first download of a base
+layer into each temporary builder. If the API host reaches CCR faster than the
+desktop, the operator can retain **verified compressed base blobs on the
+desktop**, while still deleting each temporary BuildKit container and its
+unpacked layers. This does not retain training images on the API host or change
+any pinned image digest.
+
+Configure the restricted adapter with `CCR_BLOB_CACHE=/cache` and a dedicated
+Docker volume mounted at `/cache`, writable by its existing non-root UID. Keep
+the adapter's read-only root filesystem, private network, memory limit and lack
+of published ports. Provision only this owned volume; do not change permissions
+on another workload's volume. Save the old container's exact configuration
+before replacing it, and apply only with an idle builder and no outstanding
+lease. A mount alone does not populate the cache.
+
+Run [the restricted range relay](../server/examples/ssh-builder/ccr_relay.py)
+as an unprivileged systemd service on `127.0.0.1:8878`, with a separate random
+private credential supplied through `LoadCredential`. Route only
+`/ml-expd-builder-relay` through the existing HTTPS reverse proxy. The service
+requires its dedicated Bearer credential and accepts signed URLs only for the
+fixed CCR blob host/path, with exact ranges of at most 4 MiB and four concurrent
+upstream requests. It validates the response offset, total size and actual byte
+count; upstream redirects are rejected. Signed URLs travel in POST bodies,
+never access-log query strings. Do not enable request-body logging or reuse the
+platform API token. Keep its credential out of public build contexts and logs.
+This is an operator prewarming endpoint, not a client experiment API.
+
+From the API host, using its existing private registry authentication:
+
+```bash
+python3 server/examples/ssh-builder/prewarm_ccr.py \
+  --config /etc/ml-expd/image-builder.json \
+  --image registry.cn-sh-01.sensecore.cn/ccr-zhicheng-02/elf@sha256:ACTUAL_DIGEST \
+  --relay-url https://api.example/ml-expd-builder-relay \
+  --relay-token-file /etc/ml-expd/builder-relay.token \
+  --max-cache-gib 16
+```
+
+The command accepts only a digest-pinned, single-platform CCR manifest. It
+checks the manifest identity and passes a small private control document through
+the SSH Docker endpoint. The desktop downloads exact ranges over verified HTTPS
+with four bounded concurrent requests. No blob bytes pass through SSH and no
+layer is written to API-host disk. The desktop checks the
+full SHA256 and byte count before atomically publishing a read-only blob.
+Existing blobs are rehashed before reuse. Only complete content-addressed blobs
+can be served; temporary files, symlinks and special files cannot be cache hits.
+Conditional/range requests retain the original TLS upstream behavior. BuildKit
+independently verifies downloaded layer digests.
+
+The cache is operator-managed, with a default 16 GiB hard write budget and a
+2 GiB free-space reserve; competing writes fail on its dedicated lock. Monitor
+the desktop's Windows backing drive as well. There is no global prune or
+automatic deletion: remove selected obsolete digest files only from this owned
+cache, while idle. A stalled writer removes its incomplete file after 120 seconds
+without input. Unexpected process/VM termination may leave `.partial-*` files;
+inspect and remove those only after confirming no writer is active. Registry
+images and other Docker volumes remain untouched.
+
+This command does not build an image or submit a GPU job. Reconcile an existing
+uncertain Runtime receipt before explicitly retrying it. Keep the SSH connection
+running throughout prewarming and construction. The daemon's default private
+builder response wait is 1200 seconds, longer than the production builder's
+900-second command limit; this prevents the previous 600-second wait from marking
+an ongoing build uncertain too early. It does not increase the build or GPU
+budget, and a genuinely lost response still requires reconciliation.
+
 Recovery records include the Docker endpoint. Switching endpoints while a lease
 exists is rejected instead of cleaning another engine. Recover the lease on the
 original engine first. A broken SSH tunnel never falls back to local Docker and
