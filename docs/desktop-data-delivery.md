@@ -1,6 +1,6 @@
 # Data uploads through the desktop builder
 
-Server 0.3.7 / client 0.1.7 keep protocol 2. Client code, training environment,
+Server 0.3.8 / client 0.1.7 keep protocol 2. Client code, training environment,
 training data and results retain separate identities. The client needs only its
 API URL and token; it does not need Docker, SSH or CCR credentials.
 
@@ -97,6 +97,16 @@ quota type is frozen in delivery identity; debug-cluster-01e rejects spot. Works
 and data root come from the selected SenseCore executor. The currently verified
 CPU spec is `N6lS.Iu.I10.2c4g` on `debug-cluster-01e`; availability is checked
 again before every new job. No CCI permissions are needed.
+
+The ACP copy base must supply Python, glibc and Bash. The fixed Dockerfile checks
+these before copying the dataset; an Alpine/musl base fails during image build.
+This is an admission requirement, not evidence of a historical worker's exit
+reason. Optional `data_upload_helper_image` independently selects the desktop
+staging helper, which can still use Alpine. Its private tar context always uses
+`data_base_image` for the ACP payload. Recipe revision `acp-data-image.v2` is
+part of image identity, so earlier images cannot bypass the new check. New
+deliveries freeze control revision `acp-data-copy.v5`; keep old receipts and
+uncertain submissions, then prepare a fresh definition instead of replaying.
 
 The owned desktop helper uses the existing reverse Docker socket, a private
 Docker bridge and separate code/data volumes, with no published host port.

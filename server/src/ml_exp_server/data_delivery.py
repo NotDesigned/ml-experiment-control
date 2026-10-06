@@ -25,7 +25,7 @@ from .storage import DurableJsonState, utc_now
 
 DELIVERY = re.compile(r"^delivery\.[0-9a-f]{64}$")
 COPY_TRANSFER = re.compile(r"^/api/data-copy-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/delivery\.[0-9a-f]{64}$")
-CONTROL_REVISION = "acp-data-copy.v4"
+CONTROL_REVISION = "acp-data-copy.v5"
 
 
 class ACPControlError(ValueError):

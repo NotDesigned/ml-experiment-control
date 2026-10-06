@@ -10,18 +10,13 @@ import tempfile
 
 from .storage import atomic_json
 from .worker_contract import WORKERS
+from .data_image_recipe import RECIPE, recipe
 
 
 def data_worker_digest():
     root = Path(__file__).parent
     return hashlib.sha256(b"".join((root / source).read_bytes() for source, _ in WORKERS)
                           + (root / "data_copy_worker.py").read_bytes()).hexdigest()
-
-
-def recipe(base):
-    return (f"FROM {base}\nCOPY dataset.tar /payload/dataset.tar\n"
-            "COPY asset.json /payload/asset.json\nCOPY workers/ /usr/local/lib/ml-expd/\n"
-            "ENTRYPOINT []\nCMD [\"/bin/true\"]\n")
 
 
 def build(builder, request):
@@ -46,12 +41,12 @@ def build(builder, request):
     if asset.get("project") != project or asset.get("asset_id") != asset_id:
         raise ValueError("desktop data image input identity differs")
     worker = data_worker_digest()
-    identity = hashlib.sha256(json.dumps([project, asset_id, asset["archive_bytes"], files_digest, base, worker], separators=(",", ":")).encode()).hexdigest()
+    identity = hashlib.sha256(json.dumps([project, asset_id, asset["archive_bytes"], files_digest, base, worker, RECIPE], separators=(",", ":")).encode()).hexdigest()
     root = builder.root / "data-images"
     root.mkdir(mode=0o700, exist_ok=True)
     path, progress = root / (identity + ".json"), root / (identity + ".progress.json")
     result_base = {"project": project, "asset_id": asset_id, "data_image_id": "data-image." + identity,
-                   "base_image": base, "data_worker_sha256": worker, "files_sha256": files_digest}
+                   "base_image": base, "data_worker_sha256": worker, "files_sha256": files_digest, "recipe": RECIPE}
     operation = request.get("action", "build")
     if operation == "progress":
         return {**result_base, "progress": progress_view(progress, "READY" if path.exists() else "EXECUTING", active=not path.exists())}
