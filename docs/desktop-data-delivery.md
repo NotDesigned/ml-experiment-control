@@ -1,6 +1,6 @@
 # Data uploads through the desktop builder
 
-Server 0.3.6 / client 0.1.7 keep protocol 2. Client code, training environment,
+Server 0.3.7 / client 0.1.7 keep protocol 2. Client code, training environment,
 training data and results retain separate identities. The client needs only its
 API URL and token; it does not need Docker, SSH or CCR credentials.
 
@@ -91,7 +91,9 @@ an approved digest-pinned `data_base_image`. Artifact-store config needs
 `data_upload_storage: desktop-builder`, `data_upload_socket` pointing to the
 existing private builder socket, and a `data_delivery` CPU profile containing
 `sco_bin`, `aec2`, `worker_spec`, `gpus: 0`, `cpus: 2`, `memory_gb: 4`, bounded
-`copy_timeout_seconds` / `queue_timeout_seconds` (5..3600). Workspace, NAS mount
+`copy_timeout_seconds` / `queue_timeout_seconds` (5..3600), and `quota_type`
+(`reserved` by default, or explicitly `spot` where that pool supports it). The
+quota type is frozen in delivery identity; debug-cluster-01e rejects spot. Workspace, NAS mount
 and data root come from the selected SenseCore executor. The currently verified
 CPU spec is `N6lS.Iu.I10.2c4g` on `debug-cluster-01e`; availability is checked
 again before every new job. No CCI permissions are needed.
