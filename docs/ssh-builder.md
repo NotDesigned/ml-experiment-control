@@ -186,7 +186,7 @@ idle. Registry images and other Docker volumes remain untouched.
 Use at least 256 MiB for the owned adapter container when prewarming. The 16-way
 Python/SSL downloader shares its cgroup with the serving process; a real 4 GB
 transfer exceeded the previous 128 MiB limit. The command checks the configured
-memory budget before retrieving private credentials or starting any downloads.
+memory budget before obtaining signed layer URLs or starting any layer downloads.
 It prints only a numeric child exit code on failure; inspect the owned cgroup's
 `memory.events` to distinguish OOM from network or checksum failures.
 
