@@ -228,6 +228,7 @@ def test_copy_callback_preserves_reverse_proxy_prefix(delivery):
     _,service,value,_=delivery
     service.assets.objects.config['public_transfer_base']='https://example/ml-expd/api/artifact-transfers'
     with service.state('demo',value['delivery_id']) as (_,snapshot):raw=snapshot.value
+    raw['image']=IMAGE
     command=service.create_command(raw)
     assert 'https://example/ml-expd/api/data-copy-transfers/demo/' in command[-1]
     service.assets.objects.config['public_transfer_base']='https://example/other'
