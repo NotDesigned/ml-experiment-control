@@ -73,6 +73,22 @@ without loading them into either Docker Engine. Only the exact owned temporary
 BuildKit container/state volume and storage-probe container/anonymous volume are
 removed. Existing desktop images, containers and caches are untouched.
 
+Remote source builds use the owned desktop staging helper described in
+[desktop data delivery](desktop-data-delivery.md). The private builder sends a
+bounded gzip source archive through Docker's ordinary archive API, checks its
+full SHA256 and size on the desktop, and seals it before BuildKit can read it
+over the private bridge. This avoids BuildKit filesystem-session round trips
+across the SSH connection. No helper port is published. Each context has an
+endpoint-bound cleanup lease; interrupted cleanup must finish on the original
+desktop. Only that context is removed after the build. Data assets remain in
+their separate namespace.
+
+Build progress includes `STAGING_SOURCE_CONTEXT`. `BUILD_SESSION_TIMEOUT` and
+`BUILD_CONTEXT_TRANSPORT` retain safe diagnostics with publication uncertainty;
+they do not authorize replay. Transport revision `sealed-context-transfer.v1`
+is part of new build identity. Prepare a fresh Runtime after an upgrade; earlier
+READY images remain usable, and earlier failed Runtime logs remain queryable.
+
 BuildKit containers do not automatically inherit Docker Desktop's daemon proxy.
 If HTTP blob downloads need its proxy, the administrator can set
 `buildkit_http_proxy: "http://http.docker.internal:3128"`. This endpoint must
@@ -217,4 +233,5 @@ offline. For rollback, restore the saved local-builder configuration and runtime
 while idle; retain databases, immutable Runs, registry images and receipts.
 
 Docker references: [SSH and Docker socket access](https://docs.docker.com/engine/security/protect-access/),
-[BuildKit containers and state volumes](https://docs.docker.com/build/builders/drivers/docker-container/).
+[BuildKit containers and state volumes](https://docs.docker.com/build/builders/drivers/docker-container/),
+[remote tarballs](https://docs.docker.com/build/concepts/context/#remote-tarballs).
