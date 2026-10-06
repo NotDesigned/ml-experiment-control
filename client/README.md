@@ -5,8 +5,14 @@ A standalone client for the ml-expd HTTP API. Requires Python 3.10+ and has
 Rust, SCO or Apptainer. The daemon owns those platform integrations.
 
 Distribution: `ml-experiment-client`; Python package: `ml_exp_client`;
-command: `ml-exp`. Client version 0.1.6 speaks protocol 2; client and server
+command: `ml-exp`. Client version 0.1.8 speaks protocol 2; client and server
 package versions are independent.
+
+Resumable data parts and archive completion have a separate 1,200-second
+request wait for slow desktop staging and full-archive validation. Ordinary
+API requests keep their 60-second default. This does not increase scheduler
+budgets or replay uncertain submissions; uploads still confirm their journal
+before bounded retries. SDK callers can set `Client(..., upload_timeout=180)`.
 
 ## Install only the client
 

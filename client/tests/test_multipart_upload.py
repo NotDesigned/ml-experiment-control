@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ml_exp_client.api import ClientError, upload_asset_parts, data_archive
+from ml_exp_client.api import Client, ClientError, upload_asset_parts, data_archive
 from ml_exp_client.cli import main
 
 
@@ -92,3 +92,24 @@ def test_cli_explicit_resume_checks_exact_archive(tmp_path,monkeypatch,capsys):
     (directory/'tokens.bin').write_bytes(b'changed')
     assert main(args+['--resume'])==2
     assert 'differs' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('options,ordinary,upload', [({},60,1200), ({'upload_timeout':180},60,180), ({'timeout':1800},1800,1800)])
+def test_upload_wait_changes_only_part_and_completion_requests(tmp_path,options,ordinary,upload):
+    from types import SimpleNamespace
+    data=b'data'; remote=UploadClient(data); client=Client('https://api.example','test-token',**options)
+    seen=[]
+    def open(request,**kwargs):
+        path=request.full_url.removeprefix(client.base)
+        seen.append((path,kwargs['timeout']))
+        if path=='/api/health' or path=='/api/actions':result={}
+        else:
+            payload={'raw':request.data,'method':request.method} if request.method=='PUT' else {'data':json.loads(request.data)}
+            result=remote.call(path,**payload)
+        return io.BytesIO(json.dumps(result).encode())
+    client.opener=SimpleNamespace(open=open)
+    client.call('/api/health')
+    assert run(client,tmp_path,data)['status']=='READY'
+    client.call('/api/actions',data={'operation':'submit'})
+    assert [seconds for _,seconds in seen]==[ordinary,ordinary,upload,upload,ordinary]
+    assert seen[-1][0]=='/api/actions'
