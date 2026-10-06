@@ -5,6 +5,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 from pathlib import Path
 import signal
 from urllib.parse import urlsplit
@@ -18,7 +19,8 @@ except ImportError:
 def notify(url, token, value):
     target = urlsplit(url)
     if (target.scheme != "https" or not target.hostname or target.username or target.password
-            or target.query or target.fragment or not target.path.startswith("/api/data-copy-transfers/")):
+            or target.query or target.fragment
+            or not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*/api/data-copy-transfers/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?", target.path)):
         raise ValueError("invalid data copy callback")
     connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=30)
     try:

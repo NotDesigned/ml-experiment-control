@@ -222,3 +222,13 @@ def test_cpu_spec_skips_unrelated_rows_and_callback_rejects_http(delivery,monkey
     service.verify_cpu(value['copy_profile'])
     service.assets.objects.config['public_transfer_base']='http://example'
     with pytest.raises(ValueError):service.create_command(value)
+
+
+def test_copy_callback_preserves_reverse_proxy_prefix(delivery):
+    _,service,value,_=delivery
+    service.assets.objects.config['public_transfer_base']='https://example/ml-expd/api/artifact-transfers'
+    with service.state('demo',value['delivery_id']) as (_,snapshot):raw=snapshot.value
+    command=service.create_command(raw)
+    assert 'https://example/ml-expd/api/data-copy-transfers/demo/' in command[-1]
+    service.assets.objects.config['public_transfer_base']='https://example/other'
+    with pytest.raises(ValueError):service.create_command(raw)
