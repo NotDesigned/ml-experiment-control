@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 
 WORKER_CONTRACT = "managed-worker.v1"
-CAPABILITIES = ["data-assets.v1", "checkpoint-upload.v1", "data-preparation.v1", "persistent-checkpoints.v1"]
+CAPABILITIES = ["data-assets.v1", "checkpoint-upload.v1", "data-preparation.v1", "persistent-checkpoints.v1", "data-cache-required.v1"]
 WORKERS = (("managed_worker.py", "worker.py"), ("container_worker.py", "legacy_worker.py"),
            ("data_preparation.py", "data_preparation.py"), ("persistent_state.py", "persistent_state.py"))
 

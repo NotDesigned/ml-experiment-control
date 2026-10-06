@@ -41,7 +41,7 @@ def archive_outputs(root: Path, stream, limit: int, patterns: list[str]) -> int:
                         continue
                     count += 1
                     total += info.st_size
-                    if count > 20000 or total > limit:
+                    if count > 20000 or limit and total > limit:
                         raise ValueError('artifact limit exceeded')
                     member = tarfile.TarInfo(path)
                     member.size, member.mode = info.st_size, 0o400
@@ -166,9 +166,9 @@ def main(argv=None):
     code = child.wait()
     try:
         with tempfile.TemporaryFile(dir=root.parent) as stream:
-            archive_outputs(root, stream, limit - 1024 * 1024, patterns)
+            archive_outputs(root, stream, max(1, limit - 1024 * 1024) if limit else 0, patterns)
             length = stream.tell()
-            if length > limit:
+            if limit and length > limit:
                 raise ValueError('artifact archive limit exceeded')
             upload(url, token, stream, length)
         print('ML_EXPD_ARTIFACT_UPLOAD=COMPLETE', flush=True)

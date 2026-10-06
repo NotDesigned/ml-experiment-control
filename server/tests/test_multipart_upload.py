@@ -186,7 +186,7 @@ def test_upload_journal_rejects_corruption_and_cleans_owned_expired_staging(tmp_
     with pytest.raises(ValueError):store.read('bad',binding)
     with pytest.raises(ValueError):store.part(value['upload_id'],binding,0,tmp_path/'missing','a'*64,1)
     with pytest.raises(ApplicationError):store.create(binding,'bad',1,100)
-    with pytest.raises(ApplicationError):store.create(binding,'a'*64,4097*1024,4097*1024)
+    with pytest.raises(ApplicationError):store.create(binding,'a'*64,(store.max_parts+1)*1024,None)
     monkeypatch.setattr('ml_exp_server.multipart_upload.shutil.disk_usage',lambda p:SimpleNamespace(free=0))
     with pytest.raises(ApplicationError):store.create(binding,'a'*64,1,100)
 
@@ -217,18 +217,18 @@ def test_attempt_capability_has_no_control_api_access(storage,tmp_path):
         assert client.get(root,headers={}).status_code==401
 
 
-def test_default_four_gib_boundary_uses_only_bounded_session_metadata(storage,tmp_path):
+def test_default_large_archive_uses_only_bounded_session_metadata(storage,tmp_path):
     from ml_exp_server.data_assets import AssetStore
     objects,_,_,config,_=storage
     assets=AssetStore(config,tmp_path/'registry')
-    assert objects.limit==assets.limit==assets.expanded_limit==4*1024**3
+    assert objects.limit==assets.limit==assets.expanded_limit is None
     uploads=UploadStore(tmp_path/'registry',{})
     binding={'kind':'asset','project':'demo'}
-    value=uploads.create(binding,'a'*64,4*1024**3,assets.limit)
-    assert value['part_count']==256 and value['part_bytes']==16*1024**2
+    value=uploads.create(binding,'a'*64,5*1024**3,assets.limit)
+    assert value['part_count']==320 and value['part_bytes']==16*1024**2
     assert not any((uploads.root/value['upload_id']/'parts').iterdir())
     assert uploads.abort(value['upload_id'],binding)['status']=='ABORTED'
-    with pytest.raises(ApplicationError):uploads.create(binding,'b'*64,4*1024**3+1,assets.limit)
+    with pytest.raises(ApplicationError):uploads.create(binding,'b'*64,4*1024**3+1,4*1024**3)
 
 
 def test_disk_sync_failure_does_not_acknowledge_an_upload_part(tmp_path,monkeypatch):

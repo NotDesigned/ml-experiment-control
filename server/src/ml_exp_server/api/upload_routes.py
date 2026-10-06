@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+import asyncio
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -14,6 +15,8 @@ from starlette.concurrency import run_in_threadpool
 
 from ..container_execution import ContainerExecutionService
 from ..multipart_upload import UploadStore
+from ..archive_limits import minimum_limit
+from ..remote_data_uploads import remote_uploads
 from .asset_routes import store, token
 from .container_routes import invoke
 
@@ -41,13 +44,15 @@ async def target(request, project, run=None, attempt=None, kind="asset"):
         except ValueError:
             raise HTTPException(status_code=401, detail="invalid Attempt transfer capability") from None
         binding.update(run_id=run, attempt_id=attempt)
-    uploads = UploadStore(service.root.parent, service.objects.config)
+    uploads = remote_uploads(service) if kind == "asset" else None
+    if uploads is None:
+        uploads = UploadStore(service.root.parent, service.objects.config)
     return service, uploads, binding
 
 
 async def create(context, data):
     service, uploads, binding = context
-    limit = service.objects.limit if binding["kind"] == "artifacts" else min(service.limit, service.objects.limit) if binding["kind"] == "checkpoint" else service.limit
+    limit = service.objects.limit if binding["kind"] == "artifacts" else minimum_limit(service.limit, service.objects.limit) if binding["kind"] == "checkpoint" else service.limit
     return await invoke(uploads.create, binding, data.sha256, data.bytes, limit)
 
 
@@ -63,6 +68,19 @@ async def part(context, upload_id, number, digest, request):
     raw = request.headers.get("Content-Length")
     if raw is not None and raw != str(expected):
         raise HTTPException(status_code=400, detail="upload part Content-Length differs")
+    if getattr(uploads, "remote", False):
+        slots = getattr(request.app.state, "data_upload_slots", None)
+        if slots is None:
+            slots = request.app.state.data_upload_slots = asyncio.Semaphore(4)
+        async with slots:
+            data = bytearray()
+            async for chunk in request.stream():
+                data.extend(chunk)
+                if len(data) > expected:
+                    raise HTTPException(status_code=413, detail="upload part exceeds its declared size")
+            if len(data) != expected or hashlib.sha256(data).hexdigest() != digest:
+                raise HTTPException(status_code=400, detail="upload part length or SHA256 differs")
+            return await invoke(uploads.part, upload_id, binding, number, bytes(data), digest, expected)
     if expected + 64 * 1024 ** 2 > shutil.disk_usage(uploads.root).free:
         raise HTTPException(status_code=507, detail="insufficient upload staging space")
     with tempfile.NamedTemporaryFile(dir=uploads.root, prefix=".part-", delete=False) as temporary:
@@ -88,6 +106,8 @@ async def part(context, upload_id, number, digest, request):
 async def complete(context, upload_id, request):
     service, uploads, binding = context
     value = await read(context, upload_id)
+    if getattr(uploads, "remote", False):
+        return await invoke(uploads.complete, upload_id, binding)
     if binding["kind"] == "asset":
         publish = lambda stream, size, digest: service.receive(binding["project"], stream, digest, size)
         expanded = service.expanded_limit
@@ -100,7 +120,7 @@ async def complete(context, upload_id, request):
         else:
             publish = lambda stream, size, digest: service.snapshot(*args, stream, size)
             expanded = service.expanded_limit
-    return await invoke(uploads.complete, upload_id, binding, publish, expanded + value["bytes"] + 64 * 1024 ** 2)
+    return await invoke(uploads.complete, upload_id, binding, publish, min(expanded, value["bytes"]) + value["bytes"] + 64 * 1024 ** 2 if expanded is not None else value["bytes"] * 2 + 64 * 1024 ** 2)
 
 
 async def abort(context, upload_id):

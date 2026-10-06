@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from ..application_errors import ApplicationError
 from ..artifacts import ArtifactService
 from ..artifact_store import ArtifactStore
+from ..archive_limits import exceeds
 from ..container_execution import ContainerExecutionService, RunRequest, DockerfileRuntimeSpec
 from ..image_builder import builder_request
 from ..source_imports import SourceImportService
@@ -195,7 +196,7 @@ async def artifact_transfer(project: str, run_id: str, attempt_id: str, request:
     with tempfile.TemporaryFile() as stream:
         async for chunk in request.stream():
             size += len(chunk)
-            if size > service.limit:
+            if exceeds(size, service.limit):
                 raise HTTPException(status_code=413, detail="artifact upload exceeds limit")
             stream.write(chunk)
         stream.seek(0)

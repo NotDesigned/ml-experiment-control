@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 from . import __version__
 from .api import Client, ClientError, data_archive, download, save, segment, source_archive, upload_asset_parts
 from .workflow import experiment, validate_dockerfile, report
+from .data_delivery import deliver_data
 
 
 def parser():
@@ -59,6 +60,8 @@ def parser():
     upload.add_argument("--directory", type=Path, required=True)
     upload.add_argument("--state", type=Path, required=True)
     upload.add_argument("--resume", action="store_true", help="resume the exact saved data archive; completed parts are retained")
+    upload.add_argument("--executor", help="also prepare data on this SenseCore executor's NAS using a CPU-only ACP job")
+    upload.add_argument("--wait-seconds", type=int, default=1800)
     assets = commands.add_parser("assets", help="list immutable project data assets")
     assets.add_argument("--project", required=True)
     snapshots = commands.add_parser("snapshots", help="list published checkpoints, including during training")
@@ -183,16 +186,22 @@ def main(argv=None):
         elif args.command == "asset-upload":
             if args.state.exists() and not args.resume:
                 raise ClientError("state file exists; inspect the saved asset ID instead of replaying upload")
+            if args.executor:
+                if "ccr-data-delivery.v1" not in health.get("capabilities", []):
+                    raise ClientError("server lacks ccr-data-delivery.v1")
+                catalogue = client.call("/api/executors")["executors"]
+                if not any(item["id"] == args.executor and item.get("kind") == "sensecore" for item in catalogue):
+                    raise ClientError("data preparation requires a published SenseCore executor")
             limits = client.call("/api/storage-limits")
             with tempfile.TemporaryFile() as stream:
                 digest, length = data_archive(args.directory, stream)
-                if length > limits["asset_archive_bytes"]:
+                if limits["asset_archive_bytes"] is not None and length > limits["asset_archive_bytes"]:
                     raise ClientError("data archive exceeds server upload limit")
                 if args.resume:
                     saved = json.loads(args.state.read_text())
                     if saved.get("project") != args.project or saved.get("asset_id") != "asset." + digest:
                         raise ClientError("resume directory differs from the saved upload archive")
-                    if saved.get("status") == "READY":
+                    if saved.get("status") == "READY" and not args.executor:
                         print(json.dumps(saved, indent=2))
                         return 0
                 save(args.state, {"project": args.project, "asset_id": "asset." + digest, "status": "UPLOADING"})
@@ -202,6 +211,9 @@ def main(argv=None):
                     query = urlencode({"project": args.project, "sha256": digest})
                     result = client.call("/api/assets/archive?" + query, raw=stream, length=length)
             save(args.state, result)
+            if args.executor:
+                result = {**result, "data_delivery": deliver_data(client, args.project, result["asset_id"], args.executor,
+                          args.state.with_name(args.state.name + ".delivery.json"), args.wait_seconds)}
         elif args.command == "assets":
             result = client.call(f"/api/projects/{segment(args.project)}/assets")
         elif args.command == "snapshots":

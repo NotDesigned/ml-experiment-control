@@ -16,6 +16,7 @@ from ..container_execution import ContainerExecutionService
 from ..data_assets import AssetStore
 from ..checkpoint_registry import CheckpointRegistry
 from ..persistent_state import MANIFEST_LIMIT
+from ..archive_limits import exceeds
 from .container_routes import invoke
 
 router = APIRouter(prefix="/api")
@@ -37,7 +38,7 @@ async def receive(request, service, call, *args):
             raise ValueError()
     except ValueError:
         raise HTTPException(status_code=400, detail="invalid Content-Length") from None
-    if expected_size > service.limit:
+    if exceeds(expected_size, service.limit):
         raise HTTPException(status_code=413, detail="data archive exceeds upload limit")
     if expected_size and expected_size * 2 + 64 * 1024 ** 2 > shutil.disk_usage(service.root).free:
         raise HTTPException(status_code=507, detail="insufficient local staging space for this data archive")
@@ -45,7 +46,7 @@ async def receive(request, service, call, *args):
     with tempfile.TemporaryFile(dir=service.root) as stream:
         async for chunk in request.stream():
             size += len(chunk)
-            if size > service.limit:
+            if exceeds(size, service.limit):
                 raise HTTPException(status_code=413, detail="data archive exceeds upload limit")
             stream.write(chunk)
         stream.seek(0)
@@ -72,6 +73,8 @@ async def upload_asset(request: Request,
     await invoke(ContainerExecutionService(runtime).require_enabled)
     await invoke(runtime.project, project)
     service = store(request)
+    if service.objects.config.get("data_upload_storage") == "desktop-builder":
+        raise HTTPException(status_code=409, detail="desktop data uploads require the resumable asset-uploads endpoints")
     # The archive's content digest is the idempotency key.
     return await receive(request, service, lambda p, data, size: service.receive(p, data, sha256, size), project)
 

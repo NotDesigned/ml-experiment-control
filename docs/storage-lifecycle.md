@@ -55,8 +55,10 @@ stripping its path. Do not log signed URL query strings.
 
 - `GET /api/runs/{project}/{run}/attempts/{attempt}/artifacts/download` returns
   a signed GET URL, archive SHA256/size, expiration and exact file inventory.
-- `GET /api/projects/{project}/assets/{asset}/download` returns a registered
-  dataset/checkpoint archive link and per-file checksums.
+- `GET /api/projects/{project}/assets/{asset}/download` returns an object-store
+  dataset/checkpoint link and per-file checksums. Desktop-staged assets instead
+  use the authenticated `/archive` stream without an API-host cache; see
+  [desktop data delivery](desktop-data-delivery.md).
 
 The first route reads only the exact Attempt's receipt and never restores a
 local expanded cache. Normal API Bearer authentication is required to get links.

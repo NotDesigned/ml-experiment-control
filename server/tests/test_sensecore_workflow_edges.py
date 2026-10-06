@@ -46,7 +46,8 @@ def test_custom_dockerfile_is_built_with_managed_source_and_immutable_receipt(tm
         return ""
     value._docker = docker; value._skopeo = lambda *a, **k: raw
     result = value.request(request)
-    assert result["image"].endswith(digest) and result["capabilities"] == ["data-assets.v1","checkpoint-upload.v1","data-preparation.v1","persistent-checkpoints.v1"]
+    from ml_exp_server.worker_contract import CAPABILITIES
+    assert result["image"].endswith(digest) and result["capabilities"] == list(CAPABILITIES)
     assert value.request({**request,"operation":"get"}) == result
     logs = value.request({**request,"operation":"logs"}); assert logs["lines"] == [] and not logs["truncated"]
     path = value.root / (result["bundle_id"] + ".log"); path.write_text("x"*9000+"\nlast build line\n")

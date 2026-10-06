@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from .source_imports import IDENTITY, unpack_source, seal_tree, remove_staging
 from .storage import atomic_json, utc_now
+from .archive_limits import byte_limit, exceeds, wire_limit
 
 ATTEMPT = re.compile(r'^attempt-[0-9]{3,}$')
 TRANSFER_PATH = re.compile(r'^/api/artifact-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/attempt-[0-9]{3,}$')
@@ -33,7 +34,7 @@ class ArtifactStore:
         self.config = json.loads(config_file.read_text())
         self.root = registry_root / 'artifact-transfers'
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.limit = int(self.config.get('max_archive_bytes', 4 * 1024 ** 3))
+        self.limit = byte_limit(self.config.get('max_archive_bytes'))
 
     @contextmanager
     def record(self, project, run, attempt):
@@ -66,7 +67,7 @@ class ArtifactStore:
                 value['checkpoint_state'] = checkpoint_state
                 atomic_json(path, value)
             url = self.config['public_transfer_base'].rstrip('/') + '/' + '/'.join([project, run, attempt])
-            return url, value['token'], self.limit
+            return url, value['token'], wire_limit(self.limit)
 
     def authorize(self, project, run, attempt, token):
         with self.record(project, run, attempt) as (_, value):
@@ -135,7 +136,7 @@ class ArtifactStore:
                 remove_staging(temporary)
 
     def receive(self, project, run, attempt, token, stream, size):
-        if not 0 < size <= self.limit:
+        if size <= 0 or exceeds(size, self.limit):
             raise ValueError('invalid artifact size')
         with self.record(project, run, attempt) as (path, value):
             if not value or not hmac.compare_digest(value['token'], token) or datetime.fromisoformat(value['expires_at']) < datetime.now(timezone.utc):
