@@ -45,6 +45,28 @@ def secret(service,value):
     with service.state('demo',value['delivery_id']) as (_,snapshot):return snapshot.value['copy_token']
 
 
+@pytest.mark.parametrize('result,invalid', [('No jobs found\n',False),('[]',False),('{}',True),('[null]',True),('unknown output',True)])
+def test_exact_name_query_handles_real_cli_empty_results(delivery,monkeypatch,result,invalid):
+    _,service,value,_=delivery
+    def sco(copy,args):
+        assert args == ['acp','jobs','list','--workspace-name',copy['workspace'],
+                        '--name',value['scheduler_name'],'--all','--format','json']
+        return result
+    monkeypatch.setattr(service,'sco',sco)
+    if invalid:
+        with pytest.raises(ValueError):service.find(value)
+    else:assert service.find(value) is None
+
+
+def test_control_revision_creates_new_delivery_without_replaying_history(delivery,monkeypatch):
+    _,service,value,asset=delivery
+    assert value['control_revision'] == module.CONTROL_REVISION
+    monkeypatch.setattr(module,'CONTROL_REVISION','acp-data-copy.next')
+    revised=service.prepare('demo',asset['asset_id'],'cloud')
+    assert revised['delivery_id'] != value['delivery_id'] and revised['status']=='PREPARED'
+    assert service.read('demo',value['delivery_id']) == value
+
+
 def test_prepare_execute_requires_exact_cpu_scope_and_seals_ready(delivery,monkeypatch):
     client,service,value,asset=delivery
     assert 'copy_token' not in value
@@ -93,7 +115,7 @@ def test_prepare_execute_requires_exact_cpu_scope_and_seals_ready(delivery,monke
         'executor':'cloud','inputs':[{'asset_id':asset['asset_id'],'mount_path':'/inputs/data'}]}).status_code==409
 
 
-@pytest.mark.parametrize('case',['confirmation','wrong-project','missing','bad-executor','bad-asset','cpu-config','worker-changed','reconcile-prepared'])
+@pytest.mark.parametrize('case',['confirmation','wrong-project','missing','bad-executor','bad-asset','cpu-config','worker-changed','control-changed','reconcile-prepared'])
 def test_invalid_preparation_never_submits(delivery,stored,monkeypatch,case):
     _,service,value,asset=delivery
     with pytest.raises((ValueError,ApplicationError)):
@@ -107,6 +129,9 @@ def test_invalid_preparation_never_submits(delivery,stored,monkeypatch,case):
             service.prepare('demo',asset['asset_id'],'cloud')
         elif case=='worker-changed':
             monkeypatch.setattr(module,'data_worker_digest',lambda:'changed')
+            service.begin('demo',value['delivery_id'],value['confirmation'])
+        elif case=='control-changed':
+            monkeypatch.setattr(module,'CONTROL_REVISION','changed')
             service.begin('demo',value['delivery_id'],value['confirmation'])
         else:service.begin('demo',value['delivery_id'],value['confirmation'],reconcile=True)
 
