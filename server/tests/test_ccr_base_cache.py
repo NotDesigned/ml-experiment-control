@@ -132,6 +132,62 @@ def test_remote_downloader_keeps_large_bytes_off_ssh_and_checks_whole_layer(tmp_
         server.shutdown(); thread.join(); server.server_close()
 
 
+def test_signed_url_refresh_continues_one_layer_without_leaking_controls(tmp_path):
+    tool = module('prewarm_ccr')
+    body = b'abcdef' * 1000
+    digest = hashlib.sha256(body).hexdigest()
+    entered, release = threading.Event(), threading.Event()
+    requests = []
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args): pass
+        def do_POST(self):
+            value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            start, end = value['start'], value['end']; requests.append(value)
+            if start < 2048:
+                entered.set(); assert release.wait(5)
+            else:
+                assert value['url'] == 'renewed-private-signature'
+            output = body[start:end + 1]
+            self.send_response(206)
+            self.send_header('Content-Length', str(len(output)))
+            self.send_header('Content-Range', f'bytes {start}-{end}/{len(body)}')
+            self.end_headers(); self.wfile.write(output)
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever); thread.start()
+    # Scale the same downloader's batch size down; exercise two batches and
+    # the real private pipe, HTTP ranges, complete SHA and atomic publication.
+    code = tool.DOWNLOADER.replace('chunk=2*1024*1024;workers=16', 'chunk=1024;workers=2') + tool.WRITER
+    child = subprocess.Popen([sys.executable, '-c', code], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, env={**os.environ, 'CCR_BLOB_CACHE': str(tmp_path)})
+    control = {'digest': digest, 'size': len(body), 'limit': 16 * 1024 ** 3,
+               'url': 'initial-private-signature', 'token': 'private-token',
+               'relay': f'http://127.0.0.1:{server.server_port}/ml-expd-builder-relay'}
+    try:
+        child.stdin.write(json.dumps(control).encode() + b'\n'); child.stdin.flush()
+        assert entered.wait(5)
+        child.stdin.write(b'{"url":"renewed-private-signature"}\n'); child.stdin.flush()
+        import select
+        assert select.select([child.stdout], [], [], 5)[0]
+        acknowledgement = child.stdout.readline()
+        assert json.loads(acknowledgement) == {'signed_url_refreshed': True}
+        release.set()
+        # Production keeps the control pipe open until receipt/exit. A waiting
+        # renewal reader must not hold the Python process open at completion.
+        child.wait(timeout=10)
+        output, error = child.communicate(timeout=10)
+        assert child.returncode == 0, error
+        assert (tmp_path / digest).read_bytes() == body
+        assert json.loads(output.splitlines()[-1]) == {'sha256': digest, 'bytes': len(body)}
+        assert b'private-signature' not in acknowledgement + output
+        assert b'private-token' not in acknowledgement + output
+        assert any(r['start'] >= 2048 for r in requests)
+        assert not list(tmp_path.glob('.partial-*'))
+    finally:
+        release.set()
+        if child.poll() is None: child.kill(); child.wait()
+        server.shutdown(); thread.join(); server.server_close()
+
+
 @pytest.mark.parametrize('change', [{'url': 'https://evil/secret'}, {'start': True}, {'end': 4 * 1024 ** 2},
                                   {'start': -1}, {'size': 3}, {'extra': 1}, {'url': None}])
 def test_relay_scope_and_ranges_fail_closed(change):
