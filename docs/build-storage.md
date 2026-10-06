@@ -8,6 +8,10 @@ The check runs inside the private build lock, after owned stale-builder recovery
 and before creating a new builder or downloading image layers. READY receipts
 are reused without requiring rebuild space.
 
+For an SSH-connected desktop Docker Engine, see [remote builds](ssh-builder.md).
+Its storage check runs on the remote Docker volume filesystem rather than on
+the API server. Remote mode rejects local `build_storage_path` configuration.
+
 Pinned base manifests are inspected without downloading their layers. Defaults:
 
 - Required bytes: four times the sum of compressed external base layers, twice

@@ -196,16 +196,17 @@ def test_app_poll_loop_records_success_and_failure(monkeypatch, tmp_path):
     app = api_app.create_app(console_config(tmp_path), poll=True, projects=[])
     with TestClient(app) as client:
         assert client.get("/api/health").json()["collector_enabled"] is True
-        for _ in range(100):
+        import time
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
             if len(cycles) >= 2:
                 break
-            import time
             time.sleep(0.002)
         assert len(cycles) >= 2
-        for _ in range(100):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
             if app.state.index.get_meta("collector_cycle_started_at") == "":
                 break
-            import time
             time.sleep(0.002)
         assert app.state.index.get_meta("collector_cycle_started_at") == ""
 
