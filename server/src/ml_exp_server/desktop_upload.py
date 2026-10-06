@@ -17,11 +17,14 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import time
+import stat
 
 from .application_errors import ApplicationError
 from .multipart_upload import UploadStore, PartStream
 from .storage import atomic_json, utc_now
 from .data_image_recipe import recipe
+from .build_contexts import BuildContexts
 
 IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 ASSET = re.compile(r"^asset\.[0-9a-f]{64}$")
@@ -87,8 +90,19 @@ def unpack(stream, destination, ceiling, file_limit):
 
 class DesktopUploads:
     def __init__(self, root, config):
-        self.root, self.config = Path(root), config
+        self.config = config
         self.uploads = UploadStore(root, config)
+        self.root = self.uploads.root.parent
+        self.incoming = self.root / "rpc-parts"
+        self.incoming.mkdir(mode=0o700, exist_ok=True)
+        for path in self.incoming.glob("part.*"):
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            if (re.fullmatch(r"part\.[0-9a-f]{32}", path.name) and stat.S_ISREG(info.st_mode)
+                    and info.st_mtime < time.time() - 3600):
+                path.unlink(missing_ok=True)
 
     def asset_path(self, project, asset_id):
         if not IDENTITY.fullmatch(project) or not ASSET.fullmatch(asset_id):
@@ -149,6 +163,24 @@ class DesktopUploads:
         return io.BufferedReader(PartStream(paths, value["part_bytes"], value["archive_bytes"]), buffer_size=1024 ** 2)
 
     def call(self, operation, data, body=None):
+        if operation in {"context-create", "context-seal", "context-remove"}:
+            return BuildContexts(self.root).call(operation, data)
+        if operation in {"part-file", "part-discard"}:
+            if not re.fullmatch(r"part\.[0-9a-f]{32}", data.get("body_id", "")):
+                raise ValueError("invalid desktop RPC body identity")
+            path = self.incoming / data["body_id"]
+            if path.is_symlink():
+                raise ValueError("invalid desktop RPC body file")
+            if operation == "part-discard":
+                path.unlink(missing_ok=True)
+                return {"removed": True}
+            try:
+                if (not isinstance(data.get("bytes"), int) or not 0 < data["bytes"] <= 64 * 1024 ** 2
+                        or path.stat().st_size != data["bytes"] or path.stat().st_nlink != 1):
+                    raise ValueError("desktop RPC body size differs")
+                return self.call("part", data, path.read_bytes())
+            finally:
+                path.unlink(missing_ok=True)
         if operation == "info":
             free = shutil.disk_usage(self.root)
             workers = Path(self.config.get("worker_directory", "/app/workers"))
@@ -214,6 +246,20 @@ class ContextHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        source = re.fullmatch(r"/build-contexts/(context\.[0-9a-f]{32})\.tar\.gz", self.path)
+        if source:
+            try:
+                archive = BuildContexts(store().root).archive(source[1])
+            except (OSError, ValueError):
+                self.send_error(404)
+                return
+            with archive.open("rb") as stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/gzip")
+                self.send_header("Content-Length", str(archive.stat().st_size))
+                self.end_headers()
+                shutil.copyfileobj(stream, self.wfile, 1024 ** 2)
+            return
         match = re.fullmatch(r"/contexts/([A-Za-z0-9][A-Za-z0-9_.-]{0,127})/(asset\.[0-9a-f]{64})\.tar", self.path)
         if not match:
             self.send_error(404)

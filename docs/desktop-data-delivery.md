@@ -1,6 +1,6 @@
 # Data uploads through the desktop builder
 
-Server 0.3.8 / client 0.1.7 keep protocol 2. Client code, training environment,
+Server 0.3.9 / client 0.1.7 keep protocol 2. Client code, training environment,
 training data and results retain separate identities. The client needs only its
 API URL and token; it does not need Docker, SSH or CCR credentials.
 
@@ -40,6 +40,21 @@ archive and extraction validation are on the desktop. Seoul keeps only small
 asset receipts, locators, progress records and the existing audit database.
 Whole-body `/api/assets/archive` returns 409 when desktop staging is enabled,
 so it cannot accidentally spool a large data archive on Seoul.
+
+Part bytes travel in a bounded in-memory tar through Docker's ordinary archive
+API; Docker exec carries only small control metadata, with no attached stdin.
+The helper checks the part length and SHA256 before journaling it. Temporary
+RPC files are separate from acknowledged parts and published assets. Each is
+removed after its request; only owned temporary files older than one hour are
+eligible for cleanup after a lost response. Acknowledged parts survive helper
+updates and interrupted responses.
+
+Connection/process/invalid-response errors return HTTP 503 with
+`DESKTOP_RPC_TIMEOUT`, `DESKTOP_RPC_UNAVAILABLE`, `DESKTOP_RPC_FAILED` or
+`DESKTOP_RPC_RESPONSE`. Client 0.1.7's bounded upload retry reads acknowledged
+parts before resending; explicit `--resume` uses the same journal. True identity
+and checksum conflicts still return 409. Retrying an upload part does not
+authorize replaying an uncertain image publication or scheduler submission.
 
 After upload:
 

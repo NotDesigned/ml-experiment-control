@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 import yaml
 
 from .application_errors import ApplicationError
-from .image_builder import IMAGE, RECIPE, builder_request, bundle_id, BuildStorageError
+from .image_builder import IMAGE, RECIPE, builder_request, bundle_id, BuildStorageError, BuildTransportError
 from .environment_build import DEPENDENCY_RECIPE, dockerfile, inspect_requirements, requirements_path, installer_digest
 from .dockerfile_build import DOCKERFILE_RECIPE, inspect_dockerfile, managed_dockerfile, worker_digest
 from .data_assets import AssetStore
@@ -352,6 +352,9 @@ class ContainerExecutionService:
                 return None
             if value["status"] == "EXECUTING" and not reconcile:
                 raise ApplicationError("runtime packaging is already executing; inspect or reconcile", code="CONTAINER_EXECUTION_BLOCKED")
+            if (value["status"] == "RECONCILE_REQUIRED" and not reconcile
+                    and not (value.get("build_error") or {}).get("retry_safe", False)):
+                raise ApplicationError("runtime publication is uncertain; reconcile before preparing a new build", code="CONTAINER_EXECUTION_BLOCKED")
             self.require_current_build(project, value)
             value.update(status="EXECUTING", error=None, build_error=None)
             from .execution_progress import record_progress
@@ -403,6 +406,9 @@ class ContainerExecutionService:
             value.update(status="RECONCILE_REQUIRED", error=exc.code,
                          build_error={"code": exc.code, "details": exc.details,
                                       "retry_safe": exc.code in {"BUILD_STORAGE_INSUFFICIENT", "BUILD_STORAGE_UNCHECKED"}})
+        except BuildTransportError as exc:
+            value.update(status="RECONCILE_REQUIRED", error=exc.code,
+                         build_error={"code": exc.code, "details": exc.details, "retry_safe": False})
         except Exception:
             value.update(status="RECONCILE_REQUIRED", error="image packaging failed or is uncertain; inspect worker and reconcile")
         return self.finish_state(pending, value)

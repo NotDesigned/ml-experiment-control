@@ -47,7 +47,7 @@ def main():
     try:
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);package=root/'ml_exp_server';package.mkdir();(package/'__init__.py').write_text('')
-            for file in ('desktop_upload.py','multipart_upload.py','storage.py','application_errors.py','archive_limits.py','data_image_recipe.py'):
+            for file in ('desktop_upload.py','multipart_upload.py','storage.py','application_errors.py','archive_limits.py','data_image_recipe.py','build_contexts.py'):
                 (package/file).write_bytes((source/file).read_bytes())
             workers=root/'workers';workers.mkdir()
             for origin,target in (*WORKERS,('data_copy_worker.py','data_copy_worker.py')):

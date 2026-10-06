@@ -1,5 +1,6 @@
 """Remote Docker never uses local capacity or falls back to a different engine."""
 import json
+from contextlib import nullcontext
 
 import pytest
 
@@ -111,6 +112,7 @@ def test_remote_preflight_precedes_large_pull_and_explicit_builder_creation(tmp_
         return ''
     value._docker = docker
     value._buildkit_image = lambda *a: 'verified'
+    value._source_context = lambda context: nullcontext()
     if failure:
         with pytest.raises(BuildStorageError) as exc: value._publish_buildkit('registry/test', tmp_path)
         assert exc.value.code == ('BUILD_STORAGE_INSUFFICIENT' if failure == 'small' else 'BUILD_STORAGE_UNCHECKED')

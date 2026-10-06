@@ -18,7 +18,11 @@ import socketserver
 import struct
 import subprocess
 import tempfile
+import time
 import uuid
+import tarfile
+import io
+from contextlib import contextmanager
 from urllib.parse import urlsplit, parse_qs
 
 from dockerfile_parse import DockerfileParser
@@ -29,6 +33,8 @@ from .environment_build import DEPENDENCY_RECIPE, dockerfile, inspect_requiremen
 from .dockerfile_build import DOCKERFILE_RECIPE, INTERNAL, inspect_dockerfile, managed_dockerfile, worker_digest
 from .worker_contract import CAPABILITIES, WORKER_CONTRACT, install_workers, recipe_digest
 from .execution_progress import record_progress, progress_view
+from .application_errors import ApplicationError
+from .build_contexts import CONTEXT_ID, MAX_BYTES
 from .image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE, BUILD_REMOTE_CONTEXT, BUILD_CONTEXT_BYTES
 
 
@@ -36,6 +42,7 @@ IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
 ID = re.compile(r"^[0-9a-f]{64}$")
 PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 RECIPE = "source-copy-docker-v2-v2"
+BUILD_REVISION = "sealed-context-transfer.v1"
 MANIFEST_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
 
 
@@ -47,8 +54,18 @@ class BuildStorageError(ValueError):
         self.code, self.details = code, details
 
 
-def bundle_id(project: str, source_id: str, base_image: str, requirements: str | None = None, *, dockerfile_path: str | None = None) -> str:
+class BuildTransportError(ValueError):
+    """Bounded transport evidence; uncertain publications are never replayed."""
+
+    def __init__(self, code, details):
+        super().__init__(code)
+        self.code, self.details = code, details
+
+
+def bundle_id(project: str, source_id: str, base_image: str, requirements: str | None = None, *, dockerfile_path: str | None = None, legacy: bool = False) -> str:
     fields = [project, source_id, base_image, RECIPE, WORKER_CONTRACT, worker_digest(), recipe_digest()]
+    if not legacy:
+        fields.append(BUILD_REVISION)
     if requirements is not None:
         fields.extend([DEPENDENCY_RECIPE, requirements_path(requirements), installer_digest()])
     if dockerfile_path is not None:
@@ -72,6 +89,8 @@ def builder_request(path: str, payload: dict, *, timeout: int = 1200) -> dict:
         if response.status != 200:
             if data.get("code") in {"BUILD_STORAGE_INSUFFICIENT", "BUILD_STORAGE_UNCHECKED", "BUILD_DISK_EXHAUSTED"}:
                 raise BuildStorageError(data["code"], data["details"])
+            if data.get("code") in {"BUILD_SESSION_TIMEOUT", "BUILD_CONTEXT_TRANSPORT", "DESKTOP_RPC_TIMEOUT", "DESKTOP_RPC_UNAVAILABLE", "DESKTOP_RPC_FAILED", "DESKTOP_RPC_RESPONSE"}:
+                raise BuildTransportError(data["code"], data["details"])
             raise ValueError(data.get("error", "image packaging failed"))
         return data
     finally:
@@ -101,6 +120,7 @@ class ImageBuilder:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 self._recover_probe()
                 self._recover_builder()
+                self._recover_source_context()
 
     def request(self, request: dict) -> dict:
         if request.get("operation") == "data-image":
@@ -125,12 +145,16 @@ class ImageBuilder:
                 raise ValueError("invalid frozen build identity")
             if pinned != identity:
                 receipt = self.root / f"{pinned}.json"
-                if not receipt.is_file():
+                definition = self.root / f"{pinned}.definition.json"
+                historical = bundle_id(project, source_id, image, requirements, dockerfile_path=custom_path, legacy=True)
+                evidence = receipt if receipt.is_file() else definition if definition.is_file() else None
+                if evidence is not None:
+                    value = json.loads(evidence.read_text())
+                    if any(value.get(key) != expected for key, expected in (
+                            ("bundle_id", pinned), ("project", project), ("source_id", source_id), ("base_image", image))):
+                        raise ValueError("historical packaging receipt identity mismatch")
+                elif pinned != historical:
                     raise ValueError("historical packaging receipt is unavailable")
-                value = json.loads(receipt.read_text())
-                if any(value.get(key) != expected for key, expected in (
-                        ("bundle_id", pinned), ("project", project), ("source_id", source_id), ("base_image", image))):
-                    raise ValueError("historical packaging receipt identity mismatch")
             identity = pinned
             path = self.root / f"{identity}.log"
             content = ""
@@ -222,6 +246,8 @@ class ImageBuilder:
                     shutil.copyfile(Path(__file__).with_name("dependency_install.py"), context / "dependency_install.py")
                 recipe = dockerfile(image, source_id, requirements) if inspection is None else managed_dockerfile(inspection, source_id)
                 (context / "Dockerfile").write_text(recipe)
+                atomic_json(self.root / f"{identity}.definition.json", {"bundle_id": identity, "project": project,
+                            "source_id": source_id, "base_image": image})
                 log_context = BUILD_LOG.set(self.root / f"{identity}.log")
                 progress_context = BUILD_PROGRESS.set(progress_path)
                 # One mutable acceleration tag per project; not part of source,
@@ -254,16 +280,128 @@ class ImageBuilder:
     def desktop_stage(self, operation, data, body):
         container = self.config.get("data_upload_container", "")
         if (not re.fullmatch(r"ml-expd-data-stage[-A-Za-z0-9]*", container)
-                or "docker_host" not in self.config or operation not in {"info", "create", "read", "part", "complete", "abort", "asset"}):
+                or "docker_host" not in self.config or operation not in {"info", "create", "read", "part", "complete", "abort", "asset", "context-create", "context-seal", "context-remove", "part-discard"}):
             raise ValueError("desktop data staging is not configured")
         host = self.config["docker_host"]
-        command = [self.config.get("docker_bin", "docker"), "--host", host, "exec", "-i", container,
+        if operation == "part":
+            return self._desktop_part(data, body)
+        command = [self.config.get("docker_bin", "docker"), "--host", host, "exec", container,
                    "python", "-m", "ml_exp_server.desktop_upload", operation, json.dumps(data, ensure_ascii=True)]
-        result = subprocess.run(command, input=body, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                timeout=self.config.get("data_upload_timeout_seconds", 1200), check=False)
-        if result.returncode or len(result.stdout) > 8 * 1024 ** 2:
-            raise ValueError("desktop data staging is unavailable")
-        return json.loads(result.stdout)
+        try:
+            result = subprocess.run(command, input=body, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=self.config.get("data_upload_timeout_seconds", 1200), check=False)
+        except subprocess.TimeoutExpired:
+            raise ApplicationError("desktop RPC timed out; inspect acknowledged parts before resuming", status_code=503,
+                                   code="DESKTOP_RPC_TIMEOUT") from None
+        except OSError:
+            raise ApplicationError("desktop RPC connection is unavailable", status_code=503, code="DESKTOP_RPC_UNAVAILABLE") from None
+        return self._desktop_reply(result)
+
+    @staticmethod
+    def _desktop_reply(result):
+        if result.returncode:
+            raise ApplicationError("desktop RPC process failed", status_code=503, code="DESKTOP_RPC_FAILED")
+        try:
+            if len(result.stdout) > 8 * 1024 ** 2:
+                raise ValueError("response too large")
+            value = json.loads(result.stdout)
+            if not isinstance(value, dict) or not isinstance(value.get("ok"), bool):
+                raise ValueError("invalid response")
+            return value
+        except ValueError:
+            raise ApplicationError("desktop RPC response was incomplete or invalid", status_code=503, code="DESKTOP_RPC_RESPONSE") from None
+
+    def _desktop_part(self, data, body):
+        if (not 0 < len(body) <= 64 * 1024 ** 2 or len(body) != data.get("bytes")
+                or hashlib.sha256(body).hexdigest() != data.get("sha256")):
+            raise ValueError("desktop RPC part identity differs")
+        identity = "part." + uuid.uuid4().hex
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as tar:
+            entry = tarfile.TarInfo(identity)
+            entry.size, entry.mode = len(body), 0o600
+            entry.mtime = int(time.time())
+            tar.addfile(entry, io.BytesIO(body))
+        container = self.config["data_upload_container"]
+        prefix = [self.config.get("docker_bin", "docker"), "--host", self.config["docker_host"]]
+        try:
+            result = subprocess.run([*prefix, "cp", "-", container + ":/stage/rpc-parts"], input=archive.getvalue(),
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=self.config.get("data_upload_timeout_seconds", 1200), check=False)
+            if result.returncode:
+                raise ApplicationError("desktop RPC body transport failed", status_code=503, code="DESKTOP_RPC_FAILED")
+            command = [*prefix, "exec", container, "python", "-m", "ml_exp_server.desktop_upload", "part-file",
+                       json.dumps({**data, "body_id": identity}, ensure_ascii=True)]
+            result = subprocess.run(command, input=b"", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=self.config.get("data_upload_timeout_seconds", 1200), check=False)
+            return self._desktop_reply(result)
+        except subprocess.TimeoutExpired:
+            raise ApplicationError("desktop RPC part transport timed out", status_code=503, code="DESKTOP_RPC_TIMEOUT") from None
+        except OSError:
+            raise ApplicationError("desktop RPC part transport is unavailable", status_code=503, code="DESKTOP_RPC_UNAVAILABLE") from None
+        finally:
+            try:
+                self.desktop_stage("part-discard", {"body_id": identity}, b"")
+            except ApplicationError:
+                # The helper removes only expired, owned temporary RPC bodies;
+                # acknowledged session parts and published assets are separate.
+                pass
+
+    def _recover_source_context(self):
+        record = self.root / "source-context.json"
+        if not record.exists():
+            return
+        value = json.loads(record.read_text())
+        if (not CONTEXT_ID.fullmatch(value.get("context_id", "")) or value.get("docker_host") != self._endpoint()
+                or value.get("container") != self.config.get("data_upload_container")):
+            raise ValueError("source context recovery identity changed")
+        result = self.desktop_stage("context-remove", {"context_id": value["context_id"]}, b"")
+        if not result["ok"]:
+            raise ValueError("source context cleanup failed")
+        record.unlink()
+
+    @contextmanager
+    def _source_context(self, context):
+        if "docker_host" not in self.config or BUILD_REMOTE_CONTEXT.get() is not None:
+            yield
+            return
+        container = self.config.get("data_upload_container", "")
+        if not re.fullmatch(r"ml-expd-data-stage[-A-Za-z0-9]*", container):
+            raise ValueError("remote source builds require the owned desktop staging helper")
+        self._recover_source_context()
+        identity = "context." + uuid.uuid4().hex
+        record = self.root / "source-context.json"
+        with tempfile.TemporaryDirectory(prefix="source-context-", dir=self.root) as temporary:
+            archive = Path(temporary) / "context.tar.gz"
+            self._progress("STAGING_SOURCE_CONTEXT", "Sending a sealed source archive to the desktop; no scheduler submission")
+            with tarfile.open(archive, mode="w:gz", dereference=False) as tar:
+                for path in sorted(context.rglob("*")):
+                    if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                        raise ValueError("invalid source build context file")
+                    tar.add(path, arcname=path.relative_to(context).as_posix(), recursive=False)
+            if archive.stat().st_size > MAX_BYTES:
+                raise ValueError("source context exceeds its independent limit")
+            digest = hashlib.sha256()
+            with archive.open("rb") as stream:
+                while chunk := stream.read(1024 ** 2):
+                    digest.update(chunk)
+            atomic_json(record, {"context_id": identity, "docker_host": self._endpoint(), "container": container})
+            token = None
+            try:
+                data = {"context_id": identity, "bytes": archive.stat().st_size, "sha256": digest.hexdigest()}
+                result = self.desktop_stage("context-create", data, b"")
+                if not result["ok"]:
+                    raise ValueError("source context preparation failed")
+                self._docker(["cp", str(archive), container + ":/stage/build-contexts/" + identity + "/context.tar.gz"])
+                result = self.desktop_stage("context-seal", {"context_id": identity}, b"")
+                if not result["ok"] or result["result"].get("sha256") != data["sha256"] or result["result"].get("bytes") != data["bytes"]:
+                    raise ValueError("source context transport identity differs")
+                token = BUILD_REMOTE_CONTEXT.set(f"http://{container}:8080/build-contexts/{identity}.tar.gz")
+                yield
+            finally:
+                if token is not None:
+                    BUILD_REMOTE_CONTEXT.reset(token)
+                self._recover_source_context()
 
     def _publish_buildkit(self, tag: str, context: Path) -> str:
         if not self.config.get("ephemeral_buildkit", False):
@@ -290,9 +428,10 @@ class ImageBuilder:
                               *(["--driver-opt", "network=" + self.config["buildkit_network"]]
                                 if "buildkit_network" in self.config else []),
                               *(["--driver-opt", "env.NO_PROXY=" + self.config["data_upload_container"]]
-                                if BUILD_REMOTE_CONTEXT.get() is not None else []),
+                                if "data_upload_container" in self.config else []),
                               *([self.config["docker_host"]] if "docker_host" in self.config else [])])
-                return self._buildkit_image(tag, context, name)
+                with self._source_context(context):
+                    return self._buildkit_image(tag, context, name)
             finally:
                 # Removing this exact builder also removes its dedicated state
                 # volume. No --keep-state, host image load or shared prune.
@@ -496,6 +635,10 @@ class ImageBuilder:
                     tail = log.read().decode(errors="replace").lower()
             if isinstance(exc, OSError) and exc.errno == errno.ENOSPC or "no space left on device" in tail:
                 raise BuildStorageError("BUILD_DISK_EXHAUSTED", {"publication_uncertain": True}) from None
+            if "session healthcheck" in tail and "context deadline exceeded" in tail:
+                raise BuildTransportError("BUILD_SESSION_TIMEOUT", {"publication_uncertain": True, "scheduler_submitted": False}) from None
+            if len(command) > 3 and command[3] == "cp":
+                raise BuildTransportError("BUILD_CONTEXT_TRANSPORT", {"publication_uncertain": True, "scheduler_submitted": False}) from None
             raise ValueError("OCI packaging failed; check registry access and base image availability") from exc
 
 
@@ -570,6 +713,11 @@ class Handler(BaseHTTPRequestHandler):
             result = self.server.builder.request(payload)
         except BuildStorageError as exc:
             status, result = 409, {"error": exc.code, "code": exc.code, "details": exc.details}
+        except BuildTransportError as exc:
+            status, result = 409, {"error": exc.code, "code": exc.code, "details": exc.details}
+        except ApplicationError as exc:
+            status, result = exc.status_code, {"error": exc.code, "code": exc.code, "status_code": exc.status_code,
+                                              "details": {"publication_uncertain": True, "scheduler_submitted": False}}
         except Exception:
             status, result = 409, {"error": "image packaging request failed"}
         self.reply(status, result)

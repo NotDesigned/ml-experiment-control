@@ -7,6 +7,7 @@ import importlib.util
 from types import SimpleNamespace
 
 import pytest
+from ml_exp_server.application_errors import ApplicationError
 
 from ml_exp_server import data_image_build as module
 from ml_exp_server import image_builder as builder_module
@@ -111,19 +112,19 @@ def test_desktop_stage_exec_is_fixed_and_bounded(tmp_path,monkeypatch,case):
     builder=ImageBuilder({'state_root':str(tmp_path/'state'),'source_root':str(tmp_path/'sources'),
         'repository':'registry.example/data','publisher':'buildkit'})
     builder.config.update(docker_host='unix:///run/private.sock',data_upload_container='ml-expd-data-stage')
-    operation='part'
+    operation='read'
     if case=='bad-container':builder.config['data_upload_container']='unrelated'
     if case=='no-host':builder.config.pop('docker_host')
     if case=='bad-operation':operation='shell'
     def run(command,**kw):
         assert command[1:3]==['--host','unix:///run/private.sock']
-        assert command[3:7]==['exec','-i','ml-expd-data-stage','python'] and kw['input']==b'bytes'
+        assert command[3:6]==['exec','ml-expd-data-stage','python'] and kw['input']==b''
         return SimpleNamespace(returncode=1 if case=='failed' else 0,
             stdout=b'x'*(8*1024**2+1) if case=='large' else b'{"ok":true,"result":{}}')
     monkeypatch.setattr(builder_module.subprocess,'run',run)
     if case!='ok':
-        with pytest.raises(ValueError):builder.desktop_stage(operation,{},b'bytes')
-    else:assert builder.desktop_stage(operation,{},b'bytes')=={'ok':True,'result':{}}
+        with pytest.raises((ValueError,ApplicationError)):builder.desktop_stage(operation,{},b'')
+    else:assert builder.desktop_stage(operation,{},b'')=={'ok':True,'result':{}}
 
 
 @pytest.mark.parametrize('case',['stage','stage-error','oversize','metadata','truncated','get','get-completed','get-wrong-uid','get-path','get-query','get-missing','get-spawn-failed'])
