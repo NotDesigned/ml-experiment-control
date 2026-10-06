@@ -17,7 +17,7 @@ def main():
     args = parser.parse_args()
     config = json.loads(args.builder_config.read_text())
     name = config['data_upload_container']
-    image = config['data_base_image']
+    image = config.get('data_upload_helper_image', config['data_base_image'])
     assert re.fullmatch(r'ml-expd-data-stage[-A-Za-z0-9]*', name)
     assert re.fullmatch(r'[-A-Za-z0-9._:/]+@sha256:[0-9a-f]{64}', image)
     assert re.fullmatch(r'unix:///[-A-Za-z0-9_./]+', config['docker_host'])
@@ -47,14 +47,14 @@ def main():
     try:
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);package=root/'ml_exp_server';package.mkdir();(package/'__init__.py').write_text('')
-            for file in ('desktop_upload.py','multipart_upload.py','storage.py','application_errors.py','archive_limits.py'):
+            for file in ('desktop_upload.py','multipart_upload.py','storage.py','application_errors.py','archive_limits.py','data_image_recipe.py'):
                 (package/file).write_bytes((source/file).read_bytes())
             workers=root/'workers';workers.mkdir()
             for origin,target in (*WORKERS,('data_copy_worker.py','data_copy_worker.py')):
                 (workers/target).write_bytes((source/origin).read_bytes())
             (root/'upload-config.json').write_text(json.dumps({'max_asset_archive_bytes':None,'max_asset_bytes':None,
                 'max_asset_files':20000,'upload_part_bytes':config.get('data_upload_part_bytes',16*1024**2),'upload_max_parts':65536,
-                'upload_session_seconds':86400,'data_base_image':image}))
+                'upload_session_seconds':86400,'data_base_image':config['data_base_image']}))
             run('cp',str(root)+'/.',setup+':/app')
     finally:
         run('rm',setup)

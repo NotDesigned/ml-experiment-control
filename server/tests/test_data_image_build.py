@@ -54,6 +54,17 @@ def test_data_image_receipt_reuse_and_reconciliation(data_builder):
     with pytest.raises(ValueError):builder.request(request)
 
 
+def test_recipe_revision_never_reuses_an_unchecked_data_image(data_builder, monkeypatch):
+    builder, request, _ = data_builder
+    original = builder.request(request)
+    monkeypatch.setattr(module, 'RECIPE', 'acp-data-image.next')
+    with pytest.raises(ValueError, match='reconciliation'):
+        builder.request({**request, 'action': 'get'})
+    revised = builder.request(request)
+    assert revised['data_image_id'] != original['data_image_id']
+    assert revised['recipe'] == 'acp-data-image.next'
+
+
 def test_module_entry_builder_keeps_remote_context_and_progress(data_builder):
     """Loading the CLI module again must use the same request ContextVars."""
     original, request, _ = data_builder

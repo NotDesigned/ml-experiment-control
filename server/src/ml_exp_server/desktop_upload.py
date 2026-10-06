@@ -21,6 +21,7 @@ import tempfile
 from .application_errors import ApplicationError
 from .multipart_upload import UploadStore, PartStream
 from .storage import atomic_json, utc_now
+from .data_image_recipe import recipe
 
 IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 ASSET = re.compile(r"^asset\.[0-9a-f]{64}$")
@@ -192,15 +193,13 @@ def store():
 def context(service, project, asset_id, output):
     value = service.asset(project, asset_id)
     base = service.config["data_base_image"]
-    recipe = (f"FROM {base}\nCOPY dataset.tar /payload/dataset.tar\n"
-              "COPY asset.json /payload/asset.json\nCOPY workers/ /usr/local/lib/ml-expd/\n"
-              "ENTRYPOINT []\nCMD [\"/bin/true\"]\n").encode()
+    dockerfile = recipe(base).encode()
     def add(archive, name, body):
         info = tarfile.TarInfo(name)
         info.size, info.mode = len(body), 0o444
         archive.addfile(info, io.BytesIO(body))
     with tarfile.open(fileobj=output, mode="w|") as archive:
-        add(archive, "Dockerfile", recipe)
+        add(archive, "Dockerfile", dockerfile)
         add(archive, "asset.json", json.dumps(value, sort_keys=True).encode())
         for path in sorted(Path(service.config.get("worker_directory", "/app/workers")).glob("*.py")):
             add(archive, "workers/" + path.name, path.read_bytes())
