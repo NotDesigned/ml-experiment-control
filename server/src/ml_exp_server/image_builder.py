@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import errno
-from contextvars import ContextVar
 import fcntl
 import hashlib
 import http.client
@@ -30,6 +29,7 @@ from .environment_build import DEPENDENCY_RECIPE, dockerfile, inspect_requiremen
 from .dockerfile_build import DOCKERFILE_RECIPE, INTERNAL, inspect_dockerfile, managed_dockerfile, worker_digest
 from .worker_contract import CAPABILITIES, WORKER_CONTRACT, install_workers, recipe_digest
 from .execution_progress import record_progress, progress_view
+from .image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE, BUILD_REMOTE_CONTEXT, BUILD_CONTEXT_BYTES
 
 
 IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
@@ -37,11 +37,6 @@ ID = re.compile(r"^[0-9a-f]{64}$")
 PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 RECIPE = "source-copy-docker-v2-v2"
 MANIFEST_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
-BUILD_LOG = ContextVar("ml_exp_build_log", default=None)
-BUILD_PROGRESS = ContextVar("ml_exp_build_progress", default=None)
-BUILD_CACHE = ContextVar("ml_exp_build_cache", default=None)
-BUILD_REMOTE_CONTEXT = ContextVar("ml_exp_remote_context", default=None)
-BUILD_CONTEXT_BYTES = ContextVar("ml_exp_remote_context_bytes", default=0)
 
 
 class BuildStorageError(ValueError):
