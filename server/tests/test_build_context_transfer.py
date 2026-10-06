@@ -208,5 +208,7 @@ def test_context_files_are_sealed_and_scoped(transport, monkeypatch, case):
     elif case=='unsealed':
         with pytest.raises(ValueError):store.archive(identity)
     else:
-        store.call('context-seal',{'context_id':identity});(path/'context.tar.gz').write_bytes(b'longer')
+        store.call('context-seal',{'context_id':identity})
+        (path/'context.tar.gz').chmod(0o600)  # Simulate an operator corrupting a sealed archive.
+        (path/'context.tar.gz').write_bytes(b'longer')
         with pytest.raises(ValueError):store.archive(identity)
