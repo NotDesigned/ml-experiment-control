@@ -81,6 +81,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(body) != end - start + 1:
                 self.send_error(502, 'Incomplete CCR range')
                 return
+            self.connection.settimeout(60)  # Authorized slow receivers; TLS/header idleness remains 15 s.
             self.send_response(206)
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Content-Range', f'bytes {start}-{end}/{size}')

@@ -66,7 +66,7 @@ def fetch(start):
    with urllib.request.build_opener(NoRedirect).open(request,timeout=45) as response:
     if response.status!=206 or response.headers.get('Content-Range')!=f'bytes {start}-{end}/{size}':raise ValueError('relay range identity mismatch')
     data=response.read(end-start+2)
-   if len(data)!=end-start+1:raise ValueError('incomplete relay range')
+   if len(data)!=end-start+1:raise OSError('incomplete relay range')
    return data
   except OSError:
    if attempt==1:raise ValueError('relay range unavailable') from None
