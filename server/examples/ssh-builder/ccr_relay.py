@@ -1,6 +1,6 @@
 """Restricted, authenticated CCR range relay behind the existing HTTPS ingress.
 
-Bind to loopback only. POST bodies contain signed URLs so ingress paths never
+Bind to loopback by default; public binding requires TLS. POST bodies contain signed URLs so ingress paths never
 contain them. No credentials, request bodies or upstream errors are logged.
 This service writes no image data to disk and never submits builds or jobs.
 """
@@ -11,6 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import re
+import socket
+import ssl
 import threading
 from urllib.parse import urlsplit
 
@@ -92,17 +94,52 @@ class Handler(BaseHTTPRequestHandler):
             self.server.slots.release()
 
 
+def create_server(host, port, token, cert=None, key=None):
+    if bool(cert) != bool(key) or (host != '127.0.0.1' and not cert):
+        raise ValueError('non-loopback relay requires a TLS certificate and key')
+    context = None
+    if cert:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(cert, key)
+        context.set_alpn_protocols(['http/1.1'])
+
+    class Server(ThreadingHTTPServer):
+        address_family = socket.AF_INET6 if ':' in host else socket.AF_INET
+        def server_bind(self):
+            if self.address_family == socket.AF_INET6:
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            super().server_bind()
+        def get_request(self):
+            connection, address = super().get_request()
+            connection.settimeout(15)
+            if context:
+                # Defer the handshake to the request thread. An idle TLS client
+                # cannot block the main accept loop or another authenticated client.
+                connection = context.wrap_socket(connection, server_side=True, do_handshake_on_connect=False)
+            return connection, address
+        def handle_error(self, request, client_address):
+            # Expected rejected/expired TLS sessions never produce traceback logs.
+            pass
+
+    server = Server((host, port), Handler)
+    server.token = token
+    server.slots = threading.BoundedSemaphore(4)
+    return server
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--token-file', type=Path, required=True)
     parser.add_argument('--port', type=int, default=8878)
+    parser.add_argument('--host', choices=['127.0.0.1', '0.0.0.0', '::'], default='127.0.0.1')
+    parser.add_argument('--cert-file', type=Path)
+    parser.add_argument('--key-file', type=Path)
     args = parser.parse_args()
     token = args.token_file.read_text().strip()
     if not re.fullmatch(r'[A-Za-z0-9_-]{32,128}', token):
         raise SystemExit('Invalid private relay credential')
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
-    server.token = token
-    server.slots = threading.BoundedSemaphore(4)
+    server = create_server(args.host, args.port, token, args.cert_file, args.key_file)
     with server:
         server.serve_forever()
 

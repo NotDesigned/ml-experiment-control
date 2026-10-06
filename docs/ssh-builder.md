@@ -121,6 +121,31 @@ never access-log query strings. Do not enable request-body logging or reuse the
 platform API token. Keep its credential out of public build contexts and logs.
 This is an operator prewarming endpoint, not a client experiment API.
 
+If the API host's outgoing path to the desktop is also slow, the same relay can
+run on a better-connected auxiliary host without Docker or image storage. Use
+an existing valid certificate and a separate free HTTPS port:
+
+```bash
+python3 ccr_relay.py --host :: --port 8443 \
+  --token-file /run/credentials/ml-expd-ccr-relay.service/relay-token \
+  --cert-file /run/credentials/ml-expd-ccr-relay.service/tls-cert \
+  --key-file /run/credentials/ml-expd-ccr-relay.service/tls-key
+```
+
+Supply these files with systemd `LoadCredential`; never move existing service
+certificates or print their keys. Non-loopback binding requires both certificate
+and key. Clients retain normal certificate and hostname verification. The
+listener supports IPv4/IPv6 and bounds idle TLS handshakes in request threads.
+Keep the existing API-host relay as a fallback, and point prewarming's
+`--relay-url` and its private token file at the chosen host. Check an actual
+desktop-to-relay range download before claiming a speed improvement.
+
+Certificates copied by `LoadCredential` refresh when the service restarts.
+An operator may use `RuntimeMaxSec=1d` and `Restart=always` to pick up the host's
+already-renewed certificate daily, without changing its existing renewal hooks.
+This restarts only the owned relay; ranges are idempotent and retryable, and no
+scheduler or GPU operation is involved.
+
 From the API host, using its existing private registry authentication:
 
 ```bash
