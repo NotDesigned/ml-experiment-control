@@ -18,7 +18,7 @@ from .source_imports import IDENTITY, SHA256, unpack_source, seal_tree, remove_s
 from .storage import atomic_json, utc_now
 
 ASSET_ID = re.compile(r"^asset\.[0-9a-f]{64}$")
-WORKER_PATH = re.compile(r"^/api/(?:asset-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/attempt-[0-9]{3,}/asset\.[0-9a-f]{64}|snapshot-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/attempt-[0-9]{3,})$")
+WORKER_PATH = re.compile(r"^/api/(?:asset-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/attempt-[0-9]{3,}/asset\.[0-9a-f]{64}|(?:snapshot|checkpoint)-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/attempt-[0-9]{3,})$")
 
 
 class AssetStore:

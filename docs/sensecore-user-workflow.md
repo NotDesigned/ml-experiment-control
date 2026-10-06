@@ -180,3 +180,5 @@ and reject ordinary/global credentials; clients use the public asset API.
 byte-level transformer and client Dockerfile. It uses a public FineWeb text sample,
 CUDA/bfloat16, SGD, and atomic model/optimizer/RNG checkpoints. This is a bounded
 workflow acceptance, not a quality or long-duration performance benchmark.
+
+Backend-resident complete recovery state and exact restore references: [persistent checkpoints](persistent-checkpoints.md).

@@ -118,7 +118,7 @@ def prepare(definition, cache, *, workspace=Path("/workspace")):
                 tree = temporary / "tree"
                 tree.mkdir()
                 environment = {key: value for key, value in os.environ.items()
-                               if not key.startswith("ML_EXPD_") and key not in {"OUTPUT_DIR", "RUN_ID", "ATTEMPT_ID", "BACKEND_JOB_ID", "DATA_DIR", "INPUTS_DIR"}}
+                               if not key.startswith("ML_EXPD_") and key not in {"OUTPUT_DIR", "RUN_ID", "ATTEMPT_ID", "BACKEND_JOB_ID", "DATA_DIR", "INPUTS_DIR", "STATE_DIR", "RESUME_DIR"}}
                 environment.update(spec["env"], DATA_DIR=str(tree), SOURCE_ID=spec["source_id"])
                 print("ML_EXPD_DATA_PREPARATION=RUNNING " + preparation_id, flush=True)
                 run_script([spec["interpreter"], str(script), *spec["arguments"]], environment,

@@ -83,3 +83,5 @@ mutations; it is not a complete remote experiment deployment. Follow the
 [operator guide](docs/operator-guide.md) before enabling submission.
 
 Project-defined metric names, units and frozen scoring protocols: [metrics contract](docs/metrics.md).
+
+Backend-resident complete recovery state and exact restore references: [persistent checkpoints](docs/persistent-checkpoints.md).

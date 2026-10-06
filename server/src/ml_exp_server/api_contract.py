@@ -24,6 +24,7 @@ SERVER_CAPABILITIES = (
     "project-metrics-schema.v1",
     "managed-worker.v1",
     "data-preparation.v1",
+    "persistent-checkpoints.v1",
     "multipart-upload.v1",
     "direct-object-download.v1",
     "dockerfile-build.v1",

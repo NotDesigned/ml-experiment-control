@@ -113,6 +113,10 @@ class Controller:
         if self.run.get("data_preparation"):
             environment["DATA_DIR"] = (self.run["storage"]["project_data_root"] + "/data-preparations/"
                                        + self.run["data_preparation"]["preparation_id"] + "/tree")
+        if self.run.get("checkpoint_persistence"):
+            environment["STATE_DIR"] = output.rsplit("/", 1)[0] + "/state"
+        if self.run.get("resume_from"):
+            environment["RESUME_DIR"] = "/inputs/resume"
         duration = self.run["resources"]["max_time"].split(":")
         seconds = sum(int(value) * multiplier for value, multiplier in zip(duration, (3600, 60, 1)))
         return ["env", *[f"{key}={value}" for key, value in sorted(environment.items())],
@@ -128,7 +132,8 @@ class Controller:
             transfer = ArtifactStore(Path(self.campaign["artifact_store"]), Path(self.campaign["source_store"]))
             url, token, limit = transfer.issue(self.campaign["project"], self.run["run_id"],
                                                manifest["attempt_id"], self.root, self.run["outputs"],
-                                               **({"checkpoint_upload": True} if self.run.get("checkpoint_upload") else {}))
+                                               **({"checkpoint_upload": True} if self.run.get("checkpoint_upload") else {}),
+                                               **({"checkpoint_state": self.state_context(manifest["attempt_id"])} if self.run.get("checkpoint_persistence") else {}))
             command = ["env", f"ML_EXPD_UPLOAD_URL={url}", f"ML_EXPD_UPLOAD_TOKEN={token}",
                        f"ML_EXPD_UPLOAD_LIMIT={limit}",
                        "ML_EXPD_OUTPUT_PATTERNS=" + json.dumps(self.run["outputs"]), *command]
@@ -144,7 +149,21 @@ class Controller:
                            "ML_EXPD_SNAPSHOT_INTERVAL=" + str(self.run["checkpoint_upload"]["interval_seconds"]), *command]
             if self.run.get("data_preparation"):
                 command = ["env", "ML_EXPD_DATA_PREPARATION=" + json.dumps(self.run["data_preparation"]), *command]
+            if self.run.get("checkpoint_persistence"):
+                prefix = transfer.config["public_transfer_base"].rstrip("/").rsplit("/", 1)[0]
+                state_url = prefix + "/checkpoint-transfers/" + "/".join([self.campaign["project"], self.run["run_id"], manifest["attempt_id"]])
+                command = ["env", "ML_EXPD_CHECKPOINT_STATE=" + json.dumps(self.state_context(manifest["attempt_id"])),
+                           "ML_EXPD_CHECKPOINT_STATE_URL=" + state_url,
+                           "ML_EXPD_CHECKPOINT_STATE_INTERVAL=" + str(self.run["checkpoint_persistence"]["interval_seconds"]), *command]
+            if self.run.get("resume_from"):
+                command = ["env", "ML_EXPD_CHECKPOINT_RESTORE=" + json.dumps(self.run["resume_from"]), *command]
         return command
+
+    def state_context(self, attempt_id):
+        return {"project": self.campaign["project"], "run_id": self.run["run_id"], "attempt_id": attempt_id,
+                "source_id": self.run["source_id"], "image_id": self.run["image_id"],
+                "storage_scope": self.run["checkpoint_persistence"]["storage_scope"],
+                "state_root": self.run["storage"]["run_dir"] + f"/attempts/{attempt_id}/state"}
 
     def oci_pull_environment(self):
         path = self.campaign.get("registry_pull")
@@ -161,7 +180,7 @@ class Controller:
         source = self.source()
         metadata = json.loads((source.parent / "source.json").read_text())
         resolved = {key: self.run[key] for key in ("container", "arguments", "env", "outputs")}
-        resolved.update({key: self.run[key] for key in ("inputs", "checkpoint_upload", "data_preparation") if key in self.run})
+        resolved.update({key: self.run[key] for key in ("inputs", "checkpoint_upload", "data_preparation", "checkpoint_persistence", "resume_from") if key in self.run})
         manifest = build_run_manifest(
             project=self.campaign["project"], run_id=self.run["run_id"], created_at=utc_now(),
             config_path="container_execution", resolved_config=resolved,
@@ -179,7 +198,9 @@ class Controller:
                     *[{"kind": "data_asset", "identity": item["asset_id"], "mount_path": item["mount_path"]}
                       for item in self.run.get("inputs", [])],
                     *([{"kind": "data_preparation", "identity": self.run["data_preparation"]["preparation_id"]}]
-                      if self.run.get("data_preparation") else [])],
+                      if self.run.get("data_preparation") else []),
+                    *([{"kind": "persistent_checkpoint", "identity": self.run["resume_from"]["checkpoint_id"], "mount_path": "/inputs/resume"}]
+                      if self.run.get("resume_from") else [])],
             checkpoint=self.run.get("checkpoint", {}),
             evaluation=self.run.get("evaluation", {}),
         )
@@ -189,7 +210,7 @@ class Controller:
             manifest["git_commit"] = frozen.get("git_commit")
         frozen = self.store.ensure_manifest(manifest)
         attempt = {**frozen, "created_at": utc_now(), "attempt_id": self.attempt_id,
-                   "command": self.command(self.attempt_id), "resume_from": None}
+                   "command": self.command(self.attempt_id), "resume_from": self.run.get("resume_from", {}).get("checkpoint_id")}
         if not self.store.attempt_path(self.attempt_id).exists():
             self.store.create_attempt(attempt)
         self.store.initialize_attempt_records(self.attempt_id)

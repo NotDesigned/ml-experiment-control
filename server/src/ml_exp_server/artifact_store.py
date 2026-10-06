@@ -46,7 +46,7 @@ class ArtifactStore:
             path = directory / (attempt + '.json')
             yield path, json.loads(path.read_text()) if path.exists() else None
 
-    def issue(self, project, run, attempt, run_dir: Path, outputs: list[str], *, checkpoint_upload=False):
+    def issue(self, project, run, attempt, run_dir: Path, outputs: list[str], *, checkpoint_upload=False, checkpoint_state=None):
         with self.record(project, run, attempt) as (path, value):
             if value is None:
                 value = {'project': project, 'run_id': run, 'attempt_id': attempt,
@@ -60,6 +60,11 @@ class ArtifactStore:
                     atomic_json(path, value)
             if value['run_dir'] != str(run_dir) or value['outputs'] != outputs:
                 raise ValueError('transfer identity is already bound')
+            if checkpoint_state is not None:
+                if value.get('checkpoint_state', checkpoint_state) != checkpoint_state:
+                    raise ValueError('persistent checkpoint transfer identity is already bound')
+                value['checkpoint_state'] = checkpoint_state
+                atomic_json(path, value)
             url = self.config['public_transfer_base'].rstrip('/') + '/' + '/'.join([project, run, attempt])
             return url, value['token'], self.limit
 

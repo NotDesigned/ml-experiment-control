@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import shutil
 import tempfile
 
@@ -13,6 +14,8 @@ from starlette.responses import JSONResponse, StreamingResponse
 from ..artifacts import ArtifactService
 from ..container_execution import ContainerExecutionService
 from ..data_assets import AssetStore
+from ..checkpoint_registry import CheckpointRegistry
+from ..persistent_state import MANIFEST_LIMIT
 from .container_routes import invoke
 
 router = APIRouter(prefix="/api")
@@ -131,3 +134,42 @@ async def worker_snapshot(project: str, run_id: str, attempt_id: str, request: R
 async def snapshots(project: str, run_id: str, attempt_id: str, request: Request):
     await invoke(ArtifactService(request.app.state.runtime).roots, project, run_id, attempt_id)
     return await invoke(store(request).snapshots, project, run_id, attempt_id)
+
+
+def checkpoint_store(request):
+    assets = store(request)
+    return CheckpointRegistry(Path(request.app.state.runtime.config.container_execution.artifact_store_file), assets.root.parent)
+
+
+@router.put("/checkpoint-transfers/{project}/{run_id}/{attempt_id}", include_in_schema=False)
+async def worker_checkpoint(project: str, run_id: str, attempt_id: str, request: Request):
+    service = checkpoint_store(request)
+    capability = token(request)
+    try:
+        transfer = await run_in_threadpool(service.objects.authorize, project, run_id, attempt_id, capability)
+        if not transfer.get("checkpoint_state"):
+            raise ValueError("checkpoint state is not enabled")
+    except ValueError:
+        raise HTTPException(status_code=401, detail="invalid persistent checkpoint capability") from None
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > MANIFEST_LIMIT:
+            raise HTTPException(status_code=413, detail="checkpoint metadata exceeds limit")
+    try:
+        ready = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise HTTPException(status_code=422, detail="invalid checkpoint JSON") from None
+    return await invoke(service.receive, project, run_id, attempt_id, capability, ready)
+
+
+@router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/checkpoints")
+async def persistent_checkpoints(project: str, run_id: str, attempt_id: str, request: Request):
+    await invoke(ArtifactService(request.app.state.runtime).roots, project, run_id, attempt_id)
+    return await invoke(checkpoint_store(request).list, project, run_id, attempt_id)
+
+
+@router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/checkpoints/{checkpoint_id}")
+async def persistent_checkpoint(project: str, run_id: str, attempt_id: str, checkpoint_id: str, request: Request):
+    await invoke(ArtifactService(request.app.state.runtime).roots, project, run_id, attempt_id)
+    return await invoke(checkpoint_store(request).read, project, run_id, attempt_id, checkpoint_id)

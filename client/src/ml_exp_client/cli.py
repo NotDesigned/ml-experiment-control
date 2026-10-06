@@ -52,6 +52,8 @@ def parser():
     create.add_argument("--inputs", type=json.loads, default=[], help='JSON array: [{"asset_id":"asset.…","mount_path":"/inputs/data"}]')
     create.add_argument("--checkpoint-interval", type=int, help="publish atomic checkpoint.ready.json every N seconds")
     create.add_argument("--data-preparation", type=json.loads, help='JSON: {"script":"download_data.py","arguments":[],"timeout_seconds":1200}')
+    create.add_argument("--checkpoint-state-interval", type=int, help="register persistent STATE_DIR checkpoints every N seconds; no state upload")
+    create.add_argument("--resume-from", type=json.loads, help='JSON: {"run_id":"trial","attempt_id":"attempt-001","checkpoint_id":"checkpoint.…"}')
     upload = commands.add_parser("asset-upload", help="upload a data directory independently from source")
     upload.add_argument("--project", required=True)
     upload.add_argument("--directory", type=Path, required=True)
@@ -63,6 +65,10 @@ def parser():
     snapshots.add_argument("--project", required=True)
     snapshots.add_argument("--run", required=True)
     snapshots.add_argument("--attempt", required=True)
+    checkpoints = commands.add_parser("checkpoints", help="list backend-resident recovery checkpoints; no state download")
+    checkpoints.add_argument("--project", required=True)
+    checkpoints.add_argument("--run", required=True)
+    checkpoints.add_argument("--attempt", required=True)
     prepare = commands.add_parser("prepare", help="preflight and save Submission gates; no GPU submission")
     prepare.add_argument("--project", required=True)
     prepare.add_argument("--run", required=True)
@@ -166,6 +172,13 @@ def main(argv=None):
                 if "data-preparation.v1" not in health.get("capabilities", []):
                     raise ClientError("server lacks data-preparation.v1; upgrade before using a download script")
                 definition["data_preparation"] = args.data_preparation
+            if args.checkpoint_state_interval is not None or args.resume_from is not None:
+                if "persistent-checkpoints.v1" not in health.get("capabilities", []):
+                    raise ClientError("server lacks persistent-checkpoints.v1")
+                if args.checkpoint_state_interval is not None:
+                    definition["checkpoint_persistence"] = {"interval_seconds": args.checkpoint_state_interval}
+                if args.resume_from is not None:
+                    definition["resume_from"] = args.resume_from
             result = client.call(f"/api/projects/{segment(saved['project'])}/runs", data=definition)
         elif args.command == "asset-upload":
             if args.state.exists() and not args.resume:
@@ -193,6 +206,10 @@ def main(argv=None):
             result = client.call(f"/api/projects/{segment(args.project)}/assets")
         elif args.command == "snapshots":
             result = client.call(f"/api/runs/{segment(args.project)}/{segment(args.run)}/attempts/{segment(args.attempt)}/snapshots")
+        elif args.command == "checkpoints":
+            if "persistent-checkpoints.v1" not in health.get("capabilities", []):
+                raise ClientError("server lacks persistent-checkpoints.v1")
+            result = client.call(f"/api/runs/{segment(args.project)}/{segment(args.run)}/attempts/{segment(args.attempt)}/checkpoints")
         elif args.command == "prepare":
             if args.state.exists():
                 raise ClientError("state file exists; inspect the saved Submission")
