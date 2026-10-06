@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import socket
+import ssl
 import threading
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -207,3 +209,34 @@ def test_build_request_wait_does_not_expire_before_private_900_second_builder(mo
     assert seen == [1200]
     image_builder.builder_request('/private.sock', {'operation': 'logs'}, timeout=15)
     assert seen == [1200, 15]
+
+
+@pytest.mark.parametrize('host,cert,key', [('0.0.0.0', None, None), ('::', None, None),
+                                         ('127.0.0.1', 'cert', None), ('127.0.0.1', None, 'key')])
+def test_public_relay_cannot_start_without_tls(host, cert, key):
+    with pytest.raises(ValueError): module('ccr_relay').create_server(host, 0, 'x' * 64, cert, key)
+
+
+def test_tls_relay_verifies_certificates_and_idle_handshake_does_not_block(tmp_path):
+    helper = module('ccr_relay')
+    key, cert = tmp_path / 'key.pem', tmp_path / 'cert.pem'
+    subprocess.run(['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256',
+                    '-nodes', '-keyout', str(key), '-out', str(cert), '-days', '1', '-subj', '/CN=localhost',
+                    '-addext', 'subjectAltName=DNS:localhost'], check=True, capture_output=True)
+    server = helper.create_server('127.0.0.1', 0, 'x' * 64, cert, key)
+    thread = threading.Thread(target=server.serve_forever); thread.start()
+    stalled = socket.create_connection(server.server_address, timeout=3)
+    try:
+        rejected = http.client.HTTPSConnection('localhost', server.server_port, timeout=3)
+        with pytest.raises(ssl.SSLCertVerificationError):
+            rejected.request('GET', '/health')
+        rejected.close()
+        trusted = http.client.HTTPSConnection('localhost', server.server_port, timeout=3,
+                                             context=ssl.create_default_context(cafile=str(cert)))
+        trusted.request('POST', '/ml-expd-builder-relay', body=b'{}')
+        response = trusted.getresponse(); assert response.status == 401; response.read(); trusted.close()
+        trusted = http.client.HTTPSConnection('localhost', server.server_port, timeout=3,
+                                             context=ssl.create_default_context(cafile=str(cert)))
+        trusted.request('GET', '/health'); response = trusted.getresponse(); assert response.read() == b'ok'; trusted.close()
+    finally:
+        stalled.close(); server.shutdown(); thread.join(); server.server_close()
