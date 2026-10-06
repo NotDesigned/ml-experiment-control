@@ -208,7 +208,7 @@ def test_signed_url_refresh_continues_one_layer_without_leaking_controls(tmp_pat
     thread = threading.Thread(target=server.serve_forever); thread.start()
     # Scale the same downloader's batch size down; exercise two batches and
     # the real private pipe, HTTP ranges, complete SHA and atomic publication.
-    code = tool.DOWNLOADER.replace('chunk=2*1024*1024;workers=16', 'chunk=1024;workers=2') + tool.WRITER
+    code = tool.DOWNLOADER.replace('chunk=2*1024*1024;workers=8', 'chunk=1024;workers=2') + tool.WRITER
     child = subprocess.Popen([sys.executable, '-c', code], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, env={**os.environ, 'CCR_BLOB_CACHE': str(tmp_path)})
     control = {'digest': digest, 'size': len(body), 'limit': 16 * 1024 ** 3,
