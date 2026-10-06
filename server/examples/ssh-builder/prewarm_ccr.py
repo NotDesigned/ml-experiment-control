@@ -54,7 +54,7 @@ DOWNLOADER = '''import io,json,sys,time,urllib.request,urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 control=json.loads(sys.stdin.buffer.readline(16385))
-size=control['size'];chunk=4*1024*1024;t=time.monotonic()
+size=control['size'];chunk=2*1024*1024;workers=16;t=time.monotonic()
 class NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self,*args):return None
 def fetch(start):
@@ -71,11 +71,11 @@ def fetch(start):
   except OSError:
    if attempt==1:raise ValueError('relay range unavailable') from None
 def chunks():
- with ThreadPoolExecutor(max_workers=4) as pool:
-  for offset in range(0,size,4*chunk):
-   futures=[pool.submit(fetch,start) for start in range(offset,min(size,offset+4*chunk),chunk)]
+ with ThreadPoolExecutor(max_workers=workers) as pool:
+  for offset in range(0,size,workers*chunk):
+   futures=[pool.submit(fetch,start) for start in range(offset,min(size,offset+workers*chunk),chunk)]
    for future in futures:yield future.result()
-   done=min(size,offset+4*chunk);elapsed=time.monotonic()-t
+   done=min(size,offset+workers*chunk);elapsed=time.monotonic()-t
    print(json.dumps({'downloaded_bytes':done,'total_bytes':size,'seconds':round(elapsed,2),'MB_per_s':round(done/elapsed/1e6,2)}),flush=True)
 class Stream:
  def __init__(self):self.pending=b'';self.iterator=chunks()

@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 HOST = 'aoss.cn-sh-01b.sensecoreapi-oss.cn'
 CHUNK_LIMIT = 4 * 1024 * 1024
+MAX_REQUESTS = 16
 
 
 def range_spec(value):
@@ -124,7 +125,7 @@ def create_server(host, port, token, cert=None, key=None):
 
     server = Server((host, port), Handler)
     server.token = token
-    server.slots = threading.BoundedSemaphore(4)
+    server.slots = threading.BoundedSemaphore(MAX_REQUESTS)
     return server
 
 

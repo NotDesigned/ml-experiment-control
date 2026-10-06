@@ -121,7 +121,8 @@ def test_remote_downloader_keeps_large_bytes_off_ssh_and_checks_whole_layer(tmp_
             assert json.loads(result.stdout.splitlines()[-1]) == {'sha256': digest, 'bytes': len(body)}
         else:
             assert result.returncode != 0 and not (tmp_path / digest).exists()
-        assert sorted(ranges) == [(0, 4194303), (4194304, 8388607), (8388608, len(body) - 1)]
+        assert sorted(ranges) == [(start, min(len(body) - 1, start + 2097151))
+                                  for start in range(0, len(body), 2097152)]
         assert b'test-private-token' not in result.stdout and b'test-secret' not in result.stdout
         assert not list(tmp_path.glob('.partial-*'))
     finally:
