@@ -114,7 +114,7 @@ as an unprivileged systemd service on `127.0.0.1:8878`, with a separate random
 private credential supplied through `LoadCredential`. Route only
 `/ml-expd-builder-relay` through the existing HTTPS reverse proxy. The service
 requires its dedicated Bearer credential and accepts signed URLs only for the
-fixed CCR blob host/path, with exact ranges of at most 4 MiB and four concurrent
+fixed CCR blob host/path, with exact ranges of at most 4 MiB and sixteen concurrent
 upstream requests. It validates the response offset, total size and actual byte
 count; upstream redirects are rejected. Signed URLs travel in POST bodies,
 never access-log query strings. Do not enable request-body logging or reuse the
@@ -160,7 +160,8 @@ python3 server/examples/ssh-builder/prewarm_ccr.py \
 The command accepts only a digest-pinned, single-platform CCR manifest. It
 checks the manifest identity and passes a small private control document through
 the SSH Docker endpoint. The desktop downloads exact ranges over verified HTTPS
-with four bounded concurrent requests. No blob bytes pass through SSH and no
+with sixteen bounded concurrent 2 MiB requests (at most 32 MiB of range data in
+one downloader batch). No blob bytes pass through SSH and no
 layer is written to API-host disk. The desktop checks the
 full SHA256 and byte count before atomically publishing a read-only blob.
 Existing blobs are rehashed before reuse. Only complete content-addressed blobs

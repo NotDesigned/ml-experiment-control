@@ -89,8 +89,8 @@ def test_writer_verifies_before_atomic_visibility_and_removes_incomplete_files(t
     assert not list(tmp_path.glob('.partial-*'))
 
 
-@pytest.mark.parametrize('corrupt', [False, True])
-def test_remote_downloader_keeps_large_bytes_off_ssh_and_checks_whole_layer(tmp_path, corrupt):
+@pytest.mark.parametrize('case', ['valid', 'corrupt', 'short-once'])
+def test_remote_downloader_keeps_large_bytes_off_ssh_and_checks_whole_layer(tmp_path, case):
     tool = module('prewarm_ccr')
     body = b'layer-content' * 700000  # More than two ranges.
     digest = hashlib.sha256(body).hexdigest(); ranges = []
@@ -101,7 +101,9 @@ def test_remote_downloader_keeps_large_bytes_off_ssh_and_checks_whole_layer(tmp_
             value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             start, end = value['start'], value['end']; ranges.append((start, end))
             output = body[start:end + 1]
-            if corrupt and start == 0: output = b'x' + output[1:]
+            if case == 'corrupt' and start == 0: output = b'x' + output[1:]
+            if case == 'short-once' and start == 0 and ranges.count((start, end)) == 1:
+                output = output[:-1]
             self.send_response(206)
             self.send_header('Content-Length', str(len(output)))
             self.send_header('Content-Range', f'bytes {start}-{end}/{len(body)}')
@@ -116,12 +118,14 @@ def test_remote_downloader_keeps_large_bytes_off_ssh_and_checks_whole_layer(tmp_
         assert len(payload) < 1024
         result = subprocess.run([sys.executable, '-c', tool.DOWNLOADER + tool.WRITER], input=payload,
                                 env={**os.environ, 'CCR_BLOB_CACHE': str(tmp_path)}, capture_output=True, timeout=15)
-        if not corrupt:
+        if case != 'corrupt':
             assert result.returncode == 0 and (tmp_path / digest).read_bytes() == body
             assert json.loads(result.stdout.splitlines()[-1]) == {'sha256': digest, 'bytes': len(body)}
         else:
             assert result.returncode != 0 and not (tmp_path / digest).exists()
-        assert sorted(ranges) == [(0, 4194303), (4194304, 8388607), (8388608, len(body) - 1)]
+        expected = [(start, min(len(body) - 1, start + 2097151)) for start in range(0, len(body), 2097152)]
+        if case == 'short-once': expected.append((0, 2097151))
+        assert sorted(ranges) == sorted(expected)
         assert b'test-private-token' not in result.stdout and b'test-secret' not in result.stdout
         assert not list(tmp_path.glob('.partial-*'))
     finally:

@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 HOST = 'aoss.cn-sh-01b.sensecoreapi-oss.cn'
 CHUNK_LIMIT = 4 * 1024 * 1024
+MAX_REQUESTS = 16
 
 
 def range_spec(value):
@@ -80,6 +81,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(body) != end - start + 1:
                 self.send_error(502, 'Incomplete CCR range')
                 return
+            self.connection.settimeout(60)  # Authorized slow receivers; TLS/header idleness remains 15 s.
             self.send_response(206)
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
@@ -124,7 +126,7 @@ def create_server(host, port, token, cert=None, key=None):
 
     server = Server((host, port), Handler)
     server.token = token
-    server.slots = threading.BoundedSemaphore(4)
+    server.slots = threading.BoundedSemaphore(MAX_REQUESTS)
     return server
 
 
