@@ -26,6 +26,7 @@ from .runtime_jobs import PendingRuntimeBuild
 from .worker_contract import CAPABILITIES, WORKER_CONTRACT
 from .metric_contract import MetricSchema, protocol_identity
 from .data_preparation import identity as data_identity, file_record
+from .checkpoint_registry import CheckpointRegistry, storage_scope
 
 
 SECRET_KEY = re.compile(r"(?i)(?:^|_)(?:token|secret|password|credential|api_key|proxy|authorization)(?:$|_)")
@@ -123,6 +124,13 @@ class CheckpointUpload(BaseModel):
     interval_seconds: int = Field(default=60, ge=5, le=3600)
 
 
+class CheckpointReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+    attempt_id: str = Field(pattern=r"^attempt-[0-9]{3,}$")
+    checkpoint_id: str = Field(pattern=r"^checkpoint\.[0-9a-f]{64}$")
+
+
 class DataPreparation(BaseModel):
     model_config = ConfigDict(extra="forbid")
     script: str = Field(max_length=4096)
@@ -158,6 +166,8 @@ class RunRequest(BaseModel):
     metrics_schema: MetricSchema | None = None
     evaluation: dict = Field(default_factory=dict)
     data_preparation: DataPreparation | None = None
+    checkpoint_persistence: CheckpointUpload | None = None
+    resume_from: CheckpointReference | None = None
 
     @field_validator("evaluation")
     @classmethod
@@ -181,7 +191,7 @@ class RunRequest(BaseModel):
     @field_validator("env")
     @classmethod
     def no_credentials(cls, value):
-        reserved = {"OUTPUT_DIR", "INPUTS_DIR", "DATA_DIR", "PROJECT_NAME", "RUN_ID", "ATTEMPT_ID", "SOURCE_ID", "BACKEND_JOB_ID"}
+        reserved = {"OUTPUT_DIR", "INPUTS_DIR", "DATA_DIR", "STATE_DIR", "RESUME_DIR", "PROJECT_NAME", "RUN_ID", "ATTEMPT_ID", "SOURCE_ID", "BACKEND_JOB_ID"}
         for key, item in value.items():
             if (not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", key) or SECRET_KEY.search(key)
                     or key in reserved or key.startswith("ML_EXPD_") or "\x00" in item or len(item) > 8192):
@@ -243,6 +253,7 @@ class ContainerExecutionService:
                                 "dockerfile_execution": True,
                                 "data_asset_transport": "worker-http-shared-storage",
                                 "data_preparation": "script-shared-storage.v1",
+                                "checkpoint_persistence": "backend-shared-storage.v1",
                                 "artifact_transport": bool(self.runtime.config.container_execution.artifact_store_file or profile.get("artifact_ssh") or profile["backend"]["kind"] == "slurm")}
                                for name, profile in sorted(self.profiles().items())]}
 
@@ -449,6 +460,22 @@ class ContainerExecutionService:
         root = Path(configured.base_dir)
         backend = profile["backend"]
         storage_root = profile["storage_root"].rstrip("/") + "/" + project
+        persistence = request.checkpoint_persistence
+        resume = None
+        if persistence is not None or request.resume_from is not None:
+            config = self.runtime.config.container_execution.artifact_store_file
+            if not config or "persistent-checkpoints.v1" not in bundle.get("capabilities", []):
+                raise ApplicationError("persistent checkpoints require a new runtime with persistent-checkpoints.v1", code="CONTAINER_EXECUTION_BLOCKED")
+            persistence = persistence or CheckpointUpload()
+            if request.resume_from is not None:
+                ref = request.resume_from
+                resume = CheckpointRegistry(Path(config), self.runtime.config.project_registry_root_path()).read(project, ref.run_id, ref.attempt_id, ref.checkpoint_id)
+                if resume["storage_scope"] != storage_scope(backend, storage_root):
+                    raise ApplicationError("checkpoint is on different backend storage; explicitly export/upload it as an asset", code="CHECKPOINT_STORAGE_MISMATCH")
+                if any(item.mount_path == "/inputs/resume" for item in request.inputs):
+                    raise ApplicationError("/inputs/resume is reserved for the checkpoint reference", code="CONTAINER_EXECUTION_BLOCKED")
+            if len(json.dumps([inputs, preparation, resume]).encode()) > 32768:
+                raise ApplicationError("checkpoint manifests exceed the scheduler command limit", code="CONTAINER_EXECUTION_BLOCKED")
         backend["time"] = request.resources.max_time
         run_dir = storage_root + "/runs/" + request.run_id
         if backend["kind"] == "slurm":
@@ -471,6 +498,8 @@ class ContainerExecutionService:
         outputs = list(request.outputs)
         if preparation is not None and "data-preparation.json" not in outputs:
             outputs.append("data-preparation.json")
+        if persistence is not None and "checkpoints.json" not in outputs:
+            outputs.append("checkpoints.json")
         resources = request.resources.model_dump()
         if backend["kind"] == "sensecore" and profile.get("capacity"):
             capacity = profile["capacity"]
@@ -494,6 +523,10 @@ class ContainerExecutionService:
             run["checkpoint_upload"] = request.checkpoint_upload.model_dump()
         if preparation is not None:
             run["data_preparation"] = preparation
+        if persistence is not None:
+            run["checkpoint_persistence"] = {**persistence.model_dump(), "storage_scope": storage_scope(backend, storage_root)}
+        if resume is not None:
+            run["resume_from"] = resume
         metric_schema = request.metrics_schema or getattr(configured, "metrics_schema", None)
         if metric_schema is not None or request.evaluation:
             context = {"source_id": source_id, "image": bundle["image"],
@@ -503,6 +536,8 @@ class ContainerExecutionService:
                        "metrics_schema": (metric_schema or MetricSchema()).model_dump(mode="json")}
             if preparation is not None:
                 context["data_preparation"] = preparation
+            if resume is not None:
+                context["resume_from"] = resume
             run["evaluation"] = {"metrics_schema": context["metrics_schema"],
                                  "protocol": context, "protocol_id": protocol_identity(context)}
         campaign = {"schema_version": 1, "project": project, "campaign": campaign_name,
@@ -528,4 +563,6 @@ class ContainerExecutionService:
                 "runtime_id": request.runtime_id, "source_id": source_id, "image": bundle["image"],
                 "entrypoint": [*bundle["spec"]["entrypoint"], *request.arguments], "executor": request.executor,
                 "resources": resources, "state": "NOT_SUBMITTED", "evaluation": run.get("evaluation", {}),
-                **({"data_preparation": preparation} if preparation is not None else {})}
+                **({"data_preparation": preparation} if preparation is not None else {}),
+                **({"checkpoint_persistence": run["checkpoint_persistence"]} if persistence is not None else {}),
+                **({"resume_from": resume} if resume is not None else {})}

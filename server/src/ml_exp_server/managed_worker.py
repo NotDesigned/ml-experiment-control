@@ -21,9 +21,11 @@ from urllib.parse import urlsplit
 if __package__:
     from .container_worker import archive_outputs, upload
     from .data_preparation import prepare as prepare_data
+    from . import persistent_state
 else:
     from legacy_worker import archive_outputs, upload
     from data_preparation import prepare as prepare_data
+    import persistent_state
 
 
 def digest_stream(stream, output=None):
@@ -226,11 +228,27 @@ def main(argv=None):
     snapshot_url = os.environ.pop("ML_EXPD_SNAPSHOT_URL", "")
     interval = int(os.environ.pop("ML_EXPD_SNAPSHOT_INTERVAL", "60"))
     preparation = json.loads(os.environ.pop("ML_EXPD_DATA_PREPARATION", "null"))
+    state_context = json.loads(os.environ.pop("ML_EXPD_CHECKPOINT_STATE", "null"))
+    state_url = os.environ.pop("ML_EXPD_CHECKPOINT_STATE_URL", "")
+    state_interval = int(os.environ.pop("ML_EXPD_CHECKPOINT_STATE_INTERVAL", "60"))
+    checkpoint_restore = json.loads(os.environ.pop("ML_EXPD_CHECKPOINT_RESTORE", "null"))
     root = Path(os.environ["OUTPUT_DIR"])
     root.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     try:
         link_path(root, Path("/outputs"))
+        if state_context is not None:
+            state_root = Path(state_context["state_root"])
+            if state_root != root.parent / "state" or state_root.is_symlink():
+                raise ValueError("state directory differs from the Attempt")
+            state_root.mkdir(parents=True, exist_ok=True)
+            os.environ["STATE_DIR"] = str(state_root)
+            patterns = [*patterns, "checkpoints.json"]
+        if checkpoint_restore is not None:
+            location = persistent_state.restore(checkpoint_restore)
+            link_path(location, Path("/inputs/resume"))
+            os.environ["RESUME_DIR"] = "/inputs/resume"
+            print("ML_EXPD_CHECKPOINT_RESTORE=READY " + checkpoint_restore["checkpoint_id"], flush=True)
         for item in inputs:
             cache = root.parents[4] / "data-assets"
             print("ML_EXPD_INPUT_ASSET=START " + item["asset_id"] + " archive_bytes=" + str(item["archive_bytes"]), flush=True)
@@ -266,17 +284,35 @@ def main(argv=None):
             os.killpg(child.pid, signum)
     signal.signal(signal.SIGTERM, forward)
     signal.signal(signal.SIGINT, forward)
-    previous, last_poll = None, 0.0
+    previous, last_poll, state_previous, state_last_poll = None, 0.0, None, 0.0
+    state_receipts = []
+    if state_context is not None:
+        (root / "checkpoints.json").write_text(json.dumps({"checkpoints": [], "resume_from": checkpoint_restore}))
     while True:
         code = child.poll()
+        if state_context is not None and (code is not None or time.monotonic() - state_last_poll >= state_interval):
+            state_last_poll = time.monotonic()
+            if (state_root / "checkpoint.ready.json").exists():
+                try:
+                    ready = persistent_state.read_ready(state_root)
+                    marker = persistent_state.digest(ready)
+                    if marker != state_previous:
+                        receipt = persistent_state.publish(state_context, state_url, token)
+                        state_receipts.append(receipt)
+                        (root / "checkpoints.json").write_text(json.dumps({"checkpoints": state_receipts, "resume_from": checkpoint_restore}))
+                        state_previous = marker
+                        print("ML_EXPD_CHECKPOINT_STATE=REGISTERED " + receipt["checkpoint_id"], flush=True)
+                except Exception:
+                    print("ML_EXPD_CHECKPOINT_STATE=REGISTRATION_FAILED", file=sys.stderr, flush=True)
         if snapshot_url and (code is not None or time.monotonic() - last_poll >= interval):
             last_poll = time.monotonic()
-            if (root / "checkpoint.ready.json").exists():
+            checkpoint_root = state_root if state_context is not None else root
+            if (checkpoint_root / "checkpoint.ready.json").exists():
                 try:
-                    marker = hashlib.sha256(read_checkpoint_ready(root)).hexdigest()
+                    marker = hashlib.sha256(read_checkpoint_ready(checkpoint_root)).hexdigest()
                     if marker != previous:
                         with tempfile.TemporaryFile(dir=root.parent) as stream:
-                            if checkpoint_archive(root, stream, limit) != marker:
+                            if checkpoint_archive(checkpoint_root, stream, limit) != marker:
                                 raise ValueError("checkpoint publication marker changed")
                             length = stream.tell()
                             if length > limit:

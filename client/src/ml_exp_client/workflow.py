@@ -43,7 +43,7 @@ def validate_dockerfile(source: Path, name: str):
 def read_config(path: Path):
     value = json.loads(path.read_text())
     allowed = {"project", "run_id", "source", "dockerfile", "entrypoint", "workdir", "executor",
-               "arguments", "env", "resources", "outputs", "inputs", "checkpoint_upload", "max_gpu_hours", "metrics_schema", "evaluation", "data_preparation"}
+               "arguments", "env", "resources", "outputs", "inputs", "checkpoint_upload", "max_gpu_hours", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise ClientError("experiment config contains unknown fields")
     evaluation = value.get("evaluation", {})
@@ -100,7 +100,7 @@ def read_config(path: Path):
     env = value.get("env", {})
     if not isinstance(env, dict) or any(not isinstance(item, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", key) or
             re.search(r"TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY|PROXY|AUTHORIZATION", key) or key.startswith("ML_EXPD_") or
-            key in {"OUTPUT_DIR", "INPUTS_DIR", "DATA_DIR", "PROJECT_NAME", "RUN_ID", "ATTEMPT_ID", "SOURCE_ID", "BACKEND_JOB_ID"} for key, item in env.items()):
+            key in {"OUTPUT_DIR", "INPUTS_DIR", "DATA_DIR", "STATE_DIR", "RESUME_DIR", "PROJECT_NAME", "RUN_ID", "ATTEMPT_ID", "SOURCE_ID", "BACKEND_JOB_ID"} for key, item in env.items()):
         raise ClientError("environment contains a reserved or credential-bearing field")
     inputs = value.get("inputs", [])
     if not isinstance(inputs, list) or len(inputs) > 32:
@@ -131,6 +131,16 @@ def read_config(path: Path):
     checkpoint = value.get("checkpoint_upload")
     if checkpoint is not None and (not isinstance(checkpoint, dict) or set(checkpoint) != {"interval_seconds"} or type(checkpoint["interval_seconds"]) is not int or not 5 <= checkpoint["interval_seconds"] <= 3600):
         raise ClientError("checkpoint_upload requires interval_seconds between 5 and 3600")
+    persistence = value.get("checkpoint_persistence")
+    if persistence is not None and (not isinstance(persistence, dict) or set(persistence) - {"interval_seconds"} or type(persistence.get("interval_seconds", 60)) is not int or not 5 <= persistence.get("interval_seconds", 60) <= 3600):
+        raise ClientError("checkpoint_persistence requires an interval between 5 and 3600")
+    resume = value.get("resume_from")
+    if resume is not None:
+        if (not isinstance(resume, dict) or set(resume) != {"run_id", "attempt_id", "checkpoint_id"} or
+                any(not isinstance(resume[key], str) or not re.fullmatch(pattern, resume[key]) for key, pattern in (
+                    ("run_id", r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}"), ("attempt_id", r"attempt-[0-9]{3,}"),
+                    ("checkpoint_id", r"checkpoint\.[0-9a-f]{64}"))) or "/inputs/resume" in mounts):
+            raise ClientError("resume_from needs an exact Run, Attempt and checkpoint identity; /inputs/resume is reserved")
     return value, source
 
 
@@ -157,6 +167,8 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         raise ClientError("server lacks dockerfile-only.v1; upgrade before using the experiment workflow")
     if config.get("data_preparation") is not None and "data-preparation.v1" not in health.get("capabilities", []):
         raise ClientError("server lacks data-preparation.v1; upgrade before using a download script")
+    if (config.get("checkpoint_persistence") is not None or config.get("resume_from") is not None) and "persistent-checkpoints.v1" not in health.get("capabilities", []):
+        raise ClientError("server lacks persistent-checkpoints.v1; upgrade before using backend checkpoint state")
     if state_path.resolve().is_relative_to(source):
         raise ClientError("save workflow state outside the uploaded source directory")
     fingerprint = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
@@ -216,7 +228,7 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
     state["input_bindings"] = bindings
     save(state_path, state)
     if "run" not in state:
-        definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "checkpoint_upload", "metrics_schema", "evaluation", "data_preparation") if key in config}
+        definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "checkpoint_upload", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from") if key in config}
         definition.update(runtime_id=runtime["runtime_id"], inputs=bindings)
         state["run"] = client.call(f"/api/projects/{project}/runs", data=definition)
         save(state_path, state)

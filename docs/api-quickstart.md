@@ -134,3 +134,5 @@ the dataset remains outside the result directory. See [script data preparation](
 
 Project-defined metric names, units, completeness and frozen scoring protocols:
 [metrics contract](metrics.md).
+
+Backend-resident complete recovery state and exact restore references: [persistent checkpoints](persistent-checkpoints.md).

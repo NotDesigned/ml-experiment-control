@@ -5,7 +5,7 @@ A standalone client for the ml-expd HTTP API. Requires Python 3.10+ and has
 Rust, SCO or Apptainer. The daemon owns those platform integrations.
 
 Distribution: `ml-experiment-client`; Python package: `ml_exp_client`;
-command: `ml-exp`. Client version 0.1.5 speaks protocol 2; client and server
+command: `ml-exp`. Client version 0.1.6 speaks protocol 2; client and server
 package versions are independent.
 
 ## Install only the client
@@ -136,3 +136,5 @@ tests are in `server/tests/test_api_quickstart.py`; they use real loopback HTTP
 and inject only the external registry/scheduler/object-store effects. CI also
 installs the client wheel alone into an empty environment and invokes the CLI
 from outside the repository.
+
+Backend-resident complete recovery state and exact restore references: [persistent checkpoints](../docs/persistent-checkpoints.md).
