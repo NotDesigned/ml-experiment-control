@@ -104,6 +104,7 @@ def test_corrupt_cache_fails_closed_without_rerunning_script(tmp_path, monkeypat
         destination = tree.parent; saved = destination.with_name("saved"); destination.rename(saved); destination.symlink_to(saved, target_is_directory=True)
         if case == "broken-link": saved.rename(saved.with_name("hidden"))
     elif case == "receipt-link":
+        tree.parent.chmod(0o755)
         receipt.unlink(); receipt.symlink_to("/etc/passwd")
     elif case == "receipt-large":
         receipt.chmod(0o644); receipt.write_bytes(b"x" * (8 * 1024 ** 2 + 1))
