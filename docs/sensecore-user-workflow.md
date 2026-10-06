@@ -63,6 +63,10 @@ expiry, cancellation and worker checkpoint/final-output transfers.
 
 ## Create and run
 
+For data already available online, a source download script can populate a
+backend-local persistent `DATA_DIR` instead of uploading an archive. Both
+backends verify and cache its files before training; see [script data](script-data.md).
+
 ```bash
 ml-exp create --runtime-state runtime.json --run trial --executor sensecore-1gpu \
   --inputs '[{"asset_id":"asset.REPLACE_WITH_DATA_SHA256","mount_path":"/inputs/fineweb"}]' \

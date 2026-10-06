@@ -23,6 +23,7 @@ SERVER_CAPABILITIES = (
     "dockerfile-only.v1",
     "project-metrics-schema.v1",
     "managed-worker.v1",
+    "data-preparation.v1",
     "multipart-upload.v1",
     "direct-object-download.v1",
     "dockerfile-build.v1",

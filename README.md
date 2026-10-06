@@ -60,6 +60,7 @@ checkout or package release has these endpoints. Operators should provide the
 exact installed revision alongside the connection details.
 
 - [Source/container/artifact contract](docs/source-api.md)
+- [Backend download scripts and persistent DATA_DIR](docs/script-data.md)
 - [HTTP protocol, authentication and recovery](docs/http_contract.md)
 - [Project lifecycle](docs/project_lifecycle.md)
 - [Action storage](docs/action-storage.md) and [SSE reconnect](docs/sse.md)

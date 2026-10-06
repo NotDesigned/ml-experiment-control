@@ -5,7 +5,7 @@ A standalone client for the ml-expd HTTP API. Requires Python 3.10+ and has
 Rust, SCO or Apptainer. The daemon owns those platform integrations.
 
 Distribution: `ml-experiment-client`; Python package: `ml_exp_client`;
-command: `ml-exp`. Client version 0.1.3 speaks protocol 2; client and server
+command: `ml-exp`. Client version 0.1.5 speaks protocol 2; client and server
 package versions are independent.
 
 ## Install only the client
@@ -78,6 +78,10 @@ Data is uploaded separately and mounted under `/inputs`; it never belongs inside
 source or the image. Current builds support atomic live checkpoints on both
 backends. See the [single-config quickstart](../docs/api-quickstart.md) and
 [checkpoint recovery walkthrough](../docs/sensecore-user-workflow.md).
+
+Alternatively, specify `data_preparation` in the experiment config or
+`create --data-preparation` to run a source download script into the backend's
+persistent `DATA_DIR` before training. See [script data preparation](../docs/script-data.md).
 
 Local state saves use a private, unique temporary file and atomic replacement;
 an abandoned `.tmp` file cannot block later saves. After a server restart,

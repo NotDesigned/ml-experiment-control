@@ -97,13 +97,18 @@ def test_new_build_options_require_server_capabilities_before_upload(tmp_path, m
     assert main(["pack", "--project", "demo", "--source", str(tmp_path), "--state", str(tmp_path / "runtime.json"),
                  "--dockerfile", "Dockerfile"]) == 2
     assert "capability" in capsys.readouterr().err and not (tmp_path / "runtime.json").exists()
+    saved = tmp_path / "runtime.json"
+    saved.write_text(json.dumps({"project": "demo", "runtime_id": "runtime." + "a" * 64}))
+    assert main(["create", "--runtime-state", str(saved), "--run", "trial", "--executor", "gpu",
+                 "--data-preparation", '{"script":"download.py"}']) == 2
+    assert "data-preparation.v1" in capsys.readouterr().err
 
 
 def test_dockerfile_data_upload_and_input_binding_use_only_http(tmp_path,monkeypatch,capsys):
     calls=[]
     class API:
         def __init__(self,*a):pass
-        def negotiate(self):return {"capabilities":["dockerfile-build.v1","data-assets.v1"]}
+        def negotiate(self):return {"capabilities":["dockerfile-build.v1","data-assets.v1","data-preparation.v1"]}
         def call(self,path,**kwargs):
             calls.append((path,kwargs))
             if path=="/api/storage-limits":return {"asset_archive_bytes":1000000}
@@ -125,9 +130,10 @@ def test_dockerfile_data_upload_and_input_binding_use_only_http(tmp_path,monkeyp
     assert main(["asset-upload","--project","demo","--directory",str(data),"--state",str(asset)])==0
     assert json.loads(asset.read_text())["status"]=="READY"
     bindings=json.dumps([{"asset_id":"asset."+"a"*64,"mount_path":"/inputs/data"}])
-    assert main(["create","--runtime-state",str(runtime),"--run","trial","--executor","sensecore-1gpu","--inputs",bindings,"--checkpoint-interval","5"])==0
+    assert main(["create","--runtime-state",str(runtime),"--run","trial","--executor","sensecore-1gpu","--inputs",bindings,"--checkpoint-interval","5","--data-preparation",'{"script":"download.py"}'])==0
     definition=next(kwargs["data"] for path,kwargs in calls if path.endswith("/runs"))
     assert definition["inputs"]==json.loads(bindings) and definition["checkpoint_upload"]=={"interval_seconds":5}
+    assert definition["data_preparation"] == {"script": "download.py"}
     assert main(["assets","--project","demo"])==0
     assert main(["snapshots","--project","demo","--run","trial","--attempt","attempt-001"])==0
     assert main(["asset-upload","--project","demo","--directory",str(data),"--state",str(asset)])==2

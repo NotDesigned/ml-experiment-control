@@ -20,8 +20,10 @@ from urllib.parse import urlsplit
 
 if __package__:
     from .container_worker import archive_outputs, upload
+    from .data_preparation import prepare as prepare_data
 else:
     from legacy_worker import archive_outputs, upload
+    from data_preparation import prepare as prepare_data
 
 
 def digest_stream(stream, output=None):
@@ -223,6 +225,7 @@ def main(argv=None):
     inputs = json.loads(os.environ.pop("ML_EXPD_INPUT_ASSETS", "[]"))
     snapshot_url = os.environ.pop("ML_EXPD_SNAPSHOT_URL", "")
     interval = int(os.environ.pop("ML_EXPD_SNAPSHOT_INTERVAL", "60"))
+    preparation = json.loads(os.environ.pop("ML_EXPD_DATA_PREPARATION", "null"))
     root = Path(os.environ["OUTPUT_DIR"])
     root.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
@@ -238,6 +241,25 @@ def main(argv=None):
         print("ML_EXPD_INPUT_DELIVERY=FAILED", file=sys.stderr, flush=True)
         return 65
     print("ML_EXPD_INPUT_DELIVERY_SECONDS=" + str(round(time.monotonic() - started, 3)), flush=True)
+    if preparation is not None:
+        try:
+            location, receipt = prepare_data(preparation, root.parents[4] / "data-preparations")
+            os.environ["DATA_DIR"] = str(location)
+        except Exception as error:
+            message = str(error)
+            receipt = {"status": "FAILED", "definition": preparation,
+                       "error": message if message.startswith("DATA_") and len(message) < 128 else type(error).__name__}
+            print("ML_EXPD_DATA_PREPARATION=FAILED", file=sys.stderr, flush=True)
+        (root / "data-preparation.json").write_text(json.dumps(receipt, sort_keys=True))
+        patterns = [*patterns, "data-preparation.json"]
+        if receipt["status"] != "READY":
+            try:
+                with tempfile.TemporaryFile(dir=root.parent) as stream:
+                    archive_outputs(root, stream, limit - 1024 * 1024, ["data-preparation.json"])
+                    upload(url, token, stream, stream.tell())
+            except Exception:
+                print("ML_EXPD_ARTIFACT_UPLOAD=FAILED", file=sys.stderr, flush=True)
+            return 65
     child = subprocess.Popen(argv or sys.argv[1:], start_new_session=True)
     def forward(signum, _frame):
         if child.poll() is None:

@@ -47,6 +47,36 @@ class API:
 HEALTH = {"capabilities": ["dockerfile-only.v1", "multipart-upload.v1"]}
 
 
+def test_script_data_preparation_is_frozen_without_asset_upload(configuration):
+    source = configuration.parent / "source"
+    (source / "download.py").write_text("print('download')")
+    value = json.loads(configuration.read_text())
+    value["data_preparation"] = {"script": "download.py", "arguments": ["--version", "1"]}
+    configuration.write_text(json.dumps(value))
+    api = API()
+    with pytest.raises(ClientError, match="data-preparation.v1"):
+        experiment(api, HEALTH, configuration, configuration.with_name("state.json"))
+    assert api.calls == []
+    state = experiment(api, {"capabilities": [*HEALTH["capabilities"], "data-preparation.v1"]}, configuration, configuration.with_name("state.json"))
+    request = next(kwargs["data"] for path, kwargs in api.calls if path.endswith("/runs"))
+    assert request["data_preparation"] == value["data_preparation"]
+    assert state["input_bindings"] == [] and not any("asset-upload" in path for path, _ in api.calls)
+
+
+@pytest.mark.parametrize("spec", [None, [], {"script": "../download.py"}, {"script": "missing.py"},
+    {"script": "train.py", "arguments": [""]}, {"script": "train.py", "interpreter": "bash"},
+    {"script": "train.py", "interpreter": []},
+    {"script": "train.py", "timeout_seconds": 0}, {"script": "train.py", "expected_content_sha256": "invalid"},
+    {"script": "train.py", "unrecognized": True}])
+def test_bad_script_config_fails_before_upload(configuration, spec):
+    value = json.loads(configuration.read_text()); value["data_preparation"] = spec
+    configuration.write_text(json.dumps(value))
+    if spec is None:
+        read_config(configuration)
+    else:
+        with pytest.raises(ClientError): read_config(configuration)
+
+
 def test_prepare_then_execute_resume_reuses_runtime_run_and_exact_submission(configuration, monkeypatch):
     api = API(); state = configuration.with_name("state.json")
     prepared = experiment(api, HEALTH, configuration, state)

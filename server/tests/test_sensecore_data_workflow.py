@@ -55,7 +55,7 @@ def custom_runtime(client, monkeypatch, *, text=None, tamper=None, legacy=False)
                   "bundle_id": bundle_id("demo", source["source_id"], BASE, dockerfile_path="Dockerfile"),
                   "dockerfile": {k: v for k, v in inspection.items() if k != "text"},
                   "dockerfile_sha256": hashlib.sha256(managed_dockerfile(inspection, source["source_id"]).encode()).hexdigest(),
-                  "worker_contract": WORKER_CONTRACT, "worker_sha256": worker_digest(), "capabilities": ["data-assets.v1", "checkpoint-upload.v1"]}
+                  "worker_contract": WORKER_CONTRACT, "worker_sha256": worker_digest(), "capabilities": ["data-assets.v1", "checkpoint-upload.v1", "data-preparation.v1"]}
         if tamper:
             result[tamper] = "different"
         return result
