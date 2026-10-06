@@ -43,25 +43,40 @@ try:
  signal.alarm(0)
  if h.hexdigest()!=digest:raise ValueError('layer checksum mismatch')
  os.chmod(name,0o444);os.replace(name,root/digest)
- print(json.dumps({'sha256':digest,'bytes':n}),flush=True)
+ receipt={'sha256':digest,'bytes':n}
+ if 'emit' in globals():emit(receipt)
+ else:print(json.dumps(receipt),flush=True)
 finally:
  if os.path.exists(name):os.unlink(name)
+ iterator=getattr(sys.stdin.buffer,'iterator',None)
+ if iterator is not None:iterator.close()
 '''
 
 # Consume one small private control document from Docker exec stdin. Remote
 # downloading bypasses bulk SSH traffic; only bounded progress returns via SSH.
-DOWNLOADER = '''import io,json,sys,time,urllib.request,urllib.error
+DOWNLOADER = '''import io,json,os,sys,time,urllib.request,urllib.error,threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
-control=json.loads(sys.stdin.buffer.readline(16385))
+private_input=os.fdopen(os.dup(0),'rb',buffering=0)
+control=json.loads(private_input.readline(16385))
+output_lock=threading.Lock()
+def emit(value):
+ with output_lock:print(json.dumps(value),flush=True)
+def refresh():
+ while line:=private_input.readline(16385):
+  value=json.loads(line)
+  if set(value)!= {'url'} or not isinstance(value['url'],str):return
+  control['url']=value['url']
+  emit({'signed_url_refreshed':True})
+threading.Thread(target=refresh,daemon=True).start()
 size=control['size'];chunk=2*1024*1024;workers=16;t=time.monotonic()
 class NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self,*args):return None
 def fetch(start):
  end=min(size-1,start+chunk-1)
- body=json.dumps({'url':control['url'],'start':start,'end':end,'size':size}).encode()
  for attempt in range(2):
   try:
+   body=json.dumps({'url':control['url'],'start':start,'end':end,'size':size}).encode()
    request=urllib.request.Request(control['relay'],data=body,headers={'Authorization':'Bearer '+control['token'],'Content-Type':'application/json'})
    with urllib.request.build_opener(NoRedirect).open(request,timeout=45) as response:
     if response.status!=206 or response.headers.get('Content-Range')!=f'bytes {start}-{end}/{size}':raise ValueError('relay range identity mismatch')
@@ -76,7 +91,7 @@ def chunks():
    futures=[pool.submit(fetch,start) for start in range(offset,min(size,offset+workers*chunk),chunk)]
    for future in futures:yield future.result()
    done=min(size,offset+workers*chunk);elapsed=time.monotonic()-t
-   print(json.dumps({'downloaded_bytes':done,'total_bytes':size,'seconds':round(elapsed,2),'MB_per_s':round(done/elapsed/1e6,2)}),flush=True)
+   emit({'downloaded_bytes':done,'total_bytes':size,'seconds':round(elapsed,2),'MB_per_s':round(done/elapsed/1e6,2)})
 class Stream:
  def __init__(self):self.pending=b'';self.iterator=chunks()
  def read(self,n):
@@ -165,12 +180,27 @@ def prewarm(config, image, limit, relay, token):
         control = {'url': url, 'digest': digest, 'size': size, 'limit': limit, 'relay': relay, 'token': token}
         child = subprocess.Popen(docker + ['python3', '-c', DOWNLOADER + WRITER],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        watchdog = threading.Timer(1800, child.kill)
+        watchdog = threading.Timer(3600, child.kill)
         watchdog.start()
+        finished = threading.Event()
+        def refresh_url():
+            # CCR signs each redirect for 1200 s. Slow cold layers must obtain
+            # fresh URLs without restarting or sending blob bytes over SSH.
+            while not finished.wait(300):
+                try:
+                    update = {'url': blob_url(repository, layer['digest'], auth)}
+                    if finished.is_set():
+                        return
+                    child.stdin.write(json.dumps(update).encode() + b'\n')
+                    child.stdin.flush()
+                except Exception:
+                    child.kill()  # Fail closed; never print the signed request.
+                    return
+        refresher = threading.Thread(target=refresh_url, daemon=True)
         try:
             child.stdin.write(json.dumps(control).encode() + b'\n')
             child.stdin.flush()
-            child.stdin.close()
+            refresher.start()
             receipt = None
             for line in child.stdout:
                 value = json.loads(line)
@@ -179,13 +209,17 @@ def prewarm(config, image, limit, relay, token):
                 else:
                     # Never echo arbitrary worker text or its private control.
                     print(json.dumps({'layer': digest, **{k: value[k] for k in
-                          ('downloaded_bytes', 'total_bytes', 'seconds', 'MB_per_s') if k in value}}), flush=True)
+                          ('downloaded_bytes', 'total_bytes', 'seconds', 'MB_per_s', 'signed_url_refreshed') if k in value}}), flush=True)
             if child.wait(timeout=60) != 0:
                 raise ValueError('desktop cache checksum or write failed')
             if receipt != {'sha256': digest, 'bytes': size}:
                 raise ValueError('desktop cache receipt mismatch')
             print(json.dumps({'layer': digest, 'bytes': size, 'cache': 'verified-new'}), flush=True)
         finally:
+            finished.set()
+            if refresher.ident is not None:
+                refresher.join(timeout=60)
+            child.stdin.close()
             watchdog.cancel()
             if child.poll() is None:
                 child.kill()

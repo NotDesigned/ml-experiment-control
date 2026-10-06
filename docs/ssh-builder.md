@@ -178,6 +178,13 @@ without input. Unexpected process/VM termination may leave `.partial-*` files;
 inspect and remove those only after confirming no writer is active. Registry
 images and other Docker volumes remain untouched.
 
+CCR redirect signatures expire after 1200 seconds. The operator obtains a fresh
+signed URL every 300 seconds and sends only that small control over the private
+Docker connection. The desktop continues the same download; each range retry
+uses the current URL. Logs report renewal without revealing the signature.
+Renewal failure aborts rather than publishing an unverified blob. The complete
+layer watchdog is 3600 seconds, outside the image-build budget.
+
 This command does not build an image or submit a GPU job. Reconcile an existing
 uncertain Runtime receipt before explicitly retrying it. Keep the SSH connection
 running throughout prewarming and construction. The daemon's default private
