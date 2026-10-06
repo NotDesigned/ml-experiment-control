@@ -21,19 +21,28 @@ REGISTRY = 'registry.cn-sh-01.sensecore.cn'
 HOST = 'aoss.cn-sh-01b.sensecoreapi-oss.cn'
 
 # Runs inside the restricted adapter. Each complete blob is verified, then
-# renamed atomically. Partial files are removed even on a short input stream.
-WRITER = '''import fcntl,hashlib,json,os,pathlib,signal,sys,tempfile
+# renamed atomically. Interrupted prefixes stay private and are rehashed before
+# resuming; a complete digest mismatch removes the unusable prefix.
+WRITER = '''import fcntl,hashlib,json,os,pathlib,signal,stat,sys
 digest,size,limit=sys.argv[1],int(sys.argv[2]),int(sys.argv[3]);root=pathlib.Path(os.environ.get('CCR_BLOB_CACHE','/cache'))
 lock=(root/'.cache.lock').open('a');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+name=root/('.partial-'+digest)
+if name.exists() or name.is_symlink():
+ if name.is_symlink() or not name.is_file() or name.stat().st_nlink!=1:raise ValueError('invalid partial cache file')
+ name.chmod(0o600)
+n=name.stat().st_size if name.exists() else 0
+if n>size or (len(sys.argv)>4 and n!=int(sys.argv[4])):raise ValueError('partial cache offset changed')
 used=sum(p.stat().st_size for p in root.iterdir() if p.is_file())
-if used+size>limit:raise SystemExit('cache capacity exceeded; remove selected owned blobs first')
+if used+size-n>limit:raise SystemExit('cache capacity exceeded; remove selected owned blobs first')
 stats=os.statvfs(root)
-if stats.f_bavail*stats.f_frsize<size+2*1024**3:raise SystemExit('insufficient desktop cache storage')
+if stats.f_bavail*stats.f_frsize<size-n+2*1024**3:raise SystemExit('insufficient desktop cache storage')
 def stalled(*args):raise ValueError('cache input stalled')
 signal.signal(signal.SIGALRM,stalled);signal.signal(signal.SIGTERM,stalled)
-fd,name=tempfile.mkstemp(prefix='.partial-',dir=root);h=hashlib.sha256();n=0
+fd=os.open(name,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600);h=hashlib.sha256()
+if not stat.S_ISREG(os.fstat(fd).st_mode):os.close(fd);raise ValueError('invalid partial cache type')
 try:
- with os.fdopen(fd,'wb') as out:
+ with os.fdopen(fd,'r+b') as out:
+  while prefix:=out.read(1048576):h.update(prefix)
   while n<size:
    signal.alarm(120)
    data=sys.stdin.buffer.read(min(1048576,size-n))
@@ -41,13 +50,12 @@ try:
    out.write(data);h.update(data);n+=len(data)
   out.flush();os.fsync(out.fileno())
  signal.alarm(0)
- if h.hexdigest()!=digest:raise ValueError('layer checksum mismatch')
+ if h.hexdigest()!=digest:os.unlink(name);raise ValueError('layer checksum mismatch')
  os.chmod(name,0o444);os.replace(name,root/digest)
  receipt={'sha256':digest,'bytes':n}
  if 'emit' in globals():emit(receipt)
  else:print(json.dumps(receipt),flush=True)
 finally:
- if os.path.exists(name):os.unlink(name)
  iterator=getattr(sys.stdin.buffer,'iterator',None)
  if iterator is not None:iterator.close()
 '''
@@ -69,7 +77,7 @@ def refresh():
   control['url']=value['url']
   emit({'signed_url_refreshed':True})
 threading.Thread(target=refresh,daemon=True).start()
-size=control['size'];chunk=2*1024*1024;workers=16;t=time.monotonic()
+size=control['size'];initial=control.get('offset',0);chunk=2*1024*1024;workers=16;t=time.monotonic()
 class NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self,*args):return None
 def fetch(start):
@@ -83,22 +91,24 @@ def fetch(start):
     data=response.read(end-start+2)
    if len(data)!=end-start+1:raise OSError('incomplete relay range')
    return data
-  except OSError:
+  except OSError as error:
+   status=getattr(error,'code',None)
+   emit({'range_error':{'start':start,'end':end,'attempt':attempt+1,'error_class':type(error).__name__,'http_status':status if type(status) is int else None}})
    if attempt==1:raise ValueError('relay range unavailable') from None
 def chunks():
  with ThreadPoolExecutor(max_workers=workers) as pool:
-  for offset in range(0,size,workers*chunk):
+  for offset in range(initial,size,workers*chunk):
    futures=[pool.submit(fetch,start) for start in range(offset,min(size,offset+workers*chunk),chunk)]
    for future in futures:yield future.result()
    done=min(size,offset+workers*chunk);elapsed=time.monotonic()-t
-   emit({'downloaded_bytes':done,'total_bytes':size,'seconds':round(elapsed,2),'MB_per_s':round(done/elapsed/1e6,2)})
+   emit({'downloaded_bytes':done,'total_bytes':size,'transferred_bytes':done-initial,'seconds':round(elapsed,2),'MB_per_s':round((done-initial)/elapsed/1e6,2)})
 class Stream:
  def __init__(self):self.pending=b'';self.iterator=chunks()
  def read(self,n):
   if not self.pending:self.pending=next(self.iterator,b'')
   data,self.pending=self.pending[:n],self.pending[n:];return data
 sys.stdin=SimpleNamespace(buffer=Stream())
-sys.argv=['writer',control['digest'],str(size),str(control['limit'])]
+sys.argv=['writer',control['digest'],str(size),str(control['limit']),str(initial)]
 '''
 
 
@@ -164,20 +174,30 @@ def prewarm(config, image, limit, relay, token):
         raise ValueError('invalid base layer metadata')
     if sum(l['size'] for l in layers) > limit:
         raise ValueError('base layers exceed the dedicated cache budget')
+    docker_prefix = [config.get('docker', '/usr/bin/docker'), '--host', endpoint]
+    memory = subprocess.run(docker_prefix + ['inspect', '--format', '{{.HostConfig.Memory}}', 'ml-expd-ccr-https'],
+                            capture_output=True, check=True, timeout=30)
+    # Python/SSL range buffers coexist with the serving process in this cgroup.
+    # Actual 16-way transfer exceeded a 128 MiB container budget after ~900 MB.
+    if 0 < int(memory.stdout) < 256 * 1024 ** 2:
+        raise MemoryError('CCR prewarming requires at least 256 MiB')
     auth = json.loads(Path(authfile).read_text())['auths'][REGISTRY]['auth']
     base64.b64decode(auth, validate=True)  # Validate; never display credentials.
-    docker = [config.get('docker', '/usr/bin/docker'), '--host', endpoint, 'exec', '-i', 'ml-expd-ccr-https']
+    docker = docker_prefix + ['exec', '-i', 'ml-expd-ccr-https']
     repository = image.split('/', 1)[1].split('@', 1)[0]
     for layer in layers:
         digest, size = layer['digest'][7:], layer['size']
         # Rehash before reuse. Cache metadata alone never proves an intact blob.
-        check = "import hashlib,os,pathlib,sys;p=pathlib.Path(os.environ.get('CCR_BLOB_CACHE','/cache'))/sys.argv[1];h=hashlib.sha256();n=0\nif p.is_file() and not p.is_symlink():\n with p.open('rb') as f:\n  while b:=f.read(1048576):h.update(b);n+=len(b)\nprint(int(n==int(sys.argv[2]) and h.hexdigest()==sys.argv[1]))"
+        check = "import hashlib,json,os,pathlib,sys;p=pathlib.Path(os.environ.get('CCR_BLOB_CACHE','/cache'))/sys.argv[1];h=hashlib.sha256();n=0\nif p.is_file() and not p.is_symlink():\n with p.open('rb') as f:\n  while b:=f.read(1048576):h.update(b);n+=len(b)\npartial=p.with_name('.partial-'+p.name)\nif partial.exists() or partial.is_symlink():\n if partial.is_symlink() or not partial.is_file() or partial.stat().st_nlink!=1 or partial.stat().st_size>int(sys.argv[2]):raise ValueError('invalid partial cache file')\nprint(json.dumps({'verified':n==int(sys.argv[2]) and h.hexdigest()==sys.argv[1],'offset':partial.stat().st_size if partial.exists() else 0}))"
         existing = subprocess.run(docker + ['python3', '-c', check, digest, str(size)], capture_output=True, check=True, timeout=60)
-        if existing.stdout.strip() == b'1':
+        cache = json.loads(existing.stdout)
+        if cache['verified']:
             print(json.dumps({'layer': digest, 'bytes': size, 'cache': 'verified-hit'}), flush=True)
             continue
         url = blob_url(repository, layer['digest'], auth)
-        control = {'url': url, 'digest': digest, 'size': size, 'limit': limit, 'relay': relay, 'token': token}
+        if cache['offset']:
+            print(json.dumps({'layer': digest, 'resumed_bytes': cache['offset']}), flush=True)
+        control = {'url': url, 'digest': digest, 'size': size, 'limit': limit, 'relay': relay, 'token': token, 'offset': cache['offset']}
         child = subprocess.Popen(docker + ['python3', '-c', DOWNLOADER + WRITER],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         watchdog = threading.Timer(3600, child.kill)
@@ -209,8 +229,10 @@ def prewarm(config, image, limit, relay, token):
                 else:
                     # Never echo arbitrary worker text or its private control.
                     print(json.dumps({'layer': digest, **{k: value[k] for k in
-                          ('downloaded_bytes', 'total_bytes', 'seconds', 'MB_per_s', 'signed_url_refreshed') if k in value}}), flush=True)
-            if child.wait(timeout=60) != 0:
+                          ('downloaded_bytes', 'total_bytes', 'transferred_bytes', 'seconds', 'MB_per_s', 'signed_url_refreshed', 'range_error') if k in value}}), flush=True)
+            exit_code = child.wait(timeout=60)
+            if exit_code != 0:
+                print(json.dumps({'layer': digest, 'download_process_exit_code': exit_code}), flush=True)
                 raise ValueError('desktop cache checksum or write failed')
             if receipt != {'sha256': digest, 'bytes': size}:
                 raise ValueError('desktop cache receipt mismatch')

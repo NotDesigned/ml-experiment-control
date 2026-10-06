@@ -173,10 +173,22 @@ The cache is operator-managed, with a default 16 GiB hard write budget and a
 2 GiB free-space reserve; competing writes fail on its dedicated lock. Monitor
 the desktop's Windows backing drive as well. There is no global prune or
 automatic deletion: remove selected obsolete digest files only from this owned
-cache, while idle. A stalled writer removes its incomplete file after 120 seconds
-without input. Unexpected process/VM termination may leave `.partial-*` files;
-inspect and remove those only after confirming no writer is active. Registry
-images and other Docker volumes remain untouched.
+cache, while idle. A writer stops after 120 seconds without input.
+Unverified `.partial-<digest>` prefixes remain
+private and can resume when the operator reruns the command. The writer rehashes
+the entire prefix, downloads only the remaining ranges, and publishes only if
+the whole SHA256 matches. A corrupt complete prefix is removed. Symlinks, special
+files, hardlinks, oversized prefixes and changing offsets are rejected. Capacity
+accounts for the already stored prefix; its bytes are not counted as new network
+transfer. Older unnamed `.partial-*` files require operator inspection while
+idle. Registry images and other Docker volumes remain untouched.
+
+Use at least 256 MiB for the owned adapter container when prewarming. The 16-way
+Python/SSL downloader shares its cgroup with the serving process; a real 4 GB
+transfer exceeded the previous 128 MiB limit. The command checks the configured
+memory budget before obtaining signed layer URLs or starting any layer downloads.
+It prints only a numeric child exit code on failure; inspect the owned cgroup's
+`memory.events` to distinguish OOM from network or checksum failures.
 
 CCR redirect signatures expire after 1200 seconds. The operator obtains a fresh
 signed URL every 300 seconds and sends only that small control over the private
