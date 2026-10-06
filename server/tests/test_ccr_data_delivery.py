@@ -67,6 +67,22 @@ def test_control_revision_creates_new_delivery_without_replaying_history(deliver
     assert service.read('demo',value['delivery_id']) == value
 
 
+@pytest.mark.parametrize('text,status,reason', [
+    ('400 Bad Request\\nBackend: {\\"reason\\":\\"tjInvalidArgument\\",\\"command\\":\\"secret\\"}',400,'tjInvalidArgument'),
+    ('403 Forbidden Authorization: Bearer secret',403,None),
+    ('unknown CLI failure contains secret',None,None),
+])
+def test_control_error_reports_only_provider_codes(delivery,monkeypatch,text,status,reason):
+    _,service,value,_=delivery
+    monkeypatch.setattr(module.subprocess,'run',lambda *a,**kw:SimpleNamespace(returncode=1,stdout='',stderr=text))
+    with pytest.raises(module.ACPControlError) as error:service.sco(value['copy_profile'],['acp','jobs','create','--command','secret'])
+    assert error.value.details=={'operation':'acp jobs create','exit_code':1,'http_status':status,'provider_reason':reason}
+    assert 'secret' not in json.dumps(error.value.details)
+    pending=service.begin('demo',value['delivery_id'],value['confirmation'])
+    result=service.finish(pending)
+    assert result['status']=='RECONCILE_REQUIRED' and result['control_error']['operation']=='acp jobs list'
+
+
 def test_prepare_execute_requires_exact_cpu_scope_and_seals_ready(delivery,monkeypatch):
     client,service,value,asset=delivery
     assert 'copy_token' not in value

@@ -25,7 +25,20 @@ from .storage import DurableJsonState, utc_now
 
 DELIVERY = re.compile(r"^delivery\.[0-9a-f]{64}$")
 COPY_TRANSFER = re.compile(r"^/api/data-copy-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/delivery\.[0-9a-f]{64}$")
-CONTROL_REVISION = "acp-data-copy.v2"
+CONTROL_REVISION = "acp-data-copy.v3"
+
+
+class ACPControlError(ValueError):
+    """Only bounded provider codes, never commands or credentials, are public."""
+
+    def __init__(self, arguments, result):
+        text = result.stderr.replace('\\"', '"')
+        status = re.search(r"\b([45][0-9]{2})\s+(?:Bad Request|Forbidden|Unauthorized|Not Found|Too Many Requests|Internal Server Error)", text)
+        reason = re.search(r'"reason"\s*:\s*"([A-Za-z][A-Za-z0-9_.-]{0,79})"', text)
+        self.details = {"operation": " ".join(arguments[:3]), "exit_code": result.returncode,
+                        "http_status": int(status[1]) if status else None,
+                        "provider_reason": reason[1] if reason else None}
+        super().__init__("ACP control request failed or is uncertain")
 
 
 def digest(value):
@@ -150,7 +163,7 @@ class DataDeliveryService:
         result = subprocess.run([copy["sco_bin"], *arguments], env=environment, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, timeout=60, check=False)
         if result.returncode:
-            raise ValueError("ACP control request failed or is uncertain")
+            raise ACPControlError(arguments, result)
         return result.stdout
 
     def find(self, value):
@@ -229,11 +242,12 @@ class DataDeliveryService:
                 time.sleep(2)
             self.sco(value["copy_profile"], ["acp", "jobs", "stop", value["scheduler_name"], "--workspace-name", value["copy_profile"]["workspace"]])
             return self.update(project, delivery_id, status="FAILED", error="DATA_COPY_TIMEOUT")
-        except Exception:
+        except Exception as exc:
             current = self.read(project, delivery_id)
             if current["status"] in {"READY", "FAILED"}:
                 return current
-            return self.update(project, delivery_id, status="RECONCILE_REQUIRED", error="data publication or ACP submission needs inspection; no automatic replay")
+            return self.update(project, delivery_id, status="RECONCILE_REQUIRED", error="data publication or ACP submission needs inspection; no automatic replay",
+                               control_error=exc.details if isinstance(exc, ACPControlError) else None)
 
     @staticmethod
     def check_capability(value, token):
