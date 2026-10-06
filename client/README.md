@@ -93,8 +93,10 @@ On servers advertising `multipart-upload.v1`, data uploads use 16 MiB parts
 and retain completed parts across disconnections. Resume the same unchanged
 directory with `ml-exp asset-upload --project PROJECT --directory ./data
 --state data.json --resume`. The saved archive identity must match; modifying
-the directory requires a new state file. The default archive and expanded-data
-limits are 4 GiB, not a per-part allowance. See [upload API](../docs/multipart-uploads.md).
+the directory requires a new state file. The fixed 4 GiB archive/expanded defaults are removed; real capacity and
+optional quotas still apply. Add `--executor sensecore-1gpu` to prepare uploaded
+data on NAS using a CPU-only ACP job, or let `experiment` perform preparation
+automatically. See [desktop data delivery](../docs/desktop-data-delivery.md). See [upload API](../docs/multipart-uploads.md).
 
 ## Python use
 

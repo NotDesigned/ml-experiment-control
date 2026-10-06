@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -574,7 +574,7 @@ wheels = [
 
 [[package]]
 name = "ml-experiment-client"
-version = "0.1.6"
+version = "0.1.7"
 source = { editable = "client" }
 
 [package.dev-dependencies]
@@ -614,7 +614,7 @@ dev = [
 
 [[package]]
 name = "ml-experiment-server"
-version = "0.3.1"
+version = "0.3.2"
 source = { editable = "server" }
 dependencies = [
     { name = "boto3" },

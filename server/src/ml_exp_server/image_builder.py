@@ -20,6 +20,7 @@ import struct
 import subprocess
 import tempfile
 import uuid
+from urllib.parse import urlsplit, parse_qs
 
 from dockerfile_parse import DockerfileParser
 
@@ -39,6 +40,8 @@ MANIFEST_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
 BUILD_LOG = ContextVar("ml_exp_build_log", default=None)
 BUILD_PROGRESS = ContextVar("ml_exp_build_progress", default=None)
 BUILD_CACHE = ContextVar("ml_exp_build_cache", default=None)
+BUILD_REMOTE_CONTEXT = ContextVar("ml_exp_remote_context", default=None)
+BUILD_CONTEXT_BYTES = ContextVar("ml_exp_remote_context_bytes", default=0)
 
 
 class BuildStorageError(ValueError):
@@ -105,6 +108,9 @@ class ImageBuilder:
                 self._recover_builder()
 
     def request(self, request: dict) -> dict:
+        if request.get("operation") == "data-image":
+            from .data_image_build import build
+            return build(self, request)
         project, source_id, image = (request.get(k, "") for k in ("project", "source_id", "base_image"))
         if (not PROJECT.fullmatch(project) or not re.fullmatch(r"source\.[0-9a-f]{64}", source_id)
                 or not IMAGE.fullmatch(image)):
@@ -144,6 +150,7 @@ class ImageBuilder:
                                                    active=status == "EXECUTING",
                                                    last_activity=path.stat().st_mtime if path.exists() else None)
             return result
+
         with (self.root / f"{identity}.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             if metadata_path.exists():
@@ -249,6 +256,20 @@ class ImageBuilder:
             record_progress(progress_path, "READY", "Published image manifest and worker identity verified")
             return result
 
+    def desktop_stage(self, operation, data, body):
+        container = self.config.get("data_upload_container", "")
+        if (not re.fullmatch(r"ml-expd-data-stage[-A-Za-z0-9]*", container)
+                or "docker_host" not in self.config or operation not in {"info", "create", "read", "part", "complete", "abort", "asset"}):
+            raise ValueError("desktop data staging is not configured")
+        host = self.config["docker_host"]
+        command = [self.config.get("docker_bin", "docker"), "--host", host, "exec", "-i", container,
+                   "python", "-m", "ml_exp_server.desktop_upload", operation, json.dumps(data, ensure_ascii=True)]
+        result = subprocess.run(command, input=body, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=self.config.get("data_upload_timeout_seconds", 1200), check=False)
+        if result.returncode or len(result.stdout) > 8 * 1024 ** 2:
+            raise ValueError("desktop data staging is unavailable")
+        return json.loads(result.stdout)
+
     def _publish_buildkit(self, tag: str, context: Path) -> str:
         if not self.config.get("ephemeral_buildkit", False):
             self._storage_preflight(context)
@@ -273,6 +294,8 @@ class ImageBuilder:
                                 if "buildkit_http_proxy" in self.config else []),
                               *(["--driver-opt", "network=" + self.config["buildkit_network"]]
                                 if "buildkit_network" in self.config else []),
+                              *(["--driver-opt", "env.NO_PROXY=" + self.config["data_upload_container"]]
+                                if BUILD_REMOTE_CONTEXT.get() is not None else []),
                               *([self.config["docker_host"]] if "docker_host" in self.config else [])])
                 return self._buildkit_image(tag, context, name)
             finally:
@@ -304,7 +327,7 @@ class ImageBuilder:
                     manifest = json.loads(self._skopeo(["inspect", "--authfile", auth, "--raw", "docker://" + reference], capture=True))
                 compressed += sum(int(layer["size"]) for layer in manifest["layers"])
             available_bytes, available_inodes = self._storage_available(path)
-            context_bytes = sum(p.stat().st_size for p in context.rglob("*") if p.is_file())
+            context_bytes = sum(p.stat().st_size for p in context.rglob("*") if p.is_file()) + BUILD_CONTEXT_BYTES.get()
             factor = float(self.config.get("build_expansion_factor", 4))
             reserve = int(self.config.get("build_reserve_bytes", 2 * 1024 ** 3))
             required = int(compressed * factor) + 2 * context_bytes + reserve
@@ -391,7 +414,7 @@ class ImageBuilder:
                       "--provenance=false", "--sbom=false", "--tag", tag,
                       "--metadata-file", str(metadata), "--output",
                       "type=image,push=true,oci-mediatypes=false,compression=gzip",
-                      *cache, str(context)])
+                      *cache, BUILD_REMOTE_CONTEXT.get() or str(context)])
         value = json.loads(metadata.read_text())
         digest = value.get("containerimage.digest", "")
         config_digest = value.get("containerimage.config.digest", "")
@@ -489,6 +512,40 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def do_GET(self):
+        try:
+            uid = struct.unpack("3i", self.connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
+            if uid != self.server.builder.config["client_uid"]:
+                raise ValueError("desktop archive client is not authorized")
+            target = urlsplit(self.path)
+            query = parse_qs(target.query, strict_parsing=True)
+            if target.path != "/data-stage/archive" or set(query) != {"project", "asset_id"} or any(len(v) != 1 for v in query.values()):
+                raise ValueError("invalid desktop archive request")
+            data = {key: value[0] for key, value in query.items()}
+            result = self.server.builder.desktop_stage("asset", {"binding": {"project": data["project"], "kind": "asset"},
+                                                        "asset_id": data["asset_id"]}, b"")
+            if not result["ok"]:
+                raise ValueError("desktop archive is unavailable")
+            config = self.server.builder.config
+            command = [config.get("docker_bin", "docker"), "--host", config["docker_host"], "exec", "-i",
+                       config["data_upload_container"], "python", "-m", "ml_exp_server.desktop_upload", "archive", json.dumps(data)]
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except Exception:
+            self.reply(409, {"error": "desktop archive is unavailable"})
+            return
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-tar")
+            self.send_header("Content-Length", str(result["result"]["archive_bytes"]))
+            self.end_headers()
+            self.connection.settimeout(300)
+            shutil.copyfileobj(process.stdout, self.wfile, 1024 ** 2)
+        finally:
+            process.stdout.close()
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=15)
+
     def do_POST(self):
         status = 200
         try:
@@ -496,6 +553,21 @@ class Handler(BaseHTTPRequestHandler):
             if uid != self.server.builder.config["client_uid"]:
                 raise ValueError("image packaging client is not authorized")
             size = int(self.headers.get("Content-Length", "0"))
+            if self.path.startswith("/data-stage/"):
+                if not 0 <= size <= 64 * 1024 ** 2:
+                    raise ValueError("invalid desktop data part size")
+                metadata = self.headers.get("X-ML-Expd-Data", "")
+                if len(metadata) > 8192:
+                    raise ValueError("invalid desktop data metadata")
+                self.connection.settimeout(300)
+                body = self.rfile.read(size)
+                if len(body) != size:
+                    raise ValueError("truncated desktop data part")
+                result = self.server.builder.desktop_stage(self.path.removeprefix("/data-stage/"), json.loads(metadata), body)
+                status = 200 if result["ok"] else result.get("status_code", 409)
+                result = result["result"] if result["ok"] else result
+                self.reply(status, result)
+                return
             if not 0 < size <= 16384 or self.path != "/":
                 raise ValueError("invalid image packaging request")
             self.connection.settimeout(15)
@@ -505,6 +577,9 @@ class Handler(BaseHTTPRequestHandler):
             status, result = 409, {"error": exc.code, "code": exc.code, "details": exc.details}
         except Exception:
             status, result = 409, {"error": "image packaging request failed"}
+        self.reply(status, result)
+
+    def reply(self, status, result):
         encoded = json.dumps(result).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")

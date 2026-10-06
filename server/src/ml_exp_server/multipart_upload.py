@@ -15,6 +15,7 @@ import time
 
 from .application_errors import ApplicationError
 from .storage import atomic_json
+from .archive_limits import exceeds
 
 UPLOAD_ID = re.compile(r"^upload\.[0-9a-f]{64}$")
 PART_BYTES = 16 * 1024 ** 2
@@ -67,7 +68,9 @@ class UploadStore:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.part_bytes = int(config.get("upload_part_bytes", PART_BYTES))
         self.ttl = int(config.get("upload_session_seconds", 86400))
-        if not 1024 <= self.part_bytes <= 64 * 1024 ** 2 or not 300 <= self.ttl <= 604800:
+        self.max_parts = int(config.get("upload_max_parts", 65536))
+        if (not 1024 <= self.part_bytes <= 64 * 1024 ** 2 or not 300 <= self.ttl <= 604800
+                or not 1 <= self.max_parts <= 65536):
             raise ValueError("invalid multipart upload policy")
 
     @contextmanager
@@ -81,7 +84,7 @@ class UploadStore:
             yield directory, path, json.loads(path.read_text()) if path.exists() else None
 
     def create(self, binding, digest, size, limit):
-        if not re.fullmatch(r"[0-9a-f]{64}", digest) or not 0 < size <= limit or (size + self.part_bytes - 1) // self.part_bytes > 4096:
+        if not re.fullmatch(r"[0-9a-f]{64}", digest) or size <= 0 or exceeds(size, limit) or (size + self.part_bytes - 1) // self.part_bytes > self.max_parts:
             raise ApplicationError("archive exceeds upload limit or has an invalid identity", status_code=413, code="UPLOAD_LIMIT")
         self.prune()
         upload_id = "upload." + hashlib.sha256(json.dumps([binding, digest, size], sort_keys=True).encode()).hexdigest()

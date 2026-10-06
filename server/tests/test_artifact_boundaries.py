@@ -49,6 +49,7 @@ def test_upload_rejection_never_writes_s3(storage, failure):
     if failure == "zero":
         size = 0
     elif failure == "over-limit":
+        store.limit = 4 * 1024 ** 3
         size = store.limit + 1
     elif failure == "unknown-attempt":
         attempt = "attempt-002"

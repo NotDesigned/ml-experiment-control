@@ -13,6 +13,7 @@ import time
 from urllib.parse import urlencode
 
 from .api import ClientError, data_archive, download, save, segment, source_archive, upload_asset_parts
+from .data_delivery import deliver_data
 
 
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "PREEMPTED", "TIMEOUT"}
@@ -181,6 +182,7 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
     executors = client.call("/api/executors")["executors"]
     if not any(item["id"] == config["executor"] for item in executors):
         raise ClientError("executor is not in the server catalogue")
+    selected_executor = next(item for item in executors if item["id"] == config["executor"])
     payload = source_archive(source)
     source_hash = hashlib.sha256(gzip.decompress(payload)).hexdigest()
     if state.get("source_archive_content_sha256", source_hash) != source_hash:
@@ -221,10 +223,15 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
                 if "input_bindings" in state and state["input_bindings"][number]["asset_id"] != "asset." + digest:
                     raise ClientError("resume data changed; use a new Run and state file")
                 limits = client.call("/api/storage-limits")
-                if length > limits["asset_archive_bytes"]:
+                if limits["asset_archive_bytes"] is not None and length > limits["asset_archive_bytes"]:
                     raise ClientError("data archive exceeds server upload limit")
                 asset_id = upload_asset_parts(client, config["project"], stream, digest, length, upload_state)["asset_id"]
         bindings.append({"asset_id": asset_id, "mount_path": item["mount_path"]})
+        if "ccr-data-delivery.v1" in health.get("capabilities", []) and selected_executor.get("kind") == "sensecore":
+            asset = client.call(f"/api/projects/{project}/assets/{segment(asset_id)}")
+            if asset.get("remote_storage") == "desktop-builder":
+                deliver_data(client, config["project"], asset_id, config["executor"],
+                             state_path.with_name(state_path.name + f".delivery-{number}.json"), seconds)
     state["input_bindings"] = bindings
     save(state_path, state)
     if "run" not in state:

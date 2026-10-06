@@ -19,6 +19,8 @@ VERSIONED_OPENAPI_PATH = "/api/v2/openapi.json"
 CLIENT_PROTOCOL_HEADER = "X-ML-Expd-Client-Protocol"
 
 SERVER_CAPABILITIES = (
+    "desktop-data-upload.v1",
+    "ccr-data-delivery.v1",
     "execution-progress.v1",
     "dockerfile-only.v1",
     "project-metrics-schema.v1",

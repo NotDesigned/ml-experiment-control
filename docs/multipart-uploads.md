@@ -1,10 +1,16 @@
 # Resumable archive uploads
 
-Server 0.2.1 and standalone client 0.1.1 retain protocol 2 and add the health
-capability `multipart-upload.v1`. The default data archive, expanded data and
-final artifact limits are **4 GiB (4,294,967,296 bytes)**. A checkpoint must fit
-both the artifact and asset limits. The archive still has one whole SHA256;
-parts improve transport reliability, not the total size allowance.
+Server 0.3.2 / client 0.1.7 retain protocol 2. The fixed 4 GiB defaults
+are removed; explicit optional quotas and real storage checks remain. Parts
+retain one whole-archive SHA256. The default 65,536 parts of 16 MiB support at
+most 1 TiB per archive. Read actual quotas, free bytes and part limits from
+`/api/storage-limits`. Source uploads have separate limits.
+
+With desktop staging enabled, client data parts and validation live on the
+1 TB desktop builder, and the API host buffers only bounded active parts.
+SenseCore data is delivered through a separate CCR image and CPU-only ACP copy;
+see [desktop data delivery](desktop-data-delivery.md). Worker output/checkpoint
+parts retain the existing server/object-store path.
 
 ## Client data
 
@@ -75,18 +81,18 @@ session, not a recoverable published checkpoint.
 Private artifact-store configuration keys are `max_archive_bytes`,
 `max_asset_archive_bytes`, `max_asset_bytes`, `upload_part_bytes` (default 16 MiB,
 allowed 1 KiB..64 MiB), and `upload_session_seconds` (default 24 hours, allowed
-5 minutes..7 days). Uploads have at most 4,096 parts. `/api/storage-limits`
+5 minutes..7 days). Uploads have at most `upload_max_parts` (default 65,536, allowed 1..65,536). `/api/storage-limits`
 exposes byte limits, part size and session lifetime without cloud credentials.
 
-Parts and their journal live under the project registry's `multipart-uploads`,
+For server-local transfers, parts and their journal live under the project registry's `multipart-uploads`,
 survive daemon restarts, and never contain API/worker/cloud credentials. Archive
 validation uses a seekable view of the parts, avoiding a second assembled tar.
 Publication still needs disk for expanded validation/cache and the object
-store; free-space checks can reject an upload below 4 GiB when the disk is full.
+store; free-space checks can reject an upload below any configured quota when the disk is full.
 Global storage quota, if unset, does not imply unlimited disk.
 
 Successful publication deletes its own parts and keeps a small session journal
 with the receipt. DELETE removes unfinished staging; create prunes expired
 unfinished parts under nonblocking locks. It does not remove published objects,
-historical results or recovery points. This feature retains existing API uploads
-and local Garage; it does not expose public S3 writes or migrate storage off-host.
+historical results or recovery points. Historical object-store assets and output transfers retain local Garage. Client
+data can instead be stored on the desktop; no public S3 writes are exposed.

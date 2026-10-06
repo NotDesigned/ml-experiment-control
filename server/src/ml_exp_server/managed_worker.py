@@ -16,6 +16,7 @@ import sys
 import tarfile
 import tempfile
 import time
+from contextlib import nullcontext
 from urllib.parse import urlsplit
 
 if __package__:
@@ -92,16 +93,18 @@ def deliver(item, token, cache, *, archive_stream=None):
     with (cache / (asset_id + ".lock")).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if not destination.exists():
+            if item.get("require_cached"):
+                raise ValueError("prepared backend data cache is missing")
             temporary = Path(tempfile.mkdtemp(prefix=".input-", dir=cache))
             try:
                 expected = {f["path"]: f for f in item["files"]}
                 seen = set()
-                with tempfile.TemporaryFile(dir=cache) as stream:
+                with (tempfile.TemporaryFile(dir=cache) if archive_stream is None else nullcontext(archive_stream)) as stream:
                     if archive_stream is None:
                         fetch(item["url"], token, stream, item["sha256"], item["archive_bytes"])
                     else:
                         archive_stream.seek(0)
-                        digest, length = digest_stream(archive_stream, stream)
+                        digest, length = digest_stream(archive_stream)
                         if digest != item["sha256"] or length != item["archive_bytes"]:
                             raise ValueError("local checkpoint archive differs")
                         stream.seek(0)
@@ -171,7 +174,7 @@ def read_checkpoint_ready(root):
     return ready
 
 
-def checkpoint_archive(root, stream, limit=4 * 1024 ** 3):
+def checkpoint_archive(root, stream, limit=0):
     ready = read_checkpoint_ready(root)
     document = json.loads(ready)
     files = document["files"]
@@ -186,7 +189,7 @@ def checkpoint_archive(root, stream, limit=4 * 1024 ** 3):
                 raise ValueError("checkpoint manifest contains duplicate/reserved paths")
             seen.add(name)
             total += int(item["bytes"])
-            if total > limit - 1024 * 1024:
+            if limit and total > limit - 1024 * 1024:
                 raise ValueError("checkpoint archive exceeds upload limit")
             with open_output(root, name) as body:
                 before = os.fstat(body.fileno())
@@ -273,7 +276,7 @@ def main(argv=None):
         if receipt["status"] != "READY":
             try:
                 with tempfile.TemporaryFile(dir=root.parent) as stream:
-                    archive_outputs(root, stream, limit - 1024 * 1024, ["data-preparation.json"])
+                    archive_outputs(root, stream, max(1, limit - 1024 * 1024) if limit else 0, ["data-preparation.json"])
                     upload(url, token, stream, stream.tell())
             except Exception:
                 print("ML_EXPD_ARTIFACT_UPLOAD=FAILED", file=sys.stderr, flush=True)
@@ -333,7 +336,7 @@ def main(argv=None):
         time.sleep(1)
     try:
         with tempfile.TemporaryFile(dir=root.parent) as stream:
-            archive_outputs(root, stream, limit - 1024 * 1024, patterns)
+            archive_outputs(root, stream, max(1, limit - 1024 * 1024) if limit else 0, patterns)
             length = stream.tell()
             if length > limit:
                 raise ValueError("artifact archive limit exceeded")

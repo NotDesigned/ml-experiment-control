@@ -120,10 +120,14 @@ image for a new Run. `runtime --state runtime.json --logs` reads logs;
 building. `submission --id <saved-id> --reconcile` observes the exact job without
 resubmitting. A retry requires a terminal prior job and a new authorized Attempt.
 
-Data uses 16 MiB parts numbered **0 through part_count-1**. Storage limits also
+Data uses negotiated parts (default 16 MiB; this desktop deployment uses 1 MiB)
+numbered **0 through part_count-1**. Storage limits also
 return `upload_part_number_base: 0`. `asset-upload --resume` continues an unchanged
-directory. Archive, expanded-data and final-output limits default to 4 GiB;
-source is separate: 64 MiB archive/256 MiB expanded. Read actual deployment limits
+directory. Fixed 4 GiB defaults are removed; read optional quotas and desktop capacity
+from the API. Desktop-staged SenseCore data uses a CCR image and CPU-only ACP
+copy before Run creation; `experiment` handles this automatically.
+See [desktop data delivery](desktop-data-delivery.md).
+Source is separate: 64 MiB archive/256 MiB expanded. Read actual deployment limits
 through `check` or `GET /api/storage-limits`.
 See [multipart uploads](multipart-uploads.md) and [storage lifecycle](storage-lifecycle.md).
 

@@ -38,6 +38,8 @@ from .operation_routes import router as operation_router
 from .submission_routes import router as submission_router
 from .sse import EventBroker
 from .upload_routes import WORKER_UPLOAD_PATH, router as upload_router
+from ..data_delivery import COPY_TRANSFER, recover_data_deliveries
+from .data_delivery_routes import router as data_delivery_router
 
 
 def _poll_loop(app: FastAPI, collector: Collector) -> None:
@@ -183,6 +185,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             app.state.submit_job = submit_job
             app.state.submit_action = lambda pending: submit_job(app.state.application.finish_action_execution, pending)
             app.state.recovered_runtime_builds = recover_interrupted_builds(ContainerExecutionService(runtime))
+            app.state.recovered_data_deliveries = recover_data_deliveries(runtime)
             runtime.action_service.recover_interrupted_executions()
             # Complete any previously authorized project-file transaction
             # before indexing those files into the server read model.
@@ -265,6 +268,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     @app.middleware("http")
     async def enforce_http_boundary(request, call_next):
         worker_transfer = request.method == "PUT" and bool(TRANSFER_PATH.fullmatch(request.url.path))
+        worker_transfer = worker_transfer or (request.method == "PUT" and bool(COPY_TRANSFER.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method in {"GET", "PUT"} and bool(WORKER_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method in {"GET", "POST", "PUT", "DELETE"} and bool(WORKER_UPLOAD_PATH.fullmatch(request.url.path)))
         if bearer_token is not None and not worker_transfer:
@@ -348,6 +352,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     from .asset_routes import router as asset_router
     app.include_router(asset_router)
     app.include_router(upload_router)
+    app.include_router(data_delivery_router)
 
     @app.get(VERSIONED_OPENAPI_PATH, include_in_schema=False)
     async def versioned_openapi():

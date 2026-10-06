@@ -49,8 +49,12 @@ def unpack_source(stream: BinaryIO, target: Path, policy, *, allow_empty: bool =
     magic = stream.read(2)
     stream.seek(0)
     expanded = gzip.GzipFile(fileobj=stream) if magic == b"\x1f\x8b" else stream
+    # With no configured byte ceiling, available storage supplies a real bound.
+    ceiling = policy.max_source_bytes
+    if ceiling is None:
+        ceiling = max(0, shutil.disk_usage(target).free - 64 * 1024 ** 2)
     class BoundedReader:
-        remaining = policy.max_source_bytes + policy.max_source_files * 2048 + 1024 * 1024
+        remaining = ceiling + policy.max_source_files * 2048 + 1024 * 1024
         def read(self, size):
             if size < 0 or size > self.remaining:
                 raise ValueError("expanded archive stream limit exceeded")
@@ -79,7 +83,7 @@ def unpack_source(stream: BinaryIO, target: Path, policy, *, allow_empty: bool =
             if not member.isfile() or member.size < 0:
                 raise ValueError("source archives contain only regular files and directories")
             size += member.size
-            if size > policy.max_source_bytes:
+            if size > ceiling:
                 raise ValueError("expanded source size limit exceeded")
             destination.parent.mkdir(parents=True, exist_ok=True)
             source = archive.extractfile(member)

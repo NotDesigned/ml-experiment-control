@@ -123,3 +123,21 @@ def test_remote_preflight_precedes_large_pull_and_explicit_builder_creation(tmp_
         assert 'env.HTTP_PROXY=http://http.docker.internal:3128' in seen[0]
         assert 'network=private-builder' in seen[0]
         assert seen[-1][0] == 'cleaned' and not (tmp_path/'ephemeral-builder.json').exists()
+
+
+def test_data_context_uses_private_network_and_counts_remote_payload(tmp_path):
+    from ml_exp_server.image_builder import BUILD_REMOTE_CONTEXT, BUILD_CONTEXT_BYTES
+    value=ImageBuilder({**config(tmp_path),'data_upload_container':'ml-expd-data-stage'})
+    (tmp_path/'Dockerfile').write_text('FROM registry/base@sha256:'+'b'*64+'\n')
+    value._skopeo=lambda *a,**kw:json.dumps({'layers':[{'size':100}]})
+    value._storage_available=lambda path:(10**12,1000000)
+    calls=[];value._docker=lambda args,**kw:calls.append(args) or ''
+    value._remove_builder=lambda name:None
+    value._buildkit_image=lambda *a:'verified'
+    url=BUILD_REMOTE_CONTEXT.set('http://ml-expd-data-stage:8080/context.tar')
+    size=BUILD_CONTEXT_BYTES.set(5*1024**3)
+    try:
+        assert value._publish_buildkit('registry/data',tmp_path)=='verified'
+        assert 'env.NO_PROXY=ml-expd-data-stage' in calls[0]
+    finally:
+        BUILD_REMOTE_CONTEXT.reset(url);BUILD_CONTEXT_BYTES.reset(size)

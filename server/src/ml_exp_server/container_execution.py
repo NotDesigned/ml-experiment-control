@@ -247,11 +247,13 @@ class ContainerExecutionService:
         return profiles
 
     def public_profiles(self) -> dict:
+        store_file = self.runtime.config.container_execution.artifact_store_file
+        desktop = bool(store_file and json.loads(Path(store_file).read_text()).get("data_upload_storage") == "desktop-builder")
         return {"executors": [{"id": name, "title": profile.get("title", name),
                                 "kind": profile["backend"]["kind"],
                                 "capacity": profile.get("capacity"),
                                 "dockerfile_execution": True,
-                                "data_asset_transport": "worker-http-shared-storage",
+                                "data_asset_transport": "ccr-cpu-nas" if desktop and profile["backend"]["kind"] == "sensecore" else "worker-http-shared-storage",
                                 "data_preparation": "script-shared-storage.v1",
                                 "checkpoint_persistence": "backend-shared-storage.v1",
                                 "artifact_transport": bool(self.runtime.config.container_execution.artifact_store_file or profile.get("artifact_ssh") or profile["backend"]["kind"] == "slurm")}
@@ -421,6 +423,7 @@ class ContainerExecutionService:
         bundle = self.read(project, request.runtime_id)
         if bundle["status"] != "READY":
             raise ApplicationError("runtime image is not ready", code="CONTAINER_EXECUTION_BLOCKED")
+        selected_profile = self.profiles().get(request.executor)
         inputs = []
         if request.inputs or request.checkpoint_upload:
             config = self.runtime.config.container_execution.artifact_store_file
@@ -431,6 +434,11 @@ class ContainerExecutionService:
                 asset = assets.read(project, binding.asset_id)
                 inputs.append({**binding.model_dump(), "sha256": asset["sha256"],
                                "archive_bytes": asset["archive_bytes"], "files": asset["files"]})
+                if asset.get("remote_storage") == "desktop-builder" and selected_profile and selected_profile["backend"]["kind"] == "sensecore":
+                    if "data-cache-required.v1" not in bundle.get("capabilities", []):
+                        raise ApplicationError("CCR data delivery requires a newly built runtime with data-cache-required.v1", code="CONTAINER_EXECUTION_BLOCKED")
+                    from .data_delivery import DataDeliveryService
+                    inputs[-1].update(require_cached=True, data_delivery=DataDeliveryService(self.runtime).ready_for(project, binding.asset_id, request.executor))
             if len(json.dumps(inputs).encode()) > 32768:
                 raise ApplicationError("input manifests exceed the scheduler command limit", code="CONTAINER_EXECUTION_BLOCKED")
         source_id = bundle["spec"]["source_id"]
