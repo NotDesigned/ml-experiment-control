@@ -160,7 +160,7 @@ python3 server/examples/ssh-builder/prewarm_ccr.py \
 The command accepts only a digest-pinned, single-platform CCR manifest. It
 checks the manifest identity and passes a small private control document through
 the SSH Docker endpoint. The desktop downloads exact ranges over verified HTTPS
-with sixteen bounded concurrent 2 MiB requests (at most 32 MiB of range data in
+with eight bounded concurrent 2 MiB requests (at most 16 MiB of range data in
 one downloader batch). No blob bytes pass through SSH and no
 layer is written to API-host disk. The desktop checks the
 full SHA256 and byte count before atomically publishing a read-only blob.
@@ -168,6 +168,9 @@ Existing blobs are rehashed before reuse. Only complete content-addressed blobs
 can be served; temporary files, symlinks and special files cannot be cache hits.
 Conditional/range requests retain the original TLS upstream behavior. BuildKit
 independently verifies downloaded layer digests.
+
+The downloader uses eight requests against the relay’s 16-slot limit, leaving
+headroom while abandoned connections expire and ranges retry.
 
 The cache is operator-managed, with a default 16 GiB hard write budget and a
 2 GiB free-space reserve; competing writes fail on its dedicated lock. Monitor
@@ -183,9 +186,9 @@ accounts for the already stored prefix; its bytes are not counted as new network
 transfer. Older unnamed `.partial-*` files require operator inspection while
 idle. Registry images and other Docker volumes remain untouched.
 
-Use at least 256 MiB for the owned adapter container when prewarming. The 16-way
-Python/SSL downloader shares its cgroup with the serving process; a real 4 GB
-transfer exceeded the previous 128 MiB limit. The command checks the configured
+Use at least 256 MiB for the owned adapter container when prewarming. The
+Python/SSL downloader shares its cgroup with the serving process; a real 16-way
+4 GB transfer exceeded the previous 128 MiB limit. The command checks the configured
 memory budget before obtaining signed layer URLs or starting any layer downloads.
 It prints only a numeric child exit code on failure; inspect the owned cgroup's
 `memory.events` to distinguish OOM from network or checksum failures.

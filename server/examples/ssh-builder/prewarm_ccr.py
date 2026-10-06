@@ -77,7 +77,7 @@ def refresh():
   control['url']=value['url']
   emit({'signed_url_refreshed':True})
 threading.Thread(target=refresh,daemon=True).start()
-size=control['size'];initial=control.get('offset',0);chunk=2*1024*1024;workers=16;t=time.monotonic()
+size=control['size'];initial=control.get('offset',0);chunk=2*1024*1024;workers=8;t=time.monotonic()
 class NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self,*args):return None
 def fetch(start):
