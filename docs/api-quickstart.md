@@ -127,5 +127,10 @@ source is separate: 64 MiB archive/256 MiB expanded. Read actual deployment limi
 through `check` or `GET /api/storage-limits`.
 See [multipart uploads](multipart-uploads.md) and [storage lifecycle](storage-lifecycle.md).
 
+Alternatively, include `data_preparation` with a source script, argv and timeout
+to let the backend download directly into persistent `DATA_DIR`, verify and reuse
+its cache before training. This requires a new Runtime with `data-preparation.v1`;
+the dataset remains outside the result directory. See [script data preparation](script-data.md).
+
 Project-defined metric names, units, completeness and frozen scoring protocols:
 [metrics contract](metrics.md).

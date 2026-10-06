@@ -25,6 +25,7 @@ from .storage import DurableJsonState, atomic_text, utc_now
 from .runtime_jobs import PendingRuntimeBuild
 from .worker_contract import CAPABILITIES, WORKER_CONTRACT
 from .metric_contract import MetricSchema, protocol_identity
+from .data_preparation import identity as data_identity, file_record
 
 
 SECRET_KEY = re.compile(r"(?i)(?:^|_)(?:token|secret|password|credential|api_key|proxy|authorization)(?:$|_)")
@@ -122,6 +123,25 @@ class CheckpointUpload(BaseModel):
     interval_seconds: int = Field(default=60, ge=5, le=3600)
 
 
+class DataPreparation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    script: str = Field(max_length=4096)
+    interpreter: Literal["python3", "/bin/sh"] = "python3"
+    arguments: list[str] = Field(default_factory=list, max_length=128)
+    timeout_seconds: int = Field(default=1200, ge=5, le=86400)
+    expected_content_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("script")
+    @classmethod
+    def source_script(cls, value):
+        return requirements_path(value)
+
+    @field_validator("arguments")
+    @classmethod
+    def script_arguments(cls, value):
+        return RuntimeSpec.argument_vector(value)
+
+
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -137,6 +157,7 @@ class RunRequest(BaseModel):
     checkpoint_upload: CheckpointUpload | None = None
     metrics_schema: MetricSchema | None = None
     evaluation: dict = Field(default_factory=dict)
+    data_preparation: DataPreparation | None = None
 
     @field_validator("evaluation")
     @classmethod
@@ -160,7 +181,7 @@ class RunRequest(BaseModel):
     @field_validator("env")
     @classmethod
     def no_credentials(cls, value):
-        reserved = {"OUTPUT_DIR", "INPUTS_DIR", "PROJECT_NAME", "RUN_ID", "ATTEMPT_ID", "SOURCE_ID", "BACKEND_JOB_ID"}
+        reserved = {"OUTPUT_DIR", "INPUTS_DIR", "DATA_DIR", "PROJECT_NAME", "RUN_ID", "ATTEMPT_ID", "SOURCE_ID", "BACKEND_JOB_ID"}
         for key, item in value.items():
             if (not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", key) or SECRET_KEY.search(key)
                     or key in reserved or key.startswith("ML_EXPD_") or "\x00" in item or len(item) > 8192):
@@ -221,6 +242,7 @@ class ContainerExecutionService:
                                 "capacity": profile.get("capacity"),
                                 "dockerfile_execution": True,
                                 "data_asset_transport": "worker-http-shared-storage",
+                                "data_preparation": "script-shared-storage.v1",
                                 "artifact_transport": bool(self.runtime.config.container_execution.artifact_store_file or profile.get("artifact_ssh") or profile["backend"]["kind"] == "slurm")}
                                for name, profile in sorted(self.profiles().items())]}
 
@@ -401,7 +423,23 @@ class ContainerExecutionService:
             if len(json.dumps(inputs).encode()) > 32768:
                 raise ApplicationError("input manifests exceed the scheduler command limit", code="CONTAINER_EXECUTION_BLOCKED")
         source_id = bundle["spec"]["source_id"]
-        resolve_source_tree(self.runtime.config, project, source_id)
+        tree = resolve_source_tree(self.runtime.config, project, source_id)
+        preparation = None
+        if request.data_preparation is not None:
+            if (not self.runtime.config.container_execution.artifact_store_file
+                    or "data-preparation.v1" not in bundle.get("capabilities", [])):
+                raise ApplicationError("data preparation requires a newly built runtime with data-preparation.v1 and artifact storage", code="CONTAINER_EXECUTION_BLOCKED")
+            spec = request.data_preparation.model_dump(exclude_none=True)
+            path = tree / spec["script"]
+            if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(tree.resolve()):
+                raise ApplicationError("data preparation script is missing from frozen source", code="CONTAINER_EXECUTION_BLOCKED")
+            preparation = {**spec, "script_sha256": file_record(path, spec["script"])["sha256"],
+                           "source_id": source_id, "image": bundle["image"],
+                           "workdir": bundle["spec"]["workdir"], "env": request.env,
+                           "inputs": inputs}
+            preparation["preparation_id"] = "preparation." + data_identity(preparation)
+            if len(json.dumps([inputs, preparation]).encode()) > 32768:
+                raise ApplicationError("data preparation exceeds the scheduler command limit", code="CONTAINER_EXECUTION_BLOCKED")
         profile = copy.deepcopy(self.profiles().get(request.executor))
         if not profile:
             raise ApplicationError("unknown execution profile", status_code=404, code="UNKNOWN_EXECUTOR")
@@ -430,6 +468,9 @@ class ContainerExecutionService:
         else:
             raise ApplicationError("execution profile is not a supported container backend", code="CONTAINER_EXECUTION_BLOCKED")
         campaign_name = "run-" + request.run_id
+        outputs = list(request.outputs)
+        if preparation is not None and "data-preparation.json" not in outputs:
+            outputs.append("data-preparation.json")
         resources = request.resources.model_dump()
         if backend["kind"] == "sensecore" and profile.get("capacity"):
             capacity = profile["capacity"]
@@ -442,7 +483,7 @@ class ContainerExecutionService:
                "storage": {"run_dir": run_dir, "project_data_root": storage_root,
                            "data_root": profile.get("data_root", "/data")},
                "container": {**bundle["spec"], "image": bundle["image"], "runtime_id": request.runtime_id},
-               "arguments": request.arguments, "env": request.env, "outputs": request.outputs,
+               "arguments": request.arguments, "env": request.env, "outputs": outputs,
                "checkpoint": request.checkpoint, "max_infra_retries": request.max_infra_retries,
                "artifact_ssh": profile.get("artifact_ssh")}
         if "worker_contract" in bundle:
@@ -451,6 +492,8 @@ class ContainerExecutionService:
             run["inputs"] = inputs
         if request.checkpoint_upload is not None:
             run["checkpoint_upload"] = request.checkpoint_upload.model_dump()
+        if preparation is not None:
+            run["data_preparation"] = preparation
         metric_schema = request.metrics_schema or getattr(configured, "metrics_schema", None)
         if metric_schema is not None or request.evaluation:
             context = {"source_id": source_id, "image": bundle["image"],
@@ -458,6 +501,8 @@ class ContainerExecutionService:
                        "entrypoint": bundle["spec"]["entrypoint"], "arguments": request.arguments,
                        "env": request.env,
                        "metrics_schema": (metric_schema or MetricSchema()).model_dump(mode="json")}
+            if preparation is not None:
+                context["data_preparation"] = preparation
             run["evaluation"] = {"metrics_schema": context["metrics_schema"],
                                  "protocol": context, "protocol_id": protocol_identity(context)}
         campaign = {"schema_version": 1, "project": project, "campaign": campaign_name,
@@ -482,4 +527,5 @@ class ContainerExecutionService:
         return {"project": project, "run_id": request.run_id, "campaign": campaign_name,
                 "runtime_id": request.runtime_id, "source_id": source_id, "image": bundle["image"],
                 "entrypoint": [*bundle["spec"]["entrypoint"], *request.arguments], "executor": request.executor,
-                "resources": resources, "state": "NOT_SUBMITTED", "evaluation": run.get("evaluation", {})}
+                "resources": resources, "state": "NOT_SUBMITTED", "evaluation": run.get("evaluation", {}),
+                **({"data_preparation": preparation} if preparation is not None else {})}

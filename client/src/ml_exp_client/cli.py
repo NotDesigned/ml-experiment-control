@@ -51,6 +51,7 @@ def parser():
     create.add_argument("--max-time", default="00:05:00")
     create.add_argument("--inputs", type=json.loads, default=[], help='JSON array: [{"asset_id":"asset.…","mount_path":"/inputs/data"}]')
     create.add_argument("--checkpoint-interval", type=int, help="publish atomic checkpoint.ready.json every N seconds")
+    create.add_argument("--data-preparation", type=json.loads, help='JSON: {"script":"download_data.py","arguments":[],"timeout_seconds":1200}')
     upload = commands.add_parser("asset-upload", help="upload a data directory independently from source")
     upload.add_argument("--project", required=True)
     upload.add_argument("--directory", type=Path, required=True)
@@ -161,6 +162,10 @@ def main(argv=None):
                 "memory_gb": args.memory_gb, "max_time": args.max_time}, "outputs": ["**/*"], "inputs": args.inputs}
             if args.checkpoint_interval is not None:
                 definition["checkpoint_upload"] = {"interval_seconds": args.checkpoint_interval}
+            if args.data_preparation is not None:
+                if "data-preparation.v1" not in health.get("capabilities", []):
+                    raise ClientError("server lacks data-preparation.v1; upgrade before using a download script")
+                definition["data_preparation"] = args.data_preparation
             result = client.call(f"/api/projects/{segment(saved['project'])}/runs", data=definition)
         elif args.command == "asset-upload":
             if args.state.exists() and not args.resume:

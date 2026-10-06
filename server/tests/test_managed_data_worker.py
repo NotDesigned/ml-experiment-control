@@ -287,6 +287,7 @@ def test_delivery_failure_prevents_training_and_worker_entrypoints(tmp_path, mon
     monkeypatch.setattr(worker, "link_path", bad_link)
     assert worker.main(["must-not-run"]) == 65
     monkeypatch.setitem(sys.modules, "legacy_worker", legacy)
+    monkeypatch.setitem(sys.modules, "data_preparation", __import__("ml_exp_server.data_preparation", fromlist=["prepare"]))
     runpy.run_path(worker.__file__, run_name="standalone-import")
     parsed = ast.parse(Path(worker.__file__).read_text())
     guard = ast.Module(body=[parsed.body[-1]], type_ignores=[])

@@ -43,7 +43,7 @@ def validate_dockerfile(source: Path, name: str):
 def read_config(path: Path):
     value = json.loads(path.read_text())
     allowed = {"project", "run_id", "source", "dockerfile", "entrypoint", "workdir", "executor",
-               "arguments", "env", "resources", "outputs", "inputs", "checkpoint_upload", "max_gpu_hours", "metrics_schema", "evaluation"}
+               "arguments", "env", "resources", "outputs", "inputs", "checkpoint_upload", "max_gpu_hours", "metrics_schema", "evaluation", "data_preparation"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise ClientError("experiment config contains unknown fields")
     evaluation = value.get("evaluation", {})
@@ -72,6 +72,24 @@ def read_config(path: Path):
         raise ClientError("experiment needs source and a positive max_gpu_hours budget")
     source = (path.parent / value["source"]).resolve()
     validate_dockerfile(source, value.get("dockerfile", "Dockerfile"))
+    preparation = value.get("data_preparation")
+    if preparation is not None:
+        if not isinstance(preparation, dict) or set(preparation) - {"script", "interpreter", "arguments", "timeout_seconds", "expected_content_sha256"}:
+            raise ClientError("invalid data_preparation definition")
+        name = preparation.get("script", "")
+        if not isinstance(name, str) or not name or PurePosixPath(name).is_absolute() or any(part.startswith(".") for part in name.split("/")) or "\\" in name or "\x00" in name:
+            raise ClientError("data preparation script must stay inside source")
+        script = source / name
+        args = preparation.get("arguments", [])
+        timeout = preparation.get("timeout_seconds", 1200)
+        sha = preparation.get("expected_content_sha256")
+        interpreter = preparation.get("interpreter", "python3")
+        if (not script.is_file() or script.is_symlink() or not script.resolve().is_relative_to(source) or
+                not isinstance(interpreter, str) or interpreter not in {"python3", "/bin/sh"} or
+                not isinstance(args, list) or len(args) > 128 or any(not isinstance(arg, str) or not arg or "\x00" in arg or len(arg) > 8192 for arg in args) or
+                type(timeout) is not int or not 5 <= timeout <= 86400 or
+                sha is not None and (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha))):
+            raise ClientError("data preparation needs an existing script, valid argv, interpreter and bounded timeout")
     workdir = value.get("workdir", "/workspace")
     if not isinstance(workdir, str) or PurePosixPath(workdir).parts[:2] != ("/", "workspace") or ".." in PurePosixPath(workdir).parts or "\x00" in workdir:
         raise ClientError("workdir must stay within /workspace")
@@ -82,7 +100,7 @@ def read_config(path: Path):
     env = value.get("env", {})
     if not isinstance(env, dict) or any(not isinstance(item, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", key) or
             re.search(r"TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY|PROXY|AUTHORIZATION", key) or key.startswith("ML_EXPD_") or
-            key in {"OUTPUT_DIR", "INPUTS_DIR", "PROJECT_NAME", "RUN_ID", "ATTEMPT_ID", "SOURCE_ID", "BACKEND_JOB_ID"} for key, item in env.items()):
+            key in {"OUTPUT_DIR", "INPUTS_DIR", "DATA_DIR", "PROJECT_NAME", "RUN_ID", "ATTEMPT_ID", "SOURCE_ID", "BACKEND_JOB_ID"} for key, item in env.items()):
         raise ClientError("environment contains a reserved or credential-bearing field")
     inputs = value.get("inputs", [])
     if not isinstance(inputs, list) or len(inputs) > 32:
@@ -137,6 +155,8 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
     config, source = read_config(config_path)
     if "dockerfile-only.v1" not in health.get("capabilities", []):
         raise ClientError("server lacks dockerfile-only.v1; upgrade before using the experiment workflow")
+    if config.get("data_preparation") is not None and "data-preparation.v1" not in health.get("capabilities", []):
+        raise ClientError("server lacks data-preparation.v1; upgrade before using a download script")
     if state_path.resolve().is_relative_to(source):
         raise ClientError("save workflow state outside the uploaded source directory")
     fingerprint = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
@@ -196,7 +216,7 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
     state["input_bindings"] = bindings
     save(state_path, state)
     if "run" not in state:
-        definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "checkpoint_upload", "metrics_schema", "evaluation") if key in config}
+        definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "checkpoint_upload", "metrics_schema", "evaluation", "data_preparation") if key in config}
         definition.update(runtime_id=runtime["runtime_id"], inputs=bindings)
         state["run"] = client.call(f"/api/projects/{project}/runs", data=definition)
         save(state_path, state)

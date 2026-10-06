@@ -110,6 +110,9 @@ class Controller:
                        "SOURCE_ID": self.run["source_id"]}
         if managed_io(runtime):
             environment["INPUTS_DIR"] = "/inputs"
+        if self.run.get("data_preparation"):
+            environment["DATA_DIR"] = (self.run["storage"]["project_data_root"] + "/data-preparations/"
+                                       + self.run["data_preparation"]["preparation_id"] + "/tree")
         duration = self.run["resources"]["max_time"].split(":")
         seconds = sum(int(value) * multiplier for value, multiplier in zip(duration, (3600, 60, 1)))
         return ["env", *[f"{key}={value}" for key, value in sorted(environment.items())],
@@ -139,6 +142,8 @@ class Controller:
                 url = prefix + "/snapshot-transfers/" + "/".join([self.campaign["project"], self.run["run_id"], manifest["attempt_id"]])
                 command = ["env", f"ML_EXPD_SNAPSHOT_URL={url}",
                            "ML_EXPD_SNAPSHOT_INTERVAL=" + str(self.run["checkpoint_upload"]["interval_seconds"]), *command]
+            if self.run.get("data_preparation"):
+                command = ["env", "ML_EXPD_DATA_PREPARATION=" + json.dumps(self.run["data_preparation"]), *command]
         return command
 
     def oci_pull_environment(self):
@@ -156,7 +161,7 @@ class Controller:
         source = self.source()
         metadata = json.loads((source.parent / "source.json").read_text())
         resolved = {key: self.run[key] for key in ("container", "arguments", "env", "outputs")}
-        resolved.update({key: self.run[key] for key in ("inputs", "checkpoint_upload") if key in self.run})
+        resolved.update({key: self.run[key] for key in ("inputs", "checkpoint_upload", "data_preparation") if key in self.run})
         manifest = build_run_manifest(
             project=self.campaign["project"], run_id=self.run["run_id"], created_at=utc_now(),
             config_path="container_execution", resolved_config=resolved,
@@ -172,7 +177,9 @@ class Controller:
             assets=[{"kind": "source", "identity": self.run["source_id"]},
                     {"kind": "runtime_image", "identity": self.run["container"]["image"]},
                     *[{"kind": "data_asset", "identity": item["asset_id"], "mount_path": item["mount_path"]}
-                      for item in self.run.get("inputs", [])]],
+                      for item in self.run.get("inputs", [])],
+                    *([{"kind": "data_preparation", "identity": self.run["data_preparation"]["preparation_id"]}]
+                      if self.run.get("data_preparation") else [])],
             checkpoint=self.run.get("checkpoint", {}),
             evaluation=self.run.get("evaluation", {}),
         )
