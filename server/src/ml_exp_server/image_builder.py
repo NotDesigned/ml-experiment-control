@@ -83,11 +83,25 @@ def builder_request(path: str, payload: dict, *, timeout: int = 600) -> dict:
 class ImageBuilder:
     def __init__(self, config: dict):
         self.config = config
+        proxy = config.get("buildkit_http_proxy")
+        if "buildkit_http_proxy" in config and (not isinstance(proxy, str) or not re.fullmatch(r"https?://[A-Za-z0-9._-]+:[0-9]{1,5}/?", proxy)):
+            raise ValueError("BuildKit HTTP proxy must be a credential-free HTTP endpoint")
+        network = config.get("buildkit_network")
+        if "buildkit_network" in config and (not isinstance(network, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", network)):
+            raise ValueError("invalid private BuildKit network")
+        host = config.get("docker_host")
+        if "docker_host" in config:
+            if (not isinstance(host, str) or not re.fullmatch(r"unix:///[-A-Za-z0-9_./]+", host)
+                    or ".." in host.split("/") or config.get("publisher") != "buildkit"
+                    or not config.get("ephemeral_buildkit") or config.get("build_storage_path") is not None
+                    or not IMAGE.fullmatch(str(config.get("buildkit_image", "")))):
+                raise ValueError("remote Docker requires a Unix socket, ephemeral pinned BuildKit and remote storage checks")
         self.root = Path(config["state_root"])
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self.config.get("ephemeral_buildkit"):
             with (self.root / "ephemeral-buildkit.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
+                self._recover_probe()
                 self._recover_builder()
 
     def request(self, request: dict) -> dict:
@@ -247,13 +261,19 @@ class ImageBuilder:
         with (self.root / "ephemeral-buildkit.lock").open("a") as lock:
             self._progress("WAITING_BUILDER", "Waiting for the private image builder; no scheduler submission has occurred")
             fcntl.flock(lock, fcntl.LOCK_EX)
+            self._recover_probe()
             self._recover_builder()
             self._storage_preflight(context)
             name = "ml-expd-" + uuid.uuid4().hex
-            atomic_json(self.root / "ephemeral-builder.json", {"name": name})
+            atomic_json(self.root / "ephemeral-builder.json", {"name": name, "docker_host": self._endpoint()})
             try:
                 self._docker(["buildx", "create", "--name", name, "--driver", "docker-container",
-                              "--driver-opt", "image=" + image, "--driver-opt", "default-load=false"])
+                              "--driver-opt", "image=" + image, "--driver-opt", "default-load=false",
+                              *(["--driver-opt", "env.HTTP_PROXY=" + self.config["buildkit_http_proxy"]]
+                                if "buildkit_http_proxy" in self.config else []),
+                              *(["--driver-opt", "network=" + self.config["buildkit_network"]]
+                                if "buildkit_network" in self.config else []),
+                              *([self.config["docker_host"]] if "docker_host" in self.config else [])])
                 return self._buildkit_image(tag, context, name)
             finally:
                 # Removing this exact builder also removes its dedicated state
@@ -265,7 +285,7 @@ class ImageBuilder:
         # This must be Docker's real state-volume filesystem, not /tmp or a
         # staging directory on another mount. The check runs under build lock.
         path = self.config.get("build_storage_path")
-        if path is None:
+        if path is None and "docker_host" not in self.config:
             return
         self._progress("CHECKING_BUILD_STORAGE", "Checking builder bytes and inodes before downloading image layers")
         try:
@@ -283,13 +303,13 @@ class ImageBuilder:
                     reference = image.split("@", 1)[0] + "@" + platform["digest"]
                     manifest = json.loads(self._skopeo(["inspect", "--authfile", auth, "--raw", "docker://" + reference], capture=True))
                 compressed += sum(int(layer["size"]) for layer in manifest["layers"])
-            stats = os.statvfs(path)
+            available_bytes, available_inodes = self._storage_available(path)
             context_bytes = sum(p.stat().st_size for p in context.rglob("*") if p.is_file())
             factor = float(self.config.get("build_expansion_factor", 4))
             reserve = int(self.config.get("build_reserve_bytes", 2 * 1024 ** 3))
             required = int(compressed * factor) + 2 * context_bytes + reserve
-            details = {"available_bytes": stats.f_bavail * stats.f_frsize, "required_bytes": required,
-                       "available_inodes": stats.f_favail, "required_inodes": int(self.config.get("build_min_free_inodes", 100000)),
+            details = {"available_bytes": available_bytes, "required_bytes": required,
+                       "available_inodes": available_inodes, "required_inodes": int(self.config.get("build_min_free_inodes", 100000)),
                        "compressed_base_bytes": compressed, "expansion_factor": factor, "reserve_bytes": reserve,
                        "estimate_kind": "conservative_compressed_layer_budget", "scheduler_submitted": False}
         except (OSError, ValueError, KeyError, TypeError, StopIteration):
@@ -300,6 +320,44 @@ class ImageBuilder:
             raise BuildStorageError("BUILD_STORAGE_INSUFFICIENT", details)
         self._progress("BUILD_STORAGE_READY", "Builder storage preflight passed; Dockerfile growth remains bounded by disk capacity")
 
+    def _endpoint(self) -> str:
+        return self.config.get("docker_host", "unix:///var/run/docker.sock")
+
+    def _storage_available(self, path) -> tuple[int, int]:
+        if "docker_host" not in self.config:
+            stats = os.statvfs(path)
+            return stats.f_bavail * stats.f_frsize, stats.f_favail
+        # The temporary anonymous volume is on the remote Docker data filesystem.
+        # Never use this API host's disk or pull a probe image before checking.
+        name = "ml-expd-storage-" + uuid.uuid4().hex
+        atomic_json(self.root / "storage-probe.json", {"name": name, "docker_host": self._endpoint()})
+        try:
+            raw = self._docker(["run", "--rm", "--name", name, "--pull=never", "--network=none",
+                                "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+                                "--mount", "type=volume,target=/probe", "--entrypoint", "/bin/sh",
+                                self.config["buildkit_image"], "-c", "stat -f -c '%a %S %d' /probe"], capture=True)
+            blocks, size, inodes = map(int, raw.split())
+            if blocks < 0 or size <= 0 or inodes < 0:
+                raise ValueError("invalid remote storage observation")
+            return blocks * size, inodes
+        finally:
+            self._recover_probe()
+
+    def _recover_probe(self):
+        path = self.root / "storage-probe.json"
+        if not path.exists():
+            return
+        record = json.loads(path.read_text())
+        name = record["name"]
+        if (not re.fullmatch(r"ml-expd-storage-[0-9a-f]{32}", name)
+                or record.get("docker_host") != self._endpoint()):
+            raise ValueError("remote storage probe recovery endpoint or identity changed")
+        names = self._docker(["ps", "--all", "--filter", "name=^/" + name + "$",
+                              "--format", "{{.Names}}"], capture=True).splitlines()
+        if name in names:
+            self._docker(["rm", "--force", "--volumes", name])
+        path.unlink()
+
     def _remove_builder(self, name):
         names = self._docker(["buildx", "ls", "--format", "{{.Name}}"], capture=True).splitlines()
         if name in names:
@@ -309,9 +367,12 @@ class ImageBuilder:
         path = self.root / "ephemeral-builder.json"
         if not path.exists():
             return
-        name = json.loads(path.read_text())["name"]
+        record = json.loads(path.read_text())
+        name = record["name"]
         if not re.fullmatch(r"ml-expd-[0-9a-f]{32}", name):
             raise ValueError("invalid ephemeral builder recovery identity")
+        if record.get("docker_host", "unix:///var/run/docker.sock") != self._endpoint():
+            raise ValueError("ephemeral builder recovery endpoint changed")
         self._remove_builder(name)
         path.unlink()
 
@@ -382,7 +443,8 @@ class ImageBuilder:
         return reference
 
     def _docker(self, arguments: list[str], *, capture: bool = False) -> str:
-        return self._command([self.config.get("docker", "/usr/bin/docker"), *arguments], capture=capture)
+        host = ["--host", self.config["docker_host"]] if "docker_host" in self.config else []
+        return self._command([self.config.get("docker", "/usr/bin/docker"), *host, *arguments], capture=capture)
 
     def _skopeo(self, arguments: list[str], *, capture: bool = False) -> str:
         return self._command([self.config.get("skopeo", "/usr/bin/skopeo"),
