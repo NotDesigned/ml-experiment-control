@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import threading
+import importlib.util
 from types import SimpleNamespace
 
 import pytest
@@ -51,6 +52,32 @@ def test_data_image_receipt_reuse_and_reconciliation(data_builder):
     receipt=builder.root/'data-images'/(result['data_image_id'].split('.')[1]+'.json')
     atomic_json(receipt,{**result,'image':'changed'})
     with pytest.raises(ValueError):builder.request(request)
+
+
+def test_module_entry_builder_keeps_remote_context_and_progress(data_builder):
+    """Loading the CLI module again must use the same request ContextVars."""
+    original, request, _ = data_builder
+    spec = importlib.util.spec_from_file_location('ml_exp_server._entry_probe', builder_module.__file__)
+    entry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(entry)
+    builder = entry.ImageBuilder(original.config)
+    builder.desktop_stage = original.desktop_stage
+    manifest = {'mediaType': entry.MANIFEST_TYPE, 'config': {'digest': 'sha256:' + 'd'*64}}
+    raw = json.dumps(manifest)
+    digest = 'sha256:' + module.hashlib.sha256(raw.encode()).hexdigest()
+    def docker(arguments, **kwargs):
+        assert arguments[-1] == 'http://ml-expd-data-stage:8080/contexts/demo/' + ASSET + '.tar'
+        assert entry.BUILD_CONTEXT_BYTES.get() == 100
+        assert entry.BUILD_LOG.get().parent == builder.root / 'data-images'
+        metadata = Path(arguments[arguments.index('--metadata-file') + 1])
+        atomic_json(metadata, {'containerimage.digest': digest, 'containerimage.config.digest': manifest['config']['digest']})
+        return ''
+    builder._docker = docker
+    builder._skopeo = lambda *a, **kw: raw
+    result = builder.request(request)
+    progress = json.loads((builder.root / 'data-images' / (result['data_image_id'].split('.')[1] + '.progress.json')).read_text())
+    assert [event['phase'] for event in progress['events']] == ['PREPARING_DATA_IMAGE', 'BUILDING_AND_PUSHING', 'VERIFYING_IMAGE', 'IMAGE_READY']
+    assert entry.BUILD_REMOTE_CONTEXT.get() is None and entry.BUILD_CONTEXT_BYTES.get() == 0
 
 
 @pytest.mark.parametrize('case',['project','asset','base','publisher','policy','input','identity','worker','publish-error'])
