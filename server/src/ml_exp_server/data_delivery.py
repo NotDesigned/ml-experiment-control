@@ -25,6 +25,7 @@ from .storage import DurableJsonState, utc_now
 
 DELIVERY = re.compile(r"^delivery\.[0-9a-f]{64}$")
 COPY_TRANSFER = re.compile(r"^/api/data-copy-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/delivery\.[0-9a-f]{64}$")
+CONTROL_REVISION = "acp-data-copy.v2"
 
 
 def digest(value):
@@ -111,7 +112,7 @@ class DataDeliveryService:
             raise ValueError("data preparation requires the verified 2CPU/4GiB/0GPU profile and bounded time")
         definition = {"project": project, "asset_id": asset_id, "archive_sha256": asset["sha256"],
                       "files_sha256": digest(asset["files"]), "copy_profile": copy,
-                      "worker_sha256": data_worker_digest()}
+                      "worker_sha256": data_worker_digest(), "control_revision": CONTROL_REVISION}
         delivery_id = "delivery." + digest(definition)
         with self.state(project, delivery_id) as (store, snapshot):
             if snapshot.value:
@@ -137,6 +138,8 @@ class DataDeliveryService:
                 raise ValueError("only an interrupted delivery can be reconciled")
             if not reconcile and value["worker_sha256"] != data_worker_digest():
                 raise ValueError("data-copy worker changed; prepare a new delivery")
+            if not reconcile and value.get("control_revision") != CONTROL_REVISION:
+                raise ValueError("data-copy control revision changed; prepare a new delivery")
             current = {**value, "status": "BUILDING_IMAGE", "started_at": value.get("started_at", utc_now()), "last_progress_at": utc_now(), "error": None}
             store.commit(current, expected_revision=snapshot.revision,
                          event={"event": "data_delivery_started", "timestamp": utc_now()})
@@ -153,8 +156,10 @@ class DataDeliveryService:
     def find(self, value):
         copy = value["copy_profile"]
         raw = self.sco(copy, ["acp", "jobs", "list", "--workspace-name", copy["workspace"],
-                             "--filter", "name=" + value["scheduler_name"], "--format", "json"])
-        jobs = json.loads(raw)
+                             "--name", value["scheduler_name"], "--all", "--format", "json"])
+        jobs = [] if raw.strip() == "No jobs found" else json.loads(raw)
+        if not isinstance(jobs, list) or any(not isinstance(item, dict) for item in jobs):
+            raise ValueError("ACP data-copy query returned an invalid job list")
         matches = [item for item in jobs if item.get("name") == value["scheduler_name"]]
         if len(matches) > 1:
             raise ValueError("ambiguous data-copy scheduler identity")
