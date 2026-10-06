@@ -21,7 +21,8 @@ def test_data_copy_callback_requires_fixed_https(url):
 
 
 @pytest.mark.parametrize('status',[200,401])
-def test_data_copy_callback_closes_its_connection(monkeypatch,status):
+@pytest.mark.parametrize('prefix',['','/ml-expd'])
+def test_data_copy_callback_closes_its_connection(monkeypatch,status,prefix):
     closed=[]
     class Connection:
         def __init__(self,*a,**kw):pass
@@ -30,9 +31,9 @@ def test_data_copy_callback_closes_its_connection(monkeypatch,status):
         def getresponse(self):return SimpleNamespace(status=status,read=lambda n:b'{}')
         def close(self):closed.append(True)
     monkeypatch.setattr(worker.http.client,'HTTPSConnection',Connection)
-    if status==200:worker.notify('https://example/api/data-copy-transfers/x','exact',{})
+    if status==200:worker.notify('https://example'+prefix+'/api/data-copy-transfers/x','exact',{})
     else:
-        with pytest.raises(ValueError):worker.notify('https://example/api/data-copy-transfers/x','exact',{})
+        with pytest.raises(ValueError):worker.notify('https://example'+prefix+'/api/data-copy-transfers/x','exact',{})
     assert closed==[True]
 
 
