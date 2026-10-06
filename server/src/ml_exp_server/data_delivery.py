@@ -25,7 +25,7 @@ from .storage import DurableJsonState, utc_now
 
 DELIVERY = re.compile(r"^delivery\.[0-9a-f]{64}$")
 COPY_TRANSFER = re.compile(r"^/api/data-copy-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/delivery\.[0-9a-f]{64}$")
-CONTROL_REVISION = "acp-data-copy.v3"
+CONTROL_REVISION = "acp-data-copy.v4"
 
 
 class ACPControlError(ValueError):
@@ -117,10 +117,12 @@ class DataDeliveryService:
         copy = {**self.config, "workspace": profile["backend"]["workspace"],
                 "storage_mount": profile["backend"]["storage_mount"],
                 "data_root": profile["storage_root"].rstrip("/") + "/" + project + "/data-assets"}
+        copy.setdefault("quota_type", "reserved")
         if (copy.get("gpus") != 0 or copy.get("cpus") != 2 or copy.get("memory_gb") != 4
                 or not re.fullmatch(r"[A-Za-z0-9_.-]+\.2c4g", copy.get("worker_spec", ""))
                 or not 5 <= copy.get("copy_timeout_seconds", 0) <= 3600
                 or not 5 <= copy.get("queue_timeout_seconds", 0) <= 3600
+                or copy["quota_type"] not in {"reserved", "spot"}
                 or not IDENTITY.fullmatch(copy.get("aec2", ""))):
             raise ValueError("data preparation requires the verified 2CPU/4GiB/0GPU profile and bounded time")
         definition = {"project": project, "asset_id": asset_id, "archive_sha256": asset["sha256"],
@@ -204,7 +206,7 @@ class DataDeliveryService:
         return ["acp", "jobs", "create", "--workspace-name", copy["workspace"], "--aec2-name", copy["aec2"],
                 "--name", value["scheduler_name"], "--job-name", value["scheduler_name"],
                 "--container-image-url", value["image"], "--training-framework", "pytorch",
-                "--worker-spec", copy["worker_spec"], "--worker-nodes", "1", "--quota-type", "spot",
+                "--worker-spec", copy["worker_spec"], "--worker-nodes", "1", "--quota-type", copy["quota_type"],
                 "--priority", "NORMAL", "--storage-mount", copy["storage_mount"], "--command", shlex.join(command)]
 
     def finish(self, pending):

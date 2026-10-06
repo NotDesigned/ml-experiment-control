@@ -67,6 +67,21 @@ def test_control_revision_creates_new_delivery_without_replaying_history(deliver
     assert service.read('demo',value['delivery_id']) == value
 
 
+def test_reserved_default_and_explicit_spot_have_distinct_frozen_scope(delivery):
+    _,service,value,asset=delivery
+    assert value['copy_profile']['quota_type']=='reserved'
+    with service.state('demo',value['delivery_id']) as (_,snapshot):
+        command=service.create_command({**snapshot.value,'image':IMAGE})
+    assert command[command.index('--quota-type')+1]=='reserved'
+    service.config['quota_type']='spot'
+    revised=service.prepare('demo',asset['asset_id'],'cloud')
+    assert revised['delivery_id']!=value['delivery_id']
+    with service.state('demo',revised['delivery_id']) as (_,snapshot):
+        command=service.create_command({**snapshot.value,'image':IMAGE})
+    assert command[command.index('--quota-type')+1]=='spot'
+    assert service.read('demo',value['delivery_id'])==value
+
+
 @pytest.mark.parametrize('text,status,reason', [
     ('400 Bad Request\\nBackend: {\\"reason\\":\\"tjInvalidArgument\\",\\"command\\":\\"secret\\"}',400,'tjInvalidArgument'),
     ('403 Forbidden Authorization: Bearer secret',403,None),
@@ -131,7 +146,7 @@ def test_prepare_execute_requires_exact_cpu_scope_and_seals_ready(delivery,monke
         'executor':'cloud','inputs':[{'asset_id':asset['asset_id'],'mount_path':'/inputs/data'}]}).status_code==409
 
 
-@pytest.mark.parametrize('case',['confirmation','wrong-project','missing','bad-executor','bad-asset','cpu-config','worker-changed','control-changed','reconcile-prepared'])
+@pytest.mark.parametrize('case',['confirmation','wrong-project','missing','bad-executor','bad-asset','cpu-config','quota-config','worker-changed','control-changed','reconcile-prepared'])
 def test_invalid_preparation_never_submits(delivery,stored,monkeypatch,case):
     _,service,value,asset=delivery
     with pytest.raises((ValueError,ApplicationError)):
@@ -142,6 +157,9 @@ def test_invalid_preparation_never_submits(delivery,stored,monkeypatch,case):
         elif case=='bad-asset':service.prepare('demo','bad','cloud')
         elif case=='cpu-config':
             service.config['gpus']=1
+            service.prepare('demo',asset['asset_id'],'cloud')
+        elif case=='quota-config':
+            service.config['quota_type']='unknown'
             service.prepare('demo',asset['asset_id'],'cloud')
         elif case=='worker-changed':
             monkeypatch.setattr(module,'data_worker_digest',lambda:'changed')
