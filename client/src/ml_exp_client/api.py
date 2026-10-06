@@ -41,7 +41,7 @@ def segment(value: str) -> str:
 
 
 class Client:
-    def __init__(self, base: str, token: str, *, timeout: float = 60):
+    def __init__(self, base: str, token: str, *, timeout: float = 60, upload_timeout: float = 1200):
         url = urlsplit(base)
         loopback = url.hostname == "localhost"
         try:
@@ -54,9 +54,10 @@ class Client:
         if not token or any(c.isspace() for c in token):
             raise ClientError("set ML_EXPD_API_TOKEN or ML_EXPD_API_TOKEN_FILE")
         self.base, self.token, self.timeout = base.rstrip("/"), token, timeout
+        self.upload_timeout = max(timeout, upload_timeout)
         self.opener = build_opener(NoRedirect())
 
-    def open(self, path: str, *, data=None, raw=None, length: int | None = None, method=None):
+    def open(self, path: str, *, data=None, raw=None, length: int | None = None, method=None, timeout=None):
         if not path.startswith("/api/") or "\x00" in path:
             raise ClientError("request must stay within /api/")
         headers = {"Authorization": "Bearer " + self.token,
@@ -72,7 +73,7 @@ class Client:
         method = method or ("GET" if body is None else "POST")
         try:
             return self.opener.open(Request(self.base + path, body, headers, method=method),
-                                    timeout=self.timeout)
+                                    timeout=self.timeout if timeout is None else timeout)
         except HTTPError as exc:
             code = exc.headers.get("X-ML-Expd-Error-Code", "API_ERROR")
             exc.close()
@@ -320,8 +321,9 @@ def upload_asset_parts(client, project, stream, digest, length, state):
                     if previous != {"sha256": sha, "bytes": len(data)}:
                         raise ClientError("sealed upload part differs from the local archive")
                     continue
-                client.call(root + "/parts/" + str(number) + "?sha256=" + sha, raw=data, method="PUT")
-            return client.call(root + "/complete", data={})
+                client.call(root + "/parts/" + str(number) + "?sha256=" + sha, raw=data, method="PUT",
+                            timeout=getattr(client, "upload_timeout", 1200))
+            return client.call(root + "/complete", data={}, timeout=getattr(client, "upload_timeout", 1200))
         except ClientError as exc:
             if attempt == 2 or not (exc.retryable or exc.status == 429 or exc.status is not None and exc.status >= 500):
                 raise

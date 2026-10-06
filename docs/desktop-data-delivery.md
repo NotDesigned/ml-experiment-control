@@ -1,6 +1,6 @@
 # Data uploads through the desktop builder
 
-Server 0.3.9 / client 0.1.7 keep protocol 2. Client code, training environment,
+Server 0.3.9 / client 0.1.8 keep protocol 2. Client code, training environment,
 training data and results retain separate identities. The client needs only its
 API URL and token; it does not need Docker, SSH or CCR credentials.
 
@@ -55,6 +55,15 @@ Connection/process/invalid-response errors return HTTP 503 with
 parts before resending; explicit `--resume` uses the same journal. True identity
 and checksum conflicts still return 409. Retrying an upload part does not
 authorize replaying an uncertain image publication or scheduler submission.
+
+Client 0.1.8 gives part PUT and archive completion their own 1,200-second request
+wait, matching the private staging RPC budget. Ordinary queries and scheduler
+requests retain the 60-second default. `Client(..., upload_timeout=SECONDS)`
+can adjust the upload wait; a larger general `timeout` remains respected.
+Timeout does not prove rejection: the existing bounded retry reads the same
+journal and skips confirmed parts. Client 0.1.7 still works with an explicitly
+longer request timeout, but its 60-second default can expire on a slow desktop
+link even when the part is stored successfully.
 
 After upload:
 
