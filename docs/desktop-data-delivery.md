@@ -1,6 +1,6 @@
 # Data uploads through the desktop builder
 
-Server 0.3.3 / client 0.1.7 keep protocol 2. Client code, training environment,
+Server 0.3.4 / client 0.1.7 keep protocol 2. Client code, training environment,
 training data and results retain separate identities. The client needs only its
 API URL and token; it does not need Docker, SSH or CCR credentials.
 
