@@ -106,7 +106,7 @@ SDK, publication or offline-sync support.
 
 ## Artifact selection
 
-Default backend collection patterns cover generic summaries, metrics and
-checkpoints. Project-specific JSONL/Parquet outputs belong in the host's
-`collection_includes` or managed Run `outputs`; the backend has no required ELF
-filenames or scientific metric names.
+Default backend collection patterns cover control records, summaries and
+JSONL results, including existing host prediction files. Additional formats
+belong in the host's `collection_includes` or managed Run `outputs`; the backend
+has no required ELF filenames or scientific metric names.
