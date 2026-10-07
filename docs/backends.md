@@ -18,7 +18,7 @@ GPU execution still requires explicit `--execute` and a GPU-hour budget.
 | data | assets, asset_preparation, download_script | Asset delivery before/inside a job; optional preparation script before/inside a job |
 | observability | logs, queue_reason, exit_code, preemption_reason | Evidence the adapter can actually retrieve |
 | jobs | exact_submission_lookup, walltime_enforcement | Exact request reconciliation and which layer enforces duration |
-| outputs | transfer, offline_export | Ordinary result collection and independent offline export |
+| outputs | transfer, offline_export | Adapter result transfer and a generic adapter offline-export hook |
 
 This is a configured contract, not a health probe or a promise of free GPUs.
 `storage_id` fingerprints the configured namespace; it does not independently
@@ -37,7 +37,15 @@ Current adapters declare:
 | Queue/exit/preemption reasons | Supported | Not declared as reliable structured fields |
 | Walltime | Scheduler and worker | Worker |
 | Live resource inventory | Not implemented by this capability contract | Not implemented by this capability contract |
-| Independent offline export | Not implemented | Not implemented |
+| Generic adapter offline-export hook | Not implemented | Not implemented |
+
+The server separately advertises `result-collection.v1` for recovering outputs
+from an exact original Attempt. It publishes WYD shared-directory outputs or
+uses a bounded zero-GPU SenseCore CPU job to read NAS and resume the original
+archive transfer. This server operation does not require the generic adapter
+`outputs.offline_export` hook. Query or start it with `ml-exp collect`; see
+[result recovery](recovery.md). It preserves the original scheduler outcome and
+does not rerun training or prepare input data.
 
 A separate resource endpoint may expose backend quota/catalogue data. That is
 not an admission guarantee. Queue ETA remains null without reliable backend data.
