@@ -40,10 +40,11 @@ submission-token-qualified name. Every observed exact job must belong to the
 configured account. Complete pagination is required before absence can be
 reported. Foreign owners, malformed responses and scope drift fail closed.
 
-New ACP requests, including CPU-only data-copy jobs, reject debug clusters.
-Provision a compatible non-debug CPU pool before enabling data delivery; keep
-its existing CPU specification and quota type explicit. Existing frozen records
-remain readable and are not rewritten or restarted.
+New GPU ACP requests reject debug clusters. CPU-only data-image delivery keeps
+the configured debug pool, reserved quota and verified 2CPU/4GiB/0GPU specification.
+The shared create translator accepts debug only through the explicit `cpu_copy`
+path and rejects GPU/resource/spec mismatches. Existing frozen records remain
+readable and are not rewritten or restarted.
 
 New GPU Runs default to `pool_selection: highest_spot`; profiles can set an
 optional `allowed_clusters` list. Creating a new Run fetches fresh ACTIVE workspace

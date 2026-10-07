@@ -119,8 +119,6 @@ class DataDeliveryService:
         with self.state(project, delivery_id) as (store, snapshot):
             if snapshot.value:
                 return self.public(snapshot.value)
-            if "debug" in copy["aec2"].casefold():
-                raise ValueError("new ACP data-copy jobs must not use a debug cluster")
             value = {**definition, "delivery_id": delivery_id, "status": "PREPARED",
                      "confirmation": "prepare-data:" + digest(definition), "created_at": utc_now(),
                      "last_progress_at": utc_now(), "scheduler_name": "ml-expd-data-" + delivery_id[-40:],
@@ -181,7 +179,7 @@ class DataDeliveryService:
                    "ML_EXPD_DATA_COPY_ROOT=" + copy["data_root"], "ML_EXPD_DATA_COPY_IMAGE=" + value["image"],
                    "ML_EXPD_DATA_COPY_SECONDS=" + str(copy["copy_timeout_seconds"]),
                    "python", "/usr/local/lib/ml-expd/data_copy_worker.py"]
-        body = create_document(copy, value["scheduler_name"], value["image"], shlex.join(command))
+        body = create_document(copy, value["scheduler_name"], value["image"], shlex.join(command), cpu_copy=True)
         body["roles"][0]["resource_spec"][0].update(
             requests={"cpu": "2", "memory": "3Gi"}, limits={"cpu": "2", "memory": "4Gi"})
         return body

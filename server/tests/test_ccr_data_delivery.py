@@ -278,9 +278,13 @@ def test_copy_callback_preserves_reverse_proxy_prefix(delivery):
     with pytest.raises(ValueError):service.create_document(raw)
 
 
-def test_debug_cpu_pool_rejected_before_image_build_and_historical_delivery_remains_readable(delivery):
+def test_debug_cpu_copy_remains_allowed_and_historical_delivery_remains_readable(delivery):
     _, service, value, asset = delivery
     service.config['aec2'] = 'DEBUG-cluster'
-    with pytest.raises(ValueError, match='debug'):
-        service.prepare('demo', asset['asset_id'], 'cloud')
+    revised = service.prepare('demo', asset['asset_id'], 'cloud')
+    assert revised['copy_profile']['aec2'] == 'DEBUG-cluster'
+    with service.state('demo', revised['delivery_id']) as (_, snapshot):
+        document = service.create_document({**snapshot.value, 'image': IMAGE})
+    assert document['resource_pool']['name'] == 'DEBUG-cluster'
+    assert document['roles'][0]['resource_spec'][0]['requests']['cpu'] == '2'
     assert service.read('demo', value['delivery_id'])['status'] == 'PREPARED'

@@ -398,9 +398,18 @@ def test_unknown_or_invalid_spot_quota_is_never_assumed_available(shares):
 
 
 @pytest.mark.parametrize('name', ['debug', 'DEBUG-cluster', 'compute-debug'])
-def test_new_acp_documents_reject_debug_even_for_cpu_copy(name):
+def test_gpu_acp_documents_reject_debug_and_explicit_cpu_copy_is_allowed(name):
     with pytest.raises(ValueError, match='debug'):
         m.create_document({**B, 'aec2': name, 'quota_type': 'reserved'}, 'job', 'i', 'cmd')
+    cpu = {**B, 'aec2': name, 'quota_type': 'reserved', 'gpus': 0, 'cpus': 2, 'memory_gb': 4, 'worker_spec': 'N6lS.Iu.I10.2c4g'}
+    assert m.create_document(cpu, 'job', 'i', 'cmd', cpu_copy=True)['resource_pool']['name'] == name
+
+
+@pytest.mark.parametrize('change', [{'gpus': 1}, {'gpus': False}, {'cpus': 4}, {'memory_gb': 8}, {'worker_spec': 'gpu'}])
+def test_debug_cpu_exception_cannot_be_used_for_gpu_or_unverified_spec(change):
+    cpu = {**B, 'aec2': 'debug', 'gpus': 0, 'cpus': 2, 'memory_gb': 4, 'worker_spec': 'N6lS.Iu.I10.2c4g'}
+    with pytest.raises(ValueError, match='CPU data copy'):
+        m.create_document({**cpu, **change}, 'job', 'i', 'cmd', cpu_copy=True)
 
 
 def offline_client():

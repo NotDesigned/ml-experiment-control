@@ -51,11 +51,15 @@ def origin(service, record):
     return f"https://{service}.{region}.sensecoreapi.cn"
 
 
-def create_document(backend, name, image, command):
+def create_document(backend, name, image, command, *, cpu_copy=False):
     """Translate the existing frozen backend definition without credentials."""
     component(name)
-    if "debug" in str(backend["aec2"]).casefold():
-        raise ValueError("new ACP jobs must not use a debug cluster")
+    if cpu_copy and (any(type(backend.get(key)) is not int for key in ("gpus", "cpus", "memory_gb"))
+                     or tuple(backend.get(key) for key in ("gpus", "cpus", "memory_gb")) != (0, 2, 4)
+                     or not re.fullmatch(r"[A-Za-z0-9_.-]+\.2c4g", backend.get("worker_spec", ""))):
+        raise ValueError("CPU data copy requires the verified 2CPU/4GiB/0GPU profile")
+    if "debug" in str(backend["aec2"]).casefold() and not cpu_copy:
+        raise ValueError("GPU ACP jobs must not use a debug cluster")
     volume, path = backend["storage_mount"].rsplit(":", 1)
     volume, _, subdir = volume.partition("/")
     if not volume or not path.startswith("/") or any(p == ".." for p in (path + "/" + subdir).split("/")):
