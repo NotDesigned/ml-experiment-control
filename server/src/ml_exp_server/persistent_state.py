@@ -10,6 +10,12 @@ import re
 import stat
 from urllib.parse import urlsplit
 
+
+if __package__:
+    from .worker_http import https_connection
+else:
+    from worker_http import https_connection
+
 MANIFEST_LIMIT = 256 * 1024
 CHECKPOINT_ID = re.compile(r"checkpoint\.[0-9a-f]{64}")
 
@@ -122,7 +128,7 @@ def register(url, token, ready, expected):
     target = urlsplit(url)
     if target.scheme != "https" or target.username or target.password or target.query or target.fragment:
         raise ValueError("checkpoint registration requires a fixed HTTPS endpoint")
-    connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=30)
+    connection = https_connection(target, timeout=30)
     try:
         body = json.dumps(ready).encode()
         connection.request("PUT", target.path, body=body,

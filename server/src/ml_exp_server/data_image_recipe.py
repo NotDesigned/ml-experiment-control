@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path
 
 RECIPE = "acp-data-image.v3"
-DATA_WORKERS = ("data_copy_worker.py", "data_input.py")
+DATA_WORKERS = ("data_copy_worker.py", "data_input.py", "worker_http.py")
 
 
 def data_worker_digest(directory: Path | None = None) -> str:

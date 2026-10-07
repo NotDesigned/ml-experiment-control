@@ -9,6 +9,7 @@ from experiment_control.backends.capabilities import DECLARATIONS
 
 from .application_errors import ApplicationError
 from .checkpoint_registry import storage_scope
+from .worker_http import CONTRACT as RELAY_CONTRACT, relay_environment
 
 
 CONTRACT = "backend-capabilities.v1"
@@ -39,17 +40,22 @@ def declaration(profile, *, artifact_store: bool, desktop: bool) -> dict:
     persistent = bool(adapter.persistent_filesystem and profile.get("storage_root")
                       and (kind != "sensecore" or profile["backend"].get("storage_mount")))
     storage_id = storage_scope(profile["backend"], profile["storage_root"]) if persistent else None
+    relay = relay_environment(profile["backend"].get("api_relay"))
+    if relay and kind != "slurm":
+        raise ApplicationError("API TCP relay requires a Slurm gateway", code="EXECUTOR_TRANSPORT_INVALID")
     return {
         "contract": CONTRACT,
         "runtime": {"platforms": ["linux/amd64"] if kind != "local" else [],
                     "materialization": adapter.runtime_materialization},
         "resources": {"allocation_mode": adapter.allocation_mode,
                       "inventory_query": adapter.resource_inventory_query},
+        "network": {"compute_internet": profile.get("compute_internet"),
+                    "api_transport": "tcp_relay" if relay else "direct_https"},
         "storage": {"persistent": persistent, "storage_id": storage_id,
                     "checkpoint_registration": persistent and artifact_store},
         "data": {"asset_preparation": "before_job" if desktop and kind in {"slurm", "sensecore"} else "inside_job",
                  "assets": persistent and artifact_store,
-                 "download_script": "inside_job" if persistent and artifact_store else None},
+                 "download_script": ("before_job" if relay else "inside_job") if persistent and artifact_store else None},
         "observability": {"logs": list(adapter.logs), "queue_reason": adapter.queue_reason,
                           "exit_code": adapter.exit_code, "preemption_reason": adapter.preemption_reason},
         "jobs": {"exact_submission_lookup": adapter.exact_submission_lookup,
@@ -128,6 +134,8 @@ def match(profiles, declarations, request, requirements, selector, *, resume_sco
 
 def validate_worker(request, bundle, capability, requirements=None, *, cache_required=False):
     required = set()
+    if capability.get("network", {}).get("api_transport") == "tcp_relay":
+        required.add(RELAY_CONTRACT)
     if request.inputs or request.checkpoint_upload is not None:
         required.add("data-assets.v1")
     if cache_required:

@@ -10,6 +10,12 @@ from pathlib import Path
 import signal
 from urllib.parse import urlsplit
 
+
+if __package__:
+    from .worker_http import https_connection
+else:
+    from worker_http import https_connection
+
 try:
     from .data_input import deliver
 except ImportError:
@@ -22,7 +28,7 @@ def notify(url, token, value):
             or target.query or target.fragment
             or not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*/api/data-copy-transfers/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?", target.path)):
         raise ValueError("invalid data copy callback")
-    connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=30)
+    connection = https_connection(target, timeout=30)
     try:
         connection.request("PUT", target.path, body=json.dumps(value, sort_keys=True).encode(),
                            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})

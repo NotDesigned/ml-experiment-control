@@ -15,6 +15,13 @@ import sys
 import time
 from urllib.parse import urlsplit
 
+
+if __package__:
+    from .worker_http import https_connection, error_code
+else:
+    sys.path[:0] = ["/usr/local/lib/ml-expd", str(Path(__file__).resolve().parent)]
+    from worker_http import https_connection, error_code
+
 CONTRACT = "launcher-manifest.v1"
 MAX_BYTES = 256 * 1024
 FETCH_SECONDS = 30
@@ -72,7 +79,7 @@ def fetch(url, token):
     target, match = endpoint(url)
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", token):
         raise LaunchError("invalid launch capability")
-    connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=FETCH_SECONDS)
+    connection = https_connection(target, timeout=FETCH_SECONDS)
     deadline = time.monotonic() + FETCH_SECONDS
     try:
         connection.request("GET", target.path, headers={"Authorization": "Bearer " + token})
@@ -143,7 +150,7 @@ def main(argv=None):
         return execute(document, token)
     except (ValueError, OSError) as exc:
         # Neither HTTP response bodies nor URLs/capabilities enter logs.
-        print("ML_EXPD_LAUNCH FAILED " + (str(exc) if isinstance(exc, LaunchError) else type(exc).__name__), file=sys.stderr, flush=True)
+        print("ML_EXPD_LAUNCH FAILED " + (str(exc) if isinstance(exc, LaunchError) else error_code(exc)), file=sys.stderr, flush=True)
         return 78
 
 

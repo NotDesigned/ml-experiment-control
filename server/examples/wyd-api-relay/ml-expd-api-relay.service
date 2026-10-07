@@ -1,0 +1,11 @@
+[Unit]
+Description=Fixed destination ML-Expd API TCP relay
+Requires=ml-expd-api-relay.socket
+After=ml-expd-api-relay.socket
+
+[Service]
+# Replace with the actual API origin. HTTPS remains end-to-end.
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=128 api.example.org:443
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true

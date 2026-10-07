@@ -27,6 +27,7 @@ from .worker_contract import CAPABILITIES, WORKER_CONTRACT
 from .metric_contract import MetricSchema, protocol_identity
 from .data_preparation import identity as data_identity, file_record
 from .checkpoint_registry import CheckpointRegistry, storage_scope
+from .worker_http import relay_environment
 from .executor_capabilities import declaration, ExecutionRequirements, mismatches, validate_worker
 
 
@@ -382,6 +383,14 @@ class ContainerExecutionService:
         if problems:
             raise ApplicationError("execution profile cannot satisfy: " + ", ".join(problems), code="CONTAINER_EXECUTION_BLOCKED")
         validate_worker(request, bundle, capability)
+        relay = relay_environment(selected_profile["backend"].get("api_relay"))
+        if relay:
+            from urllib.parse import urlsplit
+            store = self.runtime.config.container_execution.artifact_store_file
+            target = urlsplit(json.loads(Path(store).read_text())["public_transfer_base"]) if store else None
+            origin = urlsplit(relay["ML_EXPD_API_ORIGIN"])
+            if target is None or (target.hostname, target.port or 443) != (origin.hostname, origin.port or 443):
+                raise ApplicationError("API relay must target the configured artifact API origin", code="EXECUTOR_TRANSPORT_INVALID")
         inputs = []
         if request.inputs or request.checkpoint_upload:
             config = self.runtime.config.container_execution.artifact_store_file

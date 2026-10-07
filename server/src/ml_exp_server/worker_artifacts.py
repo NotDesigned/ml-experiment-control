@@ -14,6 +14,12 @@ import time
 from urllib.parse import urlsplit
 
 
+if __package__:
+    from .worker_http import https_connection
+else:
+    from worker_http import https_connection
+
+
 def archive_outputs(root: Path, stream, limit: int, patterns: list[str]) -> int:
     total = 0
     count = 0
@@ -47,7 +53,7 @@ def archive_outputs(root: Path, stream, limit: int, patterns: list[str]) -> int:
 
 
 def upload_request(target, method, path, token, data=b''):
-    connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=300)
+    connection = https_connection(target, timeout=300)
     try:
         connection.request(method, path, body=data, headers={'Authorization': 'Bearer ' + token,
             'Content-Type': 'application/json' if method == 'POST' else 'application/octet-stream'})

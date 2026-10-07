@@ -13,8 +13,9 @@ GPU execution still requires explicit `--execute` and a GPU-hour budget.
 |---|---|---|
 | runtime | platforms, materialization | Supported target platform and OCI/OCI-to-SIF path |
 | resources | allocation_mode, inventory_query | Flexible requests or a fixed worker spec; whether this contract implements live inventory |
+| network | compute_internet, api_transport | Configured compute egress and direct HTTPS/private TCP relay |
 | storage | persistent, storage_id, checkpoint_registration | Configured shared filesystem and metadata registration |
-| data | assets, asset_preparation, download_script | Asset delivery before/inside a job; optional preparation script inside the allocated job |
+| data | assets, asset_preparation, download_script | Asset delivery before/inside a job; optional preparation script before/inside a job |
 | observability | logs, queue_reason, exit_code, preemption_reason | Evidence the adapter can actually retrieve |
 | jobs | exact_submission_lookup, walltime_enforcement | Exact request reconciliation and which layer enforces duration |
 | outputs | transfer, offline_export | Ordinary result collection and independent offline export |
@@ -32,7 +33,7 @@ Current adapters declare:
 | Runtime | OCI → Apptainer SIF | OCI |
 | Allocation | Flexible, bounded by configured catalogue capacity | Exact GPU count of fixed worker spec |
 | Uploaded desktop asset | Stream by SSH/verify on datapool before the job | Bounded zero-GPU ACP copy into NAS before training |
-| Script download | Inside the allocated job | Inside the allocated job |
+| Script download | Before allocation on the connected gateway when relay is configured | Inside the allocated job |
 | Queue/exit/preemption reasons | Supported | Not declared as reliable structured fields |
 | Walltime | Scheduler and worker | Worker |
 | Live resource inventory | Not implemented by this capability contract | Not implemented by this capability contract |
@@ -130,3 +131,48 @@ unacknowledged transfers require inspection; continuation only accepts a verifie
 cache and never repeats an uncertain transfer. New frozen inputs require the
 cache and fail closed if it disappears. Old low-level Runs retain their original
 worker download behavior.
+
+### WYD compute nodes without Internet access
+
+Configure `backend.api_relay` on WYD executors whose workers must use the L40S
+private-network gateway. The gateway uses systemd's existing
+`systemd-socket-proxyd` with one fixed API destination; example user units are in
+`server/examples/wyd-api-relay/`. Bind the socket to the gateway's private IP,
+install both units in its `~/.config/systemd/user/`, and enable the socket:
+`systemctl --user enable --now ml-expd-api-relay.socket`. The user manager must
+remain running after SSH disconnect (linger).
+
+```yaml
+compute_internet: false
+backend:
+  # Existing Slurm settings remain here.
+  api_relay:
+    endpoint: tcp://172.16.78.148:18443
+    origin: https://api.example.org
+```
+
+The origin must match the configured artifact API host and port. The worker
+connects TCP to the gateway while retaining origin TLS certificate verification,
+SNI, Host and exact-Attempt authorization. No general HTTP/SOCKS proxy, TLS
+termination or public listener is needed. Bootstrap, data transfers, checkpoint
+registration and multipart result uploads share this transport. Worker requests
+to other origins fail closed. Network declarations expose configured
+`compute_internet` (null if unknown) and `api_transport`; these are not live
+reachability claims and do not expose the private endpoint.
+
+A relay-enabled executor requires a newly built Runtime declaring
+`api-tcp-relay.v1`; old immutable images and Runs remain unchanged. Stage and
+submission preflight verify the gateway's origin TLS path through the configured
+SSH gateway before scheduler submission. Unreachable relay errors carry the
+fixed `API_RELAY_UNREACHABLE` code; origin mismatch is
+`API_RELAY_TARGET_MISMATCH`. TLS and fixed-destination upstream failures can be
+investigated with the gateway user service journal.
+
+For these executors, download scripts run in the same SIF on the SSH gateway,
+with no GPU allocation, during submission staging. Existing script/parameter
+identity, SHA256 file inventory, cache lock and atomic READY receipt are reused.
+The allocated worker only verifies the sealed cache; missing or corrupt data
+fails before training rather than downloading on an offline GPU node. The script
+retains its own timeout; a 60-second launcher allowance covers container startup
+and teardown. A cache verification also runs before scheduler submission. An
+uncertain stage remains subject to the existing explicit reconciliation rules.

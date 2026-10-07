@@ -17,6 +17,12 @@ import tempfile
 from urllib.parse import urlsplit
 
 
+if __package__:
+    from .worker_http import https_connection, error_code
+else:
+    from worker_http import https_connection, error_code
+
+
 class InputDeliveryError(ValueError):
     def __init__(self, code, message):
         super().__init__(message)
@@ -47,6 +53,9 @@ class DeliveryTrace:
         if isinstance(error, InputDeliveryError):
             code = error.code
         phase = self.value.get("phase", "INITIALIZING")
+        network_code = error_code(error)
+        if network_code.startswith("API_RELAY_"):
+            code = network_code
         fields = {"code": code, "error_class": type(error).__name__, "failed_phase": phase}
         if isinstance(error, OSError) and error.errno is not None:
             fields["errno"] = error.errno
@@ -93,7 +102,7 @@ def fetch(url, token, stream, expected_sha, expected_size, trace=None):
     target = urlsplit(url)
     if target.scheme != "https" or target.username or target.password or target.query or target.fragment:
         raise ValueError("data delivery requires a fixed HTTPS endpoint")
-    connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=300)
+    connection = https_connection(target, timeout=300)
     try:
         connection.request("GET", target.path, headers={"Authorization": "Bearer " + token})
         response = connection.getresponse()
