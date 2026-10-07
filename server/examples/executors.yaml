@@ -26,6 +26,8 @@ executors:
       kind: sensecore
       workspace: REPLACE_WORKSPACE
       aec2: REPLACE_AEC2
+      pool_selection: highest_spot
+      allowed_clusters: [REPLACE_AEC2, REPLACE_OTHER_COMPUTE_AEC2]
       worker_spec: REPLACE_ONE_GPU_SPEC
       quota_type: spot
       storage_mount: REPLACE_VOLUME:/data

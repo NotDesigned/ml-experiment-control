@@ -89,8 +89,8 @@ uv run python tools/generate_cli_reference.py
 uv run python tools/generate_cli_reference.py --check
 ```
 
-The CLI remains intentionally narrow: it sanitizes SCO output and normalizes
-states. Experiment lifecycle control is a Python API, not a hidden command tree.
+The CLI redacts credential-bearing log text from standard input. State
+normalization and experiment lifecycle control use the Python backend API.
 
 Run the Rust-specific checks before the Python suite:
 

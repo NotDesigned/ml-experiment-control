@@ -20,7 +20,7 @@ Add runtime dependencies with `uv add <package>` and development dependencies
 with `uv add --dev <package>`. Commit the resulting `pyproject.toml` and
 `uv.lock` changes together.
 
-Rust 1.85 or newer is required to build the packaged `experiment-safe-sco`
+Rust 1.85 or newer is required to build the packaged `experiment-redact`
 binary. Commit `rust/Cargo.lock` whenever Rust dependencies change.
 
 The coverage gate checks repository-wide line and branch coverage independently:
@@ -33,6 +33,6 @@ Keep project-specific configuration, launch commands, metrics, and assets in a
 host-owned `ProjectAdapter`; use `examples/minimal_project_adapter.py` as the
 contract checklist.
 
-When changing public imports or `experiment-safe-sco`, update
+When changing public imports or `experiment-redact`, update
 [`docs/downstream_contract.md`](docs/downstream_contract.md) and validate the
 candidate package against ELF before its commit pin is advanced.

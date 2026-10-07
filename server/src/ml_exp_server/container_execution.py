@@ -112,6 +112,13 @@ class Resources(BaseModel):
     memory_gb: int = Field(default=32, ge=1, le=4096)
     max_time: str = Field(default="00:10:00", pattern=r"^[0-9]{2,3}:[0-5][0-9]:[0-5][0-9]$")
 
+    @field_validator("max_time")
+    @classmethod
+    def bounded_duration(cls, value):
+        if not any(int(part) for part in value.split(":")):
+            raise ValueError("max_time must be a positive duration")
+        return value
+
 
 class InputAsset(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -531,6 +538,8 @@ class ContainerExecutionService:
                "artifact_ssh": profile.get("artifact_ssh")}
         if "worker_contract" in bundle:
             run["container"]["worker_contract"] = bundle["worker_contract"]
+        if "launcher-manifest.v1" in bundle.get("capabilities", []):
+            run["container"]["launcher_contract"] = "launcher-manifest.v1"
         if inputs:
             run["inputs"] = inputs
         if request.checkpoint_upload is not None:
@@ -563,6 +572,31 @@ class ContainerExecutionService:
         path = root / "experiments" / "campaigns" / f"{campaign_name}.yaml"
         with source_lock(self.root, project):
             existing = yaml.safe_load(path.read_text()) if path.exists() else None
+            if backend["kind"] == "sensecore" and "pool_selection" not in backend:
+                # Historical fixed Runs keep their original definition; new Runs
+                # default to the account's requested SPOT selection policy.
+                if existing is None or existing["runs"][0]["backend"].get("pool_selection") == "highest_spot":
+                    backend["pool_selection"] = "highest_spot"
+            if backend["kind"] == "sensecore" and backend.get("pool_selection") not in {None, "fixed"}:
+                from experiment_control.backends.sensecore_rest import SenseCoreREST
+                if backend["pool_selection"] != "highest_spot":
+                    raise ApplicationError("unsupported SenseCore pool selection", code="CONTAINER_EXECUTION_BLOCKED")
+                if existing is not None:
+                    previous = existing["runs"][0]["backend"]
+                    evidence = previous.get("pool_selection_evidence", {})
+                    if not isinstance(evidence, dict):
+                        raise ApplicationError("frozen pool selection evidence is invalid", code="CONTAINER_EXECUTION_BLOCKED")
+                    if (evidence.get("configured_aec2") == backend["aec2"]
+                            and evidence.get("policy") == "highest_spot"
+                            and evidence.get("selected") == previous["aec2"]):
+                        backend.update(aec2=previous["aec2"], pool_selection_evidence=evidence)
+                else:
+                    try:
+                        backend.update(SenseCoreREST.from_environment().select_pool(backend, gpus=resources["gpus"]))
+                    except (RuntimeError, ValueError) as error:
+                        raise ApplicationError("SenseCore SPOT cluster selection is unavailable", code="CONTAINER_EXECUTION_BLOCKED") from error
+            if existing is None and backend["kind"] == "sensecore" and "debug" in backend["aec2"].casefold():
+                raise ApplicationError("new ACP jobs must not use a debug cluster", code="CONTAINER_EXECUTION_BLOCKED")
             if existing is not None and existing != campaign:
                 raise ApplicationError("run_id is already bound to another execution definition", code="CONTAINER_EXECUTION_BLOCKED")
             atomic_text(path, yaml.safe_dump(campaign, sort_keys=False))
@@ -577,6 +611,7 @@ class ContainerExecutionService:
                 "runtime_id": request.runtime_id, "source_id": source_id, "image": bundle["image"],
                 "entrypoint": [*bundle["spec"]["entrypoint"], *request.arguments], "executor": request.executor,
                 "resources": resources, "state": "NOT_SUBMITTED", "evaluation": run.get("evaluation", {}),
+                **({"pool_selection": backend["pool_selection_evidence"]} if "pool_selection_evidence" in backend else {}),
                 **({"data_preparation": preparation} if preparation is not None else {}),
                 **({"checkpoint_persistence": run["checkpoint_persistence"]} if persistence is not None else {}),
                 **({"resume_from": resume} if resume is not None else {})}

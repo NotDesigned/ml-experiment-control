@@ -318,3 +318,201 @@ def test_expiry_and_permission_or_connectivity_failures_are_distinct(status,reas
 def test_log_responses_are_bounded_and_validated(value):
     c=log_client();c.request=Mock(side_effect=[{'token':jwt('logs.sensecoreapi.cn')},value])
     with pytest.raises(ValueError):c.logs(B,'job',10)
+
+
+def test_read_only_post_failure_never_requires_job_replay(monkeypatch):
+    opener = Mock()
+    monkeypatch.setattr(m.urllib.request, 'build_opener', lambda *a: opener)
+    for error in (TimeoutError('private'), urllib.error.HTTPError('u', 503, 'm', {}, io.BytesIO(b'{}'))):
+        opener.open.side_effect = error
+        with pytest.raises(m.RESTError) as caught:
+            client().request('https://monitor.sensecoreapi.cn/logs', method='POST', read_only=True)
+        assert caught.value.details['uncertain'] is False
+
+
+def test_fresh_binding_discovery_does_not_reuse_stale_quota():
+    c = ready()
+    c.request = Mock(side_effect=[{'aec2s': [POOL]}, {'aec2s': [{**POOL, 'reserved_number': 3}]}])
+    assert 'reserved_number' not in c.pools(B)[0]
+    assert c.pools(B, fresh=True)[0]['reserved_number'] == 3
+    assert c.request.call_count == 2
+
+
+def selector(pools):
+    c = ready()
+    c.pools = Mock(return_value=pools)
+    c.pool = lambda b: next(p for p in pools if p['name'] == b['aec2'])
+    c.specs = Mock(return_value=[{**SPEC, 'device': {'number': 1}}])
+    return c
+
+
+def binding(name='pool', spot='0', **fields):
+    return {**POOL, 'name': name, 'zone': 'cn-sh-01e', 'vpc_id': 'same-network',
+            'spot_status': [{'spot_quota': {'device': spot}}], **fields}
+
+
+def test_select_highest_spot_not_most_remaining_and_freeze_evidence():
+    pools = [binding(reserved_number=900), binding('other', '11', reserved_number=2),
+             binding('debug-pool', '1000'), binding('foreign', '100', vpc_id='other-network'),
+             binding('other-zone', '99', zone='cn-sh-01a'), binding('unknown-network', '99', vpc_id=None)]
+    c = selector(pools)
+    result = c.select_pool({**B, 'pool_selection': 'highest_spot'}, gpus=1)
+    assert result['aec2'] == 'other'
+    assert result['pool_selection_evidence']['configured_aec2'] == 'pool'
+    assert result['pool_selection_evidence']['candidates'] == [
+        {'name': 'other', 'spot_devices': '11'}, {'name': 'pool', 'spot_devices': '0'}]
+    c.pools.assert_called_once_with({**B, 'pool_selection': 'highest_spot'}, fresh=True)
+
+
+def test_allowlist_spec_match_sum_and_deterministic_tie():
+    c = selector([binding(), binding('second', '10'), binding('first', '10'), binding('excluded', '999')])
+    b = {**B, 'pool_selection': 'highest_spot', 'allowed_clusters': ['first', 'second']}
+    assert c.select_pool(b, gpus=1)['aec2'] == 'first'
+    c.specs.return_value = [SPEC]
+    with pytest.raises(ValueError, match='no compatible'):
+        c.select_pool(b, gpus=1)
+    c.specs.side_effect = m.RESTError('specs', status=403)
+    with pytest.raises(m.RESTError):
+        c.select_pool(b, gpus=1)
+    c = selector([binding(spot_status=[{'spot_quota': {'device': '1.5'}}, {'spot_quota': {'device': '2.5'}}])])
+    assert c.select_pool({**B, 'pool_selection': 'highest_spot'}, gpus=1)['pool_selection_evidence']['candidates'][0]['spot_devices'] == '4.0'
+
+
+@pytest.mark.parametrize('change,gpus', [({}, 1), ({'pool_selection': 'highest_spot', 'quota_type': 'reserved'}, 1),
+    ({'pool_selection': 'highest_spot'}, True), ({'pool_selection': 'highest_spot'}, 0),
+    ({'pool_selection': 'highest_spot'}, '1'),
+    ({'pool_selection': 'highest_spot', 'allowed_clusters': []}, 1),
+    ({'pool_selection': 'highest_spot', 'allowed_clusters': 'pool'}, 1),
+    ({'pool_selection': 'highest_spot', 'allowed_clusters': [1]}, 1)])
+def test_invalid_selection_policies_do_not_create_jobs(change, gpus):
+    with pytest.raises(ValueError):
+        selector([binding()]).select_pool({**B, **change}, gpus=gpus)
+
+
+@pytest.mark.parametrize('shares', [None, [], {}, [{}], [None], [{'spot_quota': {'device': 'bad'}}],
+    [{'spot_quota': {'device': 'NaN'}}], [{'spot_quota': {'device': '-1'}}],
+    [{'spot_quota': {'device': 'Infinity'}}], [{'spot_quota': {'device': '1e100'}}]])
+def test_unknown_or_invalid_spot_quota_is_never_assumed_available(shares):
+    with pytest.raises(ValueError, match='no compatible'):
+        selector([binding(spot_status=shares)]).select_pool({**B, 'pool_selection': 'highest_spot'}, gpus=1)
+
+
+@pytest.mark.parametrize('name', ['debug', 'DEBUG-cluster', 'compute-debug'])
+def test_gpu_acp_documents_reject_debug_and_explicit_cpu_copy_is_allowed(name):
+    with pytest.raises(ValueError, match='debug'):
+        m.create_document({**B, 'aec2': name, 'quota_type': 'reserved'}, 'job', 'i', 'cmd')
+    cpu = {**B, 'aec2': name, 'quota_type': 'reserved', 'gpus': 0, 'cpus': 2, 'memory_gb': 4, 'worker_spec': 'N6lS.Iu.I10.2c4g'}
+    assert m.create_document(cpu, 'job', 'i', 'cmd', cpu_copy=True)['resource_pool']['name'] == name
+
+
+@pytest.mark.parametrize('change', [{'gpus': 1}, {'gpus': False}, {'cpus': 4}, {'memory_gb': 8}, {'worker_spec': 'gpu'}])
+def test_debug_cpu_exception_cannot_be_used_for_gpu_or_unverified_spec(change):
+    cpu = {**B, 'aec2': 'debug', 'gpus': 0, 'cpus': 2, 'memory_gb': 4, 'worker_spec': 'N6lS.Iu.I10.2c4g'}
+    with pytest.raises(ValueError, match='CPU data copy'):
+        m.create_document({**cpu, **change}, 'job', 'i', 'cmd', cpu_copy=True)
+
+
+def offline_client():
+    c = log_client()
+    c.describe.return_value = {**JOB, 'state': 'FAILED', 'create_time': '2026-01-01T00:00:00Z'}
+    return c
+
+
+def hit(text='Step 1 loss 1.5', **fields):
+    return {'body': text, 'log_time': '2026-01-02T00:00:00Z', 'resource': {'resource_id': WS['id']},
+            'attributes': {'k8s.pod.name': 'worker', 'k8s.container.name': 'worker-container'}, **fields}
+
+
+def test_terminal_job_offline_query_is_read_only_exact_and_historical():
+    c = offline_client()
+    c.request = Mock(return_value={'hits': [hit('later', log_time='2026-01-03T00:00:00Z'), hit('earlier')], 'total': '3'})
+    result = c.logs(B, 'job', 10)
+    assert result['historical'] and result['source'] == 'offline' and result['truncated']
+    assert result['text'] == 'earlier\nlater' and result['last_log_at'] == '2026-01-03T00:00:00Z'
+    call = c.request.call_args
+    assert '/product.lepton-acp-new/logs' in call.args[0]
+    assert call.kwargs['read_only'] is True
+    assert call.kwargs['body']['resource_id'] == [WS['id']]
+    assert call.kwargs['body']['custom_filter'][0] == {'key': 'Attributes.k8s.pod.name', 'value': 'worker'}
+    c.request.return_value = {'hits': [], 'total': 0}
+    assert c.logs(B, 'job', 10)['unavailable_reason'] == 'OFFLINE_LOGS_EMPTY'
+    c.request.side_effect = m.RESTError('logs', status=403, reason='Denied')
+    result = c.logs(B, 'job', 10)
+    assert not result['available'] and result['error']['http_status'] == 403
+    assert result['unavailable_reason'] == 'OFFLINE_LOGS_UNAVAILABLE'
+
+
+def test_active_stream_failure_falls_back_but_does_not_hide_identity_errors():
+    c = offline_client()
+    c.describe.return_value['state'] = 'RUNNING'
+    live = {'available': False, 'error': {'http_status': 403}, 'text': '', 'expired': True}
+    c.live_logs = Mock(return_value=live)
+    c.request = Mock(return_value={'hits': [hit()], 'total': 1})
+    result = c.logs(B, 'job', 10)
+    assert result['historical'] and result['live_error'] == live['error']
+    c.request.return_value = {'hits': [], 'total': 0}
+    assert c.logs(B, 'job', 10) == live
+    c.request.side_effect = m.RESTError('offline')
+    assert c.logs(B, 'job', 10) == live
+    c.request.side_effect = ValueError('foreign worker')
+    assert c.logs(B, 'job', 10) == live
+
+
+@pytest.mark.parametrize('tail', [True, 0, 10001, '1'])
+def test_offline_log_bounds(tail):
+    with pytest.raises(ValueError):
+        offline_client().offline_logs(B, 'job', tail)
+
+
+@pytest.mark.parametrize('create_time', [None, 'bad', '2026-01-01', '1960-01-01T00:00:00Z', '2100-01-01T00:00:00Z'])
+def test_offline_log_interval_must_match_owned_job(create_time):
+    c = offline_client()
+    c.describe.return_value['create_time'] = create_time
+    with pytest.raises(ValueError):
+        c.offline_logs(B, 'job', 10)
+
+
+def test_offline_worker_and_station_scope_empty_containers_and_no_worker():
+    c = offline_client()
+    c.resources.return_value = []
+    with pytest.raises(ValueError, match='station'):
+        c.logs(B, 'job', 10)
+    c = offline_client()
+    c.workers.return_value = []
+    c.request = Mock()
+    assert c.offline_logs(B, 'job', 10)['worker'] is None
+    c.request.assert_not_called()
+    c.workers.return_value = [{'name': 'worker', 'containers': []}]
+    c.request.return_value = {'hits': [], 'total': '0'}
+    assert c.offline_logs(B, 'job', 10)['worker'] == 'worker'
+    for containers in ('wrong', [None], [{}]):
+        c.workers.return_value[0]['containers'] = containers
+        with pytest.raises(ValueError, match='container identity'):
+            c.offline_logs(B, 'job', 10)
+
+
+@pytest.mark.parametrize('data', [None, {}, {'hits': {}}, {'hits': [], 'total': True},
+    {'hits': [], 'total': '-1'}, {'hits': [hit()], 'total': '0'}, {'hits': [hit()] * 11, 'total': 11}])
+def test_invalid_offline_log_response(data):
+    c = offline_client()
+    c.request = Mock(return_value=data)
+    with pytest.raises(ValueError):
+        c.logs(B, 'job', 10)
+
+
+@pytest.mark.parametrize('record', [None, {}, hit(body=1), hit(attributes={}), hit(resource={}),
+    hit(resource=1), hit(log_time=1), hit(log_time='bad'), hit(log_time='2026-01-02'),
+    hit(log_time='1960-01-01T00:00:00Z'), hit(log_time='2100-01-01T00:00:00Z')])
+def test_offline_foreign_malformed_and_out_of_interval_hits_fail_closed(record):
+    c = offline_client()
+    c.request = Mock(return_value={'hits': [record], 'total': 1})
+    with pytest.raises(ValueError):
+        c.logs(B, 'job', 10)
+
+
+@pytest.mark.parametrize('tail', [True, 0, 10001, '1'])
+def test_live_log_bounds_precede_all_provider_requests(tail):
+    c = log_client()
+    with pytest.raises(ValueError):
+        c.logs(B, 'job', tail)
+    c.describe.assert_not_called()

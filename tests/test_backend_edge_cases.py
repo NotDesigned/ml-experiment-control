@@ -54,7 +54,8 @@ def test_sensecore_digest_pin_rejects_mutable_or_malformed_identity(image, diges
 def test_scheduler_normalizers_cover_every_semantic_state():
     sensecore_cases = {
         "WAITING": "QUEUED", "STARTING": "STARTING", "RUNNING": "RUNNING",
-        "COMPLETED": "SUCCEEDED", "SUSPENDED": "PREEMPTED", "ERROR": "FAILED",
+        "COMPLETED": "SUCCEEDED", "SUSPENDED": "CANCELLED", "STOPPED": "CANCELLED",
+        "SUSPENDING": "UNKNOWN", "ERROR": "FAILED",
         "DELETED": "CANCELLED", "future": "UNKNOWN",
     }
     for raw, expected in sensecore_cases.items():
@@ -94,7 +95,7 @@ def test_sensecore_validate_and_environment_boundaries(tmp_path, monkeypatch):
         with pytest.raises(ValueError):
             backend.validate(run)
 
-    monkeypatch.setenv("EXPERIMENTCTL_SCO_CREATE_TIMEOUT_SECONDS", "9")
+    monkeypatch.setenv("EXPERIMENTCTL_SENSECORE_CREATE_TIMEOUT_SECONDS", "9")
     with pytest.raises(ValueError, match="10 to 600"):
         backend.create_timeout_seconds()
     with pytest.raises(ValueError, match="unsupported preflight"):
@@ -759,3 +760,14 @@ def test_slurm_logs_reject_bad_job_identity_and_remote_probe_failure(tmp_path):
     ))
     with pytest.raises(RuntimeError, match="log probe failed"):
         failed_probe.logs({}, slurm_run(), tail=10)
+
+
+def test_redactor_failure_never_exposes_partial_stdout(tmp_path, monkeypatch):
+    backend = SenseCoreBackend(services(tmp_path, QueueRunner([
+        CommandResult(('redact',), 1, stdout='token=must-not-escape')
+    ])))
+    with pytest.raises(RuntimeError, match='credential redactor failed') as caught:
+        backend._redact_error('token=private')
+    assert 'must-not-escape' not in str(caught.value)
+    monkeypatch.setenv('EXPERIMENTCTL_REDACTOR_BIN', '/test/generic-redactor')
+    assert backend.redactor_bin() == '/test/generic-redactor'

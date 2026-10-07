@@ -1,6 +1,5 @@
 from pathlib import Path
 import json
-import subprocess
 from types import SimpleNamespace
 from experiment_control.backends.sensecore_rest import RESTError, SenseCoreREST
 
@@ -83,13 +82,11 @@ def test_doctor_reports_backend_availability_and_enforces_scheduler_gate(
 def test_doctor_reports_backend_probe_timeout_without_hanging(
     monkeypatch, tmp_path, capsys,
 ):
-    def timeout_safe_sco(_self, command, **kwargs):
-        if "normalize-state" in command:
-            raise subprocess.TimeoutExpired(command, kwargs["timeout_seconds"])
+    def successful_command(_self, command, **kwargs):
         return CommandResult(tuple(command), 0)
 
     monkeypatch.setattr(
-        "experiment_control.runner.SubprocessRunner.run", timeout_safe_sco,
+        "experiment_control.runner.SubprocessRunner.run", successful_command,
     )
     monkeypatch.setattr(SenseCoreREST, "from_environment", lambda: (_ for _ in ()).throw(RESTError("timeout")))
     config = _write_config(tmp_path)

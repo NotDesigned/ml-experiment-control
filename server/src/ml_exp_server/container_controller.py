@@ -27,6 +27,7 @@ from .schemas import ServerConfig
 from .source_revisions import resolve_source_tree, _tree_digest
 from .storage import read_json
 from .worker_contract import managed_io
+from .worker_launcher import CONTRACT as LAUNCHER_CONTRACT
 
 
 def parse_metric(_campaign, line: str) -> dict | None:
@@ -68,6 +69,7 @@ class Controller:
                 or runtime_record.get("image") != runtime["image"]
                 or any(spec.get(key) != runtime.get(key) for key in ("source_id", "entrypoint", "workdir", "packaging_revision", "dockerfile", "requirements"))
                 or runtime_record.get("worker_contract") != runtime.get("worker_contract")
+                or runtime.get("launcher_contract") != (LAUNCHER_CONTRACT if LAUNCHER_CONTRACT in runtime_record.get("capabilities", []) else None)
                 or self.run["source_id"] != runtime["source_id"]
                 or self.run["image_id"] != runtime["image"].split("@", 1)[1]):
             raise ValueError("controller runtime does not match its immutable definition")
@@ -101,14 +103,13 @@ class Controller:
             raise ValueError("controller source path does not match the frozen source")
         return canonical
 
-    def command(self, attempt_id: str) -> list[str]:
-        runtime = self.run["container"]
+    def environment(self, attempt_id: str) -> dict:
         output = self.run["storage"]["run_dir"] + f"/attempts/{attempt_id}/outputs"
         environment = {**self.run.get("env", {}),
                        "OUTPUT_DIR": output, "PROJECT_NAME": self.campaign["project"],
                        "RUN_ID": self.run["run_id"], "ATTEMPT_ID": attempt_id,
                        "SOURCE_ID": self.run["source_id"]}
-        if managed_io(runtime):
+        if managed_io(self.run["container"]):
             environment["INPUTS_DIR"] = "/inputs"
         if self.run.get("data_preparation"):
             environment["DATA_DIR"] = (self.run["storage"]["project_data_root"] + "/data-preparations/"
@@ -117,12 +118,25 @@ class Controller:
             environment["STATE_DIR"] = output.rsplit("/", 1)[0] + "/state"
         if self.run.get("resume_from"):
             environment["RESUME_DIR"] = "/inputs/resume"
+        return environment
+
+    def duration_seconds(self) -> int:
         duration = self.run["resources"]["max_time"].split(":")
-        seconds = sum(int(value) * multiplier for value, multiplier in zip(duration, (3600, 60, 1)))
+        return sum(int(value) * multiplier for value, multiplier in zip(duration, (3600, 60, 1)))
+
+    def manifest_launcher(self) -> bool:
+        return bool(self.campaign.get("artifact_store") and self.run["container"].get("launcher_contract") == LAUNCHER_CONTRACT)
+
+    def command(self, attempt_id: str) -> list[str]:
+        if self.manifest_launcher():
+            return ["ml-exp-worker"]
+        runtime = self.run["container"]
+        environment = self.environment(attempt_id)
+        output = environment["OUTPUT_DIR"]
         return ["env", *[f"{key}={value}" for key, value in sorted(environment.items())],
                 "/bin/sh", "-c", 'mkdir -p "$1" && cd "$2" && shift 2 && exec "$@"',
                 "ml-expd", output, runtime["workdir"],
-                *(["timeout", "--signal=TERM", "--kill-after=30s", str(seconds) + "s", "python3", "/usr/local/lib/ml-expd/worker.py"] if self.campaign.get("artifact_store") else []),
+                *(["timeout", "--signal=TERM", "--kill-after=30s", str(self.duration_seconds()) + "s", "python3", "/usr/local/lib/ml-expd/worker.py"] if self.campaign.get("artifact_store") else []),
                 *runtime["entrypoint"], *self.run.get("arguments", [])]
 
     def dispatch_command(self, manifest):
@@ -134,29 +148,39 @@ class Controller:
                                                manifest["attempt_id"], self.root, self.run["outputs"],
                                                **({"checkpoint_upload": True} if self.run.get("checkpoint_upload") else {}),
                                                **({"checkpoint_state": self.state_context(manifest["attempt_id"])} if self.run.get("checkpoint_persistence") else {}))
-            command = ["env", f"ML_EXPD_UPLOAD_URL={url}", f"ML_EXPD_UPLOAD_TOKEN={token}",
-                       f"ML_EXPD_UPLOAD_LIMIT={limit}",
-                       "ML_EXPD_OUTPUT_PATTERNS=" + json.dumps(self.run["outputs"]), *command]
+            dispatch = {"ML_EXPD_UPLOAD_URL": url, "ML_EXPD_UPLOAD_LIMIT": str(limit),
+                        "ML_EXPD_OUTPUT_PATTERNS": json.dumps(self.run["outputs"])}
             if self.run.get("inputs"):
                 prefix = transfer.config["public_transfer_base"].rstrip("/").rsplit("/", 1)[0]
                 base = prefix + "/asset-transfers/" + "/".join([self.campaign["project"], self.run["run_id"], manifest["attempt_id"]])
                 inputs = [{**item, "url": base + "/" + item["asset_id"]} for item in self.run["inputs"]]
-                command = ["env", "ML_EXPD_INPUT_ASSETS=" + json.dumps(inputs), *command]
+                dispatch["ML_EXPD_INPUT_ASSETS"] = json.dumps(inputs)
             if self.run.get("checkpoint_upload"):
                 prefix = transfer.config["public_transfer_base"].rstrip("/").rsplit("/", 1)[0]
                 url = prefix + "/snapshot-transfers/" + "/".join([self.campaign["project"], self.run["run_id"], manifest["attempt_id"]])
-                command = ["env", f"ML_EXPD_SNAPSHOT_URL={url}",
-                           "ML_EXPD_SNAPSHOT_INTERVAL=" + str(self.run["checkpoint_upload"]["interval_seconds"]), *command]
+                dispatch.update(ML_EXPD_SNAPSHOT_URL=url,
+                                ML_EXPD_SNAPSHOT_INTERVAL=str(self.run["checkpoint_upload"]["interval_seconds"]))
             if self.run.get("data_preparation"):
-                command = ["env", "ML_EXPD_DATA_PREPARATION=" + json.dumps(self.run["data_preparation"]), *command]
+                dispatch["ML_EXPD_DATA_PREPARATION"] = json.dumps(self.run["data_preparation"])
             if self.run.get("checkpoint_persistence"):
                 prefix = transfer.config["public_transfer_base"].rstrip("/").rsplit("/", 1)[0]
                 state_url = prefix + "/checkpoint-transfers/" + "/".join([self.campaign["project"], self.run["run_id"], manifest["attempt_id"]])
-                command = ["env", "ML_EXPD_CHECKPOINT_STATE=" + json.dumps(self.state_context(manifest["attempt_id"])),
-                           "ML_EXPD_CHECKPOINT_STATE_URL=" + state_url,
-                           "ML_EXPD_CHECKPOINT_STATE_INTERVAL=" + str(self.run["checkpoint_persistence"]["interval_seconds"]), *command]
+                dispatch.update(ML_EXPD_CHECKPOINT_STATE=json.dumps(self.state_context(manifest["attempt_id"])),
+                                ML_EXPD_CHECKPOINT_STATE_URL=state_url,
+                                ML_EXPD_CHECKPOINT_STATE_INTERVAL=str(self.run["checkpoint_persistence"]["interval_seconds"]))
             if self.run.get("resume_from"):
-                command = ["env", "ML_EXPD_CHECKPOINT_RESTORE=" + json.dumps(self.run["resume_from"]), *command]
+                dispatch["ML_EXPD_CHECKPOINT_RESTORE"] = json.dumps(self.run["resume_from"])
+            if self.manifest_launcher():
+                launch_url = transfer.seal_launch(self.campaign["project"], self.run["run_id"], manifest["attempt_id"], {
+                    "contract": LAUNCHER_CONTRACT,
+                    "identity": {"project": self.campaign["project"], "run_id": self.run["run_id"], "attempt_id": manifest["attempt_id"]},
+                    "environment": {**self.environment(manifest["attempt_id"]), **dispatch},
+                    "workdir": self.run["container"]["workdir"],
+                    "argv": [*self.run["container"]["entrypoint"], *self.run.get("arguments", [])],
+                    "timeout_seconds": self.duration_seconds(),
+                })
+                return ["env", "ML_EXPD_BOOTSTRAP_TOKEN=" + token, "ml-exp-worker", "--manifest-url", launch_url]
+            command = ["env", "ML_EXPD_UPLOAD_TOKEN=" + token, *[f"{key}={value}" for key, value in sorted(dispatch.items())], *command]
         return command
 
     def state_context(self, attempt_id):
@@ -254,6 +278,14 @@ class Controller:
             return {"run_id": self.run["run_id"], "attempt_id": self.attempt_id,
                     "backend": self.backend.kind, "backend_job_id": None, "state": "NOT_SUBMITTED"}
         result = self.backend.status(self.campaign, self.run)
+        previous = self.store.load_status_payload(self.attempt_id) or {}
+        if (self.backend.kind == "sensecore" and previous.get("state") == "PREEMPTED"
+                and result.get("raw_state") == "SUSPENDED" and result["state"] == "CANCELLED"):
+            # Old adapters classified every provider stop as preemption. Keep
+            # the immutable terminal lifecycle while exposing the correction.
+            result["state"] = "PREEMPTED"
+            result["detail"] = {"classification": "legacy_terminal_state",
+                                "observed_normalized_state": "CANCELLED"}
         result.update(attempt_id=self.attempt_id, updated_at=utc_now())
         self.store.write_status_payload(self.attempt_id, result)
         return result

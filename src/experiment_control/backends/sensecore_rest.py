@@ -13,6 +13,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 
 class RESTError(RuntimeError):
@@ -49,9 +51,15 @@ def origin(service, record):
     return f"https://{service}.{region}.sensecoreapi.cn"
 
 
-def create_document(backend, name, image, command):
+def create_document(backend, name, image, command, *, cpu_copy=False):
     """Translate the existing frozen backend definition without credentials."""
     component(name)
+    if cpu_copy and (any(type(backend.get(key)) is not int for key in ("gpus", "cpus", "memory_gb"))
+                     or tuple(backend.get(key) for key in ("gpus", "cpus", "memory_gb")) != (0, 2, 4)
+                     or not re.fullmatch(r"[A-Za-z0-9_.-]+\.2c4g", backend.get("worker_spec", ""))):
+        raise ValueError("CPU data copy requires the verified 2CPU/4GiB/0GPU profile")
+    if "debug" in str(backend["aec2"]).casefold() and not cpu_copy:
+        raise ValueError("GPU ACP jobs must not use a debug cluster")
     volume, path = backend["storage_mount"].rsplit(":", 1)
     volume, _, subdir = volume.partition("/")
     if not volume or not path.startswith("/") or any(p == ".." for p in (path + "/" + subdir).split("/")):
@@ -90,7 +98,7 @@ class SenseCoreREST:
             raise RESTError("configuration") from None
         return cls(config)
 
-    def request(self, url, *, method="GET", body=None, timeout=30, signed=True):
+    def request(self, url, *, method="GET", body=None, timeout=30, signed=True, read_only=False):
         parsed = urllib.parse.urlsplit(url)
         if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
                 or parsed.port not in (None, 443) or parsed.fragment
@@ -127,9 +135,9 @@ class SenseCoreREST:
             except ValueError:
                 pass
             raise RESTError(operation, status=error.code, reason=reason,
-                            uncertain=method != "GET" and error.code >= 500) from None
+                            uncertain=method != "GET" and not read_only and error.code >= 500) from None
         except (OSError, ValueError, urllib.error.URLError):
-            raise RESTError(operation, uncertain=method != "GET") from None
+            raise RESTError(operation, uncertain=method != "GET" and not read_only) from None
 
     def pages(self, url, field, *, query=None, numbered=False):
         result, tokens, names, token, total_seen = [], set(), set(), "1", 0
@@ -186,10 +194,10 @@ class SenseCoreREST:
             self._workspaces[name] = rows[0]
         return self._workspaces[name]
 
-    def pools(self, backend):
+    def pools(self, backend, *, fresh=False):
         record = self.workspace(backend["workspace"])
         url = origin("aec2", record) + "/compute/workspace/data/v1" + scope_path(record, "workspaces") + "/workspaceAEC2Bindings"
-        if url not in self._pools:
+        if fresh or url not in self._pools:
             rows = self.pages(url, "aec2s", numbered=True)
             pools = []
             for row in rows:
@@ -209,6 +217,47 @@ class SenseCoreREST:
         if len(rows) != 1:
             raise ValueError("SenseCore pool is not bound to the configured workspace")
         return rows[0]
+
+    def select_pool(self, backend, *, gpus):
+        """Resolve a new GPU Run once, from fresh compatible SPOT bindings."""
+        if backend.get("pool_selection") != "highest_spot" or backend.get("quota_type") != "spot":
+            raise ValueError("GPU pool selection requires highest_spot and spot quota")
+        if isinstance(gpus, bool) or not isinstance(gpus, int) or gpus < 1:
+            raise ValueError("GPU pool selection requires a positive GPU count")
+        pools = self.pools(backend, fresh=True)
+        current = self.pool(backend)
+        allowed = backend.get("allowed_clusters")
+        if allowed is not None and (not isinstance(allowed, list) or not allowed
+                                   or any(not isinstance(n, str) for n in allowed)):
+            raise ValueError("invalid allowed GPU clusters")
+        candidates = []
+        for pool in pools:
+            if ("debug" in pool["name"].casefold() or (allowed is not None and pool["name"] not in allowed)
+                    or pool["zone"] != current["zone"] or not pool.get("vpc_id")
+                    or pool["vpc_id"] != current.get("vpc_id")):
+                continue
+            shares = pool.get("spot_status")
+            try:
+                if not isinstance(shares, list) or not shares:
+                    continue
+                counts = [Decimal(str(row["spot_quota"]["device"])) for row in shares]
+                if any(not n.is_finite() or n < 0 or n > 2147483647 for n in counts):
+                    continue
+                spot = sum(counts)
+            except (KeyError, TypeError, InvalidOperation):
+                continue
+            specs = self.specs({**backend, "aec2": pool["name"]})
+            if not any(s["name"] == backend["worker_spec"] and s["device"]["number"] == gpus for s in specs):
+                continue
+            candidates.append({"name": pool["name"], "spot_devices": str(spot)})
+        if not candidates:
+            raise ValueError("no compatible non-debug cluster reports a SPOT allowance")
+        candidates.sort(key=lambda p: (-Decimal(p["spot_devices"]), p["name"]))
+        return {**backend, "aec2": candidates[0]["name"],
+                "pool_selection_evidence": {"policy": "highest_spot",
+                    "observed_at": datetime.now(timezone.utc).isoformat(),
+                    "selected": candidates[0]["name"], "configured_aec2": backend["aec2"], "candidates": candidates,
+                    "quota_field": "spot_status[].spot_quota.device"}}
 
     def specs(self, backend):
         pool = self.pool(backend)
@@ -265,7 +314,99 @@ class SenseCoreREST:
         return self.pages(self.jobs_url(backend) + "/" + component(name) + "/workers", "workers", numbered=True)
 
     def logs(self, backend, name, tail):
+        if isinstance(tail, bool) or not isinstance(tail, int) or not 1 <= tail <= 10000:
+            raise ValueError("invalid log tail")
         job = self.describe(backend, name)
+        if job.get("state") in {"FAILED", "SUCCEEDED", "SUSPENDED", "DELETED"}:
+            try:
+                return self.offline_logs(backend, name, tail, job=job)
+            except RESTError as error:
+                return {"text": "", "expired": False, "exit_code": 1,
+                        "source": "offline", "historical": True, "available": False,
+                        "unavailable_reason": "OFFLINE_LOGS_UNAVAILABLE", "error": error.details}
+        live = self.live_logs(backend, name, tail, job=job)
+        if live.get("available", True):
+            return live
+        try:
+            offline = self.offline_logs(backend, name, tail, job=job)
+        except (RESTError, ValueError):
+            return live
+        if not offline.get("available"):
+            return live
+        return {**offline, "live_error": live.get("error")}
+
+    def offline_logs(self, backend, name, tail, *, job=None):
+        """Read bounded historical logs; only exact, owned worker hits escape."""
+        if isinstance(tail, bool) or not isinstance(tail, int) or not 1 <= tail <= 10000:
+            raise ValueError("invalid offline log tail")
+        job = self.describe(backend, name) if job is None else self.owned(job, name)
+        workers = self.workers(backend, name)
+        record = self.workspace(backend["workspace"])
+        stations = [s for s in self.resources("monitor.ts.v1.telemetryStation")
+                    if s.get("zone") == record["zone"] and s["name"] == "ts-user-" + self.identity()]
+        if len(stations) != 1:
+            raise ValueError("SenseCore personal telemetry station is unavailable")
+        base = "https://monitor.sensecoreapi.cn/monitor/ts/data/v1" + scope_path(stations[0], "telemetryStations")
+        end = int(datetime.now(timezone.utc).timestamp())
+        try:
+            created = datetime.fromisoformat(job["create_time"].replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                raise ValueError
+            start = int(created.timestamp()) - 60
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise ValueError("job creation time is unavailable for offline logs") from None
+        if start < 0 or start > end:
+            raise ValueError("invalid offline log interval")
+        entries = []
+        total = 0
+        # The public live-log endpoint also selects the first worker. Keep that
+        # scope explicit instead of mixing independent workers' metrics.
+        if workers:
+            worker = workers[0]
+            containers = worker.get("containers") or [{"name": "container-worker-0"}]
+            if (not isinstance(containers, list) or not isinstance(containers[0], dict)
+                    or not isinstance(containers[0].get("name"), str)):
+                raise ValueError("invalid worker container identity")
+            container = containers[0]["name"]
+            body = {"start": str(start), "end": str(end), "resource_id": [record["id"]],
+                    "page_size": tail, "offset": "0", "custom_filter": [
+                        {"key": "Attributes.k8s.pod.name", "value": worker["name"]},
+                        {"key": "Attributes.k8s.container.name", "value": container}]}
+            data = self.request(base + "/logStream/products/product.lepton-acp-new/logs",
+                                method="POST", body=body, read_only=True)
+            if not isinstance(data, dict) or not isinstance(data.get("hits"), list):
+                raise ValueError("invalid SenseCore offline log response")
+            raw_total = data.get("total")
+            if not isinstance(raw_total, (str, int)) or isinstance(raw_total, bool) or not str(raw_total).isdecimal():
+                raise ValueError("invalid offline log count")
+            total = int(raw_total)
+            if len(data["hits"]) > tail or total < len(data["hits"]):
+                raise ValueError("invalid offline log page size")
+            for hit in data["hits"]:
+                if (not isinstance(hit, dict) or not isinstance(hit.get("body"), str)
+                        or not isinstance(hit.get("attributes"), dict)
+                        or hit["attributes"].get("k8s.pod.name") != worker["name"]
+                        or hit["attributes"].get("k8s.container.name") != container
+                        or not isinstance(hit.get("resource"), dict)
+                        or hit["resource"].get("resource_id") != record["id"]
+                        or not isinstance(hit.get("log_time"), str)):
+                    raise ValueError("offline log identity differs from the exact worker")
+                try:
+                    instant = datetime.fromisoformat(hit["log_time"].replace("Z", "+00:00"))
+                    if instant.tzinfo is None or not start <= instant.timestamp() <= end + 1:
+                        raise ValueError
+                except ValueError:
+                    raise ValueError("invalid offline log timestamp") from None
+                entries.append((instant, hit["log_time"], hit["body"]))
+        entries.sort()
+        return {"text": "\n".join(text for _, _, text in entries[-tail:]),
+                "expired": False, "exit_code": 0, "source": "offline", "historical": True,
+                "available": bool(entries), "last_log_at": entries[-1][1] if entries else None,
+                "truncated": total > len(entries),
+                "worker": workers[0]["name"] if workers else None,
+                "unavailable_reason": None if entries else "OFFLINE_LOGS_EMPTY"}
+
+    def live_logs(self, backend, name, tail, *, job):
         workers = self.workers(backend, name)
         if not workers:
             return {"text": "", "expired": False, "exit_code": 0}
@@ -286,14 +427,14 @@ class SenseCoreREST:
                     "lepton.sensetime.com/workload-uid": job["uid"]}.items()]}
         try:
             token = self.request("https://monitor.sensecoreapi.cn/monitor/ts/data/v1" + scope_path(station, "telemetryStations") + "/logLivestream/token",
-                                 method="POST", body=body, timeout=20)["token"]
+                                 method="POST", body=body, timeout=20, read_only=True)["token"]
             payload = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "=="))
             endpoint = payload["Endpoint"]
             if not isinstance(endpoint, str) or any(c in endpoint for c in "/?#@"):
                 raise ValueError
             data = self.request("https://" + endpoint + "/v1/polling/resources/" + urllib.parse.quote(resource_id, safe=""),
                                 method="POST", body={"token": token, "resource_id": resource_id, "tail": tail},
-                                timeout=20, signed=False)
+                                timeout=20, signed=False, read_only=True)
         except RESTError as error:
             expired = error.status == 403 and error.details["provider_reason"] in {"ExpiredPodToken", "ExpiredToken", "PodTokenExpired"}
             return {"text": "", "expired": expired, "exit_code": 1,

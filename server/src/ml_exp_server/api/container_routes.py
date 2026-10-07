@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse, Response
 
 from ..application_errors import ApplicationError
 from ..artifacts import ArtifactService
@@ -202,6 +202,23 @@ async def artifact_transfer(project: str, run_id: str, attempt_id: str, request:
         stream.seek(0)
         receipt = await invoke(service.receive, project, run_id, attempt_id, token, stream, size)
         return {"sha256": receipt["sha256"], "bytes": receipt["bytes"], "files": len(receipt["files"])}
+
+
+@router.get("/launch-transfers/{project}/{run_id}/{attempt_id}/{digest}", include_in_schema=False)
+async def launch_transfer(project: str, run_id: str, attempt_id: str, digest: str, request: Request):
+    runtime = request.app.state.runtime
+    config = runtime.config.container_execution.artifact_store_file
+    if not config:
+        raise HTTPException(status_code=404, detail="launch transfer is not configured")
+    store = ArtifactStore(Path(config), runtime.config.project_registry_root_path())
+    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    try:
+        if scheme.lower() != "bearer":
+            raise ValueError()
+        body = await run_in_threadpool(store.launch, project, run_id, attempt_id, digest, token)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="invalid Attempt launch capability or identity")
+    return Response(body, media_type="application/json", headers={"Cache-Control": "no-store", "ETag": '"' + digest + '"'})
 
 
 @router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/files")

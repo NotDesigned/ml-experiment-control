@@ -179,7 +179,7 @@ class DataDeliveryService:
                    "ML_EXPD_DATA_COPY_ROOT=" + copy["data_root"], "ML_EXPD_DATA_COPY_IMAGE=" + value["image"],
                    "ML_EXPD_DATA_COPY_SECONDS=" + str(copy["copy_timeout_seconds"]),
                    "python", "/usr/local/lib/ml-expd/data_copy_worker.py"]
-        body = create_document(copy, value["scheduler_name"], value["image"], shlex.join(command))
+        body = create_document(copy, value["scheduler_name"], value["image"], shlex.join(command), cpu_copy=True)
         body["roles"][0]["resource_spec"][0].update(
             requests={"cpu": "2", "memory": "3Gi"}, limits={"cpu": "2", "memory": "4Gi"})
         return body

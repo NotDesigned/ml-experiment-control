@@ -21,7 +21,7 @@ IMAGE='registry.example/data@sha256:'+'b'*64
 @pytest.fixture
 def delivery(remote_client,stored,monkeypatch):
     config=json.loads(stored[0].read_text())
-    config['data_delivery']={'sco_bin':'sco','aec2':'debug','worker_spec':'N6lS.Iu.I10.2c4g',
+    config['data_delivery']={'aec2':'cpu-pool','worker_spec':'N6lS.Iu.I10.2c4g',
         'gpus':0,'cpus':2,'memory_gb':4,'copy_timeout_seconds':5,'queue_timeout_seconds':5}
     stored[0].write_text(json.dumps(config))
     data=archive({'tokens.bin':b'training tokens'})
@@ -98,7 +98,7 @@ def test_prepare_execute_requires_exact_cpu_scope_and_seals_ready(delivery,monke
     calls=[]
     def create(copy, document, **kwargs):
         calls.append("create")
-        assert document["resource_pool"]["name"] == "debug"
+        assert document["resource_pool"]["name"] == "cpu-pool"
         spec = document["roles"][0]["resource_spec"][0]
         assert spec["name"] == "N6lS.Iu.I10.2c4g"
         assert spec["requests"] == {"cpu": "2", "memory": "3Gi"}
@@ -245,13 +245,13 @@ def test_data_delivery_enqueue_failure_is_reconcilable(delivery):
     assert client.post(endpoint+'/reconcile',json={'confirmation':value['confirmation']}).status_code==503
 
 
-def test_disabled_delivery_and_sco_failures_fail_closed(client,stored,monkeypatch):
+def test_disabled_delivery_and_rest_configuration_fail_closed(client,stored,monkeypatch):
     runtime=client.app.state.runtime
     runtime.config.container_execution.artifact_store_file=None
     with pytest.raises(ApplicationError):DataDeliveryService(runtime)
     runtime.config.container_execution.artifact_store_file=str(stored[0])
     with pytest.raises(ApplicationError):DataDeliveryService(runtime)
-    config=json.loads(stored[0].read_text());config['data_delivery']={'sco_bin':'sco'};stored[0].write_text(json.dumps(config))
+    config=json.loads(stored[0].read_text());config['data_delivery']={'configured':True};stored[0].write_text(json.dumps(config))
     service=DataDeliveryService(runtime)
     monkeypatch.setattr(module.SenseCoreREST, "from_environment", lambda: SimpleNamespace())
     assert service.rest is service.rest
@@ -276,3 +276,15 @@ def test_copy_callback_preserves_reverse_proxy_prefix(delivery):
     assert 'https://example/ml-expd/api/data-copy-transfers/demo/' in command['roles'][0]['startup_script']
     service.assets.objects.config['public_transfer_base']='https://example/other'
     with pytest.raises(ValueError):service.create_document(raw)
+
+
+def test_debug_cpu_copy_remains_allowed_and_historical_delivery_remains_readable(delivery):
+    _, service, value, asset = delivery
+    service.config['aec2'] = 'DEBUG-cluster'
+    revised = service.prepare('demo', asset['asset_id'], 'cloud')
+    assert revised['copy_profile']['aec2'] == 'DEBUG-cluster'
+    with service.state('demo', revised['delivery_id']) as (_, snapshot):
+        document = service.create_document({**snapshot.value, 'image': IMAGE})
+    assert document['resource_pool']['name'] == 'DEBUG-cluster'
+    assert document['roles'][0]['resource_spec'][0]['requests']['cpu'] == '2'
+    assert service.read('demo', value['delivery_id'])['status'] == 'PREPARED'
