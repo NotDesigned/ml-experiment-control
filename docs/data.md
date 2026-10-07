@@ -140,3 +140,13 @@ automatic retention cleanup. Worker outputs still use server/object-store
 storage; moving client data staging to the desktop did not move that path.
 Direct signed output downloads bypass ML-Expd staging; a local object store can
 still use the same physical server's disk/network. It is not an off-host backup.
+
+## WYD preparation without compute-node internet
+
+The one-config server workflow prepares desktop assets through SSH into shared
+`/datapool` before GPU submission. API memory is bounded; archive staging and
+unpacking use backend disk. The helper has a 1800-second total transfer/validation
+budget, separate from the GPU walltime. A verified shared cache is frozen as a
+required input. Corruption fails closed; uncertain transfers are never repeated
+automatically. Existing low-level/historical Runs keep their original HTTP worker
+path. See [backend preparation](backends.md).

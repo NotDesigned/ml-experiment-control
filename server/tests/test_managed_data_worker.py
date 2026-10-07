@@ -239,7 +239,7 @@ def test_managed_worker_hides_capabilities_publishes_live_checkpoint_and_preserv
     monkeypatch.setattr(worker, "link_path", lambda target, path: linked.append(str(path)))
     deliver = worker.deliver
     def delivery(item, token, cache, **kwargs):
-        if kwargs:
+        if "archive_stream" in kwargs:
             return deliver(item, token, cache, **kwargs)
         delivered.append(token)
         return tmp_path

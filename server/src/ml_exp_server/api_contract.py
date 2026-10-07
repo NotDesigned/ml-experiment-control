@@ -19,6 +19,9 @@ VERSIONED_OPENAPI_PATH = "/api/v2/openapi.json"
 CLIENT_PROTOCOL_HEADER = "X-ML-Expd-Client-Protocol"
 
 SERVER_CAPABILITIES = (
+    "input-delivery-progress.v1",
+    "backend-capabilities.v1",
+    "server-experiment-preparation.v1",
     "desktop-data-upload.v1",
     "ccr-data-delivery.v1",
     "nas-data-ready-reuse.v1",

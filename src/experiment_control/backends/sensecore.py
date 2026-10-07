@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .capabilities import SENSECORE
+
 import hashlib
 import json
 import os
@@ -157,6 +159,7 @@ def normalize_state(raw_state: str, *, cancellation_requested: bool = False) -> 
 
 class SenseCoreBackend:
     kind = "sensecore"
+    capabilities = SENSECORE
 
     def __init__(self, services: BackendServices):
         self.s = services

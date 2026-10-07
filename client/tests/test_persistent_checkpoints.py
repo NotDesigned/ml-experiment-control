@@ -16,7 +16,7 @@ def test_single_config_persistence_and_restore_are_forwarded(configuration):
     with pytest.raises(ClientError,match="persistent-checkpoints.v1"):experiment(api,HEALTH,configuration,configuration.with_name("state.json"))
     assert not api.calls
     experiment(api,{"capabilities":[*HEALTH["capabilities"],"persistent-checkpoints.v1"]},configuration,configuration.with_name("state.json"))
-    run=next(args["data"] for path,args in api.calls if path.endswith("/runs"))
+    run=next(args["data"]["run"] for path,args in api.calls if path.endswith("/experiment-preparations"))
     assert run["resume_from"]==REFERENCE and run["checkpoint_persistence"]=={}
 
 

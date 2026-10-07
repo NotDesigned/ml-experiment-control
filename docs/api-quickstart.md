@@ -61,7 +61,11 @@ Write `experiment.json`:
 
 Replace the executor with one published by your server. SenseCore GPU count
 must match the fixed spec; actual CPU/memory may exceed requested minimums.
-Local paths are relative to the config file.
+Local paths are relative to the config file. Instead of `executor`, use
+`"executor_selector": {"backend": "slurm"}` or an ordered `candidates` list.
+Optional `requirements` can demand persistent checkpoints or reliable exit codes;
+matching rejects unsupported capabilities before upload/build. See [backend
+contracts and preparation](backends.md).
 
 ```bash
 ml-exp experiment experiment.json --state trial.state.json
@@ -69,8 +73,9 @@ ml-exp experiment experiment.json --state trial.state.json --resume \
   --execute --seconds 1800 --download-to results/trial-001
 ```
 
-The first command uploads source, builds/reuses the image, freezes the Run and
-prepares gates. It does not submit GPU training. Adding desktop SenseCore inputs
+The first command uploads source/data and submits one preparation request. The
+server matches the executor, builds/reuses the image, prepares data, freezes the
+Run and prepares gates. It does not submit GPU training. Adding desktop SenseCore inputs
 can launch a bounded zero-GPU data-copy job during preparation. `--execute`
 authorizes scheduling within the budget. `--seconds` is the client's wait limit;
 `resources.max_time` controls worker/job duration. Disconnecting does not cancel.
@@ -111,3 +116,11 @@ or config needs a new Run ID and state file. See [recovery](recovery.md) for
 Lower-level commands are `pack → create → prepare → execute → watch → download`.
 Use `ml-exp COMMAND --help` and the [API reference](source-api.md) when reusing
 one Runtime across multiple Runs or integrating a custom client.
+
+## Interrupted preparation
+
+Client state records `preparation_id`, dependency IDs and the submitted intent.
+`--resume` observes the same preparation. If it reports `RECONCILE_REQUIRED`, inspect
+its Runtime/data delivery first; an explicit `--resume --continue-preparation`
+advances independently READY dependencies without replaying uncertain effects.
+`--execute` remains separate authorization for GPU training.

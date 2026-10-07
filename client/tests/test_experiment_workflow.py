@@ -21,10 +21,23 @@ def configuration(tmp_path):
 class API:
     def __init__(self):
         self.calls = []; self.built = False; self.authorized = False; self.submitted = False; self.uncertain = None
+        self.preparation = None; self.builds = 0
     def call(self, path, **kwargs):
         self.calls.append((path, kwargs))
         if path == "/api/executors": return {"executors": [{"id": "gpu"}]}
+        if path == "/api/executors/match": return {"executor": "gpu", "live_availability_checked": False}
         if "source-imports" in path: return {"source_id": "source." + "a" * 64}
+        if "experiment-preparations" in path:
+            if self.preparation is None:
+                self.built = True; self.builds += 1
+                self.preparation = {"preparation_id": "preparation-" + "d" * 32, "status": "READY", "runtime_id": "runtime." + "b" * 64,
+                    "run": {"run_id": "trial"}, "matching": {"executor": "gpu"},
+                    "submission": {"submission_id": "action-" + "c" * 16, "status": "PREPARED", "ready": True,
+                                   "confirmation": "EXECUTE test", "attempt_id": "attempt-001"}}
+                if self.uncertain == "prepare":
+                    self.uncertain = None
+                    raise ClientError("lost preparation response")
+            return self.preparation
         if "/runtimes" in path:
             if path.endswith("/execute"):
                 if self.uncertain == "build": raise ClientError("lost build response")
@@ -44,7 +57,7 @@ class API:
         raise AssertionError(path)
 
 
-HEALTH = {"capabilities": ["dockerfile-only.v1", "multipart-upload.v1"]}
+HEALTH = {"capabilities": ["dockerfile-only.v1", "multipart-upload.v1", "server-experiment-preparation.v1"]}
 
 
 def test_script_data_preparation_is_frozen_without_asset_upload(configuration):
@@ -58,7 +71,7 @@ def test_script_data_preparation_is_frozen_without_asset_upload(configuration):
         experiment(api, HEALTH, configuration, configuration.with_name("state.json"))
     assert api.calls == []
     state = experiment(api, {"capabilities": [*HEALTH["capabilities"], "data-preparation.v1"]}, configuration, configuration.with_name("state.json"))
-    request = next(kwargs["data"] for path, kwargs in api.calls if path.endswith("/runs"))
+    request = next(kwargs["data"]["run"] for path, kwargs in api.calls if path.endswith("/experiment-preparations"))
     assert request["data_preparation"] == value["data_preparation"]
     assert state["input_bindings"] == [] and not any("asset-upload" in path for path, _ in api.calls)
 
@@ -88,22 +101,27 @@ def test_prepare_then_execute_resume_reuses_runtime_run_and_exact_submission(con
     completed = experiment(api, HEALTH, configuration, state, resume=True, execute=True, out=state.with_name("results"))
     assert completed["result"]["scheduler_state"] == "SUCCEEDED" and completed["download"]["verified"]
     assert downloads == [("demo", "trial", "attempt-001")]
-    assert len([p for p, _ in api.calls if p.endswith("/runtimes/prepare")]) == 1
-    assert len([p for p, _ in api.calls if p.endswith("/runs")]) == 1
+    assert len([p for p, _ in api.calls if p.endswith("/experiment-preparations")]) == 1
+    assert not any(p.endswith(("/runtimes/prepare", "/runs")) for p, _ in api.calls)
+    assert api.builds == 1
     assert len([p for p, _ in api.calls if p.endswith("/execute") and "submissions" in p]) == 1
     experiment(api, HEALTH, configuration, state, resume=True, execute=True, out=state.with_name("results"))
     assert len(downloads) == 1
 
 
-@pytest.mark.parametrize("boundary", ["build", "submit"])
+@pytest.mark.parametrize("boundary", ["prepare", "submit"])
 def test_lost_effectful_response_is_not_replayed(configuration, boundary):
     api = API(); api.uncertain = boundary; state = configuration.with_name("state.json")
     with pytest.raises(ClientError, match="lost"):
         experiment(api, HEALTH, configuration, state, execute=True)
     before = [p for p, _ in api.calls if p.endswith("/execute")]
-    with pytest.raises(ClientError, match="uncertain"):
-        experiment(api, HEALTH, configuration, state, execute=True, resume=True)
-    assert [p for p, _ in api.calls if p.endswith("/execute")] == before
+    if boundary == "submit":
+        with pytest.raises(ClientError, match="uncertain"):
+            experiment(api, HEALTH, configuration, state, execute=True, resume=True)
+        assert [p for p, _ in api.calls if p.endswith("/execute")] == before
+    else:
+        assert experiment(api, HEALTH, configuration, state, execute=True, resume=True)["result"]["scheduler_state"] == "SUCCEEDED"
+        assert api.builds == 1
 
 
 def test_resume_rejects_config_source_and_state_inside_source(configuration):
@@ -175,6 +193,67 @@ def test_one_config_transports_project_schema_and_scoring_protocol(configuration
                  evaluation={"D_FT": 0, "context_tokens": 1024})
     configuration.write_text(json.dumps(value))
     api = API(); experiment(api, HEALTH, configuration, configuration.with_name("state.json"))
-    definition = next(kwargs["data"] for endpoint, kwargs in api.calls if endpoint.endswith("/runs"))
+    definition = next(kwargs["data"]["run"] for endpoint, kwargs in api.calls if endpoint.endswith("/experiment-preparations"))
     assert definition["metrics_schema"] == value["metrics_schema"]
     assert definition["evaluation"] == value["evaluation"]
+
+
+def test_matching_request_precedes_source_upload_and_transmits_requirements(configuration):
+    value = json.loads(configuration.read_text())
+    value.pop("executor")
+    value.update(executor_selector={"backend": "slurm", "candidates": ["gpu"]}, requirements={"exit_code": True})
+    configuration.write_text(json.dumps(value))
+    api = API()
+    prepared = experiment(api, HEALTH, configuration, configuration.with_name("state.json"))
+    assert api.calls[0][0] == "/api/executors/match"
+    body = api.calls[0][1]["data"]
+    assert body["executor_selector"] == value["executor_selector"] and body["requirements"] == value["requirements"]
+    assert prepared["matching"]["executor"] == "gpu"
+
+
+@pytest.mark.parametrize("extra", [
+    {"executor_selector": {"backend": "sensecore"}},
+    {"executor": None}, {"executor": []},
+    {"executor": None, "executor_selector": {}},
+    {"executor": None, "executor_selector": {"backend": []}},
+    {"executor": None, "executor_selector": {"backend": "other"}},
+    {"executor": None, "executor_selector": {"candidates": "gpu"}},
+    {"executor": None, "executor_selector": {"candidates": ["../gpu"]}},
+    {"requirements": {"exit_code": "yes"}}, {"requirements": {"unknown": True}},
+    {"requirements": {"platform": []}},
+])
+def test_invalid_matching_config_fails_before_any_api(configuration, extra):
+    value = json.loads(configuration.read_text()); value.update(extra)
+    configuration.write_text(json.dumps(value))
+    with pytest.raises(ClientError): read_config(configuration)
+
+
+def test_server_preparation_requires_capability_and_explicit_continue(configuration):
+    api = API()
+    with pytest.raises(ClientError, match="server-experiment-preparation.v1"):
+        experiment(api, {"capabilities": ["dockerfile-only.v1"]}, configuration, configuration.with_name("state.json"))
+    with pytest.raises(ClientError, match="requires --resume"):
+        experiment(api, HEALTH, configuration, configuration.with_name("state.json"), continue_preparation=True)
+    assert api.calls == []
+
+
+def test_uncertain_preparation_observes_until_explicit_continue(configuration):
+    class Waiting(API):
+        def call(self, path, **kwargs):
+            result = super().call(path, **kwargs)
+            if "experiment-preparations" in path:
+                if path.endswith("/continue"):
+                    self.status = "READY"
+                    self.preparation["status"] = "READY"
+                else:
+                    self.preparation["status"] = getattr(self, "status", "RECONCILE_REQUIRED")
+                return self.preparation
+            return result
+    api = Waiting(); state = configuration.with_name("state.json")
+    with pytest.raises(ClientError, match="dependency inspection"):
+        experiment(api, HEALTH, configuration, state)
+    with pytest.raises(ClientError, match="dependency inspection"):
+        experiment(api, HEALTH, configuration, state, resume=True)
+    assert not any(path.endswith("/continue") for path, _ in api.calls)
+    assert experiment(api, HEALTH, configuration, state, resume=True, continue_preparation=True)["submission"]["status"] == "PREPARED"
+    assert api.builds == 1

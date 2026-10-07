@@ -100,3 +100,11 @@ for uncertain submissions, enforce finite retry/deadline limits and reconcile
 the existing outbox after interruption. Cancellation disables pending recovery.
 Code/data/hash failures, user cancellation and output-return failures must not
 automatically restart training. No latest-checkpoint fallback or infinite retry.
+
+## Server-owned experiment preparation
+
+An interrupted `EXECUTING` preparation becomes `RECONCILE_REQUIRED` at daemon
+startup. Original Runtime/copy request markers and dependency IDs stay intact.
+Observe those exact dependencies; after READY verification, explicitly continue
+the preparation. This only advances preparation, never authorizes/replays GPU
+submission. Changed executor configuration blocks the frozen selection.

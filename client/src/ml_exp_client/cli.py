@@ -30,6 +30,7 @@ def parser():
     workflow.add_argument("config", type=Path)
     workflow.add_argument("--state", type=Path, required=True)
     workflow.add_argument("--resume", action="store_true", help="continue the same identities; never replay uncertain scheduler requests")
+    workflow.add_argument("--continue-preparation", action="store_true", help="with --resume, continue after saved dependencies have been inspected; never replay uncertain effects")
     workflow.add_argument("--execute", action="store_true", help="authorize and execute the prepared submission within its GPU-hour budget")
     workflow.add_argument("--seconds", type=int, default=1800)
     workflow.add_argument("--download-to", type=Path)
@@ -130,7 +131,8 @@ def main(argv=None):
                 save(args.schema, client.call(health["openapi_path"]))
         elif args.command == "experiment":
             result = experiment(client, health, args.config, args.state, resume=args.resume,
-                                execute=args.execute, seconds=args.seconds, out=args.download_to)
+                                execute=args.execute, seconds=args.seconds, out=args.download_to,
+                                continue_preparation=args.continue_preparation)
         elif args.command == "pack":
             if args.state.exists():
                 raise ClientError("state file exists; inspect it with runtime instead of replaying pack")

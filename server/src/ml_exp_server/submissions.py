@@ -189,6 +189,11 @@ class ExperimentSubmissionService:
             result["progress_availability"] = "NOT_OBSERVED"
             if state in {"RUNNING", "STARTING"}:
                 result["diagnostic"] = "Scheduler state is not a training heartbeat; inspect data preparation and process logs"
+        from .input_progress import read_input_progress
+        transfer = read_input_progress(Path(row.run_dir) / "attempts" / view["attempt_id"]) if row is not None else None
+        result["input_delivery"] = transfer
+        if transfer is not None and transfer["phase"] == "FAILED":
+            result["diagnostic"] = transfer["code"]
         return result
 
     def list(self, project: str, run_id: str) -> dict[str, Any]:
