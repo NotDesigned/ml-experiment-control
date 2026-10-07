@@ -102,10 +102,10 @@ def test_transactional_replay_conflicts_and_remote_confirmation(tmp_path):
     with pytest.raises(ValueError): store.scope("study", "off", "attempt-001")
 
 
-def create_trial(client, *, name="trial", options=None):
+def create_trial(client, *, name="trial", options=None, schema=None):
     bundle = runtime(client)
     data = {"run_id": name, "executor": "gpu", "runtime_id": bundle["runtime_id"], "parameters": {"seed": 42, "wd": 0.1},
-            "metrics_schema": {"definitions": {"loss": {"unit": "nats/token"}}}, "evaluation": {"benchmark": "fineweb"}}
+            "metrics_schema": schema or {"definitions": {"loss": {"unit": "nats/token"}}}, "evaluation": {"benchmark": "fineweb"}}
     if options is not None:
         data["wandb"] = options
     response = client.post("/api/projects/demo/runs", json=data)
@@ -364,6 +364,57 @@ def test_worker_metric_cursor_retries_without_loss_and_survives_restart(tmp_path
     retried.url = "http://api.example/api/record-transfers/demo/trial/attempt-001"
     retried.emit("lifecycle", {}); retried.flush(final=True)
     assert retried.state["queue"]
+
+
+def test_client_writer_streams_live_through_api_and_builds_loss_curve(client, stored, tmp_path, monkeypatch):
+    from ml_exp_client import MetricWriter
+    client.put("/api/tracking/wandb", json={"api_key": "test-key", "entity": "team"})
+    schema = {"definitions": {name: {"unit": "nats/token"} for name in ("train_loss", "validation_loss")}}
+    _, _, controller = create_trial(client, schema=schema)
+    artifacts = ArtifactStore(stored[0], client.app.state.runtime.config.project_registry_root_path())
+    _, token, _ = artifacts.issue("demo", "trial", "attempt-001", controller.root, ["**/*"], record_stream=True)
+    output = tmp_path / "outputs"
+    writer = MetricWriter(output)
+    worker = WorkerRecords(output, "https://api.example/api/record-transfers/demo/trial/attempt-001", token)
+    responses = []
+    class Connection:
+        def request(self, method, path, *, body, headers):
+            self.response = client.post(path, content=body, headers=headers)
+            responses.append(self.response)
+        def getresponse(self):
+            # Simulate loss of the first successful HTTP acknowledgement.
+            return SimpleNamespace(status=503 if len(responses) == 1 else self.response.status_code,
+                                   read=lambda n: self.response.content)
+        def close(self): pass
+    monkeypatch.setattr("ml_exp_server.worker_records.https_connection", lambda *a, **k: Connection())
+    writer.log("train_loss", 2.5, unit="nats/token", step=1, dataset_id="train-v1", variant_id="baseline")
+    worker.flush(final=True)
+    assert worker.state["offset"] == 0 and responses[0].status_code == 200
+    worker = WorkerRecords(output, worker.url, token)
+    worker.flush(final=True)
+    writer.log("train_loss", 2.0, unit="nats/token", step=2, dataset_id="train-v1", variant_id="baseline")
+    worker.flush(final=True)
+    body = client.get("/api/attempts/demo/trial::attempt-001/metrics").json()
+    assert [(m["step"], m["value"]) for m in body["metrics"]["records"]] == [(1, 2.5), (2, 2.0)]
+    assert all(m["status"] == "VALID" for m in body["metrics"]["records"])
+    store = store_for(client.app.state.runtime)
+    scope = store.pending()[0]
+    assert store.total(scope["id"]) == 2  # acknowledgement retry did not duplicate a point
+    sdk, rows, handles = fake_sdk()
+    job = {**store.binding("demo", "trial"), "scope": scope, "api_key": "test-key",
+           "events": store.events(scope["id"]), "display": store.display(scope["id"], 2),
+           "session_root": str(tmp_path), "terminal": False}
+    sessions = {}
+    assert exporter.publish(job, sdk, sessions)["error"] == "REMOTE_ACK_PENDING"
+    rows.extend(handles[0].logs)
+    assert exporter.publish(job, sdk, sessions)["error"] == "REMOTE_DISPLAY_ACK_PENDING"
+    sdk.Api(overrides={"base_url": "https://api.wandb.ai"}).run("").summary.update(handles[0].summary)
+    assert exporter.publish(job, sdk, sessions)["display_version"] == 2
+    assert [r["curves/train_loss"] for r in rows] == [2.5, 2.0]
+    assert [r["axes/train_loss/step"] for r in rows] == [1, 2]
+    writer.log("validation_loss", 1.9, unit="nats/token", step=2, checkpoint_id="final-sha",
+               dataset_id="validation-v1", numerator=190, denominator=100)
+    assert len(writer.path.read_text().splitlines()) == 3  # final export appends
 
 
 def test_preparation_freezes_target_before_build_and_keeps_failure_evidence(client, service, monkeypatch):

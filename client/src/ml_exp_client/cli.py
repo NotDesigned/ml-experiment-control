@@ -127,6 +127,10 @@ def main(argv=None):
             args.directory.mkdir(parents=True, exist_ok=False)
             template = files("ml_exp_client").joinpath("templates", "train.py.txt")
             (args.directory / "train.py").write_bytes(template.read_bytes())
+            # The exact stdlib module also works without installing the client
+            # in a training image. Keep one canonical implementation.
+            helper = files("ml_exp_client").joinpath("metrics.py")
+            (args.directory / "ml_exp_metrics.py").write_bytes(helper.read_bytes())
             base = args.base_image or "REPLACE_WITH_APPROVED_BASE@sha256:" + "0" * 64
             (args.directory / "Dockerfile").write_text(f"FROM {base}\nWORKDIR /workspace\n", encoding="utf-8")
             print(json.dumps({"source_dir": str(args.directory), "entrypoint": ["python", "train.py"]}, indent=2))

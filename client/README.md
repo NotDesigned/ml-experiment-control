@@ -22,7 +22,7 @@ executors = client.call("/api/executors")
 # download(client, "my-study", "trial-001", "attempt-001", Path("new-results"))
 ```
 
-Exports: `Client`, `ClientError`, `source_archive`, `download`. `call(path)` is
+Exports: `Client`, `ClientError`, `source_archive`, `download`, `MetricWriter`. `call(path)` is
 GET; `data=...` is JSON POST; `raw=...` is raw POST. Paths begin `/api/` and are
 relative to the API base. Auth/protocol headers and proxy prefixes are handled.
 
@@ -33,3 +33,29 @@ no API Authorization and are hash-checked into a new directory.
 See [development](../docs/development.md) for independent build/tests.
 
 Optional W&B publication: [configuration and per-Run projects](../docs/wandb.md).
+
+## Training metrics
+
+`ml-exp init source` includes a standalone `ml_exp_metrics.py` and a training
+example that appends an explicit-unit metric at each step. The helper is the
+same stdlib-only module exported as `ml_exp_client.MetricWriter`; training images
+need no client installation, API token or W&B SDK/key. Copy the generated helper
+alongside your training entry when adapting an existing project.
+
+```python
+from ml_exp_metrics import MetricWriter
+
+metrics = MetricWriter()  # OUTPUT_DIR/metrics.jsonl, independently of STATE_DIR
+metrics.log("train_loss", loss.item(), unit="nats/token", step=step,
+            dataset_id="fineweb-train-v1")
+metrics.log("validation_loss", total_nll / target_tokens, unit="nats/token",
+            step=step, numerator=total_nll, denominator=target_tokens,
+            dataset_id="fineweb-validation-v1", checkpoint_id=checkpoint_hash)
+```
+
+Declare these names/units in your Run's schema. Each call appends and flushes;
+never overwrite the file with a final-only result. Keep recovery state in
+`STATE_DIR` and stream metrics directly to `OUTPUT_DIR`, even when final weights
+are exported later. A reporting rank should write your distributed aggregate.
+Use a new Dockerfile Runtime with `experiment-records.v1` for live delivery.
+See [metric meaning, aggregation and provenance](../docs/metrics.md).

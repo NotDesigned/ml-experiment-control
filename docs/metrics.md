@@ -51,6 +51,38 @@ Named JSON records on stdout remain a sampled compatibility observation path:
 {"name":"validation_loss","value":2.5,"unit":"nats/token","step":100,"numerator":25000,"denominator":10000,"checkpoint_id":"step-0100","dataset_id":"fineweb-v1","variant_id":"baseline"}
 ```
 
+The client starter (`ml-exp init source`) includes the standalone, stdlib-only
+`ml_exp_metrics.py`. It is copied from the client's canonical metrics module:
+
+```python
+from ml_exp_metrics import MetricWriter
+
+metrics = MetricWriter()  # resolves OUTPUT_DIR, not STATE_DIR
+metrics.log("train_loss", loss.item(), unit="nats/token", step=step,
+            dataset_id="training-v1", variant_id="baseline")
+metrics.log("validation_loss", total_nll / tokens, unit="nats/token", step=step,
+            numerator=total_nll, denominator=tokens,
+            checkpoint_id=checkpoint_hash, dataset_id="validation-v1")
+```
+
+An installed client also exposes `from ml_exp_client import MetricWriter`.
+Each call writes a complete line and flushes before returning, using append mode
+so a reporting restart and final result cannot erase earlier points. There is no
+network call or API/W&B credential in the helper. Names and units must be explicit;
+nonfinite values remain invalid evidence, never zero. The server owns schema and
+protocol validation. For distributed training, write the experiment's aggregate
+from its reporting rank; the platform does not combine rank losses.
+
+Keep the live file directly in OUTPUT_DIR, including when checkpoint recovery
+uses STATE_DIR. Writing `updates.jsonl` in a private experiment directory, printing
+to stdout, or copying a final-only file at exit does not provide a complete live
+stream. Do not overwrite OUTPUT_DIR/metrics.jsonl during final export. The worker
+reads incremental complete lines roughly every five seconds; network retry and
+W&B confirmation add delay. Two distinct steps allow a curve, not just a scalar.
+Older immutable Runtime images require a new build for the record-stream worker;
+upgrading the API does not change them. Existing output JSONL can be delivered
+after the run, but this is not real-time history delivery.
+
 Query `/api/runs/P/R/metrics` or exact Attempt
 `/api/attempts/P/R::attempt-001/metrics`. Responses retain records, context,
 status/errors, completeness and source. `max_points` bounds/downsamples the

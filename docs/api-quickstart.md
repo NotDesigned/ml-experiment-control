@@ -28,6 +28,7 @@ Keep source, data, client state and results separate:
 study/
   source/Dockerfile
   source/train.py
+  source/ml_exp_metrics.py
   experiment.json
   trial.state.json       # created by client, outside source
   results/               # downloads, outside source
@@ -39,7 +40,10 @@ Generate a starter, replacing the placeholder with an approved digest:
 ml-exp init source --base-image 'REGISTRY/BASE@sha256:ACTUAL_64_HEX_DIGEST'
 ```
 
-The starter uses stdlib Python. It verifies the workflow, not CUDA availability
+The starter uses stdlib Python and appends an explicit-unit metric after every
+smoke step, immediately visible in OUTPUT_DIR/metrics.jsonl. Keep its generated
+ml_exp_metrics.py helper when replacing train.py with your training code.
+It verifies the workflow, not CUDA availability
 or GPU throughput. Replace it with training code and dependency installation
 afterwards. See [Dockerfile rules](builds.md#dockerfile-contract).
 
@@ -54,6 +58,7 @@ Write `experiment.json`:
   "entrypoint": ["python3", "train.py"],
   "executor": "wyd-l40s",
   "arguments": ["--steps", "20"],
+  "metrics_schema": {"definitions": {"loss": {"unit": "dimensionless"}}},
   "resources": {"gpus": 1, "cpus": 8, "memory_gb": 32, "max_time": "00:10:00"},
   "max_gpu_hours": 0.2
 }
