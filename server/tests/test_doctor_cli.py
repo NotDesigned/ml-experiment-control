@@ -1,6 +1,8 @@
 from pathlib import Path
 import json
 import subprocess
+from types import SimpleNamespace
+from experiment_control.backends.sensecore_rest import RESTError, SenseCoreREST
 
 import pytest
 
@@ -39,6 +41,7 @@ def test_doctor_reports_backend_availability_and_enforces_scheduler_gate(
     monkeypatch.setattr(
         "experiment_control.runner.SubprocessRunner.run", available,
     )
+    monkeypatch.setattr(SenseCoreREST, "from_environment", lambda: SimpleNamespace(identity=lambda: "id", resources=lambda *a: []))
     config = _write_config(tmp_path)
     assert main(["--config", str(config), "doctor", "--json"]) == 0
     checks = {
@@ -55,6 +58,7 @@ def test_doctor_reports_backend_availability_and_enforces_scheduler_gate(
     monkeypatch.setattr(
         "experiment_control.runner.SubprocessRunner.run", unavailable,
     )
+    monkeypatch.setattr(SenseCoreREST, "from_environment", lambda: (_ for _ in ()).throw(RESTError("configuration")))
     assert main(["--config", str(config), "doctor", "--json"]) == 0
     optional = {
         item["name"]: item
@@ -87,6 +91,7 @@ def test_doctor_reports_backend_probe_timeout_without_hanging(
     monkeypatch.setattr(
         "experiment_control.runner.SubprocessRunner.run", timeout_safe_sco,
     )
+    monkeypatch.setattr(SenseCoreREST, "from_environment", lambda: (_ for _ in ()).throw(RESTError("timeout")))
     config = _write_config(tmp_path)
 
     assert main(["--config", str(config), "doctor", "--json"]) == 0
@@ -95,7 +100,7 @@ def test_doctor_reports_backend_probe_timeout_without_hanging(
         for item in json.loads(capsys.readouterr().out)["checks"]
     }
     assert checks["backend.sensecore"]["status"] == "INFO"
-    assert "safe-sco" in checks["backend.sensecore"]["detail"]
+    assert "sensecore-rest" in checks["backend.sensecore"]["detail"]
 
 
 

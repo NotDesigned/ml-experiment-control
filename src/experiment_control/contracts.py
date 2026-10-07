@@ -48,7 +48,7 @@ class SlurmBackendConfig(_SlurmBackendOptional):
 class _SenseCoreBackendOptional(TypedDict, total=False):
     priority: str
     worker_nodes: int
-    sco_bin: str
+    sco_bin: str  # Historical identity field only; ignored by the REST adapter.
 
 
 class SenseCoreBackendConfig(_SenseCoreBackendOptional):
@@ -192,7 +192,12 @@ class StreamBackendLogs(_BackendLogIdentity):
     stderr: list[str]
 
 
-class LiveBackendLogs(_BackendLogIdentity):
+class _LiveBackendLogsOptional(TypedDict, total=False):
+    available: bool
+    error: dict[str, JsonValue] | None
+
+
+class LiveBackendLogs(_BackendLogIdentity, _LiveBackendLogsOptional):
     lines: list[str]
     expired: bool
     stream_exit_code: int

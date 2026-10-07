@@ -45,17 +45,13 @@ def secret(service,value):
     with service.state('demo',value['delivery_id']) as (_,snapshot):return snapshot.value['copy_token']
 
 
-@pytest.mark.parametrize('result,invalid', [('No jobs found\n',False),('[]',False),('{}',True),('[null]',True),('unknown output',True)])
-def test_exact_name_query_handles_real_cli_empty_results(delivery,monkeypatch,result,invalid):
-    _,service,value,_=delivery
-    def sco(copy,args):
-        assert args == ['acp','jobs','list','--workspace-name',copy['workspace'],
-                        '--name',value['scheduler_name'],'--all','--format','json']
-        return result
-    monkeypatch.setattr(service,'sco',sco)
-    if invalid:
-        with pytest.raises(ValueError):service.find(value)
-    else:assert service.find(value) is None
+def test_exact_name_rest_query_is_scoped(delivery, monkeypatch):
+    _, service, value, _ = delivery
+    calls = []
+    rest = SimpleNamespace(find=lambda copy, name: calls.append((copy["workspace"], name)) or [])
+    service._rest = rest
+    assert service.find(value) is None
+    assert calls == [(value["copy_profile"]["workspace"], value["scheduler_name"])]
 
 
 def test_control_revision_creates_new_delivery_without_replaying_history(delivery,monkeypatch):
@@ -71,31 +67,24 @@ def test_reserved_default_and_explicit_spot_have_distinct_frozen_scope(delivery)
     _,service,value,asset=delivery
     assert value['copy_profile']['quota_type']=='reserved'
     with service.state('demo',value['delivery_id']) as (_,snapshot):
-        command=service.create_command({**snapshot.value,'image':IMAGE})
-    assert command[command.index('--quota-type')+1]=='reserved'
+        command=service.create_document({**snapshot.value,'image':IMAGE})
+    assert command['scheduling']['quota_type']=='RESERVED'
     service.config['quota_type']='spot'
     revised=service.prepare('demo',asset['asset_id'],'cloud')
     assert revised['delivery_id']!=value['delivery_id']
     with service.state('demo',revised['delivery_id']) as (_,snapshot):
-        command=service.create_command({**snapshot.value,'image':IMAGE})
-    assert command[command.index('--quota-type')+1]=='spot'
+        command=service.create_document({**snapshot.value,'image':IMAGE})
+    assert command['scheduling']['quota_type']=='SPOT'
     assert service.read('demo',value['delivery_id'])==value
 
 
-@pytest.mark.parametrize('text,status,reason', [
-    ('400 Bad Request\\nBackend: {\\"reason\\":\\"tjInvalidArgument\\",\\"command\\":\\"secret\\"}',400,'tjInvalidArgument'),
-    ('403 Forbidden Authorization: Bearer secret',403,None),
-    ('unknown CLI failure contains secret',None,None),
-])
-def test_control_error_reports_only_provider_codes(delivery,monkeypatch,text,status,reason):
-    _,service,value,_=delivery
-    monkeypatch.setattr(module.subprocess,'run',lambda *a,**kw:SimpleNamespace(returncode=1,stdout='',stderr=text))
-    with pytest.raises(module.ACPControlError) as error:service.sco(value['copy_profile'],['acp','jobs','create','--command','secret'])
-    assert error.value.details=={'operation':'acp jobs create','exit_code':1,'http_status':status,'provider_reason':reason}
-    assert 'secret' not in json.dumps(error.value.details)
-    pending=service.begin('demo',value['delivery_id'],value['confirmation'])
-    result=service.finish(pending)
-    assert result['status']=='RECONCILE_REQUIRED' and result['control_error']['operation']=='acp jobs list'
+def test_control_error_persists_only_safe_rest_codes(delivery):
+    _, service, value, _ = delivery
+    error = module.RESTError("GET jobs", status=403, reason="Denied")
+    service._rest = SimpleNamespace(find=lambda *a: (_ for _ in ()).throw(error))
+    result = service.finish(service.begin("demo", value["delivery_id"], value["confirmation"]))
+    assert result["status"] == "RECONCILE_REQUIRED"
+    assert result["control_error"] == error.details
 
 
 def test_prepare_execute_requires_exact_cpu_scope_and_seals_ready(delivery,monkeypatch):
@@ -107,21 +96,20 @@ def test_prepare_execute_requires_exact_cpu_scope_and_seals_ready(delivery,monke
     pending=service.begin('demo',value['delivery_id'],value['confirmation'])
     with pytest.raises(ApplicationError):service.begin('demo',value['delivery_id'],value['confirmation'])
     calls=[]
-    def sco(copy,args):
-        calls.append(args)
-        if args[:3]==['acp','jobs','list']:return '[]'
-        if args[:3]==['aec2','clusters','list-workerspec']:
-            return '| N6lS.Iu.I10.2c4g | CPU | 0 | spot | 2 | 4 | ready |'
-        assert args[:3]==['acp','jobs','create']
-        assert args[args.index('--worker-spec')+1]=='N6lS.Iu.I10.2c4g'
-        assert args[args.index('--aec2-name')+1]=='debug'
-        assert '--wait' not in args
-        # READY can arrive while create's response is still in flight. A late
-        # QUEUED update must never overwrite the sealed callback receipt.
+    def create(copy, document, **kwargs):
+        calls.append("create")
+        assert document["resource_pool"]["name"] == "debug"
+        spec = document["roles"][0]["resource_spec"][0]
+        assert spec["name"] == "N6lS.Iu.I10.2c4g"
+        assert spec["requests"] == {"cpu": "2", "memory": "3Gi"}
+        assert spec["limits"] == {"cpu": "2", "memory": "4Gi"}
         service.callback('demo',value['delivery_id'],secret(service,value),receipt(value,'COPYING'))
         service.callback('demo',value['delivery_id'],secret(service,value),receipt(value))
-        return '{}'
-    monkeypatch.setattr(service,'sco',sco)
+        return {}
+    service._rest = SimpleNamespace(
+        find=lambda *a: calls.append("find") or [],
+        specs=lambda *a: calls.append("specs") or [{"name":"N6lS.Iu.I10.2c4g", "device":{"number":0},
+            "cpu":{"vcpu_allocatable":2}, "memory":{"allocatable":4}}], create=create)
     result=service.finish(pending)
     assert result['status']=='READY' and result['receipt']==receipt(value)
     assert service.begin('demo',value['delivery_id'],value['confirmation']) is None
@@ -175,20 +163,19 @@ def test_reconciliation_never_replays_unknown_submissions(delivery,monkeypatch,c
     _,service,value,_=delivery
     pending=service.begin('demo',value['delivery_id'],value['confirmation'])
     created=[];clock=iter([0,0,100])
-    def sco(copy,args):
-        if args[:3]==['acp','jobs','list']:
-            job={'name':value['scheduler_name'],'state':'SUCCEEDED' if case=='terminal' else 'RUNNING'}
-            if case=='ambiguous-job':return json.dumps([job,job])
-            if case in {'terminal','expired','found'}:return json.dumps([job])
-            return '[]'
-        if args[:3]==['aec2','clusters','list-workerspec']:
-            return '' if case=='cpu-absent' else '| N6lS.Iu.I10.2c4g | CPU | 1 | spot | 2 | 4 | ready |' if case=='wrong-cpu' else '| N6lS.Iu.I10.2c4g | CPU | 0 | spot | 2 | 4 | ready |'
-        if args[:3]==['acp','jobs','stop']:
-            created.append('stop');return '{}'
+    def find(copy, name):
+        job={'name':value['scheduler_name'],'state':'SUCCEEDED' if case=='terminal' else 'RUNNING'}
+        if case=='ambiguous-job': return [job,job]
+        return [job] if case in {'terminal','expired','found'} else []
+    def create(*args, **kwargs):
         created.append('create')
         if case=='error-race':service.callback('demo',value['delivery_id'],secret(service,value),{'status':'FAILED','error_class':'OSError'})
         raise ValueError('uncertain ACP create')
-    monkeypatch.setattr(service,'sco',sco)
+    service._rest = SimpleNamespace(find=find, create=create,
+        stop=lambda *a: created.append('stop'),
+        specs=lambda *a: [] if case=='cpu-absent' else [{"name":"N6lS.Iu.I10.2c4g",
+            "device":{"number":1 if case=='wrong-cpu' else 0},
+            "cpu":{"vcpu_allocatable":2}, "memory":{"allocatable":4}}])
     monkeypatch.setattr(module,'time',SimpleNamespace(sleep=lambda x:None,monotonic=lambda:next(clock)))
     if case=='wrong-image':monkeypatch.setattr(module,'builder_request',lambda *a:{'image':'bad'})
     if case=='found':
@@ -266,21 +253,18 @@ def test_disabled_delivery_and_sco_failures_fail_closed(client,stored,monkeypatc
     with pytest.raises(ApplicationError):DataDeliveryService(runtime)
     config=json.loads(stored[0].read_text());config['data_delivery']={'sco_bin':'sco'};stored[0].write_text(json.dumps(config))
     service=DataDeliveryService(runtime)
-    def execute(command,**kw):
-        assert all(key.lower() not in {'http_proxy','https_proxy','all_proxy'} for key in kw['env'])
-        return SimpleNamespace(returncode=1,stdout='private',stderr='private')
-    monkeypatch.setattr(module.subprocess,'run',execute)
-    with pytest.raises(ValueError):service.sco({'sco_bin':'sco'},['acp','jobs','list'])
-    monkeypatch.setattr(module.subprocess,'run',lambda *a,**kw:SimpleNamespace(returncode=0,stdout='[]'))
-    assert service.sco({'sco_bin':'sco'},['acp','jobs','list'])=='[]'
+    monkeypatch.setattr(module.SenseCoreREST, "from_environment", lambda: SimpleNamespace())
+    assert service.rest is service.rest
 
 
 def test_cpu_spec_skips_unrelated_rows_and_callback_rejects_http(delivery,monkeypatch):
     _,service,value,_=delivery
-    monkeypatch.setattr(service,'sco',lambda *a:'header\n| other.2c4g | CPU | 0 | spot | 2 | 4 | ready |\n| N6lS.Iu.I10.2c4g | CPU | 0 | spot | 2 | 4 | ready |')
+    service._rest = SimpleNamespace(specs=lambda *a: [
+        {"name": "other.2c4g"}, {"name":"N6lS.Iu.I10.2c4g", "device":{"number":0},
+         "cpu":{"vcpu_allocatable":2}, "memory":{"allocatable":4}}])
     service.verify_cpu(value['copy_profile'])
     service.assets.objects.config['public_transfer_base']='http://example'
-    with pytest.raises(ValueError):service.create_command(value)
+    with pytest.raises(ValueError):service.create_document(value)
 
 
 def test_copy_callback_preserves_reverse_proxy_prefix(delivery):
@@ -288,7 +272,7 @@ def test_copy_callback_preserves_reverse_proxy_prefix(delivery):
     service.assets.objects.config['public_transfer_base']='https://example/ml-expd/api/artifact-transfers'
     with service.state('demo',value['delivery_id']) as (_,snapshot):raw=snapshot.value
     raw['image']=IMAGE
-    command=service.create_command(raw)
-    assert 'https://example/ml-expd/api/data-copy-transfers/demo/' in command[-1]
+    command=service.create_document(raw)
+    assert 'https://example/ml-expd/api/data-copy-transfers/demo/' in command['roles'][0]['startup_script']
     service.assets.objects.config['public_transfer_base']='https://example/other'
-    with pytest.raises(ValueError):service.create_command(raw)
+    with pytest.raises(ValueError):service.create_document(raw)

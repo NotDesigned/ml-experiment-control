@@ -105,7 +105,6 @@ def test_sensecore_observation_shape_and_recovery_errors(tmp_path):
     backend = SenseCoreBackend(services(tmp_path, QueueRunner([])))
     assert backend.verify_assets({}, [object()])["missing"] is None
     assert backend.stage({}, {}, "source", object()) is True
-    assert "job-list" in backend.safe_command(["sco", "list"], "job-list")[-1]
 
     with pytest.raises(RuntimeError, match="conflicting scheduler name"):
         backend.recover_submission(
@@ -178,7 +177,7 @@ def test_sensecore_submit_fails_closed_for_drift_duplicates_and_create_errors(tm
         CommandResult(("create",), 1, stderr="failed"),
         CommandResult(("redact",), 0, "sanitized"),
     ])))
-    with pytest.raises(RuntimeError, match="sanitized"):
+    with pytest.raises(RuntimeError, match="REST request failed"):
         failed.submit(
             {}, run, manifest, dry_run=False,
             intent=submission_intent(failed, run),
@@ -224,7 +223,8 @@ def test_sensecore_status_cancel_markers_and_active_cancel(tmp_path, monkeypatch
         {"state": "CANCELLED", "backend_job_id": resource},
     ])
     monkeypatch.setattr(backend, "status", lambda *args: next(calls))
-    backend.s = replace(backend.s, run_command=QueueRunner([CommandResult(("stop",), 0)]).run)
+    from backend_harness import RESTQueue
+    backend._rest = RESTQueue(QueueRunner([CommandResult(("stop",), 0)]))
     assert backend.cancel({}, run)["state"] == "CANCELLED"
     assert marker.is_file()
 
@@ -312,6 +312,19 @@ def test_sensecore_worker_unknown_and_log_tail_bounds(tmp_path):
     assert backend.workers({}, sensecore_run())["worker_state"] == "UNKNOWN"
     with pytest.raises(ValueError, match="tail"):
         backend.logs({}, sensecore_run(), tail=0)
+
+
+def test_sensecore_unavailable_logs_do_not_fabricate_process_liveness(tmp_path, monkeypatch):
+    backend = SenseCoreBackend(services(tmp_path, QueueRunner([])))
+    monkeypatch.setattr(backend, "logs", lambda *a, **kw: {
+        "lines": [], "expired": False, "available": False,
+        "error": {"http_status": 403, "provider_reason": "Denied"},
+    })
+    monkeypatch.setattr(backend, "workers", lambda *a: {"worker_state": "RELEASED"})
+    result = backend.collect({}, sensecore_run())
+    assert result["evidence_unavailable_reason"] == "live_logs_unavailable"
+    assert not result["process_evidence"]["observed"]
+    assert not result["live_logs_available"] and not result["live_logs_expired"]
 
 
 def test_slurm_helpers_and_validation_edges(tmp_path):
@@ -510,7 +523,7 @@ def test_sensecore_cancel_and_worker_failures_remain_sanitized(tmp_path, monkeyp
     monkeypatch.setattr(backend, "status", lambda *args: {
         "state": "RUNNING", "backend_job_id": resource,
     })
-    with pytest.raises(RuntimeError, match="sanitized stop failure"):
+    with pytest.raises(RuntimeError, match="REST request failed"):
         backend.cancel({}, sensecore_run())
 
     worker = SenseCoreBackend(services(
@@ -521,7 +534,7 @@ def test_sensecore_cancel_and_worker_failures_remain_sanitized(tmp_path, monkeyp
         ]),
         record={"attempt_id": "attempt-001", "backend_job_id": resource},
     ))
-    with pytest.raises(RuntimeError, match="sanitized worker failure"):
+    with pytest.raises(RuntimeError, match="REST request failed"):
         worker.workers({}, sensecore_run())
 
 

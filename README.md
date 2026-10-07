@@ -1,7 +1,7 @@
 # ML Experiment Control
 
 `ml-expd` is an HTTP control plane for reproducible experiments on WYD
-Slurm/Apptainer and SenseCore/SCO. Import source, combine it with a prepared
+Slurm/Apptainer and SenseCore REST APIs. Import source, combine it with a prepared
 container environment, freeze a Run, submit it, inspect progress, and download
 results from an exact Attempt. The same source, image and command work across
 both platforms; operator-defined profiles supply their different infrastructure.

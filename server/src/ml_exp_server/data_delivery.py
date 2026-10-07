@@ -7,14 +7,14 @@ import fcntl
 import hashlib
 import hmac
 import json
-import os
 from pathlib import Path
 import re
 import secrets
 import shlex
-import subprocess
 import time
 from urllib.parse import urlsplit
+
+from experiment_control.backends.sensecore_rest import SenseCoreREST, RESTError, create_document
 
 from .application_errors import ApplicationError
 from .data_assets import AssetStore, ASSET_ID
@@ -26,19 +26,6 @@ from .storage import DurableJsonState, utc_now
 DELIVERY = re.compile(r"^delivery\.[0-9a-f]{64}$")
 COPY_TRANSFER = re.compile(r"^/api/data-copy-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/delivery\.[0-9a-f]{64}$")
 CONTROL_REVISION = "acp-data-copy.v5"
-
-
-class ACPControlError(ValueError):
-    """Only bounded provider codes, never commands or credentials, are public."""
-
-    def __init__(self, arguments, result):
-        text = result.stderr.replace('\\"', '"')
-        status = re.search(r"\b([45][0-9]{2})\s+(?:Bad Request|Forbidden|Unauthorized|Not Found|Too Many Requests|Internal Server Error)", text)
-        reason = re.search(r'"reason"\s*:\s*"([A-Za-z][A-Za-z0-9_.-]{0,79})"', text)
-        self.details = {"operation": " ".join(arguments[:3]), "exit_code": result.returncode,
-                        "http_status": int(status[1]) if status else None,
-                        "provider_reason": reason[1] if reason else None}
-        super().__init__("ACP control request failed or is uncertain")
 
 
 def digest(value):
@@ -160,38 +147,27 @@ class DataDeliveryService:
                          event={"event": "data_delivery_started", "timestamp": utc_now()})
             return project, delivery_id, current, reconcile
 
-    def sco(self, copy, arguments):
-        environment = {k: v for k, v in os.environ.items() if k.lower() not in {"http_proxy", "https_proxy", "all_proxy"}}
-        result = subprocess.run([copy["sco_bin"], *arguments], env=environment, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, timeout=60, check=False)
-        if result.returncode:
-            raise ACPControlError(arguments, result)
-        return result.stdout
+    @property
+    def rest(self):
+        if not hasattr(self, "_rest"):
+            self._rest = SenseCoreREST.from_environment()
+        return self._rest
 
     def find(self, value):
-        copy = value["copy_profile"]
-        raw = self.sco(copy, ["acp", "jobs", "list", "--workspace-name", copy["workspace"],
-                             "--name", value["scheduler_name"], "--all", "--format", "json"])
-        jobs = [] if raw.strip() == "No jobs found" else json.loads(raw)
-        if not isinstance(jobs, list) or any(not isinstance(item, dict) for item in jobs):
-            raise ValueError("ACP data-copy query returned an invalid job list")
-        matches = [item for item in jobs if item.get("name") == value["scheduler_name"]]
+        matches = self.rest.find(value["copy_profile"], value["scheduler_name"])
         if len(matches) > 1:
             raise ValueError("ambiguous data-copy scheduler identity")
         return matches[0] if matches else None
 
     def verify_cpu(self, copy):
-        raw = self.sco(copy, ["aec2", "clusters", "list-workerspec", "--workspace-name", copy["workspace"],
-                             "--aec2-name", copy["aec2"]])
-        for line in raw.splitlines():
-            cells = [part.strip() for part in line.split("|")][1:-1]
-            if len(cells) == 7 and cells[0] == copy["worker_spec"]:
-                if cells[2] != "0" or cells[4] != "2" or cells[5] != "4":
-                    raise ValueError("ACP data-copy spec unexpectedly allocates GPUs or different CPU resources")
-                return
-        raise ValueError("ACP CPU-only data-copy spec is unavailable")
+        specs = [r for r in self.rest.specs(copy) if r["name"] == copy["worker_spec"]]
+        if len(specs) != 1:
+            raise ValueError("ACP CPU-only data-copy spec is unavailable")
+        spec = specs[0]
+        if (spec["device"]["number"], spec["cpu"]["vcpu_allocatable"], spec["memory"]["allocatable"]) != (0, 2, 4):
+            raise ValueError("ACP data-copy spec unexpectedly allocates GPUs or different CPU resources")
 
-    def create_command(self, value):
+    def create_document(self, value):
         copy = value["copy_profile"]
         endpoint = urlsplit(self.assets.objects.config["public_transfer_base"])
         if (endpoint.scheme != "https" or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment
@@ -203,11 +179,10 @@ class DataDeliveryService:
                    "ML_EXPD_DATA_COPY_ROOT=" + copy["data_root"], "ML_EXPD_DATA_COPY_IMAGE=" + value["image"],
                    "ML_EXPD_DATA_COPY_SECONDS=" + str(copy["copy_timeout_seconds"]),
                    "python", "/usr/local/lib/ml-expd/data_copy_worker.py"]
-        return ["acp", "jobs", "create", "--workspace-name", copy["workspace"], "--aec2-name", copy["aec2"],
-                "--name", value["scheduler_name"], "--job-name", value["scheduler_name"],
-                "--container-image-url", value["image"], "--training-framework", "pytorch",
-                "--worker-spec", copy["worker_spec"], "--worker-nodes", "1", "--quota-type", copy["quota_type"],
-                "--priority", "NORMAL", "--storage-mount", copy["storage_mount"], "--command", shlex.join(command)]
+        body = create_document(copy, value["scheduler_name"], value["image"], shlex.join(command))
+        body["roles"][0]["resource_spec"][0].update(
+            requests={"cpu": "2", "memory": "3Gi"}, limits={"cpu": "2", "memory": "4Gi"})
+        return body
 
     def finish(self, pending):
         project, delivery_id, value, reconcile = pending
@@ -229,7 +204,7 @@ class DataDeliveryService:
                     raise ValueError("data-copy submission is absent; no automatic replay")
                 self.verify_cpu(value["copy_profile"])
                 self.update(project, delivery_id, status="SUBMITTING")
-                self.sco(value["copy_profile"], self.create_command(value))
+                self.rest.create(value["copy_profile"], self.create_document(value), timeout=60)
                 self.update(project, delivery_id, status="QUEUED")
             else:
                 self.update(project, delivery_id, status="QUEUED")
@@ -239,17 +214,17 @@ class DataDeliveryService:
                 if current["status"] in {"READY", "FAILED"}:
                     return current
                 job = self.find(value)
-                if job and job.get("state", "").upper() in {"SUCCEEDED", "FAILED", "STOPPED", "DELETED"}:
+                if job and job.get("state", "").upper() in {"SUCCEEDED", "FAILED", "STOPPED", "SUSPENDED", "DELETED"}:
                     raise ValueError("data-copy job ended without a verified READY callback")
                 time.sleep(2)
-            self.sco(value["copy_profile"], ["acp", "jobs", "stop", value["scheduler_name"], "--workspace-name", value["copy_profile"]["workspace"]])
+            self.rest.stop(value["copy_profile"], value["scheduler_name"])
             return self.update(project, delivery_id, status="FAILED", error="DATA_COPY_TIMEOUT")
         except Exception as exc:
             current = self.read(project, delivery_id)
             if current["status"] in {"READY", "FAILED"}:
                 return current
             return self.update(project, delivery_id, status="RECONCILE_REQUIRED", error="data publication or ACP submission needs inspection; no automatic replay",
-                               control_error=exc.details if isinstance(exc, ACPControlError) else None)
+                               control_error=exc.details if isinstance(exc, RESTError) else None)
 
     @staticmethod
     def check_capability(value, token):

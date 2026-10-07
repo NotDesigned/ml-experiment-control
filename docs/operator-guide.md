@@ -8,10 +8,10 @@ not a request to modify a running production workspace.
 
 | Component | Responsibility | Privileges/credentials |
 | --- | --- | --- |
-| `ml-expd` | HTTP, source import, immutable definitions, Actions, collection | Dedicated service UID; workspace writes; native SSH/SCO and server S3 credentials |
+| `ml-expd` | HTTP, source import, immutable definitions, Actions, collection | Dedicated service UID; workspace writes; SSH, SenseCore REST AK/SK and server S3 credentials |
 | Image builder | Generated Dockerfile, optional pinned dependency installation and registry publication | Root-owned Unix socket worker; Docker/Buildx and registry push access |
 | WYD | Slurm allocation and Apptainer conversion/execution | Daemon user's SSH config/keys; registry pull credential |
-| SenseCore | SCO worker execution | Daemon user's SCO login; platform registry pull authorization |
+| SenseCore | ACP worker execution through REST | Daemon's private REST configuration; platform registry pull authorization |
 | S3-compatible storage | Sealed per-Attempt archives | Bucket access on server only |
 | HTTPS reverse proxy | Public API and exact-Attempt upload path | TLS; forwards Authorization and protocol headers |
 
@@ -108,7 +108,7 @@ Private images need pull authorization on the conversion host. A first OCI to
 SIF conversion can use the longer `stage_timeout_seconds`; this does not change
 the GPU job's frozen wall time.
 
-For SenseCore, install SCO and authenticate under the daemon account. Replace
+For SenseCore, provision the [private REST configuration](sensecore-rest.md). Replace
 workspace, AEC2, worker specification and volume mount with existing resources.
 Set `gpus` and `capacity` to the worker's **actual** fixed allocation. Requests
 must match the profile GPU count and cannot exceed capacity. NAS need not be
@@ -130,7 +130,7 @@ volumes; size the disk for compressed layers, unpacked CUDA libraries and build
 output. See [storage diagnostics](build-storage.md) for preflight budgets and
 explicit recovery after a capacity failure.
 The pull-only [registry-pull.json](../server/examples/registry-pull.json) is a
-separate credential used for WYD OCI conversion; it does not configure SCO's
+separate credential used for WYD OCI conversion; it does not configure SenseCore's
 platform-side registry credentials.
 
 Start the root-owned builder with the installed runtime:
@@ -205,7 +205,7 @@ Run the daemon as its dedicated account on loopback, using the installed runtime
 
 A systemd unit should specify `User`, `Group`, a readable `WorkingDirectory`,
 the absolute `ExecStart`, PATH for backend tools, `Restart=on-failure` and the
-workspace's writable paths. Keep native SSH/SCO credentials in that account's
+workspace's writable paths. Keep SSH and private SenseCore REST credentials in that account's
 home. Start the builder before testing packaging. The daemon's own collector
 runs immediately and polls every 20 seconds by default. `--snapshot` disables
 live collection and is not the normal remote experiment mode.
