@@ -9,7 +9,6 @@
   "publisher": "buildkit",
   "build_storage_path": "/var/lib/docker",
   "allow_dockerfile_builds": true,
-  "allow_dependency_builds": false,
   "registry_auth_file": "/root/.docker/config.json",
   "docker": "/usr/bin/docker",
   "skopeo": "/usr/bin/skopeo",

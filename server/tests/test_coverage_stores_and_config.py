@@ -391,7 +391,8 @@ def test_absolute_empty_research_question_directory_is_supported(tmp_path):
         "schema_version: 1\nproject: demo\ntitle: Demo\nrun_roots: []\n"
         f"research_questions_dir: {questions}\n",
     )
-    assert not hasattr(load_research_project(project), "research_questions")
+    with pytest.raises(ConfigError, match="research_questions_dir"):
+        load_research_project(project)
 
 
 def test_missing_research_question_directory_is_ignored(tmp_path):
@@ -400,4 +401,5 @@ def test_missing_research_question_directory_is_ignored(tmp_path):
         "schema_version: 1\nproject: demo\ntitle: Demo\nrun_roots: []\n"
         "research_questions_dir: missing-questions\n",
     )
-    assert not hasattr(load_research_project(project), "research_questions")
+    with pytest.raises(ConfigError, match="research_questions_dir"):
+        load_research_project(project)

@@ -765,9 +765,8 @@ mv -f "$receipt.tmp.$$" "$receipt"
              "--include=/summary.json",
              *("--include=" + pattern for pattern in self.s.collection_includes(campaign)),
              f"--include=/{run['run_id']}.json",
-             "--include=train_metrics.jsonl", "--include=metrics.jsonl",
-             "--include=all_generated_*.jsonl",
-             "--include=all_token_reconstructed_*.jsonl", "--exclude=*",
+             "--include=*.jsonl",
+             "--exclude=*",
              f"{backend['ssh_alias']}:{run['storage']['run_dir']}/", f"{mirror}/"]
         )
         summary = self.s.summarize_run(campaign, mirror)

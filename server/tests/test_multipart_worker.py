@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from ml_exp_server import container_worker as worker
+from ml_exp_server import worker_artifacts as worker
 from ml_exp_server.artifact_store import ArtifactStore
 from tests.test_multipart_upload import client, stored, policy, archive
 from tests.test_sensecore_data_workflow import custom_runtime, controller
@@ -32,15 +32,14 @@ def test_real_routes_resume_worker_after_committed_part_response_is_lost(client,
             raise OSError('response lost after commit')
         return response.json()
     monkeypatch.setattr(worker,'upload_request',request)
-    monkeypatch.setattr(worker,'MULTIPART_UPLOAD',True)
     monkeypatch.setattr(worker.time,'sleep',lambda seconds:None)
     data=archive({'weights.pt':b'weights'*500})
     marker='snapshot-transfers' if kind=='checkpoint' else 'artifact-transfers'
     url='https://api.example/api/'+marker+'/demo/trial/attempt-001'
-    worker.upload(url,token,io.BytesIO(data),len(data))
+    worker.upload_parts(url,token,io.BytesIO(data),len(data))
     assert len([p for _,p in calls if '/parts/0?' in p])==1
     before=len(calls)
-    worker.upload(url,token,io.BytesIO(data),len(data))
+    worker.upload_parts(url,token,io.BytesIO(data),len(data))
     assert len(calls)==before+1
 
 

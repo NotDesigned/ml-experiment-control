@@ -131,7 +131,7 @@ coverage are documented in [`flow_coverage.md`](flow_coverage.md).
 
 Changes to exported Python symbols or the Rust CLI must also update
 [`downstream_contract.md`](downstream_contract.md) and be validated against the
-ELF integration tests before a downstream commit pin advances.
+the affected ProjectAdapter integration tests before a downstream commit pin advances.
 
 CI first runs `uv sync --locked --all-packages`, then checks generated CLI documentation,
 Python compilation, and distribution construction with `uv build --all-packages` on every

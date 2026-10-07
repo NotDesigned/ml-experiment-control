@@ -9,14 +9,8 @@ import re
 import tempfile
 
 from .storage import atomic_json
-from .worker_contract import WORKERS
-from .data_image_recipe import RECIPE, recipe
+from .data_image_recipe import RECIPE, recipe, data_worker_digest
 
-
-def data_worker_digest():
-    root = Path(__file__).parent
-    return hashlib.sha256(b"".join((root / source).read_bytes() for source, _ in WORKERS)
-                          + (root / "data_copy_worker.py").read_bytes()).hexdigest()
 
 
 def build(builder, request):

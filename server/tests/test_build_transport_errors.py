@@ -51,7 +51,8 @@ def test_private_error_boundary_preserves_only_safe_codes(tmp_path,case):
 
 def test_failed_historical_build_logs_survive_transport_upgrade(builder,monkeypatch):
     value,request,_=builder
-    legacy=module.bundle_id(request['project'],request['source_id'],request['base_image'],legacy=True)
+    legacy='c'*64
+    (value.root/(legacy+'.definition.json')).write_text(json.dumps({'bundle_id':legacy,'project':request['project'],'source_id':request['source_id'],'base_image':request['base_image']}))
     (value.root/(legacy+'.log')).write_text('legacy session failed\n')
     assert value.request({**request,'operation':'logs','bundle_id':legacy})['lines']==['legacy session failed']
     old=value.request(request)

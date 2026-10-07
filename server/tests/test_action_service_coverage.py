@@ -361,7 +361,7 @@ def test_reconcile_policy_and_controller_outcomes(tmp_path):
         write_bad_state.reconcile(write)
 
     internal = synthetic_plan(store, "internal", "OBSERVABILITY_BACKFILL")
-    with pytest.raises(ActionError, match="backfill has been retired"):
+    with pytest.raises(ActionError, match="unsupported historical|only submission"):
         service.reconcile(internal)
     cancel = synthetic_plan(store, "cancel", "CANCEL_RUN")
     with pytest.raises(ActionError, match="not awaiting reconciliation"):
@@ -573,7 +573,7 @@ def test_local_evidence_policy_execute_and_reconcile_rejections(tmp_path, monkey
         internal_store, ActionRuntimeConfig(), actor_provider=lambda: "actor",
     )
     internal_service.authorize(internal, "review")
-    with pytest.raises(ActionError, match="backfill has been retired"):
+    with pytest.raises(ActionError, match="unsupported historical|only submission"):
         internal_service.execute(internal, f"EXECUTE {internal}")
 
     allowed = ActionService(
@@ -630,5 +630,5 @@ def test_generic_project_write_keeps_authorization_confirmation_and_retirement_g
         service.execute(identity, "yes")
     legacy = synthetic_plan(store, "retired-question", "WRITE_RESEARCH_QUESTION")
     service.authorize(legacy, "readable history")
-    with pytest.raises(ActionError, match="retired"):
+    with pytest.raises(ActionError, match="unsupported historical"):
         service.execute(legacy, "EXECUTE "+legacy)

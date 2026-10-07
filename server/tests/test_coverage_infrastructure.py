@@ -139,7 +139,7 @@ def test_action_policy_blocks_disabled_internal_observability_mutation():
         },
     }
 
-    with pytest.raises(ActionError, match="backfill has been retired"):
+    with pytest.raises(ActionError, match="unsupported historical"):
         ActionExecutionPolicy(ActionRuntimeConfig()).validate(
             snapshot, "EXECUTE action-a",
         )

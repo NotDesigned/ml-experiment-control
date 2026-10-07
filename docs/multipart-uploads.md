@@ -53,8 +53,7 @@ disk space returns 507. Unpublished parts are never listed as input assets.
 
 ## Workers
 
-Newly built images set `ML_EXPD_MULTIPART_UPLOAD=1`; the launcher consumes this
-flag before running the application. The same mechanism is used for the final
+Newly built images always use multipart upload. The same mechanism is used for the final
 declared outputs and every atomic checkpoint archive, on both WYD and SenseCore.
 It uses `/api/attempt-uploads/{project}/{run}/{attempt}/{kind}`, where `kind` is
 `artifacts` or `checkpoint`, with the same create/read/parts/complete/DELETE

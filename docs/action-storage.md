@@ -12,7 +12,11 @@ execution. A failed event insert rolls back the state update too. Existing
 cross-process Action locks still cover file artifacts and composite operations.
 This change does not remove the long lock around remote prepare checks.
 
-## Upgrade
+## Offline conversion of pre-SQLite data
+
+Current SQLite deployments need no migration command. The explicit offline
+converter remains for operator recovery of pre-SQLite records; it is never a
+runtime fallback or an instruction to roll back a live database.
 
 1. Stop the daemon and other explicit Action operator processes. Back up the
    whole Action root, runtime environment, configuration, and systemd definition.

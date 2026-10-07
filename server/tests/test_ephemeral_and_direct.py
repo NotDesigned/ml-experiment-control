@@ -87,20 +87,6 @@ def test_builder_tool_temporary_files_use_writable_state_not_readonly_host_tmp(t
     assert os.environ["TMPDIR"] == "/read-only-host-tmp"  # Scope override to the tool.
 
 
-def test_legacy_publisher_removes_only_verified_output_tag(tmp_path):
-    from ml_exp_server.image_builder import MANIFEST_TYPE
-    builder = ImageBuilder({"state_root": str(tmp_path), "repository": "registry/image", "cleanup_published_image": True})
-    raw = json.dumps({"mediaType": MANIFEST_TYPE, "config": {"digest": "sha256:" + "a" * 64}})
-    digest = "sha256:" + hashlib.sha256(raw.encode()).hexdigest()
-    calls = []
-    builder._docker = lambda args, **kwargs: calls.append(args)
-    def skopeo(args, **kwargs):
-        if args[0] == "copy":
-            Path(args[args.index("--digestfile") + 1]).write_text(digest)
-        return raw
-    builder._skopeo = skopeo
-    assert builder._publish("registry/image:bundle", tmp_path) == "registry/image@" + digest
-    assert calls[-1] == ["image", "rm", "registry/image:bundle"]
 
 
 @pytest.mark.parametrize("failed", [False, True])

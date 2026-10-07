@@ -53,7 +53,6 @@ def _make_project_files(tmp_path, run_roots="runs"):
         campaigns:
           - name: fusion-len256-gate-h100-20260711
             role_notes: {{a1: frozen Sentence-T5}}
-        research_questions_dir: experiments/research_questions
     """))
     (hyp / "h1.yml").write_text(textwrap.dedent("""\
         schema_version: 1
@@ -232,25 +231,12 @@ def test_project_import_rejects_duplicate_yaml_keys(tmp_path):
         load_research_project(path)
 
 
-def test_legacy_hypothesis_fields_are_rejected(tmp_path):
+@pytest.mark.parametrize("field", ["hypotheses_dir", "research_questions_dir", "research_questions"])
+def test_retired_question_fields_are_rejected(tmp_path, field):
     path = _make_project_files(tmp_path)
-    project_text = path.read_text().replace(
-        "research_questions_dir: experiments/research_questions",
-        "hypotheses_dir: experiments/hypotheses",
-    )
-    path.write_text(project_text)
-    with pytest.raises(ConfigError, match="hypotheses_dir"):
+    path.write_text(path.read_text() + f"{field}: []\n")
+    with pytest.raises(ConfigError, match=field):
         load_research_project(path)
-
-    path.write_text(project_text.replace(
-        "hypotheses_dir: experiments/hypotheses",
-        "research_questions_dir: experiments/research_questions",
-    ))
-    question = tmp_path / "experiments" / "research_questions" / "h1.yml"
-    question.write_text(
-        "schema_version: 1\nid: H1\ntitle: old\nverdict: PENDING\n"
-    )
-    assert load_research_project(path).project == "elf"
 
 
 def test_server_config(tmp_path):

@@ -11,7 +11,7 @@ import yaml
 
 from ml_exp_server.api.app import create_app
 from ml_exp_server.artifact_store import ArtifactStore
-from ml_exp_server.container_worker import archive_outputs
+from ml_exp_server.worker_artifacts import archive_outputs
 from ml_exp_server.schemas import ServerConfig, RunIndexRow, AttemptSummary
 from ml_exp_server.source_imports import remove_staging
 import tarfile

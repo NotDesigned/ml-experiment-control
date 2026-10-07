@@ -1751,8 +1751,6 @@ class ActionService:
             if execution.get("status") not in {"EXECUTING", "RECONCILE_REQUIRED"}:
                 raise ActionError("project write is not awaiting reconciliation")
             return self._execute_write(snapshot, execution)
-        if snapshot.get("operation") == "OBSERVABILITY_BACKFILL":
-            raise ActionError("W&B backfill has been retired; historical Actions are read-only")
         if snapshot.get("operation") == "CANCEL_RUN":
             if execution.get("status") not in {"EXECUTING", "RECONCILE_REQUIRED"}:
                 raise ActionError("cancellation is not awaiting reconciliation")

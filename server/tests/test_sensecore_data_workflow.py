@@ -10,7 +10,7 @@ import yaml
 
 from ml_exp_server.artifact_store import ArtifactStore
 from ml_exp_server.container_controller import Controller
-from ml_exp_server.container_execution import RuntimeSpec
+from ml_exp_server.container_execution import DockerfileRuntimeSpec
 from ml_exp_server.data_assets import AssetStore
 from ml_exp_server.dockerfile_build import DOCKERFILE_RECIPE, inspect_dockerfile, managed_dockerfile, worker_digest
 from ml_exp_server.image_builder import ImageBuilder, MANIFEST_TYPE, bundle_id
@@ -141,7 +141,7 @@ def test_tampered_build_receipt_cannot_become_ready(client, monkeypatch, tamper,
 @pytest.mark.parametrize("changes", [{"image": BASE}, {"environment_id": "torch"}, {"requirements": "requirements.txt"}, {"dockerfile": "../Dockerfile"}])
 def test_ambiguous_build_definitions_fail(changes):
     with pytest.raises(ValueError):
-        RuntimeSpec.model_validate({"source_id": "source." + "a" * 64, "dockerfile": "Dockerfile", "entrypoint": ["python3"], **changes})
+        DockerfileRuntimeSpec.model_validate({"source_id": "source." + "a" * 64, "dockerfile": "Dockerfile", "entrypoint": ["python3"], **changes})
 
 
 @pytest.mark.parametrize("text", ["FROM python:latest", "FROM ${BASE}", "FROM scratch", "RUN echo no-base", "FROM x AS", "FROM --platform=linux/arm64 " + BASE,

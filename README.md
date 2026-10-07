@@ -25,7 +25,7 @@ Follow the [API quickstart](docs/api-quickstart.md). It includes the complete
 [standalone client package](client/README.md), installed with
 `python3 -m pip install ./client`. Its `ml-exp` command includes an offline
 `init` template for a tiny output/metrics project. The client imports a
-source archive, packages a digest-pinned dependency image, freezes a Run for one
+source archive, builds the frozen client Dockerfile with digest-pinned bases, freezes a Run for one
 executor, prepares its review gates, submits only on explicit confirmation,
 and verifies downloaded files against the uploaded archive's SHA256.
 
@@ -68,7 +68,7 @@ exact installed revision alongside the connection details.
 
 A daemon owns one workspace, durable Actions, polling and scheduler execution.
 Clients own research goals, analysis and interpretation of metrics. Current
-W&B support is removed; numeric metrics and downloadable outputs remain.
+Project-defined metrics and downloadable outputs remain independent of tracking vendors.
 
 For a local read-only daemon scaffold after the development setup:
 

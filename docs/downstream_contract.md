@@ -1,6 +1,6 @@
 # Downstream Integration Contract
 
-`ml-experiment-control` is consumed by host repositories such as ELF. This
+`ml-experiment-control` is consumed by independent host repositories. This
 document defines the supported integration surface; internal module contents
 are not implicitly downstream APIs.
 
@@ -103,3 +103,10 @@ no training SDK or project-specific filename is embedded in the backend.
 Current daemon/ELF W&B support is removed. Historic snapshots and old frozen
 execution definitions remain historical data; they do not establish current
 SDK, publication or offline-sync support.
+
+## Artifact selection
+
+Default backend collection patterns cover control records, summaries and
+JSONL results, including existing host prediction files. Additional formats
+belong in the host's `collection_includes` or managed Run `outputs`; the backend
+has no required ELF filenames or scientific metric names.

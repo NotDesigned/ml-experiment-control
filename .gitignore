@@ -12,3 +12,7 @@ htmlcov/
 __pycache__/
 **/__pycache__/
 /.client-wheel-smoke/
+
+/.ops/
+/.recovery/
+/.dev-venv/

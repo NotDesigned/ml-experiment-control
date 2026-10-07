@@ -191,7 +191,7 @@ def test_receipt_size_is_bounded_and_partial_files_cleaned(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("executor", ["gpu", "cloud"])
 def test_api_freezes_script_argv_and_backend_data_dir(client, stored, executor):
-    source = import_source(client, archive({"train.py": b"print('training')", "download.py": b"print('download')"}))
+    source = import_source(client, archive({"train.py": b"print('training')", "download.py": b"print('download')", "Dockerfile": ("FROM registry.example/python@sha256:" + "a" * 64 + "\n").encode()}))
     ready = runtime(client, source)
     request = {"run_id": "script-data", "runtime_id": ready["runtime_id"], "executor": executor,
                "data_preparation": {"script": "download.py", "arguments": ["--version", "1"]},
@@ -233,7 +233,7 @@ def test_api_freezes_script_argv_and_backend_data_dir(client, stored, executor):
     ({"script": "download.py", "arguments": [""]}, 422), ({"script": "download.py", "timeout_seconds": 0}, 422),
     ({"script": "download.py", "arguments": ["x" * 8192] * 5}, 409)])
 def test_api_rejects_bad_scripts_or_oversized_scheduler_commands(client, stored, changes, status):
-    source = import_source(client, archive({"download.py": b"pass"})); ready = runtime(client, source)
+    source = import_source(client, archive({"download.py": b"pass", "Dockerfile": ("FROM registry.example/python@sha256:" + "a" * 64 + "\n").encode()})); ready = runtime(client, source)
     response = client.post("/api/projects/demo/runs", json={"run_id": "bad", "runtime_id": ready["runtime_id"], "executor": "gpu", "data_preparation": changes})
     assert response.status_code == status
 

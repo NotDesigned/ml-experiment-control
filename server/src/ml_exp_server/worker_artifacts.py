@@ -1,4 +1,4 @@
-"""Stdlib-only image launcher: run frozen argv, then upload this Attempt's outputs."""
+"""Safe output archiving and resumable exact-Attempt multipart transfer."""
 from __future__ import annotations
 
 import fnmatch
@@ -8,16 +8,10 @@ import json
 import os
 import re
 from pathlib import Path
-import signal
 import stat
-import subprocess
-import sys
 import tarfile
-import tempfile
 import time
 from urllib.parse import urlsplit
-
-MULTIPART_UPLOAD = os.environ.pop('ML_EXPD_MULTIPART_UPLOAD', '0') == '1'
 
 
 def archive_outputs(root: Path, stream, limit: int, patterns: list[str]) -> int:
@@ -50,12 +44,6 @@ def archive_outputs(root: Path, stream, limit: int, patterns: list[str]) -> int:
                 finally:
                     os.close(opened)
     return count
-
-
-def upload(url: str, token: str, stream, length: int):
-    if MULTIPART_UPLOAD:
-        return upload_parts(url, token, stream, length)
-    return legacy_upload(url, token, stream, length)
 
 
 def upload_request(target, method, path, token, data=b''):
@@ -118,65 +106,3 @@ def upload_parts(url, token, stream, length):
                 raise
             time.sleep(2 ** attempt)
             attempt += 1
-
-
-def legacy_upload(url: str, token: str, stream, length: int):
-    target = urlsplit(url)
-    if target.scheme != 'https' or target.username or target.password or target.query or target.fragment:
-        raise ValueError('artifact transfer requires a fixed HTTPS endpoint')
-    for attempt in range(3):
-        connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=300)
-        try:
-            connection.putrequest('PUT', target.path)
-            connection.putheader('Authorization', 'Bearer ' + token)
-            connection.putheader('Content-Type', 'application/x-tar')
-            connection.putheader('Content-Length', str(length))
-            connection.endheaders()
-            stream.seek(0)
-            while chunk := stream.read(1024 * 1024):
-                connection.send(chunk)
-            response = connection.getresponse()
-            response.read(4096)
-            if response.status == 200:
-                return
-            if response.status < 500:
-                raise ValueError('artifact transfer was rejected')
-        except (OSError, http.client.HTTPException):
-            if attempt == 2:
-                raise
-        finally:
-            connection.close()
-        time.sleep(2 ** attempt)
-    raise ValueError('artifact transfer failed')
-
-
-def main(argv=None):
-    url = os.environ.pop('ML_EXPD_UPLOAD_URL')
-    token = os.environ.pop('ML_EXPD_UPLOAD_TOKEN')
-    limit = int(os.environ.pop('ML_EXPD_UPLOAD_LIMIT'))
-    patterns = json.loads(os.environ.pop('ML_EXPD_OUTPUT_PATTERNS', '["**/*"]'))
-    root = Path(os.environ['OUTPUT_DIR'])
-    root.mkdir(parents=True, exist_ok=True)
-    child = subprocess.Popen(argv or sys.argv[1:], start_new_session=True)
-    def forward(signum, _frame):
-        if child.poll() is None:
-            os.killpg(child.pid, signum)
-    signal.signal(signal.SIGTERM, forward)
-    signal.signal(signal.SIGINT, forward)
-    code = child.wait()
-    try:
-        with tempfile.TemporaryFile(dir=root.parent) as stream:
-            archive_outputs(root, stream, max(1, limit - 1024 * 1024) if limit else 0, patterns)
-            length = stream.tell()
-            if limit and length > limit:
-                raise ValueError('artifact archive limit exceeded')
-            upload(url, token, stream, length)
-        print('ML_EXPD_ARTIFACT_UPLOAD=COMPLETE', flush=True)
-    except Exception:
-        print('ML_EXPD_ARTIFACT_UPLOAD=FAILED', file=sys.stderr, flush=True)
-        return code if code > 0 else 74
-    return code if code >= 0 else 128 - code
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())

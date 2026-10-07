@@ -32,10 +32,7 @@ may keep the host `/tmp` read-only without preventing BuildKit bootstrap.
 A private `ephemeral-builder.json` records the exact owner before creation.
 The next builder startup/build cleans up that recorded builder after interruption.
 Failed cleanup blocks publication and retains the recovery record. No default
-Docker builder, shared cache, registry image or rollback image is pruned. The
-legacy archive publisher with `cleanup_published_image: true` removes its exact
-output tag after remote verification; it cannot eliminate shared base-layer
-cache and is not the production path for large CUDA builds.
+Docker builder, shared cache, registry image or rollback image is pruned.
 
 WYD converts OCI to SIF directly on its own node. Each conversion uses a private
 temporary Apptainer OCI cache, removed on converter exit including failure.
