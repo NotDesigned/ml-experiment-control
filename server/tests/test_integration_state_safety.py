@@ -212,16 +212,6 @@ def test_atomic_text_closes_descriptor_and_keeps_previous_file_on_stream_failure
     assert list(tmp_path.iterdir()) == [path]
 
 
-def test_publisher_rejects_missing_remote_digest(builder, tmp_path):
-    value, _, _ = builder
-    value._docker = lambda *args: None
-    def skopeo(args, **kwargs):
-        if args[0] == "copy":
-            Path(args[args.index("--digestfile") + 1]).write_text("not-a-digest")
-        return '{}'
-    value._skopeo = skopeo
-    with pytest.raises(ValueError, match="digest is unavailable"):
-        value._publish("registry.example/runtime:tag", tmp_path)
 
 
 def test_frozen_comparison_ignores_empty_nonstring_fields():

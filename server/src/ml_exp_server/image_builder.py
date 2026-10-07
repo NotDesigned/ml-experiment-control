@@ -29,7 +29,6 @@ from dockerfile_parse import DockerfileParser
 
 from .source_revisions import _tree_digest
 from .storage import atomic_json
-from .environment_build import DEPENDENCY_RECIPE, dockerfile, inspect_requirements, installer_digest, requirements_path
 from .dockerfile_build import DOCKERFILE_RECIPE, INTERNAL, inspect_dockerfile, managed_dockerfile, worker_digest
 from .worker_contract import CAPABILITIES, WORKER_CONTRACT, install_workers, recipe_digest
 from .execution_progress import record_progress, progress_view
@@ -41,7 +40,6 @@ from .image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE, BUILD_R
 IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
 ID = re.compile(r"^[0-9a-f]{64}$")
 PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
-RECIPE = "source-copy-docker-v2-v2"
 BUILD_REVISION = "sealed-context-transfer.v1"
 MANIFEST_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
 
@@ -62,14 +60,9 @@ class BuildTransportError(ValueError):
         self.code, self.details = code, details
 
 
-def bundle_id(project: str, source_id: str, base_image: str, requirements: str | None = None, *, dockerfile_path: str | None = None, legacy: bool = False) -> str:
-    fields = [project, source_id, base_image, RECIPE, WORKER_CONTRACT, worker_digest(), recipe_digest()]
-    if not legacy:
-        fields.append(BUILD_REVISION)
-    if requirements is not None:
-        fields.extend([DEPENDENCY_RECIPE, requirements_path(requirements), installer_digest()])
-    if dockerfile_path is not None:
-        fields.extend([DOCKERFILE_RECIPE, requirements_path(dockerfile_path), worker_digest()])
+def bundle_id(project: str, source_id: str, base_image: str, *, dockerfile_path: str = "Dockerfile") -> str:
+    fields = [project, source_id, base_image, DOCKERFILE_RECIPE, WORKER_CONTRACT,
+              worker_digest(), recipe_digest(), BUILD_REVISION, dockerfile_path]
     return hashlib.sha256(json.dumps(fields, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -130,46 +123,46 @@ class ImageBuilder:
         if (not PROJECT.fullmatch(project) or not re.fullmatch(r"source\.[0-9a-f]{64}", source_id)
                 or not IMAGE.fullmatch(image)):
             raise ValueError("invalid image packaging identity")
-        requirements = request.get("requirements")
+        operation = request.get("operation")
         custom_path = request.get("dockerfile")
-        if custom_path is not None and requirements is not None:
-            raise ValueError("Dockerfile and generated dependency recipes are mutually exclusive")
-        recipe_version = DOCKERFILE_RECIPE if custom_path is not None else DEPENDENCY_RECIPE if requirements is not None else RECIPE
-        if request.get("packaging_revision", recipe_version) != recipe_version:
-            raise ValueError("image packaging revision mismatch")
-        identity = bundle_id(project, source_id, image, requirements, dockerfile_path=custom_path)
-        metadata_path = self.root / f"{identity}.json"
-        if request.get("operation") in {"logs", "progress"}:
-            pinned = request.get("bundle_id", identity)
+        if operation in {"get", "logs", "progress"}:
+            current = bundle_id(project, source_id, image, dockerfile_path=custom_path) if isinstance(custom_path, str) else None
+            pinned = request.get("bundle_id", current)
             if not isinstance(pinned, str) or not ID.fullmatch(pinned):
                 raise ValueError("invalid frozen build identity")
-            if pinned != identity:
-                receipt = self.root / f"{pinned}.json"
-                definition = self.root / f"{pinned}.definition.json"
-                historical = bundle_id(project, source_id, image, requirements, dockerfile_path=custom_path, legacy=True)
-                evidence = receipt if receipt.is_file() else definition if definition.is_file() else None
-                if evidence is not None:
-                    value = json.loads(evidence.read_text())
-                    if any(value.get(key) != expected for key, expected in (
-                            ("bundle_id", pinned), ("project", project), ("source_id", source_id), ("base_image", image))):
-                        raise ValueError("historical packaging receipt identity mismatch")
-                elif pinned != historical:
-                    raise ValueError("historical packaging receipt is unavailable")
-            identity = pinned
-            path = self.root / f"{identity}.log"
+            receipt = self.root / f"{pinned}.json"
+            definition = self.root / f"{pinned}.definition.json"
+            evidence = receipt if receipt.is_file() else definition if definition.is_file() else None
+            value = None
+            if evidence is not None:
+                value = json.loads(evidence.read_text())
+                if any(value.get(key) != expected for key, expected in (
+                        ("bundle_id", pinned), ("project", project), ("source_id", source_id), ("base_image", image))):
+                    raise ValueError("historical packaging receipt identity mismatch")
+            elif pinned != current:
+                raise ValueError("historical packaging receipt is unavailable")
+            if operation == "get":
+                if not receipt.is_file():
+                    raise ValueError("image bundle has not been published")
+                return value
+            path = self.root / f"{pinned}.log"
             content = ""
             if path.exists():
                 with path.open("rb") as log:
                     log.seek(max(0, path.stat().st_size - 8192))
                     content = log.read().decode("utf-8", errors="replace")
-            result = {"bundle_id": identity, "lines": content.splitlines(), "truncated": path.exists() and path.stat().st_size > 8192}
-            if request["operation"] == "progress":
-                status = "READY" if (self.root / f"{identity}.json").exists() else "EXECUTING"
-                result["progress"] = progress_view(self.root / f"{identity}.progress.json", status,
+            result = {"bundle_id": pinned, "lines": content.splitlines(), "truncated": path.exists() and path.stat().st_size > 8192}
+            if operation == "progress":
+                status = "READY" if receipt.exists() else "EXECUTING"
+                result["progress"] = progress_view(self.root / f"{pinned}.progress.json", status,
                                                    active=status == "EXECUTING",
                                                    last_activity=path.stat().st_mtime if path.exists() else None)
             return result
-
+        if (not isinstance(custom_path, str) or request.get("requirements") is not None
+                or request.get("packaging_revision", DOCKERFILE_RECIPE) != DOCKERFILE_RECIPE):
+            raise ValueError("new builds require the Dockerfile recipe")
+        identity = bundle_id(project, source_id, image, dockerfile_path=custom_path)
+        metadata_path = self.root / f"{identity}.json"
         with (self.root / f"{identity}.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             if metadata_path.exists():
@@ -177,15 +170,9 @@ class ImageBuilder:
                 if metadata.get("bundle_id") != identity:
                     raise ValueError("image packaging metadata mismatch")
                 return metadata
-            if request.get("operation") == "get":
-                raise ValueError("image bundle has not been published")
-            if request.get("operation") != "build":
+            if operation != "build":
                 raise ValueError("unsupported image packaging operation")
-            if requirements is not None and (not self.config.get("allow_dependency_builds")
-                                             or self.config.get("publisher") != "buildkit"):
-                raise ValueError("dependency builds require an enabled BuildKit publisher")
-            if custom_path is not None and (not self.config.get("allow_dockerfile_builds")
-                                           or self.config.get("publisher") != "buildkit"):
+            if not self.config.get("allow_dockerfile_builds") or self.config.get("publisher") != "buildkit":
                 raise ValueError("Dockerfile builds require an enabled BuildKit publisher")
             prefixes = self.config.get("base_image_prefixes", [])
             if prefixes and not any(image.startswith(prefix) for prefix in prefixes):
@@ -200,9 +187,8 @@ class ImageBuilder:
                 raise ValueError("source packaging identity mismatch")
             if _tree_digest(tree, require_read_only=True) != expected:
                 raise ValueError("source changed before packaging")
-            dependencies = inspect_requirements(tree, requirements) if requirements is not None else None
-            inspection = inspect_dockerfile(tree, custom_path) if custom_path is not None else None
-            if inspection is not None and (image != inspection["base_images"][-1] or
+            inspection = inspect_dockerfile(tree, custom_path)
+            if (image != inspection["base_images"][-1] or
                     prefixes and any(not any(base.startswith(prefix) for prefix in prefixes) for base in inspection["base_images"])):
                 raise ValueError("Dockerfile base images do not match packaging policy")
             registry = self.config["repository"]
@@ -213,38 +199,29 @@ class ImageBuilder:
             record_progress(progress_path, "PREPARING_CONTEXT", "Validating and preparing the frozen source build context")
             with tempfile.TemporaryDirectory(prefix="build-", dir=self.root) as directory:
                 context = Path(directory)
-                copied = context / "source" if inspection is None else context / INTERNAL / "source"
+                copied = context / INTERNAL / "source"
                 shutil.copytree(tree, copied, symlinks=False)
                 if _tree_digest(copied) != expected:
                     raise ValueError("source changed while preparing packaging context")
                 for path in copied.rglob("*"):
                     path.chmod(0o555 if path.is_dir() or path.stat().st_mode & 0o111 else 0o444)
                 copied.chmod(0o555)
-                if inspection is None:
-                    install_workers(context)
-                else:
-                    shutil.copytree(tree, context, dirs_exist_ok=True, symlinks=False)
-                    # copytree preserves sealed source permissions. Only these
-                    # temporary generated build-control files need to be writable.
-                    context.chmod(0o700)
-                    for name in ("Dockerfile", ".dockerignore", "Dockerfile.dockerignore"):
-                        control = context / name
-                        if control.exists():
-                            control.chmod(0o600)
-                    # A client .dockerignore may exclude everything; the managed
-                    # runtime and complete frozen source are always included.
-                    ignore = context / ".dockerignore"
-                    with ignore.open("a") as output:
+                shutil.copytree(tree, context, dirs_exist_ok=True, symlinks=False)
+                context.chmod(0o700)
+                for name in ("Dockerfile", ".dockerignore", "Dockerfile.dockerignore"):
+                    control = context / name
+                    if control.exists():
+                        control.chmod(0o600)
+                # Preserve the complete sealed source even under a restrictive client ignore file.
+                ignore = context / ".dockerignore"
+                with ignore.open("a") as output:
+                    output.write(f"\n!{INTERNAL}/\n!{INTERNAL}/**\n")
+                specific_ignore = context / "Dockerfile.dockerignore"
+                if specific_ignore.exists():
+                    with specific_ignore.open("a") as output:
                         output.write(f"\n!{INTERNAL}/\n!{INTERNAL}/**\n")
-                    specific_ignore = context / "Dockerfile.dockerignore"
-                    if specific_ignore.exists():
-                        with specific_ignore.open("a") as output:
-                            output.write(f"\n!{INTERNAL}/\n!{INTERNAL}/**\n")
-                    install_workers(context / INTERNAL)
-                if dependencies is not None:
-                    shutil.copyfile(tree / requirements, context / "requirements.txt")
-                    shutil.copyfile(Path(__file__).with_name("dependency_install.py"), context / "dependency_install.py")
-                recipe = dockerfile(image, source_id, requirements) if inspection is None else managed_dockerfile(inspection, source_id)
+                install_workers(context / INTERNAL)
+                recipe = managed_dockerfile(inspection, source_id)
                 (context / "Dockerfile").write_text(recipe)
                 atomic_json(self.root / f"{identity}.definition.json", {"bundle_id": identity, "project": project,
                             "source_id": source_id, "base_image": image})
@@ -255,24 +232,17 @@ class ImageBuilder:
                 cache_context = BUILD_CACHE.set(registry + ":buildcache-" + hashlib.sha256(project.encode()).hexdigest()[:24]
                                                if self.config.get("registry_cache", False) else None)
                 try:
-                    if self.config.get("publisher", "archive") == "buildkit":
-                        published = self._publish_buildkit(tag, context)
-                    else:
-                        self._docker(["build", "--network=none", "--tag", tag, directory])
-                        published = self._publish(tag, context)
+                    published = self._publish_buildkit(tag, context)
                 finally:
                     BUILD_LOG.reset(log_context)
                     BUILD_PROGRESS.reset(progress_context)
                     BUILD_CACHE.reset(cache_context)
             result = {"bundle_id": identity, "project": project, "source_id": source_id,
-                      "base_image": image, "image": published, "recipe": recipe_version,
+                      "base_image": image, "image": published, "recipe": DOCKERFILE_RECIPE,
                       "manifest_type": MANIFEST_TYPE, "worker_contract": WORKER_CONTRACT,
                       "worker_sha256": worker_digest(), "capabilities": list(CAPABILITIES),
                       "dockerfile_sha256": hashlib.sha256(recipe.encode()).hexdigest()}
-            if dependencies is not None:
-                result.update(dependencies=dependencies, installer_sha256=installer_digest())
-            if inspection is not None:
-                result["dockerfile"] = {k: v for k, v in inspection.items() if k != "text"}
+            result["dockerfile"] = {k: v for k, v in inspection.items() if k != "text"}
             atomic_json(metadata_path, result)
             record_progress(progress_path, "READY", "Published image manifest and worker identity verified")
             return result
@@ -537,7 +507,7 @@ class ImageBuilder:
         # BuildKit streams new layers to the registry and reuses existing base
         # blobs. Exporting a complete CUDA image twice exhausts small servers.
         metadata = context / "buildkit.json"
-        network = "default" if (context / "requirements.txt").exists() or (context / INTERNAL).exists() else "none"
+        network = "default" if (context / INTERNAL).exists() else "none"
         cache = []
         if BUILD_CACHE.get() is not None:
             reference = BUILD_CACHE.get()
@@ -571,33 +541,6 @@ class ImageBuilder:
         path = BUILD_PROGRESS.get()
         if path is not None:
             record_progress(path, phase, message, timeout_seconds=self.config.get("timeout_seconds", 600))
-
-    def _publish(self, tag: str, context: Path) -> str:
-        # Legacy Docker builds on the containerd store can produce mixed OCI /
-        # Docker layer media types. Use Docker's archive view and a reviewed
-        # format converter; do not trust a local RepoDigests entry as a receipt.
-        archive = context / "image.tar"
-        digest_file = context / "published.digest"
-        self._docker(["image", "save", "--output", str(archive), tag])
-        source = "docker-archive:" + str(archive)
-        original = json.loads(self._skopeo(["inspect", "--raw", source], capture=True))
-        auth = self.config.get("registry_auth_file", "/root/.docker/config.json")
-        self._skopeo(["copy", "--format", "v2s2", "--dest-precompute-digests", "--authfile", auth,
-                      "--digestfile", str(digest_file), source, "docker://" + tag])
-        digest = digest_file.read_text().strip()
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-            raise ValueError("published image digest is unavailable")
-        reference = self.config["repository"] + "@" + digest
-        raw = self._skopeo(["inspect", "--authfile", auth, "--raw", "docker://" + reference], capture=True)
-        manifest = json.loads(raw)
-        if ("sha256:" + hashlib.sha256(raw.encode()).hexdigest() != digest
-                or manifest.get("mediaType") != MANIFEST_TYPE
-                or manifest.get("config", {}).get("digest") != original.get("config", {}).get("digest")
-                or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(manifest.get("config", {}).get("digest")))):
-            raise ValueError("published manifest does not match the fixed image")
-        if self.config.get("cleanup_published_image", False):
-            self._docker(["image", "rm", tag])
-        return reference
 
     def _docker(self, arguments: list[str], *, capture: bool = False) -> str:
         host = ["--host", self.config["docker_host"]] if "docker_host" in self.config else []

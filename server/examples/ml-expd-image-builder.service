@@ -13,11 +13,14 @@ StateDirectoryMode=0700
 RuntimeDirectory=ml-expd-builder
 RuntimeDirectoryMode=0750
 WorkingDirectory=/var/lib/ml-expd-builder
-Environment=PATH=/opt/ml-expd/venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/opt/ml-expd/venv/bin/python -m ml_exp_server.image_builder --config /etc/ml-expd/image-builder.json
+Environment=PATH=/root/ml-expd/.venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/root/ml-expd/.venv/bin/python -m ml_exp_server.image_builder --config /etc/ml-expd/image-builder.json
 Restart=on-failure
 RestartSec=5
 UMask=0077
+NoNewPrivileges=true
+ProtectHome=tmpfs
+BindReadOnlyPaths=/root/ml-expd
 
 [Install]
 WantedBy=multi-user.target

@@ -122,7 +122,9 @@ Backend-resident state has no 4 GiB API byte limit: backend free space/quota sti
 apply. Metadata is bounded at 256 KiB / 20,000 files; the combined frozen
 input/preparation/restore manifests must fit the 32 KiB scheduler command budget.
 Source, uploaded data assets, final artifacts and uploaded checkpoint archives
-retain their configured limits (currently 4 GiB for asset/output archives).
+retain their advertised deployment limits. Desktop-staged input assets have
+no default byte cap; final outputs and uploaded checkpoint archives may still
+have private operator quotas. Read `/api/health` before packing.
 
 `checkpoint_upload` remains a separate, explicit backup option. With persistence
 enabled it archives the complete generation described by the **state** ready

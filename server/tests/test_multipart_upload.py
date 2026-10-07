@@ -217,7 +217,9 @@ def test_attempt_capability_has_no_control_api_access(storage,tmp_path):
         assert client.get(root,headers={}).status_code==401
 
 
-def test_default_large_archive_uses_only_bounded_session_metadata(storage,tmp_path):
+def test_default_large_archive_uses_only_bounded_session_metadata(storage,tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr("ml_exp_server.multipart_upload.shutil.disk_usage", lambda _: SimpleNamespace(free=16*1024**3))
     from ml_exp_server.data_assets import AssetStore
     objects,_,_,config,_=storage
     assets=AssetStore(config,tmp_path/'registry')

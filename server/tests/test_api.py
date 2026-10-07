@@ -39,7 +39,6 @@ def client(tmp_path):
           - name: fusion-len256-gate-h100-20260711
             file: {campaign_file}
             role_notes: {{a1: frozen Sentence-T5}}
-        research_questions_dir: experiments/research_questions
     """))
     (hyp / "h1.yml").write_text(textwrap.dedent(f"""\
         schema_version: 1

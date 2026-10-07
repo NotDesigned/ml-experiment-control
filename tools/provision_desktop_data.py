@@ -7,7 +7,7 @@ import re
 import subprocess
 import tempfile
 
-from ml_exp_server.worker_contract import WORKERS
+from ml_exp_server.data_image_recipe import DATA_WORKERS
 import ml_exp_server.desktop_upload
 
 
@@ -43,15 +43,17 @@ def main():
     setup = name+'-setup'
     assert run('container', 'inspect', setup, missing=True) is None
     run('create','--pull','never','--name',setup,'--label','com.ml-expd.owner=data-staging',
-        '--mount','type=volume,src='+name+'-code,dst=/app',image,'true')
+         '--mount','type=volume,src='+name+'-code,dst=/app',image,'python','-c',
+        "import shutil;shutil.rmtree('/app/ml_exp_server',ignore_errors=True);shutil.rmtree('/app/workers',ignore_errors=True)")
+    run('start','--attach',setup)
     try:
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);package=root/'ml_exp_server';package.mkdir();(package/'__init__.py').write_text('')
             for file in ('desktop_upload.py','multipart_upload.py','storage.py','application_errors.py','archive_limits.py','data_image_recipe.py','build_contexts.py'):
                 (package/file).write_bytes((source/file).read_bytes())
             workers=root/'workers';workers.mkdir()
-            for origin,target in (*WORKERS,('data_copy_worker.py','data_copy_worker.py')):
-                (workers/target).write_bytes((source/origin).read_bytes())
+            for file in DATA_WORKERS:
+                (workers/file).write_bytes((source/file).read_bytes())
             (root/'upload-config.json').write_text(json.dumps({'max_asset_archive_bytes':None,'max_asset_bytes':None,
                 'max_asset_files':20000,'upload_part_bytes':config.get('data_upload_part_bytes',16*1024**2),'upload_max_parts':65536,
                 'upload_session_seconds':86400,'data_base_image':config['data_base_image']}))

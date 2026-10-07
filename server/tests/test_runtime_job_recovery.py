@@ -11,13 +11,13 @@ from ml_exp_server.api.app import create_app
 from ml_exp_server.container_execution import ContainerExecutionService
 from ml_exp_server.runtime_jobs import recover_interrupted_builds
 from ml_exp_server.collectord import CollectorLease
-from tests.test_container_api import legacy_prepare, client, import_source, runtime, wait_runtime
+from tests.test_container_api import prepare_runtime, client, import_source, runtime, wait_runtime
 
 
 def prepared(api, entrypoint=None):
     source = import_source(api)
-    return legacy_prepare(api, {
-        "source_id": source["source_id"], "image": "registry.example/python@sha256:" + "a" * 64,
+    return prepare_runtime(api, {
+        "source_id": source["source_id"], "dockerfile": "Dockerfile",
         "entrypoint": entrypoint or ["python3", "train.py"]}).json()
 
 
@@ -124,7 +124,7 @@ def test_executor_rejection_leaves_inspectable_runtime(client, monkeypatch):
     assert client.get(endpoint).json()["status"] == "RECONCILE_REQUIRED"
 
 
-def test_legacy_prepared_runtime_logs_can_fall_back_to_current_recipe(client, monkeypatch):
+def test_prepare_runtimed_runtime_logs_can_fall_back_to_current_recipe(client, monkeypatch):
     value = prepared(client)
     service = ContainerExecutionService(client.app.state.runtime)
     with service.state("demo", value["runtime_id"]) as (store, snapshot):

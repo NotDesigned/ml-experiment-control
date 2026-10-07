@@ -8,7 +8,7 @@ import pytest
 
 from ml_exp_server.image_builder import ImageBuilder, BuildStorageError, BUILD_LOG
 from tests.test_image_builder_boundary import builder
-from tests.test_container_api import client, import_source, legacy_prepare, wait_runtime
+from tests.test_container_api import client, import_source, prepare_runtime, wait_runtime
 
 
 @pytest.mark.parametrize('case', ['enough', 'bytes', 'inodes', 'index', 'bad-index', 'manifest', 'stat'])
@@ -89,8 +89,8 @@ def test_structured_builder_storage_failure_survives_runtime_api(client, monkeyp
         raise BuildStorageError('BUILD_STORAGE_INSUFFICIENT', {'available_bytes': 7, 'required_bytes': 20})
     monkeypatch.setattr('ml_exp_server.container_execution.builder_request', unavailable)
     source = import_source(client)
-    value = legacy_prepare(client, {'source_id': source['source_id'],
-        'image': 'registry/base@sha256:'+'a'*64, 'entrypoint': ['python3']}).json()
+    value = prepare_runtime(client, {'source_id': source['source_id'],
+        'dockerfile': 'Dockerfile', 'entrypoint': ['python3']}).json()
     endpoint = '/api/projects/demo/runtimes/'+value['runtime_id']
     client.post(endpoint+'/execute', json={'confirmation': value['confirmation']})
     result = wait_runtime(client, endpoint)

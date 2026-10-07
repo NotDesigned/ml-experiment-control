@@ -24,6 +24,7 @@ def builder(tmp_path):
     (tree / "nested").mkdir(parents=True)
     (tree / "nested/run.sh").write_text("echo training\n")
     (tree / "nested/run.sh").chmod(0o755)
+    (tree / "Dockerfile").write_text("FROM registry.example/base@sha256:" + "a" * 64 + "\n")
     digest = _tree_digest(tree)
     source_id = "source." + digest[7:]
     published = source.with_name(source_id)
@@ -31,10 +32,10 @@ def builder(tmp_path):
     (published / "source.json").write_text(json.dumps({"project": "demo", "tree_digest": digest}))
     seal_tree(published)
     value = ImageBuilder({"state_root": str(tmp_path / "builder"), "source_root": str(tmp_path / "sources"),
-                          "repository": "registry.example/results", "publisher": "buildkit"})
+                          "repository": "registry.example/results", "publisher": "buildkit", "allow_dockerfile_builds": True})
     value._publish_buildkit = lambda *args: "registry.example/results@sha256:" + "b" * 64
     request = {"operation": "build", "project": "demo", "source_id": source_id,
-               "base_image": "registry.example/base@sha256:" + "a" * 64}
+               "base_image": "registry.example/base@sha256:" + "a" * 64, "dockerfile": "Dockerfile"}
     return value, request, published
 
 

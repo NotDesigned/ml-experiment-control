@@ -9,12 +9,14 @@ User=ml-expd
 Group=ml-expd
 StateDirectory=ml-expd
 WorkingDirectory=/var/lib/ml-expd
-Environment=PATH=/opt/ml-expd/venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/opt/ml-expd/venv/bin/ml-expd --config /etc/ml-expd/ml-expd.yaml --host 127.0.0.1 --port 8765
+Environment=PATH=/root/ml-expd/.venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/root/ml-expd/.venv/bin/ml-expd --config /etc/ml-expd/ml-expd.yaml --host 127.0.0.1 --port 8765
 Restart=on-failure
 RestartSec=5
 UMask=0077
 NoNewPrivileges=true
+ProtectHome=tmpfs
+BindReadOnlyPaths=/root/ml-expd
 
 [Install]
 WantedBy=multi-user.target

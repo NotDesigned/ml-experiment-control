@@ -15,8 +15,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 import yaml
 
 from .application_errors import ApplicationError
-from .image_builder import IMAGE, RECIPE, builder_request, bundle_id, BuildStorageError, BuildTransportError
-from .environment_build import DEPENDENCY_RECIPE, dockerfile, inspect_requirements, requirements_path, installer_digest
+from .image_builder import IMAGE, builder_request, bundle_id, BuildStorageError, BuildTransportError
+from .source_paths import relative_source_path, argument_vector
 from .dockerfile_build import DOCKERFILE_RECIPE, inspect_dockerfile, managed_dockerfile, worker_digest
 from .data_assets import AssetStore
 from .source_imports import IDENTITY, source_lock
@@ -32,59 +32,24 @@ from .checkpoint_registry import CheckpointRegistry, storage_scope
 SECRET_KEY = re.compile(r"(?i)(?:^|_)(?:token|secret|password|credential|api_key|proxy|authorization)(?:$|_)")
 
 
-class RuntimeSpec(BaseModel):
+class DockerfileRuntimeSpec(BaseModel):
+    """The only build request: frozen source plus a client Dockerfile."""
     model_config = ConfigDict(extra="forbid")
     source_id: str = Field(pattern=r"^source\.[0-9a-f]{64}$")
-    image: str | None = None
-    environment_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
-    requirements: str | None = None
-    dockerfile: str | None = None
+    dockerfile: str = "Dockerfile"
     entrypoint: list[str] = Field(min_length=1, max_length=128)
     workdir: str = "/workspace"
-    packaging_revision: str = RECIPE
+    packaging_revision: Literal[DOCKERFILE_RECIPE] = DOCKERFILE_RECIPE
 
-    @field_validator("packaging_revision")
+    @field_validator("dockerfile")
     @classmethod
-    def reviewed_recipe(cls, value: str) -> str:
-        if value not in {RECIPE, DEPENDENCY_RECIPE, DOCKERFILE_RECIPE}:
-            raise ValueError("packaging_revision must match the current reviewed recipe")
-        return value
-
-    @field_validator("image")
-    @classmethod
-    def immutable_image(cls, value: str | None) -> str | None:
-        if value is not None and not IMAGE.fullmatch(value):
-            raise ValueError("image must be a registry reference pinned by sha256 digest")
-        return value
-
-    @field_validator("requirements", "dockerfile")
-    @classmethod
-    def relative_requirements(cls, value: str | None) -> str | None:
-        return requirements_path(value) if value is not None else None
-
-    @model_validator(mode="after")
-    def build_definition(self):
-        if self.dockerfile is not None:
-            if self.image is not None or self.environment_id is not None or self.requirements is not None:
-                raise ValueError("Dockerfile builds define their own base images and dependency installation")
-            self.packaging_revision = DOCKERFILE_RECIPE
-            return self
-        if self.packaging_revision == DOCKERFILE_RECIPE:
-            raise ValueError("Dockerfile recipe requires a Dockerfile path")
-        if (self.image is None) == (self.environment_id is None):
-            raise ValueError("provide exactly one of image or environment_id")
-        if self.requirements is not None:
-            self.packaging_revision = DEPENDENCY_RECIPE
-        elif self.packaging_revision == DEPENDENCY_RECIPE:
-            raise ValueError("dependency recipe requires a requirements file")
-        return self
+    def source_file(cls, value: str) -> str:
+        return relative_source_path(value)
 
     @field_validator("entrypoint")
     @classmethod
-    def argument_vector(cls, value: list[str]) -> list[str]:
-        if any(not item or "\x00" in item or len(item) > 8192 for item in value):
-            raise ValueError("entrypoint contains an invalid argument")
-        return value
+    def arguments_valid(cls, value: list[str]) -> list[str]:
+        return argument_vector(value)
 
     @field_validator("workdir")
     @classmethod
@@ -94,15 +59,6 @@ class RuntimeSpec(BaseModel):
                 or path.parts[:2] != ("/", "workspace") or "\x00" in value):
             raise ValueError("workdir must stay within /workspace")
         return value
-
-
-class DockerfileRuntimeSpec(RuntimeSpec):
-    """New public builds have one path. RuntimeSpec still reads frozen history."""
-    image: None = None
-    environment_id: None = None
-    requirements: None = None
-    dockerfile: str = "Dockerfile"
-    packaging_revision: Literal[DOCKERFILE_RECIPE] = DOCKERFILE_RECIPE
 
 
 class Resources(BaseModel):
@@ -149,12 +105,12 @@ class DataPreparation(BaseModel):
     @field_validator("script")
     @classmethod
     def source_script(cls, value):
-        return requirements_path(value)
+        return relative_source_path(value)
 
     @field_validator("arguments")
     @classmethod
     def script_arguments(cls, value):
-        return RuntimeSpec.argument_vector(value)
+        return argument_vector(value)
 
 
 class RunRequest(BaseModel):
@@ -193,7 +149,7 @@ class RunRequest(BaseModel):
     @field_validator("arguments")
     @classmethod
     def arguments_valid(cls, value):
-        return RuntimeSpec.argument_vector(value)
+        return argument_vector(value)
 
     @field_validator("env")
     @classmethod
@@ -293,23 +249,15 @@ class ContainerExecutionService:
             store.repair_journal(snapshot)
             yield store, snapshot
 
-    def prepare(self, project: str, spec: RuntimeSpec) -> dict:
+    def prepare(self, project: str, spec: DockerfileRuntimeSpec) -> dict:
         self.require_enabled()
         configured = self.runtime.project(project)
         if not configured.controller or not configured.controller.capabilities.get("container_execution"):
             raise ApplicationError("project uses its own controller; container import requires a managed project", code="CONTAINER_EXECUTION_BLOCKED")
-        environment = None
-        if spec.environment_id is not None:
-            environment = next((e for e in self.environments()["environments"] if e["id"] == spec.environment_id), None)
-            if environment is None:
-                raise ApplicationError("unknown environment", status_code=404, code="UNKNOWN_ENVIRONMENT")
-            spec = RuntimeSpec.model_validate({**spec.model_dump(exclude_none=True), "image": environment["image"], "environment_id": None})
         tree = resolve_source_tree(self.runtime.config, project, spec.source_id)
-        dependencies = inspect_requirements(tree, spec.requirements) if spec.requirements is not None else None
-        inspection = inspect_dockerfile(tree, spec.dockerfile) if spec.dockerfile is not None else None
-        frozen = spec.model_dump(exclude_none=True)
-        build_id = bundle_id(project, spec.source_id, inspection["base_images"][-1] if inspection else spec.image,
-                             spec.requirements, dockerfile_path=spec.dockerfile)
+        inspection = inspect_dockerfile(tree, spec.dockerfile)
+        frozen = spec.model_dump()
+        build_id = bundle_id(project, spec.source_id, inspection["base_images"][-1], dockerfile_path=spec.dockerfile)
         identity = hashlib.sha256(json.dumps([project, frozen, build_id], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         runtime_id = "runtime." + identity
         with self.state(project, runtime_id) as (store, snapshot):
@@ -318,16 +266,10 @@ class ContainerExecutionService:
             value = {"project": project, "runtime_id": runtime_id, "spec": frozen,
                      "status": "PREPARED", "confirmation": "BUILD " + runtime_id,
                      "created_at": utc_now(), "image": None, "build_bundle_id": build_id,
-                     "worker_contract": WORKER_CONTRACT}
-            value.update(dockerfile=dockerfile(spec.image, spec.source_id, spec.requirements))
-            if inspection is not None:
-                value.update(dockerfile=managed_dockerfile(inspection, spec.source_id),
-                             client_dockerfile={k: v for k, v in inspection.items() if k != "text"},
-                             base_image=inspection["base_images"][-1])
-            if dependencies is not None:
-                value["dependencies"] = dependencies
-            if environment is not None:
-                value["environment"] = environment
+                     "worker_contract": WORKER_CONTRACT,
+                     "dockerfile": managed_dockerfile(inspection, spec.source_id),
+                     "client_dockerfile": {k: v for k, v in inspection.items() if k != "text"},
+                     "base_image": inspection["base_images"][-1]}
             store.commit(value, expected_revision=snapshot.revision, event={"event": "runtime_prepared", "timestamp": utc_now()})
             return value
 
@@ -338,12 +280,13 @@ class ContainerExecutionService:
             return snapshot.value
 
     def require_current_build(self, project: str, value: dict):
-        if "build_bundle_id" in value:
-            prepared = RuntimeSpec.model_validate(value["spec"])
-            current = bundle_id(project, prepared.source_id, value.get("base_image", prepared.image),
-                                prepared.requirements, dockerfile_path=prepared.dockerfile)
-            if value["build_bundle_id"] != current:
-                raise ApplicationError("packaging implementation changed; prepare a new Runtime", code="CONTAINER_EXECUTION_BLOCKED")
+        try:
+            prepared = DockerfileRuntimeSpec.model_validate(value["spec"])
+        except ValueError:
+            raise ApplicationError("retired build path; prepare a new Dockerfile Runtime", code="CONTAINER_EXECUTION_BLOCKED") from None
+        current = bundle_id(project, prepared.source_id, value["base_image"], dockerfile_path=prepared.dockerfile)
+        if value.get("build_bundle_id") != current:
+            raise ApplicationError("packaging implementation changed; prepare a new Runtime", code="CONTAINER_EXECUTION_BLOCKED")
 
     def execute(self, project: str, runtime_id: str, confirmation: str, *, reconcile: bool = False) -> dict:
         pending = self.begin_execute(project, runtime_id, confirmation, reconcile=reconcile)
@@ -374,41 +317,27 @@ class ContainerExecutionService:
         project, runtime_id, value = pending.project, pending.runtime_id, dict(pending.value)
         socket = self.runtime.config.container_execution.builder_socket
         try:
-            spec = RuntimeSpec.model_validate(value["spec"])
+            spec = DockerfileRuntimeSpec.model_validate(value["spec"])
             if not socket:
                 raise ValueError("image packaging worker is not configured")
             resolve_source_tree(self.runtime.config, project, spec.source_id)
             payload = {"operation": "get" if pending.reconcile else "build", "project": project,
-                                              "source_id": spec.source_id, "base_image": value.get("base_image", spec.image),
+                                              "source_id": spec.source_id, "base_image": value["base_image"],
                                               "packaging_revision": spec.packaging_revision}
-            if spec.requirements is not None:
-                payload["requirements"] = spec.requirements
-            if spec.dockerfile is not None:
-                payload["dockerfile"] = spec.dockerfile
+            payload["dockerfile"] = spec.dockerfile
             result = builder_request(socket, payload)
             if (result.get("project") != project or result.get("source_id") != spec.source_id
-                    or result.get("base_image") != value.get("base_image", spec.image) or not IMAGE.fullmatch(result.get("image", ""))):
+                    or result.get("base_image") != value["base_image"] or not IMAGE.fullmatch(result.get("image", ""))):
                 raise ValueError("image packaging result identity mismatch")
-            if "build_bundle_id" in value and result.get("bundle_id") != value["build_bundle_id"]:
-                raise ValueError("image packaging result does not match the prepared build identity")
-            if "worker_contract" in value and (result.get("worker_contract") != WORKER_CONTRACT
+            if (result.get("bundle_id") != value["build_bundle_id"]
+                    or result.get("worker_contract") != WORKER_CONTRACT
                     or result.get("worker_sha256") != worker_digest()
                     or result.get("capabilities") != CAPABILITIES
-                    or result.get("dockerfile_sha256") != hashlib.sha256(value["dockerfile"].encode()).hexdigest()):
-                raise ValueError("managed worker receipt does not match the prepared contract")
-            if "worker_contract" not in value and (spec.requirements is not None or spec.dockerfile is not None) and (
-                    result.get("dockerfile_sha256") != hashlib.sha256(value["dockerfile"].encode()).hexdigest()):
-                raise ValueError("legacy build receipt does not match the prepared recipe")
-            if spec.requirements is not None and (result.get("dependencies") != value["dependencies"]
-                    or result.get("installer_sha256") != installer_digest()):
-                raise ValueError("dependency build receipt does not match the prepared recipe")
-            if spec.dockerfile is not None and (result.get("dockerfile") != value["client_dockerfile"]
-                    or "worker_contract" not in value and (result.get("worker_sha256") != worker_digest()
-                    or result.get("capabilities") != CAPABILITIES)):
-                raise ValueError("Dockerfile build receipt does not match the frozen definition")
-            value.update(status="READY", image=result["image"], bundle_id=result["bundle_id"], completed_at=utc_now())
-            if spec.dockerfile is not None or "worker_contract" in value:
-                value["capabilities"] = result["capabilities"]
+                    or result.get("dockerfile_sha256") != hashlib.sha256(value["dockerfile"].encode()).hexdigest()
+                    or result.get("dockerfile") != value["client_dockerfile"]):
+                raise ValueError("Dockerfile worker receipt does not match the frozen definition")
+            value.update(status="READY", image=result["image"], bundle_id=result["bundle_id"],
+                         completed_at=utc_now(), capabilities=result["capabilities"])
         except BuildStorageError as exc:
             value.update(status="RECONCILE_REQUIRED", error=exc.code,
                          build_error={"code": exc.code, "details": exc.details,

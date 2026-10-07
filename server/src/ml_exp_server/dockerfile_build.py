@@ -9,7 +9,7 @@ import shlex
 
 from dockerfile_parse import DockerfileParser
 
-from .environment_build import requirements_path
+from .source_paths import relative_source_path
 from .worker_contract import worker_digest, worker_dockerfile
 
 DOCKERFILE_RECIPE = "source-dockerfile-assets-v1"
@@ -18,7 +18,7 @@ INTERNAL = "ml-expd-build-internal"
 
 
 def inspect_dockerfile(tree: Path, name: str) -> dict:
-    name = requirements_path(name)
+    name = relative_source_path(name)
     path = tree / name
     if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(tree.resolve()):
         raise ValueError("Dockerfile is missing from the frozen source")

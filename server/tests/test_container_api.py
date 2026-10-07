@@ -14,29 +14,18 @@ import yaml
 from ml_exp_server.api.app import create_app
 from ml_exp_server.container_controller import Controller
 from ml_exp_server.image_builder import bundle_id
-from ml_exp_server.environment_build import dockerfile
 from ml_exp_server.worker_contract import CAPABILITIES, WORKER_CONTRACT, worker_digest
 from ml_exp_server.schemas import ServerConfig, RunIndexRow, AttemptSummary
 
 
-def legacy_prepare(api, definition):
-    """Seed a historical recipe through the domain service, not the new API."""
-    import httpx
-    from ml_exp_server.container_execution import ContainerExecutionService, RuntimeSpec
-    from ml_exp_server.application_errors import ApplicationError
-    try:
-        value = ContainerExecutionService(api.app.state.runtime).prepare("demo", RuntimeSpec.model_validate(definition))
-        return httpx.Response(200, json=value)
-    except ApplicationError as exc:
-        return httpx.Response(exc.status_code, json={"error": str(exc)})
-    except ValueError as exc:
-        return httpx.Response(422 if "validation error" in str(exc) else 409, json={"error": str(exc)})
+def prepare_runtime(api, definition):
+    return api.post("/api/projects/demo/runtimes/prepare", json=definition)
 
 
 def archive(files=None):
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w:gz") as output:
-        for name, body in (files or {"train.py": b"print('training')\n"}).items():
+        for name, body in (files if files is not None else {"train.py": b"print('training')\n", "Dockerfile": ("FROM registry.example/python@sha256:" + "a" * 64 + "\n").encode()}).items():
             member = tarfile.TarInfo(name)
             member.size = len(body)
             output.addfile(member, io.BytesIO(body))
@@ -59,11 +48,15 @@ def client(tmp_path, monkeypatch):
                           "allow_project_writes": True, "allow_scheduler_mutations": True},
                           container_execution={"profiles_file": str(profiles), "builder_socket": "test.sock"})
     def build(_socket, request):
+        from ml_exp_server.dockerfile_build import inspect_dockerfile, managed_dockerfile
+        tree = config.project_registry_root_path() / "source-revisions/sources" / request["project"] / request["source_id"] / "tree"
+        inspection = inspect_dockerfile(tree, request["dockerfile"])
         return {"project": request["project"], "source_id": request["source_id"],
                 "base_image": request["base_image"], "image": "registry.example/lab/project@sha256:" + "b" * 64,
-                "bundle_id": bundle_id(request["project"], request["source_id"], request["base_image"]),
+                "bundle_id": bundle_id(request["project"], request["source_id"], request["base_image"], dockerfile_path=request["dockerfile"]),
                 "worker_contract": WORKER_CONTRACT, "worker_sha256": worker_digest(), "capabilities": list(CAPABILITIES),
-                "dockerfile_sha256": hashlib.sha256(dockerfile(request["base_image"], request["source_id"]).encode()).hexdigest()}
+                "dockerfile": {k: v for k, v in inspection.items() if k != "text"},
+                "dockerfile_sha256": hashlib.sha256(managed_dockerfile(inspection, request["source_id"]).encode()).hexdigest()}
     monkeypatch.setattr("ml_exp_server.container_execution.builder_request", build)
     with TestClient(create_app(config, poll=False)) as value:
         yield value
@@ -88,8 +81,8 @@ def wait_runtime(client, endpoint):
 
 def runtime(client, source=None):
     source = import_source(client) if source is None else source
-    prepared = legacy_prepare(client, {
-        "source_id": source["source_id"], "image": "registry.example/python@sha256:" + "a" * 64,
+    prepared = prepare_runtime(client, {
+        "source_id": source["source_id"], "dockerfile": "Dockerfile",
         "entrypoint": ["python", "train.py"]})
     assert prepared.status_code == 200, prepared.text
     value = prepared.json()
@@ -101,10 +94,10 @@ def runtime(client, source=None):
 
 
 def test_worker_upgrade_creates_new_runtime_and_preserves_ready_identity(client, monkeypatch):
-    from ml_exp_server.container_execution import ContainerExecutionService, RuntimeSpec
+    from ml_exp_server.container_execution import ContainerExecutionService, DockerfileRuntimeSpec
     original = runtime(client)
     service = ContainerExecutionService(client.app.state.runtime)
-    spec = RuntimeSpec.model_validate(original["spec"])
+    spec = DockerfileRuntimeSpec.model_validate(original["spec"])
     assert service.prepare("demo", spec) == original
     monkeypatch.setattr("ml_exp_server.container_execution.bundle_id", lambda *args, **kwargs: "d" * 64)
     new = service.prepare("demo", spec)
@@ -115,11 +108,11 @@ def test_worker_upgrade_creates_new_runtime_and_preserves_ready_identity(client,
 
 def test_unbuilt_runtime_rejects_changed_build_implementation(client, monkeypatch):
     from ml_exp_server.application_errors import ApplicationError
-    from ml_exp_server.container_execution import ContainerExecutionService, RuntimeSpec
+    from ml_exp_server.container_execution import ContainerExecutionService, DockerfileRuntimeSpec
     source = import_source(client)
     service = ContainerExecutionService(client.app.state.runtime)
-    value = service.prepare("demo", RuntimeSpec(source_id=source["source_id"],
-                            image="registry.example/python@sha256:" + "a" * 64, entrypoint=["python", "train.py"]))
+    value = service.prepare("demo", DockerfileRuntimeSpec(source_id=source["source_id"],
+                            dockerfile="Dockerfile", entrypoint=["python", "train.py"]))
     monkeypatch.setattr("ml_exp_server.container_execution.bundle_id", lambda *args, **kwargs: "d" * 64)
     monkeypatch.setattr("ml_exp_server.container_execution.builder_request", lambda *args: pytest.fail("must not submit a changed build"))
     with pytest.raises(ApplicationError, match="prepare a new Runtime"):
@@ -132,11 +125,11 @@ def test_unbuilt_runtime_rejects_changed_build_implementation(client, monkeypatc
 
 @pytest.mark.parametrize("legacy", [False, True])
 def test_fixed_recipe_build_receipt_and_legacy_runtime_compatibility(client, monkeypatch, legacy):
-    from ml_exp_server.container_execution import ContainerExecutionService, RuntimeSpec
+    from ml_exp_server.container_execution import ContainerExecutionService, DockerfileRuntimeSpec
     source = import_source(client)
     service = ContainerExecutionService(client.app.state.runtime)
-    value = service.prepare("demo", RuntimeSpec(source_id=source["source_id"],
-                            image="registry.example/python@sha256:" + "a" * 64, entrypoint=["python", "train.py"]))
+    value = service.prepare("demo", DockerfileRuntimeSpec(source_id=source["source_id"],
+                            dockerfile="Dockerfile", entrypoint=["python", "train.py"]))
     if legacy:
         with service.state("demo", value["runtime_id"]) as (store, snapshot):
             old = dict(snapshot.value)
@@ -145,10 +138,14 @@ def test_fixed_recipe_build_receipt_and_legacy_runtime_compatibility(client, mon
             store.commit(old, expected_revision=snapshot.revision, event={"event": "legacy_fixture"})
     else:
         monkeypatch.setattr("ml_exp_server.container_execution.builder_request", lambda *args: {
-            "project": "demo", "source_id": source["source_id"], "base_image": value["spec"]["image"],
+            "project": "demo", "source_id": source["source_id"], "base_image": value["base_image"],
             "image": "registry.example/result@sha256:" + "b" * 64, "bundle_id": "e" * 64})
-    result = service.execute("demo", value["runtime_id"], value["confirmation"])
-    assert result["status"] == ("READY" if legacy else "RECONCILE_REQUIRED")
+    if legacy:
+        from ml_exp_server.application_errors import ApplicationError
+        with pytest.raises(ApplicationError, match="prepare a new Runtime"):
+            service.execute("demo", value["runtime_id"], value["confirmation"])
+    else:
+        assert service.execute("demo", value["runtime_id"], value["confirmation"])["status"] == "RECONCILE_REQUIRED"
 
 
 def test_import_runtime_and_backends_share_frozen_execution(client):

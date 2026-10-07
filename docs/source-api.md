@@ -102,8 +102,7 @@ With `publisher: buildkit`, the builder uses BuildKit's image
 exporter with Docker schema 2, disabled attestations, and existing registry
 blob reuse. It avoids exporting and unpacking a second complete CUDA image.
 Skopeo verifies the exact remote manifest and configuration digests against
-BuildKit's publication metadata. The earlier archive/Skopeo publisher remains
-available for rollback. A local `RepoDigests` entry alone is insufficient.
+BuildKit's publication metadata. A local `RepoDigests` entry alone is insufficient.
 
 `action_runtime.stage_timeout_seconds` optionally gives environment staging
 (including a first OCI-to-SIF conversion) its own timeout; the operator template uses
@@ -129,7 +128,7 @@ exemption from authentication on the control API.
 The image launcher runs the fixed program, forwards termination signals and
 then uploads the declared regular files as a tar. Hidden paths and symlinks
 are excluded; the API also rejects credentials and escaping archive paths.
-The default total archive limit is 4 GiB / 20,000 entries; an operator can
+Output quotas are advertised by `/api/health`; the private operator can
 configure a smaller byte limit. Newly built images support [resumable 16 MiB
 uploads](multipart-uploads.md); existing frozen images retain their original
 whole-archive launcher and use the configured total limit. GNU timeout bounds the worker
@@ -164,16 +163,11 @@ A single-node object store on the daemon machine is not an off-host backup.
 See [the operator guide](operator-guide.md) for component ownership and
 sanitized configuration templates. Never publish credential files or dispatch scripts.
 
-## W&B removal and compatibility
+## Historical execution identities
 
-The current daemon and ELF code have no W&B SDK, sync, publication, tracking
-API, credential-management command, or producer integration. Numeric metrics
-and downloadable files are the retained observability surface. Old tracking
-parameters are rejected. `/api/tracking` and `/api/observability` return 404.
-Historical experiment data, old credentials, backups and rollback environments
-are retained without being read by the new implementation. Already frozen old
-images remain historical execution definitions; removing current support does
-not rewrite their binaries or their old manifests.
+Already frozen images and manifests keep their original execution definition.
+Historical READY images, receipts and logs remain readable; retired unbuilt
+recipes must be replaced by a newly prepared Dockerfile Runtime.
 
 Protocol 1 clients must upgrade to protocol 2 because the old health/tracking
 contract was removed. Existing Action SQLite schema and scheduler outboxes are

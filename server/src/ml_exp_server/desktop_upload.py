@@ -23,7 +23,7 @@ import stat
 from .application_errors import ApplicationError
 from .multipart_upload import UploadStore, PartStream
 from .storage import atomic_json, utc_now
-from .data_image_recipe import recipe
+from .data_image_recipe import recipe, data_worker_digest, DATA_WORKERS
 from .build_contexts import BuildContexts
 
 IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -184,8 +184,7 @@ class DesktopUploads:
         if operation == "info":
             free = shutil.disk_usage(self.root)
             workers = Path(self.config.get("worker_directory", "/app/workers"))
-            digest = hashlib.sha256(b"".join((workers / name).read_bytes() for name in (
-                "worker.py", "legacy_worker.py", "data_preparation.py", "persistent_state.py", "data_copy_worker.py"))).hexdigest()
+            digest = data_worker_digest(workers)
             return {"storage": "desktop-builder", "free_bytes": free.free, "total_bytes": free.total,
                     "data_worker_sha256": digest}
         if data.get("binding", {}).get("kind") != "asset":
@@ -233,8 +232,9 @@ def context(service, project, asset_id, output):
     with tarfile.open(fileobj=output, mode="w|") as archive:
         add(archive, "Dockerfile", dockerfile)
         add(archive, "asset.json", json.dumps(value, sort_keys=True).encode())
-        for path in sorted(Path(service.config.get("worker_directory", "/app/workers")).glob("*.py")):
-            add(archive, "workers/" + path.name, path.read_bytes())
+        for name in DATA_WORKERS:
+            path = Path(service.config.get("worker_directory", "/app/workers")) / name
+            add(archive, "workers/" + name, path.read_bytes())
         member = tarfile.TarInfo("dataset.tar")
         member.size, member.mode = value["archive_bytes"], 0o444
         with service.stream(project, asset_id) as stream:

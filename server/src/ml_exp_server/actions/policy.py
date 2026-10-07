@@ -63,14 +63,12 @@ class ActionExecutionPolicy:
             raise ActionError("authorization does not match the gate bundle")
 
         operation = str(snapshot["operation"])
-        if operation == "WRITE_RESEARCH_QUESTION":
-            raise ActionError("research-question operations have been retired; historical Actions are read-only")
+        if operation not in self.PROJECT_WRITE_OPERATIONS | self.IDENTITY_PINNED_OPERATIONS | {"REBUILD_LOCAL_EVIDENCE", "CANCEL_RUN"}:
+            raise ActionError("unsupported historical operation; this Action is read-only")
         project_write = operation in self.PROJECT_WRITE_OPERATIONS
         local_evidence_rebuild = operation == "REBUILD_LOCAL_EVIDENCE"
         if project_write and not self.config.allow_project_writes:
             raise ActionError("project writes are disabled by daemon policy")
-        if operation == "OBSERVABILITY_BACKFILL":
-            raise ActionError("W&B backfill has been retired; historical Actions are read-only")
         if local_evidence_rebuild and not self.config.allow_local_evidence_rebuild:
             raise ActionError("local evidence rebuild Actions are disabled by daemon policy")
         if (

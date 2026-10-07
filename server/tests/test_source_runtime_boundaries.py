@@ -11,15 +11,15 @@ import pytest
 import yaml
 
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server.container_execution import ContainerExecutionService, RuntimeSpec
+from ml_exp_server.container_execution import ContainerExecutionService, DockerfileRuntimeSpec
 from ml_exp_server.source_imports import SourceImportService, source_lock, unpack_source, seal_tree
-from tests.test_container_api import legacy_prepare, archive, client, import_source, runtime
+from tests.test_container_api import prepare_runtime, archive, client, import_source, runtime
 
 
 def prepared(client):
     source = import_source(client)
-    return legacy_prepare(client, {"source_id": source["source_id"],
-        "image": "registry.example/base@sha256:" + "a" * 64, "entrypoint": ["python", "train.py"]}).json()
+    return prepare_runtime(client, {"source_id": source["source_id"],
+        "dockerfile": "Dockerfile", "entrypoint": ["python", "train.py"]}).json()
 
 
 def update(service, record, **changes):
@@ -110,7 +110,7 @@ def test_git_import_verifies_exact_commit_and_never_uses_host_credentials(client
 @pytest.mark.parametrize("field,value", [("entrypoint", ["bad\x00argument"]), ("workdir", "/outside"), ("packaging_revision", "unreviewed")])
 def test_runtime_validation_rejects_unsafe_or_unreviewed_definition(client, field, value):
     source = import_source(client)
-    spec = {"source_id": source["source_id"], "image": "registry.example/base@sha256:" + "a" * 64, "entrypoint": ["python", "train.py"]}
+    spec = {"source_id": source["source_id"], "dockerfile": "Dockerfile", "entrypoint": ["python", "train.py"]}
     spec[field] = value
     assert client.post("/api/projects/demo/runtimes/prepare", json=spec).status_code == 422
 
@@ -126,7 +126,7 @@ def test_run_validation_rejects_credential_reserved_and_escaping_fields(client, 
 def test_runtime_policy_legacy_project_and_missing_identity(client):
     record = prepared(client)
     service = ContainerExecutionService(client.app.state.runtime)
-    assert service.prepare("demo", RuntimeSpec.model_validate(record["spec"])) == record
+    assert service.prepare("demo", DockerfileRuntimeSpec.model_validate(record["spec"])) == record
     with pytest.raises(ValueError):
         with service.state("../escape", record["runtime_id"]):
             pass
@@ -134,11 +134,11 @@ def test_runtime_policy_legacy_project_and_missing_identity(client):
     project = client.app.state.runtime.project("demo")
     project.controller.capabilities["container_execution"] = False
     with pytest.raises(ApplicationError, match="own controller"):
-        service.prepare("demo", RuntimeSpec.model_validate(record["spec"]))
+        service.prepare("demo", DockerfileRuntimeSpec.model_validate(record["spec"]))
     project.controller.capabilities["container_execution"] = True
     client.app.state.runtime.config.action_runtime.allow_project_writes = False
     with pytest.raises(ApplicationError, match="writes are disabled"):
-        service.prepare("demo", RuntimeSpec.model_validate(record["spec"]))
+        service.prepare("demo", DockerfileRuntimeSpec.model_validate(record["spec"]))
 
 
 def test_runtime_execute_confirmation_reconcile_and_concurrent_fencing(client, monkeypatch):

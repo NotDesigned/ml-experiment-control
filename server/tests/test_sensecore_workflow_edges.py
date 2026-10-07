@@ -11,7 +11,7 @@ from ml_exp_server import container_controller
 from ml_exp_server.data_assets import AssetStore
 from ml_exp_server.dockerfile_build import DOCKERFILE_RECIPE, INTERNAL, inspect_dockerfile
 from ml_exp_server.image_builder import BUILD_LOG, ImageBuilder, MANIFEST_TYPE, bundle_id
-from ml_exp_server.container_execution import RuntimeSpec
+from ml_exp_server.container_execution import DockerfileRuntimeSpec
 from ml_exp_server.source_imports import seal_tree
 from ml_exp_server.source_revisions import _tree_digest
 from tests.test_container_api import archive, client, import_source
@@ -40,7 +40,7 @@ def test_custom_dockerfile_is_built_with_managed_source_and_immutable_receipt(tm
         context = Path(args[-1]); recipe = (context / "Dockerfile").read_text()
         assert "RUN echo user-dockerfile" in recipe and "--network=default" in args
         assert (context / INTERNAL / "source/train.py").read_text() == "print('training')"
-        assert (context / INTERNAL / "worker.py").is_file() and (context / INTERNAL / "legacy_worker.py").is_file()
+        assert (context / INTERNAL / "worker.py").is_file() and (context / INTERNAL / "artifacts.py").is_file()
         assert "!ml-expd-build-internal/**" in (context / ".dockerignore").read_text()
         Path(args[args.index("--metadata-file")+1]).write_text(json.dumps({"containerimage.digest":digest,"containerimage.config.digest":"sha256:"+"c"*64}))
         return ""
@@ -93,7 +93,7 @@ def test_dockerfile_source_boundaries(tmp_path, case):
 
 
 def test_runtime_recipe_without_dockerfile_and_duplicate_mounts_fail(client, monkeypatch):
-    with pytest.raises(ValueError): RuntimeSpec(source_id="source."+"a"*64,image=BASE,entrypoint=["python3"],packaging_revision=DOCKERFILE_RECIPE)
+    with pytest.raises(ValueError): DockerfileRuntimeSpec(source_id="source."+"a"*64,image=BASE,entrypoint=["python3"],packaging_revision=DOCKERFILE_RECIPE)
     bundle=custom_runtime(client,monkeypatch)
     binding={"asset_id":"asset."+"a"*64,"mount_path":"/inputs/data"}
     response=client.post("/api/projects/demo/runs",json={"run_id":"trial","runtime_id":bundle["runtime_id"],"executor":"cloud","inputs":[binding,binding]})

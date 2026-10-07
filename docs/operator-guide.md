@@ -4,12 +4,14 @@ This guide is for the operator of a new daemon. Existing-API users start at
 [the quickstart](api-quickstart.md). These steps are deployment instructions,
 not a request to modify a running production workspace.
 
+See [single deployment layout](deployment-layout.md) for directory ownership.
+
 ## Components and ownership
 
 | Component | Responsibility | Privileges/credentials |
 | --- | --- | --- |
 | `ml-expd` | HTTP, source import, immutable definitions, Actions, collection | Dedicated service UID; workspace writes; SSH, SenseCore REST AK/SK and server S3 credentials |
-| Image builder | Generated Dockerfile, optional pinned dependency installation and registry publication | Root-owned Unix socket worker; Docker/Buildx and registry push access |
+| Image builder | Frozen client Dockerfile, trusted worker injection and registry publication | Root-owned Unix socket worker; Docker/Buildx and registry push access |
 | WYD | Slurm allocation and Apptainer conversion/execution | Daemon user's SSH config/keys; registry pull credential |
 | SenseCore | ACP worker execution through REST | Daemon's private REST configuration; platform registry pull authorization |
 | S3-compatible storage | Sealed per-Attempt archives | Bucket access on server only |
@@ -44,13 +46,18 @@ For the paths used by these templates:
 ```bash
 uv build --package ml-experiment-control
 uv build --package ml-experiment-server
-uv venv /opt/ml-expd/venv
-uv pip install --python /opt/ml-expd/venv/bin/python \
+uv venv /root/ml-expd/.venv
+uv pip install --python /root/ml-expd/.venv/bin/python \
   dist/ml_experiment_control-*.whl dist/ml_experiment_server-*.whl
 ```
 
 Its `ml-expd` and `experiment-redact` entry points must be on the service PATH.
-Do not leave a runtime venv inside a root-only checkout inaccessible to its UID.
+The templates bind only `/root/ml-expd` into the service namespace with
+`ProtectHome=tmpfs` and `BindReadOnlyPaths=/root/ml-expd`. Keep code readable
+(0755 directories, 0644 modules), executables executable, and `.git`, `.ops`,
+`.recovery` private. This exposes the deployment to its UID without opening
+other home directories. Configuration and credentials stay in `/etc/ml-expd`;
+state stays in `/var/lib/ml-expd` and registered project paths.
 Back up the existing workspace/config and retain the previous runtime before
 an upgrade. Stop the sole daemon for workspace copies; never restore over a
 running service. See [Action storage](action-storage.md) for migration/rollback.
@@ -136,7 +143,7 @@ platform-side registry credentials.
 Start the root-owned builder with the installed runtime:
 
 ```bash
-/opt/ml-expd/venv/bin/python -m ml_exp_server.image_builder \
+/root/ml-expd/.venv/bin/python -m ml_exp_server.image_builder \
   --config /etc/ml-expd/image-builder.json
 ```
 
@@ -145,17 +152,10 @@ accepts only the authorized packaging operation. New Runtimes use the frozen
 client Dockerfile, validated pinned bases and managed worker contract, with
 `allow_dockerfile_builds: true`. `publisher: buildkit` reuses registry blobs and emits Docker schema
 2 without attestations; Skopeo verifies the remote manifest/config digests.
-`publisher: archive` retains the earlier Docker-archive/Skopeo path. Choose and
-verify the supported toolchain before enabling imports, rather than treating a
-local image tag or RepoDigests entry as a publication receipt.
-
-To enable Python dependency builds, explicitly set
-`allow_dependency_builds: true` with `publisher: buildkit` in its JSON config.
-Only this recipe enables build-container networking to PyPI; source-only
-packaging retains `--network=none`. The reviewed installer uses binary wheels,
-base-framework constraints, `pip check`, and a version manifest. Requirements
-cannot supply indexes, URLs, includes or commands. Registry credentials stay
-with the publisher and are not passed into installation commands.
+BuildKit is the only publication path. Put dependency installation in the
+client Dockerfile before frequently changed source to preserve layer reuse.
+Registry credentials stay with the publisher. A local tag or RepoDigests entry
+alone is not a verified publication receipt.
 
 Set `container_execution.environments_file` to an operator-owned YAML file:
 
@@ -168,8 +168,9 @@ environments:
     validation: {wyd-l40s: "not-tested", sensecore-1gpu: "not-tested"}
 ```
 
-The API exposes only approved public catalogue fields. Selecting an ID freezes
-its current image digest; later catalogue edits do not rebind a Runtime.
+The API exposes only approved public catalogue fields. Use the chosen digest in
+the client Dockerfile FROM; `environment_id` is not a build selector. Later
+catalogue edits do not rebind frozen Runtimes.
 Record actual GPU validation separately from successful image publication.
 
 Run the builder under its own systemd unit with its writable state and runtime
@@ -199,7 +200,7 @@ conditions. A single-node object store is not an off-host backup.
 Run the daemon as its dedicated account on loopback, using the installed runtime:
 
 ```bash
-/opt/ml-expd/venv/bin/ml-expd --config /etc/ml-expd/ml-expd.yaml \
+/root/ml-expd/.venv/bin/ml-expd --config /etc/ml-expd/ml-expd.yaml \
   --host 127.0.0.1 --port 8765
 ```
 
@@ -244,7 +245,7 @@ With mutations still disabled, run the read-only operator checklist. Run the
 `ml-exp` check from a separate machine/environment with the client installed:
 
 ```bash
-/opt/ml-expd/venv/bin/ml-expd --config /etc/ml-expd/ml-expd.yaml doctor --json
+/root/ml-expd/.venv/bin/ml-expd --config /etc/ml-expd/ml-expd.yaml doctor --json
 ml-exp check --schema openapi.json
 ```
 
@@ -278,4 +279,4 @@ as an executed experiment. Preserve old Attempts, histories and rollback
 runtimes; no automatic artifact deletion is implemented. Monitor health and
 Action resolution; reconcile uncertain effects with observation, never blind
 replay. Stop the sole daemon for consistent workspace backups and test restores
-in an isolated location. W&B is absent from the current implementation.
+in an isolated location.

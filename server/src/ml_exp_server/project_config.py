@@ -239,9 +239,6 @@ def _load_campaign_revision(project: ResearchProject, ref: CampaignRef) -> Campa
 def load_research_project(path: Path) -> ResearchProject:
     """Load a project-owned campaign catalog plus project configuration."""
     data = _load_yaml(path)
-    # Legacy files stay untouched; retired question metadata is no longer loaded.
-    data.pop("research_questions_dir", None)
-    data.pop("research_questions", None)
     try:
         project = ResearchProject.model_validate(data)
     except ValidationError as exc:

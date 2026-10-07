@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from ml_exp_server.execution_progress import record_progress, progress_view
 from ml_exp_server.image_builder import ImageBuilder, BUILD_CACHE, BUILD_PROGRESS, MANIFEST_TYPE
 from ml_exp_server.schemas import RunIndexRow
-from ml_exp_server.container_execution import RuntimeSpec
+from ml_exp_server.container_execution import DockerfileRuntimeSpec
 from tests.test_container_api import client, import_source, archive, wait_runtime, runtime
 from tests.test_image_builder_boundary import builder
 from tests.test_submissions import _app, _action
@@ -36,7 +36,7 @@ def test_progress_freshness_uses_real_log_activity_and_never_claims_failure(tmp_
 @pytest.mark.parametrize("change", [{"packaging_revision": "unsupported"}, {"image": "python:latest"}])
 def test_historical_runtime_parser_still_validates_old_recipe_and_digest(change):
     with pytest.raises(ValueError):
-        RuntimeSpec(source_id="source." + "a" * 64, entrypoint=["python3"],
+        DockerfileRuntimeSpec(source_id="source." + "a" * 64, entrypoint=["python3"],
                     **{"image": "registry.example/python@sha256:" + "a" * 64, **change})
 
 

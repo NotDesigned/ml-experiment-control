@@ -11,9 +11,9 @@ import signal
 from urllib.parse import urlsplit
 
 try:
-    from .managed_worker import deliver
+    from .data_input import deliver
 except ImportError:
-    from worker import deliver
+    from data_input import deliver
 
 
 def notify(url, token, value):

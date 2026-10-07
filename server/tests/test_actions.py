@@ -1515,7 +1515,7 @@ def test_action_api_prepares_client_intent_without_authorizing_execution(tmp_pat
     research_questions.mkdir(parents=True)
     (root / "experiments" / "research_project.yaml").write_text(yaml.safe_dump({
         "schema_version": 1, "project": "demo", "title": "Demo",
-        "run_roots": [], "research_questions_dir": "experiments/research_questions",
+        "run_roots": [],
     }))
     (research_questions / "H1.yml").write_text(yaml.safe_dump({
         "schema_version": 1, "id": "H1", "title": "Existing",

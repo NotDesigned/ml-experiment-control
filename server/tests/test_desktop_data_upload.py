@@ -27,7 +27,7 @@ from tests.test_multipart_upload import begin, send
 @pytest.fixture
 def stage(tmp_path):
     workers = tmp_path / 'workers'; workers.mkdir()
-    for name in ('worker.py','legacy_worker.py','data_preparation.py','persistent_state.py','data_copy_worker.py'):
+    for name in ('data_copy_worker.py','data_input.py'):
         (workers / name).write_text('# trusted ' + name)
     return desktop.DesktopUploads(tmp_path / 'desktop', {'upload_part_bytes':1024,'worker_directory':str(workers),
         'data_base_image':'registry.example/python@sha256:'+'a'*64})
@@ -258,7 +258,7 @@ def test_desktop_cli_stdin_serve_and_configuration(tmp_path,monkeypatch):
 
 def test_desktop_entrypoint_reads_fixed_config(tmp_path,monkeypatch,capsys):
     configuration=tmp_path/'upload-config.json';workers=tmp_path/'workers';workers.mkdir()
-    for file in ('worker.py','legacy_worker.py','data_preparation.py','persistent_state.py','data_copy_worker.py'):
+    for file in ('data_copy_worker.py','data_input.py'):
         (workers/file).write_text('# trusted')
     configuration.write_text(json.dumps({'worker_directory':str(workers)}))
     real=Path
