@@ -162,3 +162,8 @@ def test_new_batch_stays_pending_until_its_own_display_ack(tmp_path):
 def test_latest_without_axis_is_not_given_a_fabricated_axis():
     p=Projection();p.add(metric(),1);p.add(metric(step=None),2)
     assert next(iter(p.series.values()))['latest']['axis'] is None
+
+
+def test_duplicate_projection_point_does_not_become_a_conflict():
+    p=Projection();p.add(metric(),1);p.add(metric(),2)
+    assert next(iter(p.series.values()))['latest']['status']=='VALID'
