@@ -1,47 +1,43 @@
-# Deploy a source/container API service
+# Deploy and maintain the service
 
-This guide is for the operator of a new daemon. Existing-API users start at
-[the quickstart](api-quickstart.md). These steps are deployment instructions,
-not a request to modify a running production workspace.
+API users start with the [quickstart](api-quickstart.md). This page is for the
+operator of a Linux deployment. Templates contain placeholders and disabled
+mutations; copying them alone does not produce a runnable GPU service.
 
-See [single deployment layout](deployment-layout.md) for directory ownership.
+## Components and layout
 
-## Components and ownership
+| Component | Access it needs |
+|---|---|
+| Daemon | Dedicated UID, writable state, backend auth, server S3 credentials |
+| Private builder | Docker/Buildx, Skopeo, registry push auth, private socket |
+| WYD | Daemon-owned SSH identity, Slurm/Apptainer, shared datapool, registry pull auth |
+| SenseCore | REST AK/SK, workspace/pools/specs, CCR pull authorization, mounted NAS |
+| Object store/proxy | Private bucket, authenticated upload paths and HTTPS downloads |
 
-| Component | Responsibility | Privileges/credentials |
-| --- | --- | --- |
-| `ml-expd` | HTTP, source import, immutable definitions, Actions, collection | Dedicated service UID; workspace writes; SSH, SenseCore REST AK/SK and server S3 credentials |
-| Image builder | Frozen client Dockerfile, trusted worker injection and registry publication | Root-owned Unix socket worker; Docker/Buildx and registry push access |
-| WYD | Slurm allocation and Apptainer conversion/execution | Daemon user's SSH config/keys; registry pull credential |
-| SenseCore | ACP worker execution through REST | Daemon's private REST configuration; platform registry pull authorization |
-| S3-compatible storage | Sealed per-Attempt archives | Bucket access on server only |
-| HTTPS reverse proxy | Public API and exact-Attempt upload path | TLS; forwards Authorization and protocol headers |
+Keep one daemon writer per workspace. For the consolidated deployment:
 
-Use one daemon per workspace. Lifespan acquires its lease before constructing
-writable stores; a second process is not a supported standby writer. Keep
-source, Action state, SQLite indexes and canonical Run/Attempt metadata in
-daemon-owned directories. Large datasets/checkpoints belong in backend storage.
-Do not put the HTTP daemon in the Docker group. Keep code directories traversable
-and code readable by its UID; keep token/credential files private.
-
-## Install a reviewed revision
-
-On Linux, clone a revision containing server 0.2.1 / protocol 2. Pin the commit;
-do not assume an older `main` or release provides the source API. A source
-installation requires uv and Rust 1.85+ to build the packaged credential redactor:
-
-```bash
-git clone https://github.com/NotDesigned/ml-experiment-control.git
-cd ml-experiment-control
-git checkout <reviewed-commit>
-uv sync --locked --all-packages
-uv run --package ml-experiment-server ml-expd --help
+```text
+/root/ml-expd/                 checkout and installed .venv
+  .ops/                       private operations evidence
+  .recovery/previous/          one verified preceding program
+/etc/ml-expd/                 private config/credentials
+/var/lib/ml-expd/             Action DB, index, immutable Runs and metadata
+/var/lib/ml-expd-image-builder/  configured builder receipts/progress/leases
+/srv/ml-expd/projects/        registered external projects, when used
 ```
 
-For an installed deployment, build the core and server distributions, then
-install those two wheels into a dedicated runtime environment. The independent
-client wheel is installed on client machines, not required by the daemon.
-For the paths used by these templates:
+Templates may choose a different project/builder root. Make daemon config,
+builder `source_root`/socket, service writable paths and actual ownership agree.
+Do not relocate backend datasets/checkpoints when rearranging program files.
+Code directories/modules are 0755/0644; entrypoints executable. Keep `.git`,
+`.ops`, `.recovery` mode 0700. Services use `ProtectHome=tmpfs` with a read-only
+bind of `/root/ml-expd`, exposing code without opening other home directories.
+The daemon must not have unrestricted Docker access.
+
+## Install a reviewed commit
+
+Clone into `/root/ml-expd`, check out an exact reviewed commit, install uv and
+Rust 1.85+ for core wheel construction, then build/install core and server:
 
 ```bash
 uv build --package ml-experiment-control
@@ -49,234 +45,105 @@ uv build --package ml-experiment-server
 uv venv /root/ml-expd/.venv
 uv pip install --python /root/ml-expd/.venv/bin/python \
   dist/ml_experiment_control-*.whl dist/ml_experiment_server-*.whl
+/root/ml-expd/.venv/bin/ml-expd --help
 ```
 
-Its `ml-expd` and `experiment-redact` entry points must be on the service PATH.
-The templates bind only `/root/ml-expd` into the service namespace with
-`ProtectHome=tmpfs` and `BindReadOnlyPaths=/root/ml-expd`. Keep code readable
-(0755 directories, 0644 modules), executables executable, and `.git`, `.ops`,
-`.recovery` private. This exposes the deployment to its UID without opening
-other home directories. Configuration and credentials stay in `/etc/ml-expd`;
-state stays in `/var/lib/ml-expd` and registered project paths.
-Back up the existing workspace/config and retain the previous runtime before
-an upgrade. Stop the sole daemon for workspace copies; never restore over a
-running service. See [Action storage](action-storage.md) for migration/rollback.
+Use these creation commands for a new installation, not over an active runtime.
+Existing deployments need a staged, verified upgrade and program rollback plan.
+Install the client separately on client machines. Ensure `experiment-redact`
+is on the controller/service PATH. Remove installers/dev caches after verification.
 
-Canonical Run/Attempt control metadata belongs under `run_root` (by default a
-`runs` sibling of `index_db`), outside imported source. Existing authored
-`research_project.yaml` `run_roots` remain compatibility read roots. An upgrade
-does not copy old Run trees automatically. For migration, stop the sole daemon,
-copy each `<authored-run-root>/<campaign>/<run>` to
-`<run_root>/<project>/<campaign>/<run>`, preserving ownership/relative paths,
-then restart and verify. During a staged migration the daemon-owned copy wins;
-an unmigrated Run continues to write retries beside its existing Attempts, so
-one immutable Run is not split between roots. Backend data is referenced, not
-relocated by this metadata migration.
+## Configure
 
-## Configure a new workspace
+Start from [source-api.yaml](../server/examples/source-api.yaml). Provision a
+daemon account and allow it to write the configured state/project roots. The
+HTTP token must be regular, daemon-owned and mode 0600; create a cryptographically
+random token of at least 32 non-whitespace characters without printing it to
+shared output. Distribute it privately. There is no per-user/project RBAC API.
 
-[source-api.yaml](../server/examples/source-api.yaml) is the full shape with
-mutations initially disabled. [ml-expd.yaml](../server/examples/ml-expd.yaml)
-is the smaller loopback read-only scaffold. Neither is a ready remote deployment.
+Configure these files; keep every actual secret outside Git:
 
-Provision a dedicated `ml-expd` account and directories, for example:
+| Template/config | Required choices |
+|---|---|
+| [executors.yaml](../server/examples/executors.yaml) | Existing scheduler IDs, resource specs and shared mount roots |
+| [image-builder.json](../server/examples/image-builder.json) | Daemon peer UID/GID, matching source root/socket, publisher, repository and allowlist |
+| [registry-pull.json](../server/examples/registry-pull.json) | WYD pull-only credential, distinct from publisher auth |
+| [artifact-store.json](../server/examples/artifact-store.json) | S3 endpoint/bucket/auth, worker callback base, quotas and part policy |
+| Private SenseCore REST JSON | See [SenseCore setup](sensecore-rest.md) |
 
-- `/var/lib/ml-expd` and `/srv/ml-expd/projects`: owned/writable by the daemon;
-- `/etc/ml-expd`: traversable by its UID, configuration files readable by it;
-- `/var/lib/ml-expd-builder`: private to root;
-- `/run/ml-expd-builder`: root-owned, daemon primary group allowed to traverse;
-- installed Python/runtime code: directories `0755`, code `0644`, entry points `0755`.
+Replace all example hosts/REPLACE values. Example artifact-store values are
+explicit quotas, not immutable platform limits: remove them or use null only
+after deciding capacity/retention policy. Byte quotas, if present, must be
+positive integers. Set `public_endpoint` to a pathless public HTTPS S3 endpoint
+and `download_url_seconds` (30–3600) for direct downloads. Preserve signed
+Host/path/query through its proxy and do not log signed URL queries.
 
-Copy the templates into `/etc/ml-expd`, replace every `REPLACE_*`/example host
-and confirm backend paths. Generate a server token as the daemon account:
-
-```bash
-umask 077
-python3 -c 'import secrets; print(secrets.token_urlsafe(48))' > /etc/ml-expd/http.token
-```
-
-The account must have permission to create this file, or provision it as root
-and then set its owner to the daemon UID. Token files must be regular,
-daemon-owned and mode `0600` or stricter, at least 32 non-whitespace characters.
-Artifact/registry credential files should also be daemon-readable only.
-Distribute the token privately to permitted clients. It is a shared control
-credential; this version has no per-user token issuance or project RBAC API.
-
-### Executor profiles
-
-Edit [executors.yaml](../server/examples/executors.yaml). Profile IDs are the
-client-facing selection; credential/config paths stay on the server.
-
-For WYD, configure SSH under the **daemon account**, verify host keys, and
-provision persistent `storage_root` beneath `mount_root`. The remote host needs
-Slurm, rsync and Apptainer; its partition/GRES, account/QOS and mount must pass
-live run-specific preflight. Set `apptainer_unsquash` when FUSE is unavailable.
-Private images need pull authorization on the conversion host. A first OCI to
-SIF conversion can use the longer `stage_timeout_seconds`; this does not change
-the GPU job's frozen wall time.
-
-For SenseCore, provision the [private REST configuration](sensecore-rest.md). Replace
-workspace, AEC2, worker specification and volume mount with existing resources.
-Set `gpus` and `capacity` to the worker's **actual** fixed allocation. Requests
-must match the profile GPU count and cannot exceed capacity. NAS need not be
-reachable from the daemon when S3 return is configured, but the worker needs
-its volume mounted and permission/network access to pull the private image.
-The implementation currently accepts `quota_type: spot`.
-
-### Private image publication
-
-Edit [image-builder.json](../server/examples/image-builder.json). Set
-`client_uid`/`client_gid` to the daemon's numeric identity (`id -u/-g ml-expd`).
-Set `source_root` to `<project_registry_root>/source-revisions/sources`.
-Keep a narrow base-image allowlist and a writable target registry repository.
-Provision Docker with Buildx on the builder host, Skopeo, and root registry
-authentication. Buildx uses Docker's native credential configuration; Skopeo
-uses `registry_auth_file`. Both must authorize the same publication workflow.
-Set `build_storage_path` to the filesystem that holds the builder's Docker state
-volumes; size the disk for compressed layers, unpacked CUDA libraries and build
-output. See [storage diagnostics](build-storage.md) for preflight budgets and
-explicit recovery after a capacity failure.
-The pull-only [registry-pull.json](../server/examples/registry-pull.json) is a
-separate credential used for WYD OCI conversion; it does not configure SenseCore's
-platform-side registry credentials.
-
-Start the root-owned builder with the installed runtime:
-
-```bash
-/root/ml-expd/.venv/bin/python -m ml_exp_server.image_builder \
-  --config /etc/ml-expd/image-builder.json
-```
-
-The worker creates a `0660` Unix socket, checks the caller's peer UID and only
-accepts only the authorized packaging operation. New Runtimes use the frozen
-client Dockerfile, validated pinned bases and managed worker contract, with
-`allow_dockerfile_builds: true`. `publisher: buildkit` reuses registry blobs and emits Docker schema
-2 without attestations; Skopeo verifies the remote manifest/config digests.
-BuildKit is the only publication path. Put dependency installation in the
-client Dockerfile before frequently changed source to preserve layer reuse.
-Registry credentials stay with the publisher. A local tag or RepoDigests entry
-alone is not a verified publication receipt.
-
-Set `container_execution.environments_file` to an operator-owned YAML file:
+The approved base catalogue is an operator-owned YAML selected with
+`container_execution.environments_file`:
 
 ```yaml
 environments:
-  torch-example:
-    title: Approved PyTorch environment
-    image: registry.example.org/team/base@sha256:<64 hex characters>
-    versions: {torch: "operator-verified version", cuda: "operator-verified version"}
-    validation: {wyd-l40s: "not-tested", sensecore-1gpu: "not-tested"}
+  torch-base:
+    title: Verified training base
+    image: registry.example.org/team/base@sha256:ACTUAL_64_HEX_DIGEST
+    versions: {torch: OPERATOR_VERIFIED_VERSION, cuda: OPERATOR_VERIFIED_VERSION}
 ```
 
-The API exposes only approved public catalogue fields. Use the chosen digest in
-the client Dockerfile FROM; `environment_id` is not a build selector. Later
-catalogue edits do not rebind frozen Runtimes.
-Record actual GPU validation separately from successful image publication.
+Catalogue metadata is operator-verified, not automatic package detection.
+Use [builds](builds.md) to configure local or SSH desktop construction and its
+data staging helper. For desktop data, artifact-store configuration additionally
+sets `data_upload_storage: desktop-builder`, private `data_upload_socket`, and
+the bounded CPU `data_delivery` profile described in [data](data.md).
 
-Run the builder under its own systemd unit with its writable state and runtime
-directory. Do not apply the daemon's restrictive UID or sandbox blindly to
-this root/Docker worker. Runtime/source permissions and allowlist entries are
-part of the operator's packaging trust boundary.
+## Backend preconditions
 
-### Object store and public return path
+WYD requires SSH/known-hosts under the daemon account, Slurm, rsync, Apptainer,
+valid account/QOS/GRES and storage_root beneath the mounted shared `/datapool`.
+Verify access on target nodes; a node-local `/data` is not equivalent. Private
+images need conversion-host pull auth. Use `apptainer_unsquash` where FUSE is
+unavailable. Staging/conversion has a separate controller timeout.
 
-Provision a bucket in an S3-compatible service, then edit
-[artifact-store.json](../server/examples/artifact-store.json). A loopback Garage
-instance is one supported deployment; an existing S3 service is another.
-The daemon needs boto3 (included in the server distribution) and bucket read/
-write access. Keep these credentials out of source, Runs, argv and responses.
+SenseCore requires REST access, compatible SPOT GPU specs, CCR pull auth and NAS
+permissions. Advertised fixed allocation must match actual specs. GPU jobs
+exclude debug pools; data-copy jobs use the configured debug CPU pool. NAS need
+not be accessible directly from the daemon when workers return over HTTPS.
+Backend Internet access is separate from registry/NAS access.
 
-`public_transfer_base` must be reachable over **HTTPS from compute workers**,
-including the reverse-proxy prefix and `/api/artifact-transfers`. Server S3
-credentials are not sent to the worker. Dispatch issues a seven-day write-only
-capability for one exact Attempt. The worker PUT route validates that capability
-instead of the control-plane token. Configure the proxy to pass the PUT body
-and allow the configured size (the template uses 256 MiB). Source uploads have
-their own smaller 64 MiB default. Set request/upload timeouts for real network
-conditions. A single-node object store is not an off-host backup.
+After provisioning, deliberately enable the required `action_runtime` source
+imports/project writes/scheduler mutations and finite GPU budget policy. Do not
+enable unrelated permissions just to bypass a failed gate.
 
-## Serve HTTPS and enable capabilities deliberately
+## Start and verify
 
-Run the daemon as its dedicated account on loopback, using the installed runtime:
+Review/adapt the [daemon](../server/examples/ml-expd.service) and
+[builder](../server/examples/ml-expd-image-builder.service) units, daemon config,
+PATH, writable state paths and credential permissions before installing them.
+Daemon and builder use `/root/ml-expd/.venv`. Keep the private socket inaccessible
+to other users. Public HTTPS can proxy a loopback daemon; direct non-loopback
+binding requires native TLS and Bearer auth ([HTTP contract](http_contract.md)).
 
-```bash
-/root/ml-expd/.venv/bin/ml-expd --config /etc/ml-expd/ml-expd.yaml \
-  --host 127.0.0.1 --port 8765
-```
+Verify as the service UID and through the formal HTTPS endpoint:
 
-A systemd unit should specify `User`, `Group`, a readable `WorkingDirectory`,
-the absolute `ExecStart`, PATH for backend tools, `Restart=on-failure` and the
-workspace's writable paths. Keep SSH and private SenseCore REST credentials in that account's
-home. Start the builder before testing packaging. The daemon's own collector
-runs immediately and polls every 20 seconds by default. `--snapshot` disables
-live collection and is not the normal remote experiment mode.
+1. Health/protocol/authentication and all placeholder replacements.
+2. Catalogue/base digests/limits, REST/SSH read-only availability and mount scope.
+3. A bounded source build through READY, remote digest and cleanup receipts.
+4. Existing exact-Attempt artifacts and checkpoint metadata after upgrades.
+5. Only with explicit resource authorization: a small real GPU run, checkpoint
+   restore and downloaded file hashes on each intended backend.
 
-Ready-to-edit unit templates are [ml-expd.service](../server/examples/ml-expd.service)
-and [ml-expd-image-builder.service](../server/examples/ml-expd-image-builder.service).
-They assume the account, credentials and source directory have already been
-provisioned. Install them into `/etc/systemd/system`, copy `source-api.yaml` as
-`/etc/ml-expd/ml-expd.yaml`, update numeric builder UID/GID, then reload systemd
-and enable/start the builder and daemon. Adapt tool paths and resource limits
-to your host. These are examples for a new deployment, not drop-ins to overwrite
-an existing service.
+A CPU starter, successful submit or queue entry does not validate GPU training.
+Do not claim queue ETA/free cards without provider evidence.
 
-A minimal reverse-proxy location is:
+## Maintenance and rollback
 
-```nginx
-location /ml-expd/ {
-    client_max_body_size 256m;
-    proxy_read_timeout 1300s;
-    proxy_send_timeout 1300s;
-    proxy_pass http://127.0.0.1:8765/;
-    proxy_set_header Host $host;
-    proxy_set_header Authorization $http_authorization;
-    proxy_set_header X-ML-Expd-Client-Protocol $http_x_ml_expd_client_protocol;
-    proxy_buffering off;
-}
-```
+Back up live SQLite with its backup API, or take a stopped-service copy including
+WAL. Keep an isolated restore check and one verified preceding program/config
+recovery point. Never restore an old DB over newer production state. Refuse
+program rollback if guard conditions or active/newer operations make it unsafe.
+See [Action storage](action-storage.md).
 
-This strips `/ml-expd/` while the client retains that prefix in its base URL.
-Install TLS on the public listener. Native remote binding instead requires
-both `--ssl-certfile` and `--ssl-keyfile` plus Bearer auth; plaintext remote
-binding is refused. Never remove auth to make the stock Swagger UI work; fetch
-the authenticated schema as described in [the HTTP contract](http_contract.md).
-
-With mutations still disabled, run the read-only operator checklist. Run the
-`ml-exp` check from a separate machine/environment with the client installed:
-
-```bash
-/root/ml-expd/.venv/bin/ml-expd --config /etc/ml-expd/ml-expd.yaml doctor --json
-ml-exp check --schema openapi.json
-```
-
-Doctor verifies generic host availability and policy; it does not validate all
-profile details or prove a specific Run can submit. After configuration and
-connectivity checks, enable `allow_source_imports` and `allow_project_writes`
-to test packaging and Run creation. Enable `allow_scheduler_mutations` only
-when the budget/profile policy is ready for actual execution. Each submitted
-Run still has prepare/authorize/execute gates. Restart after config changes;
-profile changes do not rebind existing immutable Runs.
-
-## Acceptance and maintenance
-
-Configure [temporary build storage and direct downloads](storage-lifecycle.md)
-to prevent training images accumulating on the API host. This also describes
-the boundary between local Garage and external S3 storage.
-
-Use a **new** project/Run definition for acceptance. Run the quickstart first,
-then a small real training task on each intended executor. Verify independently:
-
-1. Source import and Runtime `READY` with a remotely verified image digest.
-2. Submission gates and `VERIFIED` with the exact backend job ID.
-3. Exact Attempt reaches `SUCCEEDED`; inspect logs and numeric metrics.
-4. Artifacts arrive through the public HTTPS return path and S3.
-5. Download files and tar, verify receipt SHA256 and contents, check your
-   program's Run/Attempt/source identity and scientific outputs.
-
-Injected local tests establish API/client and recovery behavior, not scheduler,
-GPU or off-host network availability. Do not report submission preflight alone
-as an executed experiment. Preserve old Attempts, histories and rollback
-runtimes; no automatic artifact deletion is implemented. Monitor health and
-Action resolution; reconcile uncertain effects with observation, never blind
-replay. Stop the sole daemon for consistent workspace backups and test restores
-in an isolated location.
+Registry images, backend datasets/state and published desktop archives require
+explicit retention. No global Docker prune or automatic NAS cleanup exists.
+Record exact commit/package versions and verification privately; these docs
+are not a list of live jobs or historical test counts. Known defects and
+unimplemented recovery capabilities are in [recovery](recovery.md).

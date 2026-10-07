@@ -1,38 +1,15 @@
 # Contributing
 
-Install the package and development dependencies, then run the repository gates:
+Follow [development setup and validation](docs/development.md). Start with
+affected tests; required CI includes independent full line/branch gates and
+installed-wheel checks. Tests must not contact live schedulers.
 
-```bash
-uv sync --locked --all-packages
-cargo fmt --manifest-path rust/Cargo.toml -- --check
-cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
-cargo test --locked --manifest-path rust/Cargo.toml
-uv run mypy
-uv run python tools/coverage_gate.py
-uv run --package ml-experiment-server python tools/coverage_gate.py --suite daemon
-uv run --package ml-experiment-client pytest client/tests -q
-uv run python tools/generate_cli_reference.py --check
-uv run python -m compileall -q src tests tools examples
-uv build --all-packages
-```
+Keep the [package boundaries](docs/architecture.md): standalone HTTP client,
+server control plane and reusable backend core. Scientific commands, metrics
+and success criteria are project-owned. Follow the
+[public integration contract](docs/downstream_contract.md) when changing exports.
 
-Add runtime dependencies with `uv add <package>` and development dependencies
-with `uv add --dev <package>`. Commit the resulting `pyproject.toml` and
-`uv.lock` changes together.
-
-Rust 1.85 or newer is required to build the packaged `experiment-redact`
-binary. Commit `rust/Cargo.lock` whenever Rust dependencies change.
-
-The coverage gate checks repository-wide line and branch coverage independently:
-100% line and 100% branch coverage for both core and daemon. See
-[`docs/development.md`](docs/development.md) for the testing and generated CLI
-documentation policy.
-
-Backend tests use injected command runners and must not access a live scheduler.
-Keep project-specific configuration, launch commands, metrics, and assets in a
-host-owned `ProjectAdapter`; use `examples/minimal_project_adapter.py` as the
-contract checklist.
-
-When changing public imports or `experiment-redact`, update
-[`docs/downstream_contract.md`](docs/downstream_contract.md) and validate the
-candidate package against ELF before its commit pin is advanced.
+Maintain [current documentation](docs/README.md) alongside behavior changes.
+Use one primary page per concept; remove obsolete instructions and label known
+limitations. Keep credentials and deployment evidence outside Git. Generate the
+redactor CLI reference with its tool rather than editing it by hand.

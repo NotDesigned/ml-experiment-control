@@ -1,39 +1,49 @@
-# An experiment from an external computer
+# Run an experiment from another computer
 
-Install only this repository's standalone `client` package in Python 3.10+.
-The client needs the HTTPS API URL and a private Bearer token file; it needs no
-Docker, SSH, SenseCore credentials or backend tools.
+## Connect
+
+The operator supplies an HTTPS API base URL, private Bearer token, client wheel
+and enabled executors/base images. You need Python 3.10+; CI uses 3.12. Local
+Docker, SSH and cloud credentials are unnecessary.
 
 ```bash
 python3 -m venv .client-venv
 . .client-venv/bin/activate
-python -m pip install ./client
+python -m pip install ./ml_experiment_client-*.whl
 export ML_EXPD_API_URL='https://api.example.org/ml-expd'
 export ML_EXPD_API_TOKEN_FILE="$HOME/.config/ml-expd/client.token"
 ml-exp check --schema openapi.json
 ```
 
-`check` returns API capabilities, resource policy, executors, approved base images
-and storage limits. Executors describe supported GPU configurations, not currently
-free capacity. Copy an approved image digest into Dockerfile's `FROM`.
-Keep source, data and client state/results in separate directories:
+Provision that private token file first. Keep it outside source and experiment
+JSON. From a checkout, `python -m pip install ./client` installs only the client.
+`check` returns capabilities, policy, executors, base digests and storage limits.
+Choose actual IDs/digests from those responses; executors are not free-GPU counts.
+
+## First experiment
+
+Keep source, data, client state and results separate:
 
 ```text
 study/
   source/Dockerfile
   source/train.py
-  data/tokens.bin
   experiment.json
+  trial.state.json       # created by client, outside source
+  results/               # downloads, outside source
 ```
 
-`ml-exp init source --base-image <approved-digest>` writes a small starter.
-Install dependencies in Dockerfile before copying frequently changed code.
-The server additionally copies complete frozen source to `/workspace` and installs
-its managed worker. The final image needs Python 3.10+, `/bin/sh`, GNU `timeout`
-and permissions to create `/inputs` and `/outputs`.
-See [Dockerfile rules](sensecore-user-workflow.md).
+Generate a starter, replacing the placeholder with an approved digest:
 
-Write `experiment.json`; paths are relative to this config file:
+```bash
+ml-exp init source --base-image 'REGISTRY/BASE@sha256:ACTUAL_64_HEX_DIGEST'
+```
+
+The starter uses stdlib Python. It verifies the workflow, not CUDA availability
+or GPU throughput. Replace it with training code and dependency installation
+afterwards. See [Dockerfile rules](builds.md#dockerfile-contract).
+
+Write `experiment.json`:
 
 ```json
 {
@@ -45,98 +55,59 @@ Write `experiment.json`; paths are relative to this config file:
   "executor": "wyd-l40s",
   "arguments": ["--steps", "20"],
   "resources": {"gpus": 1, "cpus": 8, "memory_gb": 32, "max_time": "00:10:00"},
-  "inputs": [{"directory": "./data", "mount_path": "/inputs/data"}],
-  "checkpoint_upload": {"interval_seconds": 60},
   "max_gpu_hours": 0.2
 }
 ```
 
-The program reads `/inputs/data`, writes under `OUTPUT_DIR`, and emits metrics to
-stdout or `metrics.jsonl`. For safe checkpoint upload, the trainer must atomically
-publish `checkpoint.ready.json` with exact paths, sizes and SHA256 hashes after
-completing a checkpoint. Setting the interval alone does not make partial files
-safe. Follow the [checkpoint example](sensecore-user-workflow.md).
-
-Prepare without allocating GPU resources:
+Replace the executor with one published by your server. SenseCore GPU count
+must match the fixed spec; actual CPU/memory may exceed requested minimums.
+Local paths are relative to the config file.
 
 ```bash
 ml-exp experiment experiment.json --state trial.state.json
-```
-
-This validates local inputs and executor selection, imports source, builds or
-reuses its Dockerfile Runtime, uploads separate dataset assets, freezes a Run and
-prepares its Submission gates. Inspect the returned IDs, gates and budget.
-New builds accept Dockerfile only. The ordinary image/environment/requirements
-selectors have been removed. `/api/environments` remains a base-image catalogue;
-existing READY Runtime IDs and immutable Runs remain usable.
-
-Execute the prepared experiment and collect verified outputs:
-
-```bash
 ml-exp experiment experiment.json --state trial.state.json --resume \
   --execute --seconds 1800 --download-to results/trial-001
 ```
 
-`--execute` explicitly authorizes scheduling within the configured GPU-hour
-budget. State is saved before effectful requests. Runtime READY means an image
-exists; Submission VERIFIED means the exact job is visible. Only scheduler
-SUCCEEDED and verified artifacts complete training. Download checks archive
-SHA256/size and every recorded file hash. Signed links are fetched without the
-API token and are not saved in state.
+The first command uploads source, builds/reuses the image, freezes the Run and
+prepares gates. It does not submit GPU training. Adding desktop SenseCore inputs
+can launch a bounded zero-GPU data-copy job during preparation. `--execute`
+authorizes scheduling within the budget. `--seconds` is the client's wait limit;
+`resources.max_time` controls worker/job duration. Disconnecting does not cancel.
 
-After a disconnect, use the same command with `--resume`. It observes the same
-Runtime/Run/Submission; uncertain build or scheduler requests are never replayed.
-Changed configuration/source requires a new Run ID and state file. Keep state
-outside source. Downloads require a new destination directory; after interruption,
-inspect existing output or choose a fresh destination rather than overwriting it.
+## Add data and outputs
 
-## Waiting and reuse
+Code is packaged at `/workspace`. Write exports to `OUTPUT_DIR` (`/outputs`).
+Add data when needed:
 
-- `GET /api/projects/P/runtimes/R/progress`: current build phase, log tail,
-  phase start, real last progress time, and a diagnostic after 120 seconds without
-  recorded progress. Build/push and remote digest verification are separate.
-- `GET /api/submissions/S/progress`: source validation, backend staging/image
-  conversion, scheduler submission, exact job verification, and indexed scheduler
-  state/queue reason with its observation timestamp and stale flag.
+```json
+{"inputs": [{"directory": "./data", "mount_path": "/inputs/data"}]}
+```
 
-Cold OCI→SIF conversion on WYD may take minutes. Phase timeouts are displayed.
-No-progress warnings do not prove failure. Queue reasons belong to the exact
-Attempt; start-time estimates remain null without reliable backend evidence.
-Observing or diagnosing a job never launches a replacement.
+Use `asset_id` instead of `directory` to reuse an upload. A source download
+script can instead prepare persistent `DATA_DIR`. See [data](data.md).
+Use `STATE_DIR` for complete recovery state ([checkpoints](persistent-checkpoints.md)),
+and explicit units for [metrics](metrics.md). These are optional additions.
 
-The same frozen source/Dockerfile/worker recipe reuses a READY Runtime. CCR-backed
-BuildKit cache reuses dependency layers across source changes. The control server
-still removes its transient builder/cache volume. WYD reuses a verified,
-digest-bound SIF. New worker recipes require new images and preserve old history.
-First-use conversion and queueing still take time; cache does not guarantee capacity.
+## Observe and retrieve
 
-## Lower-level commands and recovery
+```bash
+ml-exp submission --id SUBMISSION_ID
+ml-exp watch --project my-study --run trial-001 --seconds 1800
+ml-exp download --project my-study --run trial-001 \
+  --attempt attempt-001 --out results/trial-001-copy
+```
 
-`pack` → `create` → `prepare` → `execute` → `watch` → `download` remain available.
-`pack --project my-study --source ./source --state runtime.json` uses Dockerfile
-by default. `create --runtime-state runtime.json` reuses that code/environment
-image for a new Run. `runtime --state runtime.json --logs` reads logs;
-`runtime --state runtime.json --reconcile` looks up a published receipt without
-building. `submission --id <saved-id> --reconcile` observes the exact job without
-resubmitting. A retry requires a terminal prior job and a new authorized Attempt.
+Use the actual Attempt ID and a new destination directory. Download verifies the
+archive and recorded file hashes. Failed jobs can still have useful outputs.
+Runtime READY means image publication; Submission VERIFIED means exact scheduler
+job visibility; neither proves training or result publication succeeded.
 
-Data uses negotiated parts (default 16 MiB; this desktop deployment uses 1 MiB)
-numbered **0 through part_count-1**. Storage limits also
-return `upload_part_number_base: 0`. `asset-upload --resume` continues an unchanged
-directory. Fixed 4 GiB defaults are removed; read optional quotas and desktop capacity
-from the API. Desktop-staged SenseCore data uses a CCR image and CPU-only ACP
-copy before Run creation; `experiment` handles this automatically.
-See [desktop data delivery](desktop-data-delivery.md).
-Source is separate: 64 MiB archive/256 MiB expanded. Read actual deployment limits
-through `check` or `GET /api/storage-limits`.
-See [multipart uploads](multipart-uploads.md) and [storage lifecycle](storage-lifecycle.md).
+After disconnecting, use the same state with `--resume`. It observes saved
+identities without replaying uncertain build/scheduler requests. Changed code
+or config needs a new Run ID and state file. See [recovery](recovery.md) for
+`RECONCILE_REQUIRED`, empty results and stalled preparation.
 
-Alternatively, include `data_preparation` with a source script, argv and timeout
-to let the backend download directly into persistent `DATA_DIR`, verify and reuse
-its cache before training. This requires a new Runtime with `data-preparation.v1`;
-the dataset remains outside the result directory. See [script data preparation](script-data.md).
-
-Project-defined metric names, units, completeness and frozen scoring protocols:
-[metrics contract](metrics.md).
-
-Backend-resident complete recovery state and exact restore references: [persistent checkpoints](persistent-checkpoints.md).
+Lower-level commands are `pack → create → prepare → execute → watch → download`.
+Use `ml-exp COMMAND --help` and the [API reference](source-api.md) when reusing
+one Runtime across multiple Runs or integrating a custom client.

@@ -1,292 +1,96 @@
 # Core library integration
 
-This path is for host controller developers. Users of the source/container HTTP
-API do not need a `ProjectAdapter` or a local installation of the core. See
-[the API quickstart](api-quickstart.md) for that workflow.
+This path is for developers of their own host controller. A client using the
+managed HTTP service needs only [the standalone client](api-quickstart.md),
+without a `ProjectAdapter` or cloud/SSH credentials.
 
-## Install
+## Install and try locally
 
-Add the package to another uv-managed project directly from GitHub:
+Pin a reviewed immutable commit, replacing the placeholder:
 
 ```bash
-uv add \
-  "ml-experiment-control @ git+https://github.com/NotDesigned/ml-experiment-control.git"
+uv add 'ml-experiment-control @ git+https://github.com/NotDesigned/ml-experiment-control.git@REVIEWED_COMMIT'
 ```
 
-The core package's only runtime dependency outside the Python standard library
-is PyYAML, used for canonical Run/Attempt manifest files. The daemon
-distribution adds FastAPI/Uvicorn, Pydantic, and optional OTLP export support.
-
-## Minimal local integration
-
-`LocalBackend` is a real asynchronous backend for Linux development and smoke
-tests. It creates an attempt-qualified process group, persists PID plus process
-start-time identity, captures redacted logs, records exit status, supports
-recovery, and cancels only the exact recorded process group.
-
-After cloning the repository and following the development setup, run:
+The core uses PyYAML and packages a Rust redactor. A source installation needs
+Rust 1.85+; a suitable built wheel includes the executable. Follow
+[development setup](development.md) in a checkout, then run:
 
 ```bash
 uv run python examples/local_smoke.py
 ```
 
-The complete, copyable integration is
-[`examples/local_smoke.py`](../examples/local_smoke.py). Its essential composition
-boundary is:
+[`examples/local_smoke.py`](../examples/local_smoke.py) is a complete Linux
+example: build a backend registry, persist immutable manifests and submission
+intent, start a real local process, observe it and read redacted logs. Local
+execution uses PID plus process start time and an Attempt-qualified process
+group. It is not acceptance evidence for Slurm, ACP or GPUs.
+
+## Compose a host
 
 ```python
-services = BackendServices(...)
-backend = build_registry(services).get("local")
-backend.preflight(run, scope="submit").require_ready()
-intent = store.begin_submission(
-    project=project,
-    run_id=run["run_id"],
-    attempt_id=manifest["attempt_id"],
-    backend=backend.kind,
-    request=backend.submission_request(campaign, run, manifest["attempt_id"]),
-)
-job_id = backend.recover_submission(run, intent, manifest["attempt_id"])
-if job_id is None:
-    job_id = backend.submit(
-        campaign, run, manifest, dry_run=False, intent=intent,
-    )
-store.reconcile_submission(
-    project=project,
-    run_id=run["run_id"],
-    attempt_id=manifest["attempt_id"],
-    backend_job_id=job_id,
-)
-```
-
-The host still owns campaign parsing and immutable manifest construction.
-`ExperimentStateStore` must persist the submission intent before any non-dry-run
-backend call; direct mutation without that intent is rejected. Local execution
-is not a substitute for live SenseCore or Slurm integration tests.
-
-## Public API
-
-```python
+from experiment_control import ExperimentStateStore
 from experiment_control.backends import build_registry
 from experiment_control.backends.services import BackendServices
-from experiment_control.preflight import PreflightCheck, PreflightReport
-from experiment_control.identity import IdentityReport
-from experiment_control.project import (
-    AssetProbe,
-    AssetRequirement,
-    ProjectAdapter,
-    ProjectRegistry,
-    SourceBundle,
-)
-from experiment_control.runner import CommandResult, CommandRunner, SubprocessRunner
-from experiment_control.states import FailureClass, classify_failure
-from experiment_control.contracts import (
-    AttemptManifest,
-    BackendLogs,
-    BackendStatus,
-    RunSpec,
-    SubmissionIntent,
-    SubmissionRequest,
-)
-from experiment_control.manifest import (
-    ExperimentStateStore,
-    RunState,
-    append_event,
-    atomic_write,
-    require_immutable,
-    sanitize_command,
-    utc_now,
-    validate_identity,
-)
-from experiment_control.outbox import execute_cancel_outbox
-from experiment_control.run_manifest import build_run_manifest
-```
 
-`build_registry` requires one host-provided `BackendServices` instance:
-
-```python
+# Supply your runner, run-directory lookup, backend-record lookup,
+# metric/checkpoint parsers, summary function, atomic writer and clock.
 services = BackendServices(...)
-registry = build_registry(services)
+backend = build_registry(services).get("slurm")
 ```
 
-`BackendServices` is the narrow host boundary. The host injects command
-execution, run-directory lookup, backend-record lookup, project metric parsing
-and summarization, atomic JSON writing, and UTC time. This keeps the package
-independent from the host's campaign format, scientific config, and metric
-semantics; package-owned manifest and outbox primitives remain usable without
-backend services.
+`BackendServices(...)` is a composition sketch, not executable without the
+callbacks. Implement your scientific/configuration boundary using
+[`examples/minimal_project_adapter.py`](../examples/minimal_project_adapter.py):
 
-The supported Python symbols, Rust CLI boundary, private-name policy, and
-consumer upgrade checklist are defined in
-[`docs/downstream_contract.md`](downstream_contract.md). Imports whose
-names begin with `_` are implementation details and are not downstream APIs.
+1. Resolve/validate config and freeze the command/environment.
+2. Describe source and immutable semantic asset identities.
+3. Map assets to backend-visible filesystem probes.
+4. Parse project metrics/checkpoints and summarize evidence.
 
-The daemon workspace's Project registry, `ACTIVE`/`PAUSED`/`ARCHIVED` state
-machine, collector effects, and non-destructive archive/unregister semantics
-are specified in [`docs/project_lifecycle.md`](project_lifecycle.md).
+The package must never import your training/model code. Asset requirements name
+semantic inputs; `AssetProbe` gives a storage path the backend can verify.
+`collection_includes` optionally adds host-specific collection patterns.
+Metric names, units, success criteria and aggregation remain host responsibilities.
 
-Source imports, frozen OCI execution, S3 artifact return and downloads are
-specified in [`docs/source-api.md`](source-api.md). W&B support is removed.
+## Submit with durable identity
 
-## Backend lifecycle
-
-Each backend implements:
-
-```text
-availability
-validate -> preflight -> identity -> stage -> render
-                    -> durable intent -> recover or submit -> reconcile
-                                      -> status/logs/collect/cancel
-```
-
-`availability()` is the run-independent daemon-host check used by `ml-expd
-doctor`. It verifies the local executables and generic API authentication needed
-to reach a backend without submitting, cancelling, or reading job payloads.
-`preflight` remains the run-specific resource and authorization check.
-
-`preflight` returns a credential-free `PreflightReport`. SenseCore checks the
-signed REST identity, exact-name workspace queries and bound resource specifications. WYD scopes checks
-to the operation: observation needs only SSH/Slurm control access, staging adds
-rsync and storage, and submission adds live partition/GRES, account/QOS,
-Apptainer, and mount validation.
-
-Local execution checks the work directory, writable run storage, and Linux
-`/proc` process identity. It launches a detached attempt process group through
-a package worker and persists enough identity to reject PID reuse during status
-or cancellation.
-
-`identity(campaign, run, attempt_id)` returns a typed, sanitized, read-only
-`IdentityReport` containing `available`, `ambiguous`, `scheduler_job_ids`, and
-`remote_manifest_exists` when the backend can inspect persistent storage.
-WYD additionally reports `remote_manifest_matches`; a host may claim an
-existing run directory only when this digest-backed ownership evidence is
-true.
-Every new durable intent contains a random 128-bit `submission_token` generated
-before scheduler contact. A non-dry-run backend submission requires that intent.
-WYD writes the token into Slurm `Comment`; SenseCore derives a unique exact
-resource name from it; LocalBackend writes it into its atomic process claim.
-Recovery requires both the expected attempt identity and the exact token.
-Historical jobs with the same human-readable base name are ignored, while
-missing, malformed, or multiply matching token evidence fails closed.
-Campaign generation and scientific config resolution remain host
-responsibilities. The package owns immutable Run/Attempt publication and local
-event/outbox reconciliation once the host has resolved those inputs.
-
-WYD log observation checks exact, attempt-qualified canonical `stdout.log` and
-`stderr.log` paths first, then exact `slurm-<job-id>.out/.err` paths in the
-attempt and run directories. It does not use remote globs. Returned tails are
-bounded and redacted, and `collect()` includes the same sanitized excerpts as
-`process_evidence` so failures before the training runtime writes metrics remain
-diagnosable by a host controller.
-
-WYD queue observation also records Slurm's `%R` pending reason in
-`BackendStatus.reason` and `detail.pending_reason`, together with observation
-time and source. For running jobs `%R` is a node list, so it is not reported as
-a pending reason. A client must not infer Resources, Priority, QOS, or
-Dependency when the scheduler did not provide that detail.
-
-SenseCore creates and observes an exact resource name derived from the attempt
-and durable submission token. The
-authored image tag remains provenance, while submission is pinned to the
-manifest's `repository@sha256:...` digest. Status, logs, and cancellation use
-the recorded exact resource rather than a prefix search.
-Collection also sanitizes the exact worker table, discards host and pod IPs,
-and normalizes `Pending`, `Running`, and terminal phases separately from model
-progress.
-
-WYD submission also acquires an attempt-qualified directory claim on persistent
-storage before copying the manifest or invoking `sbatch`. The claim is not
-removed automatically: a controller crash therefore fails closed for manual
-reconciliation instead of permitting a second scheduler mutation.
-
-Credentials remain in native providers:
-
-- a host-only JSON AK/SK configuration for SenseCore (see [REST setup](sensecore-rest.md));
-- SSH config/agent for WYD;
-- Docker credential store/helper for registries.
-
-Never pass credentials through campaign YAML, manifests, backend reports, or
-training commands.
-
-## CLI reference
-
-The package exposes one deliberately narrow Rust command, `experiment-redact`,
-for redacting captured log text from standard input. The binary is
-installed by the package wheel and is not an experiment lifecycle CLI. Its
-complete generated option reference is in
-[`docs/cli_reference.md`](cli_reference.md); the runtime parser is the
-single source of truth and CI rejects stale generated help.
-
-## Project integration
-
-A training repository implements `ProjectAdapter` to define config resolution,
-the launch command/environment, assets, metric and checkpoint-log parsing,
-summaries, and source staging policy. The controller composes one
-`ProjectAdapter` with one compute backend.
-
-Copy [`examples/minimal_project_adapter.py`](../examples/minimal_project_adapter.py)
-into the training repository and replace its JSON config, command, metric,
-checkpoint, asset, and summary conventions. The adapter deliberately stays in
-the training repository: this package must never import model code.
-
-Start with these methods in order:
-
-1. `validate_run`, `resolve_config`, and `command` freeze what will run.
-2. `environment` and `operational_overrides` map controller-owned output paths.
-3. `source_bundle`, `plan_assets`, and `asset_probes` define immutable inputs.
-4. `parse_metric`, `parse_checkpoint`, and `summarize` define durable evidence.
-
-The example is executable and covered by the package test suite. It is a
-contract template, not a universal training launcher; backend scheduling and
-project semantics remain intentionally separate.
-
-Asset discovery follows the same boundary. A project adapter returns semantic
-requirements and maps them to backend-verifiable filesystem probes:
+After manifest construction and successful preflight, persist an intent before
+any scheduler mutation:
 
 ```python
-requirements = adapter.plan_assets(config_path, overrides)
-probes = adapter.asset_probes(requirements, runtime_environment)
-report = backend.verify_assets(run, probes)
+intent = store.begin_submission(
+    project=project, run_id=run["run_id"],
+    attempt_id=attempt["attempt_id"], backend=backend.kind,
+    request=backend.submission_request(campaign, run, attempt["attempt_id"]),
+)
+job_id = backend.recover_submission(run, intent, attempt["attempt_id"])
+if job_id is None:
+    job_id = backend.submit(campaign, run, attempt, dry_run=False, intent=intent)
+store.reconcile_submission(
+    project=project, run_id=run["run_id"],
+    attempt_id=attempt["attempt_id"], backend_job_id=job_id,
+)
 ```
 
-`AssetRequirement.identity` is the immutable model, dataset, or file identity;
-`AssetProbe.path` is its backend-visible representation. Backends never need to
-know model or dataset names.
+Recovery must establish exact absence before the first create; an ambiguous or
+failed lookup must stop this flow. After an uncertain create, use reconciliation,
+not a second submit. `ExperimentStateStore` supplies a durable random token;
+backends reject non-dry-run submissions without the corresponding intent.
+See [the public contract](downstream_contract.md) for identity and upgrade rules.
 
-A project's `SourceBundle.required_paths` may declare relative files that must
-exist in the staged source tree. WYD verifies those paths after transfer. The
-project launcher remains responsible for importing its runtime dependencies as
-its first container-side action; some login nodes cannot mount SIF images
-without an allocation, so the backend does not pretend to run a container
-preflight there.
-
-## Tool overrides
-
-The backends recognize these non-secret environment variables:
+`availability()` is run-independent and read-only. `preflight(run, scope=...)`
+adds operation-specific tools, resource and storage checks. The lifecycle is:
 
 ```text
-EXPERIMENTCTL_SENSECORE_REST_CONFIG
-EXPERIMENTCTL_SENSECORE_CREATE_TIMEOUT_SECONDS
-EXPERIMENTCTL_REDACTOR_BIN
-EXPERIMENTCTL_SSH_BIN
-EXPERIMENTCTL_RSYNC_BIN
+validate → preflight → identity/assets → stage/render
+         → durable intent → recover/submit → reconcile
+         → status/logs/collect/cancel
 ```
 
-Each controller process uses its own SSH multiplexing socket. Parallel
-controller processes therefore reuse connections within their own workflow
-without racing over one global `/tmp` control socket.
-
-Registry publication remains a host workflow. A host may define its own Docker,
-Crane, or Skopeo executable overrides without adding them to this package.
-
-## Safety properties
-
-- Backend reports contain fixed, sanitized messages rather than raw shared
-  workspace responses.
-- SenseCore JSON is piped through the packaged sanitizer before parsing.
-- Preflight failure is fail-closed before remote stage or scheduler submit.
-- Consumed or ambiguous scheduler identities are rejected before submission.
-- Completed checkpoints require a matching payload, step, and byte-count marker.
-- Scheduler state, model progress, and evaluation data remain separate; the daemon
-  returns those observations without deriving a scientific conclusion.
-- Source, image, config, storage, and scheduler identities remain the host
-  manifest's responsibility.
+Use host-only REST configuration for SenseCore, SSH config/agent for WYD and
+private registry auth for publication. Never embed credentials in Run manifests.
+Supported tool overrides include `EXPERIMENTCTL_REDACTOR_BIN`,
+`EXPERIMENTCTL_SSH_BIN`, `EXPERIMENTCTL_RSYNC_BIN`,
+`EXPERIMENTCTL_SENSECORE_REST_CONFIG` and
+`EXPERIMENTCTL_SENSECORE_CREATE_TIMEOUT_SECONDS`. There is no SCO fallback.
