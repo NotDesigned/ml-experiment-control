@@ -78,6 +78,15 @@ positive integers. Set `public_endpoint` to a pathless public HTTPS S3 endpoint
 and `download_url_seconds` (30–3600) for direct downloads. Preserve signed
 Host/path/query through its proxy and do not log signed URL queries.
 
+Provision publisher Docker auth as root-only
+`/etc/ml-expd/build-docker/config.json` in a mode-0700 directory. Set builder
+`registry_auth_file` to that file for Skopeo and its service environment
+`DOCKER_CONFIG=/etc/ml-expd/build-docker` for Buildx pull/push. Keep `BUILDX_CONFIG`
+under writable builder state. `ProtectHome=tmpfs` hides `/root/.docker`; a
+successful root-shell login does not prove the service can authenticate. Verify
+manifest reads and publication as the service inside its sandbox. Never copy
+credentials into source/images or expose the whole home to fix authentication.
+
 The approved base catalogue is an operator-owned YAML selected with
 `container_execution.environments_file`:
 

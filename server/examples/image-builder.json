@@ -9,7 +9,7 @@
   "publisher": "buildkit",
   "build_storage_path": "/var/lib/docker",
   "allow_dockerfile_builds": true,
-  "registry_auth_file": "/root/.docker/config.json",
+  "registry_auth_file": "/etc/ml-expd/build-docker/config.json",
   "docker": "/usr/bin/docker",
   "skopeo": "/usr/bin/skopeo",
   "timeout_seconds": 600

@@ -439,8 +439,9 @@ class ImageBuilder:
                        "available_inodes": available_inodes, "required_inodes": int(self.config.get("build_min_free_inodes", 100000)),
                        "compressed_base_bytes": compressed, "expansion_factor": factor, "reserve_bytes": reserve,
                        "estimate_kind": "conservative_compressed_layer_budget", "scheduler_submitted": False}
-        except (OSError, ValueError, KeyError, TypeError, StopIteration):
-            raise BuildStorageError("BUILD_STORAGE_UNCHECKED", {"scheduler_submitted": False}) from None
+        except (OSError, ValueError, KeyError, TypeError, StopIteration, subprocess.SubprocessError) as exc:
+            raise BuildStorageError("BUILD_STORAGE_UNCHECKED", {"scheduler_submitted": False,
+                                    "error_class": type(exc).__name__}) from None
         # Arbitrary RUN commands may grow beyond this estimate. Runtime ENOSPC
         # still gets a distinct error and owned ephemeral-builder cleanup.
         if details["available_bytes"] < required or details["available_inodes"] < details["required_inodes"]:

@@ -51,8 +51,21 @@ POST /api/projects/P/data-deliveries/DELIVERY_ID/reconcile
 ```
 
 Asset READY and backend delivery READY are separate. Reconciliation checks the
-exact existing publication/job and never resubmits an uncertain copy. An upgrade
-can change delivery identity even for unchanged data; see [known limitations](recovery.md#known-limitations).
+exact existing publication/job and never resubmits an uncertain copy.
+With `nas-data-ready-reuse.v1`, preparation reuses a sealed READY receipt for
+identical project/asset/archive/file hashes and NAS workspace/mount/path. Worker
+upgrades and copy-placement settings do not invalidate verified dataset bytes.
+The training worker still rehashes actual cached files before starting code;
+receipt reuse is not a new independent server-side NAS verification.
+
+GET of an older pending/uncertain request can report effective `status: READY`,
+with `operation_status` retaining its original state, `reused_from` naming the
+canonical delivery and `ready_delivery` carrying the verified receipt. Its
+original file, journal, image and scheduler identity remain unchanged. This
+means data is ready through another delivery, not that the uncertain copy
+succeeded. New Runs bind the canonical receipt. Corrupt/unsealed receipts and
+different bytes/NAS scopes are never reused. Failure `diagnostic` exposes the
+phase, safe error code/class, bounded details and next action without raw errors.
 Permission-based 0444/0555 protection is not a kernel read-only mount; root code
 can change permissions. Reuse verifies bytes again and rejects corruption.
 

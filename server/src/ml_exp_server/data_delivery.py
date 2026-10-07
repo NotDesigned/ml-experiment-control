@@ -19,7 +19,7 @@ from experiment_control.backends.sensecore_rest import SenseCoreREST, RESTError,
 from .application_errors import ApplicationError
 from .data_assets import AssetStore, ASSET_ID
 from .data_image_build import data_worker_digest
-from .image_builder import builder_request, IMAGE
+from .image_builder import builder_request, IMAGE, BuildStorageError, BuildTransportError
 from .source_imports import IDENTITY
 from .storage import DurableJsonState, utc_now
 
@@ -39,7 +39,7 @@ def recover_data_deliveries(runtime):
         if not IDENTITY.fullmatch(path.parent.name) or not DELIVERY.fullmatch(path.stem):
             continue
         service = DataDeliveryService(runtime)
-        value = service.read(path.parent.name, path.stem)
+        value = service.stored_read(path.parent.name, path.stem)
         if value["status"] in {"BUILDING_IMAGE", "IMAGE_READY", "SUBMITTING", "QUEUED", "COPYING"}:
             service.update(path.parent.name, path.stem, status="RECONCILE_REQUIRED", error="daemon interrupted; inspect exact publication/job before reconciliation")
             recovered += 1
@@ -75,11 +75,58 @@ class DataDeliveryService:
     def public(value):
         return {key: item for key, item in value.items() if key != "copy_token"}
 
-    def read(self, project, delivery_id):
+    def stored_read(self, project, delivery_id):
         with self.state(project, delivery_id) as (_, snapshot):
             if not snapshot.value:
                 raise ApplicationError("unknown data delivery", status_code=404, code="UNKNOWN_DATA_DELIVERY")
+            if snapshot.value.get("project") != project or snapshot.value.get("delivery_id") != delivery_id:
+                raise ValueError("stored data delivery identity differs")
             return self.public(snapshot.value)
+
+    def read(self, project, delivery_id):
+        value = self.stored_read(project, delivery_id)
+        if value["status"] != "READY":
+            ready = self.ready_candidate(value)
+            if ready is not None:
+                # Data readiness is independent of an uncertain copy operation.
+                # Never rewrite its journal, job identity, callback or image.
+                return {**value, "status": "READY", "operation_status": value["status"],
+                        "reused_from": ready["delivery_id"], "ready_delivery": ready}
+        return value
+
+    @staticmethod
+    def nas_scope(value):
+        return tuple(value["copy_profile"].get(key) for key in ("workspace", "storage_mount", "data_root"))
+
+    @staticmethod
+    def receipt_identity(value):
+        return {"asset_id": value["asset_id"], "archive_sha256": value["archive_sha256"],
+                "files_sha256": value["files_sha256"], "image": value["image"],
+                "data_path": value["copy_profile"]["data_root"] + "/" + value["asset_id"]}
+
+    def ready_candidate(self, definition):
+        """Reuse only a sealed receipt for identical bytes on the same NAS."""
+        for path in sorted((self.root / definition["project"]).glob("delivery.*.json")):
+            if not DELIVERY.fullmatch(path.stem):
+                continue
+            if path.is_symlink():
+                raise ValueError("data delivery record is a symlink")
+            with self.state(definition["project"], path.stem) as (_, snapshot):
+                candidate = snapshot.value
+                if (candidate.get("status") != "READY"
+                        or any(candidate.get(key) != definition[key] for key in
+                               ("project", "asset_id", "archive_sha256", "files_sha256"))
+                        or self.nas_scope(candidate) != self.nas_scope(definition)):
+                    continue
+                receipt = candidate.get("receipt", {})
+                if (candidate.get("delivery_id") != path.stem
+                        or not isinstance(candidate.get("image"), str) or not IMAGE.fullmatch(candidate["image"])
+                        or not isinstance(receipt, dict)
+                        or receipt.get("status") != "READY"
+                        or any(receipt.get(key) != expected for key, expected in self.receipt_identity(candidate).items())):
+                    raise ValueError("sealed NAS data receipt identity differs")
+                return self.public(candidate)
+        return None
 
     def update(self, project, delivery_id, **fields):
         with self.state(project, delivery_id) as (store, snapshot):
@@ -116,8 +163,13 @@ class DataDeliveryService:
                       "files_sha256": digest(asset["files"]), "copy_profile": copy,
                       "worker_sha256": data_worker_digest(), "control_revision": CONTROL_REVISION}
         delivery_id = "delivery." + digest(definition)
+        ready = self.ready_candidate(definition)
+        if ready is not None:
+            return ready
         with self.state(project, delivery_id) as (store, snapshot):
             if snapshot.value:
+                if any(snapshot.value.get(key) != expected for key, expected in definition.items()):
+                    raise ValueError("stored data delivery definition differs")
                 return self.public(snapshot.value)
             value = {**definition, "delivery_id": delivery_id, "status": "PREPARED",
                      "confirmation": "prepare-data:" + digest(definition), "created_at": utc_now(),
@@ -128,11 +180,12 @@ class DataDeliveryService:
             return self.public(value)
 
     def begin(self, project, delivery_id, confirmation, *, reconcile=False):
+        effective = self.read(project, delivery_id)
         with self.state(project, delivery_id) as (store, snapshot):
             value = snapshot.value
-            if not value or confirmation != value["confirmation"]:
+            if confirmation != value["confirmation"]:
                 raise ValueError("data preparation confirmation differs")
-            if value["status"] == "READY":
+            if effective["status"] == "READY":
                 return None
             if value["status"] != "PREPARED" and not reconcile:
                 raise ApplicationError("data delivery requires inspection/reconciliation", code="DATA_DELIVERY_UNCERTAIN")
@@ -186,28 +239,34 @@ class DataDeliveryService:
 
     def finish(self, pending):
         project, delivery_id, value, reconcile = pending
+        phase = "IMAGE_PUBLICATION"
         try:
             image = ({"image": value["image"], "asset_id": value["asset_id"], "project": project,
                       "files_sha256": value["files_sha256"], "data_worker_sha256": value["worker_sha256"],
                       "data_image_id": value["data_image_id"]} if reconcile and value.get("image") else builder_request(self.runtime.config.container_execution.builder_socket,
                                     {"operation": "data-image", "action": "get" if reconcile else "build",
                                      "project": project, "asset_id": value["asset_id"]}))
+            phase = "IMAGE_VERIFICATION"
             if (not IMAGE.fullmatch(image.get("image", "")) or image.get("asset_id") != value["asset_id"]
                     or image.get("project") != project or image.get("files_sha256") != value["files_sha256"]
                     or image.get("data_worker_sha256") != value["worker_sha256"]):
                 raise ValueError("published data image identity differs")
             value.update(image=image["image"], data_image_id=image["data_image_id"])
             self.update(project, delivery_id, status="IMAGE_READY", image=value["image"], data_image_id=value["data_image_id"])
+            phase = "SCHEDULER_LOOKUP"
             found = self.find(value)
             if found is None:
                 if reconcile:
                     raise ValueError("data-copy submission is absent; no automatic replay")
+                phase = "CPU_SPEC"
                 self.verify_cpu(value["copy_profile"])
                 self.update(project, delivery_id, status="SUBMITTING")
+                phase = "ACP_CREATE"
                 self.rest.create(value["copy_profile"], self.create_document(value), timeout=60)
                 self.update(project, delivery_id, status="QUEUED")
             else:
                 self.update(project, delivery_id, status="QUEUED")
+            phase = "WAITING_READY"
             deadline = time.monotonic() + value["copy_profile"]["queue_timeout_seconds"] + value["copy_profile"]["copy_timeout_seconds"]
             while time.monotonic() < deadline:
                 current = self.read(project, delivery_id)
@@ -217,13 +276,23 @@ class DataDeliveryService:
                 if job and job.get("state", "").upper() in {"SUCCEEDED", "FAILED", "STOPPED", "SUSPENDED", "DELETED"}:
                     raise ValueError("data-copy job ended without a verified READY callback")
                 time.sleep(2)
+            phase = "CANCEL_TIMED_OUT_COPY"
             self.rest.stop(value["copy_profile"], value["scheduler_name"])
             return self.update(project, delivery_id, status="FAILED", error="DATA_COPY_TIMEOUT")
         except Exception as exc:
             current = self.read(project, delivery_id)
             if current["status"] in {"READY", "FAILED"}:
                 return current
-            return self.update(project, delivery_id, status="RECONCILE_REQUIRED", error="data publication or ACP submission needs inspection; no automatic replay",
+            code = exc.code if isinstance(exc, (BuildStorageError, BuildTransportError, ApplicationError)) else "DATA_" + phase + "_FAILED"
+            diagnostic = {"phase": phase, "code": code, "error_class": type(exc).__name__,
+                          "safe_to_retry": False, "next_action": {
+                              "IMAGE_PUBLICATION": "inspect_publication",
+                              "IMAGE_VERIFICATION": "inspect_publication",
+                              "CPU_SPEC": "inspect_copy_executor",
+                          }.get(phase, "reconcile_exact_job")}
+            if isinstance(exc, (BuildStorageError, BuildTransportError)):
+                diagnostic["details"] = exc.details
+            return self.update(project, delivery_id, status="RECONCILE_REQUIRED", error="data publication or ACP submission needs inspection; no automatic replay", diagnostic=diagnostic,
                                control_error=exc.details if isinstance(exc, RESTError) else None)
 
     @staticmethod
@@ -246,10 +315,7 @@ class DataDeliveryService:
             if (status not in {"COPYING", "READY", "FAILED"} or not value.get("image")
                     or value["status"] not in {"BUILDING_IMAGE", "IMAGE_READY", "SUBMITTING", "QUEUED", "COPYING", "RECONCILE_REQUIRED", "READY"}):
                 raise ValueError("invalid data-copy status transition")
-            if status != "FAILED" and any(receipt.get(key) != expected for key, expected in {
-                    "asset_id": value["asset_id"], "archive_sha256": value["archive_sha256"],
-                    "files_sha256": value["files_sha256"], "image": value["image"],
-                    "data_path": value["copy_profile"]["data_root"] + "/" + value["asset_id"]}.items()):
+            if status != "FAILED" and any(receipt.get(key) != expected for key, expected in self.receipt_identity(value).items()):
                 raise ValueError("data-copy receipt identity differs")
             if value["status"] == "READY":
                 if status != "READY" or receipt != value["receipt"]:

@@ -111,3 +111,17 @@ def test_ready_receipt_reuse_does_not_require_rebuild_space(builder):
     value._publish_buildkit = lambda *a: (_ for _ in ()).throw(AssertionError('must reuse ready receipt'))
     value.config['build_storage_path'] = '/missing-storage'
     assert value.request(request) == result
+
+
+def test_manifest_timeout_is_typed_and_stops_before_build(tmp_path):
+    value = ImageBuilder({'state_root': str(tmp_path), 'build_storage_path': '/unused'})
+    (tmp_path / 'Dockerfile').write_text('FROM registry/base@sha256:' + 'b' * 64 + '\n')
+    def timed_out(*args, **kwargs):
+        raise subprocess.TimeoutExpired('private-command', 10, stderr=b'secret registry token')
+    value._skopeo = timed_out
+    value._docker = lambda *args, **kwargs: pytest.fail('must not create a builder')
+    with pytest.raises(BuildStorageError) as caught:
+        value._storage_preflight(tmp_path)
+    assert caught.value.code == 'BUILD_STORAGE_UNCHECKED'
+    assert caught.value.details == {'scheduler_submitted': False, 'error_class': 'TimeoutExpired'}
+    assert 'secret' not in str(caught.value) and 'private' not in str(caught.value)
