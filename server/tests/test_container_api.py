@@ -318,4 +318,5 @@ def test_removed_tracking_and_old_protocol_are_explicit(client):
     assert client.get("/api/projects", headers={"X-ML-Expd-Client-Protocol": "1"}).status_code == 426
     schema = client.get("/api/v2/openapi.json").json()
     assert "/api/source-imports/archive" in schema["paths"]
-    assert not any("tracking" in key or "observability" in key for key in schema["paths"])
+    assert "/api/tracking" not in schema["paths"] and "/api/observability" not in schema["paths"]
+    assert "/api/tracking/wandb" in schema["paths"] and "wandb-sync.v1" in health["capabilities"]

@@ -55,7 +55,7 @@ never echo raw input.
 patterns; managed Runs declare `outputs`. Backend collection has no required
 project-specific scientific metric names. Scientific parsing and completeness
 rules belong to the host or [per-project/per-Run metrics schema](metrics.md).
-No current W&B SDK, publishing or history synchronization is provided.
+Optional server-side [W&B publication](wandb.md) is separate from core/scientific contracts.
 
 ## Consumer upgrades
 

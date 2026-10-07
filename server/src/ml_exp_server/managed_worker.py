@@ -22,12 +22,14 @@ if __package__:
     from .data_preparation import prepare as prepare_data
     from . import persistent_state
     from .worker_http import error_code
+    from .worker_records import WorkerRecords
 else:
     from artifacts import archive_outputs, upload_parts as upload
     from data_input import digest_stream, relative_path, verify_tree, fetch, deliver, DeliveryTrace
     from data_preparation import prepare as prepare_data
     import persistent_state
     from worker_http import error_code
+    from worker_records import WorkerRecords
 
 
 def link_path(target, path):
@@ -128,6 +130,9 @@ def main(argv=None):
     checkpoint_restore = json.loads(os.environ.pop("ML_EXPD_CHECKPOINT_RESTORE", "null"))
     root = Path(os.environ["OUTPUT_DIR"])
     root.mkdir(parents=True, exist_ok=True)
+    records = WorkerRecords(root, os.environ.pop("ML_EXPD_RECORD_URL", ""), token)
+    records.emit("lifecycle", {"phase": "PREPARING_DATA"})
+    records.flush()
     started = time.monotonic()
     trace = DeliveryTrace()
     trace.report("INITIALIZING")
@@ -157,6 +162,8 @@ def main(argv=None):
     except Exception as error:
         trace.failed(error)
         print("ML_EXPD_INPUT_DELIVERY=FAILED", file=sys.stderr, flush=True)
+        records.emit("lifecycle", {"phase": "DATA_FAILED", "diagnostic": error_code(error), "exit_code": 65})
+        records.flush(final=True)
         return 65
     print("ML_EXPD_INPUT_DELIVERY_SECONDS=" + str(round(time.monotonic() - started, 3)), flush=True)
     if preparation is not None:
@@ -172,6 +179,8 @@ def main(argv=None):
         (root / "data-preparation.json").write_text(json.dumps(receipt, sort_keys=True))
         patterns = [*patterns, "data-preparation.json"]
         if receipt["status"] != "READY":
+            records.emit("lifecycle", {"phase": "DATA_FAILED", "exit_code": 65})
+            records.flush(final=True)
             try:
                 with tempfile.TemporaryFile(dir=root.parent) as stream:
                     archive_outputs(root, stream, max(1, limit - 1024 * 1024) if limit else 0, ["data-preparation.json"])
@@ -180,6 +189,7 @@ def main(argv=None):
                 print("ML_EXPD_ARTIFACT_UPLOAD=FAILED error=" + error_code(error), file=sys.stderr, flush=True)
             return 65
     child = subprocess.Popen(argv or sys.argv[1:], start_new_session=True)
+    records.emit("lifecycle", {"phase": "TRAINING", "pid": child.pid})
     def forward(signum, _frame):
         if child.poll() is None:
             os.killpg(child.pid, signum)
@@ -191,6 +201,7 @@ def main(argv=None):
         (root / "checkpoints.json").write_text(json.dumps({"checkpoints": [], "resume_from": checkpoint_restore}))
     while True:
         code = child.poll()
+        records.flush()
         if state_context is not None and (code is not None or time.monotonic() - state_last_poll >= state_interval):
             state_last_poll = time.monotonic()
             if (state_root / "checkpoint.ready.json").exists():
@@ -203,6 +214,7 @@ def main(argv=None):
                         (root / "checkpoints.json").write_text(json.dumps({"checkpoints": state_receipts, "resume_from": checkpoint_restore}))
                         state_previous = marker
                         print("ML_EXPD_CHECKPOINT_STATE=REGISTERED " + receipt["checkpoint_id"], flush=True)
+                        records.emit("checkpoints", {"checkpoint_id": receipt["checkpoint_id"], "step": ready.get("step")})
                 except Exception as error:
                     print("ML_EXPD_CHECKPOINT_STATE=REGISTRATION_FAILED error=" + error_code(error), file=sys.stderr, flush=True)
         if snapshot_url and (code is not None or time.monotonic() - last_poll >= interval):
@@ -232,6 +244,8 @@ def main(argv=None):
         if code is not None:
             break
         time.sleep(1)
+    records.emit("lifecycle", {"phase": "UPLOADING_RESULTS", "exit_code": code})
+    records.flush(final=True)
     try:
         with tempfile.TemporaryFile(dir=root.parent) as stream:
             archive_outputs(root, stream, max(1, limit - 1024 * 1024) if limit else 0, patterns)
@@ -240,8 +254,12 @@ def main(argv=None):
                 raise ValueError("artifact archive limit exceeded")
             upload(url, token, stream, length)
         print("ML_EXPD_ARTIFACT_UPLOAD=COMPLETE", flush=True)
+        records.emit("lifecycle", {"phase": "RESULTS_UPLOADED", "exit_code": code})
+        records.flush(final=True)
     except Exception as error:
         print("ML_EXPD_ARTIFACT_UPLOAD=FAILED error=" + error_code(error), file=sys.stderr, flush=True)
+        records.emit("lifecycle", {"phase": "RESULTS_UPLOAD_FAILED", "diagnostic": error_code(error), "exit_code": code})
+        records.flush(final=True)
         return code if code > 0 else 74
     return code if code >= 0 else 128 - code
 

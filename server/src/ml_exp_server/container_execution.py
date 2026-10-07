@@ -29,6 +29,8 @@ from .data_preparation import identity as data_identity, file_record
 from .checkpoint_registry import CheckpointRegistry, storage_scope
 from .worker_http import relay_environment
 from .executor_capabilities import declaration, ExecutionRequirements, mismatches, validate_worker
+from .tracking_contract import WandbOptions, finite_parameters
+from .tracking_service import store_for, bind_run
 
 
 SECRET_KEY = re.compile(r"(?i)(?:^|_)(?:token|secret|password|credential|api_key|proxy|authorization)(?:$|_)")
@@ -117,6 +119,13 @@ class DataPreparation(BaseModel):
 
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    wandb: WandbOptions | None = None
+    parameters: dict | None = None
+
+    @field_validator("parameters")
+    @classmethod
+    def valid_parameters(cls, value):
+        return finite_parameters(value)
     run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
     runtime_id: str = Field(pattern=r"^runtime\.[0-9a-f]{64}$")
     executor: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -370,7 +379,7 @@ class ContainerExecutionService:
         self.finish_state(pending, {**pending.value, "status": "RECONCILE_REQUIRED",
                                    "error": "packaging could not be queued; inspect or reconcile"})
 
-    def create_run(self, project: str, request: RunRequest, *, profile_snapshot=None, prepared_assets=None) -> dict:
+    def create_run(self, project: str, request: RunRequest, *, profile_snapshot=None, prepared_assets=None, tracking=None) -> dict:
         self.require_enabled()
         bundle = self.read(project, request.runtime_id)
         if bundle["status"] != "READY":
@@ -513,6 +522,19 @@ class ContainerExecutionService:
         path = root / "experiments" / "campaigns" / f"{campaign_name}.yaml"
         with source_lock(self.root, project):
             existing = yaml.safe_load(path.read_text()) if path.exists() else None
+            if existing is None:
+                run["tracking"] = dict(tracking or store_for(self.runtime).route(request.wandb, project))
+                run["tracking"]["record_stream"] = "experiment-records.v1" in bundle.get("capabilities", [])
+                run["wandb_request"] = request.wandb.model_dump() if request.wandb is not None else None
+            else:
+                previous_run = existing["runs"][0]
+                if previous_run.get("wandb_request") != (request.wandb.model_dump() if request.wandb is not None else None):
+                    raise ApplicationError("W&B options for this Run are already frozen", code="CONTAINER_EXECUTION_BLOCKED")
+                if "tracking" in previous_run:
+                    run["tracking"] = previous_run["tracking"]
+                    run["wandb_request"] = previous_run.get("wandb_request")
+            if request.parameters is not None:
+                run["parameters"] = request.parameters
             if backend["kind"] == "sensecore" and "pool_selection" not in backend:
                 # Historical fixed Runs keep their original definition; new Runs
                 # default to the account's requested SPOT selection policy.
@@ -548,10 +570,13 @@ class ContainerExecutionService:
                 payload["campaigns"].append(reference)
                 atomic_text(manifest, yaml.safe_dump(payload, sort_keys=False))
             self.runtime.register_project(manifest)
+            if "tracking" in run:
+                bind_run(self.runtime, project, run)
         return {"project": project, "run_id": request.run_id, "campaign": campaign_name,
                 "runtime_id": request.runtime_id, "source_id": source_id, "image": bundle["image"],
                 "entrypoint": [*bundle["spec"]["entrypoint"], *request.arguments], "executor": request.executor,
                 "resources": resources, "state": "NOT_SUBMITTED", "evaluation": run.get("evaluation", {}),
+                "wandb": run.get("tracking", {"enabled": False, "reason": "HISTORICAL_RUN_NOT_BOUND"}),
                 **({"pool_selection": backend["pool_selection_evidence"]} if "pool_selection_evidence" in backend else {}),
                 **({"data_preparation": preparation} if preparation is not None else {}),
                 **({"checkpoint_persistence": run["checkpoint_persistence"]} if persistence is not None else {}),

@@ -2075,6 +2075,14 @@ class ExperimentServerApplication:
         records, source, source_attempt_id = train_metric_records(
             Path(row.run_dir), attempt_id=attempt.attempt_id, exact_attempt=True,
         )
+        from .tracking_service import store_for
+        tracking = store_for(self.runtime)
+        live = tracking.metric_records(project, row.run_id, attempt.attempt_id)
+        if live:
+            if source is None or source.name not in {"metrics.jsonl", "train_metrics.jsonl"}:
+                records = live
+                source = tracking.db
+            source_attempt_id = attempt.attempt_id
         payload = self._metric_payload(
             records, keys=keys, max_points=max_points, source=source,
             source_attempt_id=source_attempt_id, contract=metric_contract(Path(row.run_dir)),
@@ -2403,6 +2411,15 @@ class ExperimentServerApplication:
                     max_points: int = 2000) -> dict[str, Any]:
         _, _, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)
         records, source, source_attempt_id = train_metric_records(Path(row.run_dir))
+        from .tracking_service import store_for
+        current = self.run_attempts(project, run_id)["current_attempt_id"]
+        tracking = store_for(self.runtime)
+        live = tracking.metric_records(project, run_id, current) if current else []
+        if live:
+            if source_attempt_id != current or source is None or source.name not in {"metrics.jsonl", "train_metrics.jsonl"}:
+                records = live
+                source = tracking.db
+            source_attempt_id = current
         return self._metric_payload(
             records, keys=keys, max_points=max_points, source=source,
             source_attempt_id=source_attempt_id, contract=metric_contract(Path(row.run_dir)),

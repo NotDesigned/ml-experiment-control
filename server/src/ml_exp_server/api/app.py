@@ -42,6 +42,8 @@ from ..data_delivery import COPY_TRANSFER, recover_data_deliveries
 from .data_delivery_routes import router as data_delivery_router
 from ..experiment_preparation import ExperimentPreparationService
 from .preparation_routes import router as preparation_router
+from .tracking_routes import RECORD_PATH, router as tracking_router
+from ..tracking_service import TrackingPublisher
 
 
 def _poll_loop(app: FastAPI, collector: Collector) -> None:
@@ -65,6 +67,9 @@ def _start_daemon_thread(*, target, name: str, args: tuple = ()) -> threading.Th
 
 
 async def _shutdown(app: FastAPI) -> None:
+    publisher = getattr(app.state, "tracking_publisher", None)
+    if publisher is not None:
+        await asyncio.to_thread(publisher.close)
     stop = getattr(app.state, "_stop", None)
     if stop is not None:
         stop.set()
@@ -236,6 +241,8 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                 app.state._poll_thread = _start_daemon_thread(
                     target=_poll_loop, args=(app, collector), name="collectord",
                 )
+            app.state.tracking_publisher = TrackingPublisher(runtime)
+            app.state.tracking_publisher.start()
             yield
         finally:
             if getattr(app.state, "runtime", None) is None:
@@ -247,6 +254,15 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
 
     from importlib.metadata import version
     app = FastAPI(title="ml-expd", version=version("ml-experiment-server"), lifespan=lifespan)
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.exception_handlers import request_validation_exception_handler
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        if request.url.path == "/api/tracking/wandb":
+            return JSONResponse({"detail": [{key: value for key, value in error.items() if key in {"loc", "msg", "type"}}
+                                            for error in exc.errors()]}, status_code=422)
+        return await request_validation_exception_handler(request, exc)
     app.state.broker = EventBroker()
     app.state.config = config
     app.state.runtime = None
@@ -272,6 +288,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     @app.middleware("http")
     async def enforce_http_boundary(request, call_next):
         worker_transfer = request.method == "PUT" and bool(TRANSFER_PATH.fullmatch(request.url.path))
+        worker_transfer = worker_transfer or (request.method == "POST" and bool(RECORD_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method == "GET" and bool(LAUNCH_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method == "PUT" and bool(COPY_TRANSFER.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method in {"GET", "PUT"} and bool(WORKER_PATH.fullmatch(request.url.path)))
@@ -359,6 +376,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.include_router(upload_router)
     app.include_router(data_delivery_router)
     app.include_router(preparation_router)
+    app.include_router(tracking_router)
 
     @app.get(VERSIONED_OPENAPI_PATH, include_in_schema=False)
     async def versioned_openapi():

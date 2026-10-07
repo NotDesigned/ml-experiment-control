@@ -56,6 +56,18 @@ def parser():
     create.add_argument("--data-preparation", type=json.loads, help='JSON: {"script":"download_data.py","arguments":[],"timeout_seconds":1200}')
     create.add_argument("--checkpoint-state-interval", type=int, help="register persistent STATE_DIR checkpoints every N seconds; no state upload")
     create.add_argument("--resume-from", type=json.loads, help='JSON: {"run_id":"trial","attempt_id":"attempt-001","checkpoint_id":"checkpoint.…"}')
+    create.add_argument("--wandb", type=json.loads, help='JSON: {"enabled":true,"project":"fineweb"}; default enabled if configured')
+    create.add_argument("--parameters", type=json.loads, help='explicit research parameters, e.g. {"lr":0.001,"seed":42}')
+    tracking = commands.add_parser("tracking", help="inspect or retry server-side W&B publication")
+    tracking.add_argument("--project", required=True)
+    tracking.add_argument("--run", required=True)
+    tracking.add_argument("--retry", action="store_true")
+    wb = commands.add_parser("wandb", help="configure server defaults; API key is read from a private file")
+    wb.add_argument("--key-file", type=Path)
+    wb.add_argument("--entity")
+    wb.add_argument("--project", help="optional default W&B project; otherwise use the ML-Expd project name")
+    wb.add_argument("--disable", action="store_true")
+    wb.add_argument("--clear-credentials", action="store_true")
     upload = commands.add_parser("asset-upload", help="upload a data directory independently from source")
     upload.add_argument("--project", required=True)
     upload.add_argument("--directory", type=Path, required=True)
@@ -133,6 +145,20 @@ def main(argv=None):
             result = experiment(client, health, args.config, args.state, resume=args.resume,
                                 execute=args.execute, seconds=args.seconds, out=args.download_to,
                                 continue_preparation=args.continue_preparation)
+        elif args.command in {"tracking", "wandb"}:
+            if "wandb-sync.v1" not in health.get("capabilities", []):
+                raise ClientError("server lacks wandb-sync.v1")
+            if args.command == "tracking":
+                endpoint = f"/api/runs/{segment(args.project)}/{segment(args.run)}/tracking"
+                result = client.call(endpoint + "/retry", data={}) if args.retry else client.call(endpoint)
+            elif args.key_file or args.entity or args.project or args.disable or args.clear_credentials:
+                definition = {"enabled": not args.disable, "entity": args.entity, "project": args.project,
+                              "clear_credentials": args.clear_credentials}
+                if args.key_file:
+                    definition["api_key"] = args.key_file.read_text().strip()
+                result = client.call("/api/tracking/wandb", data=definition, method="PUT")
+            else:
+                result = client.call("/api/tracking/wandb")
         elif args.command == "pack":
             if args.state.exists():
                 raise ClientError("state file exists; inspect it with runtime instead of replaying pack")
@@ -171,6 +197,10 @@ def main(argv=None):
                 "runtime_id": saved["runtime_id"], "run_id": args.run, "executor": args.executor,
                 "arguments": args.arguments, "resources": {"gpus": args.gpus, "cpus": args.cpus,
                 "memory_gb": args.memory_gb, "max_time": args.max_time}, "outputs": ["**/*"], "inputs": args.inputs}
+            if args.wandb is not None:
+                definition["wandb"] = args.wandb
+            if args.parameters is not None:
+                definition["parameters"] = args.parameters
             if args.checkpoint_interval is not None:
                 definition["checkpoint_upload"] = {"interval_seconds": args.checkpoint_interval}
             if args.data_preparation is not None:

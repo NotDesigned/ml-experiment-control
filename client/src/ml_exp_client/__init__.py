@@ -1,5 +1,5 @@
 """Standalone HTTP client for ml-expd; no server or backend dependencies."""
 from .api import Client, ClientError, download, source_archive
 
-__version__ = "0.1.9"
+__version__ = "0.1.10"
 __all__ = ["Client", "ClientError", "download", "source_archive"]
