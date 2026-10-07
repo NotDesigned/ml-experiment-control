@@ -12,6 +12,7 @@ import sys
 import tempfile
 
 from .tracking_store import digest, encoded
+from . import wandb_display
 
 
 def default_entity(key):
@@ -66,10 +67,17 @@ def publish(job, sdk, sessions):
         session = {"handle": handle, "directory": directory, "sent": {}, "definitions": {}}
         sessions[identity] = session
     handle = session["handle"]
+    display = job.get("display", {"contract": "metric-display.v2", "through": scope["confirmed"], "series": {}})
     api = sdk.Api(api_key=job["api_key"], overrides={"base_url": "https://api.wandb.ai"}, timeout=15)
     remote = api.run(f'{route["entity"]}/{route["project"]}/{identity}')
+    wandb_display.configure(handle, display)
+    for key in remote.summary:
+        if key.startswith("metrics/"):
+            handle.define_metric(key, hidden=True, summary="none", overwrite=True)
     seen = {int(row["ml_expd/sequence"]): row["ml_expd/event_id"] for row in remote.scan_history(
-        keys=["ml_expd/sequence", "ml_expd/event_id"], min_step=scope["confirmed"], page_size=128, use_cache=False)}
+        keys=["ml_expd/sequence", "ml_expd/event_id"], min_step=max(0, scope["confirmed"] - 1), page_size=128, use_cache=False)}
+    if scope["confirmed"] and job.get("expected_event_id") is not None and seen.get(scope["confirmed"]) != job["expected_event_id"]:
+        return {"error": "REMOTE_HISTORY_RECONCILE_REQUIRED"}
     maximum = max(max(seen, default=scope["confirmed"]), remote.lastHistoryStep + 1)
     confirmed = scope["confirmed"]
     for event in job["events"]:
@@ -89,19 +97,28 @@ def publish(job, sdk, sessions):
         record, current = history_record(event)
         session["definitions"].update(current)
         for key in current:
-            handle.define_metric(key + "/step")
-            handle.define_metric(key, step_metric=key + "/step")
-        handle.log(record, step=sequence - 1)
+            handle.define_metric(key, hidden=True, summary="none", overwrite=True)
+            handle.define_metric(key + "/step", hidden=True, summary="none", overwrite=True)
+        record.update(wandb_display.curve_record(event, display))
+        # Explicit SDK steps default to commit=False. Without this, the final
+        # event never reaches history and remote confirmation waits forever.
+        handle.log(record, step=sequence - 1, commit=True)
         session["sent"][sequence] = event_id
-    handle.summary["ml_expd/metric_definitions"] = {**dict(remote.summary.get("ml_expd/metric_definitions", {})), **session["definitions"]}
+    handle.summary["ml_expd/metric_definitions_json"] = encoded(session["definitions"])
     handle.summary["ml_expd/publication"] = "server-published; platform state is in ml_expd/state"
-    if confirmed < job["events"][-1]["seq"]:
+    through = job["events"][-1]["seq"] if job["events"] else scope["confirmed"]
+    if confirmed < through:
         return {"confirmed": confirmed, "error": "REMOTE_ACK_PENDING"}
+    wandb_display.summaries(handle, dict(remote.summary), display, terminal=job["terminal"],
+                           coverage=job.get("coverage", "accepted metric observations"))
+    if (remote.summary.get("ml_expd/display_version") != wandb_display.VERSION
+            or remote.summary.get("ml_expd/display_through") != through):
+        return {"confirmed": confirmed, "error": "REMOTE_DISPLAY_ACK_PENDING"}
     if job["terminal"]:
         handle.finish()
         session["directory"].cleanup()
         sessions.pop(identity)
-    return {"confirmed": confirmed, "error": None}
+    return {"confirmed": confirmed, "display_version": wandb_display.VERSION, "error": None}
 
 
 class PublisherProcess:
@@ -159,16 +176,23 @@ def export(store, scope, publisher):
     lifecycle = store.latest_lifecycle(scope["id"])
     terminal = (lifecycle.get("state") in {"SUCCEEDED", "FAILED", "CANCELLED", "PREEMPTED", "TIMEOUT"}
                 or lifecycle.get("phase") in {"READY", "DATA_FAILED", "RESULTS_UPLOADED", "RESULTS_UPLOAD_FAILED"})
-    job = {**binding, "scope": scope, "api_key": key, "events": events,
-           "terminal": terminal and events[-1]["seq"] == store.total(scope["id"]), "session_root": str(store.root)}
+    through = events[-1]["seq"] if events else scope["confirmed"]
     try:
+        job = {**binding, "scope": scope, "api_key": key, "events": events,
+               "display": store.display(scope["id"], through),
+               "expected_event_id": store.event_id(scope["id"], scope["confirmed"]),
+               "coverage": "worker JSONL; accepted observations" if binding["route"].get("record_stream") else "observed-legacy; training history incomplete",
+               "terminal": terminal and through == store.total(scope["id"]), "session_root": str(store.root)}
         # No credential enters argv or log output. SDK failure leaves the durable
         # queue intact and never blocks the scheduler's separate executors.
         outcome = publisher.call(job)
         confirmed = outcome.get("confirmed")
-        if confirmed is not None and (type(confirmed) is not int or not scope["confirmed"] <= confirmed <= events[-1]["seq"]):
+        if confirmed is not None and (type(confirmed) is not int or not scope["confirmed"] <= confirmed <= through):
             raise ValueError("invalid remote confirmation")
-        store.outcome(scope["id"], confirmed=outcome.get("confirmed"), error=outcome.get("error"))
+        version = outcome.get("display_version")
+        if version is not None and (version != wandb_display.VERSION or confirmed != through or outcome.get("error")):
+            raise ValueError("invalid display confirmation")
+        store.outcome(scope["id"], confirmed=confirmed, error=outcome.get("error"), display_version=version)
     except Exception:
         publisher.close()
         store.outcome(scope["id"], error="PUBLISHER_UNAVAILABLE")

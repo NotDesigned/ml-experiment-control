@@ -90,7 +90,7 @@ def test_transactional_replay_conflicts_and_remote_confirmation(tmp_path):
     assert store.status("study", "trial")["scopes"][0]["pending"] == 2
     store.outcome(scope, confirmed=1, error="REMOTE_ACK_PENDING")
     assert store.pending()[0]["confirmed"] == 1
-    store.outcome(scope, confirmed=2)
+    store.outcome(scope, confirmed=2, display_version=2)
     store.outcome(scope, confirmed=1)
     assert store.pending() == []
     assert store.status("study", "trial")["scopes"][0]["status"] == "SYNCED"
@@ -240,7 +240,8 @@ def fake_sdk():
     class Handle:
         def __init__(self): self.summary = {}; self.logs = []; self.finished = False
         def define_metric(self, *a, **k): pass
-        def log(self, record, *, step):
+        def log(self, record, *, step, commit):
+            assert commit is True
             assert step == record["ml_expd/sequence"] - 1
             self.logs.append(record)
         def finish(self): self.finished = True
@@ -267,7 +268,13 @@ def test_official_sdk_resume_and_ack_protocol_preserves_all_context(tmp_path, mo
     assert exporter.publish(job, sdk, sessions)["error"] == "REMOTE_ACK_PENDING"
     assert len(handles[0].logs) == 1  # locally queued != remote acknowledged
     rows.extend(handles[0].logs)
-    assert exporter.publish(job, sdk, sessions) == {"confirmed": 1, "error": None}
+    assert exporter.publish(job, sdk, sessions)["error"] == "REMOTE_DISPLAY_ACK_PENDING"
+    sdk.Api(overrides={"base_url": "https://api.wandb.ai"}).run("").summary.update(handles[0].summary)
+    # Hand-written fixture jobs do not carry a projection cutoff; real jobs do.
+    job["display"] = {"through": 1, "series": {}}
+    assert exporter.publish(job, sdk, sessions)["error"] == "REMOTE_DISPLAY_ACK_PENDING"
+    sdk.Api(overrides={"base_url": "https://api.wandb.ai"}).run("").summary.update(handles[0].summary)
+    assert exporter.publish(job, sdk, sessions) == {"confirmed": 1, "display_version": 2, "error": None}
     record, definitions = exporter.history_record(job["events"][0])
     context = list(definitions.values())[0]
     assert context["unit"] == "bits/raw byte" and context["variant_id"] == "a" and context["checkpoint_id"] == "cp"
@@ -315,7 +322,7 @@ def test_export_keeps_backlog_on_failure_and_uses_no_key_in_argv(tmp_path):
     exporter.export(store, store.pending()[0], SimpleNamespace(call=failure, close=lambda: None))
     assert store.status("study", "trial")["scopes"][0]["error"] == "PUBLISHER_UNAVAILABLE"
     assert jobs[0]["terminal"]
-    exporter.export(store, store.pending()[0], SimpleNamespace(call=lambda job: {"confirmed": 1, "error": None}))
+    exporter.export(store, store.pending()[0], SimpleNamespace(call=lambda job: {"confirmed": 1, "display_version": 2, "error": None}))
     assert store.pending() == []
     store.append(scope_id, [("another", {"kind": "lifecycle", "data": {"phase": "TRAINING"}})])
     store.configure(WandbSettings(clear_credentials=True), lambda key: None)
@@ -577,8 +584,48 @@ def test_pinned_native_sdk_accepts_concurrent_offline_handles(tmp_path, monkeypa
         assert exporter.publish({**job, "scope": {**scope, "wandb_id": "test456", "attempt": "attempt-002"}}, native, sessions)["error"] == "REMOTE_ACK_PENDING"
         assert len(sessions) == 2
         for session in sessions.values():
+            # Explicit step must commit while the session is still alive.
+            # Otherwise its last event cannot be remotely acknowledged.
+            assert session["handle"].step == 1
             session["handle"].finish()
             assert list(Path(session["directory"].name).rglob("*.wandb"))
     finally:
         wandb.teardown()
         for session in sessions.values(): session["directory"].cleanup()
+
+
+def test_display_repair_only_changes_metadata_and_checks_confirmed_history(tmp_path):
+    store=TrackingStore(tmp_path);scope=configured(store)
+    store.append(scope, [('one', normalized_metric({'name':'validation_loss','unit':'nats/token','value':3.8,'step':6112},{}))])
+    store.outcome(scope,confirmed=1)
+    jobs=[]
+    exporter.export(store,store.pending()[0],SimpleNamespace(call=lambda job: jobs.append(job) or {'confirmed':1,'display_version':2,'error':None},close=lambda:None))
+    job=jobs[0]; assert job['events']==[] and job['expected_event_id']=='one'
+    sdk,rows,handles=fake_sdk();rows.append({'ml_expd/sequence':1,'ml_expd/event_id':'one'})
+    remote=sdk.Api(overrides={'base_url':'https://api.wandb.ai'}).run('')
+    remote.summary['metrics/old/step']=6112
+    sessions={}
+    assert exporter.publish(job,sdk,sessions)['error']=='REMOTE_DISPLAY_ACK_PENDING'
+    assert handles[0].logs==[] # Metadata migration never replays accepted points.
+    remote.summary.update(handles[0].summary)
+    assert exporter.publish(job,sdk,sessions)['display_version']==2
+    rows[0]['ml_expd/event_id']='changed'
+    assert exporter.publish(job,sdk,sessions)['error']=='REMOTE_HISTORY_RECONCILE_REQUIRED'
+    for session in sessions.values(): session['directory'].cleanup()
+
+
+@pytest.mark.parametrize('outcome',[{'confirmed':1,'display_version':999}, {'confirmed':0,'display_version':2}, {'confirmed':1,'display_version':2,'error':'pending'}])
+def test_invalid_display_confirmation_never_clears_repair(tmp_path,outcome):
+    store=TrackingStore(tmp_path);scope=configured(store)
+    store.append(scope,[('one',{'kind':'lifecycle','data':{'state':'RUNNING'}})])
+    exporter.export(store,store.pending()[0],SimpleNamespace(call=lambda j:outcome,close=lambda:None))
+    assert store.pending()[0]['display_version']==0
+    assert store.pending()[0]['error']=='PUBLISHER_UNAVAILABLE'
+
+
+def test_projection_failure_isolated_from_other_publications(tmp_path,monkeypatch):
+    store=TrackingStore(tmp_path);scope=configured(store)
+    store.append(scope,[('one',{'kind':'lifecycle','data':{}})])
+    monkeypatch.setattr(store,'display',lambda *a:(_ for _ in ()).throw(ValueError('DISPLAY_CONTEXT_LIMIT')))
+    exporter.export(store,store.pending()[0],SimpleNamespace(close=lambda:None))
+    assert store.pending()[0]['error']=='PUBLISHER_UNAVAILABLE'

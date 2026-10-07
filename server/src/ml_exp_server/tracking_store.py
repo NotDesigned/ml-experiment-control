@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from collections import OrderedDict
 import hashlib
 import fcntl
 import json
@@ -11,6 +12,7 @@ import uuid
 
 from .storage import atomic_json, utc_now
 from .tracking_contract import resolve
+from .wandb_display import Projection, identity, fingerprint, stem
 
 
 def encoded(value):
@@ -26,6 +28,7 @@ class TrackingStore:
         self.root = root / "tracking"
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.db = self.root / "outbox.sqlite"
+        self._display_cache = OrderedDict()
         with self.connection() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -43,7 +46,14 @@ class TrackingStore:
                     PRIMARY KEY(scope,seq), UNIQUE(scope,event_id), UNIQUE(scope,dedup));
                 CREATE TABLE IF NOT EXISTS event_ids (
                     scope TEXT, event_id TEXT, digest TEXT NOT NULL, PRIMARY KEY(scope,event_id));
+                CREATE TABLE IF NOT EXISTS display_metrics (
+                    destination TEXT, signature TEXT, public_name TEXT, context TEXT,
+                    PRIMARY KEY(destination,signature), UNIQUE(destination,public_name));
             """)
+            if "display_version" not in {r[1] for r in conn.execute("PRAGMA table_info(scopes)")}:
+                conn.execute("ALTER TABLE scopes ADD COLUMN display_version INTEGER NOT NULL DEFAULT 0")
+            if "display_confirmed" not in {r[1] for r in conn.execute("PRAGMA table_info(scopes)")}:
+                conn.execute("ALTER TABLE scopes ADD COLUMN display_confirmed INTEGER NOT NULL DEFAULT 0")
             conn.execute("INSERT OR IGNORE INTO meta VALUES ('workspace',?)", (uuid.uuid4().hex,))
         self.db.chmod(0o600)
 
@@ -158,13 +168,15 @@ class TrackingStore:
 
     def pending(self):
         with self.connection() as conn:
-            rows = conn.execute("SELECT s.* FROM scopes s WHERE confirmed < (SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=s.id) ORDER BY COALESCE(last_attempt_at,'')").fetchall()
+            rows = conn.execute("SELECT s.* FROM scopes s WHERE confirmed < (SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=s.id) OR (confirmed>0 AND (display_version<2 OR display_confirmed<confirmed)) ORDER BY COALESCE(last_attempt_at,'')").fetchall()
         return [dict(row) for row in rows]
 
-    def outcome(self, scope, *, confirmed=None, error=None):
+    def outcome(self, scope, *, confirmed=None, error=None, display_version=None):
         with self.connection() as conn:
             if confirmed is not None:
                 conn.execute("UPDATE scopes SET confirmed=MAX(confirmed,?),last_confirmed_at=? WHERE id=?", (confirmed, utc_now(), scope))
+            if display_version is not None:
+                conn.execute("UPDATE scopes SET display_version=MAX(display_version,?),display_confirmed=MAX(display_confirmed,confirmed) WHERE id=?", (display_version, scope))
             total = conn.execute("SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=?", (scope,)).fetchone()[0]
             conn.execute("UPDATE scopes SET status=CASE WHEN ? IS NOT NULL THEN 'RETRY_PENDING' WHEN confirmed>=? THEN 'SYNCED' ELSE 'PENDING' END,error=?,last_attempt_at=?,failures=CASE WHEN ? IS NULL THEN 0 ELSE failures+1 END WHERE id=?", (error, total, error, utc_now(), error, scope))
 
@@ -192,6 +204,46 @@ class TrackingStore:
     def total(self, scope):
         with self.connection() as conn:
             return conn.execute("SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=?", (scope,)).fetchone()[0]
+
+    def display(self, scope, through):
+        projection = self._display_cache.pop(scope, Projection())
+        if projection.cursor > through:
+            projection = Projection()
+        with self.connection() as conn:
+            for row in conn.execute("SELECT seq,payload FROM events WHERE scope=? AND seq>? AND seq<=? ORDER BY seq",
+                                    (scope, projection.cursor, through)):
+                payload = json.loads(row["payload"])
+                if payload["kind"] == "metrics":
+                    for item in payload["observations"]:
+                        projection.add(item, row["seq"])
+            conn.execute("BEGIN IMMEDIATE")
+            project, run, _ = json.loads(scope)
+            route = json.loads(conn.execute("SELECT route FROM runs WHERE project=? AND run=?", (project, run)).fetchone()[0])
+            destination = encoded([route["entity"], route["project"]])
+            names = {}
+            for series in projection.series.values():
+                context = {k: series["context"][k] for k in ("name", "unit", "protocol_id", "dataset_id")}
+                signature = identity(context)
+                existing = conn.execute("SELECT public_name FROM display_metrics WHERE destination=? AND signature=?",
+                                        (destination, signature)).fetchone()
+                if existing:
+                    names[signature] = existing[0]
+                    continue
+                name = stem(context["name"])
+                if conn.execute("SELECT 1 FROM display_metrics WHERE destination=? AND public_name=?", (destination, name)).fetchone():
+                    name += "/" + fingerprint(signature)
+                conn.execute("INSERT INTO display_metrics VALUES (?,?,?,?)", (destination, signature, name, encoded(context)))
+                names[signature] = name
+        projection.cursor = through
+        self._display_cache[scope] = projection
+        if len(self._display_cache) > 16:
+            self._display_cache.popitem(last=False)
+        return projection.document(names)
+
+    def event_id(self, scope, sequence):
+        with self.connection() as conn:
+            row = conn.execute("SELECT event_id FROM events WHERE scope=? AND seq=?", (scope, sequence)).fetchone()
+        return row[0] if row else None
 
     def latest_lifecycle(self, scope):
         with self.connection() as conn:

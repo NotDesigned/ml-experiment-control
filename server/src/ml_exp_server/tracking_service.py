@@ -149,7 +149,9 @@ class TrackingPublisher:
                 break
             if scope["last_attempt_at"]:
                 last = datetime.fromisoformat(scope["last_attempt_at"].replace("Z", "+00:00"))
-                if (datetime.now(timezone.utc) - last).total_seconds() < min(300, 10 * 2 ** min(scope["failures"], 5)):
+                awaiting_ack = scope["error"] in {"REMOTE_ACK_PENDING", "REMOTE_DISPLAY_ACK_PENDING"}
+                delay = 10 if awaiting_ack else min(300, 10 * 2 ** min(scope["failures"], 5))
+                if (datetime.now(timezone.utc) - last).total_seconds() < delay:
                     continue
             export(self.store, scope, self.publisher)
 

@@ -72,12 +72,35 @@ and posts using its exact-Attempt write capability. Retry retains the same IDs a
 cursor. A partial final line is not consumed. A failed transfer does not stop the
 training process. Final uploaded JSONL can fill delivery gaps.
 
-Metrics keep their name, unit, step/epoch, variant, checkpoint, dataset, protocol,
-status and numerator/denominator. W&B curve keys contain a readable name plus a
-context hash; `ml_expd/metric_definitions` maps each key to its exact meaning.
-Each curve uses its own scientific step axis. W&B history step is a separate
-monotonic publication sequence. Failed/nonfinite observations retain diagnostics
-and have no fabricated zero. No best-model selection or unit conversion is done.
+The default charts separate two uses:
+
+- `curves/<name>` plots accepted training/validation values against their explicit
+  scientific step (or an explicitly labelled epoch axis). At least two distinct
+  positions are required to show a curve; a final-only value is not a history.
+- `results/<name>` compares the latest valid result after the Attempt ends.
+  This is the latest scientific step, not the minimum loss or a chosen best model.
+  An active Attempt, missing/nonfinite result or conflicting latest observation
+  has no final result scalar. A failed Attempt can retain a valid measured result;
+  filter by `ml_expd/state` when comparing successful experiments.
+
+Step, epoch, numerator and denominator remain provenance and hidden axes, rather
+than numeric results. Raw `metrics/*` observations remain in history but are
+hidden from automatic panels and removed from result summaries. Checkpoint changes
+retain individual provenance without splitting the same curve. A single variant
+within each Attempt uses the common result name across trials; multiple variants
+within an Attempt have distinct `/variants/<hash>` fields. Different names, units,
+protocols and datasets receive distinct, persisted destination-specific field names.
+Their assignment survives restarts; no scientific meanings are silently combined.
+
+`ml_expd/display_definitions_json` maps result fields to their exact name, unit,
+protocol, dataset, variant, checkpoint, step/epoch, numerator/denominator and validity.
+JSON preserves literal field names (W&B flattens dict-valued summaries).
+`ml_expd/display_coverage` distinguishes worker JSONL from incomplete legacy
+observations. Original payloads and event IDs remain in W&B history and the private
+outbox. No unit conversion or best-model selection is done. Existing opted-in Runs
+receive presentation repairs without replaying already confirmed history; unbound
+Runs remain unchanged. Previously pinned workspace panels may need refreshing or
+selection of the new `curves/` and `results/` fields.
 
 Older immutable workers are unchanged. Their saved metrics can be published, but
 collector observations may be sampled: they are explicitly labelled incomplete.
@@ -109,11 +132,14 @@ It preserves saved evidence only and cannot reconstruct missed training history.
 
 A private SQLite outbox records complete accepted batches before acknowledging
 workers. The publisher uses stable IDs and checks W&B history before advancing
-its confirmed cursor. SDK enqueue is not confirmation. Network/credential errors
+its confirmed cursor. SDK enqueue is not confirmation. Explicit history steps commit immediately, so
+the last event can be confirmed without waiting for another event or Run closure.
+Presentation metadata has a separate remote acknowledgement (`display_version`). Network/credential errors
 retain pending records and back off (up to five minutes). If remote history has
 an identity conflict or a hole behind its latest step, reconciliation is required;
 no older record is silently discarded or blindly appended. `REMOTE_ACK_PENDING`
-means W&B has not yet confirmed the record. Normal observation/publication polls
+means W&B has not yet confirmed the record; `REMOTE_DISPLAY_ACK_PENDING` means
+the derived presentation has not yet been confirmed. Both poll every ten seconds. Normal observation/publication polls
 are ten seconds, plus backend collector/API latency; this is not a latency SLA.
 W&B session status may lag during a publisher outage; ML-Expd state/phase and
 publication diagnostics remain authoritative.
