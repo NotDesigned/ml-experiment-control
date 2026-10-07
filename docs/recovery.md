@@ -77,9 +77,9 @@ training entrypoint. Registered checkpoints and unfinished archive identities
 are checked before publishing. Recoveries run serially and do not retain another
 expanded output cache after publication. File listings use receipt metadata
 without restoring whole archives; normal signed downloads go to object storage.
-Artifact completion reserves space for validation in addition to already saved
-parts, without counting a second archive copy that the streaming publisher never
-creates. Insufficient space still rejects completion and preserves the session.
+Artifact completion reserves space for validation and the published object in
+addition to already saved parts: object storage can share the API host's disk.
+Insufficient space still rejects completion and preserves the session.
 
 New workers persist and register `training-result.v1` before result upload.
 When a terminal Attempt has a successful process result but no archive, the
