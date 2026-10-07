@@ -405,7 +405,7 @@ def test_files_listing_without_a_transfer_record_is_uncollected(recovery):
 
 
 @pytest.mark.parametrize("enough", [False, True])
-def test_streaming_artifact_completion_reserves_only_additional_validation_space(recovery, monkeypatch, enough):
+def test_artifact_completion_reserves_validation_and_colocated_object_storage(recovery, monkeypatch, enough):
     service, _, token, _, remote, _, _ = recovery
     data = archive({"chosen.bin": b"weights"})
     checksum = hashlib.sha256(data).hexdigest()
@@ -415,8 +415,8 @@ def test_streaming_artifact_completion_reserves_only_additional_validation_space
         upload = client.post(base, json={"sha256": checksum, "bytes": len(data)}, headers=headers).json()
         endpoint = base + "/" + upload["upload_id"]
         assert client.put(endpoint + "/parts/0", params={"sha256": checksum}, content=data, headers=headers).status_code == 200
-        # Available bytes are additional to the already stored archive parts.
-        free = 64 * 1024 ** 2 + len(data) - (0 if enough else 1)
+        # Parts already exist; validation and a local object store both need space.
+        free = 64 * 1024 ** 2 + 2 * len(data) - (0 if enough else 1)
         monkeypatch.setattr("ml_exp_server.api.upload_routes.shutil.disk_usage", lambda p: SimpleNamespace(free=free))
         response = client.post(endpoint + "/complete", headers=headers)
         assert response.status_code == (200 if enough else 507)

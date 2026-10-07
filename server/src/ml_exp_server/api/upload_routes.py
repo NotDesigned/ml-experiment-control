@@ -120,12 +120,9 @@ async def complete(context, upload_id, request):
         else:
             publish = lambda stream, size, digest: service.snapshot(*args, stream, size)
             expanded = service.expanded_limit
-    reserve = min(expanded, value["bytes"]) + value["bytes"] + 64 * 1024 ** 2 if expanded is not None else value["bytes"] * 2 + 64 * 1024 ** 2
-    if binding["kind"] == "artifacts":
-        # Parts are already on disk. ArtifactStore validates their seekable
-        # stream and uploads it directly, without another archive copy.
-        reserve -= value["bytes"]
-    return await invoke(uploads.complete, upload_id, binding, publish, reserve)
+    # The seekable part stream needs no concatenated archive. Keep room for
+    # validation and the published object, which may share this filesystem.
+    return await invoke(uploads.complete, upload_id, binding, publish, min(expanded, value["bytes"]) + value["bytes"] + 64 * 1024 ** 2 if expanded is not None else value["bytes"] * 2 + 64 * 1024 ** 2)
 
 
 async def abort(context, upload_id):
