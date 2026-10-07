@@ -19,10 +19,12 @@ from ..contracts import (
 from ..preflight import PreflightReport
 from ..identity import IdentityReport
 from ..project import AssetProbe, SourceBundle
+from .capabilities import BackendCapabilities
 
 
 class Backend(Protocol):
     kind: str
+    capabilities: BackendCapabilities
 
     def availability(self) -> PreflightReport: ...
     def validate(self, run: RunSpec) -> None: ...

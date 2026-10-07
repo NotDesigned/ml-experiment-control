@@ -40,6 +40,8 @@ from .sse import EventBroker
 from .upload_routes import WORKER_UPLOAD_PATH, router as upload_router
 from ..data_delivery import COPY_TRANSFER, recover_data_deliveries
 from .data_delivery_routes import router as data_delivery_router
+from ..experiment_preparation import ExperimentPreparationService
+from .preparation_routes import router as preparation_router
 
 
 def _poll_loop(app: FastAPI, collector: Collector) -> None:
@@ -201,6 +203,8 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             app.state.submission_service = ExperimentSubmissionService(
                 app.state.application, runtime,
             )
+            app.state.preparation_service = ExperimentPreparationService(runtime, app.state.submission_service)
+            app.state.recovered_preparations = app.state.preparation_service.recover_interrupted()
             # Compatibility aliases for extensions and existing integrations.
             app.state.index = runtime.index
             app.state.projects = runtime.projects
@@ -354,6 +358,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.include_router(asset_router)
     app.include_router(upload_router)
     app.include_router(data_delivery_router)
+    app.include_router(preparation_router)
 
     @app.get(VERSIONED_OPENAPI_PATH, include_in_schema=False)
     async def versioned_openapi():

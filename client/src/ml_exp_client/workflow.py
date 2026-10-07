@@ -13,7 +13,6 @@ import time
 from urllib.parse import urlencode
 
 from .api import ClientError, data_archive, download, save, segment, source_archive, upload_asset_parts
-from .data_delivery import deliver_data
 
 
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "PREEMPTED", "TIMEOUT"}
@@ -44,7 +43,7 @@ def validate_dockerfile(source: Path, name: str):
 def read_config(path: Path):
     value = json.loads(path.read_text())
     allowed = {"project", "run_id", "source", "dockerfile", "entrypoint", "workdir", "executor",
-               "arguments", "env", "resources", "outputs", "inputs", "checkpoint_upload", "max_gpu_hours", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from"}
+               "arguments", "env", "resources", "outputs", "inputs", "checkpoint_upload", "max_gpu_hours", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from", "executor_selector", "requirements"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise ClientError("experiment config contains unknown fields")
     evaluation = value.get("evaluation", {})
@@ -66,9 +65,26 @@ def read_config(path: Path):
                 not isinstance(definition.get("unit"), str) or not definition["unit"].strip() or len(definition["unit"]) > 128 or any(ord(c) < 32 for c in definition["unit"]) or
                 "required" in definition and not isinstance(definition["required"], bool)):
             raise ClientError("each metric definition needs a valid name, explicit unit and optional boolean required")
-    for key in ("project", "run_id", "executor"):
+    for key in ("project", "run_id"):
         if not isinstance(value.get(key), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value[key]):
             raise ClientError("experiment needs valid project, run_id and executor")
+    executor = value.get("executor")
+    selector = value.get("executor_selector")
+    if ((executor is None) == (selector is None) or executor is not None and
+            (not isinstance(executor, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", executor))):
+        raise ClientError("choose an executor or an executor_selector")
+    if selector is not None and (not isinstance(selector, dict) or set(selector) - {"backend", "candidates"} or
+            not isinstance(selector.get("backend"), (str, type(None))) or selector.get("backend") not in {None, "slurm", "sensecore"} or
+            not isinstance(selector.get("candidates", []), list) or len(selector.get("candidates", [])) > 64 or
+            any(not isinstance(i, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", i) for i in selector.get("candidates", [])) or
+            not (selector.get("backend") or selector.get("candidates"))):
+        raise ClientError("executor_selector needs a backend or valid candidate IDs")
+    requirements = value.get("requirements", {})
+    flags = {"data_assets", "data_preparation", "persistent_checkpoints", "queue_reason", "exit_code", "preemption_reason", "scheduler_walltime", "offline_output_export"}
+    if (not isinstance(requirements, dict) or set(requirements) - flags - {"platform"} or
+            not isinstance(requirements.get("platform", "linux/amd64"), str) or
+            any(type(item) is not bool for key, item in requirements.items() if key in flags)):
+        raise ClientError("requirements need a platform and boolean capability flags")
     if not isinstance(value.get("source"), str) or type(value.get("max_gpu_hours")) not in (int, float) or not math.isfinite(value["max_gpu_hours"]) or value["max_gpu_hours"] <= 0:
         raise ClientError("experiment needs source and a positive max_gpu_hours budget")
     source = (path.parent / value["source"]).resolve()
@@ -162,8 +178,12 @@ def wait_resource(client, endpoint, seconds, *, pending=("EXECUTING",)):
         time.sleep(5)
 
 
-def experiment(client, health, config_path, state_path, *, resume=False, execute=False, seconds=1800, out=None):
+def experiment(client, health, config_path, state_path, *, resume=False, execute=False, seconds=1800, out=None, continue_preparation=False):
     config, source = read_config(config_path)
+    if continue_preparation and not resume:
+        raise ClientError("--continue-preparation requires --resume and inspection of saved dependencies")
+    if "server-experiment-preparation.v1" not in health.get("capabilities", []):
+        raise ClientError("server lacks server-experiment-preparation.v1; upgrade for server-owned preparation")
     if "dockerfile-only.v1" not in health.get("capabilities", []):
         raise ClientError("server lacks dockerfile-only.v1; upgrade before using the experiment workflow")
     if config.get("data_preparation") is not None and "data-preparation.v1" not in health.get("capabilities", []):
@@ -178,11 +198,15 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         raise ClientError("state file exists; use --resume to inspect and continue the same experiment")
     if state.get("config_sha256") != fingerprint:
         raise ClientError("resume configuration changed; use a new Run and state file")
-    # Fail locally/against the catalogue before transferring bytes or building.
-    executors = client.call("/api/executors")["executors"]
-    if not any(item["id"] == config["executor"] for item in executors):
-        raise ClientError("executor is not in the server catalogue")
-    selected_executor = next(item for item in executors if item["id"] == config["executor"])
+    definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "checkpoint_upload", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from") if key in config}
+    requirements = dict(config.get("requirements", {}))
+    if config.get("inputs"):
+        requirements["data_assets"] = True
+    selection = {"requirements": requirements}
+    if "executor_selector" in config:
+        selection["executor_selector"] = config["executor_selector"]
+    if "submission" not in state:
+        state["matching_preview"] = client.call("/api/executors/match", data={"project": config["project"], "run": definition, **selection})
     payload = source_archive(source)
     source_hash = hashlib.sha256(gzip.decompress(payload)).hexdigest()
     if state.get("source_archive_content_sha256", source_hash) != source_hash:
@@ -194,25 +218,6 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         query = urlencode({"project": config["project"], "sha256": hashlib.sha256(payload).hexdigest()})
         state["source_id"] = client.call("/api/source-imports/archive?" + query, raw=payload)["source_id"]
         save(state_path, state)
-    if "runtime" not in state:
-        definition = {key: config[key] for key in ("dockerfile", "entrypoint", "workdir") if key in config}
-        definition.update(source_id=state["source_id"], entrypoint=config.get("entrypoint", ["python3", "train.py"]))
-        state["runtime"] = client.call(f"/api/projects/{project}/runtimes/prepare", data=definition)
-        save(state_path, state)
-    runtime = state["runtime"]
-    endpoint = f"/api/projects/{project}/runtimes/{segment(runtime['runtime_id'])}"
-    runtime = client.call(endpoint)
-    if runtime["status"] == "PREPARED":
-        if state.get("build_requested"):
-            raise ClientError("build request outcome is uncertain; inspect saved Runtime before explicitly executing it")
-        state["build_requested"] = True
-        save(state_path, state)
-        client.call(endpoint + "/execute", data={"confirmation": runtime["confirmation"]})
-    runtime = wait_resource(client, endpoint, seconds)
-    state["runtime"] = runtime
-    save(state_path, state)
-    if runtime["status"] != "READY":
-        raise ClientError("Runtime requires inspection or receipt-only reconciliation; never rebuild automatically")
     bindings = []
     for number, item in enumerate(config.get("inputs", [])):
         asset_id = item.get("asset_id")
@@ -227,21 +232,43 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
                     raise ClientError("data archive exceeds server upload limit")
                 asset_id = upload_asset_parts(client, config["project"], stream, digest, length, upload_state)["asset_id"]
         bindings.append({"asset_id": asset_id, "mount_path": item["mount_path"]})
-        if "ccr-data-delivery.v1" in health.get("capabilities", []) and selected_executor.get("kind") == "sensecore":
-            asset = client.call(f"/api/projects/{project}/assets/{segment(asset_id)}")
-            if asset.get("remote_storage") == "desktop-builder":
-                deliver_data(client, config["project"], asset_id, config["executor"],
-                             state_path.with_name(state_path.name + f".delivery-{number}.json"), seconds)
     state["input_bindings"] = bindings
     save(state_path, state)
-    if "run" not in state:
-        definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "checkpoint_upload", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from") if key in config}
-        definition.update(runtime_id=runtime["runtime_id"], inputs=bindings)
-        state["run"] = client.call(f"/api/projects/{project}/runs", data=definition)
-        save(state_path, state)
     if "submission" not in state:
-        state["submission"] = client.call(f"/api/experiments/{project}/{segment(config['run_id'])}/submissions/prepare",
-                                           data={"max_gpu_hours": config["max_gpu_hours"], "reason": "single-config experiment workflow"})
+        if "preparation_request" not in state:
+            run = {**definition, "inputs": bindings}
+            request = {"run": run, **selection, "max_gpu_hours": config["max_gpu_hours"]}
+            if "runtime" in state:
+                existing = state["runtime"]
+                endpoint = f"/api/projects/{project}/runtimes/{segment(existing['runtime_id'])}"
+                existing = client.call(endpoint)
+                if state.get("build_requested") and existing["status"] == "PREPARED":
+                    raise ClientError("saved build request outcome is uncertain; inspect Runtime before continuing")
+                request["run"]["runtime_id"] = existing["runtime_id"]
+            else:
+                runtime_spec = {key: config[key] for key in ("dockerfile", "entrypoint", "workdir") if key in config}
+                runtime_spec.update(source_id=state["source_id"], entrypoint=config.get("entrypoint", ["python3", "train.py"]))
+                request["runtime"] = runtime_spec
+            state["preparation_request"] = request
+            save(state_path, state)
+        if "preparation" not in state:
+            # The server binds one request to project/run_id before starting
+            # effects. A lost POST response can be safely retrieved by the same
+            # request; it never creates another build or copy task.
+            state["preparation"] = client.call(f"/api/projects/{project}/experiment-preparations", data=state["preparation_request"])
+            save(state_path, state)
+        endpoint = f"/api/projects/{project}/experiment-preparations/{segment(state['preparation']['preparation_id'])}"
+        if continue_preparation:
+            current = client.call(endpoint)
+            if current["status"] == "RECONCILE_REQUIRED":
+                client.call(endpoint + "/continue", data={})
+        preparation = wait_resource(client, endpoint, seconds)
+        state["preparation"] = preparation
+        save(state_path, state)
+        if preparation["status"] != "READY":
+            raise ClientError("server preparation requires dependency inspection; saved Runtime/delivery IDs must be reconciled, never resubmitted")
+        state.update(run=preparation["run"], submission=preparation["submission"], matching=preparation["matching"])
+        state["runtime"] = client.call(f"/api/projects/{project}/runtimes/{segment(preparation['runtime_id'])}")
         save(state_path, state)
     submission = state["submission"]
     endpoint = "/api/submissions/" + segment(submission["submission_id"])

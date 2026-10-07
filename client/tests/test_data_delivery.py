@@ -41,16 +41,12 @@ def test_client_wait_failure_keeps_exact_data_identity(tmp_path,status):
     assert json.loads(state.read_text())['delivery']['status']==status and api.executes==0
 
 
-def test_experiment_prepares_nas_before_creating_run(configuration,monkeypatch):
+def test_experiment_sends_data_bindings_to_server_preparation(configuration):
     value=json.loads(configuration.read_text());value['inputs']=[{'asset_id':'asset.'+'a'*64,'mount_path':'/inputs/data'}]
     configuration.write_text(json.dumps(value))
-    order=[]
-    class CloudAPI(API):
-        def call(self,path,**kw):
-            if path=='/api/executors':return {'executors':[{'id':'gpu','kind':'sensecore'}]}
-            if '/assets/' in path:return {'remote_storage':'desktop-builder'}
-            if path.endswith('/runs'):order.append('run')
-            return super().call(path,**kw)
-    monkeypatch.setattr('ml_exp_client.workflow.deliver_data',lambda *a:order.append('data-ready'))
-    experiment(CloudAPI(),{'capabilities':[*HEALTH['capabilities'],'ccr-data-delivery.v1']},configuration,configuration.with_name('state.json'))
-    assert order==['data-ready','run']
+    api=API()
+    experiment(api,HEALTH,configuration,configuration.with_name('state.json'))
+    sent=next(kw['data'] for path,kw in api.calls if path.endswith('/experiment-preparations'))
+    assert sent['run']['inputs']==value['inputs']
+    assert sent['requirements']['data_assets'] is True
+    assert not any('/deliveries/' in path or path.endswith('/runs') for path,_ in api.calls)

@@ -39,8 +39,9 @@ build contexts/layers live on the desktop. Training runs inside backend containe
 | Composition | `runtime.py`, `api/app.py` |
 | Immutable definitions | `source_imports.py`, `source_revisions.py`, `container_execution.py`, `authored_runs.py` |
 | Checked mutations | `application.py`, `submissions.py`, `actions/`, `controller_gateway.py` |
+| Capability matching/preparation | `executor_capabilities.py`, `experiment_preparation.py` |
 | Dispatch | `container_controller.py` → core `backends/` |
-| Observation | `collectord.py`, `ingest/`, `terminal_snapshot.py`, `execution_progress.py` |
+| Observation | `collectord.py`, `ingest/`, `terminal_snapshot.py`, `execution_progress.py`, `input_progress.py` |
 | Images | `image_builder.py`, `dockerfile_build.py`, `image_build_context.py` |
 | Data | `data_assets.py`, `multipart_upload.py`, `remote_data_uploads.py`, `desktop_upload.py`, `data_delivery.py`, `data_image_build.py` |
 | Results/state | `artifact_store.py`, `artifacts.py`, `checkpoint_registry.py`, `metric_contract.py` |
@@ -73,6 +74,7 @@ not change workers in existing images. Backend implementations are core
 | Source | Immutable code snapshot | Frozen tree and metadata |
 | Runtime | Source/Dockerfile/worker and published image | Definition and build receipt |
 | Asset | Immutable input bytes | Archive/file hashes and locator |
+| Preparation | One server-owned request and saved dependencies | Hash-bound intent and durable progress journal |
 | Run | Image, data, argv, resources and metric protocol | Immutable manifest |
 | Attempt | One execution | Intent, exact scheduler ID and observations |
 | Checkpoint | Complete backend-resident generation | NAS/datapool bytes and registered manifest |

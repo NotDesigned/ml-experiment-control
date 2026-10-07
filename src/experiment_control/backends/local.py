@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .services import BackendServices
+from .capabilities import LOCAL
 from ..contracts import (
     AssetVerification,
     AttemptManifest,
@@ -52,6 +53,7 @@ class LocalBackend:
     """Launch attempt-qualified local process groups with durable result files."""
 
     kind = "local"
+    capabilities = LOCAL
 
     def __init__(self, services: BackendServices):
         self.s = services

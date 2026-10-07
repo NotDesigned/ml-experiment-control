@@ -18,12 +18,12 @@ from urllib.parse import urlsplit
 
 if __package__:
     from .worker_artifacts import archive_outputs, upload_parts as upload
-    from .data_input import digest_stream, relative_path, verify_tree, fetch, deliver
+    from .data_input import digest_stream, relative_path, verify_tree, fetch, deliver, DeliveryTrace
     from .data_preparation import prepare as prepare_data
     from . import persistent_state
 else:
     from artifacts import archive_outputs, upload_parts as upload
-    from data_input import digest_stream, relative_path, verify_tree, fetch, deliver
+    from data_input import digest_stream, relative_path, verify_tree, fetch, deliver, DeliveryTrace
     from data_preparation import prepare as prepare_data
     import persistent_state
 
@@ -126,6 +126,8 @@ def main(argv=None):
     root = Path(os.environ["OUTPUT_DIR"])
     root.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
+    trace = DeliveryTrace()
+    trace.report("INITIALIZING")
     try:
         link_path(root, Path("/outputs"))
         if state_context is not None:
@@ -143,10 +145,14 @@ def main(argv=None):
         for item in inputs:
             cache = root.parents[4] / "data-assets"
             print("ML_EXPD_INPUT_ASSET=START " + item["asset_id"] + " archive_bytes=" + str(item["archive_bytes"]), flush=True)
-            location = deliver(item, token, cache)
+            trace = DeliveryTrace(item["asset_id"], item["archive_bytes"])
+            location = deliver(item, token, cache, trace=trace)
+            trace.report("MOUNTING")
             link_path(location, Path(item["mount_path"]))
+            trace.report("READY")
             print("ML_EXPD_INPUT_ASSET=READY " + item["asset_id"], flush=True)
-    except Exception:
+    except Exception as error:
+        trace.failed(error)
         print("ML_EXPD_INPUT_DELIVERY=FAILED", file=sys.stderr, flush=True)
         return 65
     print("ML_EXPD_INPUT_DELIVERY_SECONDS=" + str(round(time.monotonic() - started, 3)), flush=True)

@@ -27,6 +27,7 @@ from .worker_contract import CAPABILITIES, WORKER_CONTRACT
 from .metric_contract import MetricSchema, protocol_identity
 from .data_preparation import identity as data_identity, file_record
 from .checkpoint_registry import CheckpointRegistry, storage_scope
+from .executor_capabilities import declaration, ExecutionRequirements, mismatches, validate_worker
 
 
 SECRET_KEY = re.compile(r"(?i)(?:^|_)(?:token|secret|password|credential|api_key|proxy|authorization)(?:$|_)")
@@ -210,17 +211,25 @@ class ContainerExecutionService:
         return profiles
 
     def public_profiles(self) -> dict:
-        store_file = self.runtime.config.container_execution.artifact_store_file
-        desktop = bool(store_file and json.loads(Path(store_file).read_text()).get("data_upload_storage") == "desktop-builder")
+        profiles = self.profiles()
+        capabilities = self.profile_capabilities(profiles)
         return {"executors": [{"id": name, "title": profile.get("title", name),
                                 "kind": profile["backend"]["kind"],
                                 "capacity": profile.get("capacity"),
-                                "dockerfile_execution": True,
-                                "data_asset_transport": "ccr-cpu-nas" if desktop and profile["backend"]["kind"] == "sensecore" else "worker-http-shared-storage",
-                                "data_preparation": "script-shared-storage.v1",
-                                "checkpoint_persistence": "backend-shared-storage.v1",
-                                "artifact_transport": bool(self.runtime.config.container_execution.artifact_store_file or profile.get("artifact_ssh") or profile["backend"]["kind"] == "slurm")}
-                               for name, profile in sorted(self.profiles().items())]}
+                                "capabilities": capabilities[name],
+                                "dockerfile_execution": capabilities[name]["runtime"]["materialization"] in {"oci", "oci_to_sif"},
+                                "data_asset_transport": ("ccr-cpu-nas" if profile["backend"]["kind"] == "sensecore" else "ssh-stream-shared-storage") if capabilities[name]["data"]["asset_preparation"] == "before_job" else "worker-http-shared-storage",
+                                "data_preparation": "script-shared-storage.v1" if capabilities[name]["data"]["download_script"] else None,
+                                "checkpoint_persistence": "backend-shared-storage.v1" if capabilities[name]["storage"]["checkpoint_registration"] else None,
+                                "artifact_transport": capabilities[name]["outputs"]["transfer"]}
+                               for name, profile in sorted(profiles.items())]}
+
+    def profile_capabilities(self, profiles=None):
+        profiles = self.profiles() if profiles is None else profiles
+        store_file = self.runtime.config.container_execution.artifact_store_file
+        desktop = bool(store_file and json.loads(Path(store_file).read_text()).get("data_upload_storage") == "desktop-builder")
+        return {name: declaration(profile, artifact_store=bool(store_file), desktop=desktop)
+                for name, profile in profiles.items()}
 
     def environments(self) -> dict:
         path = self.runtime.config.container_execution.environments_file
@@ -360,23 +369,31 @@ class ContainerExecutionService:
         self.finish_state(pending, {**pending.value, "status": "RECONCILE_REQUIRED",
                                    "error": "packaging could not be queued; inspect or reconcile"})
 
-    def create_run(self, project: str, request: RunRequest) -> dict:
+    def create_run(self, project: str, request: RunRequest, *, profile_snapshot=None, prepared_assets=None) -> dict:
         self.require_enabled()
         bundle = self.read(project, request.runtime_id)
         if bundle["status"] != "READY":
             raise ApplicationError("runtime image is not ready", code="CONTAINER_EXECUTION_BLOCKED")
-        selected_profile = self.profiles().get(request.executor)
+        selected_profile = profile_snapshot if profile_snapshot is not None else self.profiles().get(request.executor)
+        if not selected_profile:
+            raise ApplicationError("unknown execution profile", status_code=404, code="UNKNOWN_EXECUTOR")
+        capability = self.profile_capabilities({request.executor: selected_profile})[request.executor]
+        problems = mismatches(capability, selected_profile, request, ExecutionRequirements())
+        if problems:
+            raise ApplicationError("execution profile cannot satisfy: " + ", ".join(problems), code="CONTAINER_EXECUTION_BLOCKED")
+        validate_worker(request, bundle, capability)
         inputs = []
         if request.inputs or request.checkpoint_upload:
             config = self.runtime.config.container_execution.artifact_store_file
-            if not config or "data-assets.v1" not in bundle.get("capabilities", []):
-                raise ApplicationError("data/checkpoint delivery requires object storage and a runtime with the managed worker", code="CONTAINER_EXECUTION_BLOCKED")
             assets = AssetStore(Path(config), self.runtime.config.project_registry_root_path())
             for binding in request.inputs:
                 asset = assets.read(project, binding.asset_id)
                 inputs.append({**binding.model_dump(), "sha256": asset["sha256"],
                                "archive_bytes": asset["archive_bytes"], "files": asset["files"]})
-                if asset.get("remote_storage") == "desktop-builder" and selected_profile and selected_profile["backend"]["kind"] == "sensecore":
+                if prepared_assets and binding.asset_id in prepared_assets:
+                    validate_worker(request, bundle, capability, cache_required=True)
+                    inputs[-1]["require_cached"] = True
+                if asset.get("remote_storage") == "desktop-builder" and selected_profile["backend"]["kind"] == "sensecore":
                     if "data-cache-required.v1" not in bundle.get("capabilities", []):
                         raise ApplicationError("CCR data delivery requires a newly built runtime with data-cache-required.v1", code="CONTAINER_EXECUTION_BLOCKED")
                     from .data_delivery import DataDeliveryService
@@ -387,9 +404,6 @@ class ContainerExecutionService:
         tree = resolve_source_tree(self.runtime.config, project, source_id)
         preparation = None
         if request.data_preparation is not None:
-            if (not self.runtime.config.container_execution.artifact_store_file
-                    or "data-preparation.v1" not in bundle.get("capabilities", [])):
-                raise ApplicationError("data preparation requires a newly built runtime with data-preparation.v1 and artifact storage", code="CONTAINER_EXECUTION_BLOCKED")
             spec = request.data_preparation.model_dump(exclude_none=True)
             path = tree / spec["script"]
             if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(tree.resolve()):
@@ -401,9 +415,7 @@ class ContainerExecutionService:
             preparation["preparation_id"] = "preparation." + data_identity(preparation)
             if len(json.dumps([inputs, preparation]).encode()) > 32768:
                 raise ApplicationError("data preparation exceeds the scheduler command limit", code="CONTAINER_EXECUTION_BLOCKED")
-        profile = copy.deepcopy(self.profiles().get(request.executor))
-        if not profile:
-            raise ApplicationError("unknown execution profile", status_code=404, code="UNKNOWN_EXECUTOR")
+        profile = copy.deepcopy(selected_profile)
         configured = self.runtime.project(project)
         if not configured.controller or not configured.controller.capabilities.get("container_execution"):
             raise ApplicationError("project is not container-managed", code="CONTAINER_EXECUTION_BLOCKED")
@@ -414,8 +426,6 @@ class ContainerExecutionService:
         resume = None
         if persistence is not None or request.resume_from is not None:
             config = self.runtime.config.container_execution.artifact_store_file
-            if not config or "persistent-checkpoints.v1" not in bundle.get("capabilities", []):
-                raise ApplicationError("persistent checkpoints require a new runtime with persistent-checkpoints.v1", code="CONTAINER_EXECUTION_BLOCKED")
             persistence = persistence or CheckpointUpload()
             if request.resume_from is not None:
                 ref = request.resume_from
@@ -434,16 +444,11 @@ class ContainerExecutionService:
                            source_dir=storage_root + "/sources/" + source_id,
                            sif_path=storage_root + "/images/" + bundle["bundle_id"] + ".sif",
                            oci_image=bundle["image"])
-        elif backend["kind"] == "sensecore":
-            expected_gpus = int(profile.get("gpus", 1))
-            if request.resources.gpus != expected_gpus:
-                raise ApplicationError("requested GPU count does not match execution profile", code="CONTAINER_EXECUTION_BLOCKED")
+        else:
             reference, digest = bundle["image"].split("@", 1)
             scheduler_name = "ml-" + re.sub(r"[^a-z0-9-]", "-", request.run_id.lower())[:30].strip("-") + "-" + hashlib.sha256(request.run_id.encode()).hexdigest()[:10]
             backend.update(image=reference + ":bundle-" + bundle["bundle_id"],
                            job_name=scheduler_name, display_name=request.run_id)
-        else:
-            raise ApplicationError("execution profile is not a supported container backend", code="CONTAINER_EXECUTION_BLOCKED")
         campaign_name = "run-" + request.run_id
         outputs = list(request.outputs)
         if preparation is not None and "data-preparation.json" not in outputs:
@@ -453,8 +458,6 @@ class ContainerExecutionService:
         resources = request.resources.model_dump()
         if backend["kind"] == "sensecore" and profile.get("capacity"):
             capacity = profile["capacity"]
-            if any(resources[key] > capacity[key] for key in ("gpus", "cpus", "memory_gb")):
-                raise ApplicationError("requested resources exceed execution profile capacity", code="CONTAINER_EXECUTION_BLOCKED")
             resources.update({key: capacity[key] for key in ("gpus", "cpus", "memory_gb")})
         run = {"run_id": request.run_id, "source_id": source_id,
                "image_id": bundle["image"].split("@", 1)[1], "backend": backend,

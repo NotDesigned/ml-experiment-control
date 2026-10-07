@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .capabilities import SLURM
+
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -209,6 +211,7 @@ def parse_accounting(
 
 class WydSlurmBackend:
     kind = "slurm"
+    capabilities = SLURM
     # Keep multiplexing within one controller process, but never share the
     # socket startup/ownership lifecycle with a concurrent controller.
     ssh_control_path = f"/tmp/experimentctl-{os.getuid()}-{os.getpid()}-%C"
