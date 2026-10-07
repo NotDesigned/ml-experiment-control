@@ -110,6 +110,13 @@ def parser():
     fetch.add_argument("--run", required=True)
     fetch.add_argument("--attempt", required=True)
     fetch.add_argument("--out", type=Path, required=True, help="new destination directory")
+    collect = commands.add_parser("collect", help="recover original Attempt outputs without rerunning training; may allocate a bounded zero-GPU CPU job")
+    collect.add_argument("--project", required=True)
+    collect.add_argument("--run", required=True)
+    collect.add_argument("--attempt", required=True)
+    collect.add_argument("--start", action="store_true", help="authorize independent result collection")
+    collect.add_argument("--retry", action="store_true")
+    collect.add_argument("--reconcile", action="store_true")
     return value
 
 
@@ -142,6 +149,12 @@ def main(argv=None):
                 result["storage_limits"] = client.call("/api/storage-limits")
             if args.schema:
                 save(args.schema, client.call(health["openapi_path"]))
+        elif args.command == "collect":
+            if "result-collection.v1" not in health.get("capabilities", []):
+                raise ClientError("server lacks result-collection.v1")
+            endpoint = f"/api/runs/{segment(args.project)}/{segment(args.run)}/attempts/{segment(args.attempt)}/collection"
+            result = (client.call(endpoint, data={"retry": args.retry, "reconcile": args.reconcile})
+                      if args.start or args.retry or args.reconcile else client.call(endpoint))
         elif args.command == "experiment":
             result = experiment(client, health, args.config, args.state, resume=args.resume,
                                 execute=args.execute, seconds=args.seconds, out=args.download_to,

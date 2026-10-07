@@ -442,6 +442,14 @@ def test_terminal_job_offline_query_is_read_only_exact_and_historical():
     assert result['unavailable_reason'] == 'OFFLINE_LOGS_UNAVAILABLE'
 
 
+def test_large_offline_tail_respects_provider_page_size_without_claiming_completeness():
+    c = offline_client()
+    c.request = Mock(return_value={'hits': [hit()], 'total': '500'})
+    result = c.logs(B, 'job', 10000)
+    assert c.request.call_args.kwargs['body']['page_size'] == 200
+    assert result['available'] and result['truncated'] and result['historical']
+
+
 def test_active_stream_failure_falls_back_but_does_not_hide_identity_errors():
     c = offline_client()
     c.describe.return_value['state'] = 'RUNNING'

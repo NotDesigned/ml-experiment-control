@@ -20,6 +20,8 @@ CLIENT_PROTOCOL_HEADER = "X-ML-Expd-Client-Protocol"
 
 SERVER_CAPABILITIES = (
     "wandb-sync.v1",
+    "result-collection.v1",
+    "training-result.v1",
     "experiment-records.v1",
     "input-delivery-progress.v1",
     "backend-capabilities.v1",

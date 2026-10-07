@@ -105,9 +105,10 @@ queries. Queries bind exact worker/container and time scope, then redact text
 with `experiment-redact`. Historical logs are not live heartbeats. SUSPENDED
 normalizes to CANCELLED with unknown cause unless an exact cancellation marker
 exists; neither FAILED nor SUSPENDING alone proves preemption. Empty logs or an
-HTTP error do not establish an exit code. The offline page-size defect is listed
-in [known limitations](recovery.md#known-limitations).
+HTTP error do not establish an exit code. Offline pages are capped at the
+provider's 200-record limit; larger requested tails report truncation.
 
 ACP requests currently set `backoff_limit: 0`. There is no automatic restart;
-the collector only observes. See [recovery](recovery.md) for manual restoration
-and the explicitly unimplemented automatic-recovery design.
+training restart remains unimplemented. Independent result collection can launch
+a bounded zero-GPU CPU job; it does not restart training. See
+[recovery](recovery.md) for collection and manual checkpoint restoration.

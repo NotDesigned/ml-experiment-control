@@ -192,6 +192,15 @@ class ExperimentSubmissionService:
         from .input_progress import read_input_progress
         transfer = read_input_progress(Path(row.run_dir) / "attempts" / view["attempt_id"]) if row is not None else None
         result["input_delivery"] = transfer
+        result["result_collection"] = None
+        if row is not None and self.runtime.config.container_execution.artifact_store_file:
+            from .result_collection import ResultCollectionService
+            try:
+                collection = ResultCollectionService(self.runtime).read(view["project"], view["run_id"], view["attempt_id"])
+                result["result_collection"] = {key: collection[key] for key in (
+                    "status", "phase", "training", "verification", "download_available", "diagnostic")}
+            except (ApplicationError, ValueError, OSError):
+                result["result_collection"] = {"status": "UNAVAILABLE", "diagnostic": "RESULT_METADATA_UNAVAILABLE"}
         if transfer is not None and transfer["phase"] == "FAILED":
             result["diagnostic"] = transfer["code"]
         return result

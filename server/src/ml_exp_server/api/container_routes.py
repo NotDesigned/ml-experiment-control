@@ -222,8 +222,8 @@ async def launch_transfer(project: str, run_id: str, attempt_id: str, digest: st
 
 
 @router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/files")
-async def artifact_list(project: str, run_id: str, attempt_id: str, request: Request):
-    return await invoke(ArtifactService(request.app.state.runtime).list, project, run_id, attempt_id)
+async def artifact_list(project: str, run_id: str, attempt_id: str, request: Request, checksums: bool = False):
+    return await invoke(ArtifactService(request.app.state.runtime).list, project, run_id, attempt_id, checksums=checksums)
 
 
 @router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/artifacts/archive")

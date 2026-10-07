@@ -198,6 +198,7 @@ def test_background_loops_continue_once_then_finish(tmp_path):
     app.state.publisher_consecutive_failures = 0
     app.state.projects = [SimpleNamespace(project="demo")]
     app.state.index = index
+    app.state.runtime = SimpleNamespace(config=SimpleNamespace(container_execution=SimpleNamespace(artifact_store_file=None)))
     collector = SimpleNamespace(
         run_cycle=lambda: None,
         config=SimpleNamespace(poll_interval_seconds=1),

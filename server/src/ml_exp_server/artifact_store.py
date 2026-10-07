@@ -210,12 +210,13 @@ class ArtifactStore:
                            'object_key': key, 'received_at': utc_now()}
                 seal_tree(temporary)
                 temporary.chmod(0o700)
-                destination = parent / 'uploaded_outputs'
-                if destination.exists():
-                    # Recover the S3-write/local-rename/receipt-write interruption window.
-                    remove_staging(destination)
-                temporary.rename(destination)
-                destination.chmod(0o500)
+                if value.get('cache_outputs', True):
+                    destination = parent / 'uploaded_outputs'
+                    if destination.exists():
+                        # Recover the S3-write/local-rename/receipt-write interruption window.
+                        remove_staging(destination)
+                    temporary.rename(destination)
+                    destination.chmod(0o500)
                 value['receipt'] = receipt
                 atomic_json(path, value)
                 return receipt

@@ -369,7 +369,7 @@ class SenseCoreREST:
                 raise ValueError("invalid worker container identity")
             container = containers[0]["name"]
             body = {"start": str(start), "end": str(end), "resource_id": [record["id"]],
-                    "page_size": tail, "offset": "0", "custom_filter": [
+                    "page_size": min(tail, 200), "offset": "0", "custom_filter": [
                         {"key": "Attributes.k8s.pod.name", "value": worker["name"]},
                         {"key": "Attributes.k8s.container.name", "value": container}]}
             data = self.request(base + "/logStream/products/product.lepton-acp-new/logs",
@@ -380,7 +380,7 @@ class SenseCoreREST:
             if not isinstance(raw_total, (str, int)) or isinstance(raw_total, bool) or not str(raw_total).isdecimal():
                 raise ValueError("invalid offline log count")
             total = int(raw_total)
-            if len(data["hits"]) > tail or total < len(data["hits"]):
+            if len(data["hits"]) > min(tail, 200) or total < len(data["hits"]):
                 raise ValueError("invalid offline log page size")
             for hit in data["hits"]:
                 if (not isinstance(hit, dict) or not isinstance(hit.get("body"), str)

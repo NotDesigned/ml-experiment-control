@@ -1,4 +1,6 @@
 /build/
+/server/build/
+/client/build/
 /dist/
 /.pytest_cache/
 /.venv/

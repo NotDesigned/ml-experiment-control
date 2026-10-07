@@ -13,7 +13,7 @@ tokens, launch commands or signed URLs. Query exact IDs, not an arbitrary latest
 | Scheduler RUNNING | Scheduler lifecycle state | Data readiness, child process, fresh logs/step |
 | Checkpoint REGISTERED | Worker verified one complete persistent generation | Actual restore validation or export |
 | Artifact receipt / COMPLETE upload | Complete result archive published | Signed download and file hashes |
-| Empty files / archive 404 | No collected/published result available | Upload state and backend storage |
+| Archive 404 | No published archive receipt; files may already exist | Exact-Attempt files and collection status |
 
 Polling time is not a process heartbeat. Submission preparation history is not
 current training progress. Preserve each evidence layer's Attempt binding,
@@ -52,11 +52,40 @@ the original scoped transfer. Identical archive identity can resume prior parts.
 Never overwrite a sealed receipt with another digest or rewrite FAILED history
 as SUCCEEDED merely because results were recovered.
 
-**There is no general public CPU output-recovery API yet.** The 2026-10-07
-SenseCore recovery was an audited one-off operator tool in private `.ops/`:
-NAS verification, original upload 43/250→250/250, exact final-weight/download hashes,
-zero GPU. It does not establish a reusable client endpoint. Do not rerun training
-or require training-data delivery just to retrieve already completed results.
+Use the original Attempt's collection endpoint; no new training Run or input-data
+delivery is required:
+
+```bash
+ml-exp collect --project PROJECT --run RUN --attempt attempt-001
+ml-exp collect --project PROJECT --run RUN --attempt attempt-001 --start
+# Repeat the query above to observe completion; then use ordinary download.
+ml-exp download --project PROJECT --run RUN --attempt attempt-001 --out results
+```
+
+`GET/POST /api/runs/P/R/attempts/A/collection` exposes training, recovery and
+archive verification separately. POST accepts `{}`, `{"retry":true}` or
+`{"reconcile":true}`. Duplicate requests observe the same durable operation.
+An uncertain create requires reconciliation of its exact CPU job; it is never
+silently resubmitted. Retries retain the original Run/Attempt and stop after three
+recovery requests. Original scheduler FAILED history remains unchanged.
+
+WYD reads the frozen shared output directory through its configured SSH endpoint.
+SenseCore uses the configured debug pool with RESERVED quota, a verified
+2CPU/4GiB/0GPU spec and an existing pinned Python image. The copy worker is bounded
+to 900 seconds, with a 1500-second queue/observation deadline; it never runs the
+training entrypoint. Registered checkpoints and unfinished archive identities
+are checked before publishing. Recoveries run serially and do not retain another
+expanded output cache after publication. File listings use receipt metadata
+without restoring whole archives; normal signed downloads go to object storage.
+
+New workers persist and register `training-result.v1` before result upload.
+When a terminal Attempt has a successful process result but no archive, the
+collector requests one independent recovery. Failed recoveries require explicit
+retry/reconcile. Old workers have no such evidence and are not automatically
+enrolled; their training status is UNKNOWN until interpreted by the experiment's
+own protocol. These are process and transport statuses, not scientific success
+criteria. Existing collected files can also be downloaded without an archive,
+provided the complete file list includes SHA256 values and every download matches.
 
 ## Restore unfinished training
 
@@ -68,15 +97,14 @@ create a replacement while the old job might still run.
 
 ## Known limitations
 
-These issues were observed on 2026-10-07 in server 0.3.12 and are **not fixed by a
-documentation rewrite**. Remove this section's items only after implementation
-and validation:
+Remaining limits:
 
-- SenseCore offline logs forward requested tail as page_size. The provider
-  accepts at most 200; larger requests return 400. A bounded accepted request can
-  still return no hits, so absence of logs does not establish an exit cause.
+- SenseCore offline queries are bounded to 200 provider records and report
+  truncation. Accepted requests can still return no hits, which does not establish
+  an exit cause.
 - Worker preparation, restore, training and artifact return share one duration.
-  A hard kill can interrupt return; separate recovery is not automated.
+  A hard kill can interrupt return; independent recovery handles saved outputs,
+  but cannot recover bytes never persisted.
 - Detailed managed phase/liveness/transfer evidence depends on image capability;
   a server upgrade cannot retrofit it into a frozen historical image.
 

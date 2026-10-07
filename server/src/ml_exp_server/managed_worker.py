@@ -23,6 +23,7 @@ if __package__:
     from . import persistent_state
     from .worker_http import error_code
     from .worker_records import WorkerRecords
+    from .result_worker import training_result
 else:
     from artifacts import archive_outputs, upload_parts as upload
     from data_input import digest_stream, relative_path, verify_tree, fetch, deliver, DeliveryTrace
@@ -30,6 +31,7 @@ else:
     import persistent_state
     from worker_http import error_code
     from worker_records import WorkerRecords
+    from result_worker import training_result
 
 
 def link_path(target, path):
@@ -244,6 +246,11 @@ def main(argv=None):
         if code is not None:
             break
         time.sleep(1)
+    records.emit("lifecycle", {"phase": "TRAINING_COMPLETED", "exit_code": code})
+    try:
+        training_result(root, url, token, code)
+    except Exception as error:
+        print("ML_EXPD_TRAINING_RESULT=REGISTRATION_FAILED error=" + error_code(error), file=sys.stderr, flush=True)
     records.emit("lifecycle", {"phase": "UPLOADING_RESULTS", "exit_code": code})
     records.flush(final=True)
     try:
