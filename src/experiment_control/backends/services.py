@@ -17,6 +17,7 @@ from ..contracts import (
     RunSummary,
 )
 from ..runner import CommandResult
+from .sensecore_rest import SenseCoreREST
 
 
 class RunCommand(Protocol):
@@ -51,3 +52,4 @@ class BackendServices:
     dispatch_command: Callable[[AttemptManifest], list[str]] = lambda manifest: list(manifest["command"])
     oci_pull_environment: Callable[[], dict[str, str]] = lambda: {}
     run_manifest_path: Callable[[Campaign, RunSpec], Path] | None = None
+    sensecore_rest: Callable[[], SenseCoreREST] = lambda: SenseCoreREST.from_environment()

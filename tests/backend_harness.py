@@ -5,6 +5,7 @@ from pathlib import Path
 
 from experiment_control.backends.services import BackendServices
 from experiment_control.runner import CommandResult
+from experiment_control.backends.sensecore_rest import RESTError
 
 
 SUBMISSION_TOKEN = "a" * 32
@@ -25,6 +26,61 @@ class QueueRunner:
         if kwargs.get("check", True):
             result.check_returncode()
         return result
+
+
+class RESTQueue:
+    """Adapter tests inject REST responses; no cloud operations are performed."""
+    def __init__(self, runner):
+        self.runner = runner
+
+    def result(self, operation, *arguments):
+        return self.runner.run(["REST", operation, *arguments], check=False)
+
+    def query(self, operation, *arguments):
+        result = self.result(operation, *arguments)
+        if result.returncode:
+            raise RESTError(operation, status=503, uncertain=operation in {"create", "stop"})
+        return json.loads(result.stdout or "{}")
+
+    def identity(self):
+        return "11111111-1111-4111-8111-111111111111"
+
+    def resources(self, kind):
+        self.query("resources", kind)
+        return []
+
+    def specs(self, backend):
+        return [{"name": backend["worker_spec"]}]
+
+    def find(self, backend, name):
+        value = self.query("find", backend["workspace"], name)
+        if not isinstance(value, list):
+            raise ValueError("invalid job list")
+        return [r for r in value if r.get("name") == name]
+
+    def describe(self, backend, name):
+        value = self.query("describe", backend["workspace"], name)
+        if not isinstance(value, dict):
+            raise ValueError("invalid job summary")
+        return value
+
+    def create(self, backend, document, **kwargs):
+        return self.query("create", json.dumps(document))
+
+    def stop(self, backend, name):
+        return self.query("stop", backend["workspace"], name)
+
+    def workers(self, backend, name):
+        value = self.query("workers", backend["workspace"], name)
+        if not isinstance(value, list):
+            raise ValueError("invalid worker list")
+        return value
+
+    def logs(self, backend, name, tail):
+        result = self.result("logs", backend["workspace"], name)
+        text = result.stdout + "\n" + result.stderr
+        return {"text": text, "expired": result.returncode not in (0, 124) and "expired" in text,
+                "exit_code": result.returncode}
 
 
 def services(
@@ -52,6 +108,7 @@ def services(
         parse_checkpoint=lambda _campaign, _line: None,
         atomic_write=atomic_write,
         utc_now=lambda: "2026-07-12T00:00:00Z",
+        sensecore_rest=lambda: RESTQueue(runner),
     )
 
 

@@ -144,7 +144,7 @@ to reach a backend without submitting, cancelling, or reading job payloads.
 `preflight` remains the run-specific resource and authorization check.
 
 `preflight` returns a credential-free `PreflightReport`. SenseCore checks the
-SCO executable and a sanitized exact-name workspace query. WYD scopes checks
+signed REST identity, exact-name workspace queries and bound resource specifications. WYD scopes checks
 to the operation: observation needs only SSH/Slurm control access, staging adds
 rsync and storage, and submission adds live partition/GRES, account/QOS,
 Apptainer, and mount validation.
@@ -200,7 +200,7 @@ reconciliation instead of permitting a second scheduler mutation.
 
 Credentials remain in native providers:
 
-- SCO profile/config for SenseCore;
+- a host-only JSON AK/SK configuration for SenseCore (see [REST setup](sensecore-rest.md));
 - SSH config/agent for WYD;
 - Docker credential store/helper for registries.
 
@@ -210,7 +210,7 @@ training commands.
 ## CLI reference
 
 The package exposes one deliberately narrow Rust command, `experiment-safe-sco`,
-for sanitizing SCO responses before a controller parses them. The binary is
+for redacting captured log text and supporting historical sanitizer integrations. The binary is
 installed by the package wheel and is not an experiment lifecycle CLI. Its
 complete generated option reference is in
 [`docs/cli_reference.md`](cli_reference.md); the runtime parser is the
@@ -264,8 +264,8 @@ preflight there.
 The backends recognize these non-secret environment variables:
 
 ```text
-EXPERIMENTCTL_SCO_BIN
-EXPERIMENTCTL_SCO_CREATE_TIMEOUT_SECONDS
+EXPERIMENTCTL_SENSECORE_REST_CONFIG
+EXPERIMENTCTL_SENSECORE_CREATE_TIMEOUT_SECONDS
 EXPERIMENTCTL_SAFE_SCO_BIN
 EXPERIMENTCTL_SSH_BIN
 EXPERIMENTCTL_RSYNC_BIN

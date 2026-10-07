@@ -114,7 +114,7 @@ Private builder config needs `data_upload_container: ml-expd-data-stage` and
 an approved digest-pinned `data_base_image`. Artifact-store config needs
 `data_upload_storage: desktop-builder`, `data_upload_socket` pointing to the
 existing private builder socket, and a `data_delivery` CPU profile containing
-`sco_bin`, `aec2`, `worker_spec`, `gpus: 0`, `cpus: 2`, `memory_gb: 4`, bounded
+`aec2`, `worker_spec`, `gpus: 0`, `cpus: 2`, `memory_gb: 4`, bounded
 `copy_timeout_seconds` / `queue_timeout_seconds` (5..3600), and `quota_type`
 (`reserved` by default, or explicitly `spot` where that pool supports it). The
 quota type is frozen in delivery identity; debug-cluster-01e rejects spot. Workspace, NAS mount

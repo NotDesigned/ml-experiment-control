@@ -27,70 +27,20 @@ from experiment_control.project import AssetProbe, AssetRequirement
 from experiment_control.runner import CommandResult
 
 
-def test_sensecore_availability_checks_tools_and_credential_backed_api(tmp_path):
-    fake = QueueRunner([
-        CommandResult(("sco",), 0),
-        CommandResult(("safe-sco",), 0),
-        CommandResult(("bash",), 0),
-        CommandResult(("timeout",), 0),
-        CommandResult(("workspace-list",), 0),
-    ])
+def test_sensecore_availability_uses_rest_without_cli(tmp_path):
+    fake = QueueRunner([CommandResult(("workspaces",), 0, "{}")])
     report = SenseCoreBackend(services(tmp_path, fake)).availability()
-    assert report.ready is True
-    assert [check.name for check in report.checks] == [
-        "sco-cli", "safe-sco", "bash-cli", "timeout-cli", "workspace-access",
-    ]
-    assert fake.commands[-1][-3:] == ("ws", "instances", "list")
-    assert [call["timeout_seconds"] for call in fake.command_kwargs] == [
-        5.0, 5.0, 5.0, 5.0, 25.0,
-    ]
+    assert report.ready
+    assert [check.name for check in report.checks] == ["sensecore-rest"]
+    assert fake.commands[0][0] == "REST"
 
 
-@pytest.mark.parametrize("workspace", [False, True])
-def test_sensecore_availability_converts_probe_timeout_to_failure(
-    tmp_path, workspace,
-):
-    class TimeoutRunner:
-        def run(self, command, **kwargs):
-            if (workspace and command[:2] == ["timeout", "20s"]) or (
-                not workspace and "normalize-state" in command
-            ):
-                raise subprocess.TimeoutExpired(command, kwargs["timeout_seconds"])
-            return CommandResult(tuple(command), 0)
-
-    report = SenseCoreBackend(services(tmp_path, TimeoutRunner())).availability()
-
-    assert report.ready is False
-    failed = [check for check in report.checks if check.status == "FAIL"]
-    assert len(failed) == 1
-    assert failed[0].name == ("workspace-access" if workspace else "safe-sco")
-    assert "timed out" in failed[0].message
-
-
-@pytest.mark.parametrize("access_code", [1, 124])
-def test_sensecore_availability_fails_closed_without_tools_or_api(
-    tmp_path, access_code,
-):
-    results = [
-        CommandResult(("sco",), 0),
-        CommandResult(("safe-sco",), 0),
-        CommandResult(("bash",), 0),
-        CommandResult(("timeout",), 0),
-        CommandResult(("workspace-list",), access_code),
-    ]
-    report = SenseCoreBackend(services(tmp_path, QueueRunner(results))).availability()
-    assert report.ready is False
-    assert report.checks[-1].name == "workspace-access"
-    assert "authentication" in report.checks[-1].message
-
-    missing = SenseCoreBackend(services(tmp_path, QueueRunner([
-        CommandResult(("sco",), 127),
-        CommandResult(("safe-sco",), 127),
-        CommandResult(("bash",), 127),
-        CommandResult(("timeout",), 127),
+def test_sensecore_availability_reports_safe_authentication_failure(tmp_path):
+    report = SenseCoreBackend(services(tmp_path, QueueRunner([
+        CommandResult(("workspaces",), 1, stderr="raw secret"),
     ]))).availability()
-    assert missing.ready is False
-    assert len(missing.checks) == 4
+    assert not report.ready
+    assert "secret" not in report.checks[0].message
 
 
 def test_slurm_availability_checks_all_local_transport_tools(tmp_path):
@@ -106,45 +56,25 @@ def test_slurm_availability_checks_all_local_transport_tools(tmp_path):
     assert [check.name for check in missing.checks] == ["ssh-cli", "rsync-cli"]
 
 
-def test_sensecore_preflight_checks_cli_and_sanitized_workspace_access(tmp_path):
-    fake = QueueRunner([
-        CommandResult(("sco-version",), 0, "v1.2.0\n"),
-        CommandResult(("safe-list",), 0, "[]\n"),
-    ])
-    report = SenseCoreBackend(services(tmp_path, fake)).preflight(
-        sensecore_run(), scope="submit"
-    )
-    assert report.ready is True
-    assert [check.name for check in report.checks] == [
-        "sco-cli", "workspace-access",
-    ]
+def test_sensecore_preflight_uses_rest_exact_query(tmp_path):
+    fake = QueueRunner([CommandResult(("find",), 0, "[]")])
+    report = SenseCoreBackend(services(tmp_path, fake)).preflight(sensecore_run(), scope="submit")
+    assert report.ready
+    assert fake.commands == [("REST", "find", "workspace", "sensecore-run")]
 
 
-def test_sensecore_preflight_fails_closed_on_malformed_sanitized_response(tmp_path):
-    fake = QueueRunner([
-        CommandResult(("sco-version",), 0, "v1.2.0\n"),
-        CommandResult(
-            ("safe-list",), 1, "",
-            "safe_sco: input was not valid JSON; raw response suppressed",
-        ),
-        CommandResult(
-            ("redact",), 0,
-            "safe_sco: input was not valid JSON; raw response suppressed",
-        ),
-    ])
-    report = SenseCoreBackend(services(tmp_path, fake)).preflight(
-        sensecore_run(), scope="submit"
-    )
-    assert report.ready is False
+def test_sensecore_preflight_fails_closed_on_malformed_or_failed_response(tmp_path):
+    for result in [CommandResult(("find",), 0, "{}"), CommandResult(("find",), 1)]:
+        report = SenseCoreBackend(services(tmp_path, QueueRunner([result]))).preflight(sensecore_run(), scope="observe")
+        assert not report.ready
 
 
-def test_sensecore_preflight_stops_when_cli_is_unavailable(tmp_path):
-    fake = QueueRunner([CommandResult(("sco-version",), 127)])
-    report = SenseCoreBackend(services(tmp_path, fake)).preflight(
-        sensecore_run(), scope="observe"
-    )
-    assert report.ready is False
-    assert [check.name for check in report.checks] == ["sco-cli"]
+def test_sensecore_preflight_observation_does_not_require_allocatable_spec(tmp_path):
+    backend = SenseCoreBackend(services(tmp_path, QueueRunner([CommandResult(("find",),0,"[]")])))
+    assert backend.preflight(sensecore_run(), scope="observe").ready
+    backend = SenseCoreBackend(services(tmp_path, QueueRunner([CommandResult(("find",),0,"[]")])))
+    backend.rest.specs = lambda _backend: []
+    assert not backend.preflight(sensecore_run(), scope="submit").ready
 
 
 def test_sensecore_identity_reports_consumed_exact_attempt_name(tmp_path):
@@ -174,7 +104,7 @@ def test_sensecore_render_and_submission_request_pin_image_digest(tmp_path):
         f"registry.example/project/image@{run['image_id']}"
     )
     rendered = backend.render(manifest)
-    assert "--name sensecore-run--attempt-002" in rendered
+    assert json.loads(rendered)["training_job"]["name"] == "sensecore-run--attempt-002"
     assert request["image_reference"] in rendered
     assert "image:source-fixed" not in rendered
     assert backend.submit({}, run, manifest, dry_run=True) == "DRY_RUN"
@@ -222,8 +152,8 @@ def test_sensecore_query_errors_are_redacted(tmp_path, method_name):
     with pytest.raises(RuntimeError) as captured:
         getattr(backend, method_name)(sensecore_run(), "job--attempt-001")
     assert secret not in str(captured.value)
-    assert "<redacted>" in str(captured.value)
-    assert "redact-lines" in fake.commands[0][-1]
+    assert "REST request failed" in str(captured.value)
+    assert fake.commands[0][0] == "REST"
 
 
 def test_slurm_preflight_checks_tools_resources_and_storage(tmp_path):
@@ -702,8 +632,8 @@ def test_sensecore_submit_checks_exact_created_job(tmp_path):
         intent=submission_intent(backend, run),
     )
     assert job_id == resource_name
-    assert any(run["image_id"] in argument for argument in fake.commands[1])
-    assert resource_name in fake.commands[1]
+    assert run["image_id"] in fake.commands[1][-1]
+    assert resource_name == json.loads(fake.commands[1][-1])["name"]
     assert any(
         f"BACKEND_JOB_ID={resource_name}" in argument
         for argument in fake.commands[1]
@@ -751,7 +681,7 @@ def test_sensecore_worker_query_is_sanitized_and_normalized(
     ))
     result = backend.workers({}, sensecore_run())
     assert result["worker_state"] == expected
-    assert "worker-list" in fake.commands[0][-1]
+    assert fake.commands[0][:2] == ("REST", "workers")
 
 
 def test_packaged_oci_source_is_not_staged_or_masked_by_host_files(tmp_path):

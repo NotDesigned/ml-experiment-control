@@ -1,4 +1,4 @@
-"""SenseCore SCO side-effect adapter with immediate output sanitization."""
+"""SenseCore REST scheduler adapter with exact identity and bounded evidence."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ import json
 import os
 import re
 import shlex
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from .services import BackendServices
+from .sensecore_rest import create_document
 from ..contracts import (
     AssetVerification,
     AttemptManifest,
@@ -30,8 +30,6 @@ from ..submission import require_submission_intent, validate_submission_token
 
 SENSECORE_BASE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 SENSECORE_ATTEMPT_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
-_DOCTOR_TOOL_PROBE_TIMEOUT_SECONDS = 5.0
-_DOCTOR_WORKSPACE_PROBE_TIMEOUT_SECONDS = 25.0
 _COLLECTION_LOG_TAIL = 10000
 _PROCESS_EVIDENCE_LOG_TAIL = 200
 _STRUCTURED_EVIDENCE_PREFIX = "EXPERIMENT_EVIDENCE_JSON="
@@ -41,6 +39,8 @@ _STRUCTURED_EVIDENCE_RESERVED_KEYS = frozenset({
     "backend_job_id",
     "evidence_unavailable_reason",
     "live_logs_expired",
+    "live_logs_available",
+    "log_error",
     "process_evidence",
     "worker_evidence_available",
     "worker_phases",
@@ -101,7 +101,7 @@ def scheduler_job_name(base_name: str, attempt_id: str) -> str:
 
 
 def submission_resource_name(base_name: str, attempt_id: str, token: str) -> str:
-    """Bind one durable submission token into a unique SCO resource name."""
+    """Bind one durable submission token into a unique resource name."""
     scheduler_job_name(base_name, attempt_id)  # validate both authored parts
     token = validate_submission_token(token)
     raw = f"{base_name}--{attempt_id}"
@@ -154,67 +154,26 @@ class SenseCoreBackend:
 
     def __init__(self, services: BackendServices):
         self.s = services
+        self._rest = None
+
+    @property
+    def rest(self):
+        if self._rest is None:
+            self._rest = self.s.sensecore_rest()
+        return self._rest
 
     def availability(self) -> PreflightReport:
-        """Check SCO, its sanitizer, and credential-backed API access.
-
-        Command output is captured and deliberately discarded.  In particular,
-        Doctor never renders a workspace table or a SCO authentication error.
-        """
-        sco = self.sco_bin({})
-        tools = (
-            ("sco-cli", [sco, "version"]),
-            ("safe-sco", [self.safe_sco_bin(), "normalize-state", "RUNNING"]),
-            ("bash-cli", ["bash", "--version"]),
-            ("timeout-cli", ["timeout", "--version"]),
-        )
-        checks = []
-        for name, command in tools:
-            try:
-                result = self.s.run_command(
-                    command, check=False,
-                    timeout_seconds=_DOCTOR_TOOL_PROBE_TIMEOUT_SECONDS,
-                )
-            except subprocess.TimeoutExpired:
-                checks.append(PreflightCheck(
-                    name, "tool", "FAIL", f"{name} probe timed out",
-                ))
-                continue
-            checks.append(PreflightCheck(
-                name, "tool", "PASS" if result.returncode == 0 else "FAIL",
-                f"{name} is executable" if result.returncode == 0
-                else f"{name} is unavailable",
-            ))
-        if all(check.status == "PASS" for check in checks):
-            try:
-                access = self.s.run_command([
-                    "timeout", "20s", "env",
-                    "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
-                    "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY",
-                    sco, "ws", "instances", "list",
-                ], check=False,
-                    timeout_seconds=_DOCTOR_WORKSPACE_PROBE_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                checks.append(PreflightCheck(
-                    "workspace-access", "authentication", "FAIL",
-                    "SCO workspace access probe timed out",
-                ))
-            else:
-                checks.append(PreflightCheck(
-                    "workspace-access", "authentication",
-                    "PASS" if access.returncode == 0 else "FAIL",
-                    "SCO credentials permit a workspace query" if access.returncode == 0
-                    else "SCO authentication, components, or API connectivity is unavailable",
-                ))
-        return PreflightReport(self.kind, "doctor", tuple(checks))
-
-    @staticmethod
-    def sco_bin(run: dict[str, Any]) -> str:
-        """Resolve a non-secret CLI override without exposing SCO credentials."""
-        return str(
-            run.get("backend", {}).get("sco_bin")
-            or os.environ.get("EXPERIMENTCTL_SCO_BIN", "sco")
-        )
+        """Use signed, read-only identity and workspace queries; no SCO probe."""
+        try:
+            self.rest.identity()
+            self.rest.resources("compute.workspace.v1.instance")
+        except (RuntimeError, ValueError):
+            check = PreflightCheck("sensecore-rest", "authentication", "FAIL",
+                                   "SenseCore REST credentials, scope or connectivity is unavailable")
+        else:
+            check = PreflightCheck("sensecore-rest", "authentication", "PASS",
+                                   "SenseCore REST identity and resource queries are permitted")
+        return PreflightReport(self.kind, "doctor", (check,))
 
     @staticmethod
     def safe_sco_bin() -> str:
@@ -224,10 +183,11 @@ class SenseCoreBackend:
     @staticmethod
     def create_timeout_seconds() -> int:
         """Bound ambiguous create waits so the durable outbox can reconcile."""
-        raw = os.environ.get("EXPERIMENTCTL_SCO_CREATE_TIMEOUT_SECONDS", "120")
+        raw = os.environ.get("EXPERIMENTCTL_SENSECORE_CREATE_TIMEOUT_SECONDS",
+                             os.environ.get("EXPERIMENTCTL_SCO_CREATE_TIMEOUT_SECONDS", "120"))
         if not raw.isdigit() or not 10 <= int(raw) <= 600:
             raise ValueError(
-                "EXPERIMENTCTL_SCO_CREATE_TIMEOUT_SECONDS must be an integer from 10 to 600"
+                "EXPERIMENTCTL_SENSECORE_CREATE_TIMEOUT_SECONDS must be an integer from 10 to 600"
             )
         return int(raw)
 
@@ -268,36 +228,22 @@ class SenseCoreBackend:
         }
 
     def preflight(self, run: RunSpec, *, scope: PreflightScope) -> PreflightReport:
-        """Check the SCO executable and sanitized workspace access."""
         if scope not in {"stage", "submit", "observe"}:
             raise ValueError(f"unsupported preflight scope: {scope}")
-        sco = self.sco_bin(run)
-        version = self.s.run_command(
-            ["env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
-             "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY",
-             sco, "version"],
-            check=False,
-        )
-        checks = [
-            PreflightCheck(
-                "sco-cli", "tool", "PASS" if version.returncode == 0 else "FAIL",
-                "SCO CLI is executable" if version.returncode == 0 else "SCO CLI is unavailable",
-            )
-        ]
-        if version.returncode == 0:
-            try:
-                self.find(run)
-            except (RuntimeError, ValueError):
-                checks.append(PreflightCheck(
-                    "workspace-access", "authentication", "FAIL",
-                    "sanitized exact-name query failed; refresh SCO login or connectivity",
-                ))
-            else:
-                checks.append(PreflightCheck(
-                    "workspace-access", "authorization", "PASS",
-                    "exact-name query is permitted",
-                ))
-        return PreflightReport(self.kind, scope, tuple(checks))
+        try:
+            self.rest.identity()
+            self.find(run)
+            if scope in {"stage", "submit"}:
+                specs = self.rest.specs(run["backend"])
+                if not any(s["name"] == run["backend"]["worker_spec"] for s in specs):
+                    raise ValueError("requested worker spec is unavailable")
+        except (RuntimeError, ValueError):
+            check = PreflightCheck("sensecore-rest", "authorization", "FAIL",
+                                   "SenseCore REST identity, exact job query or requested resources are unavailable")
+        else:
+            check = PreflightCheck("sensecore-rest", "authorization", "PASS",
+                                   "REST exact-name query and requested resources are permitted")
+        return PreflightReport(self.kind, scope, (check,))
 
     def submission_request(self, campaign, run, attempt_id) -> SubmissionRequest:
         backend = run["backend"]
@@ -342,98 +288,37 @@ class SenseCoreBackend:
             "verified_on": None,
         }
 
-    def safe_command(self, arguments: list[str], mode: str) -> list[str]:
-        sco = shlex.join(["env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
-                          "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY", *arguments])
-        sanitizer = shlex.join([self.safe_sco_bin(), mode])
-        redactor = shlex.join([self.safe_sco_bin(), "redact-lines"])
-        return [
-            "bash", "-o", "pipefail", "-c",
-            f"{sco} 2> >({redactor} >&2) | {sanitizer}",
-        ]
-
-    def describe(
-        self, run: dict[str, Any], resource_name: str | None = None
-    ) -> dict[str, Any]:
+    def describe(self, run: dict[str, Any], resource_name: str | None = None) -> dict[str, Any]:
         backend = run["backend"]
-        exact_name = str(resource_name or backend["job_name"])
-        result = self.s.run_command(
-            self.safe_command([self.sco_bin(run), "acp", "jobs", "describe", exact_name,
-                               "--workspace-name", backend["workspace"], "-o", "json"], "job-summary"),
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                self._redact_error(result.stderr)
-                or "sanitized SenseCore describe failed"
-            )
-        payload = json.loads(result.stdout)
-        if not isinstance(payload, dict):
-            raise ValueError("SenseCore describe sanitizer returned a non-object")
-        return payload
+        raw = self.rest.describe(backend, str(resource_name or backend["job_name"]))
+        role = (raw.get("roles") or [{}])[0]
+        spec = (role.get("resource_spec") or [{}])[0]
+        return {"name": raw["name"], "state": raw.get("state"),
+                "pool": raw.get("resource_pool", {}).get("name"), "spec": spec.get("name")}
 
-    def find(
-        self, run: dict[str, Any], resource_name: str | None = None
-    ) -> list[dict[str, Any]]:
+    def find(self, run: dict[str, Any], resource_name: str | None = None) -> list[dict[str, Any]]:
         backend = run["backend"]
-        exact_name = str(resource_name or backend["job_name"])
-        result = self.s.run_command(
-            self.safe_command([self.sco_bin(run), "acp", "jobs", "list", "--workspace-name", backend["workspace"],
-                               "--name", exact_name, "--page-size", "5", "-o", "json"], "job-list"),
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                self._redact_error(result.stderr)
-                or "sanitized SenseCore list failed"
-            )
-        payload = json.loads(result.stdout)
-        if not isinstance(payload, list):
-            raise ValueError("SenseCore list sanitizer returned a non-list")
-        return [item for item in payload if item.get("name") == exact_name]
+        rows = self.rest.find(backend, str(resource_name or backend["job_name"]))
+        return [{"name": row["name"], "state": row.get("state")} for row in rows]
 
     def stage(self, campaign, run, source_id, source_bundle) -> bool:
         # SenseCore consumes an immutable registry image; no controller-side
         # source upload is required for this backend.
         return True
 
-    def _create_command(
-        self, manifest: dict[str, Any], *, submission_token: str | None = None,
-    ) -> list[str]:
+    def create_document(self, manifest: dict[str, Any], *, submission_token: str | None = None) -> dict[str, Any]:
         backend = manifest["backend"]
         resource_name = (
-            submission_resource_name(
-                str(backend["job_name"]), str(manifest["attempt_id"]),
-                submission_token,
-            )
-            if submission_token else scheduler_job_name(
-                str(backend["job_name"]), str(manifest["attempt_id"])
-            )
+            submission_resource_name(str(backend["job_name"]), str(manifest["attempt_id"]), submission_token)
+            if submission_token else scheduler_job_name(str(backend["job_name"]), str(manifest["attempt_id"]))
         )
-        command = [
-            "env", f"BACKEND_JOB_ID={resource_name}",
-            *[str(value) for value in (self.s.dispatch_command(manifest) if submission_token else manifest["command"])],
-        ]
-        return [
-            "timeout", f"{self.create_timeout_seconds()}s",
-            "env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
-            "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY",
-            self.sco_bin(manifest), "acp", "jobs", "create",
-            "--workspace-name", backend["workspace"],
-            "--aec2-name", backend["aec2"], "--name", resource_name,
-            "--job-name", backend["display_name"],
-            "--container-image-url", digest_pinned_image(
-                str(backend["image"]), str(manifest["image_id"])
-            ),
-            "--training-framework", "pytorch", "--worker-spec", backend["worker_spec"],
-            "--worker-nodes", str(backend.get("worker_nodes", 1)),
-            "--priority", str(backend.get("priority", "NORMAL")),
-            "--quota-type", backend["quota_type"], "--storage-mount", backend["storage_mount"],
-            "--wait", "--command", shlex.join(command),
-        ]
+        command = ["env", f"BACKEND_JOB_ID={resource_name}",
+                   *[str(v) for v in (self.s.dispatch_command(manifest) if submission_token else manifest["command"])]]
+        return create_document(backend, resource_name, digest_pinned_image(str(backend["image"]), str(manifest["image_id"])), shlex.join(command))
 
     def render(self, manifest: AttemptManifest) -> str:
-        return shlex.join(self._create_command(manifest))
+        return json.dumps({"method": "POST", "workspace": manifest["backend"]["workspace"],
+                           "training_job": self.create_document(manifest)}, sort_keys=True)
 
     def _redact_error(self, text: str) -> str:
         result = self.s.run_command(
@@ -460,12 +345,10 @@ class SenseCoreBackend:
         resource_name = submission_resource_name(
             str(backend["job_name"]), str(manifest["attempt_id"]), token
         )
-        create = self._create_command(manifest, submission_token=token)
+        document = self.create_document(manifest, submission_token=token)
         if self.find(run, resource_name):
             raise FileExistsError(f"SenseCore job already exists: {resource_name}")
-        result = self.s.run_command(create, check=False)
-        if result.returncode != 0:
-            raise RuntimeError(self._redact_error(result.stderr) or "SenseCore create failed")
+        self.rest.create(backend, document, timeout=self.create_timeout_seconds())
         summary = self.describe(run, resource_name)
         if summary.get("name") != resource_name:
             raise RuntimeError("SenseCore accepted create but exact job was not observable")
@@ -525,14 +408,7 @@ class SenseCoreBackend:
         })
         backend = run["backend"]
         resource_name = str(current["backend_job_id"])
-        result = self.s.run_command(
-            ["env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
-             "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY",
-             self.sco_bin(run), "acp", "jobs", "stop", resource_name, "--workspace-name", backend["workspace"]],
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(self._redact_error(result.stderr) or "SenseCore stop failed")
+        self.rest.stop(backend, resource_name)
         return self.status(campaign, run)
 
     def collect(self, campaign, run) -> CollectionResult:
@@ -557,10 +433,12 @@ class SenseCoreBackend:
         result = {"run_id": run["run_id"], "backend": "sensecore", "model_observed": bool(metrics),
                   "latest_metric": metrics[-1] if metrics else None, "metric_log_lines": metric_lines[-20:],
                   "live_logs_expired": snapshot["expired"],
+                  "live_logs_available": snapshot.get("available", True),
+                  "log_error": snapshot.get("error"),
                   "process_evidence": {
-                      "observed": bool(process_lines) and not snapshot["expired"],
+                      "observed": bool(process_lines) and not snapshot["expired"] and snapshot.get("available", True),
                       "sources": {"combined": "sensecore_stream_logs"},
-                      # SCO exposes one sanitized combined stream rather than
+                      # REST exposes one sanitized combined stream rather than
                       # distinct process stdout/stderr channels.
                       "stdout_tail": process_lines,
                       "stderr_tail": [],
@@ -576,6 +454,8 @@ class SenseCoreBackend:
             }
         if snapshot["expired"]:
             result["evidence_unavailable_reason"] = "live_logs_expired"
+        elif not snapshot.get("available", True):
+            result["evidence_unavailable_reason"] = "live_logs_unavailable"
         try:
             worker = self.workers(campaign, run)
         except (RuntimeError, ValueError):
@@ -595,21 +475,7 @@ class SenseCoreBackend:
         backend = run["backend"]
         record = self.s.backend_record(campaign, run)
         resource_name = str(record["backend_job_id"])
-        result = self.s.run_command(
-            self.safe_command([
-                self.sco_bin(run), "acp", "jobs", "get-workers", resource_name,
-                "--workspace-name", backend["workspace"],
-            ], "worker-list"),
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                self._redact_error(result.stderr)
-                or "sanitized SenseCore worker query failed"
-            )
-        payload = json.loads(result.stdout)
-        if not isinstance(payload, list):
-            raise ValueError("SenseCore worker sanitizer returned a non-list")
+        payload = self.rest.workers(backend, resource_name)
         phases = [str(item.get("phase", "")) for item in payload if isinstance(item, dict)]
         normalized = {phase.casefold() for phase in phases}
         if normalized & {"running", "ready"}:
@@ -634,31 +500,12 @@ class SenseCoreBackend:
         backend = run["backend"]
         record = self.s.backend_record(campaign, run)
         resource_name = str(record["backend_job_id"])
-        result = self.s.run_command(
-            ["timeout", "20s", "env", "-u", "http_proxy", "-u", "https_proxy", "-u", "all_proxy",
-             "-u", "HTTP_PROXY", "-u", "HTTPS_PROXY", "-u", "ALL_PROXY", self.sco_bin(run), "acp", "jobs",
-             "stream-logs", resource_name, "--workspace-name", backend["workspace"]],
-            check=False,
-        )
-        redacted = self._redact_error(result.stdout + "\n" + result.stderr)
-        lines = redacted.splitlines()[-tail:]
-        # GNU timeout returns 124 for a healthy long-lived stream.  Do not treat
-        # that expected polling boundary as an expired log token, and do not use
-        # a bare ``403`` substring: progress such as ``403/19017`` is ordinary
-        # model output.  SenseCore's actual expiry diagnostic contains an expiry
-        # or offline-log phrase (and exits before the timeout).
-        diagnostic = redacted.lower()
-        expired = result.returncode not in {0, 124} and any(
-            token in diagnostic for token in (
-                "logs have expired",
-                "log has expired",
-                "log token expired",
-                "offline log",
-                "403 forbidden",
-            )
-        )
+        result = self.rest.logs(backend, resource_name, tail)
+        redacted = self._redact_error(result["text"])
         return {
             "run_id": run["run_id"], "backend": "sensecore",
             "backend_job_id": resource_name, "tail": tail,
-            "lines": lines, "expired": expired, "stream_exit_code": result.returncode,
+            "lines": redacted.splitlines()[-tail:], "expired": result["expired"],
+            "stream_exit_code": result["exit_code"],
+            "available": result.get("available", True), "error": result.get("error"),
         }
