@@ -31,6 +31,11 @@ def main():
                        capture_output=True, text=True, check=True)
         assert json.loads((root / "outputs/summary.json").read_text())["run_id"] == "trial"
         assert len((root / "outputs/metrics.jsonl").read_text().splitlines()) == 3
+        from ml_exp_client import MetricWriter
+        MetricWriter(root / "outputs").log("validation_loss", 0.5, unit="nats/token", step=3)
+        metrics = [json.loads(line) for line in (root / "outputs/metrics.jsonl").read_text().splitlines()]
+        assert len(metrics) == 4 and metrics[-1]["name"] == "validation_loss"
+        assert all(item.get("unit") for item in metrics)
     print("Standalone client wheel: CLI/module/template verified outside checkout; no runtime dependencies")
 
 

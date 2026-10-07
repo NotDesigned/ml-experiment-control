@@ -65,6 +65,12 @@ Full recovery checkpoints stay on datapool/NAS; weights/data/raw logs are not
 copied to W&B by this integration. Private commands, SSH configuration, transfer
 credentials, signed URLs and object-store keys are excluded.
 
+Enabling W&B chooses publication, not automatic metric extraction. The Run
+schema declares names/units; experiment code must actually emit their values.
+Use the [MetricWriter](metrics.md#record-and-query) included in the client starter
+to append and flush each observation directly in OUTPUT_DIR. Do not replace its
+history with a final-only file, or defer copying from STATE_DIR until exit.
+
 For complete live metric history, rebuild a Dockerfile Runtime with
 `experiment-records.v1` and append newline-terminated objects to
 `OUTPUT_DIR/metrics.jsonl`. The worker reads bounded batches every five seconds

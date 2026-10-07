@@ -3,15 +3,20 @@ import argparse
 import json
 import os
 from pathlib import Path
+import time
+
+from ml_exp_metrics import MetricWriter
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--steps", type=int, default=3)
+parser.add_argument("--step-delay", type=float, default=0, help="seconds between smoke steps")
 args = parser.parse_args()
 output = Path(os.environ["OUTPUT_DIR"])
 output.mkdir(parents=True, exist_ok=True)
-with (output / "metrics.jsonl").open("w") as metrics:
-    for step in range(1, args.steps + 1):
-        metrics.write(json.dumps({"step": step, "loss": 1 / step}) + "\n")
+metrics = MetricWriter(output)
+for step in range(1, args.steps + 1):
+    metrics.log("loss", 1 / step, unit="dimensionless", step=step)
+    time.sleep(max(0, args.step_delay))
 summary = {key.lower(): os.environ[key] for key in
            ("PROJECT_NAME", "RUN_ID", "ATTEMPT_ID", "SOURCE_ID")}
 summary["steps"] = args.steps

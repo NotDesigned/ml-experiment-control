@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tarfile
 import io
+from pathlib import Path
 
 from ml_exp_client import source_archive, __version__
 from ml_exp_client.cli import main
@@ -39,8 +40,11 @@ def test_offline_init_creates_runnable_source_and_preserves_existing_directory(t
     assert json.loads(executed.stdout)["run_id"] == "trial"
     metrics = [json.loads(line) for line in (output / "metrics.jsonl").read_text().splitlines()]
     assert [item["step"] for item in metrics] == [1, 2, 3, 4]
+    assert all(item["name"] == "loss" and item["unit"] == "dimensionless" for item in metrics)
+    import ml_exp_client.metrics
+    assert (source / "ml_exp_metrics.py").read_bytes() == Path(ml_exp_client.metrics.__file__).read_bytes()
     with tarfile.open(fileobj=io.BytesIO(source_archive(source)), mode="r:gz") as archive:
-        assert archive.getnames() == ["Dockerfile", "train.py"]
+        assert archive.getnames() == ["Dockerfile", "ml_exp_metrics.py", "train.py"]
         assert archive.extractfile("train.py").read() == program
 
 
