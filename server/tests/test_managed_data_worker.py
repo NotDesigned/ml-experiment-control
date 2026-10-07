@@ -293,6 +293,7 @@ def test_delivery_failure_prevents_training_and_worker_entrypoints(tmp_path, mon
     monkeypatch.setitem(sys.modules, "data_preparation", __import__("ml_exp_server.data_preparation", fromlist=["prepare"]))
     monkeypatch.setitem(sys.modules, "persistent_state", __import__("ml_exp_server.persistent_state", fromlist=["publish"]))
     monkeypatch.setitem(sys.modules, "worker_records", __import__("ml_exp_server.worker_records", fromlist=["WorkerRecords"]))
+    monkeypatch.setitem(sys.modules, "result_worker", __import__("ml_exp_server.result_worker", fromlist=["training_result"]))
     monkeypatch.setitem(sys.modules, "worker_http", __import__("ml_exp_server.worker_http", fromlist=["error_code"]))
     runpy.run_path(worker.__file__, run_name="standalone-import")
     parsed = ast.parse(Path(worker.__file__).read_text())

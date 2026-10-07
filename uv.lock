@@ -574,7 +574,7 @@ wheels = [
 
 [[package]]
 name = "ml-experiment-client"
-version = "0.1.10"
+version = "0.1.11"
 source = { editable = "client" }
 
 [package.dev-dependencies]
@@ -589,7 +589,7 @@ dev = [{ name = "pytest", specifier = ">=8.0" }]
 
 [[package]]
 name = "ml-experiment-control"
-version = "0.1.4"
+version = "0.1.5"
 source = { editable = "." }
 dependencies = [
     { name = "pyyaml" },
@@ -614,7 +614,7 @@ dev = [
 
 [[package]]
 name = "ml-experiment-server"
-version = "0.3.16"
+version = "0.3.17"
 source = { editable = "server" }
 dependencies = [
     { name = "boto3" },

@@ -71,25 +71,26 @@ class ArtifactService:
     def __init__(self, runtime):
         self.runtime = runtime
 
-    def roots(self, project: str, run_id: str, attempt_id: str) -> list[tuple[str, Path]]:
+    def roots(self, project: str, run_id: str, attempt_id: str, *, restore=True) -> list[tuple[str, Path]]:
         row = self.runtime.index.get_run(project, run_id)
         if row is None or attempt_id not in {a.attempt_id for a in row.attempts}:
             raise ApplicationError("unknown Run/Attempt", status_code=404, code="UNKNOWN_ATTEMPT")
         config = self.runtime.config.container_execution.artifact_store_file
-        if config:
+        if config and restore:
             from .artifact_store import ArtifactStore
             ArtifactStore(Path(config), self.runtime.config.project_registry_root_path()).restore_cache(project, run_id, attempt_id)
         attempt = Path(row.run_dir) / "attempts" / attempt_id
         # Every source is exact-Attempt evidence. Never fall back to another Attempt.
         return [("outputs", attempt / "uploaded_outputs"),
                 ("outputs", attempt / "outputs"),
+                ("outputs", attempt / "recovered_outputs"),
                 ("outputs", attempt / "collected_run" / "attempts" / attempt_id / "outputs"),
                 ("collected", attempt / "collected_run")]
 
-    def list(self, project: str, run_id: str, attempt_id: str) -> dict:
+    def list(self, project: str, run_id: str, attempt_id: str, *, checksums=False) -> dict:
         files: dict[str, dict] = {}
         truncated = False
-        for namespace, root in self.roots(project, run_id, attempt_id):
+        for namespace, root in self.roots(project, run_id, attempt_id, restore=False):
             try:
                 descriptor = open_directory(root)
             except (OSError, ValueError):
@@ -109,6 +110,20 @@ class ArtifactService:
                         if path not in files:
                             files[path] = {"path": path, "bytes": metadata.st_size,
                                            "modified_ns": metadata.st_mtime_ns}
+                            if checksums:
+                                opened = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+                                with os.fdopen(opened, "rb") as body:
+                                    before = os.fstat(body.fileno())
+                                    if not stat.S_ISREG(before.st_mode):
+                                        raise ValueError("artifact is not a regular file")
+                                    digest = hashlib.sha256()
+                                    for chunk in iter(lambda: body.read(1024 * 1024), b""):
+                                        digest.update(chunk)
+                                    checksum = digest.hexdigest()
+                                    after = os.fstat(body.fileno())
+                                if (metadata.st_ino, metadata.st_size, metadata.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+                                    raise ValueError("artifact changed during verification")
+                                files[path]["sha256"] = checksum
                         if len(files) >= 10000:
                             truncated = True
                             break
@@ -118,9 +133,27 @@ class ArtifactService:
                 os.close(descriptor)
             if truncated:
                 break
+        config = self.runtime.config.container_execution.artifact_store_file
+        result = None
+        if config:
+            from .artifact_store import ArtifactStore
+            store = ArtifactStore(Path(config), self.runtime.config.project_registry_root_path())
+            with store.record(project, run_id, attempt_id) as (_, value):
+                if value:
+                    receipt = value.get("receipt")
+                    result = value.get("results_ready")
+                    if receipt:
+                        for item in receipt["files"]:
+                            if "outputs/" + item["path"] not in files and len(files) >= 10000:
+                                truncated = True
+                                break
+                            files.setdefault("outputs/" + item["path"], {**item, "path": "outputs/" + item["path"]})
         return {"project": project, "run_id": run_id, "attempt_id": attempt_id,
                 "files": [files[key] for key in sorted(files)], "truncated": truncated,
-                "available": bool(files), "collection_required": not bool(files)}
+                "available": bool(files), "collection_required": not bool(files),
+                "training": {"status": "UNKNOWN" if result is None else "COMPLETED" if result["exit_code"] == 0 else "FAILED",
+                             "exit_code": None if result is None else result["exit_code"],
+                             "evidence": "worker-result-manifest" if result is not None else None}}
 
     def open(self, project: str, run_id: str, attempt_id: str, relative: str) -> OpenArtifact:
         try:

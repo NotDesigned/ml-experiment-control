@@ -44,6 +44,8 @@ from ..experiment_preparation import ExperimentPreparationService
 from .preparation_routes import router as preparation_router
 from .tracking_routes import RECORD_PATH, router as tracking_router
 from ..tracking_service import TrackingPublisher
+from ..result_collection import ResultCollectionService
+from .result_routes import RESULT_PATH, router as result_router
 
 
 def _poll_loop(app: FastAPI, collector: Collector) -> None:
@@ -51,6 +53,10 @@ def _poll_loop(app: FastAPI, collector: Collector) -> None:
         app.state.index.set_meta("collector_cycle_started_at", str(time.time()))
         try:
             collector.run_cycle()
+            if app.state.runtime.config.container_execution.artifact_store_file:
+                service = ResultCollectionService(app.state.runtime)
+                service.stopping = app.state._stop.is_set
+                service.automatic(app.state.submit_job)
             app.state.index.set_meta("collector_last_error", "")
         except Exception as exc:  # keep the loop alive; surface via meta
             app.state.index.set_meta("collector_last_error", str(exc)[:500])
@@ -193,6 +199,8 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             app.state.submit_action = lambda pending: submit_job(app.state.application.finish_action_execution, pending)
             app.state.recovered_runtime_builds = recover_interrupted_builds(ContainerExecutionService(runtime))
             app.state.recovered_data_deliveries = recover_data_deliveries(runtime)
+            app.state.recovered_result_collections = (ResultCollectionService(runtime).recover_interrupted()
+                                                      if runtime.config.container_execution.artifact_store_file else 0)
             runtime.action_service.recover_interrupted_executions()
             # Complete any previously authorized project-file transaction
             # before indexing those files into the server read model.
@@ -288,6 +296,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     @app.middleware("http")
     async def enforce_http_boundary(request, call_next):
         worker_transfer = request.method == "PUT" and bool(TRANSFER_PATH.fullmatch(request.url.path))
+        worker_transfer = worker_transfer or (request.method == "PUT" and bool(RESULT_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method == "POST" and bool(RECORD_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method == "GET" and bool(LAUNCH_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method == "PUT" and bool(COPY_TRANSFER.fullmatch(request.url.path)))
@@ -377,6 +386,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.include_router(data_delivery_router)
     app.include_router(preparation_router)
     app.include_router(tracking_router)
+    app.include_router(result_router)
 
     @app.get(VERSIONED_OPENAPI_PATH, include_in_schema=False)
     async def versioned_openapi():

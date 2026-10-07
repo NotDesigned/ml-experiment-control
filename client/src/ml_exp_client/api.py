@@ -213,7 +213,7 @@ def _download_object(client, project, run, attempt, out, ticket):
 
 def _download_proxy(client: Client, project: str, run: str, attempt: str, out: Path):
     endpoint = f"/api/runs/{segment(project)}/{segment(run)}/attempts/{segment(attempt)}"
-    listing = client.call(endpoint + "/files")
+    listing = client.call(endpoint + "/files?checksums=true")
     if not listing["files"] or listing.get("truncated"):
         raise ClientError("files are unavailable or listing is truncated; inspect this exact Attempt")
     out.mkdir(parents=True, exist_ok=False)
@@ -231,8 +231,23 @@ def _download_proxy(client: Client, project: str, run: str, attempt: str, out: P
                 digest, size = copy_stream(response, output)
         if size != item["bytes"]:
             raise ClientError("downloaded file size differs from listing")
+        if item.get("sha256", digest) != digest:
+            raise ClientError("downloaded file SHA256 differs from listing")
         downloaded[path.as_posix()] = {"sha256": digest, "bytes": size}
-    with client.open(endpoint + "/artifacts/archive") as response:
+    try:
+        response = client.open(endpoint + "/artifacts/archive")
+    except ClientError as error:
+        if error.status != 404:
+            raise
+        expected = {"outputs/" + item["path"].removeprefix("outputs/"): item for item in listing["files"] if item["path"].startswith("outputs/")}
+        if not downloaded or set(expected) != set(downloaded) or any(expected[name].get("sha256") != value["sha256"] for name, value in downloaded.items()):
+            raise ClientError("archive is unavailable and complete file SHA256 evidence is missing") from error
+        report = {"project": project, "run_id": run, "attempt_id": attempt,
+                  "archive_sha256": None, "archive_bytes": None, "transport": "http-files",
+                  "files": downloaded}
+        save(out / "verification.json", report)
+        return report
+    with response:
         expected = response.headers.get("ETag", "").strip('"')
         with (out / "artifacts.tar").open("xb") as output:
             digest, size = copy_stream(response, output)
