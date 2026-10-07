@@ -48,12 +48,12 @@ def test_default_entity_is_optional_and_credentials_are_never_public(tmp_path):
     store.configure(WandbSettings(enabled=False, entity="team", project="default"), lambda key: pytest.fail("explicit entity must not be looked up"))
     assert store.route(None, "study")["reason"] == "DISABLED_BY_SERVER"
     assert store.settings()["api_key"] == "private-test-key"
-    store.configure(WandbSettings(), lambda key: None)
+    store.configure(WandbSettings(entity=None, enabled=True), lambda key: None)
     assert store.route(None, "study")["reason"] == "DEFAULT_ENTITY_UNAVAILABLE"
-    store.configure(WandbSettings(), lambda key: "bad/identity")
+    store.configure(WandbSettings(entity=None), lambda key: "bad/identity")
     assert store.public_settings()["error"] == "DEFAULT_ENTITY_UNAVAILABLE"
     def failing(key): raise RuntimeError("private-test-key")
-    store.configure(WandbSettings(), failing)
+    store.configure(WandbSettings(entity=None), failing)
     assert "private-test-key" not in encoded(store.public_settings())
     store.configure(WandbSettings(clear_credentials=True), lambda key: pytest.fail("no key"))
     assert store.settings()["api_key"] is None

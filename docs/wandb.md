@@ -20,8 +20,10 @@ ml-exp wandb
 Entity is optional. The server queries the key's W&B default entity and exposes
 `resolved_entity`. To choose a team, add `--entity TEAM`; to set a default project,
 add `--project PROJECT`. Configuration responses never return the API key.
-`ml-exp wandb --disable` pauses publication; `--clear-credentials` deletes the
-stored key. Other configuration calls retain the key unless explicitly replaced.
+`ml-exp wandb --disable` pauses publication; `--enable` resumes it.
+`--clear-credentials` deletes the stored key. Configuration updates retain omitted
+defaults/key; API `entity:null` requests default-entity resolution again, and
+`project:null` restores the ML-Expd project-name fallback.
 The settings API is `GET/PUT /api/tracking/wandb`; writes use the normal API
 bearer credential. Its `api_key` field is write-only.
 

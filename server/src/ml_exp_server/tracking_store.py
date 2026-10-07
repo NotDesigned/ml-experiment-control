@@ -77,9 +77,12 @@ class TrackingStore:
         previous = self.settings()
         key = (None if request.clear_credentials else request.api_key.get_secret_value()
                if request.api_key is not None else previous.get("api_key"))
-        value = {"enabled": request.enabled, "entity": request.entity, "project": request.project,
-                 "api_key": key, "resolved_entity": request.entity, "error": None}
-        if key and request.entity is None:
+        entity = request.entity if "entity" in request.model_fields_set else previous.get("entity")
+        project = request.project if "project" in request.model_fields_set else previous.get("project")
+        enabled = request.enabled if "enabled" in request.model_fields_set else previous.get("enabled", True)
+        value = {"enabled": enabled, "entity": entity, "project": project,
+                 "api_key": key, "resolved_entity": entity, "error": None}
+        if key and entity is None:
             try:
                 entity = lookup(key)
                 # Validate remote identity before embedding it in paths/URLs.

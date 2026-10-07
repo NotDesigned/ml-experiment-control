@@ -67,6 +67,7 @@ def parser():
     wb.add_argument("--entity")
     wb.add_argument("--project", help="optional default W&B project; otherwise use the ML-Expd project name")
     wb.add_argument("--disable", action="store_true")
+    wb.add_argument("--enable", action="store_true")
     wb.add_argument("--clear-credentials", action="store_true")
     upload = commands.add_parser("asset-upload", help="upload a data directory independently from source")
     upload.add_argument("--project", required=True)
@@ -151,9 +152,17 @@ def main(argv=None):
             if args.command == "tracking":
                 endpoint = f"/api/runs/{segment(args.project)}/{segment(args.run)}/tracking"
                 result = client.call(endpoint + "/retry", data={}) if args.retry else client.call(endpoint)
-            elif args.key_file or args.entity or args.project or args.disable or args.clear_credentials:
-                definition = {"enabled": not args.disable, "entity": args.entity, "project": args.project,
-                              "clear_credentials": args.clear_credentials}
+            elif args.key_file or args.entity or args.project or args.disable or args.enable or args.clear_credentials:
+                if args.enable and args.disable:
+                    raise ClientError("choose --enable or --disable")
+                definition = {}
+                if args.enable or args.disable:
+                    definition["enabled"] = args.enable
+                for key in ("entity", "project"):
+                    if getattr(args, key) is not None:
+                        definition[key] = getattr(args, key)
+                if args.clear_credentials:
+                    definition["clear_credentials"] = True
                 if args.key_file:
                     definition["api_key"] = args.key_file.read_text().strip()
                 result = client.call("/api/tracking/wandb", data=definition, method="PUT")
