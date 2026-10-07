@@ -6,9 +6,10 @@ from pathlib import Path
 import shutil
 
 WORKER_CONTRACT = "managed-worker.v1"
-CAPABILITIES = ["data-assets.v1", "checkpoint-upload.v1", "data-preparation.v1", "persistent-checkpoints.v1", "data-cache-required.v1"]
+CAPABILITIES = ["data-assets.v1", "checkpoint-upload.v1", "data-preparation.v1", "persistent-checkpoints.v1", "data-cache-required.v1", "launcher-manifest.v1"]
 WORKERS = (("managed_worker.py", "worker.py"), ("container_worker.py", "legacy_worker.py"),
-           ("data_preparation.py", "data_preparation.py"), ("persistent_state.py", "persistent_state.py"))
+           ("data_preparation.py", "data_preparation.py"), ("persistent_state.py", "persistent_state.py"),
+           ("worker_launcher.py", "launch.py"))
 
 
 def worker_digest() -> str:
@@ -34,6 +35,7 @@ def worker_dockerfile(source_id: str, prefix: str = "") -> str:
             f"COPY {prefix}legacy_worker.py /usr/local/lib/ml-expd/legacy_worker.py\n"
             f"COPY {prefix}data_preparation.py /usr/local/lib/ml-expd/data_preparation.py\n"
             f"COPY {prefix}persistent_state.py /usr/local/lib/ml-expd/persistent_state.py\n"
+            f"COPY --chmod=0555 {prefix}launch.py /usr/local/bin/ml-exp-worker\n"
             "ENV ML_EXPD_MULTIPART_UPLOAD=1\n"
             f"LABEL org.ml-expd.source={source_id}\n"
             "ENTRYPOINT []\nCMD [\"/bin/true\"]\n")

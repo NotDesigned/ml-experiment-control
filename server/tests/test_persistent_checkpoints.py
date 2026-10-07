@@ -59,7 +59,8 @@ def test_registration_frozen_restore_and_storage_scope(client, stored, tmp_path,
     ctl = controller(client, bundle, executor=executor, checkpoint_persistence={}, metrics_schema={"definitions": {"loss": {"unit": "nats/token"}}})
     manifest = ctl.store.load_manifest()
     assert manifest["resolved_config"]["checkpoint_persistence"]["storage_scope"]
-    assert any(v.startswith("STATE_DIR=") for v in ctl.command("attempt-001"))
+    assert ctl.command("attempt-001") == ["ml-exp-worker"]
+    assert ctl.environment("attempt-001")["STATE_DIR"].endswith("/attempts/attempt-001/state")
     value = ready(tmp_path / "state")
     endpoint = "/api/checkpoint-transfers/demo/trial/attempt-001"
     assert client.put(endpoint, json=value, headers={"Authorization": "Bearer wrong"}).status_code == 401
@@ -82,7 +83,7 @@ def test_registration_frozen_restore_and_storage_scope(client, stored, tmp_path,
     assert restored.store.load_attempt("attempt-001")["resume_from"] == checkpoint["checkpoint_id"]
     assert restored.store.load_manifest()["evaluation"]["protocol"]["resume_from"] == checkpoint
     assert restored.store.load_manifest()["assets"][-1]["kind"] == "persistent_checkpoint"
-    assert "RESUME_DIR=/inputs/resume" in restored.command("attempt-001")
+    assert restored.environment("attempt-001")["RESUME_DIR"] == "/inputs/resume"
     request = {"run_id": "wrong-store", "runtime_id": bundle["runtime_id"], "executor": "gpu" if executor == "cloud" else "cloud", "resume_from": ref}
     response = client.post("/api/projects/demo/runs", json=request)
     assert response.status_code == 409 and "different backend storage" in response.text

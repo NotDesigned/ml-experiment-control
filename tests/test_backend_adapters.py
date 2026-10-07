@@ -616,7 +616,7 @@ def test_sensecore_submit_checks_exact_created_job(tmp_path):
     )
     fake = QueueRunner([
         CommandResult(("safe-list",), 0, "[]\n"),
-        CommandResult(("sco-create",), 0, ""),
+        CommandResult(("rest-create",), 0, ""),
         CommandResult(("safe-describe",), 0, json.dumps({
             "name": resource_name,
             "display_name": "render test",
@@ -734,3 +734,32 @@ def test_slurm_bootstrap_creates_apptainer_cache_and_sandbox_directories(tmp_pat
     script.write_text(render_job(manifest))
     subprocess.run(['bash',str(script)],check=True,env={**os.environ,'SLURM_JOB_ID':'1234','PATH':str(binpath)+':/usr/bin:/bin'})
     assert (root/'apptainer/tmp').is_dir() and (root/'apptainer/cache').is_dir()
+
+
+def test_offline_metrics_are_retained_without_fresh_liveness(tmp_path):
+    from unittest.mock import Mock
+    backend = SenseCoreBackend(services(tmp_path, QueueRunner([
+        CommandResult(('redact',), 0, 'Step 7 loss 1.25\n')
+    ])))
+    backend._rest = Mock()
+    backend._rest.logs.return_value = {
+        'text': 'Step 7 loss 1.25\n', 'expired': False, 'exit_code': 0, 'available': True,
+        'source': 'offline', 'historical': True, 'last_log_at': '2026-01-02T00:00:00Z', 'truncated': True}
+    backend._rest.workers.return_value = [{'phase': 'Deleted'}]
+    result = backend.collect({}, sensecore_run())
+    assert result['log_source'] == 'sensecore_offline_logs'
+    assert result['last_log_at'] == '2026-01-02T00:00:00Z'
+    assert not result['process_evidence']['observed'] and not result['live_logs_available']
+    assert result['process_evidence']['stdout_tail'] == ['Step 7 loss 1.25']
+    assert result['worker_state'] == 'RELEASED'
+
+
+def test_provider_suspended_is_stopped_without_proven_preemption(tmp_path):
+    from unittest.mock import Mock
+    backend = SenseCoreBackend(services(tmp_path, QueueRunner([])))
+    backend._rest = Mock()
+    backend._rest.describe.return_value = {'name': '1234', 'state': 'SUSPENDED'}
+    status = backend.status({}, sensecore_run())
+    assert status['state'] == 'CANCELLED' and status['failure_class'] is None
+    assert status['reason'] == 'provider_stopped_cause_unknown'
+    assert status['raw_state'] == 'SUSPENDED'

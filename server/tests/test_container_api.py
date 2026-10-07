@@ -50,7 +50,7 @@ def client(tmp_path, monkeypatch):
         "gpu": {"storage_root": "/data/lab", "backend": {"kind": "slurm", "ssh_alias": "cluster",
                  "partition": "gpu", "account": "lab", "qos": "normal", "gres": "gpu:l40s:1", "mount_root": "/data"}},
         "cloud": {"storage_root": "/data/lab", "backend": {"kind": "sensecore", "workspace": "lab",
-                   "aec2": "compute", "worker_spec": "one-gpu", "quota_type": "spot", "storage_mount": "volume:/data"}},
+                   "aec2": "compute", "worker_spec": "one-gpu", "quota_type": "spot", "pool_selection": "fixed", "storage_mount": "volume:/data"}},
     }}))
     config = ServerConfig(index_db=str(tmp_path / "index.sqlite"),
                           action_root=str(tmp_path / "actions"), run_root=str(tmp_path / "runs"),

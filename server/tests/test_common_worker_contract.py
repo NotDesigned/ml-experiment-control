@@ -27,6 +27,8 @@ def test_all_recipes_share_worker_receipt_data_mounts_and_checkpoint_support(cli
         package = Path(__file__).parents[1] / "src/ml_exp_server"
         assert (internal / "worker.py").read_bytes() == (package / "managed_worker.py").read_bytes()
         assert (internal / "legacy_worker.py").read_bytes() == (package / "container_worker.py").read_bytes()
+        assert (internal / "launch.py").read_bytes() == (package / "worker_launcher.py").read_bytes()
+        assert "COPY --chmod=0555" in (context / "Dockerfile").read_text()
         assert (internal / "worker.py").stat().st_mode & 0o777 == 0o444
         assert (internal / "legacy_worker.py").stat().st_mode & 0o777 == 0o444
         packaged.append((context / "Dockerfile").read_text())
@@ -55,11 +57,18 @@ def test_all_recipes_share_worker_receipt_data_mounts_and_checkpoint_support(cli
         ctl = Controller(campaign, executor, "attempt-001")
         ctl.prepare()
         manifest = ctl.store.load_manifest()
-        assert "INPUTS_DIR=/inputs" in manifest["command"]
+        assert manifest["command"] == ["ml-exp-worker"]
         assert manifest["resolved_config"]["container"]["worker_contract"] == WORKER_CONTRACT
         assert manifest["execution"].get("managed_io", False) == (executor == "gpu")
-        dispatch = " ".join(ctl.dispatch_command(ctl.store.load_attempt("attempt-001")))
-        assert "ML_EXPD_INPUT_ASSETS=" in dispatch and "ML_EXPD_SNAPSHOT_INTERVAL=5" in dispatch
+        dispatch = ctl.dispatch_command(ctl.store.load_attempt("attempt-001"))
+        from ml_exp_server.artifact_store import ArtifactStore
+        transfer = ArtifactStore(stored[0], root)
+        with transfer.record("demo", executor, "attempt-001") as (_, record):
+            environment = record["launch_manifest"]["environment"]
+            assert environment["INPUTS_DIR"] == "/inputs"
+            assert "ML_EXPD_INPUT_ASSETS" in environment and environment["ML_EXPD_SNAPSHOT_INTERVAL"] == "5"
+            assert "ML_EXPD_UPLOAD_TOKEN" not in environment
+        assert "--manifest-url" in dispatch
         changed = dict(campaign["runs"][0]["container"])
         changed.pop("worker_contract")
         campaign["runs"][0]["container"] = changed
@@ -101,3 +110,34 @@ def test_legacy_ready_image_keeps_original_command_and_final_only_capability(cli
     assert "managed_io" not in ctl.store.load_manifest()["execution"]
     assert "worker_contract" not in campaign["runs"][0]["container"]
     assert managed_io({"dockerfile": "Dockerfile"}) and not managed_io({})
+
+
+def test_previous_managed_worker_keeps_full_dispatch_without_new_entrypoint(client, stored, tmp_path):
+    from ml_exp_server.artifact_store import ArtifactStore
+    from tests.test_persistent_checkpoints import controller, ready, token
+    source = import_source(client, archive({"train.py": b"pass", "download.py": b"pass"}))
+    bundle = runtime(client, source)
+    service = ContainerExecutionService(client.app.state.runtime)
+    with service.state("demo", bundle["runtime_id"]) as (store, snapshot):
+        old = dict(snapshot.value)
+        old["capabilities"] = [cap for cap in old["capabilities"] if cap != "launcher-manifest.v1"]
+        store.commit(old, expected_revision=snapshot.revision, event={"event": "previous_launcher_fixture"})
+    first = controller(client, bundle, name="old-first", checkpoint_persistence={})
+    response = client.put("/api/checkpoint-transfers/demo/old-first/attempt-001", json=ready(tmp_path / "state"),
+                          headers={"Authorization": "Bearer " + token(first, stored[0])})
+    checkpoint = response.json()
+    assert response.status_code == 200
+    asset = put_asset(client).json()
+    resumed = controller(client, bundle, name="old-resumed", checkpoint_persistence={},
+        checkpoint_upload={"interval_seconds": 5}, data_preparation={"script": "download.py"},
+        inputs=[{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}],
+        resume_from={key: checkpoint[key] for key in ("run_id", "attempt_id", "checkpoint_id")})
+    frozen = resumed.store.load_attempt("attempt-001")
+    assert "/usr/local/lib/ml-expd/worker.py" in frozen["command"]
+    dispatch = resumed.dispatch_command(frozen)
+    assert any(arg.startswith("ML_EXPD_UPLOAD_TOKEN=") for arg in dispatch)
+    assert any(arg.startswith("ML_EXPD_CHECKPOINT_RESTORE=") for arg in dispatch)
+    assert "ml-exp-worker" not in dispatch
+    transfer = ArtifactStore(stored[0], Path(resumed.campaign["source_store"]))
+    with transfer.record("demo", "old-resumed", "attempt-001") as (_, record):
+        assert "launch_manifest" not in record

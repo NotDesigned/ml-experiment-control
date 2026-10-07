@@ -104,11 +104,13 @@ def test_client_can_upload_mount_publish_and_reuse_checkpoint(client, stored, mo
     assert bundle["status"] == "READY" and bundle["spec"]["packaging_revision"] == DOCKERFILE_RECIPE
     ctl = controller(client, bundle, inputs=[{"asset_id": asset["asset_id"], "mount_path": "/inputs/fineweb"}], checkpoint_upload={"interval_seconds": 5})
     command = ctl.dispatch_command(ctl.store.load_attempt("attempt-001"))
-    assert any(v == "INPUTS_DIR=/inputs" for v in ctl.command("attempt-001"))
-    assert "ML_EXPD_INPUT_ASSETS=" in " ".join(command)
+    assert ctl.command("attempt-001") == ["ml-exp-worker"]
+    assert "--manifest-url" in command
     transfer = ArtifactStore(stored[0], client.app.state.runtime.config.project_registry_root_path())
     with transfer.record("demo", "trial", "attempt-001") as (_, record):
         token = record["token"]
+        assert record["launch_manifest"]["environment"]["INPUTS_DIR"] == "/inputs"
+        assert "ML_EXPD_INPUT_ASSETS" in record["launch_manifest"]["environment"]
     endpoint = "/api/asset-transfers/demo/trial/attempt-001/" + asset["asset_id"]
     assert client.get(endpoint, headers={"Authorization": "Bearer wrong"}).status_code == 401
     response = client.get(endpoint, headers={"Authorization": "Bearer " + token})

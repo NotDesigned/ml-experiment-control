@@ -26,7 +26,7 @@ and code readable by its UID; keep token/credential files private.
 
 On Linux, clone a revision containing server 0.2.1 / protocol 2. Pin the commit;
 do not assume an older `main` or release provides the source API. A source
-installation requires uv and Rust 1.85+ to build the packaged SCO sanitizer:
+installation requires uv and Rust 1.85+ to build the packaged credential redactor:
 
 ```bash
 git clone https://github.com/NotDesigned/ml-experiment-control.git
@@ -49,7 +49,7 @@ uv pip install --python /opt/ml-expd/venv/bin/python \
   dist/ml_experiment_control-*.whl dist/ml_experiment_server-*.whl
 ```
 
-Its `ml-expd` and `experiment-safe-sco` entry points must be on the service PATH.
+Its `ml-expd` and `experiment-redact` entry points must be on the service PATH.
 Do not leave a runtime venv inside a root-only checkout inaccessible to its UID.
 Back up the existing workspace/config and retain the previous runtime before
 an upgrade. Stop the sole daemon for workspace copies; never restore over a

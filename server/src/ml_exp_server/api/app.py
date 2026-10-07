@@ -28,7 +28,7 @@ from ..project_config import load_server_config
 from ..runtime import ExperimentServerRuntime
 from ..schemas import ServerConfig, ResearchProject
 from ..submissions import ExperimentSubmissionService
-from ..artifact_store import TRANSFER_PATH
+from ..artifact_store import TRANSFER_PATH, LAUNCH_PATH
 from ..data_assets import WORKER_PATH
 from ..container_execution import ContainerExecutionService
 from ..runtime_jobs import recover_interrupted_builds
@@ -268,6 +268,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     @app.middleware("http")
     async def enforce_http_boundary(request, call_next):
         worker_transfer = request.method == "PUT" and bool(TRANSFER_PATH.fullmatch(request.url.path))
+        worker_transfer = worker_transfer or (request.method == "GET" and bool(LAUNCH_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method == "PUT" and bool(COPY_TRANSFER.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method in {"GET", "PUT"} and bool(WORKER_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method in {"GET", "POST", "PUT", "DELETE"} and bool(WORKER_UPLOAD_PATH.fullmatch(request.url.path)))

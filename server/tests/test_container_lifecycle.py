@@ -112,10 +112,13 @@ def test_dispatch_credentials_remain_outside_frozen_command(controller, monkeypa
     controller.campaign["artifact_store"] = str(tmp_path / "s3.json")
     monkeypatch.setattr("ml_exp_server.artifact_store.ArtifactStore.__init__", lambda self, *args: None)
     monkeypatch.setattr("ml_exp_server.artifact_store.ArtifactStore.issue", lambda self, *args: ("https://transfer.example/attempt", "test-write-capability", 10000))
+    sealed = []
+    monkeypatch.setattr("ml_exp_server.artifact_store.ArtifactStore.seal_launch", lambda self, *args: sealed.append(args[-1]) or "https://transfer.example/manifest")
     launched = controller.dispatch_command({"command": original, "attempt_id": "attempt-001"})
-    assert "ML_EXPD_UPLOAD_TOKEN=test-write-capability" in launched
+    assert "ML_EXPD_BOOTSTRAP_TOKEN=test-write-capability" in launched
+    assert "ML_EXPD_UPLOAD_TOKEN" not in sealed[0]["environment"]
     assert "test-write-capability" not in " ".join(controller.store.load_attempt("attempt-001")["command"])
-    assert "/usr/local/lib/ml-expd/worker.py" in controller.command("attempt-001")
+    assert controller.command("attempt-001") == ["ml-exp-worker"]
     assert controller.oci_pull_environment() == {}
     credentials = tmp_path / "pull.json"
     credentials.write_text(json.dumps({"registry": "registry.example", "username": "test-user", "password": "test-password"}))
@@ -223,3 +226,16 @@ def test_controller_module_entrypoint_reports_invalid_definition(tmp_path, monke
     with pytest.warns(RuntimeWarning, match="found in sys.modules"), pytest.raises(SystemExit) as error:
         runpy.run_module(module.__name__, run_name="__main__")
     assert error.value.code == 1 and "StopIteration" in capsys.readouterr().err
+
+
+def test_historical_preemption_terminal_lifecycle_survives_stop_classification_fix(controller):
+    controller.submit(None)
+    controller.store.write_status_payload('attempt-001', {'state': 'PREEMPTED'})
+    controller.backend.kind = 'sensecore'
+    controller.backend.status = lambda *args: {'run_id': 'gpu', 'backend': 'sensecore',
+        'backend_job_id': 'job-1', 'state': 'CANCELLED', 'raw_state': 'SUSPENDED',
+        'failure_class': None, 'reason': 'provider_stopped_cause_unknown'}
+    result = controller.status()
+    assert result['state'] == 'PREEMPTED' and result['failure_class'] is None
+    assert result['detail']['observed_normalized_state'] == 'CANCELLED'
+    assert controller.store.load_status_payload('attempt-001')['state'] == 'PREEMPTED'

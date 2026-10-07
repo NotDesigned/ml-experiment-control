@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 from .source_imports import IDENTITY, unpack_source, seal_tree, remove_staging
 from .storage import atomic_json, utc_now
 from .archive_limits import byte_limit, exceeds, wire_limit
+from .worker_launcher import LAUNCH_PATH, encode, endpoint
 
 ATTEMPT = re.compile(r'^attempt-[0-9]{3,}$')
 TRANSFER_PATH = re.compile(r'^/api/artifact-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/attempt-[0-9]{3,}$')
@@ -76,6 +77,32 @@ class ArtifactStore:
             if datetime.fromisoformat(value['expires_at']) < datetime.now(timezone.utc):
                 raise ValueError('expired transfer capability')
             return value
+
+    def seal_launch(self, project, run, attempt, document):
+        body = encode(document)
+        if document['identity'] != {'project': project, 'run_id': run, 'attempt_id': attempt}:
+            raise ValueError('launch manifest identity differs')
+        digest = hashlib.sha256(body).hexdigest()
+        prefix = self.config['public_transfer_base'].rstrip('/').rsplit('/', 1)[0]
+        url = prefix + '/launch-transfers/' + '/'.join([project, run, attempt, digest])
+        endpoint(url)
+        with self.record(project, run, attempt) as (path, value):
+            if not value:
+                raise ValueError('Attempt transfer capability has not been issued')
+            if value.get('launch_manifest', document) != document:
+                raise ValueError('Attempt launch manifest is already sealed')
+            value['launch_manifest'] = document
+            atomic_json(path, value)
+        return url
+
+    def launch(self, project, run, attempt, digest, token):
+        value = self.authorize(project, run, attempt, token)
+        if 'launch_manifest' not in value:
+            raise ValueError('launch manifest is not available')
+        body = encode(value['launch_manifest'])
+        if not hmac.compare_digest(hashlib.sha256(body).hexdigest(), digest):
+            raise ValueError('launch manifest digest differs')
+        return body
 
     def client(self, *, public=False):
         import boto3

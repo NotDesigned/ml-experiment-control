@@ -119,6 +119,8 @@ class DataDeliveryService:
         with self.state(project, delivery_id) as (store, snapshot):
             if snapshot.value:
                 return self.public(snapshot.value)
+            if "debug" in copy["aec2"].casefold():
+                raise ValueError("new ACP data-copy jobs must not use a debug cluster")
             value = {**definition, "delivery_id": delivery_id, "status": "PREPARED",
                      "confirmation": "prepare-data:" + digest(definition), "created_at": utc_now(),
                      "last_progress_at": utc_now(), "scheduler_name": "ml-expd-data-" + delivery_id[-40:],

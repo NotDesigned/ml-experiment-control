@@ -207,3 +207,111 @@ def test_executor_profiles_are_operator_owned_and_capacity_is_recorded(client):
 def test_unready_runtime_cannot_create_run(client):
     record = prepared(client)
     assert client.post("/api/projects/demo/runs", json={"run_id": "r", "runtime_id": record["runtime_id"], "executor": "gpu"}).status_code == 409
+
+
+def pool_profile(client, **backend):
+    path = Path(client.app.state.runtime.config.container_execution.profiles_file)
+    profiles = yaml.safe_load(path.read_text())
+    profiles['executors']['cloud']['backend'].update(backend)
+    path.write_text(yaml.safe_dump(profiles))
+
+
+def test_spot_pool_selection_is_frozen_once_and_definition_changes_conflict(client, monkeypatch):
+    from unittest.mock import Mock
+    from experiment_control.backends.sensecore_rest import SenseCoreREST
+    bundle = runtime(client)
+    pool_profile(client, pool_selection='highest_spot', allowed_clusters=['compute', 'other'])
+    calls = []
+    def select(backend, *, gpus):
+        calls.append((dict(backend), gpus))
+        return {**backend, 'aec2': 'other', 'pool_selection_evidence': {
+            'configured_aec2': 'compute', 'selected': 'other', 'policy': 'highest_spot',
+            'observed_at': 'fixed-time', 'candidates': [{'name': 'other', 'spot_devices': '11'}]}}
+    monkeypatch.setattr(SenseCoreREST, 'from_environment', lambda: Mock(select_pool=select))
+    body = {'run_id': 'selected', 'runtime_id': bundle['runtime_id'], 'executor': 'cloud'}
+    first = client.post('/api/projects/demo/runs', json=body)
+    assert first.status_code == 200, first.text
+    assert first.json()['pool_selection']['selected'] == 'other'
+    repeated = client.post('/api/projects/demo/runs', json=body)
+    assert repeated.status_code == 200 and repeated.json() == first.json()
+    assert len(calls) == 1 and calls[0][1] == 1
+    root = Path(client.app.state.runtime.project('demo').base_dir)
+    campaign = yaml.safe_load((root / 'experiments/campaigns/run-selected.yaml').read_text())
+    assert campaign['runs'][0]['backend']['aec2'] == 'other'
+    assert client.post('/api/projects/demo/runs', json={**body, 'arguments': ['changed']}).status_code == 409
+    pool_profile(client, aec2='changed-base')
+    assert client.post('/api/projects/demo/runs', json=body).status_code == 409
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('case', ['unsupported', 'denied', 'debug'])
+def test_selection_or_debug_guard_failure_does_not_freeze_or_submit_run(client, monkeypatch, case):
+    from unittest.mock import Mock
+    from experiment_control.backends.sensecore_rest import SenseCoreREST, RESTError
+    bundle = runtime(client)
+    pool_profile(client, **({'aec2': 'debug-cluster'} if case == 'debug' else
+                           {'pool_selection': 'bad' if case == 'unsupported' else 'highest_spot'}))
+    monkeypatch.setattr(SenseCoreREST, 'from_environment', lambda: Mock(select_pool=Mock(side_effect=RESTError('specs', status=403))))
+    response = client.post('/api/projects/demo/runs', json={'run_id': 'blocked', 'runtime_id': bundle['runtime_id'], 'executor': 'cloud'})
+    assert response.status_code == 409
+    assert not (Path(client.app.state.runtime.project('demo').base_dir) / 'experiments/campaigns/run-blocked.yaml').exists()
+
+
+def test_new_runs_default_to_spot_but_historical_fixed_runs_are_not_reselected(client, monkeypatch):
+    from unittest.mock import Mock
+    from experiment_control.backends.sensecore_rest import SenseCoreREST
+    bundle = runtime(client)
+    body = {'run_id': 'historical', 'runtime_id': bundle['runtime_id'], 'executor': 'cloud'}
+    assert client.post('/api/projects/demo/runs', json=body).status_code == 200
+    path = Path(client.app.state.runtime.config.container_execution.profiles_file)
+    profiles = yaml.safe_load(path.read_text())
+    profiles['executors']['cloud']['backend'].pop('pool_selection')
+    path.write_text(yaml.safe_dump(profiles))
+    root = Path(client.app.state.runtime.project('demo').base_dir)
+    frozen = root / 'experiments/campaigns/run-historical.yaml'
+    campaign = yaml.safe_load(frozen.read_text())
+    campaign['runs'][0]['backend'].pop('pool_selection')
+    frozen.write_text(yaml.safe_dump(campaign))
+    def select(backend, *, gpus):
+        return {**backend, 'aec2': 'other', 'pool_selection_evidence': {
+            'configured_aec2': 'compute', 'policy': 'highest_spot', 'selected': 'other'}}
+    fake = Mock(select_pool=Mock(side_effect=select))
+    monkeypatch.setattr(SenseCoreREST, 'from_environment', lambda: fake)
+    assert client.post('/api/projects/demo/runs', json=body).status_code == 200
+    fake.select_pool.assert_not_called()
+    new = {**body, 'run_id': 'default-spot'}
+    response = client.post('/api/projects/demo/runs', json=new)
+    assert response.status_code == 200, response.text
+    assert response.json()['pool_selection']['selected'] == 'other'
+    assert client.post('/api/projects/demo/runs', json=new).status_code == 200
+    fake.select_pool.assert_called_once()
+
+
+@pytest.mark.parametrize('change', [None, {'policy': 'fixed'}, {'selected': 'unbound-pool'}, {'pool_selection_evidence': 'invalid'}])
+def test_frozen_pool_evidence_cannot_be_silently_replaced_or_reselected(client, monkeypatch, change):
+    from unittest.mock import Mock
+    from experiment_control.backends.sensecore_rest import SenseCoreREST
+    bundle = runtime(client)
+    pool_profile(client, pool_selection='highest_spot')
+    def select(backend, *, gpus):
+        return {**backend, 'aec2': 'other', 'pool_selection_evidence': {
+            'configured_aec2': 'compute', 'policy': 'highest_spot', 'selected': 'other'}}
+    fake = Mock(select_pool=Mock(side_effect=select))
+    monkeypatch.setattr(SenseCoreREST, 'from_environment', lambda: fake)
+    body = {'run_id': 'bound-proof', 'runtime_id': bundle['runtime_id'], 'executor': 'cloud'}
+    assert client.post('/api/projects/demo/runs', json=body).status_code == 200
+    root = Path(client.app.state.runtime.project('demo').base_dir)
+    path = root / 'experiments/campaigns/run-bound-proof.yaml'
+    campaign = yaml.safe_load(path.read_text())
+    backend = campaign['runs'][0]['backend']
+    if change is None:
+        backend.pop('pool_selection_evidence')
+    elif 'pool_selection_evidence' in change:
+        backend.update(change)
+    else:
+        backend['pool_selection_evidence'].update(change)
+    path.write_text(yaml.safe_dump(campaign))
+    before = path.read_bytes()
+    assert client.post('/api/projects/demo/runs', json=body).status_code == 409
+    assert path.read_bytes() == before
+    fake.select_pool.assert_called_once()

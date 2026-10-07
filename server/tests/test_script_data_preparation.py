@@ -210,11 +210,16 @@ def test_api_freezes_script_argv_and_backend_data_dir(client, stored, executor):
     assert manifest["resolved_config"]["data_preparation"] == spec
     assert manifest["evaluation"]["protocol"]["data_preparation"] == spec
     assert manifest["assets"][-1]["identity"] == spec["preparation_id"]
-    assert any(arg.startswith("DATA_DIR=/data/lab/demo/data-preparations/") for arg in manifest["command"])
-    assert any(arg.startswith("ML_EXPD_DATA_PREPARATION=") for arg in ctl.dispatch_command(ctl.store.load_attempt("attempt-001")))
+    assert manifest["command"] == ["ml-exp-worker"]
+    assert ctl.environment("attempt-001")["DATA_DIR"].startswith("/data/lab/demo/data-preparations/")
+    from ml_exp_server.artifact_store import ArtifactStore
+    transfer = ArtifactStore(stored[0], Path(ctl.campaign["source_store"]))
+    ctl.dispatch_command(ctl.store.load_attempt("attempt-001"))
+    with transfer.record("demo", "script-data", "attempt-001") as (_, record):
+        assert json.loads(record["launch_manifest"]["environment"]["ML_EXPD_DATA_PREPARATION"]) == spec
     assert campaign["runs"][0]["outputs"] == ["model.pt", "data-preparation.json"]
     dispatch = ctl.dispatch_command(ctl.store.load_attempt("attempt-001"))
-    token = next(arg.split("=", 1)[1] for arg in dispatch if arg.startswith("ML_EXPD_UPLOAD_TOKEN="))
+    token = next(arg.split("=", 1)[1] for arg in dispatch if arg.startswith("ML_EXPD_BOOTSTRAP_TOKEN="))
     assert client.put("/api/artifact-transfers/demo/script-data/attempt-001", content=archive({"data-preparation.json": b'{"status":"READY"}'}), headers={"Authorization": "Bearer " + token}).status_code == 200
     changed = {**request, "data_preparation": {"script": "download.py", "arguments": ["--version", "2"]}}
     assert client.post("/api/projects/demo/runs", json=changed).status_code == 409

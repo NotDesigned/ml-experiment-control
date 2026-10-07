@@ -71,10 +71,10 @@ running job is not a pending reason.
 
 ## Sanitizer CLI
 
-`experiment-safe-sco` is a packaged Rust executable installed into the Python
-environment's `PATH`. Hosts must invoke the executable directly. The historical
-`python -m experiment_control.safe_sco` entrypoint is not part of the supported
-surface.
+`experiment-redact` is a packaged Rust executable installed into the Python
+environment's `PATH`. Invoke it directly with log text on standard input, without
+subcommands. `EXPERIMENTCTL_REDACTOR_BIN` selects the executable. Legacy executable
+names, mode arguments and environment variables are not supported.
 
 The generated [`cli_reference.md`](cli_reference.md) is the command contract.
 Sanitizer failures never echo raw input.
@@ -91,7 +91,7 @@ Consumers should pin an immutable package commit. Before updating that pin:
 5. update the commit pin only after both package and host tests pass.
 
 ELF is the reference downstream consumer. Its integration tests should exercise
-the public imports and direct `experiment-safe-sco` invocation against the
+the public imports and direct `experiment-redact` invocation against the
 candidate package before advancing `requirements.txt`.
 
 ## Host-specific collection

@@ -82,6 +82,12 @@ def token(tmp_path):
 
 
 def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from experiment_control.backends.sensecore_rest import SenseCoreREST
+    def selected(backend, *, gpus):
+        return {**backend, "pool_selection_evidence": {
+            "policy": "highest_spot", "configured_aec2": backend["aec2"], "selected": backend["aec2"]}}
+    monkeypatch.setattr(SenseCoreREST, "from_environment", lambda: SimpleNamespace(select_pool=selected))
     auth = token(tmp_path)
     s3_config = json.loads((ROOT / "server/examples/artifact-store.json").read_text())
     s3_file = tmp_path / "s3.json"

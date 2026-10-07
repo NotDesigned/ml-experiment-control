@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "experiment-safe-sco"
+name = "experiment-redact"
 version = "0.1.0"
 dependencies = [
  "regex",

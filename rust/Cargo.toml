@@ -1,14 +1,14 @@
 [package]
-name = "experiment-safe-sco"
+name = "experiment-redact"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-description = "Fail-closed sanitizer for SenseCore SCO output"
+description = "Credential redaction for experiment logs"
 repository = "https://github.com/NotDesigned/ml-experiment-control"
 
 [[bin]]
-name = "experiment-safe-sco"
+name = "experiment-redact"
 path = "src/main.rs"
 
 [dependencies]

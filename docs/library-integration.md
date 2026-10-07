@@ -209,8 +209,8 @@ training commands.
 
 ## CLI reference
 
-The package exposes one deliberately narrow Rust command, `experiment-safe-sco`,
-for redacting captured log text and supporting historical sanitizer integrations. The binary is
+The package exposes one deliberately narrow Rust command, `experiment-redact`,
+for redacting captured log text from standard input. The binary is
 installed by the package wheel and is not an experiment lifecycle CLI. Its
 complete generated option reference is in
 [`docs/cli_reference.md`](cli_reference.md); the runtime parser is the
@@ -266,7 +266,7 @@ The backends recognize these non-secret environment variables:
 ```text
 EXPERIMENTCTL_SENSECORE_REST_CONFIG
 EXPERIMENTCTL_SENSECORE_CREATE_TIMEOUT_SECONDS
-EXPERIMENTCTL_SAFE_SCO_BIN
+EXPERIMENTCTL_REDACTOR_BIN
 EXPERIMENTCTL_SSH_BIN
 EXPERIMENTCTL_RSYNC_BIN
 ```

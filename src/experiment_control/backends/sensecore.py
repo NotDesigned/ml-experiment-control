@@ -41,6 +41,10 @@ _STRUCTURED_EVIDENCE_RESERVED_KEYS = frozenset({
     "live_logs_expired",
     "live_logs_available",
     "log_error",
+    "log_source",
+    "logs_historical",
+    "last_log_at",
+    "process_observed_at",
     "process_evidence",
     "worker_evidence_available",
     "worker_phases",
@@ -140,8 +144,10 @@ def normalize_state(raw_state: str, *, cancellation_requested: bool = False) -> 
         return "RUNNING"
     if raw in {"SUCCEEDED", "COMPLETED"}:
         return "SUCCEEDED"
-    if raw in {"SUSPENDING", "SUSPENDED"}:
-        return "PREEMPTED"
+    if raw == "SUSPENDING":
+        return "UNKNOWN"
+    if raw in {"SUSPENDED", "STOPPED"}:
+        return "CANCELLED"
     if raw in {"FAILED", "ERROR"}:
         return "FAILED"
     if raw in {"DELETING", "DELETED", "CANCELLED", "CANCELED"}:
@@ -176,15 +182,14 @@ class SenseCoreBackend:
         return PreflightReport(self.kind, "doctor", (check,))
 
     @staticmethod
-    def safe_sco_bin() -> str:
+    def redactor_bin() -> str:
         """Resolve the packaged Rust sanitizer executable."""
-        return os.environ.get("EXPERIMENTCTL_SAFE_SCO_BIN", "experiment-safe-sco")
+        return os.environ.get("EXPERIMENTCTL_REDACTOR_BIN", "experiment-redact")
 
     @staticmethod
     def create_timeout_seconds() -> int:
         """Bound ambiguous create waits so the durable outbox can reconcile."""
-        raw = os.environ.get("EXPERIMENTCTL_SENSECORE_CREATE_TIMEOUT_SECONDS",
-                             os.environ.get("EXPERIMENTCTL_SCO_CREATE_TIMEOUT_SECONDS", "120"))
+        raw = os.environ.get("EXPERIMENTCTL_SENSECORE_CREATE_TIMEOUT_SECONDS", "120")
         if not raw.isdigit() or not 10 <= int(raw) <= 600:
             raise ValueError(
                 "EXPERIMENTCTL_SENSECORE_CREATE_TIMEOUT_SECONDS must be an integer from 10 to 600"
@@ -322,9 +327,11 @@ class SenseCoreBackend:
 
     def _redact_error(self, text: str) -> str:
         result = self.s.run_command(
-            [self.safe_sco_bin(), "redact-lines"],
+            [self.redactor_bin()],
             input_text=text, check=False,
         )
+        if result.returncode:
+            raise RuntimeError("credential redactor failed")
         return result.stdout.strip()
 
     def submit(
@@ -360,18 +367,19 @@ class SenseCoreBackend:
         summary = self.describe(run, resource_name)
         if summary.get("name") != resource_name:
             raise RuntimeError("SenseCore exact job describe returned a conflicting resource")
+        cancellation_requested = self._cancellation_requested(campaign, run, resource_name)
         state = normalize_state(
             str(summary.get("state", "")),
-            cancellation_requested=self._cancellation_requested(
-                campaign, run, resource_name
-            ),
+            cancellation_requested=cancellation_requested,
         )
         return {
             "run_id": run["run_id"], "backend": "sensecore",
             "backend_job_id": record["backend_job_id"],
             "state": state,
             "raw_state": summary.get("state"), "pool": summary.get("pool"), "spec": summary.get("spec"),
-            "failure_class": "preemption" if state == "PREEMPTED" else None,
+            "failure_class": None,
+            "reason": "cancellation_requested" if cancellation_requested else (
+                "provider_stopped_cause_unknown" if summary.get("state") in {"SUSPENDED", "STOPPED"} else None),
         }
 
     def _cancellation_requested(
@@ -416,6 +424,8 @@ class SenseCoreBackend:
         # and generation-evaluation logs.  Keep the public process tail bounded,
         # but inspect the largest supported live-log window for durable evidence.
         snapshot = self.logs(campaign, run, tail=_COLLECTION_LOG_TAIL)
+        historical = snapshot.get("historical", False)
+        log_source = "sensecore_offline_logs" if historical else "sensecore_stream_logs"
         lines = snapshot["lines"]
         record = self.s.backend_record(campaign, run)
         structured = _structured_evidence(
@@ -433,11 +443,15 @@ class SenseCoreBackend:
         result = {"run_id": run["run_id"], "backend": "sensecore", "model_observed": bool(metrics),
                   "latest_metric": metrics[-1] if metrics else None, "metric_log_lines": metric_lines[-20:],
                   "live_logs_expired": snapshot["expired"],
-                  "live_logs_available": snapshot.get("available", True),
-                  "log_error": snapshot.get("error"),
+                  "live_logs_available": snapshot.get("available", True) and not historical,
+                  "log_source": log_source, "logs_historical": historical,
+                  "last_log_at": snapshot.get("last_log_at"),
+                  **({"process_observed_at": snapshot.get("last_log_at")} if historical else {}),
+                  "log_error": snapshot.get("error") or snapshot.get("live_error"),
                   "process_evidence": {
-                      "observed": bool(process_lines) and not snapshot["expired"] and snapshot.get("available", True),
-                      "sources": {"combined": "sensecore_stream_logs"},
+                      "observed": bool(process_lines) and not historical and not snapshot["expired"] and snapshot.get("available", True),
+                      "sources": {"combined": log_source},
+                      **({"observed_at": snapshot.get("last_log_at")} if historical else {}),
                       # REST exposes one sanitized combined stream rather than
                       # distinct process stdout/stderr channels.
                       "stdout_tail": process_lines,
@@ -450,12 +464,12 @@ class SenseCoreBackend:
             result["model_observed"] = True
             result["structured_evidence"] = {
                 "identity_verified": True,
-                "source": "sensecore_stream_logs",
+                "source": log_source,
             }
         if snapshot["expired"]:
             result["evidence_unavailable_reason"] = "live_logs_expired"
         elif not snapshot.get("available", True):
-            result["evidence_unavailable_reason"] = "live_logs_unavailable"
+            result["evidence_unavailable_reason"] = snapshot.get("unavailable_reason") or "live_logs_unavailable"
         try:
             worker = self.workers(campaign, run)
         except (RuntimeError, ValueError):
@@ -508,4 +522,8 @@ class SenseCoreBackend:
             "lines": redacted.splitlines()[-tail:], "expired": result["expired"],
             "stream_exit_code": result["exit_code"],
             "available": result.get("available", True), "error": result.get("error"),
+            "live_error": result.get("live_error"),
+            "source": result.get("source", "live"), "historical": result.get("historical", False),
+            "last_log_at": result.get("last_log_at"), "truncated": result.get("truncated", False),
+            "unavailable_reason": result.get("unavailable_reason"),
         }
