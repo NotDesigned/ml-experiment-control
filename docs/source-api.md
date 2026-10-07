@@ -1,178 +1,112 @@
-# Source-to-container API
+# API workflow reference
 
-Protocol 2 / server 0.2.1. A remote client needs HTTPS and the existing ml-expd
-Bearer token; it does not need SSH, SCO, Apptainer, or a checkout on the daemon.
-Start with the [runnable API quickstart](api-quickstart.md); operators use
-[the deployment guide](operator-guide.md). Obtain the API URL from your operator.
-Every normal API call sends `Authorization: Bearer …` and
-`X-ML-Expd-Client-Protocol: 2`. `GET /api/health` bootstraps negotiation;
-`GET /api/v2/openapi.json` is the authoritative schema.
+Use the [quickstart](api-quickstart.md) for a complete client example.
+`GET /api/v2/openapi.json` is the installed request/response schema. All paths
+below are relative to the API base; send Bearer auth and protocol 2 headers
+([HTTP contract](http_contract.md)). `P`, `R`, `A`, `S` denote project, Run,
+Attempt and Submission IDs returned by the service, not filesystem paths.
 
-## Import and run
+## Discover and import
 
-1. Import a public HTTPS Git repository at its exact 40-character commit:
-   `POST /api/source-imports/git` with
-   `{"project":"my-study","url":"https://github.com/owner/project.git","commit":"40 hex characters"}`.
-   For private/local code, upload a tar or tar.gz rooted at the source directory:
-   `POST /api/source-imports/archive?project=my-study&sha256=<archive SHA256>`
-   with the archive as the raw body. The daemon rejects links, escaping paths,
-   credential-looking paths, and oversized archives. This is path filtering,
-   not a scan proving the contents contain no secrets. Defaults: 64 MiB upload, 256 MiB expanded,
-   20,000 entries. Import creates a daemon-managed project when its ID is new.
-   An existing project with its own controller is retained and cannot be silently
-   converted. The returned `source_id` identifies immutable source content;
-   later imports preserve earlier versions.
-2. `GET /api/executors` lists operator-defined WYD/SenseCore profiles.
-   Clients select a profile ID and common resources. Backend addresses, NAS
-   mount definitions, cluster partitions, and registry credentials stay on the
-   daemon. SenseCore fixed worker allocations are reported in `capacity`;
-   the Run records the actual allocation, which may exceed a minimum request.
-3. `POST /api/projects/my-study/runtimes/prepare` with `source_id`, `dockerfile`
-   (default `Dockerfile`), argv `entrypoint`, and optional `/workspace` workdir.
-   New builds accept only Dockerfile; dependency installation belongs in that
-   file. Base images must be approved digest pins, obtainable from
-   `GET /api/environments`. Old READY Runtime/Run identities remain usable.
-   Execute the returned exact BUILD confirmation, then poll the Runtime and
-   `/progress` endpoint. A matching READY Runtime is reused without rebuilding.
+| Method/path | Purpose |
+|---|---|
+| `GET /api/health` | Version, protocol, capabilities and enabled policy |
+| `GET /api/executors` | Configured backend/resource choices |
+| `GET /api/environments` | Approved base-image catalogue |
+| `GET /api/storage-limits` | Upload limits, part policy and available storage |
+| `POST /api/source-imports/archive?project=P&sha256=HASH` | Raw tar/tar.gz source upload |
+| `POST /api/source-imports/git` | HTTPS repository plus exact 40-character commit |
+| `GET /api/projects/P/sources/SOURCE_ID` | Immutable source metadata |
 
-4. Execute packaging with `POST /api/projects/my-study/runtimes/{runtime_id}/execute`
-   and the exact `confirmation` returned by prepare. Poll the runtime until
-   `READY`. The API durably claims the build before returning HTTP 202;
-   the daemon owns its background execution independently of the request.
-   Packaging does not allocate a GPU. After a daemon restart, interrupted builds
-   become `RECONCILE_REQUIRED`. `/reconcile` only reads the packaging receipt;
-   it cannot start a build or submit a job. If no receipt exists, the Runtime
-   stays uncertain; inspect build logs before explicitly retrying `/execute`.
-   Run only after `READY`; retain the returned final immutable OCI digest.
-   Build logs use the Runtime's frozen bundle ID, so published historical logs
-   remain readable after launcher or recipe upgrades.
-5. `POST /api/projects/my-study/runs` with
-   `{"run_id":"trial-001","runtime_id":"runtime.…","executor":"wyd-l40s","arguments":["--epochs","1"],"resources":{"gpus":1,"cpus":8,"memory_gb":32,"max_time":"00:10:00"},"outputs":["**/*"]}`.
-   `run_id` cannot be rebound to another definition. Source, derived image,
-   entrypoint/arguments, non-secret environment, resource allocation and output
-   declarations are frozen together. A retry creates another Attempt using
-   this same definition. New source or commands require a new Run.
-6. Submit entirely over HTTP:
-   `POST /api/experiments/my-study/trial-001/submissions/prepare` with
-   `{"max_gpu_hours":1,"reason":"run the frozen trial"}`, then
-   `/api/submissions/{submission_id}/authorize`, then `/execute`, using the
-   returned confirmation strings. The existing policy gates still apply.
-   Preparation validates identity, source, image/staging and resource budget.
-   On servers advertising `async-actions.v1`, execution durably claims the
-   Action and returns `EXECUTING` while the backend runs in the background.
-   Older protocol-2 servers may return the terminal submission status directly. Poll `GET /api/submissions/{submission_id}` until
-   `status` leaves `EXECUTING`; `VERIFIED` confirms the exact scheduler job was
-   observed, and does not mean training has finished. The Action endpoint
-   `GET /api/actions/{action_id}` exposes this state under `execution.status`.
-   Execution persists a submission outbox before the scheduler call. Only
-   `RECONCILE_REQUIRED` needs `/reconcile`; do not resubmit an uncertain Action.
-   List/status/logs/cancel/retry remain the existing Run/Attempt/Action APIs.
+Source defaults are 64 MiB archive, 256 MiB expanded and 20,000 entries. Imports
+reject links, escaping paths and credential-looking filenames; this is not a
+content scan proving there are no secrets. Import creates a managed Project when
+needed; it cannot silently replace an existing custom controller.
 
-The `OUTPUT_DIR`, `PROJECT_NAME`, `RUN_ID`, `ATTEMPT_ID`, `SOURCE_ID` variables
-are supplied to the program. Write checkpoints, reports and numeric JSONL
-metrics under `OUTPUT_DIR`. Paths are separate for each Attempt; a local
-relative output directory outside it is not uploaded. `metrics.jsonl` supports
-finite numeric fields (`global_step` is normalized to `step`). The daemon does
-not infer the scientific meaning of those fields.
-Once an Attempt uploads its outputs, the metrics API reads the complete
-`metrics.jsonl` from that exact Attempt before falling back to sampled
-collector observations. It never substitutes a previous Attempt's history.
+## Build a Runtime
 
-## Same execution on both backends
+```json
+{
+  "source_id": "source.ACTUAL_HASH",
+  "dockerfile": "Dockerfile",
+  "entrypoint": ["python3", "train.py"],
+  "workdir": "/workspace"
+}
+```
 
-SenseCore pulls the derived image by digest. WYD converts that same digest to
-SIF through Apptainer and verifies an OCI/SIF receipt plus the actual SIF
-checksum before reusing a cached conversion. Both use the source packaged at
-`/workspace` inside the image; WYD does not copy or mount a second checkout
-over it. Legacy projects with an authored SIF and source checkout retain their
-existing source staging behavior.
-A WYD environment that denies FUSE needs `apptainer_unsquash: true` in its
-backend profile. The upload launcher is readable by the non-root compute user.
-The profile chooses the scheduler and storage layout; the scientific command
-is identical. Private registry access is an operator-owned prerequisite on
-both backends. Remote schedulers must pass their live preflight.
+| Method/path | Purpose |
+|---|---|
+| `POST /api/projects/P/runtimes/prepare` | Validate/freeze the definition above |
+| `POST /api/projects/P/runtimes/RUNTIME_ID/execute` | Build using returned `confirmation` |
+| `GET /api/projects/P/runtimes/RUNTIME_ID` | Durable state and receipt |
+| `GET …/runtimes/RUNTIME_ID/logs` | Bound build log |
+| `GET …/runtimes/RUNTIME_ID/progress` | Phases/activity/diagnostics |
+| `POST …/runtimes/RUNTIME_ID/reconcile` | Look up publication without rebuilding |
 
-The private image builder is a separate, root-owned Unix-socket worker. It
-accepts only the daemon UID and a fixed image/source packaging operation; the
-HTTP daemon has no Docker socket permission. Image build outcomes are durable
-and keyed by source, base digest and upload-launcher revision. Interrupted
-packaging can be reconciled without starting an experiment.
+Execute returns HTTP 202 after durable claim. Poll for READY. New builds are
+Dockerfile-only; `image`, `environment_id` and `requirements` selectors are not
+accepted. Image identity binds source, Dockerfile, managed worker and transport
+recipe. Old READY images remain usable; an obsolete unbuilt definition needs
+fresh preparation. See [builds](builds.md) for admission and uncertainty.
 
-With `publisher: buildkit`, the builder uses BuildKit's image
-exporter with Docker schema 2, disabled attestations, and existing registry
-blob reuse. It avoids exporting and unpacking a second complete CUDA image.
-Skopeo verifies the exact remote manifest and configuration digests against
-BuildKit's publication metadata. A local `RepoDigests` entry alone is insufficient.
+## Freeze a Run and submit
 
-`action_runtime.stage_timeout_seconds` optionally gives environment staging
-(including a first OCI-to-SIF conversion) its own timeout; the operator template uses
-1200 seconds. Scheduler submission still uses `timeout_seconds` (300 seconds),
-and actual GPU execution retains the frozen Run's `resources.max_time` limit.
-WYD bootstrap creates its cache and sandbox directories before Apptainer runs,
-and Slurm writes stdout/stderr directly into the exact Attempt directory so
-startup errors survive. Managed terminal jobs get a final collection even if
-they completed before the first polling cycle. API retries use a new Attempt
-and accept an existing Run manifest only with an exact digest match, a prior
-failed/cancelled/preempted scheduler Attempt, and no conflicting new job.
+```json
+{
+  "run_id": "trial-001",
+  "runtime_id": "runtime.ACTUAL_HASH",
+  "executor": "wyd-l40s",
+  "arguments": ["--epochs", "1"],
+  "resources": {"gpus": 1, "cpus": 8, "memory_gb": 32, "max_time": "00:10:00"},
+  "outputs": ["metrics.jsonl", "summary.json", "weights/**"]
+}
+```
 
-## Artifacts and object storage
+`POST /api/projects/P/runs` freezes that definition. Optional fields include
+`env`, `inputs`, `metrics_schema`, `evaluation`, `data_preparation`,
+`checkpoint_persistence`, `resume_from` and `checkpoint_upload`. Read their
+contracts in [data](data.md), [metrics](metrics.md) and [checkpoints](persistent-checkpoints.md).
+Run IDs cannot be rebound; changes require a new Run. A retry gets a new Attempt.
 
-The operator template uses a loopback S3 endpoint, for example Garage on
-`127.0.0.1:3900`. An existing S3-compatible service is also supported. The bucket credentials remain on the
-server. At actual dispatch, the controller injects a separate write-only
-capability for one exact Run/Attempt, valid for seven days. It is absent from
-Run manifests, authored campaigns, preparation responses and the user program's
-environment. Worker transfer is a narrowly authenticated PUT route, not an
-exemption from authentication on the control API.
+| Method/path | Purpose |
+|---|---|
+| `POST /api/experiments/P/R/submissions/prepare` | Preflight/budget checks; body `max_gpu_hours`, `reason` |
+| `GET /api/experiments/P/R/submissions` | Existing submission records |
+| `POST /api/submissions/S/authorize` | Authorize prepared gates; body `note` |
+| `POST /api/submissions/S/execute` | Use exact returned `confirmation` |
+| `GET /api/submissions/S` | Durable state and next action |
+| `GET /api/submissions/S/progress` | Preparation and current scheduler evidence |
+| `POST /api/submissions/S/reconcile` | Recover the exact uncertain job without resubmitting |
 
-The image launcher runs the fixed program, forwards termination signals and
-then uploads the declared regular files as a tar. Hidden paths and symlinks
-are excluded; the API also rejects credentials and escaping archive paths.
-Output quotas are advertised by `/api/health`; the private operator can
-configure a smaller byte limit. Newly built images support [resumable 16 MiB
-uploads](multipart-uploads.md); existing frozen images retain their original
-whole-archive launcher and use the configured total limit. GNU timeout bounds the worker
-including upload; a hard kill or lost network can prevent the final upload.
-New Dockerfile images use `managed-worker.v1`
-and support input assets and optional live checkpoint publication using an
-atomic ready manifest. See the [data workflow](sensecore-user-workflow.md).
-The exact launcher and recipe fingerprints participate in the Runtime identity
-and the verified builder receipt. Existing READY images and frozen Runs retain
-their original capabilities; rebuilding creates a new Runtime. A failed upload
-is visible as `ML_EXPD_ARTIFACT_UPLOAD=FAILED` and fails an otherwise successful
-worker. Scientific program failure is preserved even when its artifacts upload.
+Submission VERIFIED proves exact job visibility, not training completion. The
+Action/outbox is recorded before the scheduler mutation. HTTP disconnect does
+not stop execution. Unknown effects require reconciliation.
+`GET /api/operations` describes generic operations; `/api/operations/direct`
+prepares operations such as `attempt.cancel` or `attempt.retry`. Scope/object
+IDs and parameters follow that catalogue/schema. Apply returned Action gates
+rather than guessing a mutation body. Retry does not automatically pick a newer
+checkpoint; the Run's frozen restore reference remains unchanged.
 
-The API validates tar paths, exact Attempt identity and declared outputs,
-commits the archive to S3, publishes a local immutable download cache, then
-writes a receipt. Same digest retries are idempotent; a different upload cannot
-replace a sealed Attempt. Each Attempt has a different capability and key.
-Lost local caches are rebuilt from S3 after size and SHA256 verification.
+## Observe and download
 
-- `GET /api/runs/{project}/{run}/attempts/{attempt}/files`: list available files.
-- `GET /api/runs/{project}/{run}/attempts/{attempt}/files/outputs/<path>`:
-  stream one file, supporting byte ranges and ETags.
-- `GET /api/runs/{project}/{run}/attempts/{attempt}/artifacts/archive`:
-  download the uploaded tar directly from S3 through the authenticated API.
+| Method/path | Purpose |
+|---|---|
+| `GET /api/runs/P/R` | Scheduler state, bound evidence and provenance |
+| `GET /api/runs/P/R/attempts` | Exact executions and current Attempt |
+| `GET /api/runs/P/R/metrics` | Metric observations and contexts |
+| `GET /api/attempts/P/R::A/logs` | Bounded stored Attempt logs |
+| `GET /api/runs/P/R/attempts/A/checkpoints` | Registered persistent checkpoints |
+| `GET /api/runs/P/R/attempts/A/files` | Collected/uploaded file inventory |
+| `GET …/attempts/A/artifacts/download` | Short-lived signed URL and verified inventory |
+| `GET …/attempts/A/artifacts/archive` | Authenticated proxy archive stream |
+| `GET …/attempts/A/files/outputs/PATH` | Exact file; ranges and ETags |
 
-An empty file list means no collected/uploaded artifact is available; it does
-not claim the remote run produced nothing. Legacy WYD collection remains
-readable. Artifacts never fall back to a different Attempt or arbitrary host
-path. No automatic artifact or history deletion is enabled.
+The signed URL request requires API auth; the object GET carries no API token.
+Check archive/file hashes and never save signed URLs. An empty file list or 404
+does not establish that NAS contains no output. It may mean upload never finished.
+Artifacts never fall back to another Attempt. See [recovery](recovery.md).
 
-A single-node object store on the daemon machine is not an off-host backup.
-See [the operator guide](operator-guide.md) for component ownership and
-sanitized configuration templates. Never publish credential files or dispatch scripts.
-
-## Historical execution identities
-
-Already frozen images and manifests keep their original execution definition.
-Historical READY images, receipts and logs remain readable; retired unbuilt
-recipes must be replaced by a newly prepared Dockerfile Runtime.
-
-Protocol 1 clients must upgrade to protocol 2 because the old health/tracking
-contract was removed. Existing Action SQLite schema and scheduler outboxes are
-unchanged. The root repository remains the reusable backend library; new
-managed projects need no project-specific controller implementation.
-
-Project-defined metric names, units, completeness and frozen scoring protocols:
-[metrics contract](metrics.md).
+Internal `/launch-transfers`, `/asset-transfers`, `/checkpoint-transfers` and
+`/attempt-uploads` routes use narrow worker capabilities. They are not substitutes
+for client control API credentials. Research-question and tracking-vendor APIs
+are absent; evaluation is an ordinary Run with checkpoint/data/protocol inputs.

@@ -1,168 +1,102 @@
-# Development and Quality Gates
+# Development
 
-## Scope
+## Setup and focused checks
 
-`ml-experiment-control` is the backend core; `server/` is the independently
-runnable HTTP daemon distribution. Backend tests must use injected
-command runners and may not contact live schedulers. Project-specific commands,
-paths, metrics, and assets belong in host-owned `ProjectAdapter` tests; only a
-backend's own protocol vocabulary belongs in backend-specific tests.
-
-## Setup
-
-Python dependencies are managed by uv and locked in `uv.lock`:
+Use Python 3.12 to match CI and Rust 1.85+ to build `experiment-redact`:
 
 ```bash
 git clone https://github.com/NotDesigned/ml-experiment-control.git
 cd ml-experiment-control
-uv sync --locked
+uv sync --locked --all-packages
 ```
 
-`uv sync` creates `.venv`, installs the package in editable mode, and includes
-the default `dev` dependency group. Use `uv add <package>` for runtime
-dependencies and `uv add --dev <package>` for development tools. Building the
-packaged sanitizer requires Rust 1.85 or newer.
+This creates a development `.venv`; do not sync development dependencies into
+a deployed service environment. Commit `pyproject.toml` and `uv.lock` together
+when dependencies change, and `rust/Cargo.lock` when Rust dependencies change.
 
-Install every workspace distribution when changing the daemon:
+Run affected tests first. For documentation and the introductory HTTP workflow:
 
 ```bash
-uv sync --locked --all-packages
-uv run --package ml-experiment-server pytest server/tests -q
-uv run --package ml-experiment-server ml-expd --help
+uv run pytest tests/test_quality_tools.py -q
+uv run --package ml-experiment-server pytest server/tests/test_api_quickstart.py -q
+uv run python tools/generate_cli_reference.py --check
 ```
 
-`client/` is the independent `ml-experiment-client` distribution. It has no
-runtime dependency on the server/core or third-party libraries. Build it with
-`uv build --package ml-experiment-client`; run its tests with
-`uv run --package ml-experiment-client pytest client/tests -q`. Its `ml-exp`
-entry point and `python -m ml_exp_client` work outside a repository checkout.
-Daemon integration tests depend on the client only through the server's dev
-group; this is not a server runtime dependency.
+The quickstart suite uses real loopback HTTP with injected registry, scheduler
+and object-store boundaries. It does not prove live GPU availability. Backend
+tests use injected runners/REST responses; they must not submit to a scheduler.
 
-Daemon modules may depend on the core package, never the reverse. FastAPI
-belongs only in `server/api`; `runtime.py` is the composition root;
-`controller_gateway.py` is the sole legacy `experimentctl` subprocess
-boundary. The daemon must not import a model provider or run the client Agent
-loop. It must also not persist client goals, conversations, model turns, or
-derive scientific conclusions from metrics and evaluation records.
+## Required validation
 
-Constructing the FastAPI object is side-effect free. Its lifespan first
-acquires the workspace lease and only then constructs SQLite stores,
-bootstraps the Project registry, indexes Projects, or starts
-collector threads. This ordering is part of the single-writer
-contract, not an implementation detail. If the lease is already held, startup
-fails before runtime construction; the daemon does not provide a standby
-runtime with partially writable stores.
+The repository workflow runs on pull requests and main pushes, using Python
+3.12. Python 3.10 remains the package compatibility floor, not another CI job.
+Before merging implementation changes, run the independent full gates once:
 
-Server-owned JSON state transitions use `storage.DurableJsonState`: callers
-hold their store's cross-process lock, compare the expected revision, atomically
-replace authoritative state, and append the embedded transition to JSONL. The
-next locked access repairs a journal append interrupted by a crash. Non-state
-events on the same ledger must use `append_event`, which repairs the transition
-first and safely truncates only a crash-incomplete JSONL tail. Complete records
-must be mappings and transition revisions must be contiguous; corruption fails
-closed. New stores must not invent a separate lock/atomic-write/journal protocol.
+```bash
+cargo fmt --manifest-path rust/Cargo.toml -- --check
+cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
+cargo test --locked --manifest-path rust/Cargo.toml
+uv run mypy
+uv run python tools/coverage_gate.py
+uv run --package ml-experiment-server python tools/coverage_gate.py --suite daemon
+uv run --package ml-experiment-client pytest client/tests -q
+uv run python tools/generate_cli_reference.py --check
+uv run python -m compileall -q src tests tools examples
+uv run --package ml-experiment-server python -m compileall -q server/src server/tests
+uv run --package ml-experiment-client python -m compileall -q client/src client/tests
+uv build --all-packages
+```
 
-Reviewed project-file Actions use a durable write-ahead transaction because a
-set of filesystem paths cannot be replaced atomically. The transaction binds
-every path to its reviewed old and new digest before the first effect. Restart
-recovery may only roll that exact content forward; an unrelated edit fails
-closed and is surfaced in daemon health. Every replacement fsyncs the file and
-parent directory before the Action can become `VERIFIED`.
+CI also installs the client wheel without core/server dependencies and smoke
+tests the installed server/core wheels. Both core and server coverage gates
+require **100% line and 100% branch coverage independently**. Coverage is a
+regression floor; it does not prove all lifecycle combinations or a live backend.
 
-Runtime construction registers cleanup as each SQLite/telemetry/service
-resource is acquired. Constructor failure unwinds those resources, and normal
-shutdown attempts every close operation even if an earlier one fails.
+Meaningful scenarios include lost create acknowledgments, exact identity
+reconciliation without replay, concurrent execution claims, cancellation of
+only an owned job, corrupt archives/checkpoints, interrupted journal writes,
+metric-context isolation and stale observations. Prefer simplifying code and
+testing these boundaries over tests that merely repeat implementation details.
 
-Submission changes must cover the complete safety path in
-`server/tests/test_submissions.py`: authored-but-unmaterialized Run preparation,
-separate authorization/execution, exact backend-job confirmation, idempotent
-preparation, and status-only reconciliation after uncertain execution.
+## Ownership and durable changes
 
-## CLI documentation
+Follow [architecture](architecture.md). The core must not import the server;
+the standalone client must not require either. FastAPI belongs in `server/api`.
+Host scientific configuration/parsers belong in `ProjectAdapter`; managed API
+projects use the generic worker and metric schema.
 
-The Rust binary in `rust/src/main.rs` is the single source of truth for the
-package's only CLI. Generate and check its reference with:
+Daemon startup must acquire the workspace lease before constructing writable
+stores or starting collectors. Actions use [SQLite transactions](action-storage.md).
+File-backed state uses `DurableJsonState` under its store's cross-process lock:
+revision check, atomic replace and repairable embedded journal transition.
+Reviewed multi-file edits bind old/new digests before effects and recover only
+that transaction. Do not invent another state/lock/journal protocol.
+
+Submission changes must cover preparation, explicit authorization, exact-job
+verification and observation-only reconciliation. New worker behavior needs a
+new immutable Runtime identity; do not reinterpret old receipts or silently
+replay uncertain requests. A collector is not a retry scheduler.
+
+Live acceptance is separate, explicitly scoped work with project identity,
+finite duration/GPU budget, exact Attempt and downloaded file-hash evidence.
+Documentation checks never justify a new cloud or GPU job.
+
+## Documentation and public contracts
+
+Maintain one primary page per concept and link from [the index](README.md).
+Keep introductory client instructions separate from private operator setup.
+Derive route/model examples from current OpenAPI and CLI parsers. Use placeholder
+credentials, IDs and image digests; never publish deployment secrets or logs.
+Remove obsolete instructions rather than keeping parallel historical guides;
+Git retains their history. Label unimplemented designs and known defects.
+
+`cli_reference.md` is generated from the Rust parser:
 
 ```bash
 uv run python tools/generate_cli_reference.py
 uv run python tools/generate_cli_reference.py --check
 ```
 
-The CLI redacts credential-bearing log text from standard input. State
-normalization and experiment lifecycle control use the Python backend API.
-
-Run the Rust-specific checks before the Python suite:
-
-```bash
-cargo fmt --manifest-path rust/Cargo.toml -- --check
-cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
-cargo test --locked --manifest-path rust/Cargo.toml
-```
-
-## Tests and coverage
-
-```bash
-uv run mypy
-uv run python tools/coverage_gate.py
-uv run --package ml-experiment-server python tools/coverage_gate.py --suite daemon
-```
-
-Mypy checks the public host/backend contracts in strict mode and verifies that
-every backend registered by `build_registry()` structurally implements the
-shared `Backend` protocol. The checked surface is intentionally expanded in
-stages; untyped backend internals are not evidence that a public boundary is
-safe.
-
-Both core and daemon gates run their full suites and check repository-wide
-dimensions separately:
-
-- line coverage: 100%;
-- branch coverage: 100%.
-
-Coverage is a regression floor, not a correctness proof. Prefer simplifying
-unreachable branches and testing meaningful identity, recovery, redaction,
-atomicity, and fail-closed behavior. Do not add live scheduler calls or generic
-tests coupled to a private cluster merely to increase coverage.
-
-Branch coverage measures control-flow graph edges, not every possible path
-combination. The semantic lifecycle and recovery scenarios tracked as flow
-coverage are documented in [`flow_coverage.md`](flow_coverage.md).
-
-Changes to exported Python symbols or the Rust CLI must also update
-[`downstream_contract.md`](downstream_contract.md) and be validated against the
-the affected ProjectAdapter integration tests before a downstream commit pin advances.
-
-CI first runs `uv sync --locked --all-packages`, then checks generated CLI documentation,
-Python compilation, and distribution construction with `uv build --all-packages` on every
-push and pull request. Update dependencies with `uv add` or `uv remove` and
-commit both `pyproject.toml` and `uv.lock`.
-
-## Full verification
-
-```bash
-uv sync --locked --all-packages
-cargo fmt --manifest-path rust/Cargo.toml -- --check
-cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
-cargo test --locked --manifest-path rust/Cargo.toml
-uv run mypy
-uv run python tools/coverage_gate.py
-uv run python tools/generate_cli_reference.py --check
-uv run python -m compileall -q src tests tools examples
-uv run --package ml-experiment-server python -m compileall -q server/src server/tests client/src client/tests
-uv run --package ml-experiment-server python tools/coverage_gate.py --suite daemon
-uv run --package ml-experiment-server ml-expd --help
-uv run --package ml-experiment-client pytest client/tests -q
-uv run --package ml-experiment-client ml-exp --help
-uv run python examples/local_smoke.py
-uv build --all-packages
-```
-
-Action migration and rollback: [action-storage.md](action-storage.md).
-SSE reconnect/resync contract: [sse.md](sse.md).
-Source/container/artifact contract: [source-api.md](source-api.md).
-
-CI uses Python 3.12 on PRs and main pushes. Feature-branch pushes do not duplicate
-PR runs; Python 3.10 remains the package compatibility floor, but is no longer a
-CI matrix target. For a focused edit, first run the affected pytest files; run
-the independent full coverage gates once before merging.
+Do not hand-edit it. Changes to exported symbols or redactor invocation must
+update [the public contract](downstream_contract.md) and pass affected consumer
+integration tests before a consumer's immutable commit pin advances.

@@ -1,112 +1,67 @@
-# Downstream Integration Contract
+# Public core contract
 
-`ml-experiment-control` is consumed by independent host repositories. This
-document defines the supported integration surface; internal module contents
-are not implicitly downstream APIs.
+The stable root exports are listed in `experiment_control.__all__`. Hosts
+may import those names from their defining modules. The backend composition
+interfaces below are also supported in `backends`, `backends.base` and
+`backends.services`. Private names beginning
+with `_` and unexported implementation helpers are not compatibility promises.
 
-## Supported Python surface
+## Supported boundaries
 
-The package root exports the stable primitives in `experiment_control.__all__`.
-Hosts may also import those same names from their defining modules. The primary
-integration points are:
+| Surface | Purpose |
+|---|---|
+| `Backend`, `BackendRegistry`, `build_registry`, `BackendServices` | Compose `local`, `slurm` and `sensecore` backends |
+| `ProjectAdapter`, `ProjectRegistry`, asset/source types | Host-owned configuration, science and filesystem probes |
+| `RunSpec`, `AttemptManifest`, submission/status/log/record types | Typed JSON/YAML-compatible mappings |
+| `ExperimentStateStore`, lifecycle/state and manifest helpers | Immutable definitions, events and durable intents |
+| `CommandRunner`, `CommandResult`, `SubprocessRunner` | Inject command execution |
+| Preflight, identity, checkpoint and cancel-outbox helpers | Check ownership and reconcile effects |
 
-- `experiment_control.backends.build_registry` and
-  `experiment_control.backends.services.BackendServices` for backend composition;
-- the registered `local`, `sensecore`, and `slurm` backend kinds, with `local`
-  available as the runnable Linux development and smoke-test backend;
-- `Backend`, `ProjectAdapter`, `BackendRegistry`, and `ProjectRegistry` for typed
-  host dispatch;
-- `RunSpec`, `AttemptManifest`, `BackendStatus`, `BackendLogs`,
-  `AssetVerification`, submission/record types, and JSON value aliases for the
-  serialization-compatible host/backend boundary;
-- `ExperimentStateStore`, `LifecycleStatus`, `RunState`, `append_event`,
-  `atomic_write`, `sanitize_command`, `utc_now`, `validate_identity`, and
-  `require_immutable` for durable state, durable file updates, and validated
-  identity construction;
-- `CommandResult`, `CommandRunner`, and `SubprocessRunner` for injected command
-  execution;
-- `PreflightCheck`, `PreflightReport`, `IdentityReport`, asset/source types,
-  checkpoint discovery, manifest construction, and cancel-outbox functions
-  exported from the package root.
+Mapping contracts are `TypedDict` structures, not runtime model objects.
+Campaign/project summaries remain open to host-owned fields. Backend reports
+must expose sanitized evidence, not raw account responses or commands.
 
-Names beginning with `_` are private. A host must not import them, even when a
-commit pin makes the current implementation appear stable. Module constants or
-classes omitted from both `experiment_control.__all__` and the README Public API
-section are likewise not compatibility promises.
+Every backend provides read-only `availability()` for local tools/generic
+authentication. Run-specific checks belong in `preflight(run, scope=...)`.
+An observation-only check must not require staging/submission or create jobs.
 
-The mapping contracts are `TypedDict` definitions rather than runtime model
-objects: callers continue to persist ordinary JSON/YAML dictionaries, while a
-type checker can reject missing required identity fields and incompatible
-backend result shapes. Campaign and project summary payloads remain open
-because their scientific fields are owned by the host project.
+## Exact submission and cancellation
 
-Every implementation of the public `Backend` protocol provides
-`availability() -> PreflightReport`. This run-independent method must be
-read-only, must not render raw command output, and must cover daemon-host tools
-plus any generic authentication probe needed before a concrete Run is known.
-Run-specific workspace, scheduler-resource, and storage checks remain in
-`preflight(run, scope=...)`.
+Call `begin_submission` with `backend.submission_request` before a non-dry-run
+`submit`. Pass its unchanged intent to recovery and submit. The persisted random
+128-bit token is bound to the Attempt: Slurm Comment, exact ACP resource name
+or local process claim. Recover first; reconcile an existing exact job without
+creating another. Missing, foreign or ambiguous evidence fails closed.
 
-## Submission identity
+Uncertain creates require status-only reconciliation. A legacy pending intent
+without a token cannot be silently upgraded into ownership proof. Legitimate
+retry needs a terminal prior execution and a new unused Attempt. Cancellation
+must use the durable outbox and exact owned scheduler/process identity.
 
-Hosts must call `ExperimentStateStore.begin_submission(...)` with the selected
-backend's `submission_request(...)` before invoking a non-dry-run `submit`.
-The returned durable `SubmissionIntent` contains the generated
-`submission_token` and must be passed unchanged to both `recover_submission`
-and `submit(..., intent=intent)`. Recovery is attempted first; a returned job
-ID is reconciled without another scheduler mutation. If recovery returns
-`None`, the same intent is used for the first submit and the returned job ID is
-then persisted with `reconcile_submission(...)`.
+Status can contain `reason`, `detail`, `observed_at` and `observation_source`.
+Populate them from evidence. Slurm `%R` supplies a pending reason only for a
+pending/configuring job; a running node list is not a queue reason. Historical
+logs, poll timestamps and scheduler RUNNING are not fresh training heartbeats.
 
-Backends reject non-dry-run calls without a valid intent. An unreconciled
-legacy submission record without a token cannot be upgraded automatically,
-because no local value can prove ownership of an already-created remote job;
-hosts must stop and reconcile it manually.
+## Redactor and collection
 
-`BackendStatus` includes optional `reason`, `detail`, `observed_at`, and
-`observation_source` fields. Backends should populate them only from observed
-scheduler evidence. In particular, a WYD `PENDING`/`CONFIGURING` row may expose
-Slurm `%R` as `reason` and `detail.pending_reason`; an allocated node list for a
-running job is not a pending reason.
+`experiment-redact` reads log text from stdin, without a subcommand. Its
+generated [CLI reference](cli_reference.md) is authoritative.
+`EXPERIMENTCTL_REDACTOR_BIN` selects another reviewed executable. Legacy names,
+mode arguments and fallback variables are unsupported. Redactor failure must
+never echo raw input.
 
-## Sanitizer CLI
+`BackendServices.collection_includes` optionally supplies host collection
+patterns; managed Runs declare `outputs`. Backend collection has no required
+project-specific scientific metric names. Scientific parsing and completeness
+rules belong to the host or [per-project/per-Run metrics schema](metrics.md).
+No current W&B SDK, publishing or history synchronization is provided.
 
-`experiment-redact` is a packaged Rust executable installed into the Python
-environment's `PATH`. Invoke it directly with log text on standard input, without
-subcommands. `EXPERIMENTCTL_REDACTOR_BIN` selects the executable. Legacy executable
-names, mode arguments and environment variables are not supported.
+## Consumer upgrades
 
-The generated [`cli_reference.md`](cli_reference.md) is the command contract.
-Sanitizer failures never echo raw input.
-
-## Consumer upgrade procedure
-
-Consumers should pin an immutable package commit. Before updating that pin:
-
-1. install the candidate package, including its platform wheel or Rust build;
-2. run the host's registry, project-adapter, state-store, and CLI integration tests;
-3. remove imports absent from the supported surface instead of requesting
-   compatibility for unused implementation details;
-4. update consumer documentation when module ownership or invocation changes;
-5. update the commit pin only after both package and host tests pass.
-
-ELF is the reference downstream consumer. Its integration tests should exercise
-the public imports and direct `experiment-redact` invocation against the
-candidate package before advancing `requirements.txt`.
-
-## Host-specific collection
-
-`BackendServices.collection_includes` is an optional host callback returning
-rsync include patterns for the selected Campaign (default: empty). WYD uses it
-before its final exclude rule. A host can retain this hook for generic files;
-no training SDK or project-specific filename is embedded in the backend.
-Current daemon/ELF W&B support is removed. Historic snapshots and old frozen
-execution definitions remain historical data; they do not establish current
-SDK, publication or offline-sync support.
-
-## Artifact selection
-
-Default backend collection patterns cover control records, summaries and
-JSONL results, including existing host prediction files. Additional formats
-belong in the host's `collection_includes` or managed Run `outputs`; the backend
-has no required ELF filenames or scientific metric names.
+Pin immutable commits. Install a candidate including its Rust binary, run the
+consumer's public-import, adapter, state/outbox and redactor integration tests,
+then advance the pin. Update this contract when public ownership/invocation
+changes; do not preserve unused private helpers as compatibility aliases.
+The [local integration example](library-integration.md) and repository checks
+supplement, rather than replace, tests of the consuming controller.
