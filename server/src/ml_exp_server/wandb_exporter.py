@@ -71,7 +71,7 @@ def publish(job, sdk, sessions):
     api = sdk.Api(api_key=job["api_key"], overrides={"base_url": "https://api.wandb.ai"}, timeout=15)
     remote = api.run(f'{route["entity"]}/{route["project"]}/{identity}')
     wandb_display.configure(handle, display)
-    for key in remote.summary:
+    for key in remote.summary.keys():
         if key.startswith("metrics/"):
             handle.define_metric(key, hidden=True, summary="none", overwrite=True)
     seen = {int(row["ml_expd/sequence"]): row["ml_expd/event_id"] for row in remote.scan_history(

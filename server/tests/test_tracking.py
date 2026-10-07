@@ -225,9 +225,11 @@ def test_observer_preserves_checkpoint_identity_and_receipts(client, stored):
 
 
 def fake_sdk():
+    from wandb.apis.public.summary import HTTPSummary
     rows, handles = [], []
     class Remote:
-        summary = {}
+        summary = HTTPSummary(SimpleNamespace(dir=".", storage_id="test"),
+            SimpleNamespace(execute_graphql=lambda *a, **kw: {"upsertBucket":{"bucket":{"id":"test"}}}), summary={})
         @property
         def lastHistoryStep(self): return max((r["ml_expd/sequence"] - 1 for r in rows), default=-1)
         def scan_history(self, **kw):
@@ -629,3 +631,14 @@ def test_projection_failure_isolated_from_other_publications(tmp_path,monkeypatc
     monkeypatch.setattr(store,'display',lambda *a:(_ for _ in ()).throw(ValueError('DISPLAY_CONTEXT_LIMIT')))
     exporter.export(store,store.pending()[0],SimpleNamespace(close=lambda:None))
     assert store.pending()[0]['error']=='PUBLISHER_UNAVAILABLE'
+
+
+def test_official_http_summary_is_a_mapping_not_an_iterator():
+    from wandb.apis.public.summary import HTTPSummary
+    sdk, _, _ = fake_sdk()
+    summary = sdk.Api(overrides={"base_url":"https://api.wandb.ai"}).run("").summary
+    assert isinstance(summary, HTTPSummary)
+    summary.update({"metrics/loss/step":6112})
+    assert list(summary.keys())==["metrics/loss/step"]
+    assert dict(summary)=={"metrics/loss/step":6112}
+    with pytest.raises(KeyError):list(summary)
