@@ -28,6 +28,8 @@ from .source_revisions import resolve_source_tree, _tree_digest
 from .storage import read_json
 from .worker_contract import managed_io
 from .worker_launcher import CONTRACT as LAUNCHER_CONTRACT
+from .worker_http import https_connection, relay_environment
+from urllib.parse import urlsplit
 
 
 def parse_metric(_campaign, line: str) -> dict | None:
@@ -109,6 +111,7 @@ class Controller:
                        "OUTPUT_DIR": output, "PROJECT_NAME": self.campaign["project"],
                        "RUN_ID": self.run["run_id"], "ATTEMPT_ID": attempt_id,
                        "SOURCE_ID": self.run["source_id"]}
+        environment.update(relay_environment(self.run["backend"].get("api_relay")))
         if managed_io(self.run["container"]):
             environment["INPUTS_DIR"] = "/inputs"
         if self.run.get("data_preparation"):
@@ -150,6 +153,8 @@ class Controller:
                                                **({"checkpoint_state": self.state_context(manifest["attempt_id"])} if self.run.get("checkpoint_persistence") else {}))
             dispatch = {"ML_EXPD_UPLOAD_URL": url, "ML_EXPD_UPLOAD_LIMIT": str(limit),
                         "ML_EXPD_OUTPUT_PATTERNS": json.dumps(self.run["outputs"])}
+            relay = relay_environment(self.run["backend"].get("api_relay"))
+            dispatch.update(relay)
             if self.run.get("inputs"):
                 prefix = transfer.config["public_transfer_base"].rstrip("/").rsplit("/", 1)[0]
                 base = prefix + "/asset-transfers/" + "/".join([self.campaign["project"], self.run["run_id"], manifest["attempt_id"]])
@@ -162,6 +167,8 @@ class Controller:
                                 ML_EXPD_SNAPSHOT_INTERVAL=str(self.run["checkpoint_upload"]["interval_seconds"]))
             if self.run.get("data_preparation"):
                 dispatch["ML_EXPD_DATA_PREPARATION"] = json.dumps(self.run["data_preparation"])
+                if relay:
+                    dispatch["ML_EXPD_DATA_PREPARATION_CACHED"] = "1"
             if self.run.get("checkpoint_persistence"):
                 prefix = transfer.config["public_transfer_base"].rstrip("/").rsplit("/", 1)[0]
                 state_url = prefix + "/checkpoint-transfers/" + "/".join([self.campaign["project"], self.run["run_id"], manifest["attempt_id"]])
@@ -179,7 +186,8 @@ class Controller:
                     "argv": [*self.run["container"]["entrypoint"], *self.run.get("arguments", [])],
                     "timeout_seconds": self.duration_seconds(),
                 })
-                return ["env", "ML_EXPD_BOOTSTRAP_TOKEN=" + token, "ml-exp-worker", "--manifest-url", launch_url]
+                return ["env", *[f"{key}={value}" for key, value in sorted(relay.items())],
+                        "ML_EXPD_BOOTSTRAP_TOKEN=" + token, "ml-exp-worker", "--manifest-url", launch_url]
             command = ["env", "ML_EXPD_UPLOAD_TOKEN=" + token, *[f"{key}={value}" for key, value in sorted(dispatch.items())], *command]
         return command
 
@@ -243,12 +251,52 @@ class Controller:
 
     def stage(self, source_root: str | None = None):
         self.backend.validate(self.run)
+        self.check_api_transport()
         source = self.source(source_root)
-        return self.backend.stage(self.campaign, self.run, self.run["source_id"], SourceBundle(
+        staged = self.backend.stage(self.campaign, self.run, self.run["source_id"], SourceBundle(
             root=source, excludes=(), container_path="/workspace", required_paths=()))
+        self.prepare_gateway_data(require_cached=False)
+        return staged
+
+    def check_api_transport(self):
+        relay = relay_environment(self.run["backend"].get("api_relay"))
+        if not relay:
+            return
+        target = json.loads(Path(self.campaign["artifact_store"]).read_text())["public_transfer_base"]
+        code = Path(__file__).with_name("worker_http.py").read_text() + "\n" + (
+            "import json,sys\nvalue=json.load(sys.stdin)\n"
+            "connection=https_connection(urlsplit(value['target']),timeout=10,environment=value['environment'])\n"
+            "try: connection.connect()\nfinally: connection.close()\n")
+        self.runner.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+                         self.run["backend"]["ssh_alias"], shlex.join(["python3", "-c", code])],
+                        input_text=json.dumps({"target": target, "environment": relay}), timeout_seconds=30)
+
+    def prepare_gateway_data(self, *, require_cached):
+        if not self.run["backend"].get("api_relay") or not self.run.get("data_preparation"):
+            return
+        backend = self.run["backend"]
+        cache = self.run["storage"]["project_data_root"] + "/data-preparations"
+        code = ("import json,sys;from pathlib import Path;sys.path.insert(0,'/usr/local/lib/ml-expd');"
+                "from data_preparation import prepare;prepare(json.load(sys.stdin),Path(sys.argv[1]),"
+                "require_cached=sys.argv[2]=='1')")
+        seconds = self.run["data_preparation"]["timeout_seconds"] + 60
+        cache_dir = backend.get("apptainer_cache_dir", self.run["storage"]["project_data_root"] + "/apptainer/cache")
+        temp_dir = backend.get("apptainer_tmp_dir", self.run["storage"]["project_data_root"] + "/apptainer/tmp")
+        command = ["env", "APPTAINER_CACHEDIR=" + cache_dir, "APPTAINER_TMPDIR=" + temp_dir,
+                   "timeout", "--signal=TERM", "--kill-after=30s", str(seconds) + "s",
+                   "apptainer", "exec", *(["--unsquash"] if backend.get("apptainer_unsquash") else []),
+                   "--bind", backend["mount_root"] + ":" + backend["mount_root"],
+                   "--pwd", self.run["container"]["workdir"], backend["sif_path"],
+                   "python3", "-c", code, cache, "1" if require_cached else "0"]
+        self.runner.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", backend["ssh_alias"],
+                         shlex.join(["mkdir", "-p", cache_dir, temp_dir]) + " && " + shlex.join(command)],
+                        input_text=json.dumps(self.run["data_preparation"]),
+                        timeout_seconds=seconds + 60)
 
     def submit(self, campaign_id: str | None):
         self.prepare(campaign_id)
+        self.check_api_transport()
+        self.prepare_gateway_data(require_cached=True)
         self.backend.preflight(self.run, scope="submit").require_ready()
         attempt = self.store.load_attempt(self.attempt_id)
         intent = self.store.begin_submission(
@@ -389,6 +437,8 @@ def cli(argv=None):
         elif args.verb == "stage":
             result = {"staged": controller.stage(args.source_root)}
         elif args.verb == "preflight":
+            if args.scope != "observe":
+                controller.check_api_transport()
             report = controller.backend.preflight(controller.run, scope=args.scope)
             report.require_ready()
             result = {"ready": True}

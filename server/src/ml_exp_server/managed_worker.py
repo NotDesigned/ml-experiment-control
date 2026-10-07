@@ -21,11 +21,13 @@ if __package__:
     from .data_input import digest_stream, relative_path, verify_tree, fetch, deliver, DeliveryTrace
     from .data_preparation import prepare as prepare_data
     from . import persistent_state
+    from .worker_http import error_code
 else:
     from artifacts import archive_outputs, upload_parts as upload
     from data_input import digest_stream, relative_path, verify_tree, fetch, deliver, DeliveryTrace
     from data_preparation import prepare as prepare_data
     import persistent_state
+    from worker_http import error_code
 
 
 def link_path(target, path):
@@ -119,6 +121,7 @@ def main(argv=None):
     snapshot_url = os.environ.pop("ML_EXPD_SNAPSHOT_URL", "")
     interval = int(os.environ.pop("ML_EXPD_SNAPSHOT_INTERVAL", "60"))
     preparation = json.loads(os.environ.pop("ML_EXPD_DATA_PREPARATION", "null"))
+    preparation_cached = os.environ.pop("ML_EXPD_DATA_PREPARATION_CACHED", "") == "1"
     state_context = json.loads(os.environ.pop("ML_EXPD_CHECKPOINT_STATE", "null"))
     state_url = os.environ.pop("ML_EXPD_CHECKPOINT_STATE_URL", "")
     state_interval = int(os.environ.pop("ML_EXPD_CHECKPOINT_STATE_INTERVAL", "60"))
@@ -158,7 +161,8 @@ def main(argv=None):
     print("ML_EXPD_INPUT_DELIVERY_SECONDS=" + str(round(time.monotonic() - started, 3)), flush=True)
     if preparation is not None:
         try:
-            location, receipt = prepare_data(preparation, root.parents[4] / "data-preparations")
+            location, receipt = prepare_data(preparation, root.parents[4] / "data-preparations",
+                                            require_cached=preparation_cached)
             os.environ["DATA_DIR"] = str(location)
         except Exception as error:
             message = str(error)
@@ -172,8 +176,8 @@ def main(argv=None):
                 with tempfile.TemporaryFile(dir=root.parent) as stream:
                     archive_outputs(root, stream, max(1, limit - 1024 * 1024) if limit else 0, ["data-preparation.json"])
                     upload(url, token, stream, stream.tell())
-            except Exception:
-                print("ML_EXPD_ARTIFACT_UPLOAD=FAILED", file=sys.stderr, flush=True)
+            except Exception as error:
+                print("ML_EXPD_ARTIFACT_UPLOAD=FAILED error=" + error_code(error), file=sys.stderr, flush=True)
             return 65
     child = subprocess.Popen(argv or sys.argv[1:], start_new_session=True)
     def forward(signum, _frame):
@@ -199,8 +203,8 @@ def main(argv=None):
                         (root / "checkpoints.json").write_text(json.dumps({"checkpoints": state_receipts, "resume_from": checkpoint_restore}))
                         state_previous = marker
                         print("ML_EXPD_CHECKPOINT_STATE=REGISTERED " + receipt["checkpoint_id"], flush=True)
-                except Exception:
-                    print("ML_EXPD_CHECKPOINT_STATE=REGISTRATION_FAILED", file=sys.stderr, flush=True)
+                except Exception as error:
+                    print("ML_EXPD_CHECKPOINT_STATE=REGISTRATION_FAILED error=" + error_code(error), file=sys.stderr, flush=True)
         if snapshot_url and (code is not None or time.monotonic() - last_poll >= interval):
             last_poll = time.monotonic()
             checkpoint_root = state_root if state_context is not None else root
@@ -223,8 +227,8 @@ def main(argv=None):
                             upload(snapshot_url, token, stream, length)
                             previous = marker
                             print("ML_EXPD_CHECKPOINT_UPLOAD=COMPLETE", flush=True)
-                except Exception:
-                    print("ML_EXPD_CHECKPOINT_UPLOAD=FAILED", file=sys.stderr, flush=True)
+                except Exception as error:
+                    print("ML_EXPD_CHECKPOINT_UPLOAD=FAILED error=" + error_code(error), file=sys.stderr, flush=True)
         if code is not None:
             break
         time.sleep(1)
@@ -236,8 +240,8 @@ def main(argv=None):
                 raise ValueError("artifact archive limit exceeded")
             upload(url, token, stream, length)
         print("ML_EXPD_ARTIFACT_UPLOAD=COMPLETE", flush=True)
-    except Exception:
-        print("ML_EXPD_ARTIFACT_UPLOAD=FAILED", file=sys.stderr, flush=True)
+    except Exception as error:
+        print("ML_EXPD_ARTIFACT_UPLOAD=FAILED error=" + error_code(error), file=sys.stderr, flush=True)
         return code if code > 0 else 74
     return code if code >= 0 else 128 - code
 

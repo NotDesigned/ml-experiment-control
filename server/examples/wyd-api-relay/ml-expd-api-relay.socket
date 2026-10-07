@@ -1,0 +1,10 @@
+[Unit]
+Description=ML-Expd API relay on WYD private network
+
+[Socket]
+# Replace with the gateway's private address; never use a wildcard.
+ListenStream=172.16.78.148:18443
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

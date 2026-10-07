@@ -19,6 +19,7 @@ from ml_exp_server.archive_limits import byte_limit, exceeds, minimum_limit, wir
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.data_assets import AssetStore
 from ml_exp_server.storage import atomic_json
+from ml_exp_server.data_image_recipe import DATA_WORKERS
 from tests.test_artifact_store import archive
 from tests.test_sensecore_data_workflow import client, stored
 from tests.test_multipart_upload import begin, send
@@ -27,7 +28,7 @@ from tests.test_multipart_upload import begin, send
 @pytest.fixture
 def stage(tmp_path):
     workers = tmp_path / 'workers'; workers.mkdir()
-    for name in ('data_copy_worker.py','data_input.py'):
+    for name in DATA_WORKERS:
         (workers / name).write_text('# trusted ' + name)
     return desktop.DesktopUploads(tmp_path / 'desktop', {'upload_part_bytes':1024,'worker_directory':str(workers),
         'data_base_image':'registry.example/python@sha256:'+'a'*64})
@@ -258,7 +259,7 @@ def test_desktop_cli_stdin_serve_and_configuration(tmp_path,monkeypatch):
 
 def test_desktop_entrypoint_reads_fixed_config(tmp_path,monkeypatch,capsys):
     configuration=tmp_path/'upload-config.json';workers=tmp_path/'workers';workers.mkdir()
-    for file in ('data_copy_worker.py','data_input.py'):
+    for file in DATA_WORKERS:
         (workers/file).write_text('# trusted')
     configuration.write_text(json.dumps({'worker_directory':str(workers)}))
     real=Path

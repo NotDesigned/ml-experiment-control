@@ -257,7 +257,7 @@ def test_worker_returns_preparation_failure_receipt_without_starting_training(tm
     for key, value in {"OUTPUT_DIR": str(root), "ML_EXPD_UPLOAD_URL": "https://api.example/output", "ML_EXPD_UPLOAD_TOKEN": "private",
                        "ML_EXPD_UPLOAD_LIMIT": str(2 * 1024 ** 2), "ML_EXPD_DATA_PREPARATION": '{"script":"download.py"}'}.items(): monkeypatch.setenv(key, value)
     monkeypatch.setattr(worker, "link_path", lambda *args: None)
-    def prepare(*args):
+    def prepare(*args, **kwargs):
         if known: raise ValueError("DATA_SCRIPT_EXIT_7")
         raise OSError("sensitive signed URL must not enter receipt")
     monkeypatch.setattr(worker, "prepare_data", prepare)
@@ -279,7 +279,7 @@ def test_worker_passes_verified_data_dir_and_always_returns_metadata(tmp_path, m
     for key, value in {"OUTPUT_DIR": str(root), "ML_EXPD_UPLOAD_URL": "https://api.example/output", "ML_EXPD_UPLOAD_TOKEN": "private",
                        "ML_EXPD_UPLOAD_LIMIT": str(2 * 1024 ** 2), "ML_EXPD_OUTPUT_PATTERNS": '["metrics.json"]', "ML_EXPD_DATA_PREPARATION": json.dumps(spec)}.items(): monkeypatch.setenv(key, value)
     monkeypatch.setattr(worker, "link_path", lambda *args: None)
-    monkeypatch.setattr(worker, "prepare_data", lambda definition, cache: data.prepare(definition, cache, workspace=workspace))
+    monkeypatch.setattr(worker, "prepare_data", lambda definition, cache, **kwargs: data.prepare(definition, cache, workspace=workspace, **kwargs))
     real = subprocess.Popen
     def popen(*args, **kwargs):
         assert "ML_EXPD_UPLOAD_TOKEN" not in os.environ

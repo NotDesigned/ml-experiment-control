@@ -57,7 +57,8 @@ class WydDataStager:
     @contextmanager
     def process(self, profile, metadata):
         source=Path(__file__).with_name('data_input.py').read_text()
-        code=source+'\n'+REMOTE
+        transport=Path(__file__).with_name('worker_http.py').read_text()
+        code="import types,sys;module=types.ModuleType('worker_http');sys.modules['worker_http']=module\n"+"exec("+repr(transport)+",module.__dict__)\n"+"exec("+repr(source)+",globals())\n"+REMOTE
         body=json.dumps(metadata,sort_keys=True,separators=(',',':')).encode()
         if len(body)>8*1024*1024:
             raise ApplicationError('WYD data manifest is too large',code='WYD_DATA_METADATA_TOO_LARGE')

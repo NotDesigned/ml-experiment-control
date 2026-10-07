@@ -614,7 +614,7 @@ dev = [
 
 [[package]]
 name = "ml-experiment-server"
-version = "0.3.14"
+version = "0.3.15"
 source = { editable = "server" }
 dependencies = [
     { name = "boto3" },

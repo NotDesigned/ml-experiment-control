@@ -186,7 +186,7 @@ def test_decision_reports_failure_and_retry_budget(controller, state, expected):
     assert (controller.attempt / "decision.json").is_file()
 
 
-@pytest.mark.parametrize("verb", ["submit-dry", "submit", "stage", "preflight", "assets-verify", "check-identity", "status", "observe", "collect", "decide", "cancel"])
+@pytest.mark.parametrize("verb", ["submit-dry", "submit", "stage", "preflight", "preflight-observe", "assets-verify", "check-identity", "status", "observe", "collect", "decide", "cancel"])
 def test_controller_cli_dispatches_to_injected_backend(controller, tmp_path, monkeypatch, capsys, verb):
     path = tmp_path / "campaign.yaml"
     path.write_text(yaml.safe_dump(controller.campaign))
@@ -195,7 +195,10 @@ def test_controller_cli_dispatches_to_injected_backend(controller, tmp_path, mon
         controller.submit(None)
     elif verb not in {"submit", "submit-dry"}:
         controller.prepare()
-    args = [str(path), "submit" if verb == "submit-dry" else verb, "--run", "gpu", "--local-root", str(tmp_path / "override"), "--source-id", controller.run["source_id"]]
+    args = [str(path), "submit" if verb == "submit-dry" else "preflight" if verb == "preflight-observe" else verb, "--run", "gpu", "--local-root", str(tmp_path / "override"), "--source-id", controller.run["source_id"]]
+    if verb == "preflight-observe":
+        args.extend(["--scope", "observe"])
+        monkeypatch.setattr(controller, "check_api_transport", lambda: pytest.fail("observation must not require gateway health"))
     if verb == "submit-dry":
         args.append("--dry-run")
     module.cli(args)

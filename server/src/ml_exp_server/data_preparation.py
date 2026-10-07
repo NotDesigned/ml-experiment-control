@@ -81,7 +81,7 @@ def run_script(command, environment, workdir, seconds):
             signal.signal(sig, handler)
 
 
-def prepare(definition, cache, *, workspace=Path("/workspace")):
+def prepare(definition, cache, *, workspace=Path("/workspace"), require_cached=False):
     spec = dict(definition)
     preparation_id = spec.pop("preparation_id")
     if preparation_id != "preparation." + identity(spec):
@@ -113,6 +113,8 @@ def prepare(definition, cache, *, workspace=Path("/workspace")):
                 raise ValueError("DATA_CACHE_CHECKSUM_MISMATCH")
             reused = True
         else:
+            if require_cached:
+                raise ValueError("DATA_PREPARED_CACHE_MISSING")
             temporary = Path(tempfile.mkdtemp(prefix=".preparation-", dir=cache))
             try:
                 tree = temporary / "tree"

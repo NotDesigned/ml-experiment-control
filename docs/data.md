@@ -150,3 +150,9 @@ budget, separate from the GPU walltime. A verified shared cache is frozen as a
 required input. Corruption fails closed; uncertain transfers are never repeated
 automatically. Existing low-level/historical Runs keep their original HTTP worker
 path. See [backend preparation](backends.md).
+
+On WYD executors configured with an API TCP relay, download-script preparation
+runs on the connected SSH gateway in the same runtime SIF before GPU allocation.
+Training verifies and reuses the shared `data-preparations` cache; it never
+reruns the script if the prepared cache is missing. See
+[WYD offline compute nodes](backends.md#wyd-compute-nodes-without-internet-access).
