@@ -14,6 +14,8 @@ RuntimeDirectory=ml-expd-builder
 RuntimeDirectoryMode=0750
 WorkingDirectory=/var/lib/ml-expd-builder
 Environment=PATH=/root/ml-expd/.venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DOCKER_CONFIG=/etc/ml-expd/build-docker
+Environment=BUILDX_CONFIG=/var/lib/ml-expd-builder/buildx
 ExecStart=/root/ml-expd/.venv/bin/python -m ml_exp_server.image_builder --config /etc/ml-expd/image-builder.json
 Restart=on-failure
 RestartSec=5

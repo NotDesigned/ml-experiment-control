@@ -75,14 +75,16 @@ and validation:
 - SenseCore offline logs forward requested tail as page_size. The provider
   accepts at most 200; larger requests return 400. A bounded accepted request can
   still return no hits, so absence of logs does not establish an exit cause.
-- Data-delivery identity includes worker SHA. `ready_for()` requires the current
-  computed delivery rather than reusing an older READY delivery for identical
-  asset/files/NAS scope. Worker upgrades can therefore cause INPUT_NOT_READY.
-  Preserve old receipts/uncertain jobs; do not falsify readiness or replay create.
 - Worker preparation, restore, training and artifact return share one duration.
   A hard kill can interrupt return; separate recovery is not automated.
 - Detailed managed phase/liveness/transfer evidence depends on image capability;
   a server upgrade cannot retrofit it into a frozen historical image.
+
+Server 0.3.13 fixes the old delivery-worker-identity barrier by reusing sealed
+identical-data/NAS receipts ([data readiness](data.md)). Read `operation_status`
+when effective readiness comes from another delivery; the uncertain copy still
+needs separate inspection and is never automatically replayed. Builder registry
+authentication must be visible inside its service sandbox ([deployment](operator-guide.md)).
 
 ## Automatic preemption recovery: design only
 
