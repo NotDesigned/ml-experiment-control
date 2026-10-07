@@ -43,7 +43,9 @@ such as `D_FT=0` is an authored claim; the platform does not prove it scientific
 
 ## Record and query
 
-Write `OUTPUT_DIR/metrics.jsonl` or named JSON records to stdout:
+Write newline-terminated records to `OUTPUT_DIR/metrics.jsonl`. New opted-in
+[W&B workers](wandb.md) deliver this file live to the server before result upload.
+Named JSON records on stdout remain a sampled compatibility observation path:
 
 ```json
 {"name":"validation_loss","value":2.5,"unit":"nats/token","step":100,"numerator":25000,"denominator":10000,"checkpoint_id":"step-0100","dataset_id":"fineweb-v1","variant_id":"baseline"}

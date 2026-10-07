@@ -31,3 +31,5 @@ PUT/completion use 1200 seconds. Only archive transfer retries transient failure
 Uncertain scheduling is reconciled without replay. Signed object downloads carry
 no API Authorization and are hash-checked into a new directory.
 See [development](../docs/development.md) for independent build/tests.
+
+Optional W&B publication: [configuration and per-Run projects](../docs/wandb.md).

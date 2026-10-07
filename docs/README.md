@@ -10,7 +10,8 @@ and acceptance reports belong in private operator configuration/evidence.
 2. [Data](data.md): upload/resume, NAS delivery, download scripts and limits.
 3. [Checkpoints](persistent-checkpoints.md): persist complete state and restore it.
 4. [Metrics](metrics.md): units, completeness and scoring provenance.
-5. [Recovery](recovery.md): diagnose a failed stage without duplicating work.
+5. [W&B](wandb.md): optional per-Run routing and confirmed publication.
+6. [Recovery](recovery.md): diagnose a failed stage without duplicating work.
 
 ## Operator: provide the service
 

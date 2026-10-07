@@ -18,6 +18,7 @@ from .container_execution import ContainerExecutionService, DockerfileRuntimeSpe
 from .data_assets import AssetStore
 from .data_delivery import DataDeliveryService
 from .executor_capabilities import ExecutionRequirements, ExecutorSelector, match, validate_worker
+from .tracking_service import store_for, preparation_record
 from .source_imports import IDENTITY
 from .storage import DurableJsonState, utc_now
 from .wyd_data import WydDataStager
@@ -94,11 +95,16 @@ class ExperimentPreparationService:
                 value["phase_started_at"] = value["updated_at"]
             store.commit(value, expected_revision=snapshot.revision,
                          event={"event": "preparation_progress", "phase": value["phase"], "status": value["status"], "timestamp": value["updated_at"]})
+            preparation_record(self.runtime, value)
             return value
 
     def accept(self, project, request):
         self.containers.require_enabled()
         request_body = request.model_dump(mode="json")
+        # Absent new options preserve the request hash of pre-upgrade intents.
+        for key in ("wandb", "parameters"):
+            if request_body["run"][key] is None:
+                request_body["run"].pop(key)
         request_sha = hashlib.sha256(json.dumps(request_body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         preparation_id = "preparation-" + hashlib.sha256((project + "/" + request.run.run_id).encode()).hexdigest()[:32]
         with self.state(project, preparation_id) as (store, snapshot):
@@ -121,6 +127,7 @@ class ExperimentPreparationService:
                 validate_worker(request.run, bundle, matching["capabilities"], request.requirements, cache_required=cache_required)
             now = utc_now()
             value = {"preparation_id": preparation_id, "project": project, "run_id": request.run.run_id,
+                     "tracking": store_for(self.runtime).route(request.run.wandb, project),
                      "request": request_body, "request_sha256": request_sha, "matching": matching,
                      "runtime_id": bundle["runtime_id"], "status": "EXECUTING", "phase": "ACCEPTED",
                      "created_at": now, "updated_at": now, "deliveries": {},
@@ -128,6 +135,7 @@ class ExperimentPreparationService:
                      "runtime_requested": False, "delivery_requested": [], "next_action": "OBSERVE"}
             store.commit(value, expected_revision=snapshot.revision,
                          event={"event": "preparation_accepted", "timestamp": now})
+            preparation_record(self.runtime, value)
             return self.public(value), (project, preparation_id)
 
     def select(self, project, run, requirements, selector):
@@ -231,7 +239,8 @@ class ExperimentPreparationService:
             self.update(project, preparation_id, phase="FREEZING_RUN")
             definition = request.run.model_dump(exclude_none=True)
             definition.update(executor=selected["executor"], runtime_id=bundle["runtime_id"])
-            run = self.containers.create_run(project, RunRequest.model_validate(definition), profile_snapshot=selected["profile"], prepared_assets=set(value.get("data_receipts", {})))
+            run = self.containers.create_run(project, RunRequest.model_validate(definition), profile_snapshot=selected["profile"], prepared_assets=set(value.get("data_receipts", {})),
+                tracking=value.get("tracking", {"enabled": False, "requested": True, "reason": "HISTORICAL_RUN_NOT_BOUND", "entity": None, "project": project}))
             self.update(project, preparation_id, run=run, phase="CHECKING_SUBMISSION")
             submission = self.submissions.prepare_first_attempt(project, run["run_id"], max_gpu_hours=request.max_gpu_hours, reason="server-prepared experiment")
             return self.public(self.update(project, preparation_id, submission=submission, status="READY", phase="READY",

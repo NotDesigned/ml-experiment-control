@@ -149,12 +149,16 @@ class Controller:
             transfer = ArtifactStore(Path(self.campaign["artifact_store"]), Path(self.campaign["source_store"]))
             url, token, limit = transfer.issue(self.campaign["project"], self.run["run_id"],
                                                manifest["attempt_id"], self.root, self.run["outputs"],
+                                               **({"record_stream": True} if self.run.get("tracking", {}).get("enabled") and self.run.get("tracking", {}).get("record_stream") else {}),
                                                **({"checkpoint_upload": True} if self.run.get("checkpoint_upload") else {}),
                                                **({"checkpoint_state": self.state_context(manifest["attempt_id"])} if self.run.get("checkpoint_persistence") else {}))
             dispatch = {"ML_EXPD_UPLOAD_URL": url, "ML_EXPD_UPLOAD_LIMIT": str(limit),
                         "ML_EXPD_OUTPUT_PATTERNS": json.dumps(self.run["outputs"])}
             relay = relay_environment(self.run["backend"].get("api_relay"))
             dispatch.update(relay)
+            if self.run.get("tracking", {}).get("enabled") and self.run.get("tracking", {}).get("record_stream"):
+                prefix = transfer.config["public_transfer_base"].rstrip("/").rsplit("/", 1)[0]
+                dispatch["ML_EXPD_RECORD_URL"] = prefix + "/record-transfers/" + "/".join([self.campaign["project"], self.run["run_id"], manifest["attempt_id"]])
             if self.run.get("inputs"):
                 prefix = transfer.config["public_transfer_base"].rstrip("/").rsplit("/", 1)[0]
                 base = prefix + "/asset-transfers/" + "/".join([self.campaign["project"], self.run["run_id"], manifest["attempt_id"]])
@@ -212,7 +216,7 @@ class Controller:
         source = self.source()
         metadata = json.loads((source.parent / "source.json").read_text())
         resolved = {key: self.run[key] for key in ("container", "arguments", "env", "outputs")}
-        resolved.update({key: self.run[key] for key in ("inputs", "checkpoint_upload", "data_preparation", "checkpoint_persistence", "resume_from") if key in self.run})
+        resolved.update({key: self.run[key] for key in ("inputs", "checkpoint_upload", "data_preparation", "checkpoint_persistence", "resume_from", "tracking", "parameters") if key in self.run})
         manifest = build_run_manifest(
             project=self.campaign["project"], run_id=self.run["run_id"], created_at=utc_now(),
             config_path="container_execution", resolved_config=resolved,

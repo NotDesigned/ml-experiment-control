@@ -246,6 +246,7 @@ def test_managed_worker_hides_capabilities_publishes_live_checkpoint_and_preserv
     monkeypatch.setattr(worker, "deliver", delivery)
     class Child:
         pid = 12345
+        pid = 12345
         calls = 0
         def poll(self):
             self.calls += 1
@@ -291,6 +292,8 @@ def test_delivery_failure_prevents_training_and_worker_entrypoints(tmp_path, mon
     monkeypatch.setitem(sys.modules, "data_input", data_input)
     monkeypatch.setitem(sys.modules, "data_preparation", __import__("ml_exp_server.data_preparation", fromlist=["prepare"]))
     monkeypatch.setitem(sys.modules, "persistent_state", __import__("ml_exp_server.persistent_state", fromlist=["publish"]))
+    monkeypatch.setitem(sys.modules, "worker_records", __import__("ml_exp_server.worker_records", fromlist=["WorkerRecords"]))
+    monkeypatch.setitem(sys.modules, "worker_http", __import__("ml_exp_server.worker_http", fromlist=["error_code"]))
     runpy.run_path(worker.__file__, run_name="standalone-import")
     parsed = ast.parse(Path(worker.__file__).read_text())
     guard = ast.Module(body=[parsed.body[-1]], type_ignores=[])
@@ -311,6 +314,7 @@ def test_worker_checkpoint_options_and_archive_overhead_limits(tmp_path, monkeyp
     monkeypatch.setattr(worker.time,"sleep",lambda *a:None)
     if mode == "later": monkeypatch.setattr(worker.time,"monotonic",lambda:0)
     class Child:
+        pid = 12345
         calls=0
         def poll(self):
             self.calls+=1; return None if self.calls==1 else 0

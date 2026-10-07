@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ml-experiment-server"
-version = "0.3.15"
+version = "0.3.16"
 description = "Independent daemon for ML code, project, and experiment control"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,6 +20,7 @@ dependencies = [
     "PyYAML>=6.0",
     "sse-starlette>=3.5,<4",
     "uvicorn[standard]>=0.29",
+    "wandb==0.30.0",
 ]
 
 [dependency-groups]

@@ -43,9 +43,22 @@ def validate_dockerfile(source: Path, name: str):
 def read_config(path: Path):
     value = json.loads(path.read_text())
     allowed = {"project", "run_id", "source", "dockerfile", "entrypoint", "workdir", "executor",
-               "arguments", "env", "resources", "outputs", "inputs", "checkpoint_upload", "max_gpu_hours", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from", "executor_selector", "requirements"}
+               "arguments", "env", "resources", "outputs", "inputs", "checkpoint_upload", "max_gpu_hours", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from", "executor_selector", "requirements", "wandb", "parameters"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise ClientError("experiment config contains unknown fields")
+    wandb = value.get("wandb")
+    if wandb is not None and (not isinstance(wandb, dict) or set(wandb) - {"enabled", "entity", "project"} or
+            type(wandb.get("enabled", True)) is not bool or any(item is not None and
+                (not isinstance(item, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", item))
+                for key, item in wandb.items() if key in {"entity", "project"})):
+        raise ClientError("wandb needs a boolean enabled and optional entity/project names")
+    parameters = value.get("parameters")
+    try:
+        valid_parameters = parameters is None or isinstance(parameters, dict) and len(json.dumps(parameters, allow_nan=False).encode()) <= 16384
+    except ValueError:
+        valid_parameters = False
+    if not valid_parameters:
+        raise ClientError("parameters must be a finite JSON object of at most 16 KiB")
     evaluation = value.get("evaluation", {})
     try:
         valid_evaluation = isinstance(evaluation, dict) and len(json.dumps(evaluation, allow_nan=False).encode()) <= 16384
@@ -188,6 +201,8 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         raise ClientError("server lacks dockerfile-only.v1; upgrade before using the experiment workflow")
     if config.get("data_preparation") is not None and "data-preparation.v1" not in health.get("capabilities", []):
         raise ClientError("server lacks data-preparation.v1; upgrade before using a download script")
+    if ("wandb" in config or "parameters" in config) and "wandb-sync.v1" not in health.get("capabilities", []):
+        raise ClientError("server lacks wandb-sync.v1; upgrade before specifying publication options")
     if (config.get("checkpoint_persistence") is not None or config.get("resume_from") is not None) and "persistent-checkpoints.v1" not in health.get("capabilities", []):
         raise ClientError("server lacks persistent-checkpoints.v1; upgrade before using backend checkpoint state")
     if state_path.resolve().is_relative_to(source):
@@ -198,7 +213,7 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         raise ClientError("state file exists; use --resume to inspect and continue the same experiment")
     if state.get("config_sha256") != fingerprint:
         raise ClientError("resume configuration changed; use a new Run and state file")
-    definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "checkpoint_upload", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from") if key in config}
+    definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "checkpoint_upload", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from", "wandb", "parameters") if key in config}
     requirements = dict(config.get("requirements", {}))
     if config.get("inputs"):
         requirements["data_assets"] = True

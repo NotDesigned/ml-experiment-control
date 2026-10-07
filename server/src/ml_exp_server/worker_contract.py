@@ -6,10 +6,10 @@ from pathlib import Path
 import shutil
 
 WORKER_CONTRACT = "managed-worker.v1"
-CAPABILITIES = ["api-tcp-relay.v1", "input-delivery-progress.v1", "data-assets.v1", "checkpoint-upload.v1", "data-preparation.v1", "persistent-checkpoints.v1", "data-cache-required.v1", "launcher-manifest.v1"]
+CAPABILITIES = ["experiment-records.v1", "api-tcp-relay.v1", "input-delivery-progress.v1", "data-assets.v1", "checkpoint-upload.v1", "data-preparation.v1", "persistent-checkpoints.v1", "data-cache-required.v1", "launcher-manifest.v1"]
 WORKERS = (("managed_worker.py", "worker.py"), ("worker_artifacts.py", "artifacts.py"), ("data_input.py", "data_input.py"),
            ("data_preparation.py", "data_preparation.py"), ("persistent_state.py", "persistent_state.py"),
-           ("worker_launcher.py", "launch.py"), ("worker_http.py", "worker_http.py"))
+           ("worker_launcher.py", "launch.py"), ("worker_http.py", "worker_http.py"), ("worker_records.py", "worker_records.py"))
 
 
 def worker_digest() -> str:
@@ -32,6 +32,7 @@ def install_workers(directory: Path) -> None:
 
 def worker_dockerfile(source_id: str, prefix: str = "") -> str:
     return (f"COPY {prefix}worker_http.py /usr/local/lib/ml-expd/worker_http.py\n"
+            f"COPY {prefix}worker_records.py /usr/local/lib/ml-expd/worker_records.py\n"
             f"COPY {prefix}worker.py /usr/local/lib/ml-expd/worker.py\n"
             f"COPY {prefix}artifacts.py /usr/local/lib/ml-expd/artifacts.py\n"
             f"COPY {prefix}data_input.py /usr/local/lib/ml-expd/data_input.py\n"

@@ -108,5 +108,7 @@ Artifacts never fall back to another Attempt. See [recovery](recovery.md).
 
 Internal `/launch-transfers`, `/asset-transfers`, `/checkpoint-transfers` and
 `/attempt-uploads` routes use narrow worker capabilities. They are not substitutes
-for client control API credentials. Research-question and tracking-vendor APIs
-are absent; evaluation is an ordinary Run with checkpoint/data/protocol inputs.
+for client control API credentials. `/record-transfers` is also a narrow worker
+write path. Optional [W&B publication](wandb.md) has authenticated configuration
+and per-Run status routes. No research-question entity is required; evaluation
+is an ordinary Run with checkpoint/data/protocol inputs.
