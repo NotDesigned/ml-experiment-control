@@ -395,6 +395,15 @@ def test_receipt_only_files_listing_is_bounded_without_restoring_objects(recover
     assert result["truncated"] and len(result["files"]) == 10000
 
 
+def test_files_listing_without_a_transfer_record_is_uncollected(recovery):
+    service, _, _, _, _, _, _ = recovery
+    with service.objects.record(*IDENTITY) as (path, _):
+        path.unlink()
+    result = ArtifactService(service.runtime).list(*IDENTITY)
+    assert result["files"] == [] and result["collection_required"]
+    assert result["training"]["status"] == "UNKNOWN"
+
+
 def test_poll_loop_automatically_enqueues_new_results(recovery):
     from fastapi import FastAPI
     from ml_exp_server.api.app import _poll_loop
