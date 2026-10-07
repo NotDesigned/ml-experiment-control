@@ -82,7 +82,11 @@ class TrackingStore:
         enabled = request.enabled if "enabled" in request.model_fields_set else previous.get("enabled", True)
         value = {"enabled": enabled, "entity": entity, "project": project,
                  "api_key": key, "resolved_entity": entity, "error": None}
-        if key and entity is None:
+        cached = (key == previous.get("api_key") and "entity" not in request.model_fields_set
+                  and previous.get("resolved_entity"))
+        if key and entity is None and cached:
+            value["resolved_entity"] = cached
+        elif key and entity is None:
             try:
                 entity = lookup(key)
                 # Validate remote identity before embedding it in paths/URLs.

@@ -45,6 +45,8 @@ def test_default_entity_is_optional_and_credentials_are_never_public(tmp_path):
     assert store.route(None, "study") == {"requested": True, "enabled": True, "reason": None, "entity": "my-team", "project": "study"}
     assert store.route(WandbOptions(project="fineweb", entity="other-team"), "study")["project"] == "fineweb"
     assert store.route(WandbOptions(enabled=False), "study")["reason"] == "DISABLED_BY_REQUEST"
+    store.configure(WandbSettings(project="other", enabled=False), lambda key: pytest.fail("unchanged default entity is cached"))
+    assert store.public_settings()["resolved_entity"] == "my-team"
     store.configure(WandbSettings(enabled=False, entity="team", project="default"), lambda key: pytest.fail("explicit entity must not be looked up"))
     assert store.route(None, "study")["reason"] == "DISABLED_BY_SERVER"
     assert store.settings()["api_key"] == "private-test-key"
