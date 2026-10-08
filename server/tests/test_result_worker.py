@@ -1,5 +1,6 @@
 """Real filesystem and hash checks; transport and timer boundaries substituted."""
 import hashlib
+import errno
 import io
 import json
 import os
@@ -98,3 +99,85 @@ def test_worker_can_import_in_existing_cpu_image_without_server_package(monkeypa
         monkeypatch.setitem(sys.modules, name, module)
     value = runpy.run_path(worker.__file__, run_name="cpu-recovery")
     assert callable(value["recover"])
+
+
+def recovery_input(tmp_path):
+    outputs = tmp_path / "outputs"; outputs.mkdir()
+    state = tmp_path / "state"
+    generation = state / "checkpoints/generation"; generation.mkdir(parents=True)
+    for root in (outputs, generation): (root / "model.bin").write_bytes(b"model")
+    context = {"project": "demo", "run_id": "run", "attempt_id": "attempt-001", "source_id": "source",
+               "image_id": "image", "storage_scope": "scope", "state_root": str(state)}
+    checkpoint = persistent_state.document(context, {"step": 7, "files": [{
+        "path": "checkpoints/generation/model.bin", "bytes": 5,
+        "sha256": hashlib.sha256(b"model").hexdigest(),
+    }]})
+    return {"outputs_root": str(outputs), "patterns": ["**/*"], "checkpoint": checkpoint,
+            "expected_archive": None, "url": "https://api.example/api/artifact-transfers/demo/run/attempt-001",
+            "token": "private-capability", "limit": 0, "seconds": 900}
+
+
+def test_recovery_uses_local_tmp_even_if_nas_writes_and_tmpdir_are_unavailable(tmp_path, monkeypatch):
+    value = recovery_input(tmp_path)
+    original = worker.tempfile.TemporaryFile
+    locations = []
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    def temporary(*args, **kwargs):
+        locations.append(kwargs.get("dir"))
+        assert kwargs.get("dir") == "/tmp", "NAS must never receive disposable archives"
+        return original(*args, **kwargs)
+    monkeypatch.setattr(worker.tempfile, "TemporaryFile", temporary)
+    captured = []
+    monkeypatch.setattr(worker, "upload_parts", lambda url, token, stream, size: captured.append(size))
+    before = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*"))
+    worker.recover(value)
+    assert locations == ["/tmp"] and captured[0] > 5
+    assert sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*")) == before
+
+
+@pytest.mark.parametrize("phase", ["outputs_directory", "checkpoint_directory", "checkpoint_verify",
+                                   "output_verify", "archive_tempfile", "archive_write",
+                                   "archive_verify", "archive_upload"])
+def test_recovery_failure_reports_exact_phase_errno_without_secret_text(tmp_path, monkeypatch, capsys, phase):
+    value = recovery_input(tmp_path)
+    upload_calls = []
+    monkeypatch.setattr(worker, "upload_parts", lambda *args: upload_calls.append(args))
+    def fail(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "private-capability", "/nas/private-capability/file")
+    if phase in {"outputs_directory", "checkpoint_directory"}:
+        original = worker.checked_directory
+        def check(root):
+            if (root == Path(value["outputs_root"])) == (phase == "outputs_directory"): fail()
+            return original(root)
+        monkeypatch.setattr(worker, "checked_directory", check)
+    elif phase == "checkpoint_verify": monkeypatch.setattr(worker, "restore", fail)
+    elif phase == "output_verify": monkeypatch.setattr(worker, "open_file", fail)
+    elif phase == "archive_tempfile": monkeypatch.setattr(worker.tempfile, "TemporaryFile", fail)
+    elif phase == "archive_write": monkeypatch.setattr(worker, "archive_outputs", fail)
+    elif phase == "archive_verify":
+        value["checkpoint"] = None
+        monkeypatch.setattr(worker, "sha", fail)
+    else: monkeypatch.setattr(worker, "upload_parts", fail)
+    assert worker.main(value) == 74
+    output = capsys.readouterr().out
+    row = json.loads(next(line.split("=", 1)[1] for line in output.splitlines()
+                          if line.startswith("ML_EXPD_RESULT_RECOVERY_DIAGNOSTIC=")))
+    assert row == {"phase": phase, "error": "OSError", "errno": 28, "os_code": "ENOSPC",
+                   "file_ref": hashlib.sha256(b"/nas/private-capability/file").hexdigest()[:20]}
+    assert "private-capability" not in output and "/nas/" not in output
+    assert "ML_EXPD_RESULT_RECOVERY=FAILED error=OSError" in output
+    assert not upload_calls
+
+
+@pytest.mark.parametrize("error", [ValueError("private-capability"), OSError("private-capability"),
+                                   OSError(5, "private-capability", b"/private-capability"),
+                                   OSError(True, "private-capability", 123)])
+def test_recovery_diagnostics_handle_missing_or_untrusted_errno_filename(tmp_path, monkeypatch, capsys, error):
+    value = recovery_input(tmp_path)
+    monkeypatch.setattr(worker, "checked_directory", lambda root: (_ for _ in ()).throw(error))
+    assert worker.main(value) == 74
+    output = capsys.readouterr().out
+    row = json.loads(output.splitlines()[0].split("=", 1)[1])
+    expected_errno = 5 if isinstance(error, OSError) and error.errno == 5 else None
+    assert row["errno"] == expected_errno
+    assert "private-capability" not in output
