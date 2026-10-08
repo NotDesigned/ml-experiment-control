@@ -16,7 +16,8 @@ from starlette.responses import JSONResponse, StreamingResponse, Response
 
 from ..application_errors import ApplicationError
 from ..artifacts import ArtifactService
-from ..artifact_store import ArtifactStore
+from ..artifact_store import ArtifactStore, require_artifact_available
+from ..artifact_lifecycle import ArtifactLifecycle
 from ..archive_limits import exceeds
 from ..container_execution import ContainerExecutionService, RunRequest, DockerfileRuntimeSpec
 from ..image_builder import builder_request
@@ -38,6 +39,20 @@ class GitImportRequest(BaseModel):
 class ConfirmRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     confirmation: str = Field(min_length=1, max_length=256)
+
+
+class DownloadedFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    bytes: int = Field(strict=True, ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class DownloadAcknowledgement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    archive_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    archive_bytes: int = Field(strict=True, gt=0)
+    files: dict[str, DownloadedFile] = Field(max_length=20000)
+    release: bool = Field(default=True, strict=True)
 
 
 async def invoke(call, *args, **kwargs):
@@ -229,7 +244,7 @@ async def artifact_list(project: str, run_id: str, attempt_id: str, request: Req
 @router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/artifacts/archive")
 async def artifact_archive(project: str, run_id: str, attempt_id: str, request: Request):
     runtime = request.app.state.runtime
-    await invoke(ArtifactService(runtime).roots, project, run_id, attempt_id)
+    await invoke(ArtifactService(runtime).roots, project, run_id, attempt_id, restore=False)
     config = runtime.config.container_execution.artifact_store_file
     if not config:
         raise HTTPException(status_code=404, detail="object storage is not configured")
@@ -239,6 +254,7 @@ async def artifact_archive(project: str, run_id: str, attempt_id: str, request: 
             if not value or not value.get("receipt"):
                 raise ApplicationError("Attempt artifacts have not been uploaded", status_code=404, code="ARTIFACT_UNAVAILABLE")
             receipt = value["receipt"]
+            require_artifact_available(value)
         response = store.client().get_object(Bucket=store.config["bucket"], Key=receipt["object_key"])
         return receipt, response["Body"]
     receipt, stream = await invoke(fetch)
@@ -263,6 +279,20 @@ async def artifact_download_link(project: str, run_id: str, attempt_id: str, req
         raise HTTPException(status_code=404, detail="direct downloads are not configured")
     value = await invoke(store.artifact_download, project, run_id, attempt_id)
     return JSONResponse(value, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/runs/{project}/{run_id}/attempts/{attempt_id}/artifacts/ack")
+async def acknowledge_artifact_download(project: str, run_id: str, attempt_id: str,
+                                       data: DownloadAcknowledgement, request: Request):
+    runtime = request.app.state.runtime
+    await invoke(ContainerExecutionService(runtime).require_enabled)
+    await invoke(ArtifactService(runtime).roots, project, run_id, attempt_id, restore=False)
+    config = runtime.config.container_execution.artifact_store_file
+    if not config:
+        raise HTTPException(status_code=404, detail="object storage is not configured")
+    lifecycle = ArtifactLifecycle(ArtifactStore(Path(config), runtime.config.project_registry_root_path()))
+    return await invoke(lifecycle.acknowledge, project, run_id, attempt_id,
+                        data.model_dump(exclude={"release"}), release=data.release)
 
 
 @router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/files/{path:path}")

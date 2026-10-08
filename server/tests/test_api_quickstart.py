@@ -117,6 +117,8 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
     class S3:
         def upload_fileobj(self, stream, bucket, key, **kwargs):
             objects[bucket, key] = stream.read()
+        def download_fileobj(self, bucket, key, stream, **kwargs):
+            stream.write(objects[bucket, key])
         def get_object(self, *, Bucket, Key):
             return {"Body": Body(objects[Bucket, Key])}
     monkeypatch.setattr(ArtifactStore, "client", lambda self: S3())

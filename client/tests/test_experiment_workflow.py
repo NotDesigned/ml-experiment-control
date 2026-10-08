@@ -95,7 +95,7 @@ def test_prepare_then_execute_resume_reuses_runtime_run_and_exact_submission(con
     prepared = experiment(api, HEALTH, configuration, state)
     assert prepared["submission"]["status"] == "PREPARED" and not api.submitted
     downloads = []
-    def download(client, project, run, attempt, out):
+    def download(client, project, run, attempt, out, *, keep_server_copy=False):
         downloads.append((project, run, attempt)); return {"verified": True}
     monkeypatch.setattr("ml_exp_client.workflow.download", download)
     completed = experiment(api, HEALTH, configuration, state, resume=True, execute=True, out=state.with_name("results"))

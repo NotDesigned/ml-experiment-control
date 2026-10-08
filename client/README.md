@@ -22,7 +22,7 @@ executors = client.call("/api/executors")
 # download(client, "my-study", "trial-001", "attempt-001", Path("new-results"))
 ```
 
-Exports: `Client`, `ClientError`, `source_archive`, `download`, `MetricWriter`. `call(path)` is
+Exports: `Client`, `ClientError`, `source_archive`, `download`, `acknowledge`, `MetricWriter`. `call(path)` is
 GET; `data=...` is JSON POST; `raw=...` is raw POST. Paths begin `/api/` and are
 relative to the API base. Auth/protocol headers and proxy prefixes are handled.
 
@@ -30,6 +30,13 @@ CLI state preserves IDs. Ordinary requests default to 60 seconds; multipart
 PUT/completion use 1200 seconds. Only archive transfer retries transient failures.
 Uncertain scheduling is reconciled without replay. Signed object downloads carry
 no API Authorization and are hash-checked into a new directory.
+On `artifact-retention.v1` servers, verified downloads acknowledge durable local
+files and release the server archive after 24 hours. Pass `--keep-server-copy`
+(Python: `keep_server_copy=True`) to retain it. If acknowledgement is PENDING,
+run `ml-exp acknowledge --directory results` to recheck saved files and retry
+confirmation without redownloading. Old clients/servers do not authorize cleanup.
+Checkpoint storage and experiment metadata remain separate. Keep your local
+results; see [retention and recovery](../docs/recovery.md#download-confirmation-and-server-storage).
 See [development](../docs/development.md) for independent build/tests.
 
 Optional W&B publication: [configuration and per-Run projects](../docs/wandb.md).

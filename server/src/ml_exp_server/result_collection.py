@@ -18,7 +18,7 @@ import yaml
 from experiment_control.backends.sensecore_rest import SenseCoreREST, RESTError, create_document
 
 from .application_errors import ApplicationError
-from .artifact_store import ArtifactStore, ATTEMPT
+from .artifact_store import ArtifactStore, ATTEMPT, artifact_released
 from .artifacts import ArtifactService
 from .checkpoint_registry import CheckpointRegistry
 from .container_execution import ContainerExecutionService
@@ -91,13 +91,15 @@ class ResultCollectionService:
             value = snapshot.value
         receipt = transfer.get("receipt")
         training = transfer.get("results_ready")
+        released = artifact_released(transfer)
         return {"contract": "result-collection.v1", "project": project, "run_id": run, "attempt_id": attempt,
-                "status": "AVAILABLE" if receipt else value.get("status", "NOT_COLLECTED"),
-                "phase": "VERIFIED" if receipt else value.get("phase", "NOT_STARTED"),
+                "status": "RELEASED" if released else "AVAILABLE" if receipt else value.get("status", "NOT_COLLECTED"),
+                "phase": "RELEASED" if released else "VERIFIED" if receipt else value.get("phase", "NOT_STARTED"),
                 "training": {"status": "UNKNOWN" if training is None else "COMPLETED" if training["exit_code"] == 0 else "FAILED",
                              "exit_code": None if training is None else training["exit_code"]},
                 "verification": "SHA256_VERIFIED" if receipt else "PENDING",
-                "download_available": bool(receipt), "attempts": value.get("attempts", 0),
+                "download_available": bool(receipt) and not released, "attempts": value.get("attempts", 0),
+                "retention": transfer.get("retention"),
                 "updated_at": value.get("updated_at"), "job_state": value.get("job_state"),
                 "diagnostic": value.get("diagnostic"), "scheduler_name": value.get("scheduler_name"),
                 "archive": None if receipt is None else {**{k: receipt[k] for k in ("sha256", "bytes")},

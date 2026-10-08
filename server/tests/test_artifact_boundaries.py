@@ -87,6 +87,10 @@ def test_s3_corruption_never_publishes_restored_cache(storage, failure):
 
 def test_cache_restore_noop_and_interrupted_rename_recovery(storage):
     store, root, token, _, _ = storage
+    # Historical explicit cache requests retain interrupted-rename recovery.
+    with store.record("demo", "run-a", "attempt-001") as (path, value):
+        value["cache_outputs"] = True
+        path.write_text(json.dumps(value))
     store.restore_cache("demo", "run-a", "attempt-002")
     store.restore_cache("demo", "run-a", "attempt-001")
     destination = root / "attempts/attempt-001/uploaded_outputs"

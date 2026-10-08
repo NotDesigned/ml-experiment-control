@@ -81,6 +81,11 @@ class ArtifactService:
             ArtifactStore(Path(config), self.runtime.config.project_registry_root_path()).restore_cache(project, run_id, attempt_id)
         attempt = Path(row.run_dir) / "attempts" / attempt_id
         # Every source is exact-Attempt evidence. Never fall back to another Attempt.
+        if config:
+            from .artifact_store import ArtifactStore, artifact_released
+            with ArtifactStore(Path(config), self.runtime.config.project_registry_root_path()).record(project, run_id, attempt_id) as (_, value):
+                if artifact_released(value):
+                    return []
         return [("outputs", attempt / "uploaded_outputs"),
                 ("outputs", attempt / "outputs"),
                 ("outputs", attempt / "recovered_outputs"),
@@ -135,12 +140,15 @@ class ArtifactService:
                 break
         config = self.runtime.config.container_execution.artifact_store_file
         result = None
+        released = False
         if config:
             from .artifact_store import ArtifactStore
             store = ArtifactStore(Path(config), self.runtime.config.project_registry_root_path())
             with store.record(project, run_id, attempt_id) as (_, value):
                 if value:
                     receipt = value.get("receipt")
+                    from .artifact_store import artifact_released
+                    released = artifact_released(value)
                     result = value.get("results_ready")
                     if receipt:
                         for item in receipt["files"]:
@@ -150,7 +158,8 @@ class ArtifactService:
                             files.setdefault("outputs/" + item["path"], {**item, "path": "outputs/" + item["path"]})
         return {"project": project, "run_id": run_id, "attempt_id": attempt_id,
                 "files": [files[key] for key in sorted(files)], "truncated": truncated,
-                "available": bool(files), "collection_required": not bool(files),
+                "available": bool(files) and not released, "collection_required": not bool(files) and not released,
+                "storage_status": "RELEASED" if released else "AVAILABLE" if files else "MISSING",
                 "training": {"status": "UNKNOWN" if result is None else "COMPLETED" if result["exit_code"] == 0 else "FAILED",
                              "exit_code": None if result is None else result["exit_code"],
                              "evidence": "worker-result-manifest" if result is not None else None}}

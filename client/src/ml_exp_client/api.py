@@ -100,6 +100,7 @@ class Client:
         health = self.call("/api/health")
         if not health["min_client_protocol_version"] <= 2 <= health["api_protocol_version"]:
             raise ClientError("daemon does not support protocol 2")
+        self.capabilities = health.get("capabilities", [])
         return health
 
     def wait(self, path: str, *, pending=("EXECUTING",), seconds=900, interval=2, observer=None):
@@ -160,15 +161,80 @@ def source_archive(directory: Path) -> bytes:
     return value
 
 
-def download(client: Client, project: str, run: str, attempt: str, out: Path):
+def download(client: Client, project: str, run: str, attempt: str, out: Path, *, keep_server_copy=False):
     endpoint = f"/api/runs/{segment(project)}/{segment(run)}/attempts/{segment(attempt)}"
     try:
         ticket = client.call(endpoint + "/artifacts/download")
     except ClientError as exc:
         if exc.status != 404:
             raise
-        return _download_proxy(client, project, run, attempt, out)
-    return _download_object(client, project, run, attempt, out, ticket)
+        report = _download_proxy(client, project, run, attempt, out)
+        if "artifact-retention.v1" in getattr(client, "capabilities", []) and report.get("archive_sha256"):
+            return _acknowledge_report(client, out, report, keep_server_copy=keep_server_copy)
+        return report
+    report = _download_object(client, project, run, attempt, out, ticket)
+    if ticket.get("acknowledgement", {}).get("contract") == "artifact-retention.v1":
+        return _acknowledge_report(client, out, report, keep_server_copy=keep_server_copy)
+    return report
+
+
+def _sync_download(out):
+    # Confirm durable local bytes before granting remote deletion. Windows does
+    # not expose POSIX directory fsync, but file fsync is still required.
+    for path in out.rglob("*"):
+        if path.is_file():
+            with path.open("r+b") as stream:
+                os.fsync(stream.fileno())
+    if os.name != "nt":
+        for directory in [*reversed(sorted(p for p in out.rglob("*") if p.is_dir())), out]:
+            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+
+
+def _acknowledge_report(client, out, report, *, keep_server_copy=False):
+    _sync_download(out)
+    report["acknowledgement"] = {"status": "PENDING", "keep_server_copy": keep_server_copy}
+    save(out / "verification.json", report)
+    endpoint = f"/api/runs/{segment(report['project'])}/{segment(report['run_id'])}/attempts/{segment(report['attempt_id'])}/artifacts/ack"
+    proof = {k: report[k] for k in ("archive_sha256", "archive_bytes", "files")}
+    try:
+        report["acknowledgement"] = client.call(endpoint, data={**proof, "release": not keep_server_copy})
+    except ClientError as error:
+        # Local results remain usable. Retry only the acknowledgement, never
+        # redownload or replay training because its response was lost.
+        report["acknowledgement"].update(http_status=error.status, retry_command="ml-exp acknowledge --directory " + str(out))
+    save(out / "verification.json", report)
+    return report
+
+
+def acknowledge(client, out: Path, *, keep_server_copy=None):
+    """Revalidate saved local results and retry only their exact acknowledgement."""
+    report = json.loads((out / "verification.json").read_text())
+    if keep_server_copy is None:
+        previous = report.get("acknowledgement", {})
+        keep_server_copy = previous.get("keep_server_copy", previous.get("status") == "KEEP")
+    if not report.get("archive_sha256") or not report.get("archive_bytes"):
+        raise ClientError("archive proof is unavailable; keep the server copy")
+    archive = out / "artifacts.tar"
+    if archive.is_symlink():
+        raise ClientError("downloaded archive must be a regular local file")
+    with archive.open("rb") as stream:
+        if copy_stream(stream) != (report["archive_sha256"], report["archive_bytes"]):
+            raise ClientError("saved archive differs from verification report")
+    for name, expected in report["files"].items():
+        relative = PurePosixPath(name)
+        if not relative.parts or relative.parts[0] != "outputs" or ".." in relative.parts or "\\" in name:
+            raise ClientError("saved verification path is invalid")
+        file = out / relative
+        if file.is_symlink() or not file.resolve().is_relative_to(out.resolve()):
+            raise ClientError("saved verification path is outside the download")
+        with file.open("rb") as stream:
+            if copy_stream(stream) != (expected["sha256"], expected["bytes"]):
+                raise ClientError("saved file differs from verification report")
+    return _acknowledge_report(client, out, report, keep_server_copy=keep_server_copy)
 
 
 def _download_object(client, project, run, attempt, out, ticket):

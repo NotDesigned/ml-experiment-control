@@ -191,7 +191,7 @@ def wait_resource(client, endpoint, seconds, *, pending=("EXECUTING",)):
         time.sleep(5)
 
 
-def experiment(client, health, config_path, state_path, *, resume=False, execute=False, seconds=1800, out=None, continue_preparation=False):
+def experiment(client, health, config_path, state_path, *, resume=False, execute=False, seconds=1800, out=None, continue_preparation=False, keep_server_copy=False):
     config, source = read_config(config_path)
     if continue_preparation and not resume:
         raise ClientError("--continue-preparation requires --resume and inspection of saved dependencies")
@@ -320,7 +320,7 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
             raise ClientError("training wait timed out; resume observes the same job and never creates a new Attempt")
         time.sleep(5)
     if out is not None and "download" not in state:
-        state["download"] = download(client, config["project"], config["run_id"], submission["attempt_id"], out)
+        state["download"] = download(client, config["project"], config["run_id"], submission["attempt_id"], out, keep_server_copy=keep_server_copy)
         save(state_path, state)
     if result["scheduler_state"] != "SUCCEEDED":
         raise ClientError("training ended unsuccessfully; saved state and artifacts are available for diagnosis")

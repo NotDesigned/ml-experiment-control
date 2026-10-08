@@ -23,6 +23,16 @@ ATTEMPT = re.compile(r'^attempt-[0-9]{3,}$')
 TRANSFER_PATH = re.compile(r'^/api/artifact-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/attempt-[0-9]{3,}$')
 
 
+def artifact_released(value):
+    return bool(value and value.get('retention', {}).get('status') in {'RELEASING', 'RELEASED'})
+
+
+def require_artifact_available(value):
+    if artifact_released(value):
+        from .application_errors import ApplicationError
+        raise ApplicationError('server archive was released after verified client download', status_code=410, code='ARTIFACT_RELEASED')
+
+
 def stream_digest(stream):
     digest = hashlib.sha256()
     while chunk := stream.read(1024 * 1024):
@@ -135,12 +145,16 @@ class ArtifactStore:
                 from .application_errors import ApplicationError
                 raise ApplicationError('Attempt artifacts have not been uploaded', status_code=404, code='ARTIFACT_UNAVAILABLE')
             receipt = value['receipt']
-        return self.download(receipt['object_key'], receipt['sha256'], receipt['bytes'], files=receipt['files'])
+            require_artifact_available(value)
+        ticket = self.download(receipt['object_key'], receipt['sha256'], receipt['bytes'], files=receipt['files'])
+        ticket['acknowledgement'] = {'contract': 'artifact-retention.v1', 'grace_seconds': 86400}
+        return ticket
 
     def restore_cache(self, project, run, attempt):
         with self.record(project, run, attempt) as (_, value):
             if not value or not value.get('receipt'):
                 return
+            require_artifact_available(value)
             parent = Path(value['run_dir']) / 'attempts' / attempt
             destination = parent / 'uploaded_outputs'
             if destination.exists():
@@ -210,7 +224,7 @@ class ArtifactStore:
                            'object_key': key, 'received_at': utc_now()}
                 seal_tree(temporary)
                 temporary.chmod(0o700)
-                if value.get('cache_outputs', True):
+                if value.get('cache_outputs', False):
                     destination = parent / 'uploaded_outputs'
                     if destination.exists():
                         # Recover the S3-write/local-rename/receipt-write interruption window.
