@@ -135,7 +135,7 @@ async def worker_snapshot(project: str, run_id: str, attempt_id: str, request: R
 
 @router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/snapshots")
 async def snapshots(project: str, run_id: str, attempt_id: str, request: Request):
-    await invoke(ArtifactService(request.app.state.runtime).roots, project, run_id, attempt_id)
+    await invoke(ArtifactService(request.app.state.runtime).roots, project, run_id, attempt_id, restore=False)
     return await invoke(store(request).snapshots, project, run_id, attempt_id)
 
 
@@ -168,11 +168,11 @@ async def worker_checkpoint(project: str, run_id: str, attempt_id: str, request:
 
 @router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/checkpoints")
 async def persistent_checkpoints(project: str, run_id: str, attempt_id: str, request: Request):
-    await invoke(ArtifactService(request.app.state.runtime).roots, project, run_id, attempt_id)
+    await invoke(ArtifactService(request.app.state.runtime).roots, project, run_id, attempt_id, restore=False)
     return await invoke(checkpoint_store(request).list, project, run_id, attempt_id)
 
 
 @router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/checkpoints/{checkpoint_id}")
 async def persistent_checkpoint(project: str, run_id: str, attempt_id: str, checkpoint_id: str, request: Request):
-    await invoke(ArtifactService(request.app.state.runtime).roots, project, run_id, attempt_id)
+    await invoke(ArtifactService(request.app.state.runtime).roots, project, run_id, attempt_id, restore=False)
     return await invoke(checkpoint_store(request).read, project, run_id, attempt_id, checkpoint_id)
