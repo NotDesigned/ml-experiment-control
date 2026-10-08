@@ -16,7 +16,7 @@ from tests.test_action_edges import synthetic_plan
 from tests.test_container_api import client, import_source, runtime
 
 
-def _managed_action(api, *, executor="gpu", revision=False):
+def _managed_action(api, *, executor="gpu", revision=False, embedded=False):
     source = import_source(api)
     bundle = runtime(api, source)
     response = api.post("/api/projects/demo/runs", json={
@@ -32,14 +32,16 @@ def _managed_action(api, *, executor="gpu", revision=False):
     action_id = synthetic_plan(store, "diagnostics")
     path = store.directory(action_id) / "campaign.execution.yml"
     path.write_text(yaml.safe_dump(campaign))
-    extra = ["--source-root", str(daemon.config.project_registry_root_path() / "source-revisions" / "sources" / "demo" / source["source_id"] / "tree"), "--source-id", source["source_id"]]
+    extra = ([] if embedded else ["--source-root", str(daemon.config.project_registry_root_path() / "source-revisions" / "sources" / "demo" / source["source_id"] / "tree"), "--source-id", source["source_id"]])
     if revision:
         extra += ["--campaign-id", "campaign.frozen"]
-    call = daemon.action_service.controller.build(project, path, "stage", "run-a", extra=extra)
+    attempt_id = "attempt-001" if embedded else None
+    call = daemon.action_service.controller.build(project, path, "stage", "run-a", attempt_id=attempt_id, extra=extra)
     plan_path = store.directory(action_id) / "plan.json"
     plan = json.loads(plan_path.read_text())
     plan.update(execution_campaign_file=str(path), execution_campaign_sha256="sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
-                expected_source_id=source["source_id"], run_id="run-a", stage_command_preview=call.argv, stage_cwd=str(call.cwd))
+                expected_source_id="" if embedded else source["source_id"], run_id="run-a", attempt_id=attempt_id,
+                stage_command_preview=call.argv, stage_cwd=str(call.cwd))
     if revision:
         plan["campaign_revision"] = "campaign.frozen"
     plan_path.write_text(json.dumps(plan))
@@ -117,6 +119,51 @@ def test_refresh_reports_verified_cache_reuse_as_ready_without_hashing_on_get(cl
     assert remote["next_action"] == "PREPARE_NEW_ACTION" and remote["observed_after_action"] is True
     assert remote["cache_reverified"] is False and remote["historical_failure_cause"] is False
     assert store.snapshot(action_id) == before
+
+
+def test_refresh_accepts_embedded_oci_source_provenance_without_source_flags(client, monkeypatch):
+    action_id, _, _ = _managed_action(client, embedded=True, revision=True)
+    store = client.app.state.runtime.action_store
+    before = store.snapshot(action_id)
+    assert before["expected_source_id"] == ""
+    assert "--source-root" not in before["stage_command_preview"]
+    assert "--source-id" not in before["stage_command_preview"]
+    assert "--attempt-id" in before["stage_command_preview"] and "--campaign-id" in before["stage_command_preview"]
+    event = {"phase": "CACHE_VERIFY", "status": "READY", "timestamp": "2026-10-08T12:21:00Z"}
+    monkeypatch.setattr(WydSlurmBackend, "stage_progress", lambda _self, _run: event)
+    response = client.get(f"/api/actions/{action_id}/diagnostics?refresh=true")
+    assert response.status_code == 200, response.text
+    remote = response.json()["remote"]
+    assert remote["status"] == "OBSERVED" and remote["event"] == event
+    assert remote["image_ready_reported"] is True and remote["next_action"] == "PREPARE_NEW_ACTION"
+    assert store.snapshot(action_id) == before
+
+
+@pytest.mark.parametrize("source", [None, "../private", "source.invalid", [], "source." + "f" * 64])
+def test_embedded_oci_requires_valid_frozen_source_provenance(client, monkeypatch, source):
+    action_id, path, campaign = _managed_action(client, embedded=True)
+    store = client.app.state.runtime.action_store
+    campaign["runs"][0]["source_id"] = source
+    path.write_text(yaml.safe_dump(campaign))
+    plan_path = store.directory(action_id) / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["execution_campaign_sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    plan_path.write_text(json.dumps(plan))
+    monkeypatch.setattr(WydSlurmBackend, "stage_progress", lambda *_args: pytest.fail("invalid embedded source must not query the backend"))
+    remote = client.get(f"/api/actions/{action_id}/diagnostics?refresh=true").json()["remote"]
+    assert remote["status"] == "UNAVAILABLE" and remote["error_class"] == "ValueError"
+
+
+def test_nonempty_expected_source_must_match_the_frozen_run(client, monkeypatch):
+    action_id, _, _ = _managed_action(client)
+    store = client.app.state.runtime.action_store
+    plan_path = store.directory(action_id) / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["expected_source_id"] = "source." + "f" * 64
+    plan_path.write_text(json.dumps(plan))
+    monkeypatch.setattr(WydSlurmBackend, "stage_progress", lambda *_args: pytest.fail("mismatched source must not query the backend"))
+    remote = client.get(f"/api/actions/{action_id}/diagnostics?refresh=true").json()["remote"]
+    assert remote["status"] == "UNAVAILABLE" and remote["error_class"] == "ValueError"
 
 
 @pytest.mark.parametrize("tamper", ["hash", "project", "source", "run", "stage_command", "stage_cwd", "path", "symlink", "directory_symlink", "source_shape", "source_store"])

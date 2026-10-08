@@ -150,18 +150,24 @@ class ActionExecution:
             if "sha256:" + hashlib.sha256(raw).hexdigest() != snapshot.get("execution_campaign_sha256"):
                 raise ValueError("frozen campaign digest differs")
             campaign = yaml.safe_load(raw)
-            run_id, source_id = snapshot.get("run_id"), snapshot.get("expected_source_id")
+            run_id, expected_source_id = snapshot.get("run_id"), snapshot.get("expected_source_id")
             if (not isinstance(campaign, dict) or campaign.get("project") != project_name
-                    or campaign.get("source_store") != str(root)
-                    or not isinstance(source_id, str) or not re.fullmatch(r"source\.[0-9a-f]{64}", source_id)):
-                raise ValueError("frozen campaign project or source binding differs")
+                    or campaign.get("source_store") != str(root)):
+                raise ValueError("frozen campaign project binding differs")
             runs = [run for run in campaign.get("runs", []) if isinstance(run, dict) and run.get("run_id") == run_id]
-            if len(runs) != 1 or runs[0].get("source_id") != source_id:
+            if len(runs) != 1:
                 raise ValueError("frozen campaign Run binding differs")
             run = runs[0]
+            source_id = run.get("source_id")
+            if (not isinstance(source_id, str) or not re.fullmatch(r"source\.[0-9a-f]{64}", source_id)
+                    or expected_source_id not in (None, "") and expected_source_id != source_id):
+                raise ValueError("frozen campaign source binding differs")
             if run.get("backend", {}).get("kind") != "slurm" or not run["backend"].get("oci_image"):
                 return {"status": "UNSUPPORTED", "reason": "The Action does not prepare a managed WYD OCI image"}
-            extra = ["--source-root", str(root / "source-revisions" / "sources" / project_name / source_id / "tree"), "--source-id", source_id]
+            # Embedded OCI code has no separate source staging arguments. Its
+            # provenance still comes from the exact frozen Run and Runtime.
+            extra = (["--source-root", str(root / "source-revisions" / "sources" / project_name / source_id / "tree"), "--source-id", source_id]
+                     if expected_source_id else [])
             if snapshot.get("campaign_revision"):
                 extra.extend(["--campaign-id", snapshot["campaign_revision"]])
             call = self.controller.build(project, path, "stage", run_id, attempt_id=snapshot.get("attempt_id"), extra=extra)
