@@ -14,9 +14,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..container_execution import ContainerExecutionService
-from ..multipart_upload import UploadStore
+from ..data.multipart_upload import UploadStore
 from ..archive_limits import minimum_limit
-from ..remote_data_uploads import remote_uploads
+from ..data.remote_data_uploads import remote_uploads
 from .asset_routes import store, token
 from .container_routes import invoke
 

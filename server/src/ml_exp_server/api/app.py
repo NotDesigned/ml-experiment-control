@@ -24,29 +24,29 @@ from ..api_contract import (
 from ..collectord import Collector, CollectorConfig, CollectorLease
 from ..ingest.indexer import RunIndex, index_project
 from ..http_auth import load_bearer_token
-from ..project_config import load_server_config
+from ..projects.project_config import load_server_config
 from ..runtime import ExperimentServerRuntime
 from ..schemas import ServerConfig, ResearchProject
-from ..submissions import ExperimentSubmissionService
-from ..artifact_store import TRANSFER_PATH, LAUNCH_PATH
-from ..data_assets import WORKER_PATH
+from ..runs.submissions import ExperimentSubmissionService
+from ..results.artifact_store import TRANSFER_PATH, LAUNCH_PATH
+from ..data.data_assets import WORKER_PATH
 from ..container_execution import ContainerExecutionService
-from ..runtime_jobs import recover_interrupted_builds
+from ..builds.runtime_jobs import recover_interrupted_builds
 from .routes import router
 from .action_routes import router as action_router
 from .operation_routes import router as operation_router
 from .submission_routes import router as submission_router
 from .sse import EventBroker
 from .upload_routes import WORKER_UPLOAD_PATH, router as upload_router
-from ..data_delivery import COPY_TRANSFER, recover_data_deliveries
+from ..data.data_delivery import COPY_TRANSFER, recover_data_deliveries
 from .data_delivery_routes import router as data_delivery_router
-from ..experiment_preparation import ExperimentPreparationService
+from ..runs.experiment_preparation import ExperimentPreparationService
 from .preparation_routes import router as preparation_router
 from .tracking_routes import RECORD_PATH, router as tracking_router
-from ..tracking_service import TrackingPublisher
-from ..result_collection import ResultCollectionService
+from ..tracking.tracking_service import TrackingPublisher
+from ..results.result_collection import ResultCollectionService
 from .result_routes import RESULT_PATH, router as result_router
-from ..artifact_lifecycle import ArtifactLifecycle
+from ..results.artifact_lifecycle import ArtifactLifecycle
 
 
 def _poll_loop(app: FastAPI, collector: Collector) -> None:
@@ -84,10 +84,12 @@ async def _shutdown(app: FastAPI) -> None:
         stop.set()
     thread = getattr(app.state, "_poll_thread", None)
     action_executor = getattr(app.state, "action_executor", None)
-    if action_executor is not None:
+    preparation_executor = getattr(app.state, "preparation_executor", None)
+    executors = [item for item in (action_executor, preparation_executor) if item is not None]
+    for executor in executors:
         # Stop accepting new work. Claimed actions and image builds retain ownership of
         # the runtime until their durable terminal state has been recorded.
-        action_executor.shutdown(wait=False)
+        executor.shutdown(wait=False)
     with getattr(app.state, "_action_futures_lock", threading.Lock()):
         action_futures = tuple(getattr(app.state, "_action_futures", ()))
     if thread is not None:
@@ -124,8 +126,8 @@ async def _shutdown(app: FastAPI) -> None:
                     # finish_action_execution records unexpected failures in
                     # the action journal; shutdown must still release owners.
                     pass
-            if action_executor is not None:
-                action_executor.shutdown(wait=True)
+            for executor in executors:
+                executor.shutdown(wait=True)
             try:
                 runtime.close()
             finally:
@@ -154,6 +156,11 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
         app.state._poll_thread = None
         app.state.action_executor = ThreadPoolExecutor(
             max_workers=4, thread_name_prefix="action-executor",
+        )
+        # Building, data delivery and result recovery may wait on providers for
+        # minutes. Keep their bounded queue separate from submit/cancel Actions.
+        app.state.preparation_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="preparation-executor",
         )
         app.state._action_futures: set[Future[object]] = set()
         app.state._action_futures_lock = threading.Lock()
@@ -186,8 +193,9 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                 initializer(runtime)
             app.state.application = ExperimentServerApplication(runtime)
 
-            def submit_job(call, pending):
-                future = app.state.action_executor.submit(call, pending)
+            def submit_job(call, pending, *, executor=None):
+                owner = executor if executor is not None else app.state.preparation_executor
+                future = owner.submit(call, pending)
                 with app.state._action_futures_lock:
                     app.state._action_futures.add(future)
 
@@ -199,7 +207,10 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                 return future
 
             app.state.submit_job = submit_job
-            app.state.submit_action = lambda pending: submit_job(app.state.application.finish_action_execution, pending)
+            app.state.submit_action = lambda pending: submit_job(
+                app.state.application.finish_action_execution, pending,
+                executor=app.state.action_executor,
+            )
             app.state.recovered_runtime_builds = recover_interrupted_builds(ContainerExecutionService(runtime))
             app.state.recovered_data_deliveries = recover_data_deliveries(runtime)
             app.state.recovered_result_collections = (ResultCollectionService(runtime).recover_interrupted()

@@ -8,14 +8,14 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from ml_exp_server.artifact_store import ArtifactStore
+from ml_exp_server.results.artifact_store import ArtifactStore
 from ml_exp_server.container_controller import Controller
 from ml_exp_server.container_execution import DockerfileRuntimeSpec
-from ml_exp_server.data_assets import AssetStore
+from ml_exp_server.data.data_assets import AssetStore
 from ml_exp_server.dockerfile_build import DOCKERFILE_RECIPE, inspect_dockerfile, managed_dockerfile, worker_digest
 from ml_exp_server.image_builder import ImageBuilder, MANIFEST_TYPE, bundle_id
-from ml_exp_server.source_imports import seal_tree
-from ml_exp_server.source_revisions import _tree_digest
+from ml_exp_server.projects.source_imports import seal_tree
+from ml_exp_server.projects.source_revisions import _tree_digest
 from ml_exp_server.schemas import RunIndexRow, AttemptSummary
 from tests.test_container_api import archive, client, import_source, wait_runtime, runtime
 

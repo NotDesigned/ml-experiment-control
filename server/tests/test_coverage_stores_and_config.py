@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from ml_exp_server.actions.store import ActionStore
-from ml_exp_server.project_config import ConfigError, load_server_config, load_projects, load_research_project
+from ml_exp_server.projects.project_config import ConfigError, load_server_config, load_projects, load_research_project
 from ml_exp_server.schemas import OperationScope, OperationScopeType, ServerConfig, ProjectRef
 from ml_exp_server.storage import StorageError, atomic_json, atomic_text, read_json
 

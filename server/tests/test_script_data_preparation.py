@@ -13,8 +13,8 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from ml_exp_server import data_preparation as data
-from ml_exp_server import managed_worker as worker
+from ml_exp_server.workers import data_preparation as data
+from ml_exp_server.workers import managed_worker as worker
 from ml_exp_server.container_controller import Controller
 from ml_exp_server.container_execution import ContainerExecutionService
 from tests.test_container_api import archive, client, import_source, runtime
@@ -63,7 +63,7 @@ def test_parallel_jobs_prepare_one_shared_tree_and_reuse_the_verified_receipt(tm
     spec = definition(workspace, "import os, sys, time\nfrom pathlib import Path\nwith open(sys.argv[1], 'a') as count: count.write('download\\n')\ntime.sleep(0.2)\nPath(os.environ['DATA_DIR'], 'tokens.bin').write_bytes(b'tokens')",
                       arguments=[str(counter)])
     import sys
-    code = "import json,sys; from pathlib import Path; from ml_exp_server.data_preparation import prepare; print(json.dumps(prepare(json.loads(sys.stdin.read()),Path(sys.argv[1]),workspace=Path(sys.argv[2]))[1]))"
+    code = "import json,sys; from pathlib import Path; from ml_exp_server.workers.data_preparation import prepare; print(json.dumps(prepare(json.loads(sys.stdin.read()),Path(sys.argv[1]),workspace=Path(sys.argv[2]))[1]))"
     children = [subprocess.Popen([sys.executable, "-c", code, str(tmp_path / "cache"), str(workspace)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(2)]
     for child in children:
         child.stdin.write(json.dumps(spec)); child.stdin.close(); child.stdin = None
@@ -212,7 +212,7 @@ def test_api_freezes_script_argv_and_backend_data_dir(client, stored, executor):
     assert manifest["assets"][-1]["identity"] == spec["preparation_id"]
     assert manifest["command"] == ["ml-exp-worker"]
     assert ctl.environment("attempt-001")["DATA_DIR"].startswith("/data/lab/demo/data-preparations/")
-    from ml_exp_server.artifact_store import ArtifactStore
+    from ml_exp_server.results.artifact_store import ArtifactStore
     transfer = ArtifactStore(stored[0], Path(ctl.campaign["source_store"]))
     ctl.dispatch_command(ctl.store.load_attempt("attempt-001"))
     with transfer.record("demo", "script-data", "attempt-001") as (_, record):

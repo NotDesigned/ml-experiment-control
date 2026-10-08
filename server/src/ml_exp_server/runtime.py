@@ -15,8 +15,8 @@ from typing import Callable
 from .actions import ActionService, ActionStore
 from .ingest.indexer import RunIndex
 from .identity import workspace_identity
-from .project_config import load_research_project
-from .project_registry import ProjectRegistry, ProjectRegistryError
+from .projects.project_config import load_research_project
+from .projects.project_registry import ProjectRegistry, ProjectRegistryError
 from .schemas import (
     ServerConfig,
     ProjectLifecycleRecord,
@@ -24,7 +24,7 @@ from .schemas import (
     ProjectRegistrationSource,
     ResearchProject,
 )
-from .source_revisions import resolve_source_tree
+from .projects.source_revisions import resolve_source_tree
 from .telemetry import Telemetry, initialize_telemetry
 
 

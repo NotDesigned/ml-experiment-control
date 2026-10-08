@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from ml_exp_server.execution_progress import record_progress, progress_view
+from ml_exp_server.runs.execution_progress import record_progress, progress_view
 from ml_exp_server.image_builder import ImageBuilder, BUILD_CACHE, BUILD_PROGRESS, MANIFEST_TYPE
 from ml_exp_server.schemas import RunIndexRow
 from ml_exp_server.container_execution import DockerfileRuntimeSpec
@@ -18,11 +18,11 @@ from tests.test_submissions import _app, _action
 
 def test_progress_freshness_uses_real_log_activity_and_never_claims_failure(tmp_path, monkeypatch):
     path = tmp_path / "progress.json"
-    monkeypatch.setattr("ml_exp_server.execution_progress.time.time", lambda: 1000)
+    monkeypatch.setattr("ml_exp_server.runs.execution_progress.time.time", lambda: 1000)
     assert progress_view(path, "PREPARED")["last_progress_unix"] is None
     assert progress_view(path, "EXECUTING", active=True, last_activity=999)["seconds_since_progress"] == 1
     record_progress(path, "STAGING", "Converting the image", timeout_seconds=1200)
-    monkeypatch.setattr("ml_exp_server.execution_progress.time.time", lambda: 1201)
+    monkeypatch.setattr("ml_exp_server.runs.execution_progress.time.time", lambda: 1201)
     delayed = progress_view(path, "EXECUTING", active=True)
     assert delayed["no_progress_warning"] and "do not resubmit" in delayed["diagnostic"]
     assert delayed["phase_timeout_seconds"] == 1200

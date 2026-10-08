@@ -49,11 +49,15 @@ def main():
     try:
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);package=root/'ml_exp_server';package.mkdir();(package/'__init__.py').write_text('')
-            for file in ('desktop_upload.py','multipart_upload.py','storage.py','application_errors.py','archive_limits.py','data_image_recipe.py','build_contexts.py'):
-                (package/file).write_bytes((source/file).read_bytes())
+            for file in ('desktop_upload.py','data/multipart_upload.py','storage.py','application_errors.py','archive_limits.py','data_image_recipe.py','builds/build_contexts.py'):
+                destination = package/file
+                destination.parent.mkdir(exist_ok=True)
+                if destination.parent != package:
+                    (destination.parent/'__init__.py').write_text('')
+                destination.write_bytes((source/file).read_bytes())
             workers=root/'workers';workers.mkdir()
             for file in DATA_WORKERS:
-                (workers/file).write_bytes((source/file).read_bytes())
+                (workers/file).write_bytes((source/"workers"/file).read_bytes())
             (root/'upload-config.json').write_text(json.dumps({'max_asset_archive_bytes':None,'max_asset_bytes':None,
                 'max_asset_files':20000,'upload_part_bytes':config.get('data_upload_part_bytes',16*1024**2),'upload_max_parts':65536,
                 'upload_session_seconds':86400,'data_base_image':config['data_base_image']}))

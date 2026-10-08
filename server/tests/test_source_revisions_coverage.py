@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from ml_exp_server.api.app import create_app
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server import source_revisions
+from ml_exp_server.projects import source_revisions
 from tests.test_source_revisions import config, proposal, repository
 
 

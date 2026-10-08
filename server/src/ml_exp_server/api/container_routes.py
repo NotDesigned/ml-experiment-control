@@ -15,14 +15,14 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse, StreamingResponse, Response
 
 from ..application_errors import ApplicationError
-from ..artifacts import ArtifactService
-from ..artifact_store import ArtifactStore, require_artifact_available
-from ..artifact_lifecycle import ArtifactLifecycle
+from ..results.artifacts import ArtifactService
+from ..results.artifact_store import ArtifactStore, require_artifact_available
+from ..results.artifact_lifecycle import ArtifactLifecycle
 from ..archive_limits import exceeds
 from ..container_execution import ContainerExecutionService, RunRequest, DockerfileRuntimeSpec
 from ..image_builder import builder_request
-from ..source_imports import SourceImportService
-from ..metric_contract import MetricSchema
+from ..projects.source_imports import SourceImportService
+from ..tracking.metric_contract import MetricSchema
 from .errors import application_http_error
 
 
@@ -170,7 +170,7 @@ async def runtime_build_observation(project, runtime_id, request, operation):
         result.update(runtime_id=runtime_id, status=value["status"])
         result["build_error"] = value.get("build_error")
         if not result["progress"].get("events"):
-            from ..execution_progress import progress_view
+            from ..runs.execution_progress import progress_view
             result["progress"] = progress_view(service.root / project / (runtime_id + ".progress.json"), value["status"], active=value["status"] == "EXECUTING")
         if value["status"] != "EXECUTING":
             result["progress"].update(status=value["status"], phase=value["status"], no_progress_warning=False, diagnostic=None)

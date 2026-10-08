@@ -13,15 +13,15 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from ml_exp_server.tracking_contract import WandbOptions, WandbSettings, finite_parameters
-from ml_exp_server.tracking_store import TrackingStore, encoded
-from ml_exp_server.tracking_service import store_for, normalized_metric, observe, TrackingPublisher, backfill
+from ml_exp_server.tracking.tracking_contract import WandbOptions, WandbSettings, finite_parameters
+from ml_exp_server.tracking.tracking_store import TrackingStore, encoded
+from ml_exp_server.tracking.tracking_service import store_for, normalized_metric, observe, TrackingPublisher, backfill
 from ml_exp_server import wandb_exporter as exporter
-from ml_exp_server.tracking_service import preparation_record
-from ml_exp_server.worker_records import WorkerRecords, safe_numbers
+from ml_exp_server.tracking.tracking_service import preparation_record
+from ml_exp_server.workers.worker_records import WorkerRecords, safe_numbers
 from ml_exp_server.container_controller import Controller
 from ml_exp_server.schemas import RunIndexRow, AttemptSummary
-from ml_exp_server.artifact_store import ArtifactStore
+from ml_exp_server.results.artifact_store import ArtifactStore
 from tests.test_container_api import client, runtime
 from tests.test_sensecore_data_workflow import stored
 from tests.test_experiment_preparation import service, spec, wait
@@ -29,7 +29,7 @@ from tests.test_experiment_preparation import service, spec, wait
 
 @pytest.fixture(autouse=True)
 def no_cloud(monkeypatch):
-    monkeypatch.setattr("ml_exp_server.tracking_service.export", lambda *args: None)
+    monkeypatch.setattr("ml_exp_server.tracking.tracking_service.export", lambda *args: None)
 
 
 def test_default_entity_is_optional_and_credentials_are_never_public(tmp_path):
@@ -341,7 +341,7 @@ def test_worker_metric_cursor_retries_without_loss_and_survives_restart(tmp_path
         def request(self, method, path, *, body, headers): calls.append(json.loads(body))
         def getresponse(self): return SimpleNamespace(status=status[0], read=lambda n: b"{}")
         def close(self): pass
-    monkeypatch.setattr("ml_exp_server.worker_records.https_connection", lambda *a, **k: Connection())
+    monkeypatch.setattr("ml_exp_server.workers.worker_records.https_connection", lambda *a, **k: Connection())
     worker = WorkerRecords(root, "https://api.example/api/record-transfers/demo/trial/attempt-001", "private")
     worker.emit("lifecycle", {"phase": "TRAINING"})
     worker.flush(final=True)
@@ -386,7 +386,7 @@ def test_client_writer_streams_live_through_api_and_builds_loss_curve(client, st
             return SimpleNamespace(status=503 if len(responses) == 1 else self.response.status_code,
                                    read=lambda n: self.response.content)
         def close(self): pass
-    monkeypatch.setattr("ml_exp_server.worker_records.https_connection", lambda *a, **k: Connection())
+    monkeypatch.setattr("ml_exp_server.workers.worker_records.https_connection", lambda *a, **k: Connection())
     writer.log("train_loss", 2.5, unit="nats/token", step=1, dataset_id="train-v1", variant_id="baseline")
     worker.flush(final=True)
     assert worker.state["offset"] == 0 and responses[0].status_code == 200
@@ -419,7 +419,7 @@ def test_client_writer_streams_live_through_api_and_builds_loss_curve(client, st
 
 def test_preparation_freezes_target_before_build_and_keeps_failure_evidence(client, service, monkeypatch):
     client.put("/api/tracking/wandb", json={"api_key": "test-key", "entity": "team", "project": "before"})
-    from ml_exp_server.experiment_preparation import ExperimentPreparationRequest
+    from ml_exp_server.runs.experiment_preparation import ExperimentPreparationRequest
     request = ExperimentPreparationRequest.model_validate(spec(client, run={"run_id": "trial", "executor": "gpu", "parameters": {"seed": 42}}))
     accepted, pending = service.accept("demo", request)
     client.put("/api/tracking/wandb", json={"entity": "new-team", "project": "after"})
@@ -487,7 +487,7 @@ def test_publisher_loop_isolated_failure_and_interruptible(tmp_path, monkeypatch
     scope = configured(publisher.store)
     publisher.store.append(scope, [("one", {"kind": "lifecycle", "data": {"state": "RUNNING"}})])
     calls = []
-    monkeypatch.setattr("ml_exp_server.tracking_service.export", lambda *args: calls.append(args))
+    monkeypatch.setattr("ml_exp_server.tracking.tracking_service.export", lambda *args: calls.append(args))
     publisher.cycle(); assert len(calls) == 1
     publisher.store.outcome(scope, error="REMOTE_ACK_PENDING")
     publisher.cycle(); assert len(calls) == 1  # backoff
@@ -524,7 +524,7 @@ def test_worker_spool_failures_and_bounded_lines_cannot_stop_training(tmp_path, 
         def request(self, *a, **k): received.append(json.loads(k["body"]))
         def getresponse(self): return SimpleNamespace(status=200, read=lambda n: b"{}")
         def close(self): pass
-    monkeypatch.setattr("ml_exp_server.worker_records.https_connection", lambda *a, **k: Connection())
+    monkeypatch.setattr("ml_exp_server.workers.worker_records.https_connection", lambda *a, **k: Connection())
     (root / "metrics.jsonl").write_text("x" * 65537 + "\n" + encoded([1, 2]) + "\n")
     worker.flush(final=True)
     assert any(r["data"].get("diagnostic") == "INVALID_METRIC_JSONL" for r in received[0]["records"])
@@ -579,7 +579,8 @@ def test_publisher_main_outputs_only_fixed_diagnostics(tmp_path, monkeypatch, ca
 
 
 def test_worker_records_standalone_and_batch_size(tmp_path, monkeypatch):
-    from ml_exp_server import worker_records, worker_http
+    from ml_exp_server.workers import worker_records
+    from ml_exp_server.workers import worker_http
     monkeypatch.setitem(sys.modules, "worker_http", worker_http)
     runpy.run_path(worker_records.__file__, run_name="standalone-import")
     root = tmp_path / "outputs"; root.mkdir()

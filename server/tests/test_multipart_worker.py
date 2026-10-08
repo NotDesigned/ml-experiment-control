@@ -7,8 +7,8 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from ml_exp_server import worker_artifacts as worker
-from ml_exp_server.artifact_store import ArtifactStore
+from ml_exp_server.workers import worker_artifacts as worker
+from ml_exp_server.results.artifact_store import ArtifactStore
 from tests.test_multipart_upload import client, stored, policy, archive
 from tests.test_sensecore_data_workflow import custom_runtime, controller
 

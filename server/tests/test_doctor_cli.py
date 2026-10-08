@@ -7,7 +7,7 @@ import pytest
 
 from experiment_control.runner import CommandResult
 from ml_exp_server.cli import _require_loopback_host, _validate_bind_host, main
-from ml_exp_server.project_registry import ProjectRegistry
+from ml_exp_server.projects.project_registry import ProjectRegistry
 
 
 def _write_config(tmp_path: Path, extra: str = "") -> Path:

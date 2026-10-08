@@ -8,12 +8,10 @@ import pytest
 import yaml
 
 from ml_exp_server.actions.errors import ActionError
-from ml_exp_server.actions.service import (
-    ActionService,
-    _missing_frozen_match_fields,
-)
+from ml_exp_server.actions.service import ActionService
+from ml_exp_server.actions.helpers import _missing_frozen_match_fields
 from ml_exp_server.actions.store import ActionStore
-from ml_exp_server.intent_protocol import OperationIntent
+from ml_exp_server.runs.intent_protocol import OperationIntent
 from ml_exp_server.schemas import (
     ActionRuntimeConfig,
     ControllerConfig,
@@ -22,6 +20,8 @@ from ml_exp_server.schemas import (
     ResearchProject,
 )
 from tests.test_action_edges import _local_evidence_action
+import ml_exp_server.actions.helpers as action_helpers
+import ml_exp_server.actions.planning as action_planning
 
 
 def intent(kind, draft, key="focused-intent"):
@@ -85,11 +85,11 @@ def test_frozen_comparison_match_fields_must_exist_in_preview_manifest():
 def test_manifest_path_and_prepare_dispatch_edges(tmp_path, monkeypatch):
     from ml_exp_server.actions import service as module
 
-    assert module._canonical_manifest_path({}, cwd=tmp_path, run_id="run") is None
-    assert module._canonical_manifest_path(
+    assert action_helpers._canonical_manifest_path({}, cwd=tmp_path, run_id="run") is None
+    assert action_helpers._canonical_manifest_path(
         {"local_root": "runs", "campaign": "study"}, cwd=tmp_path, run_id="run",
     ) == (tmp_path / "runs" / "study" / "run" / "manifest.yaml").resolve()
-    assert module._canonical_manifest_path(
+    assert action_helpers._canonical_manifest_path(
         {"local_root": str(tmp_path / "absolute"), "campaign": "study"},
         cwd=tmp_path, run_id="run",
     ) == (tmp_path / "absolute" / "study" / "run" / "manifest.yaml").resolve()
@@ -106,7 +106,7 @@ def test_manifest_path_and_prepare_dispatch_edges(tmp_path, monkeypatch):
         target="", change_summary="", resource_estimate="unknown", rationale="",
         risk="", evidence_digest="",
     )
-    monkeypatch.setattr(module, "intent_scope_error", lambda *args: None)
+    monkeypatch.setattr(action_planning, "intent_scope_error", lambda *args: None)
     with pytest.raises(ActionError, match="has no executor"):
         service.prepare(scope(), project, unknown)
 

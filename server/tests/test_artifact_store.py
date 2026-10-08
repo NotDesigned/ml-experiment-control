@@ -10,10 +10,10 @@ import pytest
 import yaml
 
 from ml_exp_server.api.app import create_app
-from ml_exp_server.artifact_store import ArtifactStore
-from ml_exp_server.worker_artifacts import archive_outputs
+from ml_exp_server.results.artifact_store import ArtifactStore
+from ml_exp_server.workers.worker_artifacts import archive_outputs
 from ml_exp_server.schemas import ServerConfig, RunIndexRow, AttemptSummary
-from ml_exp_server.source_imports import remove_staging
+from ml_exp_server.projects.source_imports import remove_staging
 import tarfile
 
 

@@ -10,10 +10,7 @@ from ml_exp_server.ingest.indexer import RunIndex, index_project
 from ml_exp_server.ingest.runscan import (
     evaluation_variants, scan_run_dir, train_metric_records,
 )
-from ml_exp_server.project_config import (
-    ConfigError, _declared_run_specs, _static_template_value,
-    load_server_config, load_research_project,
-)
+from ml_exp_server.projects.project_config import ConfigError, _declared_run_specs, _static_template_value, load_server_config, load_research_project
 from ml_exp_server.schemas import ServerConfig
 from tests.conftest import A1_SCHEDULER_TS, FIXTURES
 

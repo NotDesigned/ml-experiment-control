@@ -11,7 +11,10 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from ml_exp_server import result_worker as worker, persistent_state, worker_artifacts, worker_http
+from ml_exp_server.workers import result_worker as worker
+from ml_exp_server.workers import persistent_state
+from ml_exp_server.workers import worker_artifacts
+from ml_exp_server.workers import worker_http
 
 
 def test_training_result_survives_failed_upload_and_contains_no_capability(tmp_path, monkeypatch):

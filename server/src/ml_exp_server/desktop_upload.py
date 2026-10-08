@@ -21,10 +21,10 @@ import time
 import stat
 
 from .application_errors import ApplicationError
-from .multipart_upload import UploadStore, PartStream
+from .data.multipart_upload import UploadStore, PartStream
 from .storage import atomic_json, utc_now
 from .data_image_recipe import recipe, data_worker_digest, DATA_WORKERS
-from .build_contexts import BuildContexts
+from .builds.build_contexts import BuildContexts
 
 IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 ASSET = re.compile(r"^asset\.[0-9a-f]{64}$")

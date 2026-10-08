@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from ml_exp_server import data_delivery as module
-from ml_exp_server.data_delivery import DataDeliveryService, recover_data_deliveries
+from ml_exp_server.data import data_delivery as module
+from ml_exp_server.data.data_delivery import DataDeliveryService, recover_data_deliveries
 from ml_exp_server.storage import atomic_json
 from ml_exp_server.application_errors import ApplicationError
 from tests.test_sensecore_data_workflow import client, stored, custom_runtime

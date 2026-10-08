@@ -11,8 +11,8 @@ from contextlib import redirect_stdout
 import sys
 import tempfile
 
-from .tracking_store import digest, encoded
-from . import wandb_display
+from .tracking.tracking_store import digest, encoded
+from .tracking import wandb_display
 
 
 def default_entity(key):

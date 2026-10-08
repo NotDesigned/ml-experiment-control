@@ -24,11 +24,11 @@ from experiment_control.run_manifest import build_run_manifest
 from experiment_control.runner import SubprocessRunner
 
 from .schemas import ServerConfig
-from .source_revisions import resolve_source_tree, _tree_digest
+from .projects.source_revisions import resolve_source_tree, _tree_digest
 from .storage import read_json
 from .worker_contract import managed_io
-from .worker_launcher import CONTRACT as LAUNCHER_CONTRACT
-from .worker_http import https_connection, relay_environment
+from .workers.worker_launcher import CONTRACT as LAUNCHER_CONTRACT
+from .workers.worker_http import https_connection, relay_environment
 from urllib.parse import urlsplit
 
 
@@ -145,7 +145,7 @@ class Controller:
     def dispatch_command(self, manifest):
         command = list(manifest["command"])
         if self.campaign.get("artifact_store"):
-            from .artifact_store import ArtifactStore
+            from .results.artifact_store import ArtifactStore
             transfer = ArtifactStore(Path(self.campaign["artifact_store"]), Path(self.campaign["source_store"]))
             url, token, limit = transfer.issue(self.campaign["project"], self.run["run_id"],
                                                manifest["attempt_id"], self.root, self.run["outputs"],
@@ -267,7 +267,7 @@ class Controller:
         if not relay:
             return
         target = json.loads(Path(self.campaign["artifact_store"]).read_text())["public_transfer_base"]
-        code = Path(__file__).with_name("worker_http.py").read_text() + "\n" + (
+        code = (Path(__file__).parent / "workers" / "worker_http.py").read_text() + "\n" + (
             "import json,sys\nvalue=json.load(sys.stdin)\n"
             "connection=https_connection(urlsplit(value['target']),timeout=10,environment=value['environment'])\n"
             "try: connection.connect()\nfinally: connection.close()\n")
@@ -450,7 +450,7 @@ def cli(argv=None):
             controller.source(args.source_root)
             result = {"missing": [], "verification": "immutable-source-and-runtime"}
             if controller.run.get("inputs"):
-                from .data_assets import AssetStore
+                from .data.data_assets import AssetStore
                 assets = AssetStore(Path(campaign["artifact_store"]), Path(campaign["source_store"]))
                 for item in controller.run["inputs"]:
                     value = assets.read(campaign["project"], item["asset_id"])

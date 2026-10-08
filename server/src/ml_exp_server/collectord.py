@@ -20,7 +20,7 @@ from typing import Any, Optional
 import yaml
 
 from .actions.store import ActionStore
-from .campaign_lifecycle import campaign_snapshot
+from .projects.campaign_lifecycle import campaign_snapshot
 from .controller_gateway import ControllerCall, ProjectControllerGateway
 from .ingest.indexer import RunIndex, index_project
 from .ingest.runscan import collection_latest_metric, read_jsonl

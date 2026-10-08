@@ -9,7 +9,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from ml_exp_server import project_imports
+from ml_exp_server.projects import project_imports
 from ml_exp_server.api.app import create_app
 from ml_exp_server.application_errors import ApplicationError
 from tests.test_project_imports import config

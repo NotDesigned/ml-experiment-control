@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from ml_exp_server import managed_worker as worker
-from ml_exp_server import worker_artifacts as artifacts
+from ml_exp_server.workers import managed_worker as worker
+from ml_exp_server.workers import worker_artifacts as artifacts
 
 
 def tar_bytes(files, special=None):
@@ -79,7 +79,7 @@ def test_delivery_verifies_bytes_reuses_nas_cache_and_detects_changes(tmp_path, 
     fetches = []
     def fetch(url, token, stream, *args):
         fetches.append(token); stream.write(data); stream.seek(0)
-    monkeypatch.setattr("ml_exp_server.data_input.fetch", fetch)
+    monkeypatch.setattr("ml_exp_server.workers.data_input.fetch", fetch)
     destination = worker.deliver(item, "exact-capability", tmp_path / "cache")
     assert worker.deliver(item, "exact-capability", tmp_path / "cache") == destination and fetches == ["exact-capability"]
     assert (destination / "nested/tokens.bin").stat().st_mode & 0o777 == 0o444
@@ -115,7 +115,7 @@ def test_delivery_rejects_tar_manifest_mismatches(tmp_path, monkeypatch, case):
     data = tar_bytes(archived, special)
     item = input_item(data, files)
     def fetch(url, token, stream, *args): stream.write(data); stream.seek(0)
-    monkeypatch.setattr("ml_exp_server.data_input.fetch", fetch)
+    monkeypatch.setattr("ml_exp_server.workers.data_input.fetch", fetch)
     with pytest.raises(ValueError, match="archive"):
         worker.deliver(item, "capability", tmp_path / "cache")
     assert not list((tmp_path / "cache").glob(".input-*"))
@@ -170,7 +170,7 @@ def test_published_checkpoint_reuses_verified_cache_without_network(tmp_path, mo
     item = input_item(data, files)
     def forbidden(*args):
         pytest.fail("same-backend checkpoint recovery must not download the archive")
-    monkeypatch.setattr("ml_exp_server.data_input.fetch", forbidden)
+    monkeypatch.setattr("ml_exp_server.workers.data_input.fetch", forbidden)
     assert worker.deliver(item, "capability", cache) == destination
     assert worker.cache_checkpoint(stream, cache) == destination
     weights = destination / "checkpoints/step-1/model.pt"
@@ -288,13 +288,13 @@ def test_delivery_failure_prevents_training_and_worker_entrypoints(tmp_path, mon
     monkeypatch.setattr(worker, "link_path", bad_link)
     assert worker.main(["must-not-run"]) == 65
     monkeypatch.setitem(sys.modules, "artifacts", artifacts)
-    from ml_exp_server import data_input
+    from ml_exp_server.workers import data_input
     monkeypatch.setitem(sys.modules, "data_input", data_input)
-    monkeypatch.setitem(sys.modules, "data_preparation", __import__("ml_exp_server.data_preparation", fromlist=["prepare"]))
-    monkeypatch.setitem(sys.modules, "persistent_state", __import__("ml_exp_server.persistent_state", fromlist=["publish"]))
-    monkeypatch.setitem(sys.modules, "worker_records", __import__("ml_exp_server.worker_records", fromlist=["WorkerRecords"]))
-    monkeypatch.setitem(sys.modules, "result_worker", __import__("ml_exp_server.result_worker", fromlist=["training_result"]))
-    monkeypatch.setitem(sys.modules, "worker_http", __import__("ml_exp_server.worker_http", fromlist=["error_code"]))
+    monkeypatch.setitem(sys.modules, "data_preparation", __import__("ml_exp_server.workers.data_preparation", fromlist=["prepare"]))
+    monkeypatch.setitem(sys.modules, "persistent_state", __import__("ml_exp_server.workers.persistent_state", fromlist=["publish"]))
+    monkeypatch.setitem(sys.modules, "worker_records", __import__("ml_exp_server.workers.worker_records", fromlist=["WorkerRecords"]))
+    monkeypatch.setitem(sys.modules, "result_worker", __import__("ml_exp_server.workers.result_worker", fromlist=["training_result"]))
+    monkeypatch.setitem(sys.modules, "worker_http", __import__("ml_exp_server.workers.worker_http", fromlist=["error_code"]))
     runpy.run_path(worker.__file__, run_name="standalone-import")
     parsed = ast.parse(Path(worker.__file__).read_text())
     guard = ast.Module(body=[parsed.body[-1]], type_ignores=[])

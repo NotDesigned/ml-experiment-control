@@ -118,8 +118,8 @@ def _doctor_command(args: argparse.Namespace) -> int:
     from experiment_control.runner import SubprocessRunner
 
     from .http_auth import HttpAuthError, load_bearer_token
-    from .project_config import ConfigError, load_research_project, load_server_config
-    from .project_registry import ProjectRegistry, ProjectRegistryError
+    from .projects.project_config import ConfigError, load_research_project, load_server_config
+    from .projects.project_registry import ProjectRegistry, ProjectRegistryError
 
     checks: list[tuple[str, bool | None, str, str | None]] = []
     config = None
@@ -323,7 +323,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("install the ml-experiment-server package to run ml-expd") from exc
 
     from .api.app import create_app
-    from .project_config import load_server_config
+    from .projects.project_config import load_server_config
 
     config = load_server_config(args.config)
     certificate, private_key = _validate_tls_cert_chain(

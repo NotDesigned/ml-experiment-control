@@ -27,14 +27,14 @@ from urllib.parse import urlsplit, parse_qs
 
 from dockerfile_parse import DockerfileParser
 
-from .source_revisions import _tree_digest
+from .projects.source_revisions import _tree_digest
 from .storage import atomic_json
 from .dockerfile_build import DOCKERFILE_RECIPE, INTERNAL, inspect_dockerfile, managed_dockerfile, worker_digest
 from .worker_contract import CAPABILITIES, WORKER_CONTRACT, install_workers, recipe_digest
-from .execution_progress import record_progress, progress_view
+from .runs.execution_progress import record_progress, progress_view
 from .application_errors import ApplicationError
-from .build_contexts import CONTEXT_ID, MAX_BYTES
-from .image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE, BUILD_REMOTE_CONTEXT, BUILD_CONTEXT_BYTES
+from .builds.build_contexts import CONTEXT_ID, MAX_BYTES
+from .builds.image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE, BUILD_REMOTE_CONTEXT, BUILD_CONTEXT_BYTES
 
 
 IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
@@ -117,7 +117,7 @@ class ImageBuilder:
 
     def request(self, request: dict) -> dict:
         if request.get("operation") == "data-image":
-            from .data_image_build import build
+            from .builds.data_image_build import build
             return build(self, request)
         project, source_id, image = (request.get(k, "") for k in ("project", "source_id", "base_image"))
         if (not PROJECT.fullmatch(project) or not re.fullmatch(r"source\.[0-9a-f]{64}", source_id)

@@ -9,14 +9,11 @@ import yaml
 
 import ml_exp_server.application as module
 import ml_exp_server.ingest.runscan as runscan
-from ml_exp_server.application import (
-    ApplicationError,
-    ExperimentServerApplication,
-    attempt_failure_evidence_assessment,
-    compact_evidence,
-    structured_failure_summary,
-)
+from ml_exp_server.application import ApplicationError, ExperimentServerApplication
+from ml_exp_server.runs.failures import attempt_failure_evidence_assessment, compact_evidence, structured_failure_summary
 from ml_exp_server.schemas import OperationScope, OperationScopeType, CampaignRelationship
+from tests.domain_patches import patch_application_dependency
+import ml_exp_server.runs.failures as domain_runs_failures
 
 
 class Dump:
@@ -104,7 +101,7 @@ def test_run_validate_covers_binding_provenance_and_current_attempt(
     app._attempt_validation_gates = lambda *_args, **_kwargs: [
         app._gate("attempt.extra", "PASS", "checked")
     ]
-    monkeypatch.setattr(module, "preferred_attempt_id", lambda _path: current)
+    patch_application_dependency(monkeypatch, "preferred_attempt_id", lambda _path: current)
 
     payload = app.run_validate("demo", "run-a")
     gates = {item["id"]: item for item in payload["gates"]}
@@ -138,7 +135,7 @@ def test_run_validate_accepts_an_aggregate_seed_list(monkeypatch, tmp_path):
     app = application()
     app.resolve_scope = lambda *_args: (scope(), SimpleNamespace(), row)
     app._attempt_validation_gates = lambda *_args, **_kwargs: []
-    monkeypatch.setattr(module, "preferred_attempt_id", lambda _path: None)
+    patch_application_dependency(monkeypatch, "preferred_attempt_id", lambda _path: None)
 
     payload = app.run_validate("demo", "run-a")
     gate = {
@@ -571,7 +568,7 @@ def test_campaign_context_skips_excluded_peer_and_preserves_unbound_peer(monkeyp
     configured = SimpleNamespace(
         project="demo", campaigns=[SimpleNamespace(name="study", current_revision=revision)],
     )
-    monkeypatch.setattr(module, "campaign_snapshot", lambda *args: {"lifecycle_state": "ACTIVE"})
+    patch_application_dependency(monkeypatch, "campaign_snapshot", lambda *args: {"lifecycle_state": "ACTIVE"})
     result = app.campaign_contexts(configured, SimpleNamespace(campaign_memberships=[binding]))
     assert [item["run_id"] for item in result[0]["comparator_runs"]] == ["peer"]
     assert result[0]["comparator_runs"][0]["membership"] is None
@@ -598,7 +595,7 @@ def test_bounded_evidence_all_scope_shapes(monkeypatch):
     configured = SimpleNamespace(
         project="demo", title="Demo", research_questions=[question], campaigns=[campaign],
     )
-    monkeypatch.setattr(module, "campaign_snapshot", lambda *args: {"lifecycle_state": "ACTIVE"})
+    patch_application_dependency(monkeypatch, "campaign_snapshot", lambda *args: {"lifecycle_state": "ACTIVE"})
     assert app.bounded_evidence(scope(OperationScopeType.PROJECT, "demo"), configured, configured)["runs"]
     assert app.bounded_evidence(scope(OperationScopeType.CAMPAIGN, "study"), configured, campaign)["runs"]
     assert app.bounded_evidence(scope(), configured, row)["run"]["run_id"] == "run-a"
@@ -650,10 +647,10 @@ def test_object_show_run_does_not_duplicate_raw_failure_class():
 def test_campaign_list_status_and_status_error(monkeypatch):
     configured = SimpleNamespace(campaigns=[SimpleNamespace(name="one")])
     app = application(project=lambda name: configured, index=object())
-    monkeypatch.setattr(module, "campaign_snapshot", lambda *args: {"campaign": args[-1]})
+    patch_application_dependency(monkeypatch, "campaign_snapshot", lambda *args: {"campaign": args[-1]})
     assert app.campaign_list("demo")["campaigns"] == [{"campaign": "one"}]
     assert app.campaign_status("demo", "one") == {"campaign": "one"}
-    monkeypatch.setattr(module, "campaign_snapshot", lambda *args: raises(KeyError("missing")))
+    patch_application_dependency(monkeypatch, "campaign_snapshot", lambda *args: raises(KeyError("missing")))
     with pytest.raises(ApplicationError) as caught:
         app.campaign_status("demo", "missing")
     assert caught.value.code == "UNKNOWN_CAMPAIGN"
@@ -666,12 +663,12 @@ def test_campaign_and_object_action_validation_errors(monkeypatch):
     configured = SimpleNamespace()
     app.resolve_scope = lambda *args: (target, configured, object())
 
-    monkeypatch.setattr(module, "campaign_snapshot", lambda *args: {
+    patch_application_dependency(monkeypatch, "campaign_snapshot", lambda *args: {
         "lifecycle_state": "ARCHIVED",
     })
     with pytest.raises(ApplicationError, match="already archived"):
         app.prepare_campaign_archive("demo", "study", reason="x")
-    monkeypatch.setattr(module, "campaign_snapshot", lambda *args: {
+    patch_application_dependency(monkeypatch, "campaign_snapshot", lambda *args: {
         "lifecycle_state": "ACTIVE", "revision_id": "r1",
     })
     with pytest.raises(ApplicationError, match="reason is required"):
@@ -1000,7 +997,7 @@ def test_action_adapter_error_mapping(monkeypatch):
     app = ExperimentServerApplication(runtime)
     app.resolve_scope = lambda *args: (target, configured, object())
     app.bounded_evidence = lambda *args: {"bounded": True}
-    digest = module.evidence_digest({"bounded": True})
+    digest = domain_runs_failures.evidence_digest({"bounded": True})
     with pytest.raises(ApplicationError) as caught:
         app.prepare_action(
             "demo", OperationScopeType.CAMPAIGN, "study",
@@ -1039,7 +1036,7 @@ def test_action_additional_error_and_verified_success_paths(monkeypatch):
     with pytest.raises(ApplicationError) as caught:
         app.authorize_action("a")
     assert caught.value.code == "ACTION_BLOCKED"
-    monkeypatch.setattr(module, "index_project", lambda index, project: indexed.append(project.project))
+    patch_application_dependency(monkeypatch, "index_project", lambda index, project: indexed.append(project.project))
     result = app.execute_action("a", "confirm")
     assert result["execution"]["status"] == "VERIFIED"
     assert indexed == ["one"]

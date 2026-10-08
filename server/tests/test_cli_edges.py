@@ -11,7 +11,7 @@ import pytest
 
 from ml_exp_server import cli
 from ml_exp_server.cli import _validate_bind_host, _validate_tls_cert_chain, main
-from ml_exp_server.project_registry import ProjectRegistry
+from ml_exp_server.projects.project_registry import ProjectRegistry
 from ml_exp_server.schemas import ProjectLifecycleState
 
 

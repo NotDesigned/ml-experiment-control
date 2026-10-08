@@ -36,8 +36,8 @@ from ..schemas import (
     EvidenceLayers,
     RunIndexRow,
 )
-from ..evidence_conflicts import classify_evidence_conflicts
-from ..metric_contract import metric_result, finite
+from ..runs.evidence_conflicts import classify_evidence_conflicts
+from ..tracking.metric_contract import metric_result, finite
 
 # collection.json keys that are operational rather than scientific metrics.
 _COLLECTION_NON_METRIC_KEYS = {

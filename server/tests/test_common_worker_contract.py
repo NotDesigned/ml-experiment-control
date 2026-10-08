@@ -23,7 +23,7 @@ def test_dockerfile_shares_worker_receipt_data_mounts_and_checkpoint_support(cli
     packaged = []
     def publish(tag, context):
         internal = context / "ml-expd-build-internal"
-        package = Path(__file__).parents[1] / "src/ml_exp_server"
+        package = Path(__file__).parents[1] / "src/ml_exp_server/workers"
         assert (internal / "worker.py").read_bytes() == (package / "managed_worker.py").read_bytes()
         assert (internal / "artifacts.py").read_bytes() == (package / "worker_artifacts.py").read_bytes()
         assert (internal / "launch.py").read_bytes() == (package / "worker_launcher.py").read_bytes()
@@ -59,7 +59,7 @@ def test_dockerfile_shares_worker_receipt_data_mounts_and_checkpoint_support(cli
         assert manifest["resolved_config"]["container"]["worker_contract"] == WORKER_CONTRACT
         assert manifest["execution"].get("managed_io", False) == (executor == "gpu")
         dispatch = ctl.dispatch_command(ctl.store.load_attempt("attempt-001"))
-        from ml_exp_server.artifact_store import ArtifactStore
+        from ml_exp_server.results.artifact_store import ArtifactStore
         transfer = ArtifactStore(stored[0], root)
         with transfer.record("demo", executor, "attempt-001") as (_, record):
             environment = record["launch_manifest"]["environment"]
@@ -113,7 +113,7 @@ def test_legacy_ready_image_keeps_original_command_and_final_only_capability(cli
 
 
 def test_previous_managed_worker_keeps_full_dispatch_without_new_entrypoint(client, stored, tmp_path):
-    from ml_exp_server.artifact_store import ArtifactStore
+    from ml_exp_server.results.artifact_store import ArtifactStore
     from tests.test_persistent_checkpoints import controller, ready, token
     source = import_source(client, archive({"train.py": b"pass", "download.py": b"pass", "Dockerfile": ("FROM registry.example/python@sha256:" + "a" * 64 + "\n").encode()}))
     bundle = runtime(client, source)

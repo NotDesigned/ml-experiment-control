@@ -11,10 +11,10 @@ import pytest
 
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.api.app import create_app
-from ml_exp_server.artifact_store import ArtifactStore, require_artifact_available, artifact_released
-from ml_exp_server.artifact_lifecycle import ArtifactLifecycle
-from ml_exp_server.artifacts import ArtifactService
-from ml_exp_server.result_collection import ResultCollectionService
+from ml_exp_server.results.artifact_store import ArtifactStore, require_artifact_available, artifact_released
+from ml_exp_server.results.artifact_lifecycle import ArtifactLifecycle
+from ml_exp_server.results.artifacts import ArtifactService
+from ml_exp_server.results.result_collection import ResultCollectionService
 from ml_exp_server.schemas import ServerConfig, RunIndexRow, AttemptSummary
 from ml_exp_server.storage import atomic_json
 from tests.test_artifact_store import storage, archive
@@ -102,7 +102,7 @@ def test_release_retains_receipts_checkpoints_and_unrelated_local_files(sealed, 
         (directory/'weights.pt').unlink(); (directory/'weights.pt').symlink_to(checkpoint)
     if cache == 'dir-link': (directory/'link').symlink_to(tmp_path, target_is_directory=True)
     if cache == 'root-link':
-        from ml_exp_server.source_imports import remove_staging
+        from ml_exp_server.projects.source_imports import remove_staging
         remove_staging(directory); directory.symlink_to(tmp_path, target_is_directory=True)
     with store.record(*IDENTITY) as (_,value): original = dict(value['receipt'])
     lifecycle=ArtifactLifecycle(store); lifecycle.acknowledge(*IDENTITY, proof); due(store)
@@ -220,7 +220,7 @@ def test_collector_respects_project_write_pause(sealed,monkeypatch,enabled):
 
 
 def test_crash_after_delete_before_final_commit_reconciles_only_owned_object(sealed,monkeypatch):
-    from ml_exp_server import artifact_lifecycle as module
+    from ml_exp_server.results import artifact_lifecycle as module
     store,_,_,_,objects,proof,deletes=sealed
     lifecycle=ArtifactLifecycle(store);lifecycle.acknowledge(*IDENTITY,proof);due(store)
     original=module.atomic_json

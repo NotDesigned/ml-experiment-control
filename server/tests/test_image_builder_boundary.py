@@ -13,8 +13,8 @@ import pytest
 
 from ml_exp_server import image_builder as module
 from ml_exp_server.image_builder import BuilderServer, ImageBuilder, builder_request
-from ml_exp_server.source_imports import seal_tree
-from ml_exp_server.source_revisions import _tree_digest
+from ml_exp_server.projects.source_imports import seal_tree
+from ml_exp_server.projects.source_revisions import _tree_digest
 
 
 @pytest.fixture

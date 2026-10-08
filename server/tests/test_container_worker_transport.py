@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ml_exp_server import worker_artifacts as worker
+from ml_exp_server.workers import worker_artifacts as worker
 
 
 @pytest.mark.parametrize("url", ["http://example/upload", "https://user:pass@example/upload", "https://example/upload?key=value", "https://example/upload#fragment"])

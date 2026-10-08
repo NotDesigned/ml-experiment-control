@@ -9,12 +9,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from ml_exp_server import artifacts as module
+from ml_exp_server.results import artifacts as module
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server.artifact_store import ArtifactStore
-from ml_exp_server.artifacts import ArtifactService, open_directory, safe_parts
+from ml_exp_server.results.artifact_store import ArtifactStore
+from ml_exp_server.results.artifacts import ArtifactService, open_directory, safe_parts
 from ml_exp_server.schemas import AttemptSummary, RunIndexRow, ServerConfig
-from ml_exp_server.source_imports import remove_staging
+from ml_exp_server.projects.source_imports import remove_staging
 from tests.test_artifact_store import archive, storage
 
 

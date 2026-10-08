@@ -8,7 +8,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ..application import ApplicationError
 from ..api_contract import ActionSnapshotResponse
-from ..intent_protocol import OperationIntent
+from ..runs.intent_protocol import OperationIntent
 from ..schemas import OperationScopeType
 from .errors import application_http_error
 

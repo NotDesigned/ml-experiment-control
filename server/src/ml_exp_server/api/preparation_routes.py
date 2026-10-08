@@ -2,8 +2,8 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..experiment_preparation import ExperimentPreparationRequest, PreparationRun
-from ..executor_capabilities import ExecutionRequirements, ExecutorSelector
+from ..runs.experiment_preparation import ExperimentPreparationRequest, PreparationRun
+from ..runs.executor_capabilities import ExecutionRequirements, ExecutorSelector
 from .container_routes import invoke
 
 

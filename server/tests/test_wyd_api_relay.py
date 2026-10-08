@@ -13,8 +13,9 @@ import yaml
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.container_controller import Controller
 from ml_exp_server.container_execution import ContainerExecutionService
-from ml_exp_server.executor_capabilities import declaration
-from ml_exp_server import data_preparation as data, managed_worker as worker
+from ml_exp_server.runs.executor_capabilities import declaration
+from ml_exp_server.workers import data_preparation as data
+from ml_exp_server.workers import managed_worker as worker
 from tests.test_container_api import archive, client, import_source, runtime
 from tests.test_script_data_preparation import definition
 from tests.test_sensecore_data_workflow import stored
@@ -54,7 +55,7 @@ def test_relay_frozen_before_launch_and_capabilities_do_not_leak_address(gateway
     ctl = controller(gateway, data_preparation={'script': 'download.py'})
     dispatch = ctl.dispatch_command(ctl.store.load_attempt('attempt-001'))
     assert 'ML_EXPD_API_RELAY=tcp://127.0.0.1:18443' in dispatch[:4]
-    from ml_exp_server.artifact_store import ArtifactStore
+    from ml_exp_server.results.artifact_store import ArtifactStore
     store = ArtifactStore(gateway[1][0], Path(ctl.campaign['source_store']))
     with store.record('demo', 'relay-run', 'attempt-001') as (_, record):
         env = record['launch_manifest']['environment']
@@ -93,7 +94,7 @@ def test_relay_frozen_before_launch_and_capabilities_do_not_leak_address(gateway
 def test_relay_without_script_and_old_worker_are_checked(gateway, monkeypatch):
     ctl = controller(gateway)
     ctl.prepare_gateway_data(require_cached=True)  # No user script to execute.
-    from ml_exp_server.executor_capabilities import validate_worker, ExecutionRequirements
+    from ml_exp_server.runs.executor_capabilities import validate_worker, ExecutionRequirements
     service = ContainerExecutionService(gateway[0].app.state.runtime)
     request = __import__('ml_exp_server.container_execution', fromlist=['RunRequest']).RunRequest(
         run_id='old', executor='gpu', runtime_id=gateway[2]['runtime_id'])

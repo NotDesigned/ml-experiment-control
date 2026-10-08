@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 import pytest
 
-from ml_exp_server import worker_launcher as launcher
+from ml_exp_server.workers import worker_launcher as launcher
 from ml_exp_server.api.app import create_app
 from ml_exp_server.container_execution import Resources
 from ml_exp_server.schemas import ServerConfig
@@ -169,7 +169,7 @@ def test_invalid_public_origin_fails_before_sealing(storage, document):
 @pytest.mark.parametrize("mode, expected", [("success", 0), ("failure", 7), ("timeout", 124)])
 def test_real_worker_preserves_argv_budget_and_hides_capability(document, tmp_path, monkeypatch, mode, expected):
     wrapper = tmp_path / "worker.py"
-    wrapper.write_text("from ml_exp_server import managed_worker as w\n"
+    wrapper.write_text("from ml_exp_server.workers import managed_worker as w\n"
                        "w.link_path = lambda target, path: None\n"
                        "w.upload = lambda url, token, stream, size: None\nraise SystemExit(w.main())\n")
     code = "import json, os, pathlib; pathlib.Path(os.environ['OUTPUT_DIR'], 'proof.json').write_text(json.dumps({'bootstrap': 'ML_EXPD_BOOTSTRAP_TOKEN' in os.environ, 'upload': 'ML_EXPD_UPLOAD_TOKEN' in os.environ}))"

@@ -9,8 +9,8 @@ import ssl
 import pytest
 from fastapi.testclient import TestClient
 
-from ml_exp_server.data_input import DeliveryTrace, InputDeliveryError, fetch
-from ml_exp_server.input_progress import read_input_progress, MARKER
+from ml_exp_server.workers.data_input import DeliveryTrace, InputDeliveryError, fetch
+from ml_exp_server.runs.input_progress import read_input_progress, MARKER
 from ml_exp_server.schemas import RunIndexRow
 from tests.test_submissions import _app, _action
 
@@ -25,7 +25,7 @@ def event(**changes):
     (ValueError('private response'), 'INPUT_VALIDATION_FAILED'), (InputDeliveryError('INPUT_ARCHIVE_TRUNCATED', 'private'), 'INPUT_ARCHIVE_TRUNCATED')])
 def test_worker_safe_failure_and_throttled_bytes(error, code, capsys, monkeypatch):
     times = iter([0, 1, 2, 10, 11])
-    monkeypatch.setattr('ml_exp_server.data_input.time.monotonic', lambda: next(times))
+    monkeypatch.setattr('ml_exp_server.workers.data_input.time.monotonic', lambda: next(times))
     trace = DeliveryTrace('asset.' + 'a'*64, 100)
     trace.report('DOWNLOADING', received_bytes=1)
     trace.report('DOWNLOADING', received_bytes=2, force=False)
@@ -89,7 +89,7 @@ def test_delivery_trace_initial_failure_and_success_progress(tmp_path, monkeypat
     trace=DeliveryTrace()
     trace.failed(ValueError("private"))
     assert 'INITIALIZING' in capsys.readouterr().out
-    from ml_exp_server import data_input
+    from ml_exp_server.workers import data_input
     data=b'abc'; body=io.BytesIO(data)
     class Connection:
         def __init__(self,*args,**kwargs):pass
@@ -115,7 +115,7 @@ def test_reader_reports_ready_without_failure_code(tmp_path):
 
 
 def test_prepared_cache_missing_has_specific_code(tmp_path):
-    from ml_exp_server.data_input import deliver
+    from ml_exp_server.workers.data_input import deliver
     with pytest.raises(InputDeliveryError) as error:
         deliver({'asset_id':'asset.'+'a'*64,'sha256':'a'*64,'require_cached':True},None,tmp_path)
     assert error.value.code=='INPUT_PREPARED_CACHE_MISSING'

@@ -9,8 +9,8 @@ import pytest
 
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.container_execution import ContainerExecutionService
-from ml_exp_server.experiment_preparation import ExperimentPreparationRequest
-from ml_exp_server.wyd_data import WydDataStager
+from ml_exp_server.runs.experiment_preparation import ExperimentPreparationRequest
+from ml_exp_server.backends.wyd import WydDataStager
 from tests.test_desktop_data_upload import remote_client, stage, stored, client
 from tests.test_multipart_upload import begin, send
 from tests.test_artifact_store import archive
@@ -30,7 +30,7 @@ def backend(remote_client, tmp_path, monkeypatch):
         commands.append(command)
         assert command[0]=='ssh' and 'BatchMode=yes' in command
         return original(shlex.split(command[-1]),**kwargs)
-    monkeypatch.setattr('ml_exp_server.wyd_data.subprocess.Popen',local)
+    monkeypatch.setattr('ml_exp_server.backends.wyd.subprocess.Popen',local)
     return remote_client,profile,asset,commands
 
 
@@ -101,13 +101,13 @@ def test_transport_errors_are_safe_and_process_is_cleaned(backend,monkeypatch,mo
         def poll(self):return None if mode=='live_cleanup' and not self.kills else 0
         def wait(self,**kwargs):return 1 if mode=='nonzero' else 0
     process=Process()
-    monkeypatch.setattr('ml_exp_server.wyd_data.subprocess.Popen',lambda *a,**kw:process)
+    monkeypatch.setattr('ml_exp_server.backends.wyd.subprocess.Popen',lambda *a,**kw:process)
     class Timer:
         def __init__(self,seconds,fn):self.fn=fn
         def start(self):
             if mode=='timeout':self.fn()
         def cancel(self):pass
-    monkeypatch.setattr('ml_exp_server.wyd_data.threading.Timer',Timer)
+    monkeypatch.setattr('ml_exp_server.backends.wyd.threading.Timer',Timer)
     if mode=='live_cleanup':
         with WydDataStager(client.app.state.runtime).process(profile,{'x':1}):pass
     else:

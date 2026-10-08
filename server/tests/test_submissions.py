@@ -11,12 +11,12 @@ import yaml
 import pytest
 from fastapi.testclient import TestClient
 
-from ml_exp_server.authored_runs import authored_run_placeholder
+from ml_exp_server.projects.authored_runs import authored_run_placeholder
 from ml_exp_server.actions.service import ActionService
 from ml_exp_server.api.app import create_app
 from ml_exp_server.application import ExperimentServerApplication
-from ml_exp_server.campaign_lifecycle import campaign_record_path
-from ml_exp_server.project_config import load_research_project
+from ml_exp_server.projects.campaign_lifecycle import campaign_record_path
+from ml_exp_server.projects.project_config import load_research_project
 from ml_exp_server.schemas import (
     ActionRuntimeConfig,
     AttemptSummary,
@@ -518,7 +518,7 @@ def test_prepared_submission_is_not_reused_after_checkout_change(
     current = {"commit": "a" * 40}
     runner.git_commit = current["commit"]
     monkeypatch.setattr(
-        "ml_exp_server.submissions.project_code_identity",
+        "ml_exp_server.runs.submissions.project_code_identity",
         lambda _project: {
             "repository": {
                 "kind": "git",
