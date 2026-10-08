@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import errno
 import hashlib
 import json
 import os
@@ -63,33 +64,54 @@ def checked_directory(root):
 
 def recover(value):
     outputs = Path(value["outputs_root"])
-    checked_directory(outputs)
-    checkpoint = value.get("checkpoint")
-    if checkpoint is not None:
-        checked_directory(Path(checkpoint["state_root"]))
-        restore(checkpoint)
-        # Check matching exports against immutable state, without imposing any
-        # project-specific filename, metric or scientific completion rule.
-        for item in checkpoint["files"]:
-            relative = "/".join(item["path"].split("/")[2:])
-            if any(fnmatch.fnmatch(relative, p) or p.startswith("**/") and fnmatch.fnmatch(relative, p[3:])
-                   for p in value["patterns"]) and (outputs / relative).exists():
-                with open_file(outputs, relative) as stream:
-                    if os.fstat(stream.fileno()).st_size != item["bytes"] or sha(stream) != item["sha256"]:
-                        raise ValueError("output differs from registered checkpoint")
-    with tempfile.TemporaryFile(dir=outputs.parent) as stream:
-        count = archive_outputs(outputs, stream, value["limit"], value["patterns"])
-        if not count:
-            raise ValueError("Attempt has no declared outputs")
-        length = stream.tell()
-        stream.seek(0)
-        checksum = sha(stream)
-        expected = value.get("expected_archive")
-        if expected is not None and (checksum, length) != (expected["sha256"], expected["bytes"]):
-            raise ValueError("recovered outputs differ from unfinished upload")
-        print("ML_EXPD_RESULT_RECOVERY=VERIFIED", flush=True)
-        upload_parts(value["url"], value["token"], stream, length)
-    print("ML_EXPD_RESULT_RECOVERY=COMPLETE", flush=True)
+    phase = "outputs_directory"
+    try:
+        checked_directory(outputs)
+        checkpoint = value.get("checkpoint")
+        if checkpoint is not None:
+            phase = "checkpoint_directory"
+            checked_directory(Path(checkpoint["state_root"]))
+            phase = "checkpoint_verify"
+            restore(checkpoint)
+            # Check matching exports against immutable state, without imposing any
+            # project-specific filename, metric or scientific completion rule.
+            phase = "output_verify"
+            for item in checkpoint["files"]:
+                relative = "/".join(item["path"].split("/")[2:])
+                if any(fnmatch.fnmatch(relative, p) or p.startswith("**/") and fnmatch.fnmatch(relative, p[3:])
+                       for p in value["patterns"]) and (outputs / relative).exists():
+                    with open_file(outputs, relative) as stream:
+                        if os.fstat(stream.fileno()).st_size != item["bytes"] or sha(stream) != item["sha256"]:
+                            raise ValueError("output differs from registered checkpoint")
+        # Packaging is disposable work, not persistent training state. NAS can
+        # be readable while its write quota is exhausted; keep it read-only.
+        phase = "archive_tempfile"
+        with tempfile.TemporaryFile(dir="/tmp") as stream:
+            phase = "archive_write"
+            count = archive_outputs(outputs, stream, value["limit"], value["patterns"])
+            if not count:
+                raise ValueError("Attempt has no declared outputs")
+            length = stream.tell()
+            stream.seek(0)
+            phase = "archive_verify"
+            checksum = sha(stream)
+            expected = value.get("expected_archive")
+            if expected is not None and (checksum, length) != (expected["sha256"], expected["bytes"]):
+                raise ValueError("recovered outputs differ from unfinished upload")
+            print("ML_EXPD_RESULT_RECOVERY=VERIFIED", flush=True)
+            phase = "archive_upload"
+            upload_parts(value["url"], value["token"], stream, length)
+        print("ML_EXPD_RESULT_RECOVERY=COMPLETE", flush=True)
+    except Exception as error:
+        number = error.errno if isinstance(error, OSError) and type(error.errno) is int else None
+        filename = error.filename if isinstance(error, OSError) else None
+        file_ref = hashlib.sha256(os.fsencode(filename)).hexdigest()[:20] if isinstance(filename, (str, bytes)) else None
+        # Raw exception text, traceback lines and paths may contain capabilities.
+        print("ML_EXPD_RESULT_RECOVERY_DIAGNOSTIC=" + json.dumps({
+            "phase": phase, "error": error_code(error), "errno": number,
+            "os_code": errno.errorcode.get(number), "file_ref": file_ref,
+        }, sort_keys=True), flush=True)
+        raise
 
 
 def main(value):

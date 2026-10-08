@@ -73,13 +73,21 @@ WYD reads the frozen shared output directory through its configured SSH endpoint
 SenseCore uses the configured debug pool with RESERVED quota, a verified
 2CPU/4GiB/0GPU spec and an existing pinned Python image. The copy worker is bounded
 to 900 seconds, with a 1500-second queue/observation deadline; it never runs the
-training entrypoint. Registered checkpoints and unfinished archive identities
+training entrypoint. Temporary result archives are built in the CPU container's
+local `/tmp`, so recovery does not require NAS write capacity. NAS training state
+and outputs are only read. Registered checkpoints and unfinished archive identities
 are checked before publishing. Recoveries run serially and do not retain another
 expanded output cache after publication. File listings use receipt metadata
 without restoring whole archives; normal signed downloads go to object storage.
 Artifact completion reserves space for validation and the published object in
 addition to already saved parts: object storage can share the API host's disk.
 Insufficient space still rejects completion and preserves the session.
+
+Recovery failures emit `ML_EXPD_RESULT_RECOVERY_DIAGNOSTIC` with the failed phase,
+exception class, system `errno`/symbolic code when present, and a SHA256 path
+reference when the exception identifies a file. Raw exception text and paths are
+excluded. A NAS `ENOSPC` during temporary-file creation and an API-host upload
+capacity failure are separate problems; check the reported phase before retrying.
 
 ### Download confirmation and server storage
 
