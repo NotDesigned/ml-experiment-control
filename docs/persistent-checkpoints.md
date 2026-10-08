@@ -92,3 +92,5 @@ metadata means no registered API reference yet. Result-upload failure does not
 delete persistent state, but a REGISTERED checkpoint alone is not a downloadable
 archive. See [output recovery](recovery.md#output-recovery). Retain referenced
 generations deliberately; no automatic state garbage collection exists.
+
+Checkpoint 和 snapshot 查询只读取登记的元数据并校验 Run/Attempt 与 checkpoint 身份，不下载或展开结果归档。归档不可用、已释放或对象存储不可达不影响这些查询；取回文件仍需要对应的文件或归档下载接口。
