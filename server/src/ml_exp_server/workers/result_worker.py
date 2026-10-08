@@ -12,11 +12,11 @@ import stat
 import tempfile
 
 if __package__:
-    from .worker_artifacts import archive_outputs, upload_parts
+    from .worker_artifacts import archive_outputs, upload_parts, HttpTransferError
     from .persistent_state import restore, open_file
     from .worker_http import https_connection, error_code
 else:
-    from artifacts import archive_outputs, upload_parts
+    from artifacts import archive_outputs, upload_parts, HttpTransferError
     from persistent_state import restore, open_file
     from worker_http import https_connection, error_code
 
@@ -106,10 +106,13 @@ def recover(value):
         number = error.errno if isinstance(error, OSError) and type(error.errno) is int else None
         filename = error.filename if isinstance(error, OSError) else None
         file_ref = hashlib.sha256(os.fsencode(filename)).hexdigest()[:20] if isinstance(filename, (str, bytes)) else None
+        http = ({"http_status": error.http_status, "api_code": error.api_code}
+                if isinstance(error, HttpTransferError) else {})
         # Raw exception text, traceback lines and paths may contain capabilities.
         print("ML_EXPD_RESULT_RECOVERY_DIAGNOSTIC=" + json.dumps({
             "phase": phase, "error": error_code(error), "errno": number,
             "os_code": errno.errorcode.get(number), "file_ref": file_ref,
+            **http,
         }, sort_keys=True), flush=True)
         raise
 

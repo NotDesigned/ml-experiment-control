@@ -1,19 +1,191 @@
 """Execution for ActionService."""
 from __future__ import annotations
 import json
+import hashlib
+import os
+import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from ..controller_gateway import redact as _redact
+from ..controller_gateway import (
+    redact as _redact, _safe_log_tail, _open_regular_nofollow,
+    _STDOUT_LOG_BYTES, _STDERR_LOG_BYTES,
+)
 from ..storage import utc_now
 from .errors import ActionError
 from .files import file_sha as _file_sha
 from .project_writes import ProjectWriteConflict, ProjectWriteError
 from .helpers import PendingActionExecution, _SHA256_DIGEST
 
+_STAGE_PHASES = {
+    "IMAGE_STAGE", "LOCK_WAIT", "CACHE_VERIFY", "IMAGE_PULL_CONVERT",
+    "SIF_VERIFY", "SIF_PUBLISH",
+}
+_STAGE_ERRORS = {"LOCK_TIMEOUT", "STAGE_COMMAND_FAILED", "STAGE_TIMEOUT"}
+_STAGE_EVENT_PREFIX = "ML_EXPD_STAGE_EVENT="
+_STAGE_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+def _stage_event(value: Any, *, started_at: str | None) -> dict[str, Any] | None:
+    """Accept only the fixed, credential-free image preparation event schema."""
+    if not isinstance(value, dict):
+        return None
+    phase, status, timestamp = (value.get(key) for key in ("phase", "status", "timestamp"))
+    if (
+        not isinstance(phase, str) or phase not in _STAGE_PHASES
+        or not isinstance(status, str) or status not in {"START", "READY", "FAILED"}
+        or not isinstance(timestamp, str) or not _STAGE_TIMESTAMP.fullmatch(timestamp)
+    ):
+        return None
+    try:
+        observed_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        if started_at and observed_at < datetime.fromisoformat(started_at.replace("Z", "+00:00")).replace(microsecond=0):
+            return None
+    except (TypeError, ValueError):
+        return None
+    event: dict[str, Any] = {"phase": phase, "status": status, "timestamp": timestamp}
+    exit_code = value.get("exit_code")
+    if type(exit_code) is int and 0 <= exit_code <= 255:
+        event["exit_code"] = exit_code
+    error_code = value.get("error_code")
+    if isinstance(error_code, str) and error_code in _STAGE_ERRORS:
+        event["error_code"] = error_code
+    return event
+
+
+def _stage_diagnostic(result: dict[str, Any], *, started_at: str | None) -> dict[str, Any]:
+    events = []
+    for stream in ("stdout", "stderr"):
+        for line in str(result.get(stream) or "").splitlines():
+            if not line.startswith(_STAGE_EVENT_PREFIX):
+                continue
+            try:
+                value = json.loads(line[len(_STAGE_EVENT_PREFIX):])
+            except json.JSONDecodeError:
+                continue
+            event = _stage_event(value, started_at=started_at)
+            if event is not None:
+                events.append(event)
+    events.sort(key=lambda item: item["timestamp"])
+    last_event = events[-1] if events else None
+    return {
+        "phase": last_event["phase"] if last_event else "UNKNOWN",
+        "last_event": last_event,
+        "events": events[-64:],
+        "controller_exit_code": result.get("returncode"),
+        "controller_timeout": bool(result.get("timeout")),
+        "scheduler_submitted": False,
+        "remote_preparation_may_continue": bool(result.get("timeout")),
+        "retry_scope": "NEW_ACTION_BEFORE_SCHEDULER_SUBMISSION",
+        "next_check": "Inspect backend image preparation state and logs before preparing a new Action",
+    }
+
+
 class ActionExecution:
     """Execution operations; state belongs to the application facade."""
+
+    def diagnostics(self, action_id: str, *, refresh: bool = False, runtime=None) -> dict[str, Any]:
+        """Read saved staging evidence; optionally observe a managed WYD receipt."""
+        snapshot = self.store.snapshot(action_id)
+        execution = snapshot["execution"]
+        result = execution.get("result") or {}
+        saved = result.get("stage_command") if isinstance(result, dict) else None
+        saved = saved if isinstance(saved, dict) else {}
+        command = [str(item) for item in snapshot.get("stage_command_preview") or []]
+        stage = {
+            "returncode": saved.get("returncode"), "timeout": bool(saved.get("timeout")),
+            "stdout": _safe_log_tail(saved.get("stdout"), limit=_STDOUT_LOG_BYTES, command=command),
+            "stderr": _safe_log_tail(saved.get("stderr"), limit=_STDERR_LOG_BYTES, command=command),
+        }
+        diagnostic = _stage_diagnostic(stage, started_at=execution.get("started_at"))
+        submitted = {"SUBMITTED": True, "FAILED_BEFORE_SUBMISSION": False}.get(execution.get("resolution"))
+        retry = submitted is False and execution.get("safe_to_retry") is True and execution.get("next_action") == "PREPARE_NEW_ACTION"
+        diagnostic.update({
+            "scheduler_submitted": submitted,
+            "retry_scope": "NEW_ACTION_BEFORE_SCHEDULER_SUBMISSION" if retry else None,
+            "next_action": "PREPARE_NEW_ACTION" if retry else "MONITOR_RUN" if submitted is True else "OBSERVE_ACTION",
+            "next_check": "Inspect backend image preparation state and logs before preparing a new Action" if retry else
+                          "Monitor the exact Run/Attempt; do not resubmit this Action" if submitted is True else
+                          "Consult the saved Action state and reconcile any uncertain scheduler submission before retrying",
+        })
+        return {
+            "contract": "action-stage-diagnostics.v1", "action_id": action_id,
+            "status": execution.get("status"), "started_at": execution.get("started_at"),
+            "finished_at": execution.get("finished_at"), "stage_command": stage,
+            "stage_diagnostic": diagnostic,
+            "remote": self._remote_stage_diagnostic(snapshot, runtime) if refresh else {"status": "NOT_REQUESTED"},
+            "historical_execution_unchanged": True,
+        }
+
+    def _remote_stage_diagnostic(self, snapshot: dict[str, Any], runtime) -> dict[str, Any]:
+        from ..container_execution import ContainerExecutionService
+        from ..container_controller import Controller
+        import yaml
+
+        try:
+            if not snapshot["execution"].get("started_at"):
+                return {"status": "NOT_STARTED", "reason": "The Action has no preparation start time"}
+            service = ContainerExecutionService(runtime)
+            project_name = snapshot["scope"]["project"]
+            project = runtime.project(project_name)
+            root = service.runtime.config.project_registry_root_path().resolve()
+            managed = root / "managed" / project_name
+            if (
+                project.base_dir is None or project.base_dir.resolve() != managed
+                or project.controller is None
+                or not project.controller.capabilities.get("container_execution")
+                or project.controller.experimentctl != "tools/experimentctl.py"
+            ):
+                return {"status": "UNSUPPORTED", "reason": "Only the built-in managed WYD controller is queried"}
+            directory = self.store.directory(snapshot["action_id"])
+            path = directory / "campaign.execution.yml"
+            if (directory.is_symlink() or path.is_symlink()
+                    or path.resolve().parent != directory.resolve()
+                    or Path(snapshot.get("execution_campaign_file") or "") != path):
+                raise ValueError("invalid frozen campaign location")
+            descriptor, _ = _open_regular_nofollow(path)
+            with os.fdopen(descriptor, "rb") as stream:
+                raw = stream.read()
+            if "sha256:" + hashlib.sha256(raw).hexdigest() != snapshot.get("execution_campaign_sha256"):
+                raise ValueError("frozen campaign digest differs")
+            campaign = yaml.safe_load(raw)
+            run_id, source_id = snapshot.get("run_id"), snapshot.get("expected_source_id")
+            if (not isinstance(campaign, dict) or campaign.get("project") != project_name
+                    or campaign.get("source_store") != str(root)
+                    or not isinstance(source_id, str) or not re.fullmatch(r"source\.[0-9a-f]{64}", source_id)):
+                raise ValueError("frozen campaign project or source binding differs")
+            runs = [run for run in campaign.get("runs", []) if isinstance(run, dict) and run.get("run_id") == run_id]
+            if len(runs) != 1 or runs[0].get("source_id") != source_id:
+                raise ValueError("frozen campaign Run binding differs")
+            run = runs[0]
+            if run.get("backend", {}).get("kind") != "slurm" or not run["backend"].get("oci_image"):
+                return {"status": "UNSUPPORTED", "reason": "The Action does not prepare a managed WYD OCI image"}
+            extra = ["--source-root", str(root / "source-revisions" / "sources" / project_name / source_id / "tree"), "--source-id", source_id]
+            if snapshot.get("campaign_revision"):
+                extra.extend(["--campaign-id", snapshot["campaign_revision"]])
+            call = self.controller.build(project, path, "stage", run_id, attempt_id=snapshot.get("attempt_id"), extra=extra)
+            if call.argv != snapshot.get("stage_command_preview") or str(call.cwd) != snapshot.get("stage_cwd"):
+                raise ValueError("frozen stage command binding differs")
+            controller = Controller(campaign, run_id, snapshot.get("attempt_id") or "attempt-001")
+            observed = controller.backend.stage_progress(controller.run)
+            event = _stage_event(observed, started_at=snapshot["execution"].get("started_at"))
+            if event is None:
+                return {"status": "UNAVAILABLE", "reason": "No matching current preparation receipt was observed"}
+            finished = snapshot["execution"].get("finished_at")
+            after_action = bool(finished and datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00")) > datetime.fromisoformat(finished.replace("Z", "+00:00")))
+            ready = event["phase"] in {"CACHE_VERIFY", "SIF_PUBLISH"} and event["status"] == "READY"
+            new_action = ready and snapshot["execution"].get("next_action") == "PREPARE_NEW_ACTION"
+            return {
+                "status": "OBSERVED", "event": event, "observed_at": utc_now(),
+                "observed_after_action": after_action,
+                "image_ready_reported": ready,
+                "cache_reverified": False,
+                "historical_failure_cause": False,
+                "next_action": "PREPARE_NEW_ACTION" if new_action else "OBSERVE_PREPARATION",
+            }
+        except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as error:
+            return {"status": "UNAVAILABLE", "reason": "Managed preparation binding or observation could not be verified", "error_class": type(error).__name__}
 
     def authorize(self, action_id: str, note: str) -> dict[str, Any]:
         snapshot = self.store.snapshot(action_id)
@@ -420,27 +592,30 @@ class ActionExecution:
                 return self.store.set_execution(
                     plan["action_id"], execution, event="execution_stage_failed",
                 )
-            self._execution_progress(plan, "STAGING", "Preparing source and converting or reusing the pinned image on the backend", timeout_seconds=self.config.stage_timeout_seconds or self.config.timeout_seconds)
+            self._execution_progress(plan, "STAGING", "Preparing the backend image and source code: checking its cache, then converting or reusing the pinned image", timeout_seconds=self.config.stage_timeout_seconds or self.config.timeout_seconds)
             stage_result = self.controller.execute_command(
                 stage_command,
                 cwd=Path(str(stage_cwd)),
                 timeout=self.config.stage_timeout_seconds or self.config.timeout_seconds,
             )
             if stage_result.get("timeout") or stage_result.get("returncode") != 0:
+                diagnostic = _stage_diagnostic(stage_result, started_at=execution.get("started_at"))
                 detail = str(
-                    stage_result.get("stderr")
-                    or stage_result.get("stdout")
-                    or "source staging controller failed"
-                )[:1000]
+                    _redact(stage_result.get("stderr"))
+                    or _redact(stage_result.get("stdout"))
+                    or "backend image and source staging controller failed"
+                )[-1000:]
                 error = (
-                    "source staging timed out before scheduler submission"
+                    "backend image and source staging timed out before scheduler submission; "
+                    "remote preparation may continue, inspect its state before preparing a new Action"
                     if stage_result.get("timeout")
-                    else f"source staging failed before scheduler submission: {detail}"
+                    else f"backend image and source staging failed before scheduler submission: {detail}"
                 )
                 execution.update({
                     "status": "FAILED", "finished_at": utc_now(),
                     "error": error,
-                    "result": {"stage_command": _redact(stage_result)},
+                    "phase": diagnostic["phase"],
+                    "result": {"stage_command": _redact(stage_result), "stage_diagnostic": diagnostic},
                     "resolution": "FAILED_BEFORE_SUBMISSION",
                     "safe_to_retry": True,
                     "next_action": "PREPARE_NEW_ACTION",

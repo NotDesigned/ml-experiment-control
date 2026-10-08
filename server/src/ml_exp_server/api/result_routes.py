@@ -23,6 +23,12 @@ async def status(project: str, run: str, attempt: str, request: Request):
     return await invoke(ResultCollectionService(request.app.state.runtime).read, project, run, attempt)
 
 
+@router.get("/runs/{project}/{run}/attempts/{attempt}/collection/diagnostics")
+async def diagnostics(project: str, run: str, attempt: str, request: Request, refresh: bool = False):
+    return await invoke(ResultCollectionService(request.app.state.runtime).diagnostics,
+                        project, run, attempt, refresh=refresh)
+
+
 @router.post("/runs/{project}/{run}/attempts/{attempt}/collection")
 async def collect(project: str, run: str, attempt: str, data: CollectionRequest, request: Request):
     service = ResultCollectionService(request.app.state.runtime)

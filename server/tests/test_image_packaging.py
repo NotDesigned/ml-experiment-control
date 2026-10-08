@@ -23,11 +23,14 @@ def test_slurm_conversion_uses_digest_and_repairs_tampered_cache(tmp_path):
     tool.write_text('#!/bin/sh\nprintf image > "$3"\nprintf build >> "'+str(tmp_path/'calls')+'"\n')
     tool.chmod(0o700)
     import os
-    def remote(alias,command):
-        return subprocess.run(shlex.split(command),check=True,env={**os.environ,'PATH':str(binpath)+':'+os.environ['PATH']})
+    def remote(alias,command,**kwargs):
+        return subprocess.run(shlex.split(command),check=kwargs.get('check',True),
+            capture_output=True,text=True,env={**os.environ,'PATH':str(binpath)+':'+os.environ['PATH']})
     backend.remote_exec=remote
     sif=tmp_path/'images/sha.sif'
-    run={'backend':{'ssh_alias':'cluster','oci_image':'registry.example/image@sha256:'+'a'*64,'sif_path':str(sif)}}
+    run={'run_id':'conversion-test','backend':{'ssh_alias':'cluster',
+        'oci_image':'registry.example/image@sha256:'+'a'*64,'sif_path':str(sif),
+        'apptainer_tmp_dir':str(tmp_path/'scratch')}}
     backend._stage_oci_image(run)
     backend._stage_oci_image(run)
     assert (tmp_path/'calls').read_text()=='build'

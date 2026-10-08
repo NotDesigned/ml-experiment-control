@@ -153,6 +153,64 @@ def test_ordinary_runner_maps_timeout_and_invalid_output(tmp_path):
     ] is None
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+def test_timeout_preserves_safe_partial_output_without_argv(monkeypatch, tmp_path, pinned):
+    command = ["controller", "--encoded-worker", "a" * 256, "API_TOKEN=argv-secret"]
+    stdout = b"stage started\nML_EXPD_BOOTSTRAP_TOKEN=stdout-secret\ninvalid=\xff\n"
+    stderr = (
+        "converting layers\nAPPTAINER_DOCKER_PASSWORD=stderr-secret\n"
+        "Authorization: Bearer bearer-secret\n"
+        "https://objects.test/archive?X-Amz-Credential=owner&X-Amz-Signature=signature-secret\n"
+    ).encode()
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(command, 1, output=stdout, stderr=stderr)
+    monkeypatch.setattr(module.subprocess, "run", timeout)
+    runner = CommandRunner(SimpleNamespace(run=timeout))
+    result = (
+        runner.run_pinned(command, cwd=tmp_path, timeout=1, env={}, pass_fds=())
+        if pinned else runner(command, cwd=tmp_path, timeout=1)
+    )
+    assert result["timeout"] is True
+    assert result["returncode"] is None and result["payload"] is None
+    assert "stage started" in result["stdout"] and "invalid=\ufffd" in result["stdout"]
+    assert "converting layers" in result["stderr"]
+    serialized = json.dumps(result)
+    assert "controller command exceeded" in serialized
+    for private in ("argv-secret", "stdout-secret", "stderr-secret", "bearer-secret", "signature-secret", "a" * 256):
+        assert private not in serialized
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_failed_command_logs_are_bounded_after_redaction(monkeypatch, tmp_path, pinned):
+    command = ["controller", "capsule"]
+    stdout = "x" * 40000 + "\nsource transfer finished\n"
+    stderr = "\u754c" * 30000 + "\nlayer conversion: invalid image\n" + (
+        "subprocess.CalledProcessError: Command '[remote, secret-command]' "
+        "returned non-zero exit status 1.\n"
+    ) + repr(command) + "\nencoded=" + "b" * 256
+    completed = SimpleNamespace(returncode=1, stdout=stdout, stderr=stderr)
+    monkeypatch.setattr(module.subprocess, "run", lambda *_args, **_kwargs: completed)
+    runner = CommandRunner(SimpleNamespace(run=lambda *_args, **_kwargs: completed))
+    result = (
+        runner.run_pinned(command, cwd=tmp_path, timeout=1, env={}, pass_fds=())
+        if pinned else runner(command, cwd=tmp_path, timeout=1)
+    )
+    assert result["returncode"] == 1
+    assert len(result["stdout"].encode()) <= 32 * 1024
+    assert len(result["stderr"].encode()) <= 64 * 1024
+    assert "source transfer finished" in result["stdout"]
+    assert "layer conversion: invalid image" in result["stderr"]
+    assert "secret-command" not in result["stderr"]
+    assert repr(command) not in result["stderr"]
+    assert "b" * 256 not in result["stderr"]
+
+
+def test_log_tail_preserves_short_safe_strings_and_tuple_argv(tmp_path):
+    assert module._safe_log_tail(None, limit=10, command=["controller"]) == ""
+    assert module._safe_log_tail("safe", limit=10, command=["controller"]) == "safe"
+    assert module._safe_log_tail("('controller',)", limit=100, command=["controller"]) == "[COMMAND_REDACTED]"
+
+
 def test_runner_and_call_builder_cover_transport_edges(tmp_path):
     core = SimpleNamespace(
         run=lambda *_args, **_kwargs: SimpleNamespace(
