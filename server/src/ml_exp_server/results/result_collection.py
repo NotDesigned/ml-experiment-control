@@ -102,7 +102,47 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
                 "updated_at": value.get("updated_at"), "job_state": value.get("job_state"),
                 "diagnostic": value.get("diagnostic"), "scheduler_name": value.get("scheduler_name"),
                 "archive": None if receipt is None else {**{k: receipt[k] for k in ("sha256", "bytes")},
-                                                       "file_count": len(receipt["files"])}}
+                                                       "file_count": len(receipt["files"])},
+                "publication": None if receipt else self.publication_diagnostics((project, run, attempt)),
+                "cpu_diagnostics": value.get("cpu_diagnostics")}
+
+    def publication_diagnostics(self, identity):
+        """Read atomic session metadata; never wait on a publisher's long lock."""
+        binding = dict(zip(("project", "run_id", "attempt_id"), identity), kind="artifacts")
+        candidates = []
+        for path in (self.objects.root.parent / "multipart-uploads").glob("*/upload.json"):
+            try:
+                value = json.loads(path.read_text())
+                modified = path.stat().st_mtime
+            except (OSError, ValueError):
+                continue
+            if (isinstance(value, dict) and value.get("binding") == binding
+                    and value.get("status") == "UPLOADING"
+                    and {"upload_id", "parts", "part_count", "bytes"} <= value.keys()):
+                candidates.append((modified, value))
+        if not candidates:
+            return None
+        value = max(candidates, key=lambda item: item[0])[1]
+        return {"upload_id": value["upload_id"], "status": value["status"], "bytes": value["bytes"],
+                "parts_received": len(value["parts"]), "parts_total": value["part_count"],
+                "all_parts_received": len(value["parts"]) == value["part_count"],
+                "diagnostic": value.get("last_error")}
+
+    def diagnostics(self, project, run, attempt, *, refresh=False):
+        """Observe the exact CPU recovery; this never starts or retries a job."""
+        identity = (project, run, attempt)
+        _, definition, _, _ = self.evidence(*identity)
+        cpu = None
+        if definition["backend"]["kind"] == "sensecore":
+            cpu = self.result_job_diagnostics(identity, refresh=refresh)
+            if refresh:
+                with self.state(*identity) as (store, snapshot):
+                    if cpu["scheduler_name"] and snapshot.value.get("scheduler_name") == cpu["scheduler_name"]:
+                        value = {**snapshot.value, "cpu_diagnostics": cpu}
+                        store.commit(value, event={"type": "RESULT_COLLECTION_DIAGNOSTICS_OBSERVED"},
+                                     expected_revision=snapshot.revision)
+        return {"project": project, "run_id": run, "attempt_id": attempt,
+                "publication": self.publication_diagnostics(identity), "cpu": cpu}
 
     def begin(self, project, run, attempt, *, retry=False, reconcile=False):
         ContainerExecutionService(self.runtime).require_enabled()

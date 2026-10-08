@@ -88,3 +88,38 @@ def test_worker_exhausts_only_transient_archive_retries(monkeypatch):
     monkeypatch.setattr(worker.time,'sleep',lambda seconds:None)
     with pytest.raises(OSError):worker.upload_parts('https://api.example/api/artifact-transfers/p/r/attempt-001','capability',io.BytesIO(b'data'),4)
     assert len(calls)==3
+
+
+@pytest.mark.parametrize('status,header,body,code', [
+    (507, 'UPLOAD_STORAGE', b'{"detail":"private-capability"}', 'UPLOAD_STORAGE'),
+    (429, None, b'{"code":"UPLOAD_LIMIT"}', 'UPLOAD_LIMIT'),
+    (409, None, b'{"detail":{"code":"UPLOAD_EXPIRED","message":"private-capability"}}', 'UPLOAD_EXPIRED'),
+    (401, 'PRIVATE_SECRET', b'{"code":"PRIVATE_SECRET"}', None),
+    (503, None, b'private-capability', None),
+    (503, None, b'\xff', None),
+    (503, None, b'[]', None),
+    (409, None, b'{"code":17}', None),
+])
+def test_http_failures_preserve_only_safe_status_and_api_code(monkeypatch, status, header, body, code):
+    closed = []
+    class Connection:
+        def request(self, *a, **kw): pass
+        def getresponse(self):
+            return SimpleNamespace(status=status, read=lambda limit: body, getheader=lambda name: header)
+        def close(self): closed.append(True)
+    monkeypatch.setattr(worker, 'https_connection', lambda *a, **kw: Connection())
+    with pytest.raises(worker.HttpTransferError) as failure:
+        worker.upload_request(urlsplit('https://api.example'), 'POST', '/private-capability', 'private-capability')
+    error = failure.value
+    assert error.http_status == status and error.api_code == code
+    assert isinstance(error, OSError) == (status >= 500 or status == 429)
+    assert isinstance(error, ValueError) == (status < 500 and status != 429)
+    assert 'private-capability' not in str(error) and 'PRIVATE_SECRET' not in str(error)
+    assert closed == [True]
+
+
+@pytest.mark.parametrize('status,code', [(True, []), (99, 'UPLOAD_STORAGE'), (600, 'PRIVATE_SECRET'), (None, None)])
+def test_http_error_constructor_discards_untrusted_fields(status, code):
+    failure = worker.HttpTransferError(status, code)
+    assert failure.http_status is None
+    assert failure.api_code == ('UPLOAD_STORAGE' if code == 'UPLOAD_STORAGE' else None)

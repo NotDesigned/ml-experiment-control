@@ -14,6 +14,7 @@ from ml_exp_server.actions import project_writes, service as actions
 from ml_exp_server.actions.errors import ActionError
 from ml_exp_server.actions.service import ActionService
 from ml_exp_server.actions.store import ActionStore
+from ml_exp_server.actions.execution import _stage_diagnostic, _stage_event
 from ml_exp_server.schemas import (
     ActionRuntimeConfig, OperationScope, OperationScopeType, CampaignRef, CampaignRevision,
     ControllerConfig, ControllerExecutionBundle, ResearchProject,
@@ -220,6 +221,67 @@ def test_image_staging_timeout_does_not_expand_submission_timeout(tmp_path):
     result = service._execute_controller(plan, plan['execution'])
     assert result['execution']['status'] == 'VERIFIED'
     assert calls == [('stage', 1200), ('submit', 300), ('status', 300)]
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_staging_failure_exposes_last_verified_phase_without_scheduler_call(tmp_path, timeout):
+    store = ActionStore(tmp_path / "actions")
+    action_id = synthetic_plan(store, "stage-diagnostic")
+    plan = store.snapshot(action_id)
+    event = {
+        "phase": "IMAGE_PULL_CONVERT", "status": "FAILED",
+        "timestamp": "2026-10-08T12:51:00Z", "exit_code": 124,
+        "error_code": "STAGE_TIMEOUT", "argv": "secret-command", "password": "private",
+    }
+    calls = []
+    def runner(command, **_kwargs):
+        calls.append(command)
+        return {
+            "timeout": timeout, "returncode": None if timeout else 124,
+            "stdout": "ML_EXPD_STAGE_EVENT=" + json.dumps(event),
+            "stderr": "image conversion failed\nAPPTAINER_DOCKER_PASSWORD=registry-secret",
+        }
+    result = ActionService(store, ActionRuntimeConfig(), runner=runner)._execute_controller(plan, plan["execution"])
+    execution = result["execution"]
+    assert len(calls) == 1 and calls[0][-1] == "stage"
+    assert execution["status"] == "FAILED" and execution["phase"] == "IMAGE_PULL_CONVERT"
+    diagnostic = execution["result"]["stage_diagnostic"]
+    assert diagnostic["last_event"] == {key: value for key, value in event.items() if key not in {"argv", "password"}}
+    assert diagnostic["scheduler_submitted"] is False
+    assert diagnostic["remote_preparation_may_continue"] is timeout
+    assert execution["safe_to_retry"] is True and execution["next_action"] == "PREPARE_NEW_ACTION"
+    if timeout:
+        assert "remote preparation may continue" in execution["error"]
+    else:
+        assert "image conversion failed" in execution["error"]
+    assert "registry-secret" not in json.dumps(execution)
+
+
+def test_stage_diagnostic_requires_evidence_and_discards_malformed_or_stale_events():
+    marker = "ML_EXPD_STAGE_EVENT="
+    value = {"phase": "LOCK_WAIT", "status": "START", "timestamp": "2026-10-08T12:50:00Z"}
+    result = {"timeout": True, "returncode": None, "stderr": "flock waiting"}
+    assert _stage_diagnostic(result, started_at=None)["phase"] == "UNKNOWN"
+    for bad in (
+        [], {**value, "phase": []}, {**value, "phase": "SOURCE_UPLOAD"},
+        {**value, "status": []}, {**value, "status": "UNKNOWN"},
+        {**value, "timestamp": None}, {**value, "timestamp": "yesterday"},
+        {**value, "timestamp": "2026-99-08T12:50:00Z"},
+    ):
+        assert _stage_event(bad, started_at=None) is None
+    assert _stage_event(value, started_at="bad-date") is None
+    assert _stage_event(value, started_at="2026-10-08T12:50:00") is None
+    assert _stage_event(value, started_at="2026-10-08T12:50:01Z") is None
+    # Event timestamps are second-granular; an event in the Action's starting
+    # second must survive, even though Action timestamps include microseconds.
+    assert _stage_event(value, started_at="2026-10-08T12:50:00.987Z") == value
+    result["stdout"] = marker + "invalid-json\n" + marker + json.dumps([])
+    result["stderr"] += "\n" + marker + json.dumps(value)
+    assert _stage_diagnostic(result, started_at="2026-10-08T12:50:01Z")["phase"] == "UNKNOWN"
+    result["stderr"] += "\n" + marker + json.dumps({**value, "timestamp": "2026-10-08T12:50:02Z"})
+    assert _stage_diagnostic(result, started_at="2026-10-08T12:50:01Z")["phase"] == "LOCK_WAIT"
+    for exit_code in (None, True, -1, 256, "1"):
+        assert _stage_event({**value, "exit_code": exit_code, "error_code": []}, started_at=None) == value
 
 
 def test_cancel_preparation_binds_live_backend_job_and_capability(tmp_path):

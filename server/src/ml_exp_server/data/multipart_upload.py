@@ -14,7 +14,7 @@ import shutil
 import time
 
 from ..application_errors import ApplicationError
-from ..storage import atomic_json
+from ..storage import atomic_json, utc_now
 from ..archive_limits import exceeds
 
 UPLOAD_ID = re.compile(r"^upload\.[0-9a-f]{64}$")
@@ -162,7 +162,12 @@ class UploadStore:
             self.checked(value, binding, active=True)
             if len(value["parts"]) != value["part_count"]:
                 raise ValueError("upload is missing parts")
-            if reserve > shutil.disk_usage(self.root).free:
+            free = shutil.disk_usage(self.root).free
+            if reserve > free:
+                value["last_error"] = {"phase": "PUBLICATION_CAPACITY", "http_status": 507,
+                                       "code": "UPLOAD_STORAGE", "required_free_bytes": reserve,
+                                       "available_bytes": free, "observed_at": utc_now()}
+                atomic_json(path, value)
                 raise ApplicationError("insufficient space to validate and publish archive", status_code=507, code="UPLOAD_STORAGE")
             paths = [directory / "parts" / str(i) for i in range(value["part_count"])]
             with io.BufferedReader(PartStream(paths, value["part_bytes"], value["bytes"]), buffer_size=1024 ** 2) as stream:
@@ -184,6 +189,7 @@ class UploadStore:
                 stream.seek(0)
                 result = publish(stream, value["bytes"], value["sha256"])
             value.update(status="COMPLETED", result=result)
+            value.pop("last_error", None)
             atomic_json(path, value)
             shutil.rmtree(directory / "parts")
             return result

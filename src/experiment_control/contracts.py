@@ -30,6 +30,7 @@ class _SlurmBackendOptional(TypedDict, total=False):
     apptainer_cache_dir: str
     apptainer_tmp_dir: str
     oci_image: str
+    image_stage_timeout_seconds: int
 
 
 class SlurmBackendConfig(_SlurmBackendOptional):

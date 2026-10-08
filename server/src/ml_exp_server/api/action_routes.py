@@ -64,6 +64,19 @@ def get_action(action_id: str, request: Request):
         ) from exc
 
 
+@router.get("/{action_id}/diagnostics")
+async def action_diagnostics(action_id: str, request: Request, refresh: bool = False):
+    try:
+        return await run_in_threadpool(
+            request.app.state.runtime.action_service.diagnostics,
+            action_id, refresh=refresh, runtime=request.app.state.runtime,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise application_http_error(ApplicationError(
+            "action not found", status_code=404, code="UNKNOWN_ACTION",
+        )) from exc
+
+
 @router.post("/prepare", response_model=ActionSnapshotResponse)
 async def prepare_action(data: PrepareActionRequest, request: Request):
     try:

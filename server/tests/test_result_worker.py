@@ -184,3 +184,17 @@ def test_recovery_diagnostics_handle_missing_or_untrusted_errno_filename(tmp_pat
     expected_errno = 5 if isinstance(error, OSError) and error.errno == 5 else None
     assert row["errno"] == expected_errno
     assert "private-capability" not in output
+
+
+def test_result_upload_failure_reports_http_storage_failure_without_response_text(tmp_path, monkeypatch, capsys):
+    value = recovery_input(tmp_path)
+    def unavailable(*args):
+        raise worker_artifacts.TransientHttpTransferError(507, 'UPLOAD_STORAGE')
+    monkeypatch.setattr(worker, 'upload_parts', unavailable)
+    assert worker.main(value) == 74
+    output = capsys.readouterr().out
+    row = json.loads(next(line.split('=', 1)[1] for line in output.splitlines()
+                         if line.startswith('ML_EXPD_RESULT_RECOVERY_DIAGNOSTIC=')))
+    assert row['phase'] == 'archive_upload' and row['http_status'] == 507 and row['api_code'] == 'UPLOAD_STORAGE'
+    assert row['errno'] is None and row['file_ref'] is None
+    assert 'private-capability' not in output

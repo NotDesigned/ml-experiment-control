@@ -26,6 +26,7 @@ import yaml
 
 from experiment_control.runner import CommandRunner as CoreCommandRunner
 from experiment_control.runner import SubprocessRunner
+from experiment_control.redaction import redact_line
 
 from .schemas import ResearchProject
 
@@ -35,6 +36,13 @@ _SECRET = re.compile(
     r"api[_-]?key|proxy|authorization|cookie)(?:$|[_-])"
 )
 _SNAPSHOT_ROOT_ARGUMENT = "{controller_snapshot}"
+_STDOUT_LOG_BYTES = 32 * 1024
+_STDERR_LOG_BYTES = 64 * 1024
+_ENCODED_CONTENT = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{128,}={0,2}")
+_COMMAND_EXCEPTION = re.compile(
+    r"(?m)^.*(?:subprocess\.(?:CalledProcessError|TimeoutExpired):|"
+    r"Command ['\"].*(?:returned non-zero exit status|timed out after)).*$"
+)
 _TRUSTED_RUNTIME_SOURCES = {
     "yaml": Path(str(yaml.__file__)).resolve(strict=True).parent,
 }
@@ -50,8 +58,28 @@ def redact(value: Any) -> Any:
     if isinstance(value, list):
         return [redact(item) for item in value]
     if isinstance(value, str):
-        return re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1[REDACTED]@", value)
+        return redact_line(value).replace("<redacted>", "[REDACTED]")
     return value
+
+
+def _safe_log_tail(value: str | bytes | None, *, limit: int, command: list[str]) -> str:
+    """Keep diagnostic tails without serializing subprocess command capsules."""
+    decoded = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+    safe = _COMMAND_EXCEPTION.sub("subprocess command failed; inspect preceding diagnostics", decoded)
+    # Exception messages can quote either the list or tuple form of argv.
+    for representation in (repr(command), repr(tuple(command))):
+        safe = safe.replace(representation, "[COMMAND_REDACTED]")
+    safe = _ENCODED_CONTENT.sub("[ENCODED_CONTENT_REDACTED]", str(redact(safe)))
+    return safe.encode("utf-8")[-limit:].decode("utf-8", errors="ignore")
+
+
+def _timeout_result(exc: subprocess.TimeoutExpired, command: list[str]) -> dict[str, Any]:
+    return {
+        "returncode": None, "timeout": True, "payload": None,
+        "stdout": _safe_log_tail(exc.stdout, limit=_STDOUT_LOG_BYTES, command=command),
+        "stderr": _safe_log_tail(exc.stderr, limit=_STDERR_LOG_BYTES, command=command),
+        "error": "controller command exceeded its configured timeout",
+    }
 
 
 @dataclass(frozen=True)
@@ -75,9 +103,7 @@ class CommandRunner:
                 command, cwd=cwd, check=False, timeout_seconds=timeout,
             )
         except subprocess.TimeoutExpired as exc:
-            return {
-                "returncode": None, "timeout": True, "stdout": "", "stderr": str(exc),
-            }
+            return _timeout_result(exc, command)
         payload: Any = None
         if result.stdout.strip():
             try:
@@ -88,8 +114,8 @@ class CommandRunner:
             "returncode": result.returncode,
             "timeout": False,
             "payload": redact(payload),
-            "stdout": redact(result.stdout[-2000:]),
-            "stderr": redact(result.stderr[-2000:]),
+            "stdout": _safe_log_tail(result.stdout, limit=_STDOUT_LOG_BYTES, command=command),
+            "stderr": _safe_log_tail(result.stderr, limit=_STDERR_LOG_BYTES, command=command),
         }
 
     def run_pinned(
@@ -103,10 +129,7 @@ class CommandRunner:
                 timeout=timeout, env=env, pass_fds=pass_fds,
             )
         except subprocess.TimeoutExpired as exc:
-            return {
-                "returncode": None, "timeout": True, "payload": None,
-                "stdout": "", "stderr": str(exc),
-            }
+            return _timeout_result(exc, command)
         except OSError as exc:
             return {
                 "returncode": 127, "timeout": False, "payload": None,
@@ -121,8 +144,8 @@ class CommandRunner:
         return {
             "returncode": completed.returncode, "timeout": False,
             "payload": redact(payload),
-            "stdout": redact(completed.stdout[-2000:]),
-            "stderr": redact(completed.stderr[-2000:]),
+            "stdout": _safe_log_tail(completed.stdout, limit=_STDOUT_LOG_BYTES, command=command),
+            "stderr": _safe_log_tail(completed.stderr, limit=_STDERR_LOG_BYTES, command=command),
         }
 
 

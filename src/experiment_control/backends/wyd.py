@@ -5,6 +5,7 @@ from __future__ import annotations
 from .capabilities import SLURM
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
@@ -12,6 +13,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Iterator
@@ -86,6 +88,34 @@ def log_probe_command(paths: list[str], *, tail: int) -> str:
         f"tail -n {tail} -- \"$path\"; exit 0; "
         "fi; done; exit 1"
     )
+
+
+def _safe_stage_failure_log(text: str, credentials: dict[str, str]) -> str:
+    """Keep bounded operational errors without publishing execution credentials."""
+    for value in sorted((value for value in credentials.values() if value), key=len, reverse=True):
+        text = text.replace(value, "<redacted>")
+    lines = []
+    execution = re.compile(
+        r"(?i)(?:TimeoutExpired|CalledProcessError|subprocess\.(?:run|call|Popen)\s*\("
+        r"|\b(?:argv|command|args)\s*(?:[=:]|\[|['\"])"
+        r"|\b(?:stdin|base64|b64)[\"']?\s*[=:]"
+        r"|\[\s*['\"](?:[^'\"]*/)?(?:ssh|apptainer|python3?|timeout|sh|bash)['\"]"
+        r"|(?:^|\s)(?:[^\s]*/)?(?:ssh|apptainer|python3?|timeout|sh|bash)\s+(?:-[\w-]|build\b|exec\b))"
+    )
+    for line in text.splitlines():
+        if line.startswith("ML_EXPD_STAGE_EVENT="):
+            continue
+        if execution.search(line):
+            lines.append("[OMITTED EXECUTION DETAILS]")
+            continue
+        line = redact_line(line)
+        # A complete signed URL is a credential, including its object path.
+        line = re.sub(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s\"']+\?<redacted>",
+                      "<redacted-signed-url>", line)
+        line = re.sub(r"[A-Za-z0-9+/_-]{80,}={0,2}", "<redacted-encoded>", line)
+        line = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", line)
+        lines.append(line)
+    return "\n".join(lines).encode("utf-8")[-16384:].decode("utf-8", errors="ignore")
 
 
 @contextmanager
@@ -334,6 +364,7 @@ class WydSlurmBackend:
             value = backend.get(field)
             if value is not None and not Path(str(value)).is_absolute():
                 raise ValueError(f"run {run['run_id']} backend.{field} must be an absolute path")
+        self.image_stage_timeout_seconds(run)
         for field, value in (
             ("storage.run_dir", storage["run_dir"]),
             ("backend.source_dir", backend["source_dir"]),
@@ -592,35 +623,88 @@ class WydSlurmBackend:
         backend = run["backend"]
         image = str(backend["oci_image"])
         sif = str(backend["sif_path"])
+        print("ML_EXPD_STAGE_EVENT=" + json.dumps({"phase": "IMAGE_STAGE", "status": "START",
+              "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}),
+              file=sys.stderr, flush=True)
         # Arguments stay outside the shell program. The image and paths were
         # validated by validate(); only the conversion receipt permits cache reuse.
         script = r'''
 set -eu
 sif=$1
 image=$2
+scratch_root=$3
+progress=$4
+lock_timeout=$5
 receipt="$sif.oci"
+temporary="$sif.tmp.$$"
+cache=""
+phase=LOCK_WAIT
+reported=0
+stage_event() {
+  phase=$1
+  timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  event=$(printf '{"phase":"%s","status":"%s","timestamp":"%s","exit_code":%s,"error_code":"%s"}' "$1" "$2" "$timestamp" "${3:-null}" "${4:-}")
+  printf 'ML_EXPD_STAGE_EVENT=%s\n' "$event" >&2
+  (printf '%s\n' "$event" > "$progress.tmp.$$" && mv -f "$progress.tmp.$$" "$progress") || true
+}
+finish() {
+  code=$?
+  trap - EXIT
+  if test "$code" -ne 0 && test "$reported" -eq 0; then
+    error_code=STAGE_COMMAND_FAILED
+    if test "$code" -eq 124; then error_code=STAGE_TIMEOUT; fi
+    stage_event "$phase" FAILED "$code" "$error_code"
+  fi
+  rm -f "$temporary" "$receipt.tmp.$$" "$progress.tmp.$$"
+  if test -n "$cache"; then rm -rf "$cache"; fi
+  exit "$code"
+}
+trap finish EXIT
+trap 'exit 124' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
+stage_event LOCK_WAIT START
+exec 9> "$sif.lock"
+if ! flock -w "$lock_timeout" 9; then
+  stage_event LOCK_WAIT FAILED 75 LOCK_TIMEOUT
+  reported=1
+  exit 75
+fi
+stage_event CACHE_VERIFY START
 if test -s "$sif" && test -s "$receipt"; then
   read -r previous digest < "$receipt"
   actual=$(sha256sum "$sif")
   actual=${actual%% *}
-  if test "$previous" = "$image" && test "$digest" = "$actual"; then exit 0; fi
+  if test "$previous" = "$image" && test "$digest" = "$actual"; then
+    stage_event CACHE_VERIFY READY
+    exit 0
+  fi
 fi
-temporary="$sif.tmp.$$"
-cache=$(mktemp -d "${sif}.cache.XXXXXX")
-trap 'rm -f "$temporary" "$receipt.tmp.$$"; rm -rf "$cache"' EXIT
+stage_event IMAGE_PULL_CONVERT START
+mkdir -p "$scratch_root"
+cache=$(mktemp -d "$scratch_root/ml-expd-oci.XXXXXX")
 export APPTAINER_CACHEDIR="$cache"
 export APPTAINER_TMPDIR="$cache/tmp"
 mkdir -p "$APPTAINER_TMPDIR"
 apptainer build --force "$temporary" "docker://$image"
+stage_event SIF_VERIFY START
 actual=$(sha256sum "$temporary")
 actual=${actual%% *}
+stage_event SIF_PUBLISH START
 mv -f "$temporary" "$sif"
 printf '%s %s\n' "$image" "$actual" > "$receipt.tmp.$$"
 mv -f "$receipt.tmp.$$" "$receipt"
+stage_event SIF_PUBLISH READY
 '''
         parent = str(Path(sif).parent)
         self.remote_exec(backend["ssh_alias"], shlex.join(["mkdir", "-p", parent]))
-        arguments = ["flock", sif + ".lock", "sh", "-c", script, "ml-expd", sif, image]
+        scratch = str(backend.get("apptainer_tmp_dir", "/tmp"))
+        if not Path(scratch).is_absolute():
+            raise ValueError("OCI conversion scratch must be an absolute path")
+        seconds = self.image_stage_timeout_seconds(run)
+        arguments = ["timeout", "--signal=TERM", "--kill-after=15s", str(seconds) + "s",
+                     "sh", "-c", script, "ml-expd", sif, image, scratch,
+                     self.stage_progress_path(run), str(min(300, seconds))]
         environment = self.s.oci_pull_environment() if hasattr(self, "s") else {}
         if environment:
             # Private stdin avoids credentials in SSH argv, scripts and manifests.
@@ -628,11 +712,83 @@ mv -f "$receipt.tmp.$$" "$receipt"
                         "allowed={'APPTAINER_DOCKER_USERNAME','APPTAINER_DOCKER_PASSWORD'}; "
                         "assert set(credentials)<=allowed; "
                         "sys.exit(subprocess.call(sys.argv[1:],env={**os.environ,**credentials}))")
-            self.s.run_command([self.ssh_bin, "-o", "BatchMode=yes", backend["ssh_alias"],
+            result = self.s.run_command([self.ssh_bin, "-o", "BatchMode=yes", backend["ssh_alias"],
                                 shlex.join(["python3", "-c", launcher, *arguments])],
-                               input_text=json.dumps(environment))
+                               input_text=json.dumps(environment), check=False)
         else:
-            self.remote_exec(backend["ssh_alias"], shlex.join(arguments))
+            result = self.remote_exec(backend["ssh_alias"], shlex.join(arguments), check=False)
+        # Keep real registry/storage errors as well as the fixed phase markers.
+        # The raw nested command output must never cross this boundary.
+        if result.returncode:
+            safe_log = _safe_stage_failure_log(result.stderr, environment)
+            if safe_log:
+                print("ML_EXPD_STAGE_LOG_BEGIN\n" + safe_log + "\nML_EXPD_STAGE_LOG_END",
+                      file=sys.stderr, flush=True)
+        latest: dict[str, Any] | None = None
+        for line in result.stderr.splitlines():
+            if line.startswith("ML_EXPD_STAGE_EVENT="):
+                try:
+                    event = self._safe_stage_event(json.loads(line.split("=", 1)[1]))
+                except (ValueError, TypeError):
+                    continue
+                if event:
+                    latest = event
+                    print("ML_EXPD_STAGE_EVENT=" + json.dumps(event), file=sys.stderr, flush=True)
+        if result.returncode:
+            if latest is None or latest.get("status") != "FAILED" or latest.get("exit_code") != result.returncode:
+                print("ML_EXPD_STAGE_EVENT=" + json.dumps({
+                    "phase": latest["phase"] if latest else "IMAGE_STAGE", "status": "FAILED",
+                    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "exit_code": result.returncode,
+                    "error_code": "STAGE_TIMEOUT" if result.returncode == 124 else "STAGE_COMMAND_FAILED",
+                }), file=sys.stderr, flush=True)
+            raise RuntimeError(f"OCI image preparation failed (exit code {result.returncode})")
+
+    @staticmethod
+    def image_stage_timeout_seconds(run: RunSpec) -> int:
+        value = run["backend"].get("image_stage_timeout_seconds", 1080)
+        if isinstance(value, bool) or not isinstance(value, int) or not 30 <= value <= 1080:
+            raise ValueError("image_stage_timeout_seconds must be an integer from 30 to 1080")
+        return value
+
+    @staticmethod
+    def stage_progress_path(run: RunSpec) -> str:
+        identity = hashlib.sha256(str(run["run_id"]).encode()).hexdigest()[:16]
+        return str(run["backend"]["sif_path"]) + ".stage-" + identity + ".json"
+
+    @staticmethod
+    def _safe_stage_event(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or value.get("phase") not in {
+            "LOCK_WAIT", "CACHE_VERIFY", "IMAGE_PULL_CONVERT", "SIF_VERIFY", "SIF_PUBLISH",
+        } or value.get("status") not in {"START", "READY", "FAILED"}:
+            return None
+        timestamp = value.get("timestamp")
+        if not isinstance(timestamp, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", timestamp):
+            return None
+        result = {"phase": value["phase"], "status": value["status"], "timestamp": timestamp}
+        code = value.get("exit_code")
+        if isinstance(code, int) and not isinstance(code, bool) and 0 <= code <= 255:
+            result["exit_code"] = code
+        if value.get("error_code") in {"LOCK_TIMEOUT", "STAGE_COMMAND_FAILED", "STAGE_TIMEOUT"}:
+            result["error_code"] = value["error_code"]
+        return result
+
+    def stage_progress(self, run: RunSpec) -> dict[str, Any] | None:
+        """Read bounded safe evidence without rerunning a conversion or scheduler."""
+        try:
+            result = self.s.run_command(
+                [self.ssh_bin, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                 run["backend"]["ssh_alias"], shlex.join(["head", "-c", "4096", "--", self.stage_progress_path(run)])],
+                check=False, timeout_seconds=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode:
+            return None
+        try:
+            return self._safe_stage_event(json.loads(result.stdout))
+        except (ValueError, TypeError):
+            return None
 
     def render(self, manifest: AttemptManifest) -> str:
         return render_job(manifest)

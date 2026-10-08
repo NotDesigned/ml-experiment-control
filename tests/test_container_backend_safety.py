@@ -76,7 +76,7 @@ def test_oci_conversion_reuses_verified_cache_and_repairs_tampering(tmp_path, mo
     runner = ShellRunner()
     if mode == "legacy-unbound":
         backend = object.__new__(WydSlurmBackend)
-        backend.remote_exec = lambda alias, command: runner.run(["ssh", alias, command])
+        backend.remote_exec = lambda alias, command, **kwargs: runner.run(["ssh", alias, command], **kwargs)
     else:
         backend = WydSlurmBackend(replace(services(tmp_path, runner),
             oci_pull_environment=lambda: {"APPTAINER_DOCKER_USERNAME": "test-user", "APPTAINER_DOCKER_PASSWORD": "test-pull-password"} if private else {}))

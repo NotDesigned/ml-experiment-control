@@ -101,17 +101,21 @@ def test_wyd_conversion_drops_temporary_oci_cache_and_preserves_sif(tmp_path, fa
                     ('exit 1\n' if failed else 'printf verified-sif > "$3"\n'))
     tool.chmod(0o700)
     backend = object.__new__(WydSlurmBackend)
-    backend.remote_exec = lambda alias, cmd: subprocess.run(shlex.split(cmd), check=True,
+    backend.remote_exec = lambda alias, cmd, **kwargs: subprocess.run(shlex.split(cmd),
+        check=kwargs.get("check", True), capture_output=True, text=True,
         env={**os.environ, "PATH": str(tools) + ":" + os.environ["PATH"]})
     sif = tmp_path / "images/test.sif"
-    run = {"backend": {"ssh_alias": "cluster", "oci_image": "registry/image@sha256:" + "a" * 64, "sif_path": str(sif)}}
+    run = {"run_id": "conversion-test", "backend": {"ssh_alias": "cluster",
+        "oci_image": "registry/image@sha256:" + "a" * 64, "sif_path": str(sif),
+        "apptainer_tmp_dir": str(tmp_path / "scratch")}}
     if failed:
-        with pytest.raises(subprocess.CalledProcessError):
+        with pytest.raises(RuntimeError, match="OCI image preparation failed.*exit code 1"):
             backend._stage_oci_image(run)
     else:
         backend._stage_oci_image(run)
         assert sif.read_text() == "verified-sif" and Path(str(sif) + ".oci").exists()
     assert not list(sif.parent.glob("*.cache.*")) and not list(sif.parent.glob("*.tmp.*"))
+    assert not list((tmp_path / "scratch").iterdir())
 
 
 @pytest.mark.parametrize("endpoint", ["", "http://public", "https://user:pass@public", "https://public/path", "https://public?q=x", "https://public#x", "https://"])

@@ -20,6 +20,35 @@ current training progress. Preserve each evidence layer's Attempt binding,
 observation time and stale status. Queue reasons can be reported; reliable ETA
 may remain null. Unknown exit cause must not be called preemption or timeout.
 
+For an Action that failed before scheduler submission, query
+`GET /api/actions/ACTION_ID/diagnostics` with the normal API Bearer and protocol
+header. It returns bounded, redacted staging stdout/stderr, controller exit code
+and timeout, and fixed image preparation stages. Old actions without phase
+evidence report `UNKNOWN`; a timeout exception's full command is suppressed.
+
+```text
+GET /api/actions/action-0123456789abcdef/diagnostics
+GET /api/actions/action-0123456789abcdef/diagnostics?refresh=true
+```
+
+The optional refresh reads only the frozen managed WYD image preparation receipt;
+it does not run the Action, convert an image or submit a scheduler job. Its
+`remote.event` is a separate observation, never a rewrite of the saved failure.
+`observed_after_action=true` means that stage was recorded after the Action ended.
+`image_ready_reported=true` represents `CACHE_VERIFY READY` (successful cache
+reuse) or `SIF_PUBLISH READY` (completed publication), possibly recorded later;
+the next new Action still verifies the actual cached SIF (`cache_reverified=false`
+in this query). External project controllers are not invoked. Missing, stale or
+unverifiable receipts remain unavailable instead of becoming guessed causes.
+
+WYD prepares its SIF before scheduler submission. New preparations distinguish
+lock waiting, cache verification, OCI pull/conversion, SIF verification and
+publication. The remote process group has a 1080-second limit, shorter than the
+1200-second Action limit, and waits at most 300 seconds for the image lock.
+`backend.image_stage_timeout_seconds` may lower the remote limit to 30–1080
+seconds. Conversion scratch uses `backend.apptainer_tmp_dir` (or node-local
+`/tmp`); successful cache reuse still verifies the complete SIF SHA256.
+
 ## Uncertain build, submit or data delivery
 
 ```bash
@@ -82,6 +111,20 @@ without restoring whole archives; normal signed downloads go to object storage.
 Artifact completion reserves space for validation and the published object in
 addition to already saved parts: object storage can share the API host's disk.
 Insufficient space still rejects completion and preserves the session.
+
+Query `GET /api/runs/P/R/attempts/A/collection/diagnostics` with the normal API
+Bearer for the current result upload and CPU recovery evidence. The publication
+section distinguishes missing parts from a complete upload awaiting publication.
+A capacity rejection records HTTP 507, `UPLOAD_STORAGE`, required free bytes and
+observed free bytes. After freeing space, complete the **same** upload session;
+do not repeat training or start a CPU copy when all parts already exist.
+
+Add `?refresh=true` to query the exact saved SenseCore CPU job's workers, events
+and offline logs. These are bounded and redacted, and stdout/stderr are combined
+by the provider. Empty logs remain `PENDING` because indexing can be delayed.
+Unavailable process exit codes remain null; a successful log query is not a
+successful job. Refresh never submits or retries a job, and observations are
+cached only for the current CPU job identity.
 
 Recovery failures emit `ML_EXPD_RESULT_RECOVERY_DIAGNOSTIC` with the failed phase,
 exception class, system `errno`/symbolic code when present, and a SHA256 path

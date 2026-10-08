@@ -20,6 +20,46 @@ else:
     from worker_http import https_connection
 
 
+API_ERROR_CODES = frozenset({
+    'UPLOAD_STORAGE', 'UPLOAD_LIMIT', 'UNKNOWN_UPLOAD', 'UPLOAD_EXPIRED',
+    'ARTIFACT_UNAVAILABLE', 'ARTIFACT_RELEASED', 'ARTIFACT_ACK_INVALID',
+    'CHECKPOINT_UPLOAD_DISABLED', 'INPUT_NOT_READY',
+})
+
+
+class HttpTransferError(Exception):
+    """Safe HTTP facts; response text and capabilities are never retained."""
+
+    def __init__(self, status, api_code=None):
+        self.http_status = status if type(status) is int and 100 <= status <= 599 else None
+        self.api_code = api_code if isinstance(api_code, str) and api_code in API_ERROR_CODES else None
+        super().__init__('multipart archive transfer failed')
+
+
+class TransientHttpTransferError(HttpTransferError, OSError):
+    """Retain the existing bounded retries for server errors and rate limits."""
+
+
+class RejectedHttpTransferError(HttpTransferError, ValueError):
+    """Rejected requests require correction rather than automatic replay."""
+
+
+def response_error_code(response, body):
+    code = getattr(response, 'getheader', lambda name: None)('X-ML-Expd-Error-Code')
+    if isinstance(code, str) and code in API_ERROR_CODES:
+        return code
+    try:
+        value = json.loads(body)
+        if isinstance(value, dict):
+            detail = value.get('detail')
+            code = value.get('code') or (detail.get('code') if isinstance(detail, dict) else None)
+            if isinstance(code, str) and code in API_ERROR_CODES:
+                return code
+    except (ValueError, UnicodeError):
+        pass
+    return None
+
+
 def archive_outputs(root: Path, stream, limit: int, patterns: list[str]) -> int:
     total = 0
     count = 0
@@ -60,9 +100,9 @@ def upload_request(target, method, path, token, data=b''):
         response = connection.getresponse()
         body = response.read(4 * 1024 ** 2)
         if response.status >= 500 or response.status == 429:
-            raise OSError('multipart archive transfer temporarily unavailable')
+            raise TransientHttpTransferError(response.status, response_error_code(response, body))
         if response.status != 200:
-            raise ValueError('multipart archive transfer rejected (HTTP ' + str(response.status) + ')')
+            raise RejectedHttpTransferError(response.status, response_error_code(response, body))
         return json.loads(body)
     finally:
         connection.close()
