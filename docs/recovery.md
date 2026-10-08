@@ -40,6 +40,9 @@ reuse) or `SIF_PUBLISH READY` (completed publication), possibly recorded later;
 the next new Action still verifies the actual cached SIF (`cache_reverified=false`
 in this query). External project controllers are not invoked. Missing, stale or
 unverifiable receipts remain unavailable instead of becoming guessed causes.
+When code is embedded in the Dockerfile image, the saved Action has no external
+source staging arguments. Refresh checks the frozen Run's source and READY
+Runtime provenance; it does not require an external source directory or add one.
 
 WYD prepares its SIF before scheduler submission. New preparations distinguish
 lock waiting, cache verification, OCI pull/conversion, SIF verification and
