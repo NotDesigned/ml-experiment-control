@@ -13,7 +13,7 @@ import tempfile
 from urllib.parse import urlencode
 
 from . import __version__
-from .api import Client, ClientError, data_archive, download, save, segment, source_archive, upload_asset_parts
+from .api import Client, ClientError, acknowledge, data_archive, download, save, segment, source_archive, upload_asset_parts
 from .workflow import experiment, validate_dockerfile, report
 from .data_delivery import deliver_data
 
@@ -34,6 +34,7 @@ def parser():
     workflow.add_argument("--execute", action="store_true", help="authorize and execute the prepared submission within its GPU-hour budget")
     workflow.add_argument("--seconds", type=int, default=1800)
     workflow.add_argument("--download-to", type=Path)
+    workflow.add_argument("--keep-server-copy", action="store_true", help="retain server archives after verified download")
     check = commands.add_parser("check", help="GET health, policy, executors and optionally schema")
     check.add_argument("--schema", type=Path)
     pack = commands.add_parser("pack", help="import source and package image; allocates no GPU")
@@ -110,6 +111,13 @@ def parser():
     fetch.add_argument("--run", required=True)
     fetch.add_argument("--attempt", required=True)
     fetch.add_argument("--out", type=Path, required=True, help="new destination directory")
+    fetch.add_argument("--keep-server-copy", action="store_true", help="retain server archive instead of releasing it after 24 hours")
+    ack = commands.add_parser("acknowledge", help="reverify saved results and retry download confirmation without redownloading")
+    ack.add_argument("--directory", type=Path, required=True)
+    retention = ack.add_mutually_exclusive_group()
+    retention.add_argument("--keep-server-copy", dest="keep_server_copy", action="store_true", default=None)
+    retention.add_argument("--release-server-copy", dest="keep_server_copy", action="store_false")
+    ack.set_defaults(keep_server_copy=None)
     collect = commands.add_parser("collect", help="recover original Attempt outputs without rerunning training; may allocate a bounded zero-GPU CPU job")
     collect.add_argument("--project", required=True)
     collect.add_argument("--run", required=True)
@@ -162,7 +170,9 @@ def main(argv=None):
         elif args.command == "experiment":
             result = experiment(client, health, args.config, args.state, resume=args.resume,
                                 execute=args.execute, seconds=args.seconds, out=args.download_to,
-                                continue_preparation=args.continue_preparation)
+                                continue_preparation=args.continue_preparation, keep_server_copy=args.keep_server_copy)
+        elif args.command == "acknowledge":
+            result = acknowledge(client, args.directory, keep_server_copy=args.keep_server_copy)
         elif args.command in {"tracking", "wandb"}:
             if "wandb-sync.v1" not in health.get("capabilities", []):
                 raise ClientError("server lacks wandb-sync.v1")
@@ -317,7 +327,7 @@ def main(argv=None):
                     raise ClientError("watch timed out; Run continues on server; use watch again")
                 time.sleep(5)
         else:
-            result = download(client, args.project, args.run, args.attempt, args.out)
+            result = download(client, args.project, args.run, args.attempt, args.out, keep_server_copy=args.keep_server_copy)
         print(json.dumps(result, indent=2))
         if args.command == "execute" and result["status"] != "VERIFIED":
             return 2

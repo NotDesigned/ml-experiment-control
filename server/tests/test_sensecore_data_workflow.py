@@ -38,6 +38,8 @@ def stored(client, tmp_path, monkeypatch):
     class Objects:
         def upload_fileobj(self, stream, bucket, key, **kwargs):
             objects[key] = stream.read()
+        def download_fileobj(self, bucket, key, stream, **kwargs):
+            stream.write(objects[key])
         def get_object(self, Bucket, Key):
             return {"Body": Body(objects[Key])}
     monkeypatch.setattr(ArtifactStore, "client", lambda self: Objects())

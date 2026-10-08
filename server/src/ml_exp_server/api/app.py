@@ -46,6 +46,7 @@ from .tracking_routes import RECORD_PATH, router as tracking_router
 from ..tracking_service import TrackingPublisher
 from ..result_collection import ResultCollectionService
 from .result_routes import RESULT_PATH, router as result_router
+from ..artifact_lifecycle import ArtifactLifecycle
 
 
 def _poll_loop(app: FastAPI, collector: Collector) -> None:
@@ -56,6 +57,8 @@ def _poll_loop(app: FastAPI, collector: Collector) -> None:
             if app.state.runtime.config.container_execution.artifact_store_file:
                 service = ResultCollectionService(app.state.runtime)
                 service.stopping = app.state._stop.is_set
+                if app.state.runtime.config.action_runtime.allow_project_writes:
+                    ArtifactLifecycle(service.objects).run_due()
                 service.automatic(app.state.submit_job)
             app.state.index.set_meta("collector_last_error", "")
         except Exception as exc:  # keep the loop alive; surface via meta

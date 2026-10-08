@@ -19,6 +19,7 @@ VERSIONED_OPENAPI_PATH = "/api/v2/openapi.json"
 CLIENT_PROTOCOL_HEADER = "X-ML-Expd-Client-Protocol"
 
 SERVER_CAPABILITIES = (
+    "artifact-retention.v1",
     "wandb-sync.v1",
     "result-collection.v1",
     "training-result.v1",

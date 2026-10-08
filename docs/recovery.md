@@ -81,6 +81,48 @@ Artifact completion reserves space for validation and the published object in
 addition to already saved parts: object storage can share the API host's disk.
 Insufficient space still rejects completion and preserves the session.
 
+### Download confirmation and server storage
+
+On `artifact-retention.v1` servers, a successful `ml-exp download` verifies the
+whole archive and every output file, saves and syncs the local files and
+`verification.json`, then acknowledges the exact Run/Attempt and archive SHA256.
+The server schedules deletion of that archive **24 hours after confirmation**.
+A download link, partial transfer or checksum failure never authorizes deletion.
+Repeated confirmations do not extend the deadline. Older clients send no
+confirmation, so their archives remain retained.
+
+```bash
+# Default: verified local copy, then release server archive after 24 hours.
+ml-exp download --project PROJECT --run RUN --attempt attempt-001 --out results
+# Keep the server archive instead; also supported by experiment --download-to.
+ml-exp download --project PROJECT --run RUN --attempt attempt-001 --out results --keep-server-copy
+# If confirmation failed, recheck existing files without downloading again.
+ml-exp acknowledge --directory results
+# Change retention explicitly while the archive is still retained.
+ml-exp acknowledge --directory results --keep-server-copy
+ml-exp acknowledge --directory results --release-server-copy
+```
+
+Confirmation errors leave usable local files and a PENDING acknowledgement in
+`verification.json`. The retry command preserves the original retention choice.
+Keep that verified local copy: releasing a server archive transfers responsibility
+for its bytes to the client, and a client receipt is not independent proof of a
+backup. NAS/datapool recovery checkpoints and training data are never deleted by
+this flow. Experiment identity, archive/file hashes, metrics and scientific
+receipts remain on the server. New uploads avoid a duplicate expanded cache;
+temporary multipart parts are removed only after publication succeeds.
+
+REST: `POST /api/runs/P/R/attempts/A/artifacts/ack` takes `archive_sha256`,
+`archive_bytes`, a `files` map of `outputs/path` to `{sha256, bytes}`, and
+`release` (default true). It requires the normal API Bearer, not a worker token.
+The collector releases only confirmed, due, exactly bound objects; interrupted
+deletions retry the same object key without starting compute. Object-store
+garbage collection can delay physical disk reclamation. RELEASED collections
+retain their metadata and report `download_available=false`; download returns
+410 `ARTIFACT_RELEASED`, not a missing-upload 404. `collect` does not silently
+start a job or recreate an intentionally released archive. Re-exporting backend
+files is a separate operation, subject to those files still being present.
+
 New workers persist and register `training-result.v1` before result upload.
 When a terminal Attempt has a successful process result but no archive, the
 collector requests one independent recovery. Failed recoveries require explicit

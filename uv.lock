@@ -574,7 +574,7 @@ wheels = [
 
 [[package]]
 name = "ml-experiment-client"
-version = "0.1.12"
+version = "0.1.13"
 source = { editable = "client" }
 
 [package.dev-dependencies]
@@ -614,7 +614,7 @@ dev = [
 
 [[package]]
 name = "ml-experiment-server"
-version = "0.3.20"
+version = "0.3.21"
 source = { editable = "server" }
 dependencies = [
     { name = "boto3" },
