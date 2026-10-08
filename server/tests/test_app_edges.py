@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 import time
+import threading
 
 import pytest
 from fastapi import FastAPI
@@ -26,6 +27,56 @@ def config(tmp_path: Path, *, collector=False) -> ServerConfig:
         project_registry_root=str(tmp_path / "registry"),
         projects=[], collector_enabled=collector,
     )
+
+
+def test_waiting_preparations_do_not_block_actions(tmp_path):
+    app = create_app(config(tmp_path))
+    waiting = threading.Event()
+    entered = [threading.Event(), threading.Event()]
+
+    def prepare(index):
+        entered[index].set()
+        assert waiting.wait(5)
+
+    with TestClient(app):
+        futures = [app.state.submit_job(prepare, index) for index in range(2)]
+        try:
+            assert all(event.wait(2) for event in entered)
+            app.state.application.finish_action_execution = lambda pending: pending
+            assert app.state.submit_action("cancel-ready").result(timeout=2) == "cancel-ready"
+        finally:
+            waiting.set()
+            for future in futures:
+                future.result(timeout=2)
+
+
+def test_shutdown_retains_workspace_until_preparation_finishes(tmp_path):
+    settings = config(tmp_path)
+    app = create_app(settings)
+    entered, release = threading.Event(), threading.Event()
+
+    def prepare(_pending):
+        entered.set()
+        assert release.wait(5)
+
+    async def close_with_pending_work():
+        async with app.router.lifespan_context(app):
+            future = app.state.submit_job(prepare, None)
+            assert await asyncio.to_thread(entered.wait, 2)
+        return future
+
+    try:
+        future = asyncio.run(close_with_pending_work())
+        competing = app_module.CollectorLease(settings.index_db_path())
+        assert not competing.acquire()
+    finally:
+        release.set()
+    future.result(timeout=2)
+    deadline = time.monotonic() + 2
+    while not competing.acquire():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    competing.release()
 
 
 class Lease:

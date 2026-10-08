@@ -10,8 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server.artifact_store import ArtifactStore
-from ml_exp_server.multipart_upload import PartStream, UploadStore
+from ml_exp_server.results.artifact_store import ArtifactStore
+from ml_exp_server.data.multipart_upload import PartStream, UploadStore
 from ml_exp_server.storage import atomic_json
 from tests.test_sensecore_data_workflow import client, stored, custom_runtime, controller
 from tests.test_artifact_store import archive, storage
@@ -187,7 +187,7 @@ def test_upload_journal_rejects_corruption_and_cleans_owned_expired_staging(tmp_
     with pytest.raises(ValueError):store.part(value['upload_id'],binding,0,tmp_path/'missing','a'*64,1)
     with pytest.raises(ApplicationError):store.create(binding,'bad',1,100)
     with pytest.raises(ApplicationError):store.create(binding,'a'*64,(store.max_parts+1)*1024,None)
-    monkeypatch.setattr('ml_exp_server.multipart_upload.shutil.disk_usage',lambda p:SimpleNamespace(free=0))
+    monkeypatch.setattr('ml_exp_server.data.multipart_upload.shutil.disk_usage',lambda p:SimpleNamespace(free=0))
     with pytest.raises(ApplicationError):store.create(binding,'a'*64,1,100)
 
 
@@ -219,8 +219,8 @@ def test_attempt_capability_has_no_control_api_access(storage,tmp_path):
 
 def test_default_large_archive_uses_only_bounded_session_metadata(storage,tmp_path,monkeypatch):
     from types import SimpleNamespace
-    monkeypatch.setattr("ml_exp_server.multipart_upload.shutil.disk_usage", lambda _: SimpleNamespace(free=16*1024**3))
-    from ml_exp_server.data_assets import AssetStore
+    monkeypatch.setattr("ml_exp_server.data.multipart_upload.shutil.disk_usage", lambda _: SimpleNamespace(free=16*1024**3))
+    from ml_exp_server.data.data_assets import AssetStore
     objects,_,_,config,_=storage
     assets=AssetStore(config,tmp_path/'registry')
     assert objects.limit==assets.limit==assets.expanded_limit is None

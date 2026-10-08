@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
-from ..result_collection import ResultCollectionService
+from ..results.result_collection import ResultCollectionService
 from .container_routes import invoke
 from .asset_routes import token
 

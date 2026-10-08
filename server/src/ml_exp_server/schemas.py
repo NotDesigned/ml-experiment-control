@@ -16,7 +16,7 @@ from typing import Any, Literal, Optional
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from .metric_contract import MetricSchema
+from .tracking.metric_contract import MetricSchema
 
 SCHEMA_VERSION = 1
 SAFE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"

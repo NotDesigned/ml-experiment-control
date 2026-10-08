@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from ..application import ApplicationError
 from ..api_contract import DaemonHealth, ProjectRegistrationResponse
-from ..campaign_lifecycle import campaign_snapshot
+from ..projects.campaign_lifecycle import campaign_snapshot
 from ..collectord import Collector
 from ..ingest.indexer import RunIndex, index_project
 from ..ingest.runscan import parse_iso_ts, read_jsonl
@@ -24,8 +24,7 @@ from ..schemas import (
     RunIndexRow,
     TERMINAL_RUN_STATES,
 )
-from ..terminal_snapshot import (build_snapshot, is_current_collector_error,
-                                 snapshot_payload)
+from ..runs.terminal_snapshot import build_snapshot, is_current_collector_error, snapshot_payload
 from .errors import application_http_error
 
 router = APIRouter(prefix="/api")

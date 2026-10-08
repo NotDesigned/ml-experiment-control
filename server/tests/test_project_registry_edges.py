@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ml_exp_server.project_registry import ProjectRegistry, ProjectRegistryError
+from ml_exp_server.projects.project_registry import ProjectRegistry, ProjectRegistryError
 from ml_exp_server.schemas import ProjectLifecycleState
 from ml_exp_server.storage import StorageError
 
@@ -159,7 +159,7 @@ def test_events_maps_unreadable_journal(monkeypatch, tmp_path):
     registry = ProjectRegistry(tmp_path / "registry")
     registry.bootstrap([])
     monkeypatch.setattr(
-        "ml_exp_server.project_registry._jsonl_mappings",
+        "ml_exp_server.projects.project_registry._jsonl_mappings",
         lambda _path: (_ for _ in ()).throw(StorageError("bad journal")),
     )
     with pytest.raises(ProjectRegistryError, match="events are unreadable"):

@@ -16,9 +16,10 @@ from experiment_control import runner as core_runner
 from ml_exp_server.api.app import create_app
 from ml_exp_server.actions import project_writes
 from ml_exp_server.actions import service as action_service
-from ml_exp_server.actions.service import ActionError, ActionService
+from ml_exp_server.actions.errors import ActionError
+from ml_exp_server.actions.service import ActionService
 from ml_exp_server.actions.store import ActionStore
-from ml_exp_server.project_config import load_research_project
+from ml_exp_server.projects.project_config import load_research_project
 from ml_exp_server.schemas import (
     ActionRuntimeConfig,
     OperationScope,
@@ -28,6 +29,9 @@ from ml_exp_server.schemas import (
     ProjectRef,
     ResearchProject,
 )
+import ml_exp_server.actions.files as action_files
+import ml_exp_server.actions.helpers as action_helpers
+import ml_exp_server.controller_gateway as controller_gateway
 
 
 def operation_intent(kind: str, draft: str, idempotency_key: str = "intent-123456abcdef"):
@@ -43,21 +47,21 @@ def operation_intent(kind: str, draft: str, idempotency_key: str = "intent-12345
 
 
 def test_action_helpers_reject_unsafe_inputs_and_classify_changes(tmp_path):
-    assert action_service._file_sha(tmp_path / "missing") is None
-    assert action_service._inside(tmp_path / "outside", tmp_path / "root") is False
+    assert action_files.file_sha(tmp_path / "missing") is None
+    assert action_helpers._inside(tmp_path / "outside", tmp_path / "root") is False
     with pytest.raises(ActionError, match="valid YAML"):
-        action_service._parse_mapping("key: [")
+        action_helpers._parse_mapping("key: [")
     with pytest.raises(ActionError, match="mapping"):
-        action_service._parse_mapping("- item")
+        action_helpers._parse_mapping("- item")
 
-    changes = action_service._semantic_changes({}, {
+    changes = action_helpers._semantic_changes({}, {
         "links": ["Q1"], "budget": {"gpu": 1}, "command": ["train"], "title": "new",
     })
     assert {item["category"] for item in changes} == {
         "EXPERIMENT_DESIGN", "RESOURCE", "EXECUTION_IDENTITY", "METADATA",
     }
-    assert action_service._semantic_changes({"same": 1}, {"same": 1}) == []
-    assert action_service._redact({
+    assert action_helpers._semantic_changes({"same": 1}, {"same": 1}) == []
+    assert controller_gateway.redact({
         "api_token": "secret", "tokenizer_path": "tokenizer.model",
         "train_batch_tokens": 65536,
     }) == {
@@ -67,7 +71,7 @@ def test_action_helpers_reject_unsafe_inputs_and_classify_changes(tmp_path):
 
 
 def test_command_runner_handles_timeout_and_non_json_output(monkeypatch, tmp_path):
-    runner = action_service.CommandRunner()
+    runner = controller_gateway.CommandRunner()
 
     def timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])

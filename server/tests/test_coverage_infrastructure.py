@@ -10,15 +10,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from ml_exp_server import code_identity, runtime as runtime_module
+from ml_exp_server.projects import code_identity
+from ml_exp_server import runtime as runtime_module
 from ml_exp_server.actions import project_writes
 from ml_exp_server.actions.errors import ActionError
 from ml_exp_server.actions.policy import ActionExecutionPolicy
 from ml_exp_server.actions.project_writes import ProjectWriteError, ProjectWriteTransaction
 from ml_exp_server.actions.store import ActionStore
-from ml_exp_server.authored_runs import authored_run_placeholder
+from ml_exp_server.projects.authored_runs import authored_run_placeholder
 from ml_exp_server.controller_gateway import CommandRunner, ProjectControllerGateway
-from ml_exp_server.operations import intent_scope_error
+from ml_exp_server.runs.operations import intent_scope_error
 from ml_exp_server.runtime import ExperimentServerRuntime
 from ml_exp_server.schemas import (
     ActionRuntimeConfig,
@@ -214,7 +215,7 @@ def test_unknown_intent_kind_has_explicit_scope_error():
 
 
 def test_operation_definition_can_replace_parameters():
-    from ml_exp_server.operations import OPERATIONS, REQUEST
+    from ml_exp_server.runs.operations import OPERATIONS, REQUEST
 
     changed = OPERATIONS[0].with_parameters(REQUEST)
     assert changed.parameters == (REQUEST,)

@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from ml_exp_server.wandb_display import Projection, identity, curve_record, configure, summaries
-from ml_exp_server.tracking_store import TrackingStore
+from ml_exp_server.tracking.wandb_display import Projection, identity, curve_record, configure, summaries
+from ml_exp_server.tracking.tracking_store import TrackingStore
 
 
 def metric(**changes):

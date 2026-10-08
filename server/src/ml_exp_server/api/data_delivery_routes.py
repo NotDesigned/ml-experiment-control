@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from ..data_delivery import DataDeliveryService
+from ..data.data_delivery import DataDeliveryService
 from .asset_routes import token
 from .container_routes import ConfirmRequest, invoke
 

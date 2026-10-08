@@ -9,7 +9,7 @@ DATA_WORKERS = ("data_copy_worker.py", "data_input.py", "worker_http.py")
 
 
 def data_worker_digest(directory: Path | None = None) -> str:
-    root = directory if directory is not None else Path(__file__).parent
+    root = directory if directory is not None else Path(__file__).parent / "workers"
     return hashlib.sha256(b"".join((root / name).read_bytes() for name in DATA_WORKERS)).hexdigest()
 
 

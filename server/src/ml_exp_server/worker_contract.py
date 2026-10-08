@@ -14,7 +14,7 @@ WORKERS = (("managed_worker.py", "worker.py"), ("worker_artifacts.py", "artifact
 
 
 def worker_digest() -> str:
-    root = Path(__file__).parent
+    root = Path(__file__).parent / "workers"
     return hashlib.sha256(b"".join((root / source).read_bytes() for source, _ in WORKERS)).hexdigest()
 
 
@@ -27,7 +27,7 @@ def recipe_digest() -> str:
 def install_workers(directory: Path) -> None:
     for source, target in WORKERS:
         path = directory / target
-        shutil.copyfile(Path(__file__).with_name(source), path)
+        shutil.copyfile((Path(__file__).parent / "workers" / source), path)
         path.chmod(0o444)
 
 

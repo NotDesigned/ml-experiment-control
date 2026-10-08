@@ -8,7 +8,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from ml_exp_server.api.app import create_app
-from ml_exp_server.operations import OPERATIONS
+from ml_exp_server.runs.operations import OPERATIONS
 from ml_exp_server.schemas import ProjectRef, ServerConfig
 
 

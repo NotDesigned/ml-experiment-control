@@ -1,0 +1,278 @@
+"""Load daemon workspace, project catalog, and project configuration."""
+
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+import yaml
+from pydantic import ValidationError
+
+from ..schemas import CampaignRef, CampaignRevision, CampaignRunMembership, ServerConfig, ResearchProject
+
+
+class ConfigError(ValueError):
+    """A configuration file is missing or fails schema validation."""
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects ambiguous duplicate mapping keys."""
+
+
+def _construct_unique_mapping(loader, node, deep=False):
+    loader.flatten_mapping(node)
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping", node.start_mark,
+                "found an unhashable mapping key", key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping", node.start_mark,
+                f"found duplicate key {key!r}", key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
+def _load_yaml(path: Path) -> dict:
+    if not path.is_file():
+        raise ConfigError(f"config file not found: {path}")
+    try:
+        data = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise ConfigError(f"invalid YAML in {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"expected a mapping at top level of {path}")
+    return data
+
+
+def load_server_config(path: Path) -> ServerConfig:
+    path = path.expanduser().resolve()
+    data = _load_yaml(path)
+    try:
+        config = ServerConfig.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError(f"invalid daemon config {path}: {exc}") from exc
+    if config.schema_version != 1:
+        raise ConfigError(f"unsupported schema_version in {path}: {config.schema_version}")
+    # A checked-in workspace must be relocatable.  Project manifests are the
+    # only repository-owned paths in this file; state roots intentionally keep
+    # their normal XDG/home-relative semantics.  Resolve relative manifests
+    # against the config, never against whichever directory launched the daemon.
+    for ref in config.projects:
+        project_file = Path(ref.project_file).expanduser()
+        if not project_file.is_absolute():
+            ref.project_file = str((path.parent / project_file).resolve())
+    token_file = config.http_auth.bearer_token_file
+    if token_file:
+        token_path = Path(token_file).expanduser()
+        if not token_path.is_absolute():
+            config.http_auth.bearer_token_file = str(
+                (path.parent / token_path).resolve()
+            )
+    return config
+
+
+
+
+def _campaign_path(project: ResearchProject, ref: CampaignRef) -> Path:
+    path = Path(ref.file or "")
+    if not path.is_absolute():
+        path = (project.base_dir or Path(".")) / path
+    return path.resolve()
+
+
+def _declared_run_specs(authored: object) -> list[dict]:
+    """Extract concrete Run declarations from direct and legacy matrix entries.
+
+    Matrix expansion syntax is controller-specific, so the daemon does not
+    attempt to render templates. It indexes concrete run_id leaves already
+    present in the authored matrix and ignores placeholder-only template ids.
+    """
+    if not isinstance(authored, dict):
+        return []
+    run_id = authored.get("run_id")
+    if isinstance(run_id, str) and run_id and "{" not in run_id:
+        return [authored]
+    found: list[dict] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            nested_run_id = value.get("run_id")
+            if isinstance(nested_run_id, str) and nested_run_id and "{" not in nested_run_id:
+                found.append(value)
+                return
+            for nested in value.values():
+                visit(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                visit(nested)
+
+    visit(authored.get("matrix"))
+    return found
+
+
+def _static_template_value(template: object, key: str) -> object:
+    if not isinstance(template, dict):
+        return None
+    value = template.get(key)
+    if isinstance(value, str) and "{" in value:
+        return None
+    return value
+
+
+def _load_campaign_revision(project: ResearchProject, ref: CampaignRef) -> CampaignRevision:
+    path = _campaign_path(project, ref)
+    raw = path.read_bytes() if path.is_file() else None
+    if raw is None:
+        raise ConfigError(f"campaign file not found for {ref.name!r}: {path}")
+    data = _load_yaml(path)
+    campaign = data.get("campaign")
+    if campaign != ref.name:
+        raise ConfigError(
+            f"campaign catalog name mismatch for {path}: {ref.name!r} != {campaign!r}"
+        )
+    campaign_project = data.get("project")
+    if campaign_project != project.project:
+        raise ConfigError(
+            f"campaign project mismatch for {path}: "
+            f"{project.project!r} != {campaign_project!r}"
+        )
+    authored_runs = data.get("runs", [])
+    authored_refs = data.get("run_refs", [])
+    if not isinstance(authored_runs, list):
+        raise ConfigError(f"campaign runs must be a list in {path}")
+    if not isinstance(authored_refs, list):
+        raise ConfigError(f"campaign run_refs must be a list in {path}")
+    if not authored_runs and not authored_refs:
+        raise ConfigError(f"campaign requires runs or run_refs in {path}")
+    memberships: list[CampaignRunMembership] = []
+    source_bindings: dict[str, str] = {}
+    run_ids: set[str] = set()
+    for authored in authored_runs:
+        template = authored.get("template") if isinstance(authored, dict) else None
+        for spec in _declared_run_specs(authored):
+            run_id = spec["run_id"]
+            if run_id in run_ids:
+                raise ConfigError(f"duplicate campaign run_id {run_id!r} in {path}")
+            run_ids.add(run_id)
+
+            def value(key: str, default=None):
+                resolved = spec.get(key)
+                if resolved is None:
+                    resolved = _static_template_value(template, key)
+                return default if resolved is None else resolved
+
+            try:
+                memberships.append(CampaignRunMembership(
+                    run_id=run_id,
+                    kind="materialize",
+                    role=value("research_role"),
+                    arm=value("arm"),
+                    replicate=value("replicate"),
+                    purpose=value("purpose"),
+                    included_in_analysis=value("included_in_analysis", True),
+                ))
+            except ValidationError as exc:
+                raise ConfigError(f"invalid campaign run membership in {path}: {exc}") from exc
+            source_id = value("source_id")
+            if source_id is not None:
+                if not isinstance(source_id, str) or not source_id or "{" in source_id:
+                    raise ConfigError(
+                        f"campaign run source_id must be a concrete string in {path}"
+                    )
+                source_bindings[run_id] = source_id
+    for authored in authored_refs:
+        if not isinstance(authored, dict):
+            raise ConfigError(f"campaign run_refs entries must be mappings in {path}")
+        run_id = authored.get("run_id")
+        if not isinstance(run_id, str) or not run_id or "{" in run_id:
+            raise ConfigError(f"campaign run_ref requires a concrete run_id in {path}")
+        if run_id in run_ids:
+            raise ConfigError(f"duplicate campaign run_id {run_id!r} in {path}")
+        run_ids.add(run_id)
+        try:
+            memberships.append(CampaignRunMembership(
+                run_id=run_id,
+                kind="reuse",
+                role=authored.get("research_role"),
+                arm=authored.get("arm"),
+                replicate=authored.get("replicate"),
+                purpose=authored.get("purpose"),
+                included_in_analysis=authored.get("included_in_analysis", True),
+            ))
+        except ValidationError as exc:
+            raise ConfigError(f"invalid campaign run_ref in {path}: {exc}") from exc
+    revision_id = f"campaign.{hashlib.sha256(raw).hexdigest()}"
+    return CampaignRevision(
+        campaign=ref.name,
+        project=project.project,
+        revision_id=revision_id,
+        file=str(path),
+        research_contract=(
+            data.get("research_contract")
+            if isinstance(data.get("research_contract"), dict) else None
+        ),
+        memberships=memberships,
+        source_bindings=source_bindings,
+    )
+
+
+def load_research_project(path: Path) -> ResearchProject:
+    """Load a project-owned campaign catalog plus project configuration."""
+    data = _load_yaml(path)
+    try:
+        project = ResearchProject.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError(f"invalid research project {path}: {exc}") from exc
+    if project.schema_version != 1:
+        raise ConfigError(f"unsupported schema_version in {path}: {project.schema_version}")
+    project.base_dir = path.parent.parent if path.parent.name == "experiments" else path.parent
+    project.authored_file = path.resolve()
+    # Convention: research_project.yaml lives in <repo>/experiments/, and its
+    # run_roots are repo-relative. Fall back to the file's own
+    # directory when the layout differs.
+    campaign_names: set[str] = set()
+    materialized_run_ids: dict[str, str] = {}
+    for ref in project.campaigns:
+        if ref.name in campaign_names:
+            raise ConfigError(f"duplicate campaign name {ref.name!r} in {path}")
+        campaign_names.add(ref.name)
+        if ref.file:
+            ref.current_revision = _load_campaign_revision(project, ref)
+            for membership in ref.current_revision.memberships:
+                if membership.kind != "materialize":
+                    continue
+                previous = materialized_run_ids.get(membership.run_id)
+                if previous is not None:
+                    raise ConfigError(
+                        f"run_id {membership.run_id!r} is materialized by both "
+                        f"campaign {previous!r} and {ref.name!r}; use run_refs for reuse"
+                    )
+                materialized_run_ids[membership.run_id] = ref.name
+
+    return project
+
+
+def load_projects(config: ServerConfig) -> list[ResearchProject]:
+    projects = []
+    names: set[str] = set()
+    for ref in config.projects:
+        project = load_research_project(Path(ref.project_file).expanduser())
+        if project.project in names:
+            raise ConfigError(f"duplicate project name {project.project!r}")
+        names.add(project.project)
+        projects.append(project)
+    return projects

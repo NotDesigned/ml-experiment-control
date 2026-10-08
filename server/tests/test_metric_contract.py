@@ -6,7 +6,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from ml_exp_server.metric_contract import MetricSchema, finite, metric_result, observations, protocol_identity
+from ml_exp_server.tracking.metric_contract import MetricSchema, finite, metric_result, observations, protocol_identity
 from ml_exp_server.ingest.runscan import evaluation_snapshot, evaluation_variants, scan_run_dir
 from ml_exp_server.container_controller import Controller
 from ml_exp_server.container_execution import ContainerExecutionService, RunRequest

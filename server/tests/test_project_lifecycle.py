@@ -11,10 +11,10 @@ import yaml
 import pytest
 from fastapi.testclient import TestClient
 
-from ml_exp_server import project_service as project_service_module
+from ml_exp_server.projects import project_service as project_service_module
 from ml_exp_server.api.app import create_app
 from ml_exp_server.cli import main
-from ml_exp_server.project_registry import ProjectRegistry, ProjectRegistryError
+from ml_exp_server.projects.project_registry import ProjectRegistry, ProjectRegistryError
 from ml_exp_server.runtime import ExperimentServerRuntime
 from ml_exp_server.schemas import (
     ServerConfig,

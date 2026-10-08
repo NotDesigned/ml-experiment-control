@@ -16,9 +16,9 @@ from fastapi.testclient import TestClient
 
 from ml_exp_server.api.app import create_app
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server.artifacts import ArtifactService
-from ml_exp_server.artifact_store import ArtifactStore
-from ml_exp_server.result_collection import ResultCollectionService, ACTIVE
+from ml_exp_server.results.artifacts import ArtifactService
+from ml_exp_server.results.artifact_store import ArtifactStore
+from ml_exp_server.results.result_collection import ResultCollectionService, ACTIVE
 from ml_exp_server.schemas import ServerConfig, RunIndexRow, AttemptSummary
 from ml_exp_server.storage import atomic_json
 from experiment_control.backends.sensecore_rest import RESTError
@@ -164,7 +164,7 @@ def cpu(recovery, monkeypatch):
     rest.describe.return_value = {"state": "FAILED"}
     rest.specs.return_value = [{"name": "cpu.2c4g", "device": {"number": 0},
                                "cpu": {"vcpu_allocatable": 2}, "memory": {"allocatable": 4}}]
-    monkeypatch.setattr("ml_exp_server.result_collection.SenseCoreREST.from_environment", lambda: rest)
+    monkeypatch.setattr("ml_exp_server.results.result_collection.SenseCoreREST.from_environment", lambda: rest)
     return rest
 
 
@@ -238,7 +238,7 @@ def test_unfinished_archive_identity_cannot_be_silently_replaced(recovery, case)
     service, root, _, _, remote, _, _ = recovery
     path = output(root)
     raw = io.BytesIO()
-    from ml_exp_server.worker_artifacts import archive_outputs
+    from ml_exp_server.workers.worker_artifacts import archive_outputs
     archive_outputs(path, raw, 0, ["**/*"])
     digest = hashlib.sha256(raw.getvalue()).hexdigest()
     folder = service.objects.root.parent / "multipart-uploads/upload.first"; folder.mkdir(parents=True)
@@ -282,7 +282,7 @@ def test_cpu_recovery_limits_and_provider_failures(recovery, monkeypatch, case):
     if case == "stopping": service.stopping = lambda: True
     if case == "deadline":
         rest.create.side_effect = lambda *a, **kw: service.update(IDENTITY, deadline_at=-1)
-    monkeypatch.setattr("ml_exp_server.result_collection.time.sleep", lambda s: None)
+    monkeypatch.setattr("ml_exp_server.results.result_collection.time.sleep", lambda s: None)
     service.finish_one(IDENTITY)
     result = service.read(*IDENTITY)
     assert result["status"] == ("AVAILABLE" if case == "poll-then-upload" else "RECONCILE_REQUIRED" if case in {"stopping", "deadline"} else "FAILED")
@@ -374,7 +374,7 @@ def test_http_collection_control_and_worker_capability_boundaries(recovery, tmp_
 
 @pytest.mark.parametrize("broken", [False, True])
 def test_submission_progress_includes_collection_without_hiding_bad_metadata(recovery, monkeypatch, tmp_path, broken):
-    from ml_exp_server.submissions import ExperimentSubmissionService
+    from ml_exp_server.runs.submissions import ExperimentSubmissionService
     service, _, _, _, _, _, _ = recovery
     service.runtime.action_store = SimpleNamespace(directory=lambda _: tmp_path)
     submissions = ExperimentSubmissionService(None, service.runtime)

@@ -14,10 +14,10 @@ from types import SimpleNamespace
 import pytest
 
 from ml_exp_server import desktop_upload as desktop
-from ml_exp_server import remote_data_uploads as remote
+from ml_exp_server.data import remote_data_uploads as remote
 from ml_exp_server.archive_limits import byte_limit, exceeds, minimum_limit, wire_limit
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server.data_assets import AssetStore
+from ml_exp_server.data.data_assets import AssetStore
 from ml_exp_server.storage import atomic_json
 from ml_exp_server.data_image_recipe import DATA_WORKERS
 from tests.test_artifact_store import archive

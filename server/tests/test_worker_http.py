@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from ml_exp_server import worker_http as transport
+from ml_exp_server.workers import worker_http as transport
 
 RELAY = {'endpoint': 'tcp://127.0.0.1:18443', 'origin': 'https://example.test'}
 
@@ -94,8 +94,8 @@ def test_real_tls_uses_origin_sni_certificate_and_authorization(tmp_path, monkey
 
 
 def test_network_diagnostics_preserve_codes_without_raw_details():
-    from ml_exp_server.data_input import DeliveryTrace
-    from ml_exp_server import worker_launcher
+    from ml_exp_server.workers.data_input import DeliveryTrace
+    from ml_exp_server.workers import worker_launcher
     assert transport.error_code(OSError('private')) == 'OSError'
     assert transport.error_code(transport.ApiTransportError('private')) == 'ApiTransportError'
     error = transport.ApiTransportError('API_RELAY_UNREACHABLE')

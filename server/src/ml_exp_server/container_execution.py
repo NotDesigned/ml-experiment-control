@@ -18,19 +18,19 @@ from .application_errors import ApplicationError
 from .image_builder import IMAGE, builder_request, bundle_id, BuildStorageError, BuildTransportError
 from .source_paths import relative_source_path, argument_vector
 from .dockerfile_build import DOCKERFILE_RECIPE, inspect_dockerfile, managed_dockerfile, worker_digest
-from .data_assets import AssetStore
-from .source_imports import IDENTITY, source_lock
-from .source_revisions import resolve_source_tree
+from .data.data_assets import AssetStore
+from .projects.source_imports import IDENTITY, source_lock
+from .projects.source_revisions import resolve_source_tree
 from .storage import DurableJsonState, atomic_text, utc_now
-from .runtime_jobs import PendingRuntimeBuild
+from .builds.runtime_jobs import PendingRuntimeBuild
 from .worker_contract import CAPABILITIES, WORKER_CONTRACT
-from .metric_contract import MetricSchema, protocol_identity
-from .data_preparation import identity as data_identity, file_record
-from .checkpoint_registry import CheckpointRegistry, storage_scope
-from .worker_http import relay_environment
-from .executor_capabilities import declaration, ExecutionRequirements, mismatches, validate_worker
-from .tracking_contract import WandbOptions, finite_parameters
-from .tracking_service import store_for, bind_run
+from .tracking.metric_contract import MetricSchema, protocol_identity
+from .workers.data_preparation import identity as data_identity, file_record
+from .results.checkpoint_registry import CheckpointRegistry, storage_scope
+from .workers.worker_http import relay_environment
+from .runs.executor_capabilities import declaration, ExecutionRequirements, mismatches, validate_worker
+from .tracking.tracking_contract import WandbOptions, finite_parameters
+from .tracking.tracking_service import store_for, bind_run
 
 
 SECRET_KEY = re.compile(r"(?i)(?:^|_)(?:token|secret|password|credential|api_key|proxy|authorization)(?:$|_)")
@@ -326,7 +326,7 @@ class ContainerExecutionService:
                 raise ApplicationError("runtime publication is uncertain; reconcile before preparing a new build", code="CONTAINER_EXECUTION_BLOCKED")
             self.require_current_build(project, value)
             value.update(status="EXECUTING", error=None, build_error=None)
-            from .execution_progress import record_progress
+            from .runs.execution_progress import record_progress
             record_progress(self.root / project / (runtime_id + ".progress.json"), "WAITING_BUILD_WORKER",
                             "Build claimed by daemon; waiting for builder request or receipt reconciliation")
             executing = store.commit(value, expected_revision=snapshot.revision, event={"event": "runtime_execution_started", "timestamp": utc_now()})
@@ -414,7 +414,7 @@ class ContainerExecutionService:
                 if asset.get("remote_storage") == "desktop-builder" and selected_profile["backend"]["kind"] == "sensecore":
                     if "data-cache-required.v1" not in bundle.get("capabilities", []):
                         raise ApplicationError("CCR data delivery requires a newly built runtime with data-cache-required.v1", code="CONTAINER_EXECUTION_BLOCKED")
-                    from .data_delivery import DataDeliveryService
+                    from .data.data_delivery import DataDeliveryService
                     inputs[-1].update(require_cached=True, data_delivery=DataDeliveryService(self.runtime).ready_for(project, binding.asset_id, request.executor))
             if len(json.dumps(inputs).encode()) > 32768:
                 raise ApplicationError("input manifests exceed the scheduler command limit", code="CONTAINER_EXECUTION_BLOCKED")

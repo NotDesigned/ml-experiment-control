@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from ml_exp_server import data_copy_worker as worker
-from ml_exp_server import managed_worker
+from ml_exp_server.workers import data_copy_worker as worker
+from ml_exp_server.workers import managed_worker
 from tests.test_artifact_store import archive
 
 

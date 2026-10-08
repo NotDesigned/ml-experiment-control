@@ -8,12 +8,12 @@ from types import SimpleNamespace
 import pytest
 
 from ml_exp_server import container_controller
-from ml_exp_server.data_assets import AssetStore
+from ml_exp_server.data.data_assets import AssetStore
 from ml_exp_server.dockerfile_build import DOCKERFILE_RECIPE, INTERNAL, inspect_dockerfile
 from ml_exp_server.image_builder import BUILD_LOG, ImageBuilder, MANIFEST_TYPE, bundle_id
 from ml_exp_server.container_execution import DockerfileRuntimeSpec
-from ml_exp_server.source_imports import seal_tree
-from ml_exp_server.source_revisions import _tree_digest
+from ml_exp_server.projects.source_imports import seal_tree
+from ml_exp_server.projects.source_revisions import _tree_digest
 from tests.test_container_api import archive, client, import_source
 from tests.test_sensecore_data_workflow import stored, custom_runtime, controller, put_asset, BASE
 

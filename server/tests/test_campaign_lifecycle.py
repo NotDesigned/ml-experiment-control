@@ -10,13 +10,9 @@ from pathlib import Path
 import pytest
 
 from ml_exp_server.application import ExperimentServerApplication
-from ml_exp_server.campaign_lifecycle import (
-    _load_record,
-    campaign_record_path,
-    campaign_snapshot,
-)
+from ml_exp_server.projects.campaign_lifecycle import _load_record, campaign_record_path, campaign_snapshot
 from ml_exp_server.ingest.indexer import RunIndex, index_project
-from ml_exp_server.project_config import load_research_project
+from ml_exp_server.projects.project_config import load_research_project
 from ml_exp_server.runtime import ExperimentServerRuntime
 from ml_exp_server.schemas import (
     ActionRuntimeConfig,

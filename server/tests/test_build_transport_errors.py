@@ -9,7 +9,7 @@ import pytest
 
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.image_builder import BuilderServer, Handler, ImageBuilder, BuildTransportError, builder_request, BUILD_LOG
-from ml_exp_server.remote_data_uploads import stage_request
+from ml_exp_server.data.remote_data_uploads import stage_request
 from ml_exp_server import image_builder as module
 from tests.test_container_api import client, import_source, archive, wait_runtime
 from tests.test_image_builder_boundary import builder

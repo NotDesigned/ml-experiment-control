@@ -12,9 +12,10 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from ml_exp_server import persistent_state as state, managed_worker as worker
-from ml_exp_server.artifact_store import ArtifactStore
-from ml_exp_server.checkpoint_registry import CheckpointRegistry, storage_scope
+from ml_exp_server.workers import persistent_state as state
+from ml_exp_server.workers import managed_worker as worker
+from ml_exp_server.results.artifact_store import ArtifactStore
+from ml_exp_server.results.checkpoint_registry import CheckpointRegistry, storage_scope
 from ml_exp_server.container_controller import Controller
 from ml_exp_server.schemas import RunIndexRow, AttemptSummary
 from tests.test_container_api import client, import_source, runtime

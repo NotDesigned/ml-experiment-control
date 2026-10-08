@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from ml_exp_server import terminal_snapshot as module
+from ml_exp_server.runs import terminal_snapshot as module
 from ml_exp_server.schemas import (
     CampaignRef,
     EvidenceLayer,
@@ -12,12 +12,7 @@ from ml_exp_server.schemas import (
     ResearchProject,
     RunIndexRow,
 )
-from ml_exp_server.terminal_snapshot import (
-    build_snapshot,
-    is_current_collector_error,
-    snapshot_from_payload,
-    snapshot_payload,
-)
+from ml_exp_server.runs.terminal_snapshot import build_snapshot, is_current_collector_error, snapshot_from_payload, snapshot_payload
 
 
 def row(run_id, campaign, state, *, stale=False):

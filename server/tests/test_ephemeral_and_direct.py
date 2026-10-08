@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from ml_exp_server.artifact_store import ArtifactStore
+from ml_exp_server.results.artifact_store import ArtifactStore
 from ml_exp_server.image_builder import ImageBuilder
 from tests.test_artifact_store import archive, storage
 from tests.test_container_api import client

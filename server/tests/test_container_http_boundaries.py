@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 import pytest
 
-from ml_exp_server.artifact_store import ArtifactStore
+from ml_exp_server.results.artifact_store import ArtifactStore
 from ml_exp_server.schemas import AttemptSummary, RunIndexRow
 from tests.test_artifact_store import archive, storage
 from tests.test_container_api import client

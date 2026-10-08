@@ -9,7 +9,7 @@ import yaml
 
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.container_execution import ContainerExecutionService
-from ml_exp_server.experiment_preparation import ExperimentPreparationRequest
+from ml_exp_server.runs.experiment_preparation import ExperimentPreparationRequest
 from tests.test_container_api import client, import_source, runtime
 from tests.test_sensecore_data_workflow import stored
 from tests.test_ccr_data_delivery import delivery, receipt, secret
@@ -162,7 +162,7 @@ def test_request_needs_exactly_one_runtime(runtime_spec, runtime_id):
 
 def test_server_prepares_cpu_nas_delivery_before_run_and_reuses_ready(delivery, service, monkeypatch):
     from types import SimpleNamespace
-    from ml_exp_server.data_delivery import DataDeliveryService
+    from ml_exp_server.data.data_delivery import DataDeliveryService
     client, data, value, asset = delivery
     copy_value = value
     events = []
@@ -209,7 +209,7 @@ def test_server_prepares_cpu_nas_delivery_before_run_and_reuses_ready(delivery, 
 
 
 def test_uncertain_data_delivery_keeps_exact_id_across_worker_changes(delivery, service, monkeypatch):
-    from ml_exp_server.data_delivery import DataDeliveryService
+    from ml_exp_server.data.data_delivery import DataDeliveryService
     client, data, value, asset = delivery
     data.update("demo", value["delivery_id"], status="RECONCILE_REQUIRED")
     body = spec(client, run={"run_id": "uncertain-data", "executor": "cloud", "inputs": [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]})
@@ -234,9 +234,9 @@ def test_object_data_is_delivered_by_worker_without_cpu_copy(client, stored, ser
 
 
 def test_resume_selection_reads_checkpoint_scope_and_rejects_missing_registry(client, service, stored, monkeypatch):
-    from ml_exp_server.checkpoint_registry import storage_scope, CheckpointRegistry
-    from ml_exp_server.executor_capabilities import ExecutionRequirements, ExecutorSelector
-    from ml_exp_server.experiment_preparation import PreparationRun
+    from ml_exp_server.results.checkpoint_registry import storage_scope, CheckpointRegistry
+    from ml_exp_server.runs.executor_capabilities import ExecutionRequirements, ExecutorSelector
+    from ml_exp_server.runs.experiment_preparation import PreparationRun
     profile = service.containers.profiles()["gpu"]
     scope = storage_scope(profile["backend"], profile["storage_root"] + "/demo")
     monkeypatch.setattr(CheckpointRegistry, "read", lambda *a: {"storage_scope": scope})
@@ -248,7 +248,7 @@ def test_resume_selection_reads_checkpoint_scope_and_rejects_missing_registry(cl
 
 
 def test_dependency_observation_waits_only_same_record_and_has_bound(monkeypatch):
-    from ml_exp_server import experiment_preparation as module
+    from ml_exp_server.runs import experiment_preparation as module
     calls = []
     monkeypatch.setattr(module.time, "sleep", lambda seconds: calls.append(seconds))
     values = iter([{"status": "EXECUTING"}, {"status": "READY"}])

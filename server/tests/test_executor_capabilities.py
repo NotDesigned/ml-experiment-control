@@ -6,10 +6,8 @@ import pytest
 
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.container_execution import ContainerExecutionService, RunRequest
-from ml_exp_server.experiment_preparation import PreparationRun
-from ml_exp_server.executor_capabilities import (
-    ExecutionRequirements, ExecutorSelector, declaration, match, mismatches, validate_worker,
-)
+from ml_exp_server.runs.experiment_preparation import PreparationRun
+from ml_exp_server.runs.executor_capabilities import ExecutionRequirements, ExecutorSelector, declaration, match, mismatches, validate_worker
 from tests.test_container_api import client, runtime
 
 
@@ -107,7 +105,7 @@ def test_matching_rejects_ambiguous_or_impossible_selection(client, run, selecto
 
 
 def test_resume_matching_requires_same_project_storage(client):
-    from ml_exp_server.checkpoint_registry import storage_scope
+    from ml_exp_server.results.checkpoint_registry import storage_scope
     service = ContainerExecutionService(client.app.state.runtime)
     profiles = service.profiles()
     scope = storage_scope(profiles["gpu"]["backend"], profiles["gpu"]["storage_root"] + "/demo")

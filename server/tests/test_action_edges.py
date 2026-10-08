@@ -8,9 +8,11 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ml_exp_server.actions import files as action_files, helpers as action_helpers
 
 from ml_exp_server.actions import project_writes, service as actions
-from ml_exp_server.actions.service import ActionError, ActionService
+from ml_exp_server.actions.errors import ActionError
+from ml_exp_server.actions.service import ActionService
 from ml_exp_server.actions.store import ActionStore
 from ml_exp_server.schemas import (
     ActionRuntimeConfig, OperationScope, OperationScopeType, CampaignRef, CampaignRevision,
@@ -348,12 +350,12 @@ def test_local_evidence_action_executes_only_approved_snapshot(tmp_path):
         "manifest": {"entry_module": "demo"},
     }
     input_digest = "sha256:" + "b" * 64
-    old_digest = actions._file_sha(collection)
+    old_digest = action_files.file_sha(collection)
     calls: list[list[str]] = []
     service.controller.snapshot_execution_bundle = lambda *a, **k: snapshot
     service.controller.verify_execution_bundle = lambda value: None
     rebuilt_bytes = b'{"rebuilt":true}\n'
-    expected_new_digest = actions._sha256(rebuilt_bytes)
+    expected_new_digest = action_helpers._sha256(rebuilt_bytes)
 
     def execute_snapshot(value, arguments, *, timeout):
         assert value == snapshot
@@ -362,7 +364,7 @@ def test_local_evidence_action_executes_only_approved_snapshot(tmp_path):
             new_digest = expected_new_digest
         else:
             collection.write_bytes(rebuilt_bytes)
-            new_digest = actions._file_sha(collection)
+            new_digest = action_files.file_sha(collection)
         record = {
             "project": "demo", "run_id": "run-a",
             "attempt_id": "attempt-001", "input_digest": input_digest,
@@ -396,7 +398,7 @@ def test_local_evidence_action_executes_only_approved_snapshot(tmp_path):
     executed = service.execute(action_id, f"EXECUTE {action_id}")
 
     assert executed["execution"]["status"] == "VERIFIED"
-    assert executed["execution"]["result"]["new_digest"] == actions._file_sha(collection)
+    assert executed["execution"]["result"]["new_digest"] == action_files.file_sha(collection)
     assert "--dry-run" not in calls[1]
     assert service.execute(action_id, f"EXECUTE {action_id}") == executed
 
@@ -414,7 +416,7 @@ def test_local_evidence_action_fails_closed_on_collection_cas(tmp_path):
         "manifest_path": str(tmp_path / "private" / "manifest.json"),
         "manifest": {},
     }
-    old_digest = actions._file_sha(collection)
+    old_digest = action_files.file_sha(collection)
     service.controller.snapshot_execution_bundle = lambda *a, **k: snapshot
     service.controller.verify_execution_bundle = lambda value: None
     service.controller.execute_snapshot = lambda *a, **k: {
@@ -519,10 +521,10 @@ def test_local_evidence_uncertain_execution_reconciles_read_only_without_rerun(
         "manifest_path": str(tmp_path / "private" / "manifest.json"),
         "manifest": {},
     }
-    old_digest = actions._file_sha(collection)
+    old_digest = action_files.file_sha(collection)
     input_digest = "sha256:" + "d" * 64
     rebuilt_payload = b'{"rebuilt":true}\n'
-    expected_new = actions._sha256(rebuilt_payload)
+    expected_new = action_helpers._sha256(rebuilt_payload)
     calls = 0
     service.controller.snapshot_execution_bundle = lambda *a, **k: snapshot
     service.controller.verify_execution_bundle = lambda value: None
@@ -613,7 +615,7 @@ def test_multi_write_detects_changed_target_and_marks_uncertain_effect(monkeypat
 
 
 def test_action_helper_and_prepare_error_branches(tmp_path):
-    assert actions._parse_mapping("```yaml\nwhen: 2026-07-13\n```") == {"when": "2026-07-13"}
+    assert action_helpers._parse_mapping("```yaml\nwhen: 2026-07-13\n```") == {"when": "2026-07-13"}
     assert ActionService._gpu_hours({"gpus": 2}, {"time": "1.5h"}) == 3.0
     assert ActionService._gpu_hours({"gpus": 2}, {"time": "bad"}) is None
     assert ActionService._gpu_hours({}, {}) is None

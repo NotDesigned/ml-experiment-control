@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from ml_exp_server import project_service as module
+from ml_exp_server.projects import project_service as module
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server.project_registry import ProjectRegistryError
-from ml_exp_server.project_service import ProjectApplicationService
+from ml_exp_server.projects.project_registry import ProjectRegistryError
+from ml_exp_server.projects.project_service import ProjectApplicationService
 from ml_exp_server.schemas import ProjectLifecycleState
 
 

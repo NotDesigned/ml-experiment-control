@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from ml_exp_server.image_builder import ImageBuilder, MANIFEST_TYPE
-from ml_exp_server.source_revisions import _tree_digest
-from ml_exp_server.source_imports import seal_tree
+from ml_exp_server.projects.source_revisions import _tree_digest
+from ml_exp_server.projects.source_imports import seal_tree
 from experiment_control.backends.wyd import WydSlurmBackend
 
 

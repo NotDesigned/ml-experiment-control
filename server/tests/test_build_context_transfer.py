@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server.build_contexts import BuildContexts
+from ml_exp_server.builds.build_contexts import BuildContexts
 from ml_exp_server.desktop_upload import DesktopUploads
 from ml_exp_server.image_builder import ImageBuilder, BUILD_REMOTE_CONTEXT
 from ml_exp_server import image_builder as module
@@ -184,7 +184,7 @@ def test_context_files_are_sealed_and_scoped(transport, monkeypatch, case):
         with pytest.raises(ValueError):store.path('../escape')
         return
     if case=='storage':
-        monkeypatch.setattr('ml_exp_server.build_contexts.shutil.disk_usage',lambda *a:SimpleNamespace(free=0))
+        monkeypatch.setattr('ml_exp_server.builds.build_contexts.shutil.disk_usage',lambda *a:SimpleNamespace(free=0))
         with pytest.raises(ValueError):store.call('context-create',{'context_id':identity,'bytes':3,'sha256':hashlib.sha256(b'abc').hexdigest()})
         return
     store.call('context-create',{'context_id':identity,'bytes':3,'sha256':hashlib.sha256(b'abc').hexdigest()})

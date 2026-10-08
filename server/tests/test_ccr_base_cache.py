@@ -19,11 +19,13 @@ import pytest
 from tests.test_blob_https_adapter import adapter
 
 
-def module(name):
+def module(name, *, free_bytes=8 * 1024 ** 3):
     path = Path(__file__).parents[1] / ('examples/ssh-builder/' + name + '.py')
     spec = importlib.util.spec_from_file_location(name, path)
     result = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(result)
+    if hasattr(result, "WRITER"):
+        result.WRITER = f"import os;from types import SimpleNamespace;os.statvfs=lambda path:SimpleNamespace(f_bavail={free_bytes},f_frsize=1)\n" + result.WRITER
     return result
 
 
@@ -68,9 +70,9 @@ def test_unavailable_cache_or_http_preconditions_use_original_tls(adapter, tmp_p
     assert requests == [('GET', path, headers)]
 
 
-@pytest.mark.parametrize('case', ['valid', 'wrong-hash', 'short', 'budget'])
+@pytest.mark.parametrize('case', ['valid', 'wrong-hash', 'short', 'budget', 'disk-full'])
 def test_writer_verifies_before_visibility_and_keeps_only_resumable_prefixes(tmp_path, case):
-    tool = module('prewarm_ccr')
+    tool = module('prewarm_ccr', free_bytes=1024 ** 3 if case == 'disk-full' else 8 * 1024 ** 3)
     data = b'model layer' * 100000
     digest = hashlib.sha256(data).hexdigest()
     expected = digest if case != 'wrong-hash' else 'a' * 64
@@ -86,6 +88,8 @@ def test_writer_verifies_before_visibility_and_keeps_only_resumable_prefixes(tmp
         assert (tmp_path / digest).stat().st_mode & 0o777 == 0o444
     else:
         assert child.returncode != 0 and not (tmp_path / expected).exists()
+        if case == 'disk-full':
+            assert b'insufficient desktop cache storage' in child.stderr
     if case == 'short':
         assert (tmp_path / ('.partial-' + expected)).read_bytes() == payload
     else:

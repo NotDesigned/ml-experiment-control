@@ -12,7 +12,7 @@ import yaml
 
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.container_execution import ContainerExecutionService, DockerfileRuntimeSpec
-from ml_exp_server.source_imports import SourceImportService, source_lock, unpack_source, seal_tree
+from ml_exp_server.projects.source_imports import SourceImportService, source_lock, unpack_source, seal_tree
 from tests.test_container_api import prepare_runtime, archive, client, import_source, runtime
 
 
@@ -97,7 +97,7 @@ def test_git_import_verifies_exact_commit_and_never_uses_host_credentials(client
         if "archive" in command:
             kwargs["stdout"].write(data)
         return SimpleNamespace(stdout=b"")
-    monkeypatch.setattr("ml_exp_server.source_imports.subprocess.run", git)
+    monkeypatch.setattr("ml_exp_server.projects.source_imports.subprocess.run", git)
     if failure == "budget":
         client.app.state.runtime.config.container_execution.max_archive_bytes = 10
     response = client.post("/api/source-imports/git", json={"project": "demo", "url": "https://github.com/example/project.git", "commit": commit})

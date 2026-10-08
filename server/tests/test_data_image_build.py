@@ -9,10 +9,10 @@ from types import SimpleNamespace
 import pytest
 from ml_exp_server.application_errors import ApplicationError
 
-from ml_exp_server import data_image_build as module
+from ml_exp_server.builds import data_image_build as module
 from ml_exp_server import image_builder as builder_module
 from ml_exp_server.image_builder import ImageBuilder, BuilderServer, Handler, UnixConnection, BUILD_REMOTE_CONTEXT, BUILD_CONTEXT_BYTES
-from ml_exp_server.remote_data_uploads import stage_request, remote_archive
+from ml_exp_server.data.remote_data_uploads import stage_request, remote_archive
 from ml_exp_server.storage import atomic_json
 
 BASE='registry.example/python@sha256:'+'a'*64

@@ -7,9 +7,7 @@ import pytest
 import yaml
 
 from ml_exp_server.application import ExperimentServerApplication
-from ml_exp_server.evidence_conflicts import (
-    _exact_binding, _family_id, classify_evidence_conflicts,
-)
+from ml_exp_server.runs.evidence_conflicts import _exact_binding, _family_id, classify_evidence_conflicts
 
 
 PROJECT = "elf"

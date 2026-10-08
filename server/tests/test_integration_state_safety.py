@@ -11,14 +11,15 @@ from fastapi.testclient import TestClient
 import pytest
 import yaml
 
-from ml_exp_server.actions.service import ActionService, _missing_frozen_match_fields
+from ml_exp_server.actions.service import ActionService
+from ml_exp_server.actions.helpers import _missing_frozen_match_fields
 from ml_exp_server.actions.store import ActionStore
 from ml_exp_server.api.app import _shutdown, create_app
 from ml_exp_server.application import ApplicationError, ExperimentServerApplication
 from ml_exp_server.container_execution import RunRequest
-from ml_exp_server.project_service import ProjectApplicationService
+from ml_exp_server.projects.project_service import ProjectApplicationService
 from ml_exp_server.schemas import ActionRuntimeConfig, ProjectLifecycleState
-from ml_exp_server.submissions import ExperimentSubmissionService, _prepared_matches_current_authored_state
+from ml_exp_server.runs.submissions import ExperimentSubmissionService, _prepared_matches_current_authored_state
 from ml_exp_server import storage as storage_module
 from tests.test_app_edges import config
 from tests.test_image_builder_boundary import builder

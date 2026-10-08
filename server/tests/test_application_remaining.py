@@ -10,14 +10,14 @@ import pytest
 import yaml
 
 from ml_exp_server import application as module
-from ml_exp_server.application import (
-    ApplicationError, ExperimentServerApplication,
-    attempt_failure_evidence_assessment, structured_failure_summary,
-)
+from ml_exp_server.application import ApplicationError, ExperimentServerApplication
+from ml_exp_server.runs.failures import attempt_failure_evidence_assessment, structured_failure_summary
 from ml_exp_server.schemas import (
     CampaignRef, CampaignRelationship, ControllerConfig, OperationScope, OperationScopeType,
     ProjectLifecycleState, ResearchProject,
 )
+from tests.domain_patches import patch_application_dependency
+import ml_exp_server.runs.run_operations as domain_runs_run_operations
 
 
 def app(**runtime_values):
@@ -62,7 +62,7 @@ def test_campaign_context_preserves_orphaned_membership():
 
 
 def test_operation_availability_fails_closed_on_unavailable_evidence(monkeypatch):
-    operation = module.OPERATIONS_BY_ID["run.submit"]
+    operation = domain_runs_run_operations.OPERATIONS_BY_ID["run.submit"]
     value = app()
     value.resolve_scope = lambda *_args: (scope(), SimpleNamespace(), object())
     value._publication_targets_available = lambda: ()
@@ -70,7 +70,7 @@ def test_operation_availability_fails_closed_on_unavailable_evidence(monkeypatch
     value._operation_blockers = lambda *_args: (_ for _ in ()).throw(
         ValueError("unavailable"),
     )
-    monkeypatch.setattr(module, "operations_for_scope", lambda _kind: (operation,))
+    patch_application_dependency(monkeypatch, "operations_for_scope", lambda _kind: (operation,))
     result = value.operation_availability("demo", OperationScopeType.RUN, "run-a")
     assert result[0].status == "BLOCKED"
     assert "unavailable" in result[0].reasons[0]
@@ -100,8 +100,7 @@ def test_operation_blocker_matrix(monkeypatch, tmp_path):
         SimpleNamespace(campaign_memberships=[], campaign=None),
     )
 
-    monkeypatch.setattr(
-        module, "campaign_snapshot", lambda *_args: {"lifecycle_state": "ARCHIVED"},
+    patch_application_dependency(monkeypatch, "campaign_snapshot", lambda *_args: {"lifecycle_state": "ARCHIVED"},
     )
     assert "already archived" in value._operation_blockers(
         "object.archive", scope(OperationScopeType.CAMPAIGN, "study"), project, object(),
@@ -139,12 +138,12 @@ def test_operation_blocker_matrix(monkeypatch, tmp_path):
     run = SimpleNamespace(run_dir=str(tmp_path), run_id="run-a")
     assert value._operation_blockers("run.evaluate", scope(), project, run)
     project.controller = SimpleNamespace(capabilities={})
-    monkeypatch.setattr(module, "preferred_attempt_id", lambda _path: None)
+    patch_application_dependency(monkeypatch, "preferred_attempt_id", lambda _path: None)
     assert any("evaluation_as_run" in reason for reason in value._operation_blockers(
         "run.evaluate", scope(), project, run,
     ))
     project.controller.capabilities["evaluation_as_run"] = True
-    monkeypatch.setattr(module, "preferred_attempt_id", lambda _path: "a1")
+    patch_application_dependency(monkeypatch, "preferred_attempt_id", lambda _path: "a1")
     value.attempt_checkpoints = lambda *_args: {
         "latest_completed_checkpoint": "checkpoint-1",
     }
@@ -265,7 +264,7 @@ def test_require_and_direct_operation_dispatch_edges(monkeypatch):
     )) == "INVALID_OPERATION"
 
     def availability(operation_id, parameters=()):
-        definition = module.OPERATIONS_BY_ID[operation_id]
+        definition = domain_runs_run_operations.OPERATIONS_BY_ID[operation_id]
         operation = SimpleNamespace(
             operation_id=operation_id,
             parameters=tuple(SimpleNamespace(key=key) for key in parameters),
@@ -328,7 +327,7 @@ def test_direct_local_evidence_dispatch_and_prepare(tmp_path):
     target_scope = scope(OperationScopeType.ATTEMPT, "run-a::a1")
     value.resolve_scope = lambda *_args: (target_scope, SimpleNamespace(), object())
     value._require_operation_available = lambda *_args: None
-    definition = module.OPERATIONS_BY_ID["evidence.rebuild_local"]
+    definition = domain_runs_run_operations.OPERATIONS_BY_ID["evidence.rebuild_local"]
     value.operation_availability = lambda *_args: [SimpleNamespace(operation=definition)]
     value.prepare_local_evidence_rebuild = lambda *_args, **kwargs: kwargs["reason"]
     assert value.invoke_direct_operation(
@@ -404,9 +403,9 @@ def test_run_attempts_and_failure_assessment_missing_current_attempt(monkeypatch
     row = SimpleNamespace(run_id="run-a", run_dir=str(tmp_path), attempts=attempts)
     value = app()
     value.resolve_scope = lambda *_args: (scope(), object(), row)
-    monkeypatch.setattr(module, "preferred_attempt_id", lambda _path: "a1")
+    patch_application_dependency(monkeypatch, "preferred_attempt_id", lambda _path: "a1")
     assert value.run_attempts("demo", "run-a")["attempts"][0]["current"] is True
-    monkeypatch.setattr(module, "preferred_attempt_id", lambda _path: "missing")
+    patch_application_dependency(monkeypatch, "preferred_attempt_id", lambda _path: "missing")
     assert value.run_failure_assessment(row)["failure_summary"] is None
 
 
@@ -454,9 +453,8 @@ def gates_by_id(value):
 def test_attempt_validation_complete_and_conflicting_paths(monkeypatch, tmp_path):
     _run_dir, attempt_dir, row, attempt = validation_context(tmp_path)
     value = app()
-    monkeypatch.setattr(module, "preferred_attempt_id", lambda _root: "a1")
-    monkeypatch.setattr(
-        module, "train_metric_records",
+    patch_application_dependency(monkeypatch, "preferred_attempt_id", lambda _root: "a1")
+    patch_application_dependency(monkeypatch, "train_metric_records",
         lambda *_args, **_kwargs: ([{"step": 1}], Path("metrics"), "a1"),
     )
     gates = gates_by_id(value._attempt_validation_gates(
@@ -485,9 +483,8 @@ def test_attempt_validation_complete_and_conflicting_paths(monkeypatch, tmp_path
         "process_state": "FAILED", "model_state": "OBSERVED",
         "artifacts": {"empty": {"records": 0}},
     })
-    monkeypatch.setattr(module, "preferred_attempt_id", lambda _root: "other")
-    monkeypatch.setattr(
-        module, "train_metric_records",
+    patch_application_dependency(monkeypatch, "preferred_attempt_id", lambda _root: "other")
+    patch_application_dependency(monkeypatch, "train_metric_records",
         lambda *_args, **_kwargs: ([{"step": 1}], Path("metrics"), "other"),
     )
     gates = gates_by_id(value._attempt_validation_gates(
@@ -501,7 +498,7 @@ def test_attempt_validation_complete_and_conflicting_paths(monkeypatch, tmp_path
     assert gates["attempt.model_evidence"]["status"] == "BLOCKED"
     assert gates["attempt.artifact_evidence"]["status"] == "UNKNOWN"
 
-    monkeypatch.setattr(module, "preferred_attempt_id", lambda _root: None)
+    patch_application_dependency(monkeypatch, "preferred_attempt_id", lambda _root: None)
     gates = gates_by_id(value._attempt_validation_gates(
         "demo", row, attempt, attempt_dir, require_current=True,
     ))
@@ -550,9 +547,8 @@ def test_terminal_aggregate_benchmark_accepts_seed_list_and_result_artifact(
         "artifacts": {"result": {"records": 1, "nonempty_records": 1}},
     })
     value = app()
-    monkeypatch.setattr(module, "preferred_attempt_id", lambda _root: "a1")
-    monkeypatch.setattr(
-        module, "train_metric_records",
+    patch_application_dependency(monkeypatch, "preferred_attempt_id", lambda _root: "a1")
+    patch_application_dependency(monkeypatch, "train_metric_records",
         lambda *_args, **_kwargs: ([], None, "a1"),
     )
 
@@ -609,9 +605,8 @@ def test_harness_attempt_validation_integrity_paths(
     })
     row = SimpleNamespace(run_id="run-a", run_dir=str(run_dir))
     attempt = SimpleNamespace(attempt_id="a1", backend_job_id=None, state="SUCCEEDED")
-    monkeypatch.setattr(module, "preferred_attempt_id", lambda _root: "a1")
-    monkeypatch.setattr(
-        module, "train_metric_records",
+    patch_application_dependency(monkeypatch, "preferred_attempt_id", lambda _root: "a1")
+    patch_application_dependency(monkeypatch, "train_metric_records",
         lambda *_args, **_kwargs: ([{"step": 1}], Path("metrics"), "a1"),
     )
     gates = gates_by_id(app()._attempt_validation_gates(

@@ -11,11 +11,11 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse, StreamingResponse
 
-from ..artifacts import ArtifactService
+from ..results.artifacts import ArtifactService
 from ..container_execution import ContainerExecutionService
-from ..data_assets import AssetStore
-from ..checkpoint_registry import CheckpointRegistry
-from ..persistent_state import MANIFEST_LIMIT
+from ..data.data_assets import AssetStore
+from ..results.checkpoint_registry import CheckpointRegistry
+from ..workers.persistent_state import MANIFEST_LIMIT
 from ..archive_limits import exceeds
 from .container_routes import invoke
 

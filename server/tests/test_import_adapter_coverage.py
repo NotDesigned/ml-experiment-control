@@ -11,14 +11,14 @@ from fastapi.testclient import TestClient
 from ml_exp_server.api.app import create_app
 from ml_exp_server.application import ExperimentServerApplication
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server.project_config import ConfigError, load_research_project
+from ml_exp_server.projects.project_config import ConfigError, load_research_project
 from ml_exp_server.schemas import (
     ActionRuntimeConfig,
     OperationScope,
     ProjectRef,
     ServerConfig,
 )
-from ml_exp_server.source_revisions import resolve_source_tree
+from ml_exp_server.projects.source_revisions import resolve_source_tree
 
 
 def test_minimal_embedded_application_reports_import_services_unavailable(tmp_path):

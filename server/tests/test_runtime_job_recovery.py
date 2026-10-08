@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from ml_exp_server.api.app import create_app
 from ml_exp_server.container_execution import ContainerExecutionService
-from ml_exp_server.runtime_jobs import recover_interrupted_builds
+from ml_exp_server.builds.runtime_jobs import recover_interrupted_builds
 from ml_exp_server.collectord import CollectorLease
 from tests.test_container_api import prepare_runtime, client, import_source, runtime, wait_runtime
 
