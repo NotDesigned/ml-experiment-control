@@ -111,7 +111,7 @@ def parser():
     fetch.add_argument("--run", required=True)
     fetch.add_argument("--attempt", required=True)
     fetch.add_argument("--out", type=Path, required=True, help="new destination directory")
-    fetch.add_argument("--keep-server-copy", action="store_true", help="retain server archive instead of releasing it after 24 hours")
+    fetch.add_argument("--keep-server-copy", action="store_true", help="retain server archive after verified download")
     ack = commands.add_parser("acknowledge", help="reverify saved results and retry download confirmation without redownloading")
     ack.add_argument("--directory", type=Path, required=True)
     retention = ack.add_mutually_exclusive_group()

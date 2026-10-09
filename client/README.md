@@ -31,7 +31,7 @@ PUT/completion use 1200 seconds. Only archive transfer retries transient failure
 Uncertain scheduling is reconciled without replay. Signed object downloads carry
 no API Authorization and are hash-checked into a new directory.
 On `artifact-retention.v1` servers, verified downloads acknowledge durable local
-files and release the server archive after 24 hours. Pass `--keep-server-copy`
+files and authorize release of the server archive without a waiting period. Pass `--keep-server-copy`
 (Python: `keep_server_copy=True`) to retain it. If acknowledgement is PENDING,
 run `ml-exp acknowledge --directory results` to recheck saved files and retry
 confirmation without redownloading. Old clients/servers do not authorize cleanup.

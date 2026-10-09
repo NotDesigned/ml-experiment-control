@@ -42,21 +42,45 @@ def due(store):
         atomic_json(path, value)
 
 
-def test_acknowledgement_is_idempotent_and_does_not_extend_grace(sealed):
+def test_verified_acknowledgement_is_immediately_eligible_and_idempotent(sealed):
     store, root, _, _, objects, proof, deletes = sealed
     lifecycle = ArtifactLifecycle(store)
     assert not (root/'attempts/attempt-001/uploaded_outputs').exists()
     assert lifecycle.run_due() == 0 and objects
     first = lifecycle.acknowledge(*IDENTITY, proof)
     assert first['status'] == 'SCHEDULED'
-    wait = datetime.fromisoformat(first['release_after']) - datetime.now(timezone.utc)
-    assert timedelta(hours=23, minutes=59) < wait <= timedelta(hours=24)
+    assert datetime.fromisoformat(first['release_after']) <= datetime.now(timezone.utc)
     assert lifecycle.acknowledge(*IDENTITY, proof) == first
-    assert lifecycle.run_due() == 0 and objects and not deletes
+    assert lifecycle.run_due() == 1 and not objects and len(deletes) == 1
+    assert lifecycle.run_due() == 0 and len(deletes) == 1
+
+
+def test_keep_cancels_pending_release_and_later_release_has_no_wait(sealed):
+    store, _, _, _, objects, proof, deletes = sealed
+    lifecycle = ArtifactLifecycle(store)
+    lifecycle.acknowledge(*IDENTITY, proof)
     kept = lifecycle.acknowledge(*IDENTITY, proof, release=False)
     assert kept['status'] == 'KEEP' and kept['release_after'] is None
-    assert lifecycle.run_due() == 0
-    assert lifecycle.acknowledge(*IDENTITY, proof)['status'] == 'SCHEDULED'
+    assert lifecycle.run_due() == 0 and objects and not deletes
+    released = lifecycle.acknowledge(*IDENTITY, proof)
+    assert released['status'] == 'SCHEDULED'
+    assert datetime.fromisoformat(released['release_after']) <= datetime.now(timezone.utc)
+    assert lifecycle.run_due() == 1 and not objects and len(deletes) == 1
+
+
+@pytest.mark.parametrize('repeat_ack', [False, True])
+def test_legacy_future_deadline_no_longer_delays_verified_release(sealed, repeat_ack):
+    store, _, _, _, objects, proof, deletes = sealed
+    lifecycle = ArtifactLifecycle(store)
+    lifecycle.acknowledge(*IDENTITY, proof)
+    with store.record(*IDENTITY) as (path, value):
+        value['retention']['release_after'] = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+        atomic_json(path, value)
+    if repeat_ack:
+        updated = lifecycle.acknowledge(*IDENTITY, proof)
+        assert datetime.fromisoformat(updated['release_after']) <= datetime.now(timezone.utc)
+        assert lifecycle.acknowledge(*IDENTITY, proof) == updated
+    assert lifecycle.run_due() == 1 and not objects and len(deletes) == 1
 
 
 @pytest.mark.parametrize('change', ['sha', 'size', 'missing', 'extra', 'file-sha', 'file-bytes'])
@@ -151,7 +175,7 @@ def test_release_binding_cannot_delete_another_object(sealed, change):
     assert objects and not deletes
 
 
-def test_api_ack_requires_main_bearer_and_reports_released_metadata(sealed,tmp_path):
+def test_api_ack_requires_main_bearer_and_reports_released_metadata(sealed,tmp_path,monkeypatch):
     store, root, worker_token, config, objects, proof, deletes = sealed
     settings=json.loads(config.read_text());settings['public_endpoint']='https://objects.example';config.write_text(json.dumps(settings))
     bearer=tmp_path/'bearer';bearer.write_text('a'*40);bearer.chmod(0o600)
@@ -166,6 +190,10 @@ def test_api_ack_requires_main_bearer_and_reports_released_metadata(sealed,tmp_p
         endpoint='/api/runs/demo/run-a/attempts/attempt-001/artifacts/ack'
         assert client.post(endpoint,json=proof,headers={'Authorization':'Bearer '+worker_token}).status_code == 401
         headers={'Authorization':'Bearer '+'a'*40}
+        monkeypatch.setattr(ArtifactStore, 'download', lambda *args, **kwargs: {})
+        ticket = client.get(endpoint.removesuffix('/ack') + '/download', headers=headers)
+        assert ticket.status_code == 200
+        assert ticket.json()['acknowledgement'] == {'contract':'artifact-retention.v1', 'grace_seconds':0}
         assert client.post(endpoint.replace('001','002'),json=proof,headers=headers).status_code == 404
         assert client.post(endpoint,json={**proof,'archive_bytes':True},headers=headers).status_code == 422
         assert client.post(endpoint,json={**proof,'archive_sha256':'b'*64},headers=headers).status_code == 409
