@@ -1,15 +1,13 @@
 """Release downloaded archives, preserving their immutable scientific receipts."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..application_errors import ApplicationError
 from .artifact_store import ArtifactStore, stream_digest
 from ..projects.source_imports import remove_staging
 from ..storage import atomic_json
-
-GRACE_SECONDS = 24 * 3600
 
 
 class ArtifactLifecycle:
@@ -37,7 +35,7 @@ class ArtifactLifecycle:
                 return retention
             now = datetime.now(timezone.utc)
             acknowledgement = value.get("download_acknowledgement", {**proof, "verified_at": now.isoformat()})
-            due = retention.get("release_after") if retention.get("status") == "SCHEDULED" else (now + timedelta(seconds=GRACE_SECONDS)).isoformat()
+            due = min(now, datetime.fromisoformat(retention["release_after"])).isoformat() if retention.get("status") == "SCHEDULED" else now.isoformat()
             retention = {"status": "SCHEDULED" if release else "KEEP", "sha256": receipt["sha256"],
                          "release_after": due if release else None}
             value.update(download_acknowledgement=acknowledgement, retention=retention)
@@ -70,8 +68,6 @@ class ArtifactLifecycle:
             with self.store.record(*identity) as (path, value):
                 retention = value.get("retention", {})
                 if retention.get("status") not in {"SCHEDULED", "RELEASING"}:
-                    continue
-                if datetime.fromisoformat(retention["release_after"]) > datetime.now(timezone.utc):
                     continue
                 receipt = value["receipt"]
                 canonical = "/".join([*identity, receipt["sha256"] + ".tar"])

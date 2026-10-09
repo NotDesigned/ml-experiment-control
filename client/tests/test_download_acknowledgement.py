@@ -17,7 +17,7 @@ class API:
         self.ticket={'transport':'s3-presigned-get','url':'https://objects.example/x?private-signature',
                      'sha256':hashlib.sha256(self.body).hexdigest(),'bytes':len(self.body),
                      'files':[{'path':name,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()} for name,data in self.files.items()],
-                     'acknowledgement':{'contract':'artifact-retention.v1','grace_seconds':86400}}
+                     'acknowledgement':{'contract':'artifact-retention.v1','grace_seconds':0}}
         self.calls=[];self.downloads=0;self.fail_ack=False;self.out=None
     def call(self,path,**kwargs):
         self.calls.append((path,kwargs))
@@ -29,7 +29,7 @@ class API:
         proof=kwargs['data']
         assert proof['archive_sha256']==self.ticket['sha256'] and proof['archive_bytes']==len(self.body)
         assert len(proof['files'])==2
-        return {'status':'SCHEDULED' if proof['release'] else 'KEEP','release_after':'tomorrow' if proof['release'] else None}
+        return {'status':'SCHEDULED' if proof['release'] else 'KEEP','release_after':'now' if proof['release'] else None}
     def open_object(self,url):self.downloads+=1;return io.BytesIO(self.body)
 
 

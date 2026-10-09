@@ -140,13 +140,17 @@ capacity failure are separate problems; check the reported phase before retrying
 On `artifact-retention.v1` servers, a successful `ml-exp download` verifies the
 whole archive and every output file, saves and syncs the local files and
 `verification.json`, then acknowledges the exact Run/Attempt and archive SHA256.
-The server schedules deletion of that archive **24 hours after confirmation**.
+The server schedules deletion of that archive **as soon as confirmation is accepted**.
+The background collector performs deletion on its next cycle; there is no 24-hour
+waiting period. Existing acknowledgements that allow release are also eligible
+without waiting for their old deadline. Physical disk space is reclaimed by the
+object store in the background and may become available later.
 A download link, partial transfer or checksum failure never authorizes deletion.
 Repeated confirmations do not extend the deadline. Older clients send no
 confirmation, so their archives remain retained.
 
 ```bash
-# Default: verified local copy, then release server archive after 24 hours.
+# Default: verified local copy, then authorize immediate server archive release.
 ml-exp download --project PROJECT --run RUN --attempt attempt-001 --out results
 # Keep the server archive instead; also supported by experiment --download-to.
 ml-exp download --project PROJECT --run RUN --attempt attempt-001 --out results --keep-server-copy

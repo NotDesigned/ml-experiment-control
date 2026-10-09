@@ -147,7 +147,7 @@ class ArtifactStore:
             receipt = value['receipt']
             require_artifact_available(value)
         ticket = self.download(receipt['object_key'], receipt['sha256'], receipt['bytes'], files=receipt['files'])
-        ticket['acknowledgement'] = {'contract': 'artifact-retention.v1', 'grace_seconds': 86400}
+        ticket['acknowledgement'] = {'contract': 'artifact-retention.v1', 'grace_seconds': 0}
         return ticket
 
     def restore_cache(self, project, run, attempt):
