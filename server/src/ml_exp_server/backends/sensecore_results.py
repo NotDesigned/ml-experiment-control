@@ -64,11 +64,18 @@ class SenseCoreResultOperations:
         result = self.collect_result_job_diagnostics(rest, profile, name, secrets, result)
         if isinstance(cached, dict) and cached.get("scheduler_name") == name and result.get("job_uid"):
             evidence = exit_event_evidence(cached.get("events", []), result["job_uid"], secrets)
+            if cached.get("job_uid") == result["job_uid"]:
+                evidence += cached.get("exit_evidence", [])
+                result["exit_code_conflict"] |= cached.get("exit_code_conflict", False)
+                if result["logs"]["status"] != "AVAILABLE" and cached["logs"]["status"] == "AVAILABLE":
+                    result["logs"] = cached["logs"]
+                    result["logs_observed_at"] = cached.get("logs_observed_at", cached.get("observed_at"))
             codes = {item["exit_code"] for item in evidence + result.get("exit_evidence", [])}
             if result["job_exit_code"] is not None:
                 codes.add(result["job_exit_code"])
             if evidence:
-                result["exit_evidence"] = evidence + result.get("exit_evidence", [])
+                result["exit_evidence"] = list({json.dumps(item, sort_keys=True): item
+                                               for item in evidence + result.get("exit_evidence", [])}.values())
                 result["job_exit_code"] = next(iter(codes)) if len(codes) == 1 and not result["exit_code_conflict"] else None
                 result["exit_code_conflict"] |= len(codes) > 1
         return result

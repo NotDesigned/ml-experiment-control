@@ -153,7 +153,9 @@ def test_archive_repair_rejects_changes_and_unproven_cache_deletion(storage, tmp
         store.restore_cache(*IDENTITY); cache = root/'attempts/attempt-001/uploaded_outputs'
         cache.chmod(0o700)
         if case == 'cache-link': (cache/'extra').symlink_to(tmp_path)
-        if case == 'cache-changed': (cache/'a').write_bytes(b'changed')
+        if case == 'cache-changed':
+            (cache/'a').chmod(0o600)
+            (cache/'a').write_bytes(b'changed')
         if case == 'cache-root-link':
             cache.rename(root/'cache-retained'); cache.symlink_to(root/'cache-retained')
     data = archive(files)
@@ -209,6 +211,13 @@ def test_cpu_exit_event_saved_before_upgrade_survives_provider_event_expiry(reco
     monkeypatch.setattr('ml_exp_server.backends.sensecore_results.SenseCoreREST.from_environment', lambda: rest)
     value = service.result_job_diagnostics(IDENTITY, refresh=True)
     assert (value['job_exit_code'], value['exit_code_conflict']) == (expected, conflict)
+    value['logs'] = {'status': 'AVAILABLE', 'lines': ['retained diagnostic']}
+    service.update(IDENTITY, cpu_diagnostics=value)
+    value = service.result_job_diagnostics(IDENTITY, refresh=True)
+    assert (value['job_exit_code'], value['exit_code_conflict']) == (expected, conflict)
+    assert value['logs']['lines'] == ['retained diagnostic']
+    rest.logs.return_value = {'text': 'fresh log', 'available': True}
+    assert service.result_job_diagnostics(IDENTITY, refresh=True)['logs']['lines'] == ['fresh log']
     service.update(IDENTITY, cpu_diagnostics={'scheduler_name': name, 'events': []})
     assert not service.result_job_diagnostics(IDENTITY, refresh=True)['exit_evidence']
 
