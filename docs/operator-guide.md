@@ -161,8 +161,9 @@ unimplemented recovery capabilities are in [recovery](recovery.md).
 
 Every collector cycle prunes expired unfinished multipart sessions and performs
 verified-client-ACK archive releases before backend polling. The unfinished
-upload TTL is unchanged; unexpired resumable parts are retained. A download GET
-is not an ACK. Scientific receipts, registered metrics, datasets and backend
+upload TTL is unchanged; unexpired resumable parts are retained. Maintenance
+failures appear as `storage_maintenance_error` in `GET /api/health`, while
+scheduler polling continues. A download GET is not an ACK. Scientific receipts, registered metrics, datasets and backend
 checkpoints survive archive release. Garage physical block reclamation is
 asynchronous.
 

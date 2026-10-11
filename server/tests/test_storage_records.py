@@ -194,3 +194,25 @@ def test_archive_import_batches_long_histories(tmp_path):
     (tree/'metrics.jsonl').write_text(''.join(json.dumps({'name': 'loss', 'unit': 'nats/token', 'value': 1, 'step': n})+'\n' for n in range(65)))
     assert import_metrics(tmp_path, *IDENTITY, tree, {})['records'] == 65
     assert len(RecordStore(tmp_path).metric_records(*IDENTITY)) == 65
+
+
+def test_legacy_stream_opt_out_remains_frozen(client, stored):
+    from tests.test_tracking import create_trial
+    from ml_exp_server.results.artifact_store import ArtifactStore
+    _, _, controller = create_trial(client, options={'enabled': False})
+    # A historical frozen definition did not contain independent records settings.
+    controller.run.pop('records')
+    controller.run['tracking']['record_stream'] = False
+    before = (controller.attempt/'attempt.yaml').read_bytes()
+    controller.dispatch_command({'command': controller.command('attempt-001'), 'attempt_id': 'attempt-001'})
+    objects = ArtifactStore(stored[0], client.app.state.runtime.config.project_registry_root_path())
+    with objects.record('demo', 'trial', 'attempt-001') as (_, value):
+        assert not value.get('record_stream')
+        assert 'ML_EXPD_RECORD_URL' not in value['launch_manifest']['environment']
+    assert (controller.attempt/'attempt.yaml').read_bytes() == before
+
+
+def test_storage_maintenance_diagnostic_is_visible_without_marking_collector_failed(client):
+    client.app.state.index.set_meta('storage_maintenance_last_error', 'OSError')
+    health = client.get('/api/health').json()
+    assert health['storage_maintenance_error'] == 'OSError' and health['collector_error'] is None
