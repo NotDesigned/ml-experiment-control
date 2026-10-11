@@ -100,7 +100,11 @@ def evict_caches(value):
         for item in value['receipt']['files']:
             if not item.get('sha256'):
                 continue
-            parts = safe_parts(item['path'])
+            try:
+                parts = safe_parts(item['path'])
+            except ValueError:
+                # Preserve hidden/unsupported paths without blocking other releases.
+                continue
             path = cache.joinpath(*parts)
             key = path.relative_to(attempt).as_posix()
             size = evict_file(path, item, report['retained'], key)
