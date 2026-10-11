@@ -4,9 +4,11 @@ from __future__ import annotations
 import base64
 from contextlib import contextmanager
 import fcntl
+import fnmatch
 import gzip
 import hashlib
 import json
+import shutil
 import re
 from pathlib import Path, PurePosixPath
 import shlex
@@ -144,6 +146,46 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
         return {"project": project, "run_id": run, "attempt_id": attempt,
                 "publication": self.publication_diagnostics(identity), "cpu": cpu}
 
+    def training_diagnostics(self, project, run, attempt, *, refresh=False):
+        """Persist exact original-job evidence independently of provider retention."""
+        identity = (project, run, attempt)
+        root, definition, transfer, _ = self.evidence(*identity)
+        backend = definition["backend"]
+        name = json.loads((root / "attempts" / attempt / "backend.json").read_text())["backend_job_id"]
+        result = {"scheduler_name": name, "job_state": None, "job_exit_code": None,
+                  "exit_code_conflict": False, "events": [], "errors": [],
+                  "logs": {"status": "PENDING", "source": None, "historical": None,
+                           "truncated": False, "lines": [], "unavailable_reason": None}}
+        if backend["kind"] != "sensecore":
+            result["logs"]["status"] = "NOT_APPLICABLE"
+            return result
+        cached = transfer.get("training_diagnostics")
+        cached = cached if isinstance(cached, dict) and cached.get("scheduler_name") == name else None
+        if not refresh:
+            return cached or result
+        try:
+            rest = SenseCoreREST.from_environment()
+        except RESTError:
+            result["logs"].update(status="UNAVAILABLE", unavailable_reason="PROVIDER_CONFIGURATION_UNAVAILABLE")
+            return result
+        secrets = [transfer["token"], rest.config.get("access_key_id"), rest.config.get("access_key_secret")]
+        result = self.collect_result_job_diagnostics(rest, backend, name, secrets, result)
+        from ..storage import atomic_json
+        with self.objects.record(*identity) as (path, current):
+            cached = current.get("training_diagnostics")
+            # Read the latest observation under the lock: a concurrent refresh
+            # or provider log expiry must not erase captured evidence.
+            if isinstance(cached, dict) and cached.get("scheduler_name") == name and result.get("job_uid", cached.get("job_uid")) == cached.get("job_uid"):
+                if result["logs"]["status"] != "AVAILABLE" and cached["logs"]["status"] == "AVAILABLE":
+                    result["logs"] = cached["logs"]
+                    result["logs_observed_at"] = cached.get("logs_observed_at", cached.get("observed_at"))
+                if result["job_exit_code"] is None and not result["exit_code_conflict"]:
+                    for key in ("job_exit_code", "exit_evidence", "exit_code_conflict"):
+                        result[key] = cached.get(key, result.get(key))
+            current["training_diagnostics"] = result
+            atomic_json(path, current)
+        return result
+
     def begin(self, project, run, attempt, *, retry=False, reconcile=False):
         ContainerExecutionService(self.runtime).require_enabled()
         identity = (project, run, attempt)
@@ -172,6 +214,34 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
                          "reconcile": False, "created_at": utc_now(), "updated_at": utc_now()}
             store.commit(value, event={"type": "RESULT_COLLECTION_REQUESTED"}, expected_revision=snapshot.revision)
         return self.read(*identity), identity
+
+    def repair(self, project, run, attempt, expected_sha256):
+        """Add missing files to an unacknowledged archive, retaining its old receipt/object."""
+        ContainerExecutionService(self.runtime).require_enabled()
+        identity = (project, run, attempt)
+        root, definition, transfer, observed = self.evidence(*identity)
+        if observed.state not in TERMINAL:
+            raise ApplicationError("archive repair requires a terminal Attempt", code="ATTEMPT_NOT_TERMINAL")
+        receipt = transfer.get("receipt")
+        if receipt and receipt["sha256"] != expected_sha256 and any(
+                v["sha256"] == expected_sha256 for v in transfer.get("receipt_history", [])):
+            return self.read(*identity)
+        if not receipt or receipt["sha256"] != expected_sha256 or transfer.get("retention"):
+            raise ApplicationError("archive repair requires the exact unacknowledged receipt", code="ARCHIVE_REPAIR_BLOCKED")
+        job = json.loads((root / "attempts" / attempt / "backend.json").read_text())["backend_job_id"]
+        backend = definition["backend"]
+        if backend["kind"] == "slurm":
+            self.verify_wyd_terminal(backend, job)
+        elif backend["kind"] != "sensecore" or SenseCoreREST.from_environment().describe(backend, job)["state"] not in TERMINAL:
+            raise ApplicationError("provider job is not confirmed terminal", code="ORIGINAL_JOB_NOT_TERMINAL")
+        local = self.local_outputs(root, attempt)
+        if local is None:
+            raise ApplicationError("archive repair needs collected outputs", code="RESULT_FILES_NOT_FOUND")
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with (self.root / "worker.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.publish_local(identity, local, transfer, repair_sha256=expected_sha256)
+        return self.read(*identity)
 
     @staticmethod
     def read_unlocked(identity, value):
@@ -246,6 +316,10 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
                 value = snapshot.value
             backend = definition["backend"]
             local = self.local_outputs(root, identity[2])
+            if backend["kind"] == "slurm" and local == root / "attempts" / identity[2] / "collected_run" / "attempts" / identity[2] / "outputs":
+                # Generic mirrors may contain filtered or partially copied files.
+                # A recovery needs a completed copy of the actual output directory.
+                local = None
             if backend["kind"] == "sensecore":
                 rest = SenseCoreREST.from_environment()
                 job = json.loads((root / "attempts" / identity[2] / "backend.json").read_text())["backend_job_id"]
@@ -313,9 +387,18 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
             raise RecoveryError("ARCHIVE_IDENTITY_CONFLICT", "multiple conflicting unfinished result archives")
         return found[0] if found else None
 
-    def publish_local(self, identity, outputs, transfer):
+    def publish_local(self, identity, outputs, transfer, *, repair_sha256=None):
         from ..workers.result_worker import checked_directory
         checked_directory(outputs)
+        if repair_sha256 is not None:
+            selected_bytes = sum(path.stat().st_size for path in outputs.rglob('*')
+                                 if not path.is_symlink() and path.is_file()
+                                 and not any(part.startswith('.') for part in path.relative_to(outputs).parts)
+                                 and any(fnmatch.fnmatch(path.relative_to(outputs).as_posix(), pattern) or
+                                         pattern.startswith('**/') and fnmatch.fnmatch(path.relative_to(outputs).as_posix(), pattern[3:])
+                                         for pattern in transfer['outputs']))
+            if shutil.disk_usage(outputs).free < 3 * selected_bytes + 64 * 1024 ** 2:
+                raise ApplicationError("insufficient archive repair staging space", status_code=507, code="UPLOAD_STORAGE")
         with tempfile.TemporaryFile() as stream:
             count = archive_outputs(outputs, stream, self.objects.limit or 0, transfer["outputs"])
             if not count:
@@ -326,4 +409,6 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
             if expected is not None and (sha(stream), length) != (expected["sha256"], expected["bytes"]):
                 raise RecoveryError("OUTPUT_ARCHIVE_CHANGED", "local outputs differ from unfinished upload")
             stream.seek(0)
-            self.objects.receive(*identity, transfer["token"], stream, length)
+            if repair_sha256 is not None and shutil.disk_usage(outputs).free < 2 * length + 64 * 1024 ** 2:
+                raise ApplicationError("insufficient archive repair staging space", status_code=507, code="UPLOAD_STORAGE")
+            self.objects.receive(*identity, transfer["token"], stream, length, repair_sha256=repair_sha256)

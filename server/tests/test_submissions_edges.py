@@ -41,8 +41,8 @@ def test_reusable_submission_state_matrix(view, expected):
 
 
 @pytest.mark.parametrize(("status", "next_action"), [
-    ("PREPARED", "AUTHORIZE"),
-    ("AUTHORIZED", "EXECUTE"),
+    ("PREPARED", "REPREPARE"),
+    ("AUTHORIZED", "REPREPARE"),
     ("EXECUTING", "RECONCILE"),
     ("RECONCILE_REQUIRED", "RECONCILE"),
     ("BLOCKED", "REPREPARE"),

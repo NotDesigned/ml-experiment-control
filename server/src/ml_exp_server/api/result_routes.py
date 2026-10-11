@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from ..results.result_collection import ResultCollectionService
 from .container_routes import invoke
 from .asset_routes import token
@@ -18,6 +18,11 @@ class CollectionRequest(BaseModel):
     reconcile: bool = False
 
 
+class ArchiveRepairRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 @router.get("/runs/{project}/{run}/attempts/{attempt}/collection")
 async def status(project: str, run: str, attempt: str, request: Request):
     return await invoke(ResultCollectionService(request.app.state.runtime).read, project, run, attempt)
@@ -27,6 +32,18 @@ async def status(project: str, run: str, attempt: str, request: Request):
 async def diagnostics(project: str, run: str, attempt: str, request: Request, refresh: bool = False):
     return await invoke(ResultCollectionService(request.app.state.runtime).diagnostics,
                         project, run, attempt, refresh=refresh)
+
+
+@router.get("/runs/{project}/{run}/attempts/{attempt}/diagnostics")
+async def training_diagnostics(project: str, run: str, attempt: str, request: Request, refresh: bool = False):
+    return await invoke(ResultCollectionService(request.app.state.runtime).training_diagnostics,
+                        project, run, attempt, refresh=refresh)
+
+
+@router.post("/runs/{project}/{run}/attempts/{attempt}/collection/repair")
+async def repair(project: str, run: str, attempt: str, data: ArchiveRepairRequest, request: Request):
+    return await invoke(ResultCollectionService(request.app.state.runtime).repair,
+                        project, run, attempt, data.expected_sha256)
 
 
 @router.post("/runs/{project}/{run}/attempts/{attempt}/collection")

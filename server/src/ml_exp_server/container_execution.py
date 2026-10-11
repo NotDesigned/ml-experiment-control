@@ -133,6 +133,7 @@ class RunRequest(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     resources: Resources = Field(default_factory=Resources)
     outputs: list[str] = Field(default_factory=lambda: ["**/*"], max_length=64)
+    required_outputs: list[str] = Field(default_factory=list, max_length=64)
     checkpoint: dict = Field(default_factory=lambda: {"expected_first_minutes": 5, "max_uncheckpointed_minutes": 10})
     max_infra_retries: int = Field(default=1, ge=0, le=10)
     inputs: list[InputAsset] = Field(default_factory=list, max_length=32)
@@ -172,7 +173,7 @@ class RunRequest(BaseModel):
                 raise ValueError("environment contains a reserved or credential-bearing field")
         return value
 
-    @field_validator("outputs")
+    @field_validator("outputs", "required_outputs")
     @classmethod
     def output_paths(cls, value):
         for item in value:
@@ -468,7 +469,7 @@ class ContainerExecutionService:
             backend.update(image=reference + ":bundle-" + bundle["bundle_id"],
                            job_name=scheduler_name, display_name=request.run_id)
         campaign_name = "run-" + request.run_id
-        outputs = list(request.outputs)
+        outputs = list(dict.fromkeys([*request.outputs, *request.required_outputs]))
         if preparation is not None and "data-preparation.json" not in outputs:
             outputs.append("data-preparation.json")
         if persistence is not None and "checkpoints.json" not in outputs:
@@ -486,6 +487,8 @@ class ContainerExecutionService:
                "arguments": request.arguments, "env": request.env, "outputs": outputs,
                "checkpoint": request.checkpoint, "max_infra_retries": request.max_infra_retries,
                "artifact_ssh": profile.get("artifact_ssh")}
+        if request.required_outputs:
+            run["required_outputs"] = request.required_outputs
         if "worker_contract" in bundle:
             run["container"]["worker_contract"] = bundle["worker_contract"]
         if "launcher-manifest.v1" in bundle.get("capabilities", []):
