@@ -526,11 +526,14 @@ class ContainerExecutionService:
         with source_lock(self.root, project):
             existing = yaml.safe_load(path.read_text()) if path.exists() else None
             if existing is None:
+                run["records"] = {"enabled": "experiment-records.v1" in bundle.get("capabilities", [])}
                 run["tracking"] = dict(tracking or store_for(self.runtime).route(request.wandb, project))
                 run["tracking"]["record_stream"] = "experiment-records.v1" in bundle.get("capabilities", [])
                 run["wandb_request"] = request.wandb.model_dump() if request.wandb is not None else None
             else:
                 previous_run = existing["runs"][0]
+                if "records" in previous_run:
+                    run["records"] = previous_run["records"]
                 if previous_run.get("wandb_request") != (request.wandb.model_dump() if request.wandb is not None else None):
                     raise ApplicationError("W&B options for this Run are already frozen", code="CONTAINER_EXECUTION_BLOCKED")
                 if "tracking" in previous_run:

@@ -156,13 +156,14 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
                   "exit_code_conflict": False, "events": [], "errors": [],
                   "logs": {"status": "PENDING", "source": None, "historical": None,
                            "truncated": False, "lines": [], "unavailable_reason": None}}
+        result['bootstrap'] = transfer.get('launch_diagnostics', [])
         if backend["kind"] != "sensecore":
             result["logs"]["status"] = "NOT_APPLICABLE"
             return result
         cached = transfer.get("training_diagnostics")
         cached = cached if isinstance(cached, dict) and cached.get("scheduler_name") == name else None
         if not refresh:
-            return cached or result
+            return {**(cached or result), 'bootstrap': result['bootstrap']}
         try:
             rest = SenseCoreREST.from_environment()
         except RESTError:

@@ -43,8 +43,10 @@ such as `D_FT=0` is an authored claim; the platform does not prove it scientific
 
 ## Record and query
 
-Write newline-terminated records to `OUTPUT_DIR/metrics.jsonl`. New opted-in
-[W&B workers](wandb.md) deliver this file live to the server before result upload.
+Write newline-terminated records to `OUTPUT_DIR/metrics.jsonl`. New managed workers deliver this file live to the platform independently of
+[optional W&B publication](wandb.md). Disabling W&B or omitting its key does not
+disable the platform journal. Existing frozen Runs retain their original stream
+setting.
 Named JSON records on stdout remain a sampled compatibility observation path:
 
 ```json
@@ -86,7 +88,9 @@ after the run, but this is not real-time history delivery.
 Query `/api/runs/P/R/metrics` or exact Attempt
 `/api/attempts/P/R::attempt-001/metrics`. Responses retain records, context,
 status/errors, completeness and source. `max_points` bounds/downsamples the
-response; download full JSONL for complete analysis. Uploaded exact-Attempt
+response; `validation` always examines complete history, including points omitted
+from the plot. It reports invalid/conflicting records and incomplete contexts.
+Download full JSONL for complete analysis. Uploaded exact-Attempt
 records take priority over sampled collector observations. Old wide numeric
 records can inherit frozen schema units; otherwise they remain UNDECLARED.
 
@@ -115,3 +119,19 @@ Parquet/JSONL artifacts for regrouping/bootstrap. Evaluation is an ordinary Run
 with a checkpoint input and scoring protocol. Keep selection validation and
 independent benchmark results under distinct dataset/protocol identities.
 The platform does not choose the best model from arbitrary names containing `loss`.
+
+## Persistence and result release
+
+The historical `projects/tracking/outbox.sqlite` path holds the canonical
+experiment journal as well as separate W&B confirmation cursors. Confirmed
+records are scientific evidence, not disposable queued messages. Do not truncate
+this database when cleaning published archives.
+
+Before accepting a newly uploaded result archive, the server imports its root
+`metrics.jsonl` and `train_metrics.jsonl` with the frozen schema and protocol.
+Identical live/archive observations deduplicate; missing final points are added.
+Invalid lines leave bounded diagnostics. A journal write failure prevents result
+publication, preserving the upload for retry. The receipt records
+`metrics_ingestion`; archive release does not remove journal rows. Older published
+receipts are not retroactively declared imported and previously lost history
+cannot be reconstructed without retained source evidence.

@@ -133,6 +133,7 @@ def health(request: Request) -> DaemonHealth:
             or request.app.state.index.get_meta("collector_last_error")
             or None
         ),
+        storage_maintenance_error=request.app.state.index.get_meta("storage_maintenance_last_error") or None,
         project_write_recovery_errors=(
             request.app.state.project_write_recovery_errors
         ),

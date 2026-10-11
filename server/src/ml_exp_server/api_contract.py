@@ -81,6 +81,7 @@ class DaemonHealth(BaseModel):
     collector_enabled: bool
     collector_requested: bool
     collector_error: str | None = None
+    storage_maintenance_error: str | None = None
     project_write_recovery_errors: list[str] = Field(default_factory=list)
     project_writes: bool
     source_imports: bool

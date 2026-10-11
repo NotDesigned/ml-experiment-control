@@ -114,13 +114,30 @@ def fetch(url, token):
         connection.close()
 
 
-def execute(document, token, *, worker="/usr/local/lib/ml-expd/worker.py"):
+def report(url, token, data):
+    """Best-effort bounded diagnostic delivery, independent of writable NAS."""
+    try:
+        target, _ = endpoint(url)
+        connection = https_connection(target, timeout=2)
+        try:
+            connection.request("PUT", target.path, body=json.dumps(data).encode(),
+                               headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+            connection.getresponse()
+        finally:
+            connection.close()
+    except (ValueError, OSError, http.client.HTTPException):
+        pass
+
+
+def execute(document, token, *, worker="/usr/local/lib/ml-expd/worker.py", progress=lambda phase: None):
     encode(document)
     environment = dict(os.environ)
     environment.pop("ML_EXPD_BOOTSTRAP_TOKEN", None)
     environment.update(document["environment"])
     environment["ML_EXPD_UPLOAD_TOKEN"] = token
+    progress("CREATE_OUTPUT")
     Path(environment["OUTPUT_DIR"]).mkdir(parents=True, exist_ok=True)
+    progress("START_WORKER")
     child = subprocess.Popen([
         "timeout", "--signal=TERM", "--kill-after=30s", str(document["timeout_seconds"]) + "s",
         sys.executable, worker, *document["argv"]
@@ -143,14 +160,25 @@ def main(argv=None):
     parser.add_argument("--manifest-url", required=True)
     args = parser.parse_args(argv)
     token = os.environ.pop("ML_EXPD_BOOTSTRAP_TOKEN", "")
+    phase = "FETCH_MANIFEST"
+    def progress(value):
+        nonlocal phase
+        phase = value
+        report(args.manifest_url, token, {"phase": phase, "status": "STARTED"})
     try:
+        progress(phase)
         document = fetch(args.manifest_url, token)
         identity = document["identity"]
         print("ML_EXPD_LAUNCH READY " + identity["run_id"] + "/" + identity["attempt_id"], flush=True)
-        return execute(document, token)
+        code = execute(document, token, progress=progress)
+        report(args.manifest_url, token, {"phase": "WORKER_EXITED", "status": "COMPLETED", "exit_code": code})
+        return code
     except (ValueError, OSError) as exc:
         # Neither HTTP response bodies nor URLs/capabilities enter logs.
         print("ML_EXPD_LAUNCH FAILED " + (str(exc) if isinstance(exc, LaunchError) else error_code(exc)), file=sys.stderr, flush=True)
+        report(args.manifest_url, token, {"phase": phase, "status": "FAILED", "exit_code": 78,
+                                        "error_code": "LAUNCH_VALIDATION_FAILED" if isinstance(exc, ValueError) else "LAUNCH_IO_FAILED",
+                                        "errno": getattr(exc, "errno", None)})
         return 78
 
 

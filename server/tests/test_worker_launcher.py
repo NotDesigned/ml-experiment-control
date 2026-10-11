@@ -204,7 +204,7 @@ def test_cancellation_forwarded_and_handlers_restored(document, monkeypatch, gon
 def test_cli_main_does_not_print_secrets_on_failure(document, monkeypatch, capsys):
     monkeypatch.setenv("ML_EXPD_BOOTSTRAP_TOKEN", "private-capability")
     monkeypatch.setattr(launcher, "fetch", lambda url, token: document)
-    monkeypatch.setattr(launcher, "execute", lambda spec, token: 0)
+    monkeypatch.setattr(launcher, "execute", lambda spec, token, **kwargs: 0)
     assert launcher.main(["--manifest-url", "https://example/private-url"]) == 0
     assert "private" not in capsys.readouterr().out
     def fail(*args): raise ValueError("private-capability private-url")

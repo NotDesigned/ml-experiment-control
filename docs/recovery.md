@@ -245,3 +245,21 @@ startup. Original Runtime/copy request markers and dependency IDs stay intact.
 Observe those exact dependencies; after READY verification, explicitly continue
 the preparation. This only advances preparation, never authorizes/replays GPU
 submission. Changed executor configuration blocks the frozen selection.
+
+## Failures before the worker starts
+
+New Runtime images advertise `launch-diagnostics.v1`. Their sealed-manifest
+launcher reports `FETCH_MANIFEST`, `CREATE_OUTPUT`, `START_WORKER` and child exit
+directly to the API using the exact Attempt capability. The training diagnostics
+response includes a bounded `bootstrap` timeline with server receipt times,
+allowlisted error codes, errno and exit code; it never includes commands, tokens,
+paths or raw exception text. Delivery is best effort with a short timeout, so
+absent entries do not prove a particular failure. No writable NAS is needed to
+send this evidence. Existing immutable images require a new build; an API upgrade
+does not add reporting to an old image.
+
+Exit 78 can be a launcher configuration or filesystem failure, or a child return
+code. The code alone does not identify the cause. For NAS errno 28, check the
+mounted directory's capacity and file-count quota; shared-volume free space and
+API archive deletion are not evidence that this directory is writable. Keep the
+training queue paused until a real write/checkpoint/resume probe succeeds.

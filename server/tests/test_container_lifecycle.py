@@ -110,8 +110,8 @@ def test_dispatch_credentials_remain_outside_frozen_command(controller, monkeypa
     original = controller.store.load_attempt("attempt-001")["command"]
     assert controller.dispatch_command({"command": original}) == original
     controller.campaign["artifact_store"] = str(tmp_path / "s3.json")
-    monkeypatch.setattr("ml_exp_server.results.artifact_store.ArtifactStore.__init__", lambda self, *args: None)
-    monkeypatch.setattr("ml_exp_server.results.artifact_store.ArtifactStore.issue", lambda self, *args: ("https://transfer.example/attempt", "test-write-capability", 10000))
+    monkeypatch.setattr("ml_exp_server.results.artifact_store.ArtifactStore.__init__", lambda self, *args: setattr(self, "config", {"public_transfer_base": "https://transfer.example/api/artifact-transfers"}))
+    monkeypatch.setattr("ml_exp_server.results.artifact_store.ArtifactStore.issue", lambda self, *args, **kwargs: ("https://transfer.example/attempt", "test-write-capability", 10000))
     sealed = []
     monkeypatch.setattr("ml_exp_server.results.artifact_store.ArtifactStore.seal_launch", lambda self, *args: sealed.append(args[-1]) or "https://transfer.example/manifest")
     launched = controller.dispatch_command({"command": original, "attempt_id": "attempt-001"})

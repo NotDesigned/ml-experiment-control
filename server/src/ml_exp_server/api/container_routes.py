@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import asyncio
 import re
 import tempfile
@@ -234,6 +236,32 @@ async def launch_transfer(project: str, run_id: str, attempt_id: str, digest: st
     except ValueError:
         raise HTTPException(status_code=401, detail="invalid Attempt launch capability or identity")
     return Response(body, media_type="application/json", headers={"Cache-Control": "no-store", "ETag": '"' + digest + '"'})
+
+
+@router.put("/launch-transfers/{project}/{run_id}/{attempt_id}/{digest}", include_in_schema=False)
+async def launch_diagnostic(project: str, run_id: str, attempt_id: str, digest: str, request: Request):
+    runtime = request.app.state.runtime
+    config = runtime.config.container_execution.artifact_store_file
+    if not config:
+        raise HTTPException(status_code=404, detail="launch transfer is not configured")
+    store = ArtifactStore(Path(config), runtime.config.project_registry_root_path())
+    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    try:
+        if scheme.lower() != "bearer":
+            raise ValueError()
+        await run_in_threadpool(store.launch, project, run_id, attempt_id, digest, token)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="invalid Attempt launch capability or identity")
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > 4096:
+            raise HTTPException(status_code=413, detail="launch diagnostic exceeds size limit")
+    try:
+        data = json.loads(body)
+        return await run_in_threadpool(store.launch_report, project, run_id, attempt_id, digest, token, data)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="invalid launch diagnostic")
 
 
 @router.get("/runs/{project}/{run_id}/attempts/{attempt_id}/files")

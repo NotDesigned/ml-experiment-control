@@ -7,9 +7,16 @@ from ..application_errors import ApplicationError
 from ..projects.campaign_lifecycle import campaign_snapshot
 from ..projects.code_identity import project_code_identity
 from ..ingest.runscan import evaluation_snapshot, metric_contract, parse_iso_ts, preferred_attempt_id, read_jsonl, train_metric_records
+from ..tracking.metric_contract import observations
 from ..outward import attempt_dto, run_dto, sanitized_outward
 from ..schemas import OperationScopeType
 from .failures import compact_evidence, evidence_digest
+
+def merge_metrics(records, live, contract, source):
+    rows = [*(item for record in records for item in observations(
+        record, contract.get("metrics_schema", {}), protocol_id=contract.get("protocol_id"), source=str(source) if source else None)), *live]
+    return list({json.dumps({k: v for k, v in item.items() if k != "source"}, sort_keys=True): item for item in rows}.values())
+
 
 class RunQueries:
     """Queries operations; state belongs to the application facade."""
@@ -173,17 +180,17 @@ class RunQueries:
         records, source, source_attempt_id = train_metric_records(
             Path(row.run_dir), attempt_id=attempt.attempt_id, exact_attempt=True,
         )
-        from ..tracking.tracking_service import store_for
-        tracking = store_for(self.runtime)
+        from ..records.store import RecordStore
+        tracking = RecordStore(self.runtime.config.project_registry_root_path())
         live = tracking.metric_records(project, row.run_id, attempt.attempt_id)
         if live:
-            if source is None or source.name not in {"metrics.jsonl", "train_metrics.jsonl"}:
-                records = live
-                source = tracking.db
+            contract = metric_contract(Path(row.run_dir))
+            records = merge_metrics(records, live, contract, source)
+            source = tracking.db
             source_attempt_id = attempt.attempt_id
         payload = self._metric_payload(
             records, keys=keys, max_points=max_points, source=source,
-            source_attempt_id=source_attempt_id, contract=metric_contract(Path(row.run_dir)),
+            source_attempt_id=source_attempt_id, contract=metric_contract(Path(row.run_dir)), normalized=bool(live),
         )
         return {"project": project, "run_id": row.run_id,
                 "attempt_id": attempt.attempt_id, **payload}
@@ -249,18 +256,18 @@ class RunQueries:
                     max_points: int = 2000) -> dict[str, Any]:
         _, _, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)
         records, source, source_attempt_id = train_metric_records(Path(row.run_dir))
-        from ..tracking.tracking_service import store_for
+        from ..records.store import RecordStore
         current = self.run_attempts(project, run_id)["current_attempt_id"]
-        tracking = store_for(self.runtime)
+        tracking = RecordStore(self.runtime.config.project_registry_root_path())
         live = tracking.metric_records(project, run_id, current) if current else []
         if live:
-            if source_attempt_id != current or source is None or source.name not in {"metrics.jsonl", "train_metrics.jsonl"}:
-                records = live
-                source = tracking.db
+            contract = metric_contract(Path(row.run_dir))
+            records = merge_metrics(records if source_attempt_id == current else [], live, contract, source)
+            source = tracking.db
             source_attempt_id = current
         return self._metric_payload(
             records, keys=keys, max_points=max_points, source=source,
-            source_attempt_id=source_attempt_id, contract=metric_contract(Path(row.run_dir)),
+            source_attempt_id=source_attempt_id, contract=metric_contract(Path(row.run_dir)), normalized=bool(live),
         )
 
     def run_eval(self, project: str, run_id: str) -> dict[str, Any]:

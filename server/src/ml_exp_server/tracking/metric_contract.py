@@ -126,12 +126,12 @@ def observations(record, schema, *, protocol_id=None, source=None):
     return results
 
 
-def metric_result(records, schema=None, *, protocol_id=None, source=None):
+def metric_result(records, schema=None, *, protocol_id=None, source=None, normalized=False):
     """Keep distinct contexts and mark conflicting rewrites instead of overriding."""
     schema = schema or {"definitions": {}}
     by_key = {}
     for record in records:
-        for item in observations(record, schema, protocol_id=protocol_id, source=source):
+        for item in ([dict(record)] if normalized else observations(record, schema, protocol_id=protocol_id, source=source)):
             key = tuple(item.get(k) for k in ("name", "unit", "protocol_id", "checkpoint_id", "dataset_id", "variant_id", "epoch", "step"))
             previous = by_key.get(key)
             item["sources"] = sorted(set([*(previous.get("sources", []) if previous else []),
