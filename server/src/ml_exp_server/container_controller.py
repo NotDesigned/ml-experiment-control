@@ -130,6 +130,11 @@ class Controller:
     def manifest_launcher(self) -> bool:
         return bool(self.campaign.get("artifact_store") and self.run["container"].get("launcher_contract") == LAUNCHER_CONTRACT)
 
+    def record_stream(self) -> bool:
+        # Existing Run definitions retain their original opt-in semantics.
+        return bool(self.run.get("records", {}).get("enabled") or
+                    self.run.get("tracking", {}).get("enabled") and self.run.get("tracking", {}).get("record_stream"))
+
     def command(self, attempt_id: str) -> list[str]:
         if self.manifest_launcher():
             return ["ml-exp-worker"]
@@ -150,14 +155,14 @@ class Controller:
             url, token, limit = transfer.issue(self.campaign["project"], self.run["run_id"],
                                                manifest["attempt_id"], self.root, self.run["outputs"],
                                                **({"required_outputs": self.run["required_outputs"]} if self.run.get("required_outputs") else {}),
-                                               **({"record_stream": True} if self.run.get("tracking", {}).get("enabled") and self.run.get("tracking", {}).get("record_stream") else {}),
+                                               **({"record_stream": True} if self.record_stream() else {}),
                                                **({"checkpoint_upload": True} if self.run.get("checkpoint_upload") else {}),
                                                **({"checkpoint_state": self.state_context(manifest["attempt_id"])} if self.run.get("checkpoint_persistence") else {}))
             dispatch = {"ML_EXPD_UPLOAD_URL": url, "ML_EXPD_UPLOAD_LIMIT": str(limit),
                         "ML_EXPD_OUTPUT_PATTERNS": json.dumps(self.run["outputs"])}
             relay = relay_environment(self.run["backend"].get("api_relay"))
             dispatch.update(relay)
-            if self.run.get("tracking", {}).get("enabled") and self.run.get("tracking", {}).get("record_stream"):
+            if self.record_stream():
                 prefix = transfer.config["public_transfer_base"].rstrip("/").rsplit("/", 1)[0]
                 dispatch["ML_EXPD_RECORD_URL"] = prefix + "/record-transfers/" + "/".join([self.campaign["project"], self.run["run_id"], manifest["attempt_id"]])
             if self.run.get("inputs"):

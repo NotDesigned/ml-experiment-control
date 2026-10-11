@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..results.artifact_store import ArtifactStore
 from ..tracking.tracking_contract import WandbOptions, WandbSettings
 from ..tracking.tracking_service import store_for, normalized_metric, backfill
+from ..records.store import RecordStore
 from ..wandb_exporter import default_entity
 from .container_routes import invoke
 
@@ -63,7 +64,7 @@ async def record_transfer(project: str, run: str, attempt: str, request: Request
             raise HTTPException(status_code=413, detail="record batch exceeds size limit")
     try:
         runtime = request.app.state.runtime
-        store = store_for(runtime)
+        store = RecordStore(runtime.config.project_registry_root_path())
         config = runtime.config.container_execution.artifact_store_file
         if not config:
             raise ValueError("worker transfer is unavailable")

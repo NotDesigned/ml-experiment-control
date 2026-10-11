@@ -99,7 +99,11 @@ def test_transactional_replay_conflicts_and_remote_confirmation(tmp_path):
     with pytest.raises(ValueError): store.bind("study", "trial", {"enabled": False}, {})
     with pytest.raises(ValueError): store.scope("study", "missing", "attempt-001")
     store.bind("study", "off", {"enabled": False}, {})
-    with pytest.raises(ValueError): store.scope("study", "off", "attempt-001")
+    local = store.scope("study", "off", "attempt-001")
+    store.append(local, [("m1", event)])
+    assert store.pending() == []
+    assert store.status("study", "off")["scopes"] == []
+    assert store.metric_records("study", "off", "attempt-001")[0]["value"] == 2.5
 
 
 def create_trial(client, *, name="trial", options=None, schema=None):
@@ -473,6 +477,7 @@ def test_preexisting_run_without_tracking_is_not_implicitly_opted_in(client):
     project = client.app.state.runtime.project("demo")
     path = Path(project.base_dir) / "experiments/campaigns/run-trial.yaml"
     payload = yaml.safe_load(path.read_text())
+    payload["runs"][0].pop("records")
     payload["runs"][0].pop("tracking")
     payload["runs"][0].pop("wandb_request")
     path.write_text(yaml.safe_dump(payload, sort_keys=False))

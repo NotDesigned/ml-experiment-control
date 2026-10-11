@@ -65,9 +65,11 @@ def observe(runtime, store):
         binding = store.binding(row.project, row.run_id)
         publication_run = row.run_id
         if binding is None or not binding["route"]["enabled"]:
-            publication_run += "--backfill"
-            binding = store.binding(row.project, publication_run)
-        if binding is None or not binding["route"]["enabled"]:
+            historical = store.binding(row.project, row.run_id + "--backfill")
+            if historical and historical["route"]["enabled"]:
+                publication_run += "--backfill"
+                binding = historical
+        if binding is None:
             continue
         for attempt in row.attempts:
             scope = store.scope(row.project, publication_run, attempt.attempt_id)
@@ -85,6 +87,10 @@ def observe(runtime, store):
                 if receipt:
                     value = {k: receipt[k] for k in ("sha256", "bytes", "files", "received_at")}
                     store.append(scope, [("artifacts." + digest(value), {"kind": "artifacts", "data": value})])
+            if publication_run != row.run_id:
+                for item in store.metric_records(row.project, row.run_id, attempt.attempt_id):
+                    payload = {"kind": "metrics", "observations": [item]}
+                    store.append(scope, [("journal." + digest(payload), payload)])
             if not binding["route"].get("record_stream") or (root / "uploaded_outputs" / "metrics.jsonl").is_file():
                 records, source, _ = train_metric_records(Path(row.run_dir), attempt_id=attempt.attempt_id, exact_attempt=True)
                 for record in records:
@@ -139,11 +145,11 @@ class TrackingPublisher:
         self.thread.join(timeout=5)
 
     def cycle(self):
+        observe(self.runtime, self.store)
         settings = self.store.settings()
         if not settings.get("api_key") or not settings.get("enabled", True):
             self.publisher.close()
             return
-        observe(self.runtime, self.store)
         for scope in self.store.pending():
             if self.stop.is_set():
                 break

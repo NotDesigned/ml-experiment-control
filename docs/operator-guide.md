@@ -156,3 +156,16 @@ explicit retention. No global Docker prune or automatic NAS cleanup exists.
 Record exact commit/package versions and verification privately; these docs
 are not a list of live jobs or historical test counts. Known defects and
 unimplemented recovery capabilities are in [recovery](recovery.md).
+
+## Storage maintenance boundaries
+
+Every collector cycle prunes expired unfinished multipart sessions and performs
+verified-client-ACK archive releases before backend polling. The unfinished
+upload TTL is unchanged; unexpired resumable parts are retained. A download GET
+is not an ACK. Scientific receipts, registered metrics, datasets and backend
+checkpoints survive archive release. Garage physical block reclamation is
+asynchronous.
+
+Treat API disk, desktop builder disk, WYD datapool and SenseCore NAS as distinct
+capacity domains. Check each domain's actual write/quota/inode state. In
+particular, freeing an API archive does not free NAS training-state generations.

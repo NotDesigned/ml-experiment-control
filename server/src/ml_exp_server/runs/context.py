@@ -113,7 +113,7 @@ class RunContext:
     @staticmethod
     def _metric_payload(records: list[dict[str, Any]], *, keys: str | None,
                         max_points: int, source: Path | None,
-                        source_attempt_id: str | None, contract: dict | None = None) -> dict[str, Any]:
+                        source_attempt_id: str | None, contract: dict | None = None, normalized: bool = False) -> dict[str, Any]:
         if max_points <= 0:
             raise ApplicationError("max_points must be positive", status_code=422,
                                    code="INVALID_MAX_POINTS")
@@ -154,10 +154,18 @@ class RunContext:
                     point[key] = value
             points.append(point)
         contract = contract or {}
+        complete = metric_result(records, contract.get("metrics_schema"),
+                                 protocol_id=contract.get("protocol_id"), source=str(source) if source else None, normalized=normalized)
         result = metric_result(sampled, contract.get("metrics_schema"),
-                               protocol_id=contract.get("protocol_id"), source=str(source) if source else None)
+                               protocol_id=contract.get("protocol_id"), source=str(source) if source else None, normalized=normalized)
+        validation = {"coverage": "complete_history", "total_records": total,
+                      "failed_records": sum(item["status"] == "FAILED" for item in complete["records"]),
+                      "conflicting_records": sum(item["status"] == "CONFLICTING" for item in complete["records"]),
+                      "incomplete_contexts": sum(item["state"] == "PARTIAL" for item in complete["contexts"])}
+        validation["state"] = ("FAILED" if validation["failed_records"] or validation["conflicting_records"] else
+                               "PARTIAL" if validation["incomplete_contexts"] else complete["state"])
         return {
-            "metrics": result, "evaluation": contract,
+            "metrics": result, "evaluation": contract, "validation": validation,
             "points": points, "keys": wanted or numeric_available,
             "missing_keys": [key for key in wanted or [] if key not in available],
             "total_records": total, "downsampled": total > len(sampled),

@@ -47,18 +47,27 @@ from ..tracking.tracking_service import TrackingPublisher
 from ..results.result_collection import ResultCollectionService
 from .result_routes import RESULT_PATH, router as result_router
 from ..results.artifact_lifecycle import ArtifactLifecycle
+from ..data.multipart_upload import UploadStore
 
 
 def _poll_loop(app: FastAPI, collector: Collector) -> None:
     while not app.state._stop.is_set():
         app.state.index.set_meta("collector_cycle_started_at", str(time.time()))
         try:
+            try:
+                config_file = app.state.runtime.config.container_execution.artifact_store_file
+                if config_file and app.state.runtime.config.action_runtime.allow_project_writes:
+                    objects = ResultCollectionService(app.state.runtime).objects
+                    UploadStore(objects.root.parent, objects.config).prune()
+                    ArtifactLifecycle(objects).run_due()
+                app.state.index.set_meta("storage_maintenance_last_error", "")
+            except Exception as exc:
+                # A storage maintenance fault must not hide scheduler progress.
+                app.state.index.set_meta("storage_maintenance_last_error", type(exc).__name__)
             collector.run_cycle()
             if app.state.runtime.config.container_execution.artifact_store_file:
                 service = ResultCollectionService(app.state.runtime)
                 service.stopping = app.state._stop.is_set
-                if app.state.runtime.config.action_runtime.allow_project_writes:
-                    ArtifactLifecycle(service.objects).run_due()
                 service.automatic(app.state.submit_job)
             app.state.index.set_meta("collector_last_error", "")
         except Exception as exc:  # keep the loop alive; surface via meta
@@ -312,7 +321,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
         worker_transfer = request.method == "PUT" and bool(TRANSFER_PATH.fullmatch(request.url.path))
         worker_transfer = worker_transfer or (request.method == "PUT" and bool(RESULT_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method == "POST" and bool(RECORD_PATH.fullmatch(request.url.path)))
-        worker_transfer = worker_transfer or (request.method == "GET" and bool(LAUNCH_PATH.fullmatch(request.url.path)))
+        worker_transfer = worker_transfer or (request.method in {"GET", "PUT"} and bool(LAUNCH_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method == "PUT" and bool(COPY_TRANSFER.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method in {"GET", "PUT"} and bool(WORKER_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method in {"GET", "POST", "PUT", "DELETE"} and bool(WORKER_UPLOAD_PATH.fullmatch(request.url.path)))

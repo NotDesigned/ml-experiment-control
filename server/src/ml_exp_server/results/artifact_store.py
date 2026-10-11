@@ -117,6 +117,22 @@ class ArtifactStore:
             raise ValueError('launch manifest digest differs')
         return body
 
+    def launch_report(self, project, run, attempt, digest, token, data):
+        self.launch(project, run, attempt, digest, token)
+        if (not isinstance(data, dict) or set(data) - {'phase', 'status', 'exit_code', 'error_code', 'errno'}
+                or data.get('phase') not in {'FETCH_MANIFEST', 'CREATE_OUTPUT', 'START_WORKER', 'WORKER_EXITED'}
+                or data.get('status') not in {'STARTED', 'FAILED', 'COMPLETED'}
+                or data.get('error_code') not in {None, 'LAUNCH_VALIDATION_FAILED', 'LAUNCH_IO_FAILED'}
+                or any(value is not None and (type(value) is not int or not -255 <= value <= 4096)
+                       for value in (data.get('errno'), data.get('exit_code')))):
+            raise ValueError('invalid launch diagnostic')
+        with self.record(project, run, attempt) as (path, value):
+            entries = value.get('launch_diagnostics', [])
+            if not entries or {k: v for k, v in entries[-1].items() if k != 'received_at'} != data:
+                value['launch_diagnostics'] = [*entries[-15:], {**data, 'received_at': utc_now()}]
+                atomic_json(path, value)
+        return {'accepted': True}
+
     def client(self, *, public=False):
         import boto3
         from botocore.config import Config
@@ -249,12 +265,14 @@ class ArtifactStore:
                         if cached != old:
                             raise ValueError('archive repair cache differs from old receipt')
                 stream.seek(0)
+                from ..records.ingest import import_metrics
+                metrics = import_metrics(self.root.parent, project, run, attempt, temporary, manifest)
                 key = '/'.join([project, run, attempt, digest + '.tar'])
                 self.client().upload_fileobj(stream, self.config['bucket'], key,
                                              ExtraArgs={'ContentType': 'application/x-tar', 'Metadata': {'sha256': digest}},
                                              Config=self._transfer_config())
                 receipt = {'sha256': digest, 'bytes': size, 'files': sorted(files, key=lambda f: f['path']),
-                           'object_key': key, 'received_at': utc_now()}
+                           'object_key': key, 'received_at': utc_now(), 'metrics_ingestion': metrics}
                 seal_tree(temporary)
                 temporary.chmod(0o700)
                 if value.get('cache_outputs', False):
