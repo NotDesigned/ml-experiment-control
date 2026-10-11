@@ -164,3 +164,30 @@ def test_unexpected_io_errors_are_not_silenced(tmp_path, monkeypatch, operation)
 
 def test_prune_ignores_missing_or_linked_parent(tmp_path):
     cache.prune_empty(tmp_path/'absent/child')
+
+
+def test_hidden_archive_files_do_not_block_other_cache_cleanup(storage, monkeypatch):
+    import io
+    from tests.test_artifact_store import archive
+    from ml_exp_server.results.artifact_store import ArtifactStore
+    from types import SimpleNamespace
+    store, root, token, _, _ = storage
+    body = archive({'.hidden': b'private', 'visible': b'public'})
+    receipt = store.receive(*IDENTITY, token, io.BytesIO(body), len(body))
+    proof = {'archive_sha256': receipt['sha256'], 'archive_bytes': receipt['bytes'],
+             'files': {'outputs/' + f['path']: {k: f[k] for k in ('sha256', 'bytes')} for f in receipt['files']}}
+    directory = root/'attempts/attempt-001/uploaded_outputs'; directory.mkdir()
+    (directory/'.hidden').write_bytes(b'private'); (directory/'visible').write_bytes(b'public')
+    deletes=[]
+    monkeypatch.setattr(ArtifactStore, 'client', lambda self: SimpleNamespace(delete_object=lambda **kwargs: deletes.append(kwargs)))
+    lifecycle = ArtifactLifecycle(store); lifecycle.acknowledge(*IDENTITY, proof)
+    assert lifecycle.run_due() == 1 and len(deletes) == 1
+    assert (directory/'.hidden').read_bytes() == b'private' and not (directory/'visible').exists()
+    assert lifecycle.run_due() == 0 and len(deletes) == 1
+
+
+@pytest.mark.parametrize('unsafe', ['../escape', '/absolute', 'bad\\path'])
+def test_unsupported_receipt_path_is_conservatively_retained(tmp_path, unsafe):
+    report=cache.evict_caches({'run_dir': str(tmp_path), 'attempt_id': 'attempt-001',
+                             'receipt': {'files': [{'path': unsafe, 'bytes': 1, 'sha256': 'a'*64}]}})
+    assert report['files_removed'] == report['bytes_removed'] == 0
