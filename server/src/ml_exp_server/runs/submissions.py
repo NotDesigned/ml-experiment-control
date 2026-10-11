@@ -35,7 +35,7 @@ def _reusable(view: dict[str, Any]) -> bool:
         expires_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return False
-    return datetime.now(timezone.utc) < expires_at
+    return expires_at.tzinfo is not None and datetime.now(timezone.utc) < expires_at
 
 
 def _prepared_matches_current_authored_state(
@@ -108,6 +108,8 @@ class ExperimentSubmissionService:
             next_action = "REPREPARE"
         else:
             next_action = "NONE"
+        if status in {"PREPARED", "AUTHORIZED"} and not _reusable({**action, "status": status}):
+            next_action = "REPREPARE"
         return {
             "submission_id": action_id,
             "project": (action.get("scope") or {}).get("project"),

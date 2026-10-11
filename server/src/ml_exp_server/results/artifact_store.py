@@ -58,13 +58,13 @@ class ArtifactStore:
             path = directory / (attempt + '.json')
             yield path, json.loads(path.read_text()) if path.exists() else None
 
-    def issue(self, project, run, attempt, run_dir: Path, outputs: list[str], *, checkpoint_upload=False, checkpoint_state=None, record_stream=False):
+    def issue(self, project, run, attempt, run_dir: Path, outputs: list[str], *, checkpoint_upload=False, checkpoint_state=None, record_stream=False, required_outputs=()):
         with self.record(project, run, attempt) as (path, value):
             if value is None:
                 value = {'project': project, 'run_id': run, 'attempt_id': attempt,
                          'run_dir': str(run_dir), 'outputs': outputs, 'token': secrets.token_urlsafe(32),
                          'expires_at': (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
-                         'receipt': None}
+                         'receipt': None, **({'required_outputs': list(required_outputs)} if required_outputs else {})}
                 atomic_json(path, value)
             if checkpoint_upload:
                 if not value.get('checkpoint_upload'):
@@ -73,7 +73,7 @@ class ArtifactStore:
             if record_stream:
                 value['record_stream'] = True
                 atomic_json(path, value)
-            if value['run_dir'] != str(run_dir) or value['outputs'] != outputs:
+            if value['run_dir'] != str(run_dir) or value['outputs'] != outputs or value.get('required_outputs', []) != list(required_outputs):
                 raise ValueError('transfer identity is already bound')
             if checkpoint_state is not None:
                 if value.get('checkpoint_state', checkpoint_state) != checkpoint_state:
@@ -179,7 +179,7 @@ class ArtifactStore:
             finally:
                 remove_staging(temporary)
 
-    def receive(self, project, run, attempt, token, stream, size):
+    def receive(self, project, run, attempt, token, stream, size, *, repair_sha256=None):
         if size <= 0 or exceeds(size, self.limit):
             raise ValueError('invalid artifact size')
         with self.record(project, run, attempt) as (path, value):
@@ -196,7 +196,15 @@ class ArtifactStore:
                 raise ValueError('Run/Attempt transfer identity mismatch')
             digest = stream_digest(stream)
             stream.seek(0)
-            if value['receipt']:
+            previous = value['receipt'] if repair_sha256 is not None else None
+            if previous is not None:
+                if previous['sha256'] == digest:
+                    return previous
+                if previous['sha256'] != repair_sha256 or value.get('retention'):
+                    raise ValueError('archive repair requires the exact unacknowledged receipt')
+            elif repair_sha256 is not None:
+                raise ValueError('archive repair requires an existing receipt')
+            if value['receipt'] and previous is None:
                 if value['receipt']['sha256'] != digest:
                     raise ValueError('Attempt artifacts are already sealed with another digest')
                 return value['receipt']
@@ -215,6 +223,31 @@ class ArtifactStore:
                         with file.open('rb') as body:
                             file_sha = stream_digest(body)
                         files.append({'path': relative, 'bytes': file.stat().st_size, 'sha256': file_sha})
+                for pattern in value.get('required_outputs', []):
+                    if not any(fnmatch.fnmatch(item['path'], pattern) or pattern.startswith('**/') and
+                               fnmatch.fnmatch(item['path'], pattern[3:]) for item in files):
+                        from ..application_errors import ApplicationError
+                        raise ApplicationError('archive is missing required outputs', code='RESULT_OUTPUTS_INCOMPLETE')
+                if previous is not None:
+                    old = {item['path']: item for item in previous['files']}
+                    new = {item['path']: item for item in files}
+                    if not old.keys() < new.keys() or any(new[name] != item for name, item in old.items()):
+                        raise ValueError('archive repair must retain all old files and add missing files')
+                    cache = parent / 'uploaded_outputs'
+                    if cache.exists():
+                        if cache.is_symlink():
+                            raise ValueError('archive repair cache contains a link')
+                        cached = {}
+                        for item in cache.rglob('*'):
+                            if item.is_symlink():
+                                raise ValueError('archive repair cache contains a link')
+                            if item.is_file():
+                                with item.open('rb') as body:
+                                    cached[item.relative_to(cache).as_posix()] = {
+                                        'path': item.relative_to(cache).as_posix(), 'bytes': item.stat().st_size,
+                                        'sha256': stream_digest(body)}
+                        if cached != old:
+                            raise ValueError('archive repair cache differs from old receipt')
                 stream.seek(0)
                 key = '/'.join([project, run, attempt, digest + '.tar'])
                 self.client().upload_fileobj(stream, self.config['bucket'], key,
@@ -232,6 +265,10 @@ class ArtifactStore:
                     temporary.rename(destination)
                     destination.chmod(0o500)
                 value['receipt'] = receipt
+                if previous is not None:
+                    value.setdefault('receipt_history', []).append(previous)
+                    if cache.exists():
+                        remove_staging(cache)
                 atomic_json(path, value)
                 return receipt
             finally:

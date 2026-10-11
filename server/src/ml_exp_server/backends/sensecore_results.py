@@ -18,6 +18,24 @@ from ..results.errors import RecoveryError
 from .states import TERMINAL
 
 
+def exit_event_evidence(events, uid, secrets=()):
+    evidence = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("reason") != "ExitedWithCode":
+            continue
+        match = re.fullmatch(r"pod <(pt-([0-9a-f]{32})-worker-[0-9]+)>'s container <([A-Za-z0-9_.-]+)> exited with code (-?[0-9]{1,3}) \| time: <([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z)>",
+                             str(event.get("message", "")))
+        if not match or match[2] != uid or not -255 <= int(match[4]) <= 255:
+            continue
+        container = match[3]
+        for secret in secrets:
+            if isinstance(secret, str) and secret:
+                container = container.replace(secret, "[REDACTED]")
+        evidence.append({"source": "ExitedWithCode", "worker": match[1],
+                         "container": container, "exit_code": int(match[4]), "time": match[5]})
+    return evidence
+
+
 class SenseCoreResultOperations:
     """Provider-specific operations sharing the owning service state."""
 
@@ -43,7 +61,17 @@ class SenseCoreResultOperations:
             result["logs"].update(status="UNAVAILABLE", unavailable_reason="CPU_CONFIGURATION_UNAVAILABLE")
             return result
         secrets = [transfer["token"]] + [rest.config.get(key) for key in ("access_key_id", "access_key_secret")]
-        return self.collect_result_job_diagnostics(rest, profile, name, secrets, result)
+        result = self.collect_result_job_diagnostics(rest, profile, name, secrets, result)
+        if isinstance(cached, dict) and cached.get("scheduler_name") == name and result.get("job_uid"):
+            evidence = exit_event_evidence(cached.get("events", []), result["job_uid"], secrets)
+            codes = {item["exit_code"] for item in evidence + result.get("exit_evidence", [])}
+            if result["job_exit_code"] is not None:
+                codes.add(result["job_exit_code"])
+            if evidence:
+                result["exit_evidence"] = evidence + result.get("exit_evidence", [])
+                result["job_exit_code"] = next(iter(codes)) if len(codes) == 1 and not result["exit_code_conflict"] else None
+                result["exit_code_conflict"] |= len(codes) > 1
+        return result
 
     @staticmethod
     def collect_result_job_diagnostics(rest, profile, name, secrets, result):
@@ -72,11 +100,13 @@ class SenseCoreResultOperations:
                 raise ValueError("invalid recovery job observation")
         except (RESTError, ValueError) as error:
             failed("describe", error)
-            result["logs"].update(status="UNAVAILABLE", unavailable_reason="CPU_JOB_QUERY_FAILED")
+            result["logs"].update(status="UNAVAILABLE", unavailable_reason="JOB_QUERY_FAILED")
             return result
         state = job.get("state")
+        result["job_uid"] = job.get("uid")
         result["job_state"] = state if isinstance(state, str) and state in TERMINAL | {"PENDING", "STARTING", "RUNNING", "QUEUING"} else None
         codes = set()
+        result["exit_evidence"] = []
 
         def exit_codes(value):
             if not isinstance(value, dict):
@@ -106,6 +136,8 @@ class SenseCoreResultOperations:
             if not isinstance(response, dict) or not isinstance(response.get("events", []), list):
                 raise ValueError("invalid recovery event observation")
             events = response.get("events", [])
+            result["exit_evidence"] = exit_event_evidence(events, job.get("uid"), secrets)
+            codes.update(item["exit_code"] for item in result["exit_evidence"])
             result["events"] = [{"reason": safe_text(event.get("reason")),
                                  "type": safe_text(event.get("type")),
                                  "message": safe_text(event.get("message"))}
@@ -130,7 +162,7 @@ class SenseCoreResultOperations:
                               "unavailable_reason": None if available else safe_text(logs.get("unavailable_reason")) or None}
         except (RESTError, ValueError) as error:
             failed("logs", error)
-            result["logs"].update(status="UNAVAILABLE", unavailable_reason="CPU_LOG_QUERY_FAILED")
+            result["logs"].update(status="UNAVAILABLE", unavailable_reason="JOB_LOG_QUERY_FAILED")
         return result
 
     def sensecore(self, identity, definition, transfer, operation, rest):

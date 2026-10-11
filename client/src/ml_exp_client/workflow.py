@@ -43,7 +43,7 @@ def validate_dockerfile(source: Path, name: str):
 def read_config(path: Path):
     value = json.loads(path.read_text())
     allowed = {"project", "run_id", "source", "dockerfile", "entrypoint", "workdir", "executor",
-               "arguments", "env", "resources", "outputs", "inputs", "checkpoint_upload", "max_gpu_hours", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from", "executor_selector", "requirements", "wandb", "parameters"}
+               "arguments", "env", "resources", "outputs", "required_outputs", "inputs", "checkpoint_upload", "max_gpu_hours", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from", "executor_selector", "requirements", "wandb", "parameters"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise ClientError("experiment config contains unknown fields")
     wandb = value.get("wandb")
@@ -213,7 +213,7 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         raise ClientError("state file exists; use --resume to inspect and continue the same experiment")
     if state.get("config_sha256") != fingerprint:
         raise ClientError("resume configuration changed; use a new Run and state file")
-    definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "checkpoint_upload", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from", "wandb", "parameters") if key in config}
+    definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "required_outputs", "checkpoint_upload", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from", "wandb", "parameters") if key in config}
     requirements = dict(config.get("requirements", {}))
     if config.get("inputs"):
         requirements["data_assets"] = True

@@ -169,7 +169,19 @@ class ArtifactService:
             parts = safe_parts(relative)
         except ValueError as exc:
             raise ApplicationError("invalid artifact path", code="ARTIFACT_PATH_BLOCKED") from exc
-        for namespace, root in self.roots(project, run_id, attempt_id):
+        roots = self.roots(project, run_id, attempt_id, restore=False)
+        result = self.open_roots(project, run_id, attempt_id, relative, parts, roots)
+        if result is not None:
+            return result
+        result = self.open_roots(project, run_id, attempt_id, relative, parts,
+                                 self.roots(project, run_id, attempt_id))
+        if result is not None:
+            return result
+        raise ApplicationError("artifact is not locally collected or path is unavailable", status_code=404, code="ARTIFACT_UNAVAILABLE")
+
+    @staticmethod
+    def open_roots(project, run_id, attempt_id, relative, parts, roots):
+        for namespace, root in roots:
             if len(parts) < 2 or parts[0] != namespace:
                 continue
             directory = None
@@ -196,4 +208,4 @@ class ArtifactService:
                     os.close(directory)
                 if descriptor is not None:
                     os.close(descriptor)
-        raise ApplicationError("artifact is not locally collected or path is unavailable", status_code=404, code="ARTIFACT_UNAVAILABLE")
+        return None

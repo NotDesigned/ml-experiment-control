@@ -190,12 +190,13 @@ def test_metric_and_evaluation_errors_fail_before_source_upload(configuration, e
 def test_one_config_transports_project_schema_and_scoring_protocol(configuration):
     value = json.loads(configuration.read_text())
     value.update(metrics_schema={"definitions": {"validation_loss": {"unit": "nats/token", "required": True}}},
-                 evaluation={"D_FT": 0, "context_tokens": 1024})
+                 evaluation={"D_FT": 0, "context_tokens": 1024}, required_outputs=["weights/*.pt", "summary.json"])
     configuration.write_text(json.dumps(value))
     api = API(); experiment(api, HEALTH, configuration, configuration.with_name("state.json"))
     definition = next(kwargs["data"]["run"] for endpoint, kwargs in api.calls if endpoint.endswith("/experiment-preparations"))
     assert definition["metrics_schema"] == value["metrics_schema"]
     assert definition["evaluation"] == value["evaluation"]
+    assert definition["required_outputs"] == value["required_outputs"]
 
 
 def test_matching_request_precedes_source_upload_and_transmits_requirements(configuration):

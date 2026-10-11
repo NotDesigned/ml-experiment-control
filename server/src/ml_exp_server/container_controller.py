@@ -149,6 +149,7 @@ class Controller:
             transfer = ArtifactStore(Path(self.campaign["artifact_store"]), Path(self.campaign["source_store"]))
             url, token, limit = transfer.issue(self.campaign["project"], self.run["run_id"],
                                                manifest["attempt_id"], self.root, self.run["outputs"],
+                                               **({"required_outputs": self.run["required_outputs"]} if self.run.get("required_outputs") else {}),
                                                **({"record_stream": True} if self.run.get("tracking", {}).get("enabled") and self.run.get("tracking", {}).get("record_stream") else {}),
                                                **({"checkpoint_upload": True} if self.run.get("checkpoint_upload") else {}),
                                                **({"checkpoint_state": self.state_context(manifest["attempt_id"])} if self.run.get("checkpoint_persistence") else {}))
@@ -216,6 +217,8 @@ class Controller:
         source = self.source()
         metadata = json.loads((source.parent / "source.json").read_text())
         resolved = {key: self.run[key] for key in ("container", "arguments", "env", "outputs")}
+        if self.run.get("required_outputs"):
+            resolved["required_outputs"] = self.run["required_outputs"]
         resolved.update({key: self.run[key] for key in ("inputs", "checkpoint_upload", "data_preparation", "checkpoint_persistence", "resume_from", "tracking", "parameters") if key in self.run})
         manifest = build_run_manifest(
             project=self.campaign["project"], run_id=self.run["run_id"], created_at=utc_now(),

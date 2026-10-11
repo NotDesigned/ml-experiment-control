@@ -99,6 +99,39 @@ script can instead prepare persistent `DATA_DIR`. See [data](data.md).
 Use `STATE_DIR` for complete recovery state ([checkpoints](persistent-checkpoints.md)),
 and explicit units for [metrics](metrics.md). These are optional additions.
 
+`outputs` selects files to export; it does not promise that every matching file
+exists. Use `required_outputs` for the files your experiment must publish, for
+example `{"required_outputs": ["summary.json", "weights/*.pt", "updates.jsonl"]}`.
+Each pattern must match at least one regular file. These patterns are frozen
+with the Run, included in the export selection, and checked before publication.
+The platform does not prescribe model filenames or scientific success criteria.
+
+For an original job's persisted provider evidence, query
+`GET /api/runs/{project}/{run}/attempts/{attempt}/diagnostics`; add `?refresh=true`
+to capture current provider events and logs. No compute is submitted. An
+`ExitedWithCode` event is accepted only for the exact job UID and identifies its
+worker/container. Empty delayed logs remain pending, and later log expiry does
+not erase previously captured evidence. Missing historical stderr cannot be
+reconstructed from an exit code.
+
+A byte-verified archive can still lack intended scientific outputs. If an
+unacknowledged archive was published from an incomplete mirror and the complete
+outputs are now collected, an operator can call
+`POST /api/runs/{project}/{run}/attempts/{attempt}/collection/repair` with
+`{"expected_sha256": "CURRENT_ARCHIVE_SHA256"}`. Repair only adds files, verifies
+every old file is unchanged, preserves the old receipt/object, and switches the
+download to the expanded archive. It rejects acknowledged/retained/released
+archives and active Attempts; it never launches training. This request may take
+time to package and validate; after a lost response, query collection before
+retrying the same digest.
+
+If preparation's response is lost, list
+`GET /api/experiments/{project}/{run}/submissions` and query the original
+`GET /api/submissions/{submission_id}`. A valid prepared review returns
+`AUTHORIZE`; an expired review returns `REPREPARE`. Reprepare the same Run to
+obtain current gates instead of executing expired approval. Never create a
+second Run or replay an uncertain scheduler submission.
+
 ## Observe and retrieve
 
 ```bash
