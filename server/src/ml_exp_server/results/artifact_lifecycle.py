@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 
 from ..application_errors import ApplicationError
-from .artifact_store import ArtifactStore, stream_digest
-from ..projects.source_imports import remove_staging
+from .artifact_store import ArtifactStore
+from .artifact_cache import evict_caches
 from ..storage import atomic_json
 
 
@@ -42,51 +41,41 @@ class ArtifactLifecycle:
             atomic_json(path, value)
             return retention
 
-    @staticmethod
-    def evict_matching_cache(value):
-        cache = Path(value["run_dir"]) / "attempts" / value["attempt_id"] / "uploaded_outputs"
-        if not cache.is_dir() or cache.is_symlink():
-            return
-        expected = {item["path"]: item for item in value["receipt"]["files"]}
-        actual = {}
-        for file in cache.rglob("*"):
-            if file.is_symlink():
-                return
-            if file.is_file():
-                with file.open("rb") as stream:
-                    digest = stream_digest(stream)
-                actual[file.relative_to(cache).as_posix()] = {"bytes": file.stat().st_size, "sha256": digest}
-        # Unknown or modified local files are never treated as a disposable cache.
-        if set(actual) == set(expected) and all(all(actual[name][k] == item.get(k) for k in ("bytes", "sha256"))
-                                               for name, item in expected.items()):
-            remove_staging(cache)
-
     def run_due(self):
         released = 0
         for file in self.store.root.glob("*/*/attempt-*.json"):
             identity = (file.parent.parent.name, file.parent.name, file.stem)
             with self.store.record(*identity) as (path, value):
                 retention = value.get("retention", {})
-                if retention.get("status") not in {"SCHEDULED", "RELEASING"}:
+                if retention.get("status") not in {"SCHEDULED", "RELEASING", "RELEASED"}:
                     continue
                 receipt = value["receipt"]
                 canonical = "/".join([*identity, receipt["sha256"] + ".tar"])
                 if (receipt["object_key"] != canonical or retention["sha256"] != receipt["sha256"]
                         or not self.matches(receipt, value["download_acknowledgement"])):
                     raise ValueError("archive release identity differs")
-                # Durable marker before the external effect. DELETE is idempotent;
-                # a restart retries only this exact object, never a compute job.
-                retention["status"] = "RELEASING"
-                atomic_json(path, value)
-                try:
-                    self.store.client().delete_object(Bucket=self.store.config["bucket"], Key=canonical)
-                    self.evict_matching_cache(value)
-                except Exception:
-                    retention["diagnostic"] = "ARCHIVE_RELEASE_RETRY_REQUIRED"
+                if retention["status"] != "RELEASED":
+                    # Durable marker before the external effect. Retry only the
+                    # exact object after a crash; never restart compute.
+                    retention["status"] = "RELEASING"
                     atomic_json(path, value)
-                    continue
-                retention.update(status="RELEASED", released_at=datetime.now(timezone.utc).isoformat())
-                retention.pop("diagnostic", None)
-                atomic_json(path, value)
-                released += 1
+                    try:
+                        self.store.client().delete_object(Bucket=self.store.config["bucket"], Key=canonical)
+                    except Exception:
+                        retention["diagnostic"] = "ARCHIVE_RELEASE_RETRY_REQUIRED"
+                        atomic_json(path, value)
+                        continue
+                    retention.update(status="RELEASED", released_at=datetime.now(timezone.utc).isoformat())
+                    retention.pop("diagnostic", None)
+                    atomic_json(path, value)
+                    released += 1
+                # Include historical releases and copies arriving after release.
+                # Cache failures must not repeat an already completed S3 DELETE.
+                try:
+                    cleanup = evict_caches(value)
+                except OSError:
+                    cleanup = {**value.get("cache_cleanup", {}), "diagnostic": "LOCAL_CACHE_CLEANUP_RETRY_REQUIRED"}
+                if cleanup != value.get("cache_cleanup"):
+                    value["cache_cleanup"] = cleanup
+                    atomic_json(path, value)
         return released

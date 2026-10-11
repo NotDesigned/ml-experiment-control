@@ -145,6 +145,12 @@ The background collector performs deletion on its next cycle; there is no 24-hou
 waiting period. Existing acknowledgements that allow release are also eligible
 without waiting for their old deadline. Physical disk space is reclaimed by the
 object store in the background and may become available later.
+After release, the collector also removes matching files from local delivery
+caches (`uploaded_outputs`, `recovered_outputs`, and the exact Attempt's
+`collected_run/.../outputs`). It checks each file's size and SHA256 against the
+receipt, including caches left by older releases. Extra files, changed bytes,
+symlinks, original worker outputs and persistent training state are retained.
+Local cache failures retry independently without deleting the object again.
 A download link, partial transfer or checksum failure never authorizes deletion.
 Repeated confirmations do not extend the deadline. Older clients send no
 confirmation, so their archives remain retained.
