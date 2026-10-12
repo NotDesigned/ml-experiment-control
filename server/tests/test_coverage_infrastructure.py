@@ -223,7 +223,7 @@ def test_operation_definition_can_replace_parameters():
 
 
 def test_http_auth_detects_file_growth_after_metadata_check(monkeypatch, tmp_path):
-    from ml_exp_server import http_auth
+    from ml_exp_server.api import auth as http_auth
 
     token = tmp_path / "token"
     token.write_text("x" * 40)

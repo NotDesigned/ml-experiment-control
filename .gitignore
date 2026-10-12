@@ -3,6 +3,9 @@
 /client/build/
 /dist/
 /.pytest_cache/
+/server/.pytest_cache/
+/client/.pytest_cache/
+/.mypy_cache/
 /.venv/
 /rust/target/
 .coverage
@@ -14,6 +17,7 @@ htmlcov/
 __pycache__/
 **/__pycache__/
 /.client-wheel-smoke/
+/.wheel-smoke/
 
 /.ops/
 /.recovery/

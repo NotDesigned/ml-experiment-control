@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
-from ml_exp_server.api_contract import API_PROTOCOL_VERSION, CLIENT_PROTOCOL_HEADER
+from ml_exp_server.api.contract import API_PROTOCOL_VERSION, CLIENT_PROTOCOL_HEADER
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

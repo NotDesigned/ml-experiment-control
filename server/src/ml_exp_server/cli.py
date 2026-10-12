@@ -117,7 +117,7 @@ def _doctor_command(args: argparse.Namespace) -> int:
     from experiment_control.backends import BackendServices, build_registry
     from experiment_control.runner import SubprocessRunner
 
-    from .http_auth import HttpAuthError, load_bearer_token
+    from .api.auth import HttpAuthError, load_bearer_token
     from .projects.project_config import ConfigError, load_research_project, load_server_config
     from .projects.project_registry import ProjectRegistry, ProjectRegistryError
 

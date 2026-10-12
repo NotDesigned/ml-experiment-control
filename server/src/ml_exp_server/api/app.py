@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from ..application import ExperimentServerApplication
-from ..api_contract import (
+from .contract import (
     API_PROTOCOL_VERSION,
     CLIENT_PROTOCOL_HEADER,
     MIN_CLIENT_PROTOCOL_VERSION,
@@ -23,7 +23,7 @@ from ..api_contract import (
 )
 from ..collectord import Collector, CollectorConfig, CollectorLease
 from ..ingest.indexer import RunIndex, index_project
-from ..http_auth import load_bearer_token
+from .auth import load_bearer_token
 from ..projects.project_config import load_server_config
 from ..runtime import ExperimentServerRuntime
 from ..schemas import ServerConfig, ResearchProject

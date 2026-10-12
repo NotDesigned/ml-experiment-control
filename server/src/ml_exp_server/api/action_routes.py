@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..application import ApplicationError
-from ..api_contract import ActionSnapshotResponse
+from .contract import ActionSnapshotResponse
 from ..runs.intent_protocol import OperationIntent
 from ..schemas import OperationScopeType
 from .errors import application_http_error

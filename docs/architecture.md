@@ -11,6 +11,25 @@
 The server imports the core; the core never imports the server. Clients install
 neither. `rust/src/main.rs` supplies `experiment-redact`, packaged with the core.
 
+The checkout groups independently installable packages and their tests:
+
+```text
+client/       HTTP client source, CLI and client tests
+server/       Daemon source, server tests and operator configuration examples
+src/          Reusable experiment_control core
+tests/        Core tests
+rust/         experiment-redact source
+docs/         Current user, operator and developer documentation
+examples/     Core integration and data-image examples
+tools/        Development checks and desktop provisioning
+```
+
+The root `pyproject.toml` defines the core package and the uv workspace;
+`server/` and `client/` have their own package metadata. Generated environments,
+build outputs and test caches are not source. On a deployed checkout, private
+`.ops/` evidence and `.recovery/` rollback programs are also Git-ignored; keep
+them separate from scientific data and apply their operator retention rules.
+
 ```mermaid
 flowchart LR
     Client[Client computer] --> API[API daemon]
@@ -35,7 +54,7 @@ build contexts/layers live on the desktop. Training runs inside backend containe
 
 | Concern | Main modules under `server/src/ml_exp_server/` |
 |---|---|
-| HTTP and auth | `api/`, `http_auth.py`, `api_contract.py` |
+| HTTP and auth | `api/`: routes, `auth.py` bearer loading and `contract.py` versioned response models |
 | Composition | `runtime.py`, `api/app.py` |
 | Projects and source identities | `projects/`: imports, revisions, registry, lifecycle and authored Runs |
 | Checked mutations | `application.py`, `actions/`, `runs/submissions.py`, `controller_gateway.py` |
@@ -47,8 +66,21 @@ build contexts/layers live on the desktop. Training runs inside backend containe
 | Data | `data/`: assets, multipart upload, remote upload and delivery; `desktop_upload.py` is the standalone process entry |
 | Provider storage operations | `backends/wyd.py`, `sensecore_data.py`, `sensecore_results.py` |
 | Results/state | `results/`: artifact storage, download lifecycle, checkpoint registry and independent collection |
-| Metrics and W&B | `tracking/`: contracts, durable outbox, display and publication; `wandb_exporter.py` is the SDK process entry |
+| Experiment records | `records/`: canonical durable journal and verified-archive metric import |
+| Metrics and W&B | `tracking/`: metric/route contracts, publication cursors and display; `wandb_exporter.py` is the SDK process entry |
 | Compute programs | `workers/`: standalone stdlib training, data-copy and result-recovery programs |
+
+The two `backends/` directories have different responsibilities: core backends
+implement scheduling, status, logs and cancellation; server backends prepare
+shared-storage inputs and collect exact-Attempt outputs. Shared storage helpers,
+schemas and process entry points remain at the server package root.
+
+`records/RecordStore` owns accepted platform observations, independently of
+whether W&B is enabled. `tracking/TrackingStore` adds optional publication and
+display operations. They reuse the same historical `tracking/outbox.sqlite`
+database and event identities; they are not two copies of experiment history.
+Archive publication imports verified metrics before allowing artifact release;
+releasing an acknowledged archive does not delete its registered observations.
 
 `ExperimentServerApplication` and `ActionService` remain stable facades. Their
 stateless operation classes group existing methods by responsibility and share
@@ -77,6 +109,8 @@ These files under `workers/` are injected into new images:
 - `data_input.py`: verified data cache; `data_preparation.py`: optional download script.
 - `persistent_state.py`: verify/register/restore complete generations.
 - `worker_artifacts.py`: declared-output archive and multipart transfer.
+- `worker_http.py`: bounded HTTP transfer and safe transport diagnostics.
+- `worker_records.py`: send appended experiment records with retry/dedup identities.
 - `data_copy_worker.py`: separate zero-GPU NAS dataset copy.
 - `result_worker.py`: recover exact-Attempt outputs without running training.
 
@@ -97,9 +131,10 @@ not change workers in existing images. Backend implementations are core
 | Checkpoint | Complete backend-resident generation | NAS/datapool bytes and registered manifest |
 | Artifact | Published exact-Attempt output archive | Object, hashes and receipt |
 
-Actions/events use transactional SQLite. The read index uses another SQLite
-database. Runtime/delivery/checkpoint/upload metadata use files and durable
-journals/locks as needed. There is no global transaction across all stores.
+Actions/events use transactional SQLite. The read index and experiment-record
+journal use separate SQLite databases. Runtime/delivery/checkpoint/upload
+metadata use files and durable journals/locks as needed. There is no global
+transaction across all stores.
 Reconciliation verifies exact effects; it does not replay an uncertain create.
 The collector never starts replacement training. For eligible new workers with
 confirmed successful process exit, it may request independent CPU result
@@ -120,7 +155,8 @@ flowchart TD
     Certain -->|uncertain| Reconcile[Inspect original intent; no replay]
     Reconcile --> Worker
     Worker --> Train[User training program]
-    Train --> Metrics[metrics.jsonl to API outbox and optional W&B]
+    Train --> Metrics[metrics.jsonl to canonical API record journal]
+    Metrics --> WandB[Optional W&B publication]
     Train --> Checkpoint[Complete checkpoint on NAS or datapool]
     Train --> Exit[Record process exit]
     Exit --> Archive[Archive, upload and verify results]

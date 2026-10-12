@@ -1,4 +1,4 @@
-"""Read-only REST routes. Contract: docs/api_contract.md."""
+"""Read-only REST routes. Contract: docs/http_contract.md."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from .sse import IndexEventResponse
 from pydantic import BaseModel, Field, model_validator
 
 from ..application import ApplicationError
-from ..api_contract import DaemonHealth, ProjectRegistrationResponse
+from .contract import DaemonHealth, ProjectRegistrationResponse
 from ..projects.campaign_lifecycle import campaign_snapshot
 from ..collectord import Collector
 from ..ingest.indexer import RunIndex, index_project
