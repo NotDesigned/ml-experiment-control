@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .schemas import ProjectLifecycleRecord
+from ..schemas import ProjectLifecycleRecord
 
 
 API_PROTOCOL_VERSION = 2

@@ -16,7 +16,7 @@ from ml_exp_server.api import app as app_module
 from ml_exp_server.api.app import (
     _poll_loop, _shutdown, _start_daemon_thread, create_app,
 )
-from ml_exp_server.api_contract import CLIENT_PROTOCOL_HEADER
+from ml_exp_server.api.contract import CLIENT_PROTOCOL_HEADER
 from ml_exp_server.schemas import ServerConfig
 
 

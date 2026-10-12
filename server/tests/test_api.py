@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import ml_exp_server.api.app as api_app
-from ml_exp_server.api_contract import CLIENT_PROTOCOL_HEADER
+from ml_exp_server.api.contract import CLIENT_PROTOCOL_HEADER
 from ml_exp_server.api.app import create_app
 from ml_exp_server.api.routes import _attention
 from ml_exp_server.schemas import RunIndexRow

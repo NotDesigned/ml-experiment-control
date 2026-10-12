@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from ml_exp_server.http_auth import HttpAuthError, load_bearer_token
+from ml_exp_server.api.auth import HttpAuthError, load_bearer_token
 
 
 def test_bearer_token_requires_private_regular_owned_file(tmp_path):
