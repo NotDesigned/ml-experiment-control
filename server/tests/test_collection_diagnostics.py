@@ -27,7 +27,7 @@ def test_capacity_failure_is_durable_then_cleared_only_on_success(tmp_path, monk
     failed = store.read(value["upload_id"], binding)
     diagnostic = failed["last_error"]
     assert diagnostic["code"] == "UPLOAD_STORAGE" and diagnostic["http_status"] == 507
-    assert diagnostic["required_free_bytes"] == 10**20 and diagnostic["available_bytes"] >= 0
+    assert diagnostic["required_free_bytes"] == 10**20 + store.capacity.headroom and diagnostic["available_bytes"] >= 0
     assert failed["status"] == "UPLOADING" and len(failed["parts"]) == 1
     publish = Mock(return_value={"sha256": value["sha256"]})
     store.complete(value["upload_id"], binding, publish, 0)

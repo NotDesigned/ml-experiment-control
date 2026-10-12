@@ -76,11 +76,11 @@ def test_command_runner_handles_timeout_and_non_json_output(monkeypatch, tmp_pat
     def timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
 
-    monkeypatch.setattr(core_runner.subprocess, "run", timeout)
+    monkeypatch.setattr("ml_exp_server.processes.run_process", timeout)
     assert runner(["slow"], cwd=tmp_path, timeout=1)["timeout"] is True
 
     monkeypatch.setattr(
-        core_runner.subprocess, "run",
+        "ml_exp_server.processes.run_process",
         lambda *args, **kwargs: SimpleNamespace(
             returncode=2, stdout="not json", stderr="https://secret@example.test/error",
         ),

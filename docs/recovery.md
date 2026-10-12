@@ -115,6 +115,15 @@ Artifact completion reserves space for validation and the published object in
 addition to already saved parts: object storage can share the API host's disk.
 Insufficient space still rejects completion and preserves the session.
 
+State observation does not download weights. Large WYD copies first perform a
+read-only rsync size inventory and reserve their copy/build/validation/storage
+peak. Local result publication and multipart completion use the same admission
+budget, including concurrent unfinished uploads and the configured disk margin.
+`storage_capacity` in collection status explains a rejected recovery; retry only
+after resolving capacity. Newly copied files are evicted only after the complete
+published object and corresponding local file hashes verify. Backend files,
+receipts and unacknowledged archives remain available.
+
 Query `GET /api/runs/P/R/attempts/A/collection/diagnostics` with the normal API
 Bearer for the current result upload and CPU recovery evidence. The publication
 section distinguishes missing parts from a complete upload awaiting publication.

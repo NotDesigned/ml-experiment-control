@@ -49,7 +49,7 @@ def main():
     try:
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);package=root/'ml_exp_server';package.mkdir();(package/'__init__.py').write_text('')
-            for file in ('desktop_upload.py','data/multipart_upload.py','storage.py','application_errors.py','archive_limits.py','data_image_recipe.py','builds/build_contexts.py'):
+            for file in ('desktop_upload.py','data/multipart_upload.py','storage.py','storage_capacity.py','application_errors.py','archive_limits.py','data_image_recipe.py','builds/build_contexts.py'):
                 destination = package/file
                 destination.parent.mkdir(exist_ok=True)
                 if destination.parent != package:

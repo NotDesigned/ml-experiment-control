@@ -64,12 +64,17 @@ class AssetStore:
                            if p.is_dir() and ASSET_ID.fullmatch(p.name)]}
 
     def limits(self) -> dict:
+        from ..storage_capacity import StorageCapacity
+        capacity = StorageCapacity(self.objects.root.parent, self.objects.config)
+        with capacity.locked():
+            local = capacity.snapshot()
         value = {"asset_archive_bytes": wire_limit(self.limit), "asset_expanded_bytes": wire_limit(self.expanded_limit),
                 "asset_file_bytes": wire_limit(self.expanded_limit), "asset_files": self.file_limit,
                 "artifact_archive_bytes": wire_limit(self.objects.limit),
                 "configured_byte_limits": {"asset_archive_bytes": self.limit, "asset_expanded_bytes": self.expanded_limit,
                                            "artifact_archive_bytes": self.objects.limit},
                 "artifact_files": 20000, "local_storage_free_bytes": shutil.disk_usage(self.root).free,
+                "local_storage": local,
                 "upload_part_bytes": int(self.objects.config.get("upload_part_bytes", 16 * 1024 ** 2)),
                 "upload_session_seconds": int(self.objects.config.get("upload_session_seconds", 86400)),
                 "upload_part_number_base": 0,

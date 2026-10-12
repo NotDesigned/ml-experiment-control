@@ -50,7 +50,8 @@ def recovery(storage, tmp_path, monkeypatch):
                       attempts=[AttemptSummary(attempt_id="attempt-001", state="FAILED")])
     index = SimpleNamespace(get_run=lambda p, r: row if (p, r) == ("demo", "run-a") else None)
     service = ResultCollectionService(SimpleNamespace(config=cfg, index=index))
-    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout="FAILED|\n"))
+    monkeypatch.setattr(subprocess, "run", lambda command, **kw: SimpleNamespace(stdout="Total file size: 7 bytes\n" if "--stats" in command else "FAILED|\n"))
+    monkeypatch.setattr("ml_exp_server.backends.wyd.run_process", lambda *a, **kw: subprocess.run(*a, **kw))
     return service, root, token, config, remote, definition, row
 
 
@@ -223,13 +224,13 @@ def test_shared_storage_transfer_is_atomic_and_bounded(recovery, monkeypatch):
     commands = []
     def run(command, **kwargs):
         commands.append((command, kwargs))
-        if command[0] == "rsync":
+        if command[0] == "rsync" and "--stats" not in command:
             Path(command[-1]).joinpath("chosen.bin").write_bytes(b"weights")
-        return SimpleNamespace(stdout="FAILED|\n")
+        return SimpleNamespace(stdout="Total file size: 7 bytes\n" if "--stats" in command else "FAILED|\n")
     monkeypatch.setattr(subprocess, "run", run)
     service.begin(*IDENTITY); service.finish(IDENTITY)
     assert service.read(*IDENTITY)["status"] == "AVAILABLE" and remote
-    assert commands[1][0][0] == "rsync" and commands[1][1]["timeout"] == 300
+    assert commands[2][0][0] == "rsync" and commands[2][1]["timeout"] == 300
     assert not list((root / "attempts/attempt-001").glob(".result-recovery-*"))
 
 
@@ -416,7 +417,7 @@ def test_artifact_completion_reserves_validation_and_colocated_object_storage(re
         endpoint = base + "/" + upload["upload_id"]
         assert client.put(endpoint + "/parts/0", params={"sha256": checksum}, content=data, headers=headers).status_code == 200
         # Parts already exist; validation and a local object store both need space.
-        free = 64 * 1024 ** 2 + 2 * len(data) - (0 if enough else 1)
+        free = 1024 ** 3 + 2 * len(data) - (0 if enough else 1)
         monkeypatch.setattr("ml_exp_server.api.upload_routes.shutil.disk_usage", lambda p: SimpleNamespace(free=free))
         response = client.post(endpoint + "/complete", headers=headers)
         assert response.status_code == (200 if enough else 507)

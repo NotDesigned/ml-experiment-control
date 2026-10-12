@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import base64
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import fcntl
 import fnmatch
 import gzip
 import hashlib
+import io
 import json
+import os
 import shutil
 import re
+import stat
 from pathlib import Path, PurePosixPath
 import shlex
 import subprocess
@@ -20,6 +23,7 @@ import yaml
 from experiment_control.backends.sensecore_rest import SenseCoreREST, RESTError, create_document
 
 from ..application_errors import ApplicationError
+from ..storage_capacity import StorageCapacity, CapacityError
 from .artifact_store import ArtifactStore, ATTEMPT, artifact_released
 from .artifacts import ArtifactService
 from .checkpoint_registry import CheckpointRegistry
@@ -27,7 +31,7 @@ from ..container_execution import ContainerExecutionService
 from ..data.data_delivery import DataDeliveryService
 from ..workers.result_worker import sha
 from ..projects.source_imports import IDENTITY, remove_staging
-from ..storage import DurableJsonState, utc_now
+from ..storage import DurableJsonState, utc_now, atomic_json
 from ..workers.worker_artifacts import archive_outputs
 from ..backends.sensecore_results import SenseCoreResultOperations
 from ..backends.wyd import WydResultOperations
@@ -106,7 +110,7 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
                 "archive": None if receipt is None else {**{k: receipt[k] for k in ("sha256", "bytes")},
                                                        "file_count": len(receipt["files"])},
                 "publication": None if receipt else self.publication_diagnostics((project, run, attempt)),
-                "cpu_diagnostics": value.get("cpu_diagnostics")}
+                "cpu_diagnostics": value.get("cpu_diagnostics"), "storage_capacity": value.get("storage_capacity")}
 
     def publication_diagnostics(self, identity):
         """Read atomic session metadata; never wait on a publisher's long lock."""
@@ -338,8 +342,13 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
                 phase = "READING_SHARED_STORAGE"
                 self.update(identity, status="COLLECTING", phase=phase)
                 local = root / "attempts" / identity[2] / "recovered_outputs"
-                self.read_wyd_outputs(backend, definition, identity[2], local)
-            if local is not None:
+                size = self.wyd_output_bytes(backend, definition, identity[2])
+                with self.capacity().reserve(4 * size + 128 * 1024 ** 2) as reservation:
+                    self.read_wyd_outputs(backend, definition, identity[2], local)
+                    phase = "VERIFYING_AND_PUBLISHING"
+                    self.update(identity, status="COLLECTING", phase=phase)
+                    self.publish_local(identity, local, transfer, reservation=reservation)
+            elif local is not None:
                 phase = "VERIFYING_AND_PUBLISHING"
                 self.update(identity, status="COLLECTING", phase=phase)
                 self.publish_local(identity, local, transfer)
@@ -355,8 +364,11 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
             self.update(identity, status="RECONCILE_REQUIRED" if uncertain else "FAILED",
                         phase=phase, diagnostic="PROVIDER_REQUEST_UNCERTAIN" if uncertain else "PROVIDER_REQUEST_FAILED")
         except Exception as error:
+            capacity = ({"http_status": error.status_code, "required_free_bytes": error.required_free_bytes,
+                         "available_bytes": error.available_bytes, "reserved_bytes": error.reserved_bytes}
+                        if isinstance(error, CapacityError) else None)
             self.update(identity, status="RECONCILE_REQUIRED" if self.provider_effect_pending(identity) else "FAILED",
-                        phase=phase, diagnostic=getattr(error, "code", type(error).__name__))
+                        phase=phase, diagnostic=getattr(error, "code", type(error).__name__), storage_capacity=capacity)
 
     def provider_effect_pending(self, identity):
         with self.state(*identity) as (_, snapshot):
@@ -388,19 +400,33 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
             raise RecoveryError("ARCHIVE_IDENTITY_CONFLICT", "multiple conflicting unfinished result archives")
         return found[0] if found else None
 
-    def publish_local(self, identity, outputs, transfer, *, repair_sha256=None):
+    def capacity(self):
+        return StorageCapacity(self.objects.root.parent, self.objects.config)
+
+    @staticmethod
+    def archive_peak(outputs, patterns):
+        total, count = 0, 0
+        for directory, _, names, fd in os.fwalk(outputs, follow_symlinks=False):
+            for name in names:
+                relative = Path(directory, name).relative_to(outputs)
+                if any(part.startswith('.') for part in relative.parts):
+                    continue
+                if not any(fnmatch.fnmatch(relative.as_posix(), pattern) or pattern.startswith('**/') and
+                           fnmatch.fnmatch(relative.as_posix(), pattern[3:]) for pattern in patterns):
+                    continue
+                info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if stat.S_ISREG(info.st_mode):
+                    total += (info.st_size + 511) // 512 * 512 + 8192
+                    count += 1
+        # Tar, expanded validation tree and same-host object storage; include
+        # allocation overhead for many tiny files and the tar end records.
+        return 3 * (total + 10240) + count * 4096
+
+    def publish_local(self, identity, outputs, transfer, *, repair_sha256=None, reservation=None):
         from ..workers.result_worker import checked_directory
         checked_directory(outputs)
-        if repair_sha256 is not None:
-            selected_bytes = sum(path.stat().st_size for path in outputs.rglob('*')
-                                 if not path.is_symlink() and path.is_file()
-                                 and not any(part.startswith('.') for part in path.relative_to(outputs).parts)
-                                 and any(fnmatch.fnmatch(path.relative_to(outputs).as_posix(), pattern) or
-                                         pattern.startswith('**/') and fnmatch.fnmatch(path.relative_to(outputs).as_posix(), pattern[3:])
-                                         for pattern in transfer['outputs']))
-            if shutil.disk_usage(outputs).free < 3 * selected_bytes + 64 * 1024 ** 2:
-                raise ApplicationError("insufficient archive repair staging space", status_code=507, code="UPLOAD_STORAGE")
-        with tempfile.TemporaryFile() as stream:
+        claim = nullcontext(reservation) if reservation is not None else self.capacity().reserve(self.archive_peak(outputs, transfer["outputs"]))
+        with claim as lease, tempfile.TemporaryFile(dir=self.objects.root) as stream:
             count = archive_outputs(outputs, stream, self.objects.limit or 0, transfer["outputs"])
             if not count:
                 raise RecoveryError("RESULT_FILES_NOT_FOUND", "Attempt has no declared outputs")
@@ -410,6 +436,40 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
             if expected is not None and (sha(stream), length) != (expected["sha256"], expected["bytes"]):
                 raise RecoveryError("OUTPUT_ARCHIVE_CHANGED", "local outputs differ from unfinished upload")
             stream.seek(0)
-            if repair_sha256 is not None and shutil.disk_usage(outputs).free < 2 * length + 64 * 1024 ** 2:
-                raise ApplicationError("insufficient archive repair staging space", status_code=507, code="UPLOAD_STORAGE")
-            self.objects.receive(*identity, transfer["token"], stream, length, repair_sha256=repair_sha256)
+            # Tar and copied files now consume real free space. Keep only the
+            # remaining validation + object-write peak claimed, and recheck
+            # unexpected disk consumption before publication.
+            lease.resize(2 * length + count * 4096)
+            receipt = self.objects.receive(*identity, transfer["token"], stream, length, repair_sha256=repair_sha256)
+        self.evict_published_copies(identity, receipt)
+
+    def evict_published_copies(self, identity, receipt):
+        # Verify the durable object by streaming through bounded memory before
+        # removing receipt-matched delivery copies. This never ACKs/deletes the
+        # archive or touches the backend's outputs/checkpoint state.
+        from .artifact_cache import evict_caches
+        class ChecksumSink(io.RawIOBase):
+            def __init__(self):
+                self.digest, self.size = hashlib.sha256(), 0
+            def writable(self):
+                return True
+            def write(self, data):
+                self.digest.update(data)
+                self.size += len(data)
+                return len(data)
+        try:
+            with ChecksumSink() as sink:
+                self.objects.client().download_fileobj(self.objects.config["bucket"], receipt["object_key"], sink,
+                                                       Config=self.objects._transfer_config())
+                if (sink.digest.hexdigest(), sink.size) != (receipt["sha256"], receipt["bytes"]):
+                    raise ValueError("published archive verification differs")
+            with self.objects.record(*identity) as (path, value):
+                if value["receipt"] != receipt:
+                    return
+                value["cache_cleanup"] = evict_caches(value)
+                value["cache_cleanup"].pop("error", None)
+                atomic_json(path, value)
+        except Exception as error:
+            with self.objects.record(*identity) as (path, value):
+                value.setdefault("cache_cleanup", {})["error"] = type(error).__name__
+                atomic_json(path, value)

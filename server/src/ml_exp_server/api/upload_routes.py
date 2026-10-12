@@ -81,8 +81,15 @@ async def part(context, upload_id, number, digest, request):
             if len(data) != expected or hashlib.sha256(data).hexdigest() != digest:
                 raise HTTPException(status_code=400, detail="upload part length or SHA256 differs")
             return await invoke(uploads.part, upload_id, binding, number, bytes(data), digest, expected)
-    if expected + 64 * 1024 ** 2 > shutil.disk_usage(uploads.root).free:
-        raise HTTPException(status_code=507, detail="insufficient upload staging space")
+    lease = uploads.capacity.reserve(expected, ignore_upload=upload_id)
+    await invoke(lease.__enter__)
+    try:
+        return await receive_part(uploads, binding, upload_id, number, digest, expected, request)
+    finally:
+        await run_in_threadpool(lease.__exit__, None, None, None)
+
+
+async def receive_part(uploads, binding, upload_id, number, digest, expected, request):
     with tempfile.NamedTemporaryFile(dir=uploads.root, prefix=".part-", delete=False) as temporary:
         filename = Path(temporary.name)
         try:
@@ -122,7 +129,7 @@ async def complete(context, upload_id, request):
             expanded = service.expanded_limit
     # The seekable part stream needs no concatenated archive. Keep room for
     # validation and the published object, which may share this filesystem.
-    return await invoke(uploads.complete, upload_id, binding, publish, min(expanded, value["bytes"]) + value["bytes"] + 64 * 1024 ** 2 if expanded is not None else value["bytes"] * 2 + 64 * 1024 ** 2)
+    return await invoke(uploads.complete, upload_id, binding, publish, min(expanded, value["bytes"]) + value["bytes"] if expanded is not None else value["bytes"] * 2)
 
 
 async def abort(context, upload_id):

@@ -16,6 +16,7 @@ import time
 from ..application_errors import ApplicationError
 from ..storage import atomic_json, utc_now
 from ..archive_limits import exceeds
+from ..storage_capacity import StorageCapacity, CapacityError
 
 UPLOAD_ID = re.compile(r"^upload\.[0-9a-f]{64}$")
 PART_BYTES = 16 * 1024 ** 2
@@ -66,6 +67,7 @@ class UploadStore:
     def __init__(self, root, config):
         self.root = Path(root) / "multipart-uploads"
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.capacity = StorageCapacity(root, config)
         self.part_bytes = int(config.get("upload_part_bytes", PART_BYTES))
         self.ttl = int(config.get("upload_session_seconds", 86400))
         self.max_parts = int(config.get("upload_max_parts", 65536))
@@ -93,17 +95,17 @@ class UploadStore:
                 return value
             if value and value["status"] == "UPLOADING" and not self.expired(value):
                 return value
-            if size + 64 * 1024 ** 2 > shutil.disk_usage(self.root).free:
-                raise ApplicationError("insufficient upload staging space", status_code=507, code="UPLOAD_STORAGE")
-            if directory.exists():
-                shutil.rmtree(directory)
-            directory.mkdir(mode=0o700)
-            (directory / "parts").mkdir(mode=0o700)
             value = {"upload_id": upload_id, "binding": binding, "sha256": digest, "bytes": size,
                      "part_bytes": self.part_bytes, "part_count": (size + self.part_bytes - 1) // self.part_bytes,
                      "parts": {}, "status": "UPLOADING",
                      "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=self.ttl)).isoformat()}
-            atomic_json(path, value)
+            with self.capacity.locked():
+                self.capacity.check(size, ignore_upload=upload_id)
+                if directory.exists():
+                    shutil.rmtree(directory)
+                directory.mkdir(mode=0o700)
+                (directory / "parts").mkdir(mode=0o700)
+                atomic_json(path, value)
             return value
 
     @staticmethod
@@ -149,8 +151,9 @@ class UploadStore:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
-            value["parts"][str(number)] = item
-            atomic_json(path, value)
+            with self.capacity.locked():
+                value["parts"][str(number)] = item
+                atomic_json(path, value)
             return item
 
     def complete(self, upload_id, binding, publish, reserve):
@@ -162,37 +165,42 @@ class UploadStore:
             self.checked(value, binding, active=True)
             if len(value["parts"]) != value["part_count"]:
                 raise ValueError("upload is missing parts")
-            free = shutil.disk_usage(self.root).free
-            if reserve > free:
+            try:
+                with self.capacity.reserve(reserve, ignore_upload=upload_id):
+                    return self.publish(directory, path, value, publish)
+            except CapacityError as error:
                 value["last_error"] = {"phase": "PUBLICATION_CAPACITY", "http_status": 507,
-                                       "code": "UPLOAD_STORAGE", "required_free_bytes": reserve,
-                                       "available_bytes": free, "observed_at": utc_now()}
+                                       "code": error.code, "required_free_bytes": error.required_free_bytes,
+                                       "available_bytes": error.available_bytes, "reserved_bytes": error.reserved_bytes,
+                                       "observed_at": utc_now()}
                 atomic_json(path, value)
-                raise ApplicationError("insufficient space to validate and publish archive", status_code=507, code="UPLOAD_STORAGE")
-            paths = [directory / "parts" / str(i) for i in range(value["part_count"])]
-            with io.BufferedReader(PartStream(paths, value["part_bytes"], value["bytes"]), buffer_size=1024 ** 2) as stream:
-                # Revalidate on completion, including parts recovered after a restart.
-                whole = hashlib.sha256()
-                for number in range(value["part_count"]):
-                    digest = hashlib.sha256()
-                    size = self.part_size(value, number)
-                    remaining = size
-                    while remaining:
-                        data = stream.read(min(1024 ** 2, remaining))
-                        digest.update(data)
-                        whole.update(data)
-                        remaining -= len(data)
-                    if {"sha256": digest.hexdigest(), "bytes": size} != value["parts"][str(number)]:
-                        raise ValueError("stored upload part checksum differs")
-                if whole.hexdigest() != value["sha256"]:
-                    raise ValueError("archive SHA256 differs from upload identity")
-                stream.seek(0)
-                result = publish(stream, value["bytes"], value["sha256"])
-            value.update(status="COMPLETED", result=result)
-            value.pop("last_error", None)
-            atomic_json(path, value)
-            shutil.rmtree(directory / "parts")
-            return result
+                raise
+
+    def publish(self, directory, path, value, publish):
+        paths = [directory / "parts" / str(i) for i in range(value["part_count"])]
+        with io.BufferedReader(PartStream(paths, value["part_bytes"], value["bytes"]), buffer_size=1024 ** 2) as stream:
+            # Revalidate on completion, including parts recovered after a restart.
+            whole = hashlib.sha256()
+            for number in range(value["part_count"]):
+                digest = hashlib.sha256()
+                size = self.part_size(value, number)
+                remaining = size
+                while remaining:
+                    data = stream.read(min(1024 ** 2, remaining))
+                    digest.update(data)
+                    whole.update(data)
+                    remaining -= len(data)
+                if {"sha256": digest.hexdigest(), "bytes": size} != value["parts"][str(number)]:
+                    raise ValueError("stored upload part checksum differs")
+            if whole.hexdigest() != value["sha256"]:
+                raise ValueError("archive SHA256 differs from upload identity")
+            stream.seek(0)
+            result = publish(stream, value["bytes"], value["sha256"])
+        value.update(status="COMPLETED", result=result)
+        value.pop("last_error", None)
+        atomic_json(path, value)
+        shutil.rmtree(directory / "parts")
+        return result
 
     def abort(self, upload_id, binding):
         with self.record(upload_id) as (directory, path, value):
