@@ -590,11 +590,12 @@ def test_cpu_script_rejects_historical_object_asset_even_under_desktop_policy(cp
     assert not control.creates
 
 
-def test_cpu_script_accepts_desktop_asset_and_freezes_only_cached_input(cpu_download, remote_client, monkeypatch):
+def test_cpu_script_accepts_desktop_asset_and_freezes_only_cached_input(cpu_download, remote_client, stage, monkeypatch):
     from ml_exp_server.data.data_delivery import DataDeliveryService
     from tests.test_artifact_store import archive
     from tests.test_multipart_upload import begin, send
     control = cpu_download
+    stage.uploads.capacity.headroom = 0  # This tiny transfer verifies routing, not disk admission.
     content = archive({"tokens.bin": b"desktop input"})
     upload = begin(remote_client, content)
     response = remote_client.post(send(remote_client, content, upload) + "/complete")
