@@ -182,7 +182,7 @@ class Controller:
                                 ML_EXPD_SNAPSHOT_INTERVAL=str(self.run["checkpoint_upload"]["interval_seconds"]))
             if self.run.get("data_preparation"):
                 dispatch["ML_EXPD_DATA_PREPARATION"] = json.dumps(self.run["data_preparation"])
-                if relay:
+                if relay or self.run.get("data_preparation_mode") == "before_job":
                     dispatch["ML_EXPD_DATA_PREPARATION_CACHED"] = "1"
             if self.run.get("checkpoint_persistence"):
                 prefix = transfer.config["public_transfer_base"].rstrip("/").rsplit("/", 1)[0]
@@ -289,6 +289,11 @@ class Controller:
                         input_text=json.dumps({"target": target, "environment": relay}), timeout_seconds=30)
 
     def prepare_gateway_data(self, *, require_cached):
+        if self.run.get("data_preparation_mode") == "before_job" and self.run["backend"]["kind"] == "sensecore":
+            from .backends.sensecore_preparation import SenseCoreScriptPreparation
+            SenseCoreScriptPreparation(self.campaign["artifact_store"], self.campaign["source_store"]).ensure(
+                self.campaign["project"], self.run, require_cached=require_cached)
+            return
         if not self.run["backend"].get("api_relay") or not self.run.get("data_preparation"):
             return
         backend = self.run["backend"]

@@ -7,7 +7,7 @@ import pytest
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.container_execution import ContainerExecutionService, RunRequest
 from ml_exp_server.runs.experiment_preparation import PreparationRun
-from ml_exp_server.runs.executor_capabilities import ExecutionRequirements, ExecutorSelector, declaration, match, mismatches, validate_worker
+from ml_exp_server.runs.executor_capabilities import ExecutionRequirements, ExecutorSelector, declaration, match, mismatches, validate_worker, validate_script_asset
 from tests.test_container_api import client, runtime
 
 
@@ -138,3 +138,89 @@ def test_lowlevel_create_cannot_bypass_capacity_check(client):
     profile["capacity"] = {"gpus": 1}
     with pytest.raises(ApplicationError, match="resources.gpus"):
         service.create_run("demo", RunRequest(run_id="big", runtime_id=bundle["runtime_id"], executor="gpu", resources={"gpus": 2}), profile_snapshot=profile)
+
+
+@pytest.mark.parametrize("kind,cpu,relay,phase,transport,maximum", [
+    ("sensecore", True, False, "before_job", "cpu-acp-shared-storage", 3600),
+    ("sensecore", False, False, "inside_job", "worker-shared-storage", 86400),
+    ("gpu", False, False, "inside_job", "worker-shared-storage", 86400),
+    ("gpu", False, True, "before_job", "ssh-shared-storage", 86400),
+])
+def test_data_preparation_contract_explains_phase_budget_transport_and_bound(client, kind, cpu, relay, phase, transport, maximum):
+    service = ContainerExecutionService(client.app.state.runtime)
+    profile = service.profiles()["cloud" if kind == "sensecore" else "gpu"]
+    if relay:
+        profile["backend"]["api_relay"] = {"endpoint": "tcp://127.0.0.1:18443", "origin": "https://api.example"}
+    cap = declaration(profile, artifact_store=True, desktop=True, cpu_preparation=cpu)
+    assert cap["data"]["download_script"] == phase
+    assert cap["data"]["preparation"] == {"phase": phase, "budget": "preparation" if phase == "before_job" else "training",
+                                          "transport": transport, "max_timeout_seconds": maximum}
+    assert cap["resources"]["inventory_query"] is False
+    assert not cap["outputs"]["offline_export"]
+
+
+def test_relay_cannot_be_declared_on_sensecore(client):
+    profile = ContainerExecutionService(client.app.state.runtime).profiles()["cloud"]
+    profile["backend"]["api_relay"] = {"endpoint": "tcp://127.0.0.1:18443", "origin": "https://api.example"}
+    with pytest.raises(ApplicationError) as error:
+        declaration(profile, artifact_store=True, desktop=False, cpu_preparation=True)
+    assert error.value.code == "EXECUTOR_TRANSPORT_INVALID"
+
+
+@pytest.mark.parametrize("cpu", [False, True])
+def test_before_job_requirement_matches_only_published_preparation_capability(client, cpu):
+    profile = ContainerExecutionService(client.app.state.runtime).profiles()["cloud"]
+    cap = declaration(profile, artifact_store=True, desktop=False, cpu_preparation=cpu)
+    reasons = mismatches(cap, profile, request(data_preparation={"script": "download.py"}),
+                         ExecutionRequirements(data_preparation_before_job=True))
+    assert ("data.download_script.before_job" in reasons) is not cpu
+
+
+@pytest.mark.parametrize("timeout,accepted", [(3600, True), (3601, False)])
+def test_cpu_preparation_script_limit_is_rejected_during_matching(client, timeout, accepted):
+    service = ContainerExecutionService(client.app.state.runtime)
+    profiles = {"cloud": service.profiles()["cloud"]}
+    caps = {"cloud": declaration(profiles["cloud"], artifact_store=True, desktop=False, cpu_preparation=True)}
+    run = request(executor="cloud", data_preparation={"script": "download.py", "timeout_seconds": timeout})
+    if accepted:
+        assert match(profiles, caps, run, ExecutionRequirements(), None)["executor"] == "cloud"
+    else:
+        with pytest.raises(ApplicationError, match="data.download_script.timeout_seconds"):
+            match(profiles, caps, run, ExecutionRequirements(), None)
+
+
+def test_gateway_preparation_requires_the_runtime_relay_worker(client):
+    profile = ContainerExecutionService(client.app.state.runtime).profiles()["gpu"]
+    profile["backend"]["api_relay"] = {"endpoint": "tcp://127.0.0.1:18443", "origin": "https://api.example"}
+    cap = declaration(profile, artifact_store=True, desktop=False)
+    with pytest.raises(ApplicationError, match="api-tcp-relay.v1"):
+        validate_worker(request(), {"capabilities": []}, cap)
+    validate_worker(request(), {"capabilities": ["api-tcp-relay.v1"]}, cap)
+
+
+@pytest.mark.parametrize("desktop,cpu,script,rejected", [(False, True, True, True),
+    (True, True, True, False), (False, True, False, False), (False, False, True, False)])
+def test_cpu_scripts_require_inputs_prepared_before_job_only_when_needed(client, desktop, cpu, script, rejected):
+    profile = ContainerExecutionService(client.app.state.runtime).profiles()["cloud"]
+    cap = declaration(profile, artifact_store=True, desktop=desktop, cpu_preparation=cpu)
+    fields = {"inputs": [{"asset_id": "asset." + "a" * 64, "mount_path": "/inputs/data"}]}
+    if script:
+        fields["data_preparation"] = {"script": "download.py"}
+    reasons = mismatches(cap, profile, request(**fields), ExecutionRequirements())
+    assert ("data.download_script.inputs_require_before_job" in reasons) is rejected
+
+
+@pytest.mark.parametrize("script,cpu,asset,rejected", [(True, True, {}, True),
+    (True, True, {"remote_storage": "object"}, True),
+    (True, True, {"remote_storage": "desktop-builder"}, False),
+    (False, True, {}, False), (True, False, {}, False)])
+def test_actual_asset_transport_is_checked_independently_of_current_upload_policy(client, script, cpu, asset, rejected):
+    profile = ContainerExecutionService(client.app.state.runtime).profiles()["cloud"]
+    cap = declaration(profile, artifact_store=True, desktop=True, cpu_preparation=cpu)
+    run = request(**({"data_preparation": {"script": "download.py"}} if script else {}))
+    if rejected:
+        with pytest.raises(ApplicationError) as error:
+            validate_script_asset(run, cap, asset)
+        assert error.value.code == "DATA_SCRIPT_INPUT_TRANSPORT_UNSUPPORTED"
+    else:
+        validate_script_asset(run, cap, asset)

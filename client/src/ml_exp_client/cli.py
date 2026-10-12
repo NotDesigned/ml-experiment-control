@@ -13,9 +13,10 @@ import tempfile
 from urllib.parse import urlencode
 
 from . import __version__
-from .api import Client, ClientError, acknowledge, data_archive, download, save, segment, source_archive, upload_asset_parts
+from .api import Client, ClientError, _safe_error_json, _safe_error_text, acknowledge, data_archive, download, save, segment, source_archive, upload_asset_parts
 from .workflow import experiment, validate_dockerfile, report
 from .data_delivery import deliver_data
+from .operations import read_attempt, training_operation
 
 
 def parser():
@@ -106,6 +107,30 @@ def parser():
     watch.add_argument("--project", required=True)
     watch.add_argument("--run", required=True)
     watch.add_argument("--seconds", type=float, default=1800)
+    logs = commands.add_parser("logs", help="read stored Attempt stdout/stderr; defaults to the current Attempt")
+    metrics = commands.add_parser("metrics", help="read recorded Attempt metrics with their units, protocols and variants")
+    for reading in (logs, metrics):
+        reading.add_argument("--project", required=True)
+        reading.add_argument("--run", required=True)
+        reading.add_argument("--attempt", help="exact attempt-NNN; otherwise resolve the current Attempt once")
+    logs.add_argument("--stream", choices=("both", "stdout", "stderr"), default="both")
+    logs.add_argument("--lines", type=int, default=80)
+    metrics.add_argument("--keys", help="comma-separated recorded metric names; server filtering preserves dimensions")
+    metrics.add_argument("--max-points", type=int, default=2000)
+    cancel = commands.add_parser("cancel", help="prepare cancellation of an exact Attempt; review before --execute")
+    retry = commands.add_parser("retry", help="prepare a new Attempt in the same frozen Run; does not select a checkpoint")
+    for operation in (cancel, retry):
+        operation.add_argument("--project", help="required when first preparing the plan")
+        operation.add_argument("--run", help="required when first preparing the plan")
+        operation.add_argument("--attempt", help="exact source attempt-NNN; required when first preparing")
+        operation.add_argument("--reason", help="operator reason saved in the plan")
+        operation.add_argument("--state", type=Path, required=True, help="saved Action plan; existing state is observed without replay")
+        operation.add_argument("--action-id", help="attach the exact original Action after a lost preparation reply, for review")
+        confirmation = operation.add_mutually_exclusive_group()
+        confirmation.add_argument("--execute", action="store_true", help="explicitly authorize and execute an already saved, reviewed plan")
+        confirmation.add_argument("--reconcile", action="store_true", help="observe the original uncertain Action; never resubmit")
+    retry.add_argument("--max-gpu-hours", type=float, help="finite positive budget; required when first preparing")
+    retry.add_argument("--new-attempt", help="optional exact new attempt-NNN identity")
     fetch = commands.add_parser("download", help="download exact-Attempt outputs and verify against archive")
     fetch.add_argument("--project", required=True)
     fetch.add_argument("--run", required=True)
@@ -167,6 +192,16 @@ def main(argv=None):
             endpoint = f"/api/runs/{segment(args.project)}/{segment(args.run)}/attempts/{segment(args.attempt)}/collection"
             result = (client.call(endpoint, data={"retry": args.retry, "reconcile": args.reconcile})
                       if args.start or args.retry or args.reconcile else client.call(endpoint))
+        elif args.command in {"logs", "metrics"}:
+            options = ({"stream": args.stream, "lines": args.lines} if args.command == "logs"
+                       else {"keys": args.keys, "max_points": args.max_points})
+            result = read_attempt(client, args.command, args.project, args.run, args.attempt, **options)
+        elif args.command in {"cancel", "retry"}:
+            result = training_operation(client, args.command, args.state, project=args.project,
+                run=args.run, attempt=args.attempt, reason=args.reason, execute=args.execute,
+                reconcile=args.reconcile, action_id=args.action_id,
+                max_gpu_hours=getattr(args, "max_gpu_hours", None),
+                new_attempt=getattr(args, "new_attempt", None))
         elif args.command == "experiment":
             result = experiment(client, health, args.config, args.state, resume=args.resume,
                                 execute=args.execute, seconds=args.seconds, out=args.download_to,
@@ -331,9 +366,22 @@ def main(argv=None):
         print(json.dumps(result, indent=2))
         if args.command == "execute" and result["status"] != "VERIFIED":
             return 2
+        if args.command in {"cancel", "retry"} and args.execute and result["action"]["execution"]["status"] not in {"EXECUTING", "VERIFIED"}:
+            return 2
         if args.command == "watch" and result["run"]["scheduler_state"] != "SUCCEEDED":
             return 2
         return 0
-    except (ClientError, OSError, ValueError, KeyError) as exc:
+    except ClientError as exc:
+        error_token = locals().get("token", "")
+        print(json.dumps({"error": _safe_error_text(str(exc), error_token),
+                          "status": _safe_error_json(exc.status, error_token),
+                          "retryable": _safe_error_json(exc.retryable, error_token),
+                          "error_code": _safe_error_json(exc.error_code, error_token),
+                          "retry_after": _safe_error_json(exc.retry_after, error_token),
+                          "details": _safe_error_json(exc.details, error_token),
+                          "response_body": _safe_error_json(exc.response_body, error_token),
+                          "body_truncated": _safe_error_json(exc.body_truncated, error_token)}, ensure_ascii=False), file=sys.stderr)
+        return 2
+    except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

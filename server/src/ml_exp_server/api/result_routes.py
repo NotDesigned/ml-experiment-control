@@ -1,10 +1,15 @@
 """Result collection control and narrowly scoped training completion evidence."""
 from __future__ import annotations
 
+import asyncio
+from functools import partial
 import re
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from ..results.result_collection import ResultCollectionService
+from ..application_errors import ApplicationError
+from ..execution_queue import admitted_handoff
+from .errors import application_http_error
 from .container_routes import invoke
 from .asset_routes import token
 
@@ -42,22 +47,34 @@ async def training_diagnostics(project: str, run: str, attempt: str, request: Re
 
 @router.post("/runs/{project}/{run}/attempts/{attempt}/collection/repair")
 async def repair(project: str, run: str, attempt: str, data: ArchiveRepairRequest, request: Request):
-    return await invoke(ResultCollectionService(request.app.state.runtime).repair,
-                        project, run, attempt, data.expected_sha256)
+    service = ResultCollectionService(request.app.state.runtime)
+    future = request.app.state.submit_job(
+        partial(service.repair, project, run, attempt), data.expected_sha256,
+        executor=request.app.state.job_executors["collection"],
+    )
+    try:
+        return await asyncio.shield(asyncio.wrap_future(future))
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    except (KeyError, ValueError, OSError) as exc:
+        raise HTTPException(status_code=409, detail="operation is unavailable or its frozen identity is invalid") from exc
 
 
 @router.post("/runs/{project}/{run}/attempts/{attempt}/collection")
 async def collect(project: str, run: str, attempt: str, data: CollectionRequest, request: Request):
     service = ResultCollectionService(request.app.state.runtime)
     service.stopping = request.app.state._stop.is_set
-    result, pending = await invoke(service.begin, project, run, attempt, retry=data.retry, reconcile=data.reconcile)
-    if pending is not None:
-        try:
-            request.app.state.submit_job(service.finish, pending)
-        except RuntimeError:
-            await invoke(service.update, pending, status="RECONCILE_REQUIRED", diagnostic="EXECUTOR_UNAVAILABLE")
-            raise HTTPException(status_code=503, detail="collection request was saved; reconcile before continuing") from None
-    return result
+    async def begin_and_enqueue():
+        result, pending = await invoke(service.begin, project, run, attempt, retry=data.retry, reconcile=data.reconcile)
+        if pending is not None:
+            try:
+                request.app.state.submit_job(service.finish, pending)
+            except RuntimeError:
+                await invoke(service.update, pending, status="RECONCILE_REQUIRED", diagnostic="EXECUTOR_UNAVAILABLE")
+                raise HTTPException(status_code=503, detail="collection request was saved; reconcile before continuing") from None
+        return result
+
+    return await admitted_handoff(begin_and_enqueue)
 
 
 @router.put("/result-ready-transfers/{project}/{run}/{attempt}")

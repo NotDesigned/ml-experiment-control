@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..data.data_delivery import DataDeliveryService
+from ..execution_queue import admitted_handoff
 from .asset_routes import token
 from .container_routes import ConfirmRequest, invoke
 
@@ -29,14 +30,17 @@ async def read(project: str, delivery_id: str, request: Request):
 
 async def start(project, delivery_id, data, request, reconcile):
     service = DataDeliveryService(request.app.state.runtime)
-    pending = await invoke(service.begin, project, delivery_id, data.confirmation, reconcile=reconcile)
-    if pending is not None:
-        try:
-            request.app.state.submit_job(service.finish, pending)
-        except RuntimeError:
-            await invoke(service.update, project, delivery_id, status="RECONCILE_REQUIRED", error="data preparation could not be queued")
-            raise HTTPException(status_code=503, detail="data preparation executor is unavailable") from None
-    return {"accepted": True, "delivery_id": delivery_id, "status": "EXECUTING" if pending is not None else "READY"}
+    async def begin_and_enqueue():
+        pending = await invoke(service.begin, project, delivery_id, data.confirmation, reconcile=reconcile)
+        if pending is not None:
+            try:
+                request.app.state.submit_job(service.finish, pending)
+            except RuntimeError:
+                await invoke(service.update, project, delivery_id, status="RECONCILE_REQUIRED", error="data preparation could not be queued")
+                raise HTTPException(status_code=503, detail="data preparation executor is unavailable") from None
+        return {"accepted": True, "delivery_id": delivery_id, "status": "EXECUTING" if pending is not None else "READY"}
+
+    return await admitted_handoff(begin_and_enqueue)
 
 
 @router.post("/projects/{project}/data-deliveries/{delivery_id}/execute", status_code=202)

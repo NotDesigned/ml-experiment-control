@@ -9,6 +9,6 @@ primitives remain in :mod:`experiment_control`.
 # installing FastAPI or OpenTelemetry.  Daemon entry points import
 # their runtime modules explicitly.
 
-__version__ = "0.3.32"
+__version__ = "0.3.33"
 
 __all__: list[str] = []

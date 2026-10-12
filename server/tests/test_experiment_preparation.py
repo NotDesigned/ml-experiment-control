@@ -1,8 +1,11 @@
 """Server preparation survives disconnects without repeating uncertain effects."""
+from copy import deepcopy
 import json
+import shlex
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -278,3 +281,373 @@ def test_competing_runtime_owner_is_observed_without_second_build(client, servic
     assert result["status"] == ("READY" if state == "EXECUTING" else "RECONCILE_REQUIRED")
     if state == "PREPARED":
         assert result["error_code"] == "OWNED"
+
+
+@pytest.fixture
+def cpu_download(client, stored, service, monkeypatch):
+    """Real preparation/campaign/state stores with a bounded, fake CPU provider."""
+    from ml_exp_server.backends.sensecore_preparation import PREFIX, SenseCoreScriptPreparation
+    from tests.test_container_api import archive
+    config = json.loads(stored[0].read_text())
+    config["local_storage_headroom_bytes"] = 0  # Tiny fixture assets do not test host disk admission.
+    config["data_delivery"] = {"aec2": "debug-cluster-01e", "worker_spec": "N6lS.Iu.I10.2c4g",
+                               "gpus": 0, "cpus": 2, "memory_gb": 4,
+                               "queue_timeout_seconds": 5, "copy_timeout_seconds": 5}
+    stored[0].write_text(json.dumps(config))
+    source = import_source(client, archive({"train.py": b"print('training')\n", "download.py": b"print('download')\n",
+                                           "Dockerfile": ("FROM registry.example/python@sha256:" + "a" * 64 + "\n").encode()}))
+    bundle = runtime(client, source)
+    control = SimpleNamespace(state="SUCCEEDED", uncertain=False, creates=[], stops=[], jobs={}, events=[])
+    def create(profile, body, **kwargs):
+        assert (profile["gpus"], profile["cpus"], profile["memory_gb"], profile["quota_type"]) == (0, 2, 4, "reserved")
+        assert profile["aec2"] == "debug-cluster-01e" and profile["workspace"] == "lab"
+        assert body["roles"][0]["image_path"] == bundle["image"]
+        definition = json.loads(shlex.split(body["roles"][0]["startup_script"])[-1])
+        control.creates.append((deepcopy(profile), deepcopy(body)))
+        control.events.append("cpu-script")
+        prepared = service.read("demo", control.preparation_id)
+        assert prepared["phase"] == "PREPARING_DATA_SCRIPT" and prepared["run"]["state"] == "NOT_SUBMITTED"
+        control.jobs[body["name"]] = {"uid": "e" * 32, "receipt": {
+            "preparation_id": definition["definition"]["preparation_id"], "content_sha256": "d" * 64,
+            "dataset_id": "dataset." + "d" * 64, "bytes": 17}}
+        if control.uncertain:
+            raise RuntimeError("private provider URL and token")
+        return {"name": body["name"], "uid": "e" * 32}
+    rest = SimpleNamespace(
+        specs=lambda _: [{"name": "N6lS.Iu.I10.2c4g", "device": {"number": 0},
+                          "cpu": {"vcpu_allocatable": 2}, "memory": {"allocatable": 4}}],
+        create=create,
+        find=lambda profile, name: [{"uid": control.jobs[name]["uid"]}] if name in control.jobs else [],
+        describe=lambda profile, name: {"uid": control.jobs[name]["uid"], "state": control.state},
+        logs=lambda profile, name, lines: {"text": PREFIX + json.dumps(control.jobs[name]["receipt"])},
+        stop=lambda *args: control.stops.append(args))
+    monkeypatch.setattr(SenseCoreScriptPreparation, "rest", property(lambda self: rest))
+    monkeypatch.setattr(service.submissions, "prepare_first_attempt",
+                        lambda *a, **kw: control.events.append("submission-check") or submission(*a, **kw))
+    body = {"run": {"run_id": "cpu-download", "executor": "cloud", "runtime_id": bundle["runtime_id"],
+                    "data_preparation": {"script": "download.py", "timeout_seconds": 5}},
+            "requirements": {"data_preparation_before_job": True}, "max_gpu_hours": 0.2}
+    control.body, control.config, control.service, control.client = body, stored[0], service, client
+    return control
+
+
+def accept_cpu(control):
+    value, pending = control.service.accept("demo", ExperimentPreparationRequest.model_validate(control.body))
+    control.preparation_id = value["preparation_id"]
+    return value, pending
+
+
+def frozen_campaign(client, value):
+    path = Path(client.app.state.runtime.project("demo").base_dir) / "experiments/campaigns" / (value["campaign"] + ".yaml")
+    return path, yaml.safe_load(path.read_text())["runs"][0]
+
+
+def test_download_script_preparation_finishes_zero_gpu_phase_before_submission(cpu_download):
+    control = cpu_download
+    value, pending = accept_cpu(control)
+    result = control.service.finish(pending)
+    assert result["status"] == "READY", result
+    assert control.events == ["cpu-script", "submission-check"] and len(control.creates) == 1
+    assert result["run"]["data_preparation_execution"]["phase"] == "before_job"
+    assert result["run"]["data_preparation_execution"]["budget"] == "preparation"
+    assert result["data_script"]["status"] == "READY" and result["data_script"]["receipt"]["bytes"] == 17
+    _, frozen = frozen_campaign(control.client, result["run"])
+    assert frozen["backend"]["aec2"] == "compute" and frozen["backend"]["quota_type"] == "spot"
+    assert frozen["data_preparation_cpu"]["gpus"] == 0
+    assert control.service.progress(*pending)["data_script"] == result["data_script"]
+    journal = control.service.root / "demo" / (value["preparation_id"] + ".jsonl")
+    assert '"PREPARING_DATA_SCRIPT"' in journal.read_text()
+    same, next_pending = control.service.continue_preparation(*pending)
+    assert same == result and next_pending is None and len(control.creates) == 1
+
+
+@pytest.mark.parametrize("change", ["different-config", "removed-config"])
+def test_new_run_freezes_cpu_profile_and_repeat_create_preserves_identity(cpu_download, change):
+    control = cpu_download
+    request = control.body["run"]
+    first = control.client.post("/api/projects/demo/runs", json=request)
+    assert first.status_code == 200, first.text
+    path, original = frozen_campaign(control.client, first.json())
+    before = path.read_bytes()
+    config = json.loads(control.config.read_text())
+    if change == "different-config":
+        config["data_delivery"].update(aec2="debug-new-pool", queue_timeout_seconds=60)
+    else:
+        config.pop("data_delivery")
+    control.config.write_text(json.dumps(config))
+    again = control.client.post("/api/projects/demo/runs", json=request)
+    assert again.status_code == 200, again.text
+    assert again.json()["data_preparation_execution"]["phase"] == "before_job"
+    assert path.read_bytes() == before
+    assert frozen_campaign(control.client, again.json())[1] == original
+    assert not control.creates
+
+
+@pytest.mark.parametrize("seconds", [5, 7200])
+def test_legacy_run_repeat_create_does_not_upgrade_data_mode_or_identity(cpu_download, seconds):
+    control = cpu_download
+    config = json.loads(control.config.read_text())
+    configured = config.pop("data_delivery")
+    control.config.write_text(json.dumps(config))
+    request = deepcopy(control.body["run"])
+    request["data_preparation"]["timeout_seconds"] = seconds
+    first = control.client.post("/api/projects/demo/runs", json=request)
+    assert first.status_code == 200, first.text
+    path, frozen = frozen_campaign(control.client, first.json())
+    assert "data_preparation_mode" not in frozen and "data_preparation_cpu" not in frozen
+    before = path.read_bytes()
+    config["data_delivery"] = configured
+    control.config.write_text(json.dumps(config))
+    again = control.client.post("/api/projects/demo/runs", json=request)
+    assert again.status_code == 200, again.text
+    assert again.json()["data_preparation_execution"]["phase"] == "inside_job"
+    assert path.read_bytes() == before and not control.creates
+
+
+def test_uncertain_cpu_create_continues_same_frozen_operation_after_config_change(cpu_download):
+    control = cpu_download
+    control.uncertain = True
+    _, pending = accept_cpu(control)
+    failed = control.service.finish(pending)
+    assert failed["status"] == "RECONCILE_REQUIRED" and failed["error_code"] == "DATA_SCRIPT_PROVIDER_ERROR"
+    assert "private provider" not in json.dumps(failed)
+    original = failed["data_script"]["operation_id"]
+    config = json.loads(control.config.read_text())
+    config["data_delivery"].update(aec2="debug-different", queue_timeout_seconds=60)
+    control.config.write_text(json.dumps(config))
+    control.uncertain = False
+    _, continued = control.service.continue_preparation(*pending)
+    ready = control.service.finish(continued)
+    assert ready["status"] == "READY", ready
+    assert ready["data_script"]["operation_id"] == original and len(control.creates) == 1
+    assert control.events == ["cpu-script", "submission-check"]
+    assert control.service.continue_preparation(*pending)[1] is None
+
+
+def test_failed_cpu_script_preserves_original_job_and_never_retries_on_continue(cpu_download):
+    control = cpu_download
+    control.state = "FAILED"
+    _, pending = accept_cpu(control)
+    failed = control.service.finish(pending)
+    assert failed["error_code"] == "DATA_SCRIPT_FAILED" and control.events == ["cpu-script"]
+    original = failed["data_script"]["operation_id"]
+    for _ in range(2):
+        _, continued = control.service.continue_preparation(*pending)
+        result = control.service.finish(continued)
+        assert result["status"] == "RECONCILE_REQUIRED" and result["data_script"]["operation_id"] == original
+        assert result["error_code"] == "DATA_SCRIPT_FAILED"
+    assert len(control.creates) == 1 and not control.stops
+    assert control.service.progress(*pending)["data_script"]["status"] == "FAILED"
+
+
+def test_changed_preparation_script_reference_is_rejected_without_new_job(cpu_download):
+    control = cpu_download
+    control.uncertain = True
+    _, pending = accept_cpu(control)
+    failed = control.service.finish(pending)
+    assert failed["status"] == "RECONCILE_REQUIRED"
+    control.service.update(*pending, data_script={**failed["data_script"], "operation_id": "script." + "f" * 64})
+    _, continued = control.service.continue_preparation(*pending)
+    result = control.service.finish(continued)
+    assert result["error_code"] == "DATA_SCRIPT_IDENTITY_CHANGED" and len(control.creates) == 1
+    assert control.events == ["cpu-script"]
+
+
+def test_scheduler_policy_disables_cpu_script_before_provider_call(cpu_download):
+    control = cpu_download
+    _, pending = accept_cpu(control)
+    control.service.runtime.config.action_runtime.allow_scheduler_mutations = False
+    result = control.service.finish(pending)
+    assert result["error_code"] == "DATA_SCRIPT_DISABLED" and not control.creates
+    assert not control.events
+
+
+def test_script_timeout_exceeding_cpu_limit_is_rejected_before_runtime_build(cpu_download, monkeypatch):
+    control = cpu_download
+    control.body["run"]["data_preparation"]["timeout_seconds"] = 3601
+    monkeypatch.setattr(control.service.containers, "prepare", lambda *a: pytest.fail("matching rejects before build"))
+    with pytest.raises(ApplicationError) as error:
+        accept_cpu(control)
+    assert error.value.code == "NO_MATCHING_EXECUTOR" and not control.creates
+
+
+def test_preparation_request_hash_keeps_explicit_research_options_and_old_false_default(client, service):
+    body = spec(client, run={"run_id": "hash-compatible", "executor": "cloud",
+                            "wandb": {"enabled": False}, "parameters": {"seed": 42}})
+    value, _ = service.accept("demo", ExperimentPreparationRequest.model_validate(body))
+    with service.state("demo", value["preparation_id"]) as (_, snapshot):
+        assert "data_preparation_before_job" not in snapshot.value["request"]["requirements"]
+        assert snapshot.value["request"]["run"]["wandb"]["enabled"] is False
+        assert snapshot.value["request"]["run"]["parameters"] == {"seed": 42}
+    body["requirements"] = {"data_preparation_before_job": False}
+    assert service.accept("demo", ExperimentPreparationRequest.model_validate(body)) == (value, None)
+
+
+def test_cpu_script_controller_requires_ready_cache_and_launch_cannot_redownload(cpu_download):
+    from ml_exp_server.container_controller import Controller
+    from ml_exp_server.results.artifact_store import ArtifactStore
+    control = cpu_download
+    created = control.client.post("/api/projects/demo/runs", json=control.body["run"])
+    assert created.status_code == 200, created.text
+    path, _ = frozen_campaign(control.client, created.json())
+    campaign = yaml.safe_load(path.read_text())
+    campaign["local_root"] = str(control.service.runtime.config.project_run_root_path("demo"))
+    ctl = Controller(campaign, control.body["run"]["run_id"], "attempt-001")
+    with pytest.raises(ApplicationError) as error:
+        ctl.prepare_gateway_data(require_cached=True)
+    assert error.value.code == "DATA_SCRIPT_NOT_READY" and not control.creates
+    _, pending = accept_cpu(control)
+    assert control.service.finish(pending)["status"] == "READY"
+    ctl.prepare_gateway_data(require_cached=False)
+    ctl.prepare_gateway_data(require_cached=True)
+    assert len(control.creates) == 1
+    ctl.prepare()
+    ctl.dispatch_command(ctl.store.load_attempt("attempt-001"))
+    objects = ArtifactStore(control.config, control.service.runtime.config.project_registry_root_path())
+    with objects.record("demo", ctl.run["run_id"], "attempt-001") as (_, record):
+        environment = record["launch_manifest"]["environment"]
+        assert environment["ML_EXPD_DATA_PREPARATION_CACHED"] == "1"
+        assert json.loads(environment["ML_EXPD_DATA_PREPARATION"]) == ctl.run["data_preparation"]
+
+
+@pytest.mark.parametrize("mode", ["publish", "cached", "uncertain"])
+def test_wyd_desktop_data_preparation_records_receipt_and_never_replays_uncertain_copy(remote_client, service, monkeypatch, mode):
+    from ml_exp_server.backends.wyd import WydDataStager
+    from tests.test_artifact_store import archive
+    from tests.test_multipart_upload import begin, send
+    body = archive({"tokens.bin": b"training tokens"})
+    upload = begin(remote_client, body)
+    asset = remote_client.post(send(remote_client, body, upload) + "/complete").json()
+    calls = []
+    real_receipt = WydDataStager.receipt
+    monkeypatch.setattr(WydDataStager, "check", lambda *a: {"status": "READY" if mode == "cached" else "NOT_FOUND"})
+    def publish(self, *args):
+        calls.append("copy")
+        if mode == "uncertain":
+            raise ApplicationError("inspect original copy", code="WYD_DATA_PREPARATION_FAILED")
+        return real_receipt(self, *args)
+    monkeypatch.setattr(WydDataStager, "publish", publish)
+    request = spec(remote_client, run={"run_id": "wyd-data", "executor": "gpu",
+                                     "inputs": [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]})
+    _, pending = service.accept("demo", ExperimentPreparationRequest.model_validate(request))
+    value = service.finish(pending)
+    if mode == "uncertain":
+        assert value["error_code"] == "WYD_DATA_PREPARATION_FAILED"
+        _, continued = service.continue_preparation(*pending)
+        again = service.finish(continued)
+        assert again["error_code"] == "WYD_DATA_NOT_READY" and calls == ["copy"]
+    else:
+        assert value["status"] == "READY", value
+        assert value["data_receipts"][asset["asset_id"]]["transport"] == "ssh_stream_shared_storage"
+        assert calls == ([] if mode == "cached" else ["copy"])
+        _, frozen = frozen_campaign(remote_client, value["run"])
+        assert frozen["inputs"][0]["require_cached"] is True
+
+
+def object_input(control):
+    import hashlib
+    from tests.test_artifact_store import archive
+    content = archive({"tokens.bin": b"input tokens"})
+    response = control.client.post("/api/assets/archive", params={"project": "demo", "sha256": hashlib.sha256(content).hexdigest()}, content=content)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_cpu_script_with_worker_delivered_inputs_is_rejected_before_build_or_asset_read(cpu_download, monkeypatch):
+    from ml_exp_server.data.data_assets import AssetStore
+    control = cpu_download
+    control.body["run"]["inputs"] = [{"asset_id": "asset." + "a" * 64, "mount_path": "/inputs/data"}]
+    control.body["runtime"] = {"source_id": "source." + "b" * 64, "entrypoint": ["python3", "train.py"]}
+    control.body["run"].pop("runtime_id")
+    monkeypatch.setattr(control.service.containers, "prepare", lambda *a: pytest.fail("unsupported transport must not build"))
+    monkeypatch.setattr(AssetStore, "read", lambda *a: pytest.fail("matching rejects before asset access"))
+    with pytest.raises(ApplicationError) as error:
+        accept_cpu(control)
+    assert error.value.code == "NO_MATCHING_EXECUTOR"
+    assert "data.download_script.inputs_require_before_job" in str(error.value)
+    assert not control.creates
+
+
+@pytest.mark.parametrize("entry", ["preparation", "create"])
+def test_cpu_script_rejects_historical_object_asset_even_under_desktop_policy(cpu_download, monkeypatch, entry):
+    control = cpu_download
+    asset = object_input(control)
+    config = json.loads(control.config.read_text())
+    config.update(data_upload_storage="desktop-builder", data_upload_socket="desktop.sock")
+    control.config.write_text(json.dumps(config))
+    control.body["run"]["inputs"] = [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]
+    monkeypatch.setattr(control.service.containers, "prepare", lambda *a: pytest.fail("unsupported historical asset must not build"))
+    if entry == "preparation":
+        control.body["runtime"] = {"source_id": "source." + "b" * 64, "entrypoint": ["python3", "train.py"]}
+        control.body["run"].pop("runtime_id")
+        with pytest.raises(ApplicationError) as error:
+            accept_cpu(control)
+        assert error.value.code == "DATA_SCRIPT_INPUT_TRANSPORT_UNSUPPORTED"
+    else:
+        response = control.client.post("/api/projects/demo/runs", json=control.body["run"])
+        assert response.headers["X-ML-Expd-Error-Code"] == "DATA_SCRIPT_INPUT_TRANSPORT_UNSUPPORTED"
+        assert not (Path(control.service.runtime.project("demo").base_dir) / "experiments/campaigns/run-cpu-download.yaml").exists()
+    assert not control.creates
+
+
+def test_cpu_script_accepts_desktop_asset_and_freezes_only_cached_input(cpu_download, remote_client, monkeypatch):
+    from ml_exp_server.data.data_delivery import DataDeliveryService
+    from tests.test_artifact_store import archive
+    from tests.test_multipart_upload import begin, send
+    control = cpu_download
+    content = archive({"tokens.bin": b"desktop input"})
+    upload = begin(remote_client, content)
+    response = remote_client.post(send(remote_client, content, upload) + "/complete")
+    assert response.status_code == 200, response.text
+    asset = response.json()
+    assert asset["remote_storage"] == "desktop-builder"
+    control.body["run"]["inputs"] = [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]
+    value, pending = accept_cpu(control)
+    assert value["status"] == "EXECUTING" and pending is not None
+    checked = []
+    def ready(self, project, asset_id, executor):
+        checked.append((project, asset_id, executor))
+        return {"status": "READY", "asset_id": asset_id, "data_path": "/data/lab/demo/data-assets/" + asset_id}
+    monkeypatch.setattr(DataDeliveryService, "ready_for", ready)
+    response = remote_client.post("/api/projects/demo/runs", json=control.body["run"])
+    assert response.status_code == 200, response.text
+    _, frozen = frozen_campaign(remote_client, response.json())
+    assert frozen["inputs"][0]["require_cached"] is True
+    assert frozen["data_preparation"]["inputs"][0]["require_cached"] is True
+    assert checked == [("demo", asset["asset_id"], "cloud")] and not control.creates
+
+
+@pytest.mark.parametrize("variant", ["no-script", "non-cpu"])
+def test_object_assets_remain_allowed_without_cpu_download_script(cpu_download, variant):
+    control = cpu_download
+    asset = object_input(control)
+    control.body["run"]["inputs"] = [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]
+    control.body["requirements"] = {}
+    if variant == "no-script":
+        control.body["run"].pop("data_preparation")
+    else:
+        control.body["run"]["executor"] = "gpu"
+    assert accept_cpu(control)[0]["status"] == "EXECUTING"
+    response = control.client.post("/api/projects/demo/runs", json=control.body["run"])
+    assert response.status_code == 200, response.text
+    assert not control.creates
+
+
+def test_legacy_script_with_object_inputs_keeps_inside_job_transport_on_repeat_create(cpu_download):
+    control = cpu_download
+    asset = object_input(control)
+    config = json.loads(control.config.read_text())
+    cpu = config.pop("data_delivery")
+    control.config.write_text(json.dumps(config))
+    control.body["run"]["inputs"] = [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]
+    first = control.client.post("/api/projects/demo/runs", json=control.body["run"])
+    assert first.status_code == 200, first.text
+    path, frozen = frozen_campaign(control.client, first.json())
+    assert "data_preparation_mode" not in frozen
+    original = path.read_bytes()
+    config.update(data_delivery=cpu, data_upload_storage="desktop-builder", data_upload_socket="desktop.sock")
+    control.config.write_text(json.dumps(config))
+    again = control.client.post("/api/projects/demo/runs", json=control.body["run"])
+    assert again.status_code == 200, again.text
+    assert again.json()["data_preparation_execution"]["phase"] == "inside_job"
+    assert path.read_bytes() == original and not control.creates

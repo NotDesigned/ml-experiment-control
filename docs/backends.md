@@ -15,7 +15,7 @@ GPU execution still requires explicit `--execute` and a GPU-hour budget.
 | resources | allocation_mode, inventory_query | Flexible requests or a fixed worker spec; whether this contract implements live inventory |
 | network | compute_internet, api_transport | Configured compute egress and direct HTTPS/private TCP relay |
 | storage | persistent, storage_id, checkpoint_registration | Configured shared filesystem and metadata registration |
-| data | assets, asset_preparation, download_script | Asset delivery before/inside a job; optional preparation script before/inside a job |
+| data | assets, asset_preparation, download_script, preparation | Asset delivery before/inside a job; optional preparation script before/inside a job |
 | observability | logs, queue_reason, exit_code, preemption_reason | Evidence the adapter can actually retrieve |
 | jobs | exact_submission_lookup, walltime_enforcement | Exact request reconciliation and which layer enforces duration |
 | outputs | transfer, offline_export | Adapter result transfer and a generic adapter offline-export hook |
@@ -33,7 +33,7 @@ Current adapters declare:
 | Runtime | OCI → Apptainer SIF | OCI |
 | Allocation | Flexible, bounded by configured catalogue capacity | Exact GPU count of fixed worker spec |
 | Uploaded desktop asset | Stream by SSH/verify on datapool before the job | Bounded zero-GPU ACP copy into NAS before training |
-| Script download | Before allocation on the connected gateway when relay is configured | Inside the allocated job |
+| Script download | Before allocation on the connected gateway when relay is configured | Zero-GPU debug ACP before training when CPU preparation is configured |
 | Queue/exit/preemption reasons | Supported | Not declared as reliable structured fields |
 | Walltime | Scheduler and worker | Worker |
 | Live resource inventory | Not implemented by this capability contract | Not implemented by this capability contract |
@@ -86,7 +86,8 @@ Replace placeholder identities with API responses. Instead of `runtime`, supply
 `run.runtime_id` for an existing image. Uploaded assets use `run.inputs`; selection
 and requirements are sibling fields. The API returns 202 and a durable preparation
 ID. GET the same resource or its `/progress` endpoint to observe:
-`ACCEPTED → BUILDING_RUNTIME → PREPARING_DATA → FREEZING_RUN → CHECKING_SUBMISSION`.
+`ACCEPTED → BUILDING_RUNTIME → PREPARING_DATA → FREEZING_RUN → PREPARING_DATA_SCRIPT → CHECKING_SUBMISSION`.
+The script stage is optional; progress includes its exact operation/job identity and safe diagnostic.
 A completed preparation returns the frozen Run and submission ID. `READY` denotes
 completed preparation; check `submission.ready` before authorizing GPU execution.
 
@@ -184,3 +185,31 @@ fails before training rather than downloading on an offline GPU node. The script
 retains its own timeout; a 60-second launcher allowance covers container startup
 and teardown. A cache verification also runs before scheduler submission. An
 uncertain stage remains subject to the existing explicit reconciliation rules.
+
+
+### SenseCore script preparation
+
+With the operator's `data_delivery` CPU profile configured, new SenseCore Runs
+freeze that profile and prepare their download script in a RESERVED debug ACP
+job with 2 CPUs, 4 GiB and no GPU. The exact training image supplies the helper,
+source and script. Already staged inputs are verified and linked at their frozen
+mount paths before the script starts. The script writes into NAS; its hash-based
+cache and READY receipt are reused by the training worker.
+Inputs combined with CPU script preparation must use the desktop-backed,
+pre-staged asset path. API-hosted inputs without that transport are rejected
+before building or creating the CPU job (`DATA_SCRIPT_INPUT_TRANSPORT_UNSUPPORTED`);
+the platform does not attempt an unauthenticated download in the helper.
+
+`data.preparation` reports `phase=before_job`, `budget=preparation`,
+`transport=cpu-acp-shared-storage` and `max_timeout_seconds=3600`. Queue and script
+limits are bounded independently; this work does not consume the training GPU
+allocation or its walltime. Set `requirements.data_preparation_before_job=true`
+to reject an executor that cannot provide this. Matching rejects an excessive
+script timeout before building. It is not a free-resource or startup-time guarantee.
+
+The CPU intent is persisted before its single REST create. Confirmed UID, image,
+script and profile are checked when observing the original job. A lost reply or
+missing receipt requires reconciliation; continue never creates a replacement.
+Delayed offline logs remain observable until the bounded deadline. Config changes
+do not rebind an existing frozen Run. Historical Runs without this mode retain
+inside-job preparation; an API upgrade does not rewrite them.

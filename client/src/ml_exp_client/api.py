@@ -10,22 +10,81 @@ import gzip
 import io
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
 import tarfile
 import tempfile
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
+ERROR_BODY_BYTES = 16 * 1024
+_SENSITIVE_FIELD = re.compile(r"token|secret|password|credential|authorization|cookie|(?:api|private|access|client)[_-]?key|signature|url|argv|command|environment|^env$|^input$|headers|body|^auth$|^key$", re.I)
+
+
+def _safe_error_text(value, token):
+    if token:
+        value = value.replace(token, "[REDACTED]")
+    value = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", "[REDACTED]", value, flags=re.S)
+    value = re.sub(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s\"'<>]+", "[REDACTED]", value)
+    value = re.sub(r"(?i)\bBearer\s+[^\s,;\"']+", "Bearer [REDACTED]", value)
+    value = re.sub(r'''(?i)([\w-]*(?:token|secret|password|credential|authorization|cookie|(?:api|private|access|client)[_-]?key|signature)[\w-]*["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)''', r"\1[REDACTED]", value)
+    return "".join(char if ord(char) >= 32 else " " for char in value)[:1024]
+
+
+def _safe_error_json(value, token, *, depth=0, budget=None):
+    """Keep bounded diagnostic JSON without request inputs or credentials."""
+    budget = [256] if budget is None else budget
+    budget[0] -= 1
+    if budget[0] < 0 or depth > 6:
+        return "[TRUNCATED]"
+    if isinstance(value, dict):
+        result = {}
+        for key, item in list(value.items())[:64]:
+            clean_key = _safe_error_text(key, token)[:128]
+            result[clean_key] = ("[REDACTED]" if _SENSITIVE_FIELD.search(key) else
+                                 _safe_error_json(item, token, depth=depth + 1, budget=budget))
+        return result
+    if isinstance(value, list):
+        return [_safe_error_json(item, token, depth=depth + 1, budget=budget) for item in value[:64]]
+    if isinstance(value, str):
+        return _safe_error_text(value, token)
+    if value is None or type(value) in {bool, int} or type(value) is float and math.isfinite(value):
+        return value
+    return None
+
+
+def _retry_after_seconds(value):
+    if not value or len(value) > 128:
+        return None
+    try:
+        seconds = int(value) if value.isdecimal() else math.ceil(
+            (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds())
+        return min(86400, max(0, seconds))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 class ClientError(RuntimeError):
-    def __init__(self, message, *, status=None, retryable=False):
+    def __init__(self, message, *, status=None, retryable=False, details=None,
+                 error_code=None, retry_after=None, body_truncated=False,
+                 response_body=None):
         super().__init__(message)
         self.status = status
         self.retryable = retryable
+        self.details = details
+        # Retain sibling diagnostics while preserving the established FastAPI
+        # `detail` convenience field. Both contain only bounded, sanitized JSON.
+        self.response_body = response_body
+        self.error_code = error_code
+        self.retry_after = retry_after
+        self.body_truncated = body_truncated
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -76,10 +135,31 @@ class Client:
                                     timeout=self.timeout if timeout is None else timeout)
         except HTTPError as exc:
             code = exc.headers.get("X-ML-Expd-Error-Code", "API_ERROR")
-            exc.close()
-            raise ClientError(f"{method} {path}: HTTP {exc.code} {code}; inspect saved IDs before retrying", status=exc.code) from None
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", code) or self.token in code:
+                code = "API_ERROR"
+            details, response_body, truncated = None, None, False
+            retry_after = _retry_after_seconds(exc.headers.get("Retry-After"))
+            try:
+                body = exc.read(ERROR_BODY_BYTES + 1)
+                truncated = len(body) > ERROR_BODY_BYTES
+                if not truncated:
+                    response_body = _safe_error_json(json.loads(body), self.token)
+                    details = (response_body.get("detail", response_body)
+                               if isinstance(response_body, dict) else response_body)
+            except Exception:
+                # Malformed/truncated proxy responses must not hide the HTTP
+                # status or expose unparsed HTML/plaintext credentials.
+                pass
+            finally:
+                exc.close()
+            safe_path = _safe_error_text(path.partition("?")[0], self.token)
+            raise ClientError(f"{method} {safe_path}: HTTP {exc.code} {code}; inspect saved IDs before retrying",
+                              status=exc.code, details=details, error_code=code,
+                              retry_after=retry_after, body_truncated=truncated,
+                              response_body=response_body) from None
         except (URLError, TimeoutError, OSError):
-            raise ClientError(f"{method} {path}: connection failed; inspect saved IDs before retrying", retryable=True) from None
+            safe_path = _safe_error_text(path.partition("?")[0], self.token)
+            raise ClientError(f"{method} {safe_path}: connection failed; inspect saved IDs before retrying", retryable=True) from None
 
     def call(self, path: str, **kwargs):
         with self.open(path, **kwargs) as response:

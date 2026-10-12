@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..application import ApplicationError
+from ..execution_queue import admitted_handoff
 from .contract import ActionSnapshotResponse
 from ..runs.intent_protocol import OperationIntent
 from ..schemas import OperationScopeType
@@ -101,16 +102,19 @@ def authorize_action(data: AuthorizeActionRequest, request: Request):
 async def execute_action(
     data: ExecuteActionRequest, request: Request,
 ):
-    try:
-        result, pending = await run_in_threadpool(
-            request.app.state.application.begin_action_execution,
-            data.action_id, data.confirmation,
-        )
-    except ApplicationError as exc:
-        raise application_http_error(exc) from exc
-    if pending is not None:
-        request.app.state.submit_action(pending)
-    return result
+    async def begin_and_enqueue():
+        try:
+            result, pending = await run_in_threadpool(
+                request.app.state.application.begin_action_execution,
+                data.action_id, data.confirmation,
+            )
+        except ApplicationError as exc:
+            raise application_http_error(exc) from exc
+        if pending is not None:
+            request.app.state.submit_action(pending)
+        return result
+
+    return await admitted_handoff(begin_and_enqueue)
 
 
 @router.post("/reconcile", response_model=ActionSnapshotResponse)

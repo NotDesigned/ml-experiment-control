@@ -320,6 +320,37 @@ def test_only_new_successful_training_records_auto_enroll(recovery):
     assert len(submitted) == 1 and submitted[0][1] == IDENTITY
 
 
+def test_automatic_reserves_capacity_before_claim_and_releases_unused_admission(recovery, monkeypatch):
+    from ml_exp_server.execution_queue import BoundedExecutor
+    service, _, token, _, _, _, row = recovery
+    value = dict(zip(("project", "run_id", "attempt_id"), IDENTITY), contract="training-result.v1", exit_code=0)
+    service.register_training(*IDENTITY, token, value)
+    begin = Mock(wraps=service.begin)
+    monkeypatch.setattr(service, "begin", begin)
+    executor = BoundedExecutor("collection", workers=1, capacity=1)
+    futures = []
+
+    def submit(call, pending):
+        futures.append(executor.submit(lambda: pending))
+
+    submit.reserve = lambda call: executor.reserve()
+    try:
+        reserved = executor.reserve()
+        service.automatic(submit)
+        assert not begin.called and not futures
+        reserved.release()
+        row.attempts[0].state = "RUNNING"
+        service.automatic(submit)
+        assert begin.call_count == 1 and not executor.busy
+        row.attempts[0].state = "FAILED"
+        service.automatic(submit)
+        assert futures[0].result(timeout=2) == IDENTITY
+        service.automatic(submit)
+        assert len(futures) == 1 and not executor.busy
+    finally:
+        executor.shutdown()
+
+
 def test_recovery_queue_survives_executor_failure_and_responds_to_shutdown(recovery, monkeypatch):
     import fcntl
     service, _, token, _, _, _, _ = recovery
@@ -371,6 +402,29 @@ def test_http_collection_control_and_worker_capability_boundaries(recovery, tmp_
         service.update(IDENTITY, status="FAILED")
         assert client.post(endpoint, headers=headers, json={"retry": True}).status_code == 503
         assert client.get(endpoint, headers=headers).json()["diagnostic"] == "EXECUTOR_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("options,status", [({"retry": True}, "FAILED"), ({"reconcile": True}, "RECONCILE_REQUIRED")])
+def test_full_collection_lane_does_not_consume_retry_or_reconciliation(recovery, monkeypatch, options, status):
+    service, _, _, _, _, _, row = recovery
+    _, pending = service.begin(*IDENTITY)
+    service.update(pending, status=status)
+    before = service.read(*IDENTITY)
+    with TestClient(create_app(service.runtime.config, poll=False)) as client:
+        client.app.state.runtime.index.upsert_run(row)
+        reservations = [client.app.state.job_executors["collection"].reserve() for _ in range(4)]
+        try:
+            endpoint = "/api/runs/demo/run-a/attempts/attempt-001/collection"
+            response = client.post(endpoint, json=options)
+            assert response.status_code == 503 and response.json()["lane"] == "collection"
+            assert service.read(*IDENTITY) == before
+        finally:
+            for reservation in reservations:
+                reservation.release()
+        finished = []
+        monkeypatch.setattr(ResultCollectionService, "finish", lambda self, identity: finished.append(identity))
+        assert client.post(endpoint, json=options).json()["status"] == "QUEUED"
+    assert finished == [IDENTITY]
 
 
 @pytest.mark.parametrize("broken", [False, True])

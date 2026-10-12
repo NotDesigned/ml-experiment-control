@@ -23,6 +23,7 @@ and acceptance reports belong in private operator configuration/evidence.
 
 ## Developer and API integrator
 
+- [Simplification plan](simplification-plan.md): next structural changes and acceptance boundaries.
 - [Architecture](architecture.md): packages, execution locations and ownership.
 - [Backend capabilities and preparation](backends.md): matching, server workflow and data diagnostics.
 - [API workflow](source-api.md): source, Runtime, Run, Submission and result routes.

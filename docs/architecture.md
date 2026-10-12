@@ -64,7 +64,7 @@ build contexts/layers live on the desktop. Training runs inside backend containe
 | Observation | `collectord.py`, `ingest/`, `runs/terminal_snapshot.py`, `execution_progress.py`, `input_progress.py` |
 | Images | `image_builder.py`, `dockerfile_build.py`, `builds/` |
 | Data | `data/`: assets, multipart upload, remote upload and delivery; `desktop_upload.py` is the standalone process entry |
-| Provider storage operations | `backends/wyd.py`, `sensecore_data.py`, `sensecore_results.py` |
+| Provider storage operations | `backends/wyd.py`, `sensecore_data.py`, `sensecore_preparation.py`, `sensecore_results.py` |
 | Results/state | `results/`: artifact storage, download lifecycle, checkpoint registry and independent collection |
 | Experiment records | `records/`: canonical durable journal and verified-archive metric import |
 | Metrics and W&B | `tracking/`: metric/route contracts, publication cursors and display; `wandb_exporter.py` is the SDK process entry |
@@ -88,11 +88,18 @@ the facade's one runtime/store; they do not own separate mutable state or add
 another workflow engine. Action planning, execution and reconciliation live in
 `actions/planning.py`, `execution.py` and `recovery.py` respectively.
 
-The API has separate bounded pools: four Action threads and two preparation
-threads. Builds, data delivery and result collection use the latter, so provider
-waits cannot fill the submit/cancel queue. Both pools retain the workspace lease
-and runtime until claimed work finishes during shutdown. Provider waits still
-occupy preparation threads; this is queue isolation, not a nonblocking scheduler.
+The API has five bounded execution lanes: Action (4 threads/16 admitted jobs),
+experiment orchestration (2/4), builds (1/4), data delivery (1/4), and result
+collection (1/4). Capacity includes running, queued and reserved work. Authenticated
+mutations reserve capacity before recording execution; saturation returns HTTP 503
+with `Retry-After` and a stable code. It does not create an execution claim.
+
+A short cancellation-safe handoff owns durable begin and enqueue even after a
+client disconnects. Long provider work stays in the bounded executor. Shutdown
+rejects new reservations and retains the workspace lease until admitted handoffs
+and jobs finish. Automatic collection reserves capacity before consuming a retry.
+Experiment orchestration still waits synchronously for dependencies in its own
+lane; these lanes isolate pressure rather than implement a dependency scheduler.
 
 `runtime.py` initializes daemon services; the public **Runtime resource** denotes
 a code/environment image. `controller_gateway.py` is the project-controller

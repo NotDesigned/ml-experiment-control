@@ -1,5 +1,7 @@
 """Single config workflow preserves identities through interruption."""
 import json
+import hashlib
+import io
 from pathlib import Path
 
 import pytest
@@ -258,3 +260,156 @@ def test_uncertain_preparation_observes_until_explicit_continue(configuration):
     assert not any(path.endswith("/continue") for path, _ in api.calls)
     assert experiment(api, HEALTH, configuration, state, resume=True, continue_preparation=True)["submission"]["status"] == "PREPARED"
     assert api.builds == 1
+
+
+COLLECTION_HEALTH = {"capabilities": [*HEALTH["capabilities"], "result-collection.v1"]}
+
+
+def collection(status="AVAILABLE", **changes):
+    return {"project": "demo", "run_id": "trial", "attempt_id": "attempt-001", "status": status,
+            "verification": "SHA256_VERIFIED" if status == "AVAILABLE" else "PENDING",
+            "download_available": status == "AVAILABLE", **changes}
+
+
+class CollectionAPI(API):
+    def __init__(self, values):
+        super().__init__()
+        self.collection_values = list(values)
+        self.collection_reads = 0
+    def call(self, path, **kwargs):
+        if path.endswith("/collection"):
+            assert path == "/api/runs/demo/trial/attempts/attempt-001/collection" and not kwargs
+            self.calls.append((path, kwargs))
+            self.collection_reads += 1
+            return self.collection_values.pop(0) if len(self.collection_values) > 1 else self.collection_values[0]
+        return super().call(path, **kwargs)
+
+
+def test_download_waits_for_original_attempt_collection_and_verification(configuration, monkeypatch):
+    values = [collection("NOT_COLLECTED"), collection("QUEUED"), collection("COLLECTING"),
+              collection(verification="PENDING"), collection(download_available=False), collection()]
+    api = CollectionAPI(values)
+    sleeps, downloads = [], []
+    monkeypatch.setattr("ml_exp_client.workflow.time.sleep", sleeps.append)
+    def fetch(client, project, run, attempt, out, **kwargs):
+        assert api.collection_reads == len(values)
+        downloads.append((project, run, attempt))
+        return {"verified": True}
+    monkeypatch.setattr("ml_exp_client.workflow.download", fetch)
+    state = experiment(api, COLLECTION_HEALTH, configuration, configuration.with_name("state.json"),
+                       execute=True, out=configuration.with_name("results"))
+    assert state["collection"] == collection() and state["download"]["verified"]
+    assert downloads == [("demo", "trial", "attempt-001")] and sleeps == [5] * 5
+    assert all(not kwargs for path, kwargs in api.calls if path.endswith("/collection"))
+
+
+@pytest.mark.parametrize("status", ["FAILED", "RECONCILE_REQUIRED", "RELEASED", "UNRECOGNIZED", None, {"invalid": True}])
+def test_collection_terminal_or_unknown_state_never_requests_recovery_or_download(configuration, monkeypatch, status):
+    api = CollectionAPI([collection(status)])
+    monkeypatch.setattr("ml_exp_client.workflow.download", lambda *a, **kw: pytest.fail("unexpected download"))
+    state = configuration.with_name("state.json")
+    with pytest.raises(ClientError, match="RELEASED|FAILED|RECONCILE_REQUIRED|unknown collection") as caught:
+        experiment(api, COLLECTION_HEALTH, configuration, state, execute=True, out=configuration.with_name("results"))
+    assert json.loads(state.read_text())["collection"]["status"] == status
+    assert api.collection_reads == 1 and all(not kwargs for path, kwargs in api.calls if path.endswith("/collection"))
+    if status == "RELEASED":
+        assert caught.value.status == 410 and caught.value.error_code == "ARTIFACT_RELEASED"
+
+
+def test_collection_timeout_resumes_original_job_directory_and_keep_choice(configuration, monkeypatch):
+    api = CollectionAPI([collection("NOT_COLLECTED")])
+    state = configuration.with_name("state.json")
+    destination = configuration.with_name("results")
+    with pytest.raises(ClientError, match="publication wait timed out"):
+        experiment(api, COLLECTION_HEALTH, configuration, state, execute=True, seconds=0,
+                   out=destination, keep_server_copy=True)
+    saved = json.loads(state.read_text())
+    assert saved["result"]["scheduler_state"] == "SUCCEEDED" and "download" not in saved
+    assert saved["download_directory"] == str(destination.resolve()) and saved["download_keep_server_copy"]
+    api.collection_values = [collection()]
+    downloads = []
+    def fetch(client, project, run, attempt, out, *, keep_server_copy):
+        downloads.append((attempt, out, keep_server_copy))
+        return {"verified": True}
+    monkeypatch.setattr("ml_exp_client.workflow.download", fetch)
+    experiment(api, COLLECTION_HEALTH, configuration, state, resume=True, execute=True)
+    assert downloads == [("attempt-001", destination, True)]
+    assert sum(path.endswith("/execute") and "submissions" in path for path, _ in api.calls) == 1
+    assert sum(path.endswith("/experiment-preparations") for path, _ in api.calls) == 1
+    assert all(not kwargs for path, kwargs in api.calls if path.endswith("/collection"))
+
+
+@pytest.mark.parametrize("field", ["project", "run_id", "attempt_id"])
+def test_collection_rejects_different_identity_before_download(configuration, monkeypatch, field):
+    api = CollectionAPI([collection(**{field: "different"})])
+    monkeypatch.setattr("ml_exp_client.workflow.download", lambda *a, **kw: pytest.fail("unexpected download"))
+    with pytest.raises(ClientError, match="collection identity differs"):
+        experiment(api, COLLECTION_HEALTH, configuration, configuration.with_name("state.json"),
+                   execute=True, out=configuration.with_name("results"))
+
+
+class DownloadAPI(CollectionAPI):
+    def __init__(self):
+        super().__init__([collection()])
+        from test_direct_download import archive
+        self.body = archive({"weights.pt": b"weights"})
+        self.ticket = {"transport": "s3-presigned-get", "url": "https://objects.example/x?private-signature",
+                       "sha256": hashlib.sha256(self.body).hexdigest(), "bytes": len(self.body),
+                       "files": [{"path": "weights.pt", "bytes": 7, "sha256": hashlib.sha256(b"weights").hexdigest()}],
+                       "acknowledgement": {"contract": "artifact-retention.v1"}}
+        self.downloads = 0
+        self.fail_ack = True
+    def open_object(self, url):
+        self.downloads += 1
+        return io.BytesIO(self.body)
+    def call(self, path, **kwargs):
+        if path.endswith("/artifacts/download"):
+            self.calls.append((path, kwargs))
+            return self.ticket
+        if path.endswith("/artifacts/ack"):
+            assert path == "/api/runs/demo/trial/attempts/attempt-001/artifacts/ack"
+            self.calls.append((path, kwargs))
+            if self.fail_ack:
+                raise ClientError("lost ACK", retryable=True)
+            return {"status": "SCHEDULED" if kwargs["data"]["release"] else "KEEP"}
+        return super().call(path, **kwargs)
+
+
+@pytest.mark.parametrize("keep", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_resume_revalidates_pending_ack_without_redownload_or_collection(configuration, keep, legacy):
+    api = DownloadAPI()
+    state, destination = configuration.with_name("state.json"), configuration.with_name("results")
+    first = experiment(api, COLLECTION_HEALTH, configuration, state, execute=True, out=destination, keep_server_copy=keep)
+    assert first["download"]["acknowledgement"]["status"] == "PENDING"
+    if legacy:
+        saved = json.loads(state.read_text())
+        saved.pop("download_directory"); saved.pop("download_keep_server_copy")
+        state.write_text(json.dumps(saved))
+    api.fail_ack = False
+    resumed = experiment(api, COLLECTION_HEALTH, configuration, state, resume=True, out=destination if legacy else None)
+    assert resumed["download"]["acknowledgement"]["status"] == ("KEEP" if keep else "SCHEDULED")
+    assert api.downloads == 1 and api.collection_reads == 1
+    proofs = [kwargs["data"] for path, kwargs in api.calls if path.endswith("/artifacts/ack")]
+    assert len(proofs) == 2 and all(proof["release"] is not keep for proof in proofs)
+    assert sum(path.endswith("/execute") and "submissions" in path for path, _ in api.calls) == 1
+
+
+@pytest.mark.parametrize("failure", ["file", "identity", "proof", "missing-directory"])
+def test_resume_ack_rejects_corrupt_or_different_local_proof(configuration, failure):
+    api = DownloadAPI()
+    state, destination = configuration.with_name("state.json"), configuration.with_name("results")
+    experiment(api, COLLECTION_HEALTH, configuration, state, execute=True, out=destination)
+    if failure == "file":
+        (destination / "outputs/weights.pt").write_bytes(b"changed")
+    elif failure == "missing-directory":
+        saved = json.loads(state.read_text()); saved.pop("download_directory"); state.write_text(json.dumps(saved))
+    else:
+        report = json.loads((destination / "verification.json").read_text())
+        report["attempt_id" if failure == "identity" else "archive_sha256"] = "different"
+        (destination / "verification.json").write_text(json.dumps(report))
+    calls = sum(path.endswith("/artifacts/ack") for path, _ in api.calls)
+    with pytest.raises(ClientError, match="differs|PENDING"):
+        experiment(api, COLLECTION_HEALTH, configuration, state, resume=True)
+    assert sum(path.endswith("/artifacts/ack") for path, _ in api.calls) == calls
+    assert api.downloads == 1 and api.collection_reads == 1
