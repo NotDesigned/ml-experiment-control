@@ -233,7 +233,7 @@ def test_diagnostics_and_repair_http_authentication_never_launch_compute(recover
     service.runtime.config.http_auth.bearer_token_file = str(bearer)
     with TestClient(create_app(service.runtime.config, poll=False)) as api:
         api.app.state.runtime.index.upsert_run(row)
-        submit = Mock(); api.app.state.submit_job = submit
+        submit = Mock(wraps=api.app.state.submit_job); api.app.state.submit_job = submit
         base = '/api/runs/demo/run-a/attempts/attempt-001'
         headers = {'Authorization': 'Bearer '+'a'*40, 'X-ML-Expd-Client-Protocol': '2'}
         assert api.get(base+'/diagnostics').status_code == 401
@@ -242,7 +242,11 @@ def test_diagnostics_and_repair_http_authentication_never_launch_compute(recover
         assert api.post(base+'/collection/repair', json={'expected_sha256': receipt['sha256']}).status_code == 401
         assert api.post(base+'/collection/repair', json={'expected_sha256': 'wrong'}, headers=headers).status_code == 422
         assert api.post(base+'/collection/repair', json={'expected_sha256': receipt['sha256']}, headers=headers).json()['archive']['file_count'] == 2
-        submit.assert_not_called()
+        # Repair now owns a bounded local collection worker; this does not
+        # submit a scheduler/CPU/GPU job. Preserve authentication and results.
+        submit.assert_called_once()
+        assert submit.call_args.kwargs['executor'] is api.app.state.job_executors['collection']
+        assert submit.call_args.args[0].func.__name__ == 'repair'
 
 
 def test_required_outputs_freeze_with_run_and_attempt_transfer(container_client, tmp_path):

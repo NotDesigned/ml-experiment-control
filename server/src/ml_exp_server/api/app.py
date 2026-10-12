@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import re
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Optional
@@ -48,6 +49,24 @@ from ..results.result_collection import ResultCollectionService
 from .result_routes import RESULT_PATH, router as result_router
 from ..results.artifact_lifecycle import ArtifactLifecycle
 from ..data.multipart_upload import UploadStore
+from ..execution_queue import BoundedExecutor, QueueUnavailable, job_lane
+
+
+_EXECUTION_ROUTES = (
+    ("action", re.compile(r"/api/(?:actions/execute|submissions/[^/]+/execute)")),
+    ("preparation", re.compile(r"/api/projects/[^/]+/experiment-preparations(?:/[^/]+/continue)?")),
+    ("build", re.compile(r"/api/projects/[^/]+/runtimes/[^/]+/(?:execute|reconcile)")),
+    ("data", re.compile(r"/api/projects/[^/]+/data-deliveries/[^/]+/(?:execute|reconcile)")),
+    ("collection", re.compile(r"/api/runs/[^/]+/[^/]+/attempts/[^/]+/collection(?:/repair)?")),
+)
+
+
+def _execution_lane(method, path):
+    if method == "POST":
+        for lane, pattern in _EXECUTION_ROUTES:
+            if pattern.fullmatch(path):
+                return lane
+    return None
 
 
 def _poll_loop(app: FastAPI, collector: Collector) -> None:
@@ -94,11 +113,19 @@ async def _shutdown(app: FastAPI) -> None:
     thread = getattr(app.state, "_poll_thread", None)
     action_executor = getattr(app.state, "action_executor", None)
     preparation_executor = getattr(app.state, "preparation_executor", None)
-    executors = [item for item in (action_executor, preparation_executor) if item is not None]
+    executors = getattr(app.state, "job_executors", None) or {
+        key: item for key, item in (("action", action_executor), ("preparation", preparation_executor))
+        if item is not None
+    }
+    executors = list(executors.values())
     for executor in executors:
         # Stop accepting new work. Claimed actions and image builds retain ownership of
         # the runtime until their durable terminal state has been recorded.
         executor.shutdown(wait=False)
+    # A disconnected request may still be completing begin + enqueue in its
+    # daemon-owned handoff. Finish those before snapshotting worker ownership.
+    await asyncio.gather(*(executor.drain_handoffs() for executor in executors
+                           if isinstance(executor, BoundedExecutor)))
     with getattr(app.state, "_action_futures_lock", threading.Lock()):
         action_futures = tuple(getattr(app.state, "_action_futures", ()))
     if thread is not None:
@@ -114,7 +141,8 @@ async def _shutdown(app: FastAPI) -> None:
     owner_threads = [
         item for item in (thread,) if item is not None
     ]
-    if not any(item.is_alive() for item in owner_threads) and not action_futures:
+    if (not any(item.is_alive() for item in owner_threads) and not action_futures
+            and not any(getattr(item, "busy", False) for item in executors)):
         try:
             runtime.close()
         finally:
@@ -163,14 +191,17 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
         app.state.broker.bind_loop(loop)
         app.state._stop = threading.Event()
         app.state._poll_thread = None
-        app.state.action_executor = ThreadPoolExecutor(
-            max_workers=4, thread_name_prefix="action-executor",
-        )
-        # Building, data delivery and result recovery may wait on providers for
-        # minutes. Keep their bounded queue separate from submit/cancel Actions.
-        app.state.preparation_executor = ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="preparation-executor",
-        )
+        # Long orchestration waits must not consume independent image, data,
+        # or result workers. Capacity includes queued and reserved requests.
+        app.state.job_executors = {
+            "action": BoundedExecutor("action", workers=4, capacity=16),
+            "preparation": BoundedExecutor("preparation", workers=2, capacity=4),
+            "build": BoundedExecutor("build", workers=1, capacity=4),
+            "data": BoundedExecutor("data", workers=1, capacity=4),
+            "collection": BoundedExecutor("collection", workers=1, capacity=4),
+        }
+        app.state.action_executor = app.state.job_executors["action"]
+        app.state.preparation_executor = app.state.job_executors["preparation"]
         app.state._action_futures: set[Future[object]] = set()
         app.state._action_futures_lock = threading.Lock()
         app.state.project_write_recovery_errors = []
@@ -203,7 +234,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             app.state.application = ExperimentServerApplication(runtime)
 
             def submit_job(call, pending, *, executor=None):
-                owner = executor if executor is not None else app.state.preparation_executor
+                owner = executor if executor is not None else app.state.job_executors[job_lane(call)]
                 future = owner.submit(call, pending)
                 with app.state._action_futures_lock:
                     app.state._action_futures.add(future)
@@ -216,6 +247,9 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                 return future
 
             app.state.submit_job = submit_job
+            # The collector uses the same admission protocol before claiming
+            # an automatic collection, without requiring an HTTP request.
+            submit_job.reserve = lambda call: app.state.job_executors[job_lane(call)].reserve()
             app.state.submit_action = lambda pending: submit_job(
                 app.state.application.finish_action_execution, pending,
                 executor=app.state.action_executor,
@@ -277,7 +311,8 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
             yield
         finally:
             if getattr(app.state, "runtime", None) is None:
-                app.state.action_executor.shutdown(wait=False, cancel_futures=True)
+                for executor in app.state.job_executors.values():
+                    executor.shutdown(wait=False, cancel_futures=True)
                 if lease_acquired:
                     lease.release()
             else:
@@ -300,6 +335,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.state.application = None
     app.state.submission_service = None
     app.state.action_executor = None
+    app.state.job_executors = None
     app.state.submit_action = None
     app.state.submit_job = None
     app.state.index = None
@@ -393,7 +429,22 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
                 status_code=409,
                 headers={"X-ML-Expd-Error-Code": "WORKSPACE_NOT_OWNER"},
             )
-        response = await call_next(request)
+        lane = _execution_lane(request.method, request.url.path)
+        if lane is None:
+            response = await call_next(request)
+        else:
+            try:
+                reservation = app.state.job_executors[lane].reserve()
+            except QueueUnavailable:
+                return JSONResponse(
+                    {"detail": "execution capacity is full or stopping; retry this request later",
+                     "code": "EXECUTION_CAPACITY_UNAVAILABLE", "lane": lane, "retry_after_seconds": 2},
+                    status_code=503,
+                    headers={"Retry-After": "2", "X-ML-Expd-Error-Code": "EXECUTION_CAPACITY_UNAVAILABLE",
+                             "X-ML-Expd-Protocol": str(API_PROTOCOL_VERSION)},
+                )
+            with reservation:
+                response = await call_next(request)
         response.headers["X-ML-Expd-Protocol"] = str(API_PROTOCOL_VERSION)
         return response
 

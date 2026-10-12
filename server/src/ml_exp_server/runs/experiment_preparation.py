@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import re
 import time
+import yaml
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -17,7 +18,7 @@ from ..results.checkpoint_registry import CheckpointRegistry
 from ..container_execution import ContainerExecutionService, DockerfileRuntimeSpec, RunRequest
 from ..data.data_assets import AssetStore
 from ..data.data_delivery import DataDeliveryService
-from .executor_capabilities import ExecutionRequirements, ExecutorSelector, match, validate_worker
+from .executor_capabilities import ExecutionRequirements, ExecutorSelector, match, validate_worker, validate_script_asset
 from ..tracking.tracking_service import store_for, preparation_record
 from ..projects.source_imports import IDENTITY
 from ..storage import DurableJsonState, utc_now
@@ -101,6 +102,8 @@ class ExperimentPreparationService:
     def accept(self, project, request):
         self.containers.require_enabled()
         request_body = request.model_dump(mode="json")
+        if not request.requirements.data_preparation_before_job:
+            request_body["requirements"].pop("data_preparation_before_job")
         # Absent new options preserve the request hash of pre-upgrade intents.
         for key in ("wandb", "parameters"):
             if request_body["run"][key] is None:
@@ -120,6 +123,7 @@ class ExperimentPreparationService:
             cache_required = False
             for item in request.run.inputs:
                 asset = AssetStore(Path(objects), self.runtime.config.project_registry_root_path()).read(project, item.asset_id)
+                validate_script_asset(request.run, matching["capabilities"], asset)
                 cache_required |= asset.get("remote_storage") == "desktop-builder" and matching["capabilities"]["data"]["asset_preparation"] == "before_job"
             bundle = (self.containers.prepare(project, request.runtime) if request.runtime is not None
                       else self.containers.read(project, request.run.runtime_id))
@@ -152,11 +156,17 @@ class ExperimentPreparationService:
 
     def progress(self, project, preparation_id):
         value = self.read(project, preparation_id)
+        script = value.get("data_script")
+        if script:
+            from ..backends.sensecore_preparation import SenseCoreScriptPreparation
+            script = SenseCoreScriptPreparation(self.runtime.config.container_execution.artifact_store_file,
+                self.runtime.config.project_registry_root_path()).read(project, script["operation_id"])
         started = datetime.fromisoformat(value["phase_started_at"].replace("Z", "+00:00"))
         return {"phase": value["phase"], "phase_started_at": value["phase_started_at"],
                 "phase_seconds": max(0, (datetime.now(timezone.utc) - started).total_seconds()),
                 "last_progress_at": value["updated_at"], "status": value["status"],
                 "runtime_id": value["runtime_id"], "deliveries": value["deliveries"],
+                "data_script": script,
                 "diagnostic": value.get("error_code"), "message": "Server preparation; scheduler and training have separate observations"}
 
     def continue_preparation(self, project, preparation_id):
@@ -241,6 +251,22 @@ class ExperimentPreparationService:
             definition.update(executor=selected["executor"], runtime_id=bundle["runtime_id"])
             run = self.containers.create_run(project, RunRequest.model_validate(definition), profile_snapshot=selected["profile"], prepared_assets=set(value.get("data_receipts", {})),
                 tracking=value.get("tracking", {"enabled": False, "requested": True, "reason": "HISTORICAL_RUN_NOT_BOUND", "entity": None, "project": project}))
+            if request.run.data_preparation is not None and selected["profile"]["backend"]["kind"] == "sensecore" and run["data_preparation_execution"]["phase"] == "before_job":
+                if not self.runtime.config.action_runtime.allow_scheduler_mutations:
+                    raise ApplicationError("CPU data preparation is disabled by scheduler policy", code="DATA_SCRIPT_DISABLED")
+                from ..backends.sensecore_preparation import SenseCoreScriptPreparation
+                self.update(project, preparation_id, phase="PREPARING_DATA_SCRIPT", run=run)
+                campaign = Path(self.runtime.project(project).base_dir) / "experiments" / "campaigns" / (run["campaign"] + ".yaml")
+                frozen = yaml.safe_load(campaign.read_text())["runs"][0]
+                scripts = SenseCoreScriptPreparation(self.runtime.config.container_execution.artifact_store_file,
+                    self.runtime.config.project_registry_root_path())
+                reference = scripts.reference(frozen)
+                previous = value.get("data_script")
+                if previous is not None and previous["operation_id"] != reference["operation_id"]:
+                    raise ApplicationError("original CPU data preparation identity changed", code="DATA_SCRIPT_IDENTITY_CHANGED")
+                self.update(project, preparation_id, data_script=reference)
+                receipt = scripts.ensure(project, frozen)
+                self.update(project, preparation_id, data_script=receipt)
             self.update(project, preparation_id, run=run, phase="CHECKING_SUBMISSION")
             submission = self.submissions.prepare_first_attempt(project, run["run_id"], max_gpu_hours=request.max_gpu_hours, reason="server-prepared experiment")
             return self.public(self.update(project, preparation_id, submission=submission, status="READY", phase="READY",

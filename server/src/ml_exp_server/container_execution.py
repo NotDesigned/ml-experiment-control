@@ -28,7 +28,7 @@ from .tracking.metric_contract import MetricSchema, protocol_identity
 from .workers.data_preparation import identity as data_identity, file_record
 from .results.checkpoint_registry import CheckpointRegistry, storage_scope
 from .workers.worker_http import relay_environment
-from .runs.executor_capabilities import declaration, ExecutionRequirements, mismatches, validate_worker
+from .runs.executor_capabilities import declaration, ExecutionRequirements, mismatches, validate_worker, validate_script_asset
 from .tracking.tracking_contract import WandbOptions, finite_parameters
 from .tracking.tracking_service import store_for, bind_run
 
@@ -238,8 +238,10 @@ class ContainerExecutionService:
     def profile_capabilities(self, profiles=None):
         profiles = self.profiles() if profiles is None else profiles
         store_file = self.runtime.config.container_execution.artifact_store_file
-        desktop = bool(store_file and json.loads(Path(store_file).read_text()).get("data_upload_storage") == "desktop-builder")
-        return {name: declaration(profile, artifact_store=bool(store_file), desktop=desktop)
+        storage_config = json.loads(Path(store_file).read_text()) if store_file else {}
+        desktop = storage_config.get("data_upload_storage") == "desktop-builder"
+        return {name: declaration(profile, artifact_store=bool(store_file), desktop=desktop,
+                                  cpu_preparation=bool(storage_config.get("data_delivery")))
                 for name, profile in profiles.items()}
 
     def environments(self) -> dict:
@@ -389,6 +391,16 @@ class ContainerExecutionService:
         if not selected_profile:
             raise ApplicationError("unknown execution profile", status_code=404, code="UNKNOWN_EXECUTOR")
         capability = self.profile_capabilities({request.executor: selected_profile})[request.executor]
+        configured = self.runtime.project(project)
+        root = Path(configured.base_dir)
+        original = root / "experiments" / "campaigns" / ("run-" + request.run_id + ".yaml")
+        with source_lock(self.root, project):
+            frozen_run = yaml.safe_load(original.read_text())["runs"][0] if original.exists() else None
+        if frozen_run is not None and selected_profile["backend"]["kind"] == "sensecore" and "data_preparation_mode" not in frozen_run:
+            # Historical inside-job scripts retain their original timeout contract.
+            capability["data"]["download_script"] = "inside_job"
+            capability["data"]["preparation"] = {"phase": "inside_job", "budget": "training",
+                "transport": "worker-shared-storage", "max_timeout_seconds": 86400}
         problems = mismatches(capability, selected_profile, request, ExecutionRequirements())
         if problems:
             raise ApplicationError("execution profile cannot satisfy: " + ", ".join(problems), code="CONTAINER_EXECUTION_BLOCKED")
@@ -407,6 +419,7 @@ class ContainerExecutionService:
             assets = AssetStore(Path(config), self.runtime.config.project_registry_root_path())
             for binding in request.inputs:
                 asset = assets.read(project, binding.asset_id)
+                validate_script_asset(request, capability, asset)
                 inputs.append({**binding.model_dump(), "sha256": asset["sha256"],
                                "archive_bytes": asset["archive_bytes"], "files": asset["files"]})
                 if prepared_assets and binding.asset_id in prepared_assets:
@@ -435,10 +448,8 @@ class ContainerExecutionService:
             if len(json.dumps([inputs, preparation]).encode()) > 32768:
                 raise ApplicationError("data preparation exceeds the scheduler command limit", code="CONTAINER_EXECUTION_BLOCKED")
         profile = copy.deepcopy(selected_profile)
-        configured = self.runtime.project(project)
         if not configured.controller or not configured.controller.capabilities.get("container_execution"):
             raise ApplicationError("project is not container-managed", code="CONTAINER_EXECUTION_BLOCKED")
-        root = Path(configured.base_dir)
         backend = profile["backend"]
         storage_root = profile["storage_root"].rstrip("/") + "/" + project
         persistence = request.checkpoint_persistence
@@ -526,12 +537,19 @@ class ContainerExecutionService:
         with source_lock(self.root, project):
             existing = yaml.safe_load(path.read_text()) if path.exists() else None
             if existing is None:
+                if preparation is not None and backend["kind"] == "sensecore" and capability["data"]["download_script"] == "before_job":
+                    run["data_preparation_mode"] = "before_job"
+                    run["data_preparation_cpu"] = json.loads(Path(self.runtime.config.container_execution.artifact_store_file).read_text())["data_delivery"]
                 run["records"] = {"enabled": "experiment-records.v1" in bundle.get("capabilities", [])}
                 run["tracking"] = dict(tracking or store_for(self.runtime).route(request.wandb, project))
                 run["tracking"]["record_stream"] = "experiment-records.v1" in bundle.get("capabilities", [])
                 run["wandb_request"] = request.wandb.model_dump() if request.wandb is not None else None
             else:
                 previous_run = existing["runs"][0]
+                if "data_preparation_mode" in previous_run:
+                    run["data_preparation_mode"] = previous_run["data_preparation_mode"]
+                if "data_preparation_cpu" in previous_run:
+                    run["data_preparation_cpu"] = previous_run["data_preparation_cpu"]
                 if "records" in previous_run:
                     run["records"] = previous_run["records"]
                 if previous_run.get("wandb_request") != (request.wandb.model_dump() if request.wandb is not None else None):
@@ -585,5 +603,11 @@ class ContainerExecutionService:
                 "wandb": run.get("tracking", {"enabled": False, "reason": "HISTORICAL_RUN_NOT_BOUND"}),
                 **({"pool_selection": backend["pool_selection_evidence"]} if "pool_selection_evidence" in backend else {}),
                 **({"data_preparation": preparation} if preparation is not None else {}),
+                **({"data_preparation_execution":
+                    ({"phase": "before_job", "budget": "preparation", "transport": "cpu-acp-shared-storage", "max_timeout_seconds": 3600}
+                     if "data_preparation_cpu" in run else
+                     {"phase": "inside_job", "budget": "training", "transport": "worker-shared-storage"}
+                     if backend["kind"] == "sensecore" and "data_preparation_mode" not in run
+                     else capability["data"]["preparation"])} if preparation is not None else {}),
                 **({"checkpoint_persistence": run["checkpoint_persistence"]} if persistence is not None else {}),
                 **({"resume_from": resume} if resume is not None else {})}

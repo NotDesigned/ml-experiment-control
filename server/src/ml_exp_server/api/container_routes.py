@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse, StreamingResponse, Response
 
 from ..application_errors import ApplicationError
+from ..execution_queue import admitted_handoff
 from ..results.artifacts import ArtifactService
 from ..results.artifact_store import ArtifactStore, require_artifact_available
 from ..results.artifact_lifecycle import ArtifactLifecycle
@@ -133,10 +134,13 @@ async def runtime_read(project: str, runtime_id: str, request: Request):
 async def runtime_execute(project: str, runtime_id: str, data: ConfirmRequest,
                           request: Request):
     service = ContainerExecutionService(request.app.state.runtime)
-    pending = await invoke(service.begin_execute, project, runtime_id, data.confirmation)
-    if pending is not None:
-        await enqueue_build(request, service, pending)
-    return {"runtime_id": runtime_id, "status": "EXECUTING" if pending is not None else "READY", "accepted": True}
+    async def begin_and_enqueue():
+        pending = await invoke(service.begin_execute, project, runtime_id, data.confirmation)
+        if pending is not None:
+            await enqueue_build(request, service, pending)
+        return {"runtime_id": runtime_id, "status": "EXECUTING" if pending is not None else "READY", "accepted": True}
+
+    return await admitted_handoff(begin_and_enqueue)
 
 
 async def enqueue_build(request, service, pending):
@@ -182,10 +186,13 @@ async def runtime_build_observation(project, runtime_id, request, operation):
 @router.post("/projects/{project}/runtimes/{runtime_id}/reconcile")
 async def runtime_reconcile(project: str, runtime_id: str, data: ConfirmRequest, request: Request):
     service = ContainerExecutionService(request.app.state.runtime)
-    pending = await invoke(service.begin_execute, project, runtime_id, data.confirmation, reconcile=True)
-    if pending is None:
+    async def begin_and_enqueue():
+        pending = await invoke(service.begin_execute, project, runtime_id, data.confirmation, reconcile=True)
+        return await enqueue_build(request, service, pending) if pending is not None else None
+
+    future = await admitted_handoff(begin_and_enqueue)
+    if future is None:
         return await invoke(service.read, project, runtime_id)
-    future = await enqueue_build(request, service, pending)
     # A client disconnect cannot cancel durable ownership of receipt recovery.
     return await asyncio.shield(asyncio.wrap_future(future))
 

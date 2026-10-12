@@ -12,7 +12,7 @@ import tempfile
 import time
 from urllib.parse import urlencode
 
-from .api import ClientError, data_archive, download, save, segment, source_archive, upload_asset_parts
+from .api import ClientError, acknowledge, data_archive, download, save, segment, source_archive, upload_asset_parts
 
 
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "PREEMPTED", "TIMEOUT"}
@@ -191,6 +191,52 @@ def wait_resource(client, endpoint, seconds, *, pending=("EXECUTING",)):
         time.sleep(5)
 
 
+def wait_download(client, project, run, attempt, state, state_path, seconds):
+    """Observe publication for the original Attempt; never request collection."""
+    endpoint = f"/api/runs/{segment(project)}/{segment(run)}/attempts/{segment(attempt)}/collection"
+    deadline = time.monotonic() + seconds
+    while True:
+        value = client.call(endpoint)
+        if not isinstance(value, dict) or (value.get("project"), value.get("run_id"), value.get("attempt_id")) != (project, run, attempt):
+            raise ClientError("collection identity differs from the saved exact Attempt")
+        state["collection"] = value
+        save(state_path, state)
+        status = value.get("status")
+        if status == "AVAILABLE" and value.get("verification") == "SHA256_VERIFIED" and value.get("download_available") is True:
+            return value
+        if status == "RELEASED":
+            raise ClientError("original Attempt archive was RELEASED; collection will not recreate it",
+                              status=410, error_code="ARTIFACT_RELEASED")
+        if status in ("FAILED", "RECONCILE_REQUIRED"):
+            raise ClientError(f"original Attempt collection is {status}; inspect saved collection diagnostics before explicit recovery; no collection was requested",
+                              error_code="RESULT_COLLECTION_" + status)
+        if status not in ("NOT_COLLECTED", "QUEUED", "COLLECTING", "AVAILABLE"):
+            raise ClientError("unknown collection status; inspect the saved exact Attempt before downloading")
+        report(value)
+        if time.monotonic() >= deadline:
+            raise ClientError("result publication wait timed out; resume the saved state to observe the same Attempt; no collection was requested",
+                              error_code="RESULT_WAIT_TIMEOUT")
+        time.sleep(5)
+
+
+def retry_download_acknowledgement(client, project, run, attempt, state, state_path, directory):
+    """Retry a saved PENDING ACK after verifying its local identity and bytes."""
+    previous = state.get("download", {})
+    if previous.get("acknowledgement", {}).get("status") != "PENDING":
+        return
+    if directory is None:
+        raise ClientError("download acknowledgement is PENDING; resume with --download-to pointing to the original directory, or use ml-exp acknowledge")
+    local = json.loads((directory / "verification.json").read_text())
+    identity = {"project": project, "run_id": run, "attempt_id": attempt}
+    if any(local.get(key) != value for key, value in identity.items()) or any(
+            local.get(key) != previous.get(key) for key in ("archive_sha256", "archive_bytes", "files")):
+        raise ClientError("local download proof differs from the saved exact Attempt; acknowledgement was not sent")
+    # acknowledge() rehashes the archive/every file and preserves the locally
+    # saved KEEP/release policy. A default CLI flag must not override that choice.
+    state["download"] = acknowledge(client, directory)
+    save(state_path, state)
+
+
 def experiment(client, health, config_path, state_path, *, resume=False, execute=False, seconds=1800, out=None, continue_preparation=False, keep_server_copy=False):
     config, source = read_config(config_path)
     if continue_preparation and not resume:
@@ -213,6 +259,14 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         raise ClientError("state file exists; use --resume to inspect and continue the same experiment")
     if state.get("config_sha256") != fingerprint:
         raise ClientError("resume configuration changed; use a new Run and state file")
+    if out is not None:
+        if state.get("download_directory") and Path(state["download_directory"]).resolve() != out.resolve():
+            raise ClientError("download directory differs from saved workflow state; resume with the original directory")
+        state["download_directory"] = str(out.resolve())
+        # A resumed command's default False must not release a copy originally
+        # requested as KEEP. Explicit release remains an acknowledge operation.
+        state["download_keep_server_copy"] = state.get("download_keep_server_copy", False) or keep_server_copy
+    download_out = Path(state["download_directory"]) if state.get("download_directory") else None
     definition = {key: config[key] for key in ("run_id", "executor", "arguments", "resources", "env", "outputs", "required_outputs", "checkpoint_upload", "metrics_schema", "evaluation", "data_preparation", "checkpoint_persistence", "resume_from", "wandb", "parameters") if key in config}
     requirements = dict(config.get("requirements", {}))
     if config.get("inputs"):
@@ -300,6 +354,9 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         submission = wait_resource(client, endpoint, seconds)
     state["submission"] = submission
     save(state_path, state)
+    if resume:
+        retry_download_acknowledgement(client, config["project"], config["run_id"], submission["attempt_id"],
+                                       state, state_path, download_out)
     if not execute:
         return state
     if submission["status"] != "VERIFIED":
@@ -319,8 +376,11 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         if time.monotonic() >= deadline:
             raise ClientError("training wait timed out; resume observes the same job and never creates a new Attempt")
         time.sleep(5)
-    if out is not None and "download" not in state:
-        state["download"] = download(client, config["project"], config["run_id"], submission["attempt_id"], out, keep_server_copy=keep_server_copy)
+    if download_out is not None and "download" not in state:
+        if "result-collection.v1" in health.get("capabilities", []):
+            wait_download(client, config["project"], config["run_id"], submission["attempt_id"], state, state_path, seconds)
+        state["download"] = download(client, config["project"], config["run_id"], submission["attempt_id"], download_out,
+                                     keep_server_copy=state.get("download_keep_server_copy", keep_server_copy))
         save(state_path, state)
     if result["scheduler_state"] != "SUCCEEDED":
         raise ClientError("training ended unsuccessfully; saved state and artifacts are available for diagnosis")

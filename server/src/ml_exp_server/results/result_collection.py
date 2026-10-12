@@ -23,6 +23,7 @@ import yaml
 from experiment_control.backends.sensecore_rest import SenseCoreREST, RESTError, create_document
 
 from ..application_errors import ApplicationError
+from ..execution_queue import QueueUnavailable
 from ..storage_capacity import StorageCapacity, CapacityError
 from .artifact_store import ArtifactStore, ATTEMPT, artifact_released
 from .artifacts import ArtifactService
@@ -288,14 +289,19 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
                 continue
             identity = tuple(transfer[k] for k in ("project", "run_id", "attempt_id"))
             try:
-                _, pending = self.begin(*identity)
+                reserve = getattr(submit, "reserve", None)
+                with reserve(self.finish) if reserve is not None else nullcontext():
+                    _, pending = self.begin(*identity)
+                    if pending is not None:
+                        try:
+                            submit(self.finish, pending)
+                        except RuntimeError:
+                            self.update(identity, status="RECONCILE_REQUIRED", diagnostic="EXECUTOR_UNAVAILABLE")
+            except QueueUnavailable:
+                # Leave unclaimed work eligible for a later collector cycle.
+                break
             except ApplicationError:
                 continue
-            if pending is not None:
-                try:
-                    submit(self.finish, pending)
-                except RuntimeError:
-                    self.update(identity, status="RECONCILE_REQUIRED", diagnostic="EXECUTOR_UNAVAILABLE")
 
     def finish(self, identity):
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)

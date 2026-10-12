@@ -66,9 +66,53 @@ before explicitly preparing another operation. Old unbuilt recipes and stale
 unexecuted gates need fresh preparation. Completed READY images remain usable.
 Client `--resume` observes saved identities; it is not automatic GPU recovery.
 
+HTTP 503 `EXECUTION_CAPACITY_UNAVAILABLE` means that execution lane admitted no new
+work for that request. Keep the same state and observe its original resource; do
+not replace a Run or replay an earlier uncertain scheduler request. GETs remain
+usable while a lane is full. The SDK exposes sanitized `ClientError.response_body`,
+the compatible `details` field, `status`, `error_code` and numeric `retry_after`.
+JSON error bodies over 16 KiB or malformed bodies are discarded. The CLI prints
+only bounded, sanitized ClientError fields as JSON on stderr. See
+[HTTP errors](http_contract.md#structured-errors-and-execution-capacity).
+
 Archive transfer is independently resumable. Confirm committed parts first;
 retry missing identical bytes and completion. Preserve incomplete sessions and
 their expiry/whole-archive hash when diagnosing a released worker.
+
+## Cancel or retry an exact Attempt
+
+Use a separate state file for each operation and review its returned Action before
+execution. Cancellation targets the chosen Attempt. Retry creates a new Attempt
+in the same frozen Run and requires a finite positive budget:
+
+```bash
+ml-exp cancel --project PROJECT --run RUN --attempt attempt-001 --state cancel.state.json
+# Review the Action and next_action before authorizing cancellation.
+ml-exp cancel --state cancel.state.json --execute
+
+ml-exp retry --project PROJECT --run RUN --attempt attempt-001 \
+  --max-gpu-hours 0.2 --state retry.state.json
+# Review the new Attempt, gates and budget before authorizing execution.
+ml-exp retry --state retry.state.json --execute
+```
+
+No first invocation may both prepare and execute. Repeating with only `--state`
+reads the original Action. `--execute` rechecks its identity, scope and sealed
+review digests; it cannot change the saved request or raise the saved budget.
+For an uncertain execution, use `ml-exp cancel --state cancel.state.json --reconcile`
+or the corresponding `retry` command. Reconciliation observes the original Action
+without repeating scheduler effects. Follow `next_action` and inspect diagnostics
+before preparing a new plan.
+
+If the preparation reply was lost, state retains the intended operation and a
+recovery URL. Query that exact scope's Actions, then attach the matching original
+Action with `--state FILE --action-id ACTION_ID` for review. This attachment cannot
+also execute or reconcile. Lost authorization/execution replies are observed,
+never automatically replayed.
+
+Retry does not discover or change checkpoints. To resume from a chosen registered
+checkpoint, freeze a new Run with an explicit `resume_from` reference. Reconcile
+the prior job before creating replacement training when its outcome is uncertain.
 
 ## Output recovery
 
@@ -143,6 +187,34 @@ exception class, system `errno`/symbolic code when present, and a SHA256 path
 reference when the exception identifies a file. Raw exception text and paths are
 excluded. A NAS `ENOSPC` during temporary-file creation and an API-host upload
 capacity failure are separate problems; check the reported phase before retrying.
+
+## Resume publication or a download acknowledgement
+
+`experiment --download-to` first observes training's terminal scheduler state, then
+polls `GET /api/runs/P/R/attempts/A/collection` for the saved original Attempt.
+It downloads only after `AVAILABLE`, `verification=SHA256_VERIFIED` and
+`download_available=true`. `NOT_COLLECTED`, `QUEUED`, `COLLECTING`, or incomplete
+publication keeps waiting; the client never POSTs collection or creates another
+Attempt during this wait. Automatic server collection may independently begin
+when successful training evidence is available.
+
+`FAILED` or `RECONCILE_REQUIRED` stops the client with an explicit diagnostic;
+inspect the exact collection and choose recovery separately. `RELEASED` stops
+with `ARTIFACT_RELEASED`/410 and cannot trigger re-export. Each wait stage has its
+own `--seconds` limit. A publication timeout saves the last collection snapshot,
+original identities, destination and KEEP choice. Use the same config and state
+with `--resume --execute` to continue observing the same job/publication; the saved
+destination can be reused without repeating `--download-to`. Servers without
+`result-collection.v1` use the older direct-download behavior.
+
+If the state contains a completed download with `acknowledgement.status=PENDING`,
+`--resume` revalidates local `verification.json` against the exact saved Attempt
+and archive/file proof, then hashes the archive and every file before retrying
+only ACK. This works without `--execute` and never redownloads or starts collection.
+The local saved KEEP/release choice is preserved. Keep the directory and proof
+file; for older state without a saved destination, supply the original
+`--download-to` or use `ml-exp acknowledge --directory DIRECTORY` directly.
+Corrupt or changed local bytes/proof prevent ACK and retain the server copy.
 
 ### Download confirmation and server storage
 

@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..application import ApplicationError
+from ..execution_queue import admitted_handoff
 from .errors import application_http_error
 
 
@@ -85,15 +86,18 @@ def authorize_submission(
 async def execute_submission(
     submission_id: str, data: ExecuteSubmissionRequest, request: Request,
 ):
-    try:
-        result, pending = await run_in_threadpool(
-            _service(request).begin_execute, submission_id, data.confirmation,
-        )
-    except ApplicationError as exc:
-        raise application_http_error(exc) from exc
-    if pending is not None:
-        request.app.state.submit_action(pending)
-    return result
+    async def begin_and_enqueue():
+        try:
+            result, pending = await run_in_threadpool(
+                _service(request).begin_execute, submission_id, data.confirmation,
+            )
+        except ApplicationError as exc:
+            raise application_http_error(exc) from exc
+        if pending is not None:
+            request.app.state.submit_action(pending)
+        return result
+
+    return await admitted_handoff(begin_and_enqueue)
 
 
 @router.post("/submissions/{submission_id}/reconcile")

@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..runs.experiment_preparation import ExperimentPreparationRequest, PreparationRun
 from ..runs.executor_capabilities import ExecutionRequirements, ExecutorSelector
+from ..execution_queue import admitted_handoff
 from .container_routes import invoke
 
 
@@ -35,8 +36,11 @@ async def enqueue(request, pending):
 
 @router.post("/projects/{project}/experiment-preparations", status_code=202)
 async def prepare(project: str, data: ExperimentPreparationRequest, request: Request):
-    result, pending = await invoke(request.app.state.preparation_service.accept, project, data)
-    return await enqueue(request, pending) if pending is not None else result
+    async def begin_and_enqueue():
+        result, pending = await invoke(request.app.state.preparation_service.accept, project, data)
+        return await enqueue(request, pending) if pending is not None else result
+
+    return await admitted_handoff(begin_and_enqueue)
 
 
 @router.get("/projects/{project}/experiment-preparations/{preparation_id}")
@@ -51,5 +55,8 @@ async def progress(project: str, preparation_id: str, request: Request):
 
 @router.post("/projects/{project}/experiment-preparations/{preparation_id}/continue", status_code=202)
 async def continue_preparation(project: str, preparation_id: str, request: Request):
-    result, pending = await invoke(request.app.state.preparation_service.continue_preparation, project, preparation_id)
-    return await enqueue(request, pending) if pending is not None else result
+    async def begin_and_enqueue():
+        result, pending = await invoke(request.app.state.preparation_service.continue_preparation, project, preparation_id)
+        return await enqueue(request, pending) if pending is not None else result
+
+    return await admitted_handoff(begin_and_enqueue)

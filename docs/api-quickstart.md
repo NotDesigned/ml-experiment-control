@@ -82,8 +82,18 @@ The first command uploads source/data and submits one preparation request. The
 server matches the executor, builds/reuses the image, prepares data, freezes the
 Run and prepares gates. It does not submit GPU training. Adding desktop SenseCore inputs
 can launch a bounded zero-GPU data-copy job during preparation. `--execute`
-authorizes scheduling within the budget. `--seconds` is the client's wait limit;
+authorizes scheduling within the budget. `--seconds` limits each client wait stage;
 `resources.max_time` controls worker/job duration. Disconnecting does not cancel.
+
+With `--download-to`, scheduler completion is followed by observation of the
+original Attempt's collection. Download starts only when it is `AVAILABLE`,
+`verification=SHA256_VERIFIED` and `download_available=true`. This wait can include
+the server's automatic result collection; the client does not request collection
+or create another Attempt. `FAILED` or `RECONCILE_REQUIRED` requires inspection;
+`RELEASED` cannot be downloaded again. A publication timeout preserves the exact
+Attempt and destination in the state file. Repeat the same command with
+`--resume --execute` to continue observing it. Servers without
+`result-collection.v1` retain the older direct-download behavior.
 
 ## Add data and outputs
 
@@ -137,6 +147,8 @@ second Run or replay an uncertain scheduler submission.
 ```bash
 ml-exp submission --id SUBMISSION_ID
 ml-exp watch --project my-study --run trial-001 --seconds 1800
+ml-exp logs --project my-study --run trial-001 --attempt attempt-001 --stream both --lines 80
+ml-exp metrics --project my-study --run trial-001 --attempt attempt-001 --keys loss --max-points 2000
 ml-exp download --project my-study --run trial-001 \
   --attempt attempt-001 --out results/trial-001-copy
 ```
@@ -145,15 +157,47 @@ Use the actual Attempt ID and a new destination directory. Download verifies the
 archive and recorded file hashes. Failed jobs can still have useful outputs.
 Runtime READY means image publication; Submission VERIFIED means exact scheduler
 job visibility; neither proves training or result publication succeeded.
+`watch` stops at a scheduler terminal state and does not wait for publication.
+`logs` and `metrics` are reads; omitting `--attempt` resolves the current Attempt
+once. Metrics retain their recorded units, protocols and variants.
 
 After disconnecting, use the same state with `--resume`. It observes saved
 identities without replaying uncertain build/scheduler requests. Changed code
 or config needs a new Run ID and state file. See [recovery](recovery.md) for
 `RECONCILE_REQUIRED`, empty results and stalled preparation.
 
+A completed download with a `PENDING` acknowledgement can be resumed with the
+same experiment state and `--resume`, even without `--execute`. The client verifies
+the saved local archive and files, then retries only ACK, preserving the saved
+KEEP/release choice. It does not download again. Keep the results directory and
+`verification.json`; `ml-exp acknowledge --directory results/trial-001` performs
+the same local verification and ACK retry directly.
+
+Cancellation and retry use separately saved plans. The first command prepares an
+exact-Attempt Action for review; only the second explicit invocation executes it:
+
+```bash
+ml-exp cancel --project my-study --run trial-001 --attempt attempt-001 --state cancel.state.json
+# Inspect the returned Action, scope, gates and next_action first.
+ml-exp cancel --state cancel.state.json --execute
+
+ml-exp retry --project my-study --run trial-001 --attempt attempt-001 \
+  --max-gpu-hours 0.2 --state retry.state.json
+# Inspect the new Attempt and budget first.
+ml-exp retry --state retry.state.json --execute
+```
+
+Repeating either command with only `--state` observes its original Action. Use
+`--reconcile` for an uncertain original Action. Retry creates a new Attempt in the
+same frozen Run and does not select a checkpoint. To change the frozen checkpoint,
+create a new Run with an explicit `resume_from` reference. See [safe operation
+recovery](recovery.md#cancel-or-retry-an-exact-attempt).
+
 Lower-level commands are `pack → create → prepare → execute → watch → download`.
 Use `ml-exp COMMAND --help` and the [API reference](source-api.md) when reusing
 one Runtime across multiple Runs or integrating a custom client.
+The [HTTP contract](http_contract.md#structured-errors-and-execution-capacity)
+describes bounded execution queues and safe structured SDK errors.
 
 ## Interrupted preparation
 

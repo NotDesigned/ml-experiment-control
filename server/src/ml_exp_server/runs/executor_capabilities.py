@@ -20,6 +20,7 @@ class ExecutionRequirements(BaseModel):
     platform: str = Field(default="linux/amd64", max_length=128)
     data_assets: bool = False
     data_preparation: bool = False
+    data_preparation_before_job: bool = False
     persistent_checkpoints: bool = False
     queue_reason: bool = False
     exit_code: bool = False
@@ -34,7 +35,7 @@ class ExecutorSelector(BaseModel):
     candidates: list[str] = Field(default_factory=list, max_length=64)
 
 
-def declaration(profile, *, artifact_store: bool, desktop: bool) -> dict:
+def declaration(profile, *, artifact_store: bool, desktop: bool, cpu_preparation: bool = False) -> dict:
     kind = profile["backend"]["kind"]
     adapter = DECLARATIONS[kind]
     persistent = bool(adapter.persistent_filesystem and profile.get("storage_root")
@@ -43,6 +44,8 @@ def declaration(profile, *, artifact_store: bool, desktop: bool) -> dict:
     relay = relay_environment(profile["backend"].get("api_relay"))
     if relay and kind != "slurm":
         raise ApplicationError("API TCP relay requires a Slurm gateway", code="EXECUTOR_TRANSPORT_INVALID")
+    script_mode = ("before_job" if relay or kind == "sensecore" and cpu_preparation else "inside_job") if persistent and artifact_store else None
+    asset_mode = "before_job" if desktop and kind in {"slurm", "sensecore"} else "inside_job"
     return {
         "contract": CONTRACT,
         "runtime": {"platforms": ["linux/amd64"] if kind != "local" else [],
@@ -53,9 +56,13 @@ def declaration(profile, *, artifact_store: bool, desktop: bool) -> dict:
                     "api_transport": "tcp_relay" if relay else "direct_https"},
         "storage": {"persistent": persistent, "storage_id": storage_id,
                     "checkpoint_registration": persistent and artifact_store},
-        "data": {"asset_preparation": "before_job" if desktop and kind in {"slurm", "sensecore"} else "inside_job",
+        "data": {"asset_preparation": asset_mode,
                  "assets": persistent and artifact_store,
-                 "download_script": ("before_job" if relay else "inside_job") if persistent and artifact_store else None},
+                 "download_script": script_mode,
+                 "preparation": {"phase": script_mode,
+                                 "max_timeout_seconds": 3600 if kind == "sensecore" and cpu_preparation else 86400,
+                                 "budget": "preparation" if script_mode == "before_job" else "training" if script_mode else None,
+                                 "transport": "cpu-acp-shared-storage" if kind == "sensecore" and cpu_preparation else "ssh-shared-storage" if relay else "worker-shared-storage"}},
         "observability": {"logs": list(adapter.logs), "queue_reason": adapter.queue_reason,
                           "exit_code": adapter.exit_code, "preemption_reason": adapter.preemption_reason},
         "jobs": {"exact_submission_lookup": adapter.exact_submission_lookup,
@@ -82,6 +89,14 @@ def mismatches(capabilities, profile, request, requirements) -> list[str]:
         problems.append("data.assets")
     if (request.data_preparation is not None or requirements.data_preparation) and capabilities["data"]["download_script"] is None:
         problems.append("data.download_script")
+    if requirements.data_preparation_before_job and capabilities["data"]["download_script"] != "before_job":
+        problems.append("data.download_script.before_job")
+    if request.data_preparation is not None and request.data_preparation.timeout_seconds > capabilities["data"]["preparation"]["max_timeout_seconds"]:
+        problems.append("data.download_script.timeout_seconds")
+    if (request.data_preparation is not None and request.inputs
+            and capabilities["data"]["preparation"]["transport"] == "cpu-acp-shared-storage"
+            and capabilities["data"]["asset_preparation"] != "before_job"):
+        problems.append("data.download_script.inputs_require_before_job")
     if (request.checkpoint_persistence is not None or request.resume_from is not None or requirements.persistent_checkpoints) and not capabilities["storage"]["checkpoint_registration"]:
         problems.append("storage.checkpoint_registration")
     if request.checkpoint_upload is not None and not capabilities["data"]["assets"]:
@@ -93,6 +108,13 @@ def mismatches(capabilities, profile, request, requirements) -> list[str]:
     if capabilities["resources"]["allocation_mode"] == "fixed_spec" and request.resources.gpus != profile.get("gpus", 1):
         problems.append("resources.fixed_gpu_count")
     return problems
+
+
+def validate_script_asset(request, capabilities, asset):
+    if (request.data_preparation is not None
+            and capabilities["data"]["preparation"]["transport"] == "cpu-acp-shared-storage"
+            and asset.get("remote_storage") != "desktop-builder"):
+        raise ApplicationError("CPU download scripts require pre-staged desktop-backed input assets", code="DATA_SCRIPT_INPUT_TRANSPORT_UNSUPPORTED")
 
 
 def match(profiles, declarations, request, requirements, selector, *, resume_scope=None, project=None):
