@@ -4,6 +4,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -33,9 +34,23 @@ def test_timeout_kills_grandchild_that_ignores_term_and_closes_its_descriptors(t
     pid = int(identity.read_text())
     # A reparented zombie may await init's reaper; it cannot retain write FDs.
     status = Path(f"/proc/{pid}/stat")
-    assert not status.exists() or status.read_text().split()[2] == "Z"
+    def alive():
+        try:
+            return status.read_text().split()[2] != "Z"
+        except FileNotFoundError:
+            return False
+    # SIGKILL delivery and the parent's wait are separate kernel events. The
+    # grandchild can briefly be runnable before its pending kill is processed.
+    deadline = time.monotonic() + 2
+    while alive() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not alive()
     descriptors = Path(f"/proc/{pid}/fd")
-    assert not descriptors.exists() or not list(descriptors.iterdir())
+    try:
+        retained = list(descriptors.iterdir())
+    except FileNotFoundError:
+        retained = []
+    assert not retained
 
 
 def test_timeout_with_already_gone_process_group_preserves_original_timeout(monkeypatch):
