@@ -209,16 +209,9 @@ async def artifact_transfer(project: str, run_id: str, attempt_id: str, request:
         await run_in_threadpool(service.authorize, project, run_id, attempt_id, token)
     except ValueError:
         raise HTTPException(status_code=401, detail="invalid Attempt upload capability")
-    size = 0
-    with tempfile.TemporaryFile() as stream:
-        async for chunk in request.stream():
-            size += len(chunk)
-            if exceeds(size, service.limit):
-                raise HTTPException(status_code=413, detail="artifact upload exceeds limit")
-            stream.write(chunk)
-        stream.seek(0)
-        receipt = await invoke(service.receive, project, run_id, attempt_id, token, stream, size)
-        return {"sha256": receipt["sha256"], "bytes": receipt["bytes"], "files": len(receipt["files"])}
+    from .asset_routes import receive
+    receipt = await receive(request, service, service.receive, project, run_id, attempt_id, token)
+    return {"sha256": receipt["sha256"], "bytes": receipt["bytes"], "files": len(receipt["files"])}
 
 
 @router.get("/launch-transfers/{project}/{run_id}/{attempt_id}/{digest}", include_in_schema=False)

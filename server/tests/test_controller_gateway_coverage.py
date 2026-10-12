@@ -93,7 +93,7 @@ def test_pinned_runner_maps_process_failures(monkeypatch, tmp_path, failure):
             raise subprocess.TimeoutExpired(["python"], 1)
         raise OSError("unavailable")
 
-    monkeypatch.setattr(module.subprocess, "run", fail)
+    monkeypatch.setattr(module, "run_process", fail)
     result = CommandRunner().run_pinned(
         ["python"], cwd=tmp_path, timeout=1, env={}, pass_fds=(),
     )
@@ -103,8 +103,8 @@ def test_pinned_runner_maps_process_failures(monkeypatch, tmp_path, failure):
 
 def test_pinned_runner_tolerates_non_json_output(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        module.subprocess,
-        "run",
+        module,
+        "run_process",
         lambda *_args, **_kwargs: SimpleNamespace(
             returncode=0, stdout="not-json", stderr="",
         ),
@@ -115,8 +115,8 @@ def test_pinned_runner_tolerates_non_json_output(monkeypatch, tmp_path):
     assert result["payload"] is None
 
     monkeypatch.setattr(
-        module.subprocess,
-        "run",
+        module,
+        "run_process",
         lambda *_args, **_kwargs: SimpleNamespace(
             returncode=0, stdout="", stderr="",
         ),
@@ -164,7 +164,7 @@ def test_timeout_preserves_safe_partial_output_without_argv(monkeypatch, tmp_pat
     ).encode()
     def timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired(command, 1, output=stdout, stderr=stderr)
-    monkeypatch.setattr(module.subprocess, "run", timeout)
+    monkeypatch.setattr(module, "run_process", timeout)
     runner = CommandRunner(SimpleNamespace(run=timeout))
     result = (
         runner.run_pinned(command, cwd=tmp_path, timeout=1, env={}, pass_fds=())
@@ -189,7 +189,7 @@ def test_failed_command_logs_are_bounded_after_redaction(monkeypatch, tmp_path, 
         "returned non-zero exit status 1.\n"
     ) + repr(command) + "\nencoded=" + "b" * 256
     completed = SimpleNamespace(returncode=1, stdout=stdout, stderr=stderr)
-    monkeypatch.setattr(module.subprocess, "run", lambda *_args, **_kwargs: completed)
+    monkeypatch.setattr(module, "run_process", lambda *_args, **_kwargs: completed)
     runner = CommandRunner(SimpleNamespace(run=lambda *_args, **_kwargs: completed))
     result = (
         runner.run_pinned(command, cwd=tmp_path, timeout=1, env={}, pass_fds=())

@@ -157,7 +157,7 @@ def test_collect_preserves_complete_uploaded_metrics_and_attempt_logs(controller
     assert (controller.root / "collection.json").is_file()
 
 
-def test_cloud_collect_exact_remote_outputs_without_overwriting_latest_attempt(controller):
+def test_cloud_observation_does_not_copy_outputs_or_overwrite_latest_attempt(controller):
     controller.prepare()
     other = Controller(controller.campaign, "gpu", "attempt-002")
     other.prepare()
@@ -171,10 +171,23 @@ def test_cloud_collect_exact_remote_outputs_without_overwriting_latest_attempt(c
     controller.backend.logs = lambda *args, **kwargs: {"lines": ["cloud output"]}
     result = controller.collect()
     assert "artifacts" not in result
-    assert calls[0][-2].endswith("/attempts/attempt-001/outputs/")
+    assert calls == []
     assert (controller.attempt / "stdout.log").read_text() == "cloud output\n"
     assert json.loads((controller.root / "collection.json").read_text())["attempt_id"] == "attempt-002"
     assert controller.summarize({}, controller.attempt)["latest_metric"] is None
+
+
+def test_managed_backend_collection_has_no_declared_weights_and_bounds_metadata_copy(controller):
+    managed = Controller(controller.campaign, "gpu", "attempt-001")
+    assert managed.backend.s.collection_includes(managed.campaign) == ()
+    calls = []
+    managed.runner = SimpleNamespace(run=lambda command, **options: calls.append((command, options)))
+    managed.backend_command(["rsync", "-a", "remote:/run/", str(managed.attempt / "collected_run") + "/"])
+    assert "--max-size=32m" in calls[-1][0] and calls[-1][1]["timeout_seconds"] == 120
+    managed.backend_command(["rsync", "source", "remote:/source/"])
+    assert "--max-size=32m" not in calls[-1][0] and not calls[-1][1]
+    managed.backend_command(["ssh", "host", "squeue"])
+    assert calls[-1][0] == ["ssh", "host", "squeue"]
 
 
 @pytest.mark.parametrize("state,expected", [("FAILED", "REVIEW_RETRY"), ("RUNNING", "WAIT")])

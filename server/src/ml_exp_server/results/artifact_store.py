@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from ..projects.source_imports import IDENTITY, unpack_source, seal_tree, remove_staging
 from ..storage import atomic_json, utc_now
+from ..storage_capacity import StorageCapacity
 from ..archive_limits import byte_limit, exceeds, wire_limit
 from ..workers.worker_launcher import LAUNCH_PATH, encode, endpoint
 
@@ -176,24 +177,27 @@ class ArtifactStore:
             if destination.exists():
                 return
             receipt = value['receipt']
-            temporary = Path(tempfile.mkdtemp(prefix='.restore-', dir=parent))
-            try:
-                with tempfile.TemporaryFile() as stream:
-                    self.client().download_fileobj(self.config['bucket'], receipt['object_key'], stream,
-                                                   Config=self._transfer_config())
-                    if stream.tell() != receipt['bytes']:
-                        raise ValueError('stored artifact size mismatch')
-                    stream.seek(0)
-                    if stream_digest(stream) != receipt['sha256']:
-                        raise ValueError('stored artifact digest mismatch')
-                    stream.seek(0)
-                    unpack_source(stream, temporary, SimpleNamespace(max_source_bytes=self.limit, max_source_files=20000), allow_empty=True)
-                seal_tree(temporary)
-                temporary.chmod(0o700)
-                temporary.rename(destination)
-                destination.chmod(0o500)
-            finally:
-                remove_staging(temporary)
+            expanded = sum((item['bytes'] + 4095) // 4096 * 4096 for item in receipt['files'])
+            capacity = StorageCapacity(self.root.parent, self.config)
+            with capacity.reserve(receipt['bytes'] + expanded):
+                temporary = Path(tempfile.mkdtemp(prefix='.restore-', dir=parent))
+                try:
+                    with tempfile.TemporaryFile(dir=self.root) as stream:
+                        self.client().download_fileobj(self.config['bucket'], receipt['object_key'], stream,
+                                                       Config=self._transfer_config())
+                        if stream.tell() != receipt['bytes']:
+                            raise ValueError('stored artifact size mismatch')
+                        stream.seek(0)
+                        if stream_digest(stream) != receipt['sha256']:
+                            raise ValueError('stored artifact digest mismatch')
+                        stream.seek(0)
+                        unpack_source(stream, temporary, SimpleNamespace(max_source_bytes=self.limit, max_source_files=20000), allow_empty=True)
+                    seal_tree(temporary)
+                    temporary.chmod(0o700)
+                    temporary.rename(destination)
+                    destination.chmod(0o500)
+                finally:
+                    remove_staging(temporary)
 
     def receive(self, project, run, attempt, token, stream, size, *, repair_sha256=None):
         if size <= 0 or exceeds(size, self.limit):

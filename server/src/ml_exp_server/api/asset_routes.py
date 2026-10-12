@@ -17,6 +17,7 @@ from ..data.data_assets import AssetStore
 from ..results.checkpoint_registry import CheckpointRegistry
 from ..workers.persistent_state import MANIFEST_LIMIT
 from ..archive_limits import exceeds
+from ..storage_capacity import StorageCapacity
 from .container_routes import invoke
 
 router = APIRouter(prefix="/api")
@@ -40,14 +41,25 @@ async def receive(request, service, call, *args):
         raise HTTPException(status_code=400, detail="invalid Content-Length") from None
     if exceeds(expected_size, service.limit):
         raise HTTPException(status_code=413, detail="data archive exceeds upload limit")
-    if expected_size and expected_size * 2 + 64 * 1024 ** 2 > shutil.disk_usage(service.root).free:
-        raise HTTPException(status_code=507, detail="insufficient local staging space for this data archive")
+    objects = getattr(service, "objects", service)
+    capacity = StorageCapacity(objects.root.parent, objects.config)
+    reservation = capacity.reserve(3 * expected_size)
+    lease = await invoke(reservation.__enter__)
+    try:
+        return await receive_body(request, service, call, args, lease, expected_size)
+    finally:
+        await run_in_threadpool(reservation.__exit__, None, None, None)
+
+
+async def receive_body(request, service, call, args, lease, expected_size):
     size = 0
     with tempfile.TemporaryFile(dir=service.root) as stream:
         async for chunk in request.stream():
             size += len(chunk)
             if exceeds(size, service.limit):
                 raise HTTPException(status_code=413, detail="data archive exceeds upload limit")
+            if not expected_size or size > expected_size:
+                await invoke(lease.resize, 3 * size)
             stream.write(chunk)
         stream.seek(0)
         return await invoke(call, *args, stream, size)

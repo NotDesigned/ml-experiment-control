@@ -81,7 +81,7 @@ class Controller:
         self.attempt = self.root / "attempts" / attempt_id
         self.runner = runner or SubprocessRunner()
         self.backend = build_registry(BackendServices(
-            run_command=self.runner.run,
+            run_command=self.backend_command,
             local_run_dir=lambda _campaign, _run: self.attempt,
             backend_record=lambda _campaign, _run: self.store.load_backend(attempt_id) or {
                 "attempt_id": attempt_id, "backend_job_id": None},
@@ -89,13 +89,18 @@ class Controller:
             parse_metric=parse_metric,
             parse_checkpoint=lambda _campaign, _line: None,
             atomic_write=atomic_write, utc_now=utc_now,
-            collection_includes=lambda _campaign: tuple(
-                f"/attempts/{attempt_id}/outputs/{pattern}" for pattern in self.run["outputs"]
-            ),
             dispatch_command=self.dispatch_command,
             oci_pull_environment=self.oci_pull_environment,
             run_manifest_path=lambda _campaign, _run: self.store.manifest_path,
         )).get(self.run["backend"]["kind"])
+
+    def backend_command(self, command, **options):
+        if command[0] == "rsync" and command[-1].rstrip("/") == str(self.attempt / "collected_run"):
+            # Scheduler observation copies only bounded evidence. Declared
+            # weights belong to ResultCollectionService, never status polling.
+            command = [command[0], "--max-size=32m", *command[1:]]
+            options["timeout_seconds"] = 120
+        return self.runner.run(command, **options)
 
     def source(self, source_root: str | None = None) -> Path:
         source_id = self.run["source_id"]
@@ -391,13 +396,6 @@ class Controller:
             result.update(self.summarize(self.campaign, uploaded))
             result["artifacts"] = {"files": sum(1 for p in uploaded.rglob("*") if p.is_file()),
                                    "storage": "s3", "download_available": True}
-        alias = self.run.get("artifact_ssh")
-        if alias and self.backend.kind == "sensecore":
-            mirror = self.attempt / "collected_run" / "attempts" / self.attempt_id / "outputs"
-            mirror.mkdir(parents=True, exist_ok=True)
-            remote = self.run["storage"]["run_dir"] + f"/attempts/{self.attempt_id}/outputs/"
-            self.runner.run(["rsync", "-a", "--safe-links", "-e", "ssh -o BatchMode=yes",
-                             f"{alias}:{remote}", str(mirror) + "/"], timeout_seconds=120)
         result.update(project=self.campaign["project"], run_id=self.run["run_id"],
                       attempt_id=self.attempt_id, collected_at=utc_now())
         result["scheduler_state"] = (self.store.load_status_payload(self.attempt_id) or {}).get("state")

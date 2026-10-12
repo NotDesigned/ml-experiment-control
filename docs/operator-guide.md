@@ -159,6 +159,30 @@ unimplemented recovery capabilities are in [recovery](recovery.md).
 
 ## Storage maintenance boundaries
 
+Managed status/observe/controller-collect operations copy only scheduler evidence,
+logs and JSONL records (32 MiB per copied file), never declared model weights.
+Use the exact Attempt's `/collection` operation to recover large results. Duplicate
+requests share its durable operation; recoveries use one global worker lock.
+
+Local uploads and recoveries share disk admission. Configure
+`local_storage_headroom_bytes` in the private artifact-store JSON (default
+1 GiB). `GET /api/storage-limits` reports `local_storage`: actual free bytes,
+unreceived bytes promised to unexpired uploads, active operation reservations,
+headroom and admissible bytes. Promises survive daemon restarts; crashed process
+reservations are reaped using OS locks, without deleting their transfer data.
+Peak estimates include copying, tar creation, validation and a same-host object
+store. They are conservative admission checks, not a filesystem quota against
+other programs consuming this disk. HTTP 507 `UPLOAD_STORAGE` includes required,
+available and reserved bytes. Existing parts and scientific files remain intact.
+
+After local recovery publishes an archive, the server reads the complete stored
+object through a bounded checksum sink and only then evicts receipt-matched
+delivery cache files. A missing/corrupt object or changed local file keeps the
+copy; hidden/unknown files are retained. Cache verification failure is recorded
+independently of successful publication. This does not acknowledge a client
+download or release the server archive. Transfer timeouts terminate their process
+group before removing the operation's own scratch directory.
+
 Every collector cycle prunes expired unfinished multipart sessions and performs
 verified-client-ACK archive releases before backend polling. The unfinished
 upload TTL is unchanged; unexpired resumable parts are retained. Maintenance

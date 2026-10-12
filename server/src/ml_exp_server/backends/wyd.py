@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import os
 import re
 import tempfile
 from ..results.errors import RecoveryError
@@ -12,6 +13,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import threading
+from ..processes import run_process
 
 from ..application_errors import ApplicationError
 from ..results.checkpoint_registry import storage_scope
@@ -141,10 +143,22 @@ class WydResultOperations:
         alias = backend["ssh_alias"]
         temporary = Path(tempfile.mkdtemp(prefix=".result-recovery-", dir=local.parent))
         try:
-            subprocess.run(["rsync", "-a", "--protect-args", "--safe-links", "--exclude=.*",
+            run_process(["rsync", "-a", "--protect-args", "--safe-links", "--exclude=.*",
                             "-e", "ssh -o BatchMode=yes -o ConnectTimeout=15",
                             alias + ":" + str(remote) + "/", str(temporary) + "/"],
                            check=True, capture_output=True, timeout=300)
             temporary.rename(local)
         finally:
             remove_staging(temporary)
+
+    def wyd_output_bytes(self, backend, definition, attempt):
+        remote = self.remote_outputs(definition, attempt)
+        result = run_process(["rsync", "-an", "--stats", "--out-format=", "--protect-args", "--safe-links", "--exclude=.*",
+                              "-e", "ssh -o BatchMode=yes -o ConnectTimeout=15",
+                              backend["ssh_alias"] + ":" + str(remote) + "/", str(self.root / ".size-probe") + "/"],
+                             check=True, capture_output=True, text=True, timeout=60,
+                             env={**os.environ, "LC_ALL": "C"})
+        match = re.search(r"^Total file size: ([0-9,]+) bytes$", result.stdout, re.MULTILINE)
+        if not match:
+            raise RecoveryError("RESULT_SIZE_UNAVAILABLE", "cannot determine result transfer peak")
+        return int(match[1].replace(",", ""))
