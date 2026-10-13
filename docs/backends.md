@@ -213,3 +213,27 @@ missing receipt requires reconciliation; continue never creates a replacement.
 Delayed offline logs remain observable until the bounded deadline. Config changes
 do not rebind an existing frozen Run. Historical Runs without this mode retain
 inside-job preparation; an API upgrade does not rewrite them.
+
+## Internal boundary for another backend
+
+Scheduler capabilities, image staging, submission, observation and cancellation
+continue to use the existing core `Backend`/`BackendRegistry`. The server's
+`backends/operations.py` contains the additional preparation and independent
+collection operations: `prepare_asset`, `prepare_script`, `script_progress`,
+`confirm_terminal` and `collect`. Experiment preparation and result recovery
+select an installed adapter through one explicit mapping. Adding an adapter does
+not require new client provider branches, plugin discovery or another journal.
+A third fake adapter exercises this server boundary in tests; it is not a claim
+that a third production scheduler is installed.
+
+SenseCore data copy, download-script preparation and result recovery share the
+CPU profile/specification/document checks and exact name/UID observation helpers
+in `backends/sensecore_cpu.py`. They retain separate durable intents, timeouts,
+retry rules and receipts. A confirmed UID is persisted even when a data READY
+callback arrives first. An old interrupted operation without a UID may bind only
+the single exact, owned job found under its original name. Subsequent observations
+and timeout cancellation reject another UID. Missing or ambiguous jobs never
+cause create to be replayed. The provider's batch-stop API is still name based;
+checking the UID first does not make it an atomic compare-and-stop operation.
+Historical valid profiles keep their original cluster/quota choices and frozen
+manifests; sharing validation does not move old CPU operations to another pool.

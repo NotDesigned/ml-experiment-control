@@ -9,13 +9,13 @@ import re
 import shlex
 import time
 
-from experiment_control.backends.sensecore_rest import SenseCoreREST, create_document
+from experiment_control.backends.sensecore_rest import SenseCoreREST
 
 from ..application_errors import ApplicationError
 from ..projects.source_imports import IDENTITY
 from ..storage import DurableJsonState, utc_now
 from ..workers.data_preparation import identity
-from .sensecore_data import SenseCoreDataOperations
+from .sensecore_cpu import checked_job, describe_job, document, find_job, stop_job, validate_profile, verify_spec
 from .states import TERMINAL
 
 
@@ -75,16 +75,13 @@ class SenseCoreScriptPreparation:
             raise ApplicationError("CPU script preparation is not configured", code="DATA_SCRIPT_DISABLED")
         copy = {**configured, "workspace": backend["workspace"], "storage_mount": backend["storage_mount"],
                 "quota_type": "reserved", "worker_nodes": 1}
-        if ("debug" not in copy["aec2"].casefold()
-                or not IDENTITY.fullmatch(copy["aec2"])
-                or not re.fullmatch(r"[A-Za-z0-9_.-]+\.2c4g", copy.get("worker_spec", ""))
-                or any(type(copy.get(key)) is not int or copy[key] != expected
-                       for key, expected in (("gpus", 0), ("cpus", 2), ("memory_gb", 4)))
-                or type(copy.get("queue_timeout_seconds")) is not int
-                or not 5 <= copy["queue_timeout_seconds"] <= 3600
-                or type(run["data_preparation"]["timeout_seconds"]) is not int
-                or not 5 <= run["data_preparation"]["timeout_seconds"] <= 3600):
-            raise ApplicationError("download scripts require the configured debug CPU pool", code="DATA_SCRIPT_CPU_PROFILE")
+        try:
+            validate_profile(copy, timeouts=("queue_timeout_seconds",), debug=True)
+            seconds = run["data_preparation"]["timeout_seconds"]
+            if type(seconds) is not int or not 5 <= seconds <= 3600:
+                raise ValueError("script duration is outside the CPU preparation budget")
+        except ValueError:
+            raise ApplicationError("download scripts require the configured debug CPU pool", code="DATA_SCRIPT_CPU_PROFILE") from None
         cache = run["storage"]["project_data_root"].rstrip("/") + "/data-preparations"
         mount = Path(backend["storage_mount"].rsplit(":", 1)[1])
         if not Path(cache).is_absolute() or ".." in Path(cache).parts or not Path(cache).is_relative_to(mount):
@@ -148,30 +145,24 @@ class SenseCoreScriptPreparation:
             name = "ml-expd-data-script-" + operation.split(".", 1)[1][:32]
             try:
                 if not value:
-                    SenseCoreDataOperations.verify_cpu(self, profile)
-                    body = create_document(profile, name, definition["image"], self.command(definition), cpu_copy=True)
-                    body["roles"][0]["resource_spec"][0].update(requests={"cpu": "2", "memory": "3Gi"}, limits={"cpu": "2", "memory": "4Gi"})
+                    verify_spec(self.rest, profile)
+                    body = document(profile, name, definition["image"], self.command(definition))
                     value = self.update(project, operation, operation_id=operation, preparation_id=preparation,
                                         scheduler_name=name, status="SUBMITTING", definition=definition,
                                         deadline_at=time.time() + profile["queue_timeout_seconds"] + definition["definition"]["timeout_seconds"] + 90)
                     # Durable intent is recorded before the only create call.
                     created = self.rest.create(profile, body, timeout=60)
-                    if created.get("name") != name or not isinstance(created.get("uid"), str) or not created["uid"]:
-                        raise ValueError("CPU preparation create identity differs")
+                    checked_job(created, name)
                     value = self.update(project, operation, job_uid=created["uid"])
                 elif value["definition"] != definition or value["status"] == "FAILED":
                     raise ApplicationError("inspect the original failed CPU preparation", code="DATA_SCRIPT_FAILED")
-                jobs = self.rest.find(profile, name)
-                if len(jobs) != 1:
+                job = find_job(self.rest, profile, name, value.get("job_uid"))
+                if job is None:
                     raise ApplicationError("original CPU submission is unconfirmed; never replay it", code="DATA_SCRIPT_SUBMISSION_UNKNOWN")
-                uid = jobs[0].get("uid")
-                if not isinstance(uid, str) or not uid or value.get("job_uid", uid) != uid:
-                    raise ValueError("CPU preparation job identity differs")
+                uid = job["uid"]
                 value = self.update(project, operation, job_uid=uid)
                 while True:
-                    job = self.rest.describe(profile, name)
-                    if job.get("uid") != uid:
-                        raise ValueError("CPU preparation job identity differs")
+                    job = describe_job(self.rest, profile, name, uid)
                     self.update(project, operation, status="WAITING", job_state=job["state"])
                     if job["state"] == "SUCCEEDED":
                         receipt = self.receipt(profile, name, preparation)
@@ -182,7 +173,7 @@ class SenseCoreScriptPreparation:
                         raise ApplicationError("CPU data preparation failed; inspect its exact job", code="DATA_SCRIPT_FAILED")
                     if time.time() >= value["deadline_at"]:
                         if job["state"] not in TERMINAL:
-                            self.rest.stop(profile, name)
+                            stop_job(self.rest, profile, name, uid)
                         raise ApplicationError("CPU data preparation timed out or its receipt is pending", code="DATA_SCRIPT_TIMEOUT")
                     time.sleep(2)
             except Exception as error:

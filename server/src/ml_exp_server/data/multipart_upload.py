@@ -64,10 +64,10 @@ class PartStream(io.RawIOBase):
 
 
 class UploadStore:
-    def __init__(self, root, config):
+    def __init__(self, root, config, *, capacity=None):
         self.root = Path(root) / "multipart-uploads"
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.capacity = StorageCapacity(root, config)
+        self.capacity = capacity if capacity is not None else StorageCapacity(root, config)
         self.part_bytes = int(config.get("upload_part_bytes", PART_BYTES))
         self.ttl = int(config.get("upload_session_seconds", 86400))
         self.max_parts = int(config.get("upload_max_parts", 65536))

@@ -64,8 +64,9 @@ build contexts/layers live on the desktop. Training runs inside backend containe
 | Observation | `collectord.py`, `ingest/`, `runs/terminal_snapshot.py`, `execution_progress.py`, `input_progress.py` |
 | Images | `image_builder.py`, `dockerfile_build.py`, `builds/` |
 | Data | `data/`: assets, multipart upload, remote upload and delivery; `desktop_upload.py` is the standalone process entry |
-| Provider storage operations | `backends/wyd.py`, `sensecore_data.py`, `sensecore_preparation.py`, `sensecore_results.py` |
+| Backend preparation/collection boundary | `backends/operations.py`; provider implementations in `wyd.py`, `sensecore_data.py`, `sensecore_preparation.py`, `sensecore_results.py`; shared CPU checks in `sensecore_cpu.py` |
 | Results/state | `results/`: artifact storage, download lifecycle, checkpoint registry and independent collection |
+| Local storage policy | `storage_service.py`: existing upload/lifecycle services and shared `storage_capacity.py` admission |
 | Experiment records | `records/`: canonical durable journal and verified-archive metric import |
 | Metrics and W&B | `tracking/`: metric/route contracts, publication cursors and display; `wandb_exporter.py` is the SDK process entry |
 | Compute programs | `workers/`: standalone stdlib training, data-copy and result-recovery programs |
@@ -74,6 +75,21 @@ The two `backends/` directories have different responsibilities: core backends
 implement scheduling, status, logs and cancellation; server backends prepare
 shared-storage inputs and collect exact-Attempt outputs. Shared storage helpers,
 schemas and process entry points remain at the server package root.
+
+The server's small, explicit backend mapping groups asset/script preparation,
+terminal verification and result collection. The core's existing `BackendRegistry`
+continues to own scheduling capabilities, stage, submit, status and cancel.
+Together they provide the backend boundary without another scheduling registry,
+plugin loader or operation state machine. SenseCore CPU jobs share profile and
+exact name/confirmed UID checks; data copy, scripts and collection retain their
+separate durable intents, retry policies and receipts.
+
+`StorageService` composes the existing object, multipart-upload and ACK lifecycle
+stores. Upload promises, restore and publication reservations use the same local
+capacity policy and cross-process locks. Maintenance removes expired upload
+staging before processing acknowledged releases. Verified reproducible delivery
+caches remain distinct from retained objects and scientific records; NAS/datapool
+state is outside local storage cleanup. This facade adds no journal or database.
 
 `records/RecordStore` owns accepted platform observations, independently of
 whether W&B is enabled. `tracking/TrackingStore` adds optional publication and
@@ -106,6 +122,21 @@ a code/environment image. `controller_gateway.py` is the project-controller
 subprocess boundary. Managed projects use the generic container controller;
 library consumers can supply adapters. A single managed Run currently generates
 an internal Campaign file, without requiring clients to design a Campaign.
+
+## Client workflow and observation
+
+`client/src/ml_exp_client/workflow.py` owns one experiment configuration and its saved preparation,
+Submission, execution and download references. `operations.py` owns explicit
+cancel/retry plans. Both use `saved_plan.py` only to save, observe, and record a
+durable marker before a single request; policy and reconciliation remain with
+their callers. An unknown response does not authorize a replacement request.
+
+`ml-exp status` composes existing read APIs in `status.py`; it adds no server
+endpoint or scheduler mutation. The default response separates preparation,
+scheduler, training, publication and verification. `--details` expands the
+original evidence. Observation is pinned to an exact Attempt; absent/stale
+evidence remains unknown instead of being interpreted as a completed stage.
+Training completion and downloadable results are independent facts.
 
 ## Worker code executes on compute
 

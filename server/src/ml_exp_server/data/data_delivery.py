@@ -10,11 +10,9 @@ import json
 from pathlib import Path
 import re
 import secrets
-import shlex
 import time
-from urllib.parse import urlsplit
 
-from experiment_control.backends.sensecore_rest import SenseCoreREST, RESTError, create_document
+from experiment_control.backends.sensecore_rest import RESTError
 
 from ..application_errors import ApplicationError
 from .data_assets import AssetStore, ASSET_ID
@@ -23,6 +21,7 @@ from ..image_builder import builder_request, IMAGE, BuildStorageError, BuildTran
 from ..projects.source_imports import IDENTITY
 from ..storage import DurableJsonState, utc_now
 from ..backends.sensecore_data import SenseCoreDataOperations
+from ..backends.sensecore_cpu import checked_job, stop_job, validate_profile
 
 DELIVERY = re.compile(r"^delivery\.[0-9a-f]{64}$")
 COPY_TRANSFER = re.compile(r"^/api/data-copy-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/delivery\.[0-9a-f]{64}$")
@@ -153,13 +152,7 @@ class DataDeliveryService(SenseCoreDataOperations):
                 "storage_mount": profile["backend"]["storage_mount"],
                 "data_root": profile["storage_root"].rstrip("/") + "/" + project + "/data-assets"}
         copy.setdefault("quota_type", "reserved")
-        if (copy.get("gpus") != 0 or copy.get("cpus") != 2 or copy.get("memory_gb") != 4
-                or not re.fullmatch(r"[A-Za-z0-9_.-]+\.2c4g", copy.get("worker_spec", ""))
-                or not 5 <= copy.get("copy_timeout_seconds", 0) <= 3600
-                or not 5 <= copy.get("queue_timeout_seconds", 0) <= 3600
-                or copy["quota_type"] not in {"reserved", "spot"}
-                or not IDENTITY.fullmatch(copy.get("aec2", ""))):
-            raise ValueError("data preparation requires the verified 2CPU/4GiB/0GPU profile and bounded time")
+        validate_profile(copy, timeouts=("copy_timeout_seconds", "queue_timeout_seconds"))
         definition = {"project": project, "asset_id": asset_id, "archive_sha256": asset["sha256"],
                       "files_sha256": digest(asset["files"]), "copy_profile": copy,
                       "worker_sha256": data_worker_digest(), "control_revision": CONTROL_REVISION}
@@ -230,10 +223,18 @@ class DataDeliveryService(SenseCoreDataOperations):
                 self.verify_cpu(value["copy_profile"])
                 self.update(project, delivery_id, status="SUBMITTING")
                 phase = "ACP_CREATE"
-                self.rest.create(value["copy_profile"], self.create_document(value), timeout=60)
-                self.update(project, delivery_id, status="QUEUED")
-            else:
-                self.update(project, delivery_id, status="QUEUED")
+                found = checked_job(self.rest.create(value["copy_profile"], self.create_document(value), timeout=60), value["scheduler_name"])
+            value["job_uid"] = found["uid"]
+            # A fast READY callback must not discard the confirmed scheduler
+            # UID. Bind only identity under its own journal lock; never change
+            # a terminal receipt or phase merely to persist this observation.
+            with self.state(project, delivery_id) as (store, snapshot):
+                current = snapshot.value
+                checked_job(found, current["scheduler_name"], current.get("job_uid"))
+                if current.get("job_uid") is None:
+                    store.commit({**current, "job_uid": found["uid"]}, expected_revision=snapshot.revision,
+                                 event={"event": "data_copy_job_confirmed", "timestamp": utc_now()})
+            self.update(project, delivery_id, status="QUEUED")
             phase = "WAITING_READY"
             deadline = time.monotonic() + value["copy_profile"]["queue_timeout_seconds"] + value["copy_profile"]["copy_timeout_seconds"]
             while time.monotonic() < deadline:
@@ -245,7 +246,7 @@ class DataDeliveryService(SenseCoreDataOperations):
                     raise ValueError("data-copy job ended without a verified READY callback")
                 time.sleep(2)
             phase = "CANCEL_TIMED_OUT_COPY"
-            self.rest.stop(value["copy_profile"], value["scheduler_name"])
+            stop_job(self.rest, value["copy_profile"], value["scheduler_name"], value["job_uid"])
             return self.update(project, delivery_id, status="FAILED", error="DATA_COPY_TIMEOUT")
         except Exception as exc:
             current = self.read(project, delivery_id)

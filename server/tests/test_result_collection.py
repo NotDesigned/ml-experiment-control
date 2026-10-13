@@ -49,7 +49,10 @@ def recovery(storage, tmp_path, monkeypatch):
     row = RunIndexRow(project="demo", run_id="run-a", run_dir=str(root),
                       attempts=[AttemptSummary(attempt_id="attempt-001", state="FAILED")])
     index = SimpleNamespace(get_run=lambda p, r: row if (p, r) == ("demo", "run-a") else None)
-    service = ResultCollectionService(SimpleNamespace(config=cfg, index=index))
+    runtime = SimpleNamespace(config=cfg, index=index)
+    from ml_exp_server.storage_service import StorageService
+    runtime.storage_service = StorageService(ArtifactStore(config, objects.root.parent))
+    service = ResultCollectionService(runtime)
     monkeypatch.setattr(subprocess, "run", lambda command, **kw: SimpleNamespace(stdout="Total file size: 7 bytes\n" if "--stats" in command else "FAILED|\n"))
     monkeypatch.setattr("ml_exp_server.backends.wyd.run_process", lambda *a, **kw: subprocess.run(*a, **kw))
     return service, root, token, config, remote, definition, row
@@ -162,7 +165,8 @@ def cpu(recovery, monkeypatch):
     definition["backend"]["kind"] = "sensecore"
     (root / "attempts/attempt-001/attempt.yaml").write_text(yaml.safe_dump(definition))
     rest = Mock()
-    rest.describe.return_value = {"state": "FAILED"}
+    rest.describe.side_effect = lambda profile, name: {"name": name, "uid": "a" * 32, "state": "FAILED"}
+    rest.create.side_effect = lambda profile, body, **kwargs: {"name": body["name"], "uid": "a" * 32}
     rest.specs.return_value = [{"name": "cpu.2c4g", "device": {"number": 0},
                                "cpu": {"vcpu_allocatable": 2}, "memory": {"allocatable": 4}}]
     monkeypatch.setattr("ml_exp_server.results.result_collection.SenseCoreREST.from_environment", lambda: rest)
@@ -179,7 +183,7 @@ def test_uncertain_cpu_request_reconciles_exact_job_and_does_not_restart_trainin
     rest.find.return_value = []
     _, pending = service.begin(*IDENTITY, reconcile=True); service.finish(pending)
     assert service.read(*IDENTITY)["status"] == "RECONCILE_REQUIRED" and rest.create.call_count == 1
-    rest.find.return_value = [{"state": "FAILED"}]
+    rest.find.return_value = [{"name": service.read(*IDENTITY)["scheduler_name"], "uid": "a" * 32, "state": "FAILED"}]
     _, pending = service.begin(*IDENTITY, reconcile=True); service.finish(pending)
     assert service.read(*IDENTITY)["status"] == "FAILED" and rest.create.call_count == 1
     assert rest.stop.call_count == 0
@@ -198,6 +202,7 @@ def test_cpu_recovery_reuses_data_image_and_verifies_zero_gpu_and_archive(recove
         _, _, value, _ = service.evidence(*IDENTITY)
         data = archive({"any-name.bin": b"payload"})
         service.objects.receive(*IDENTITY, value["token"], io.BytesIO(data), len(data))
+        return {"name": body["name"], "uid": "a" * 32}
     rest.create.side_effect = create_unlocked
     service.begin(*IDENTITY); service.finish(IDENTITY)
     assert service.read(*IDENTITY)["status"] == "AVAILABLE" and len(remote) == 1
@@ -265,24 +270,27 @@ def test_cpu_recovery_limits_and_provider_failures(recovery, monkeypatch, case):
     service, root, _, _, _, _, _ = recovery
     rest = cpu(recovery, monkeypatch)
     service.begin(*IDENTITY)
-    rest.describe.return_value = {"state": "RUNNING"}
+    rest.describe.side_effect = lambda profile, name: {"name": name, "uid": "a" * 32, "state": "RUNNING"}
     if case != "running-original":
         seen = []
         def describe(profile, name):
             seen.append(name)
-            if name == "24830": return {"state": "FAILED"}
+            if name == "24830": return {"name": name, "uid": "a" * 32, "state": "FAILED"}
             if case == "poll-then-upload" and len(seen) > 2:
                 _, _, value, _ = service.evidence(*IDENTITY)
                 data = archive({"chosen.bin": b"ok"})
                 service.objects.receive(*IDENTITY, value["token"], io.BytesIO(data), len(data))
-            return {"state": "RUNNING"}
+            return {"name": name, "uid": "a" * 32, "state": "RUNNING"}
         rest.describe.side_effect = describe
     if case == "blocked": service.runtime.config.action_runtime.allow_scheduler_mutations = False
     if case == "bad-pool": service.objects.config["data_delivery"]["aec2"] = "compute-cluster"
     if case == "known-request-error": rest.describe.side_effect = RESTError("query", status=403)
     if case == "stopping": service.stopping = lambda: True
     if case == "deadline":
-        rest.create.side_effect = lambda *a, **kw: service.update(IDENTITY, deadline_at=-1)
+        def expire(profile, body, **kwargs):
+            service.update(IDENTITY, deadline_at=-1)
+            return {"name": body["name"], "uid": "a" * 32}
+        rest.create.side_effect = expire
     monkeypatch.setattr("ml_exp_server.results.result_collection.time.sleep", lambda s: None)
     service.finish_one(IDENTITY)
     result = service.read(*IDENTITY)
@@ -513,3 +521,40 @@ def test_file_checksum_refuses_special_or_changed_files(recovery, monkeypatch, c
     monkeypatch.setattr(os, "fstat", altered)
     with pytest.raises(ValueError, match="changed" if changed else "regular"):
         ArtifactService(service.runtime).list(*IDENTITY, checksums=True)
+
+
+@pytest.mark.parametrize('reconcile,confirmed', [(False, False), (True, False), (True, True)])
+def test_cpu_recovery_freezes_exact_uid_and_refuses_replacement(recovery, monkeypatch, reconcile, confirmed):
+    service, _, _, _, _, _, _ = recovery
+    rest = cpu(recovery, monkeypatch)
+    _, pending = service.begin(*IDENTITY)
+    if reconcile:
+        service.update(IDENTITY, status='RECONCILE_REQUIRED', cpu_profile={
+            **service.objects.config['data_delivery'], 'workspace': 'ws',
+            'storage_mount': 'volume/user:/data', 'worker_nodes': 1}, deadline_at=10**12,
+            **({'job_uid': 'original'} if confirmed else {}))
+        _, pending = service.begin(*IDENTITY, reconcile=True)
+        name = service.read(*IDENTITY)['scheduler_name']
+        rest.find.return_value = [{'name': name, 'uid': 'replacement' if confirmed else 'original'}]
+        rest.create.side_effect = lambda *_a, **_kw: pytest.fail('do not replay create')
+    else:
+        rest.create.side_effect = lambda profile, body, **kwargs: {'name': body['name'], 'uid': 'original'}
+    def describe(profile, name):
+        return {'name': name, 'uid': 'a'*32 if name == '24830' else 'replacement',
+                'state': 'FAILED' if name == '24830' else 'RUNNING'}
+    rest.describe.side_effect = describe
+    service.finish(pending)
+    assert service.read(*IDENTITY)['status'] == 'RECONCILE_REQUIRED'
+    with service.state(*IDENTITY) as (_, snapshot):
+        assert snapshot.value['job_uid'] == 'original'
+    assert rest.create.call_count == (0 if reconcile else 1) and not rest.stop.called
+
+
+def test_sensecore_existing_local_outputs_publish_without_new_cpu_job(recovery, monkeypatch):
+    service, root, _, _, _, _, _ = recovery
+    rest = cpu(recovery, monkeypatch)
+    output(root)
+    _, pending = service.begin(*IDENTITY)
+    service.finish(pending)
+    assert service.read(*IDENTITY)['status'] == 'AVAILABLE'
+    rest.create.assert_not_called()

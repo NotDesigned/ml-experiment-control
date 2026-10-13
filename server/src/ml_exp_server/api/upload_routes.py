@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..container_execution import ContainerExecutionService
-from ..data.multipart_upload import UploadStore
+from ..storage_service import StorageService
 from ..archive_limits import minimum_limit
 from ..data.remote_data_uploads import remote_uploads
 from .asset_routes import store, token
@@ -46,7 +46,7 @@ async def target(request, project, run=None, attempt=None, kind="asset"):
         binding.update(run_id=run, attempt_id=attempt)
     uploads = remote_uploads(service) if kind == "asset" else None
     if uploads is None:
-        uploads = UploadStore(service.root.parent, service.objects.config)
+        uploads = StorageService(service.objects).uploads
     return service, uploads, binding
 
 

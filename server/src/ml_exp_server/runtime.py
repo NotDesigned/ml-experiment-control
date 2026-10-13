@@ -10,7 +10,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 import sys
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from .actions import ActionService, ActionStore
 from .ingest.indexer import RunIndex
@@ -26,6 +26,10 @@ from .schemas import (
 )
 from .projects.source_revisions import resolve_source_tree
 from .telemetry import Telemetry, initialize_telemetry
+from .application_errors import ApplicationError
+
+if TYPE_CHECKING:
+    from .storage_service import StorageService
 
 
 def _load_registered_project(record: ProjectLifecycleRecord) -> ResearchProject:
@@ -64,6 +68,18 @@ class ExperimentServerRuntime:
     project_registry: ProjectRegistry
     telemetry: Telemetry
     workspace_id: str
+
+    @property
+    def storage_service(self) -> StorageService:
+        from .storage_service import StorageService
+        from .results.artifact_store import ArtifactStore
+        config = self.config.container_execution.artifact_store_file
+        if not config:
+            raise ApplicationError("result storage is not configured", code="RESULT_COLLECTION_DISABLED")
+        # Loading lazily preserves transport-neutral/partial daemon construction.
+        # A new facade observes the current config file, just as the stores did
+        # before consolidation; concurrency ownership remains in their OS locks.
+        return StorageService(ArtifactStore(Path(config), self.config.project_registry_root_path()))
 
     @classmethod
     def create(

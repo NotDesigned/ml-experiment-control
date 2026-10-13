@@ -70,7 +70,7 @@ def prepare(api, path, operation="cancel", **kwargs):
 @pytest.mark.parametrize("explicit", [False, True])
 def test_read_exact_attempt_and_preserve_metric_dimensions(view, explicit):
     calls = []
-    payload = {"records": [{"step": 3, "loss": 1.5, "unit": "nats/token", "protocol": "validation", "variant": "heldout"}]}
+    payload = {"project": "demo", "run_id": "trial", "attempt_id": "attempt-001", "records": [{"step": 3, "loss": 1.5, "unit": "nats/token", "protocol": "validation", "variant": "heldout"}]}
     class Reader:
         def call(self, path, **kwargs):
             calls.append((path, kwargs))
@@ -336,12 +336,12 @@ def test_cli_read_flags_and_no_dimension_rewriting(monkeypatch, capsys, command)
         def negotiate(self): return {}
         def call(self, path, **kwargs):
             calls.append((path, kwargs))
-            return {"unit": "nats/token", "protocol": "validation", "variant": "test"}
+            return {"project": "demo", "run_id": "trial", "attempt_id": "attempt-001", "unit": "nats/token", "protocol": "validation", "variant": "test"}
     monkeypatch.setattr("ml_exp_client.cli.Client", lambda *args: Reader())
     args = [command, "--project", "demo", "--run", "trial", "--attempt", "attempt-001"]
     args += ["--stream", "stdout", "--lines", "2"] if command == "logs" else ["--keys", "loss", "--max-points", "10"]
     assert main(args) == 0
-    assert json.loads(capsys.readouterr().out) == {"unit": "nats/token", "protocol": "validation", "variant": "test"}
+    assert json.loads(capsys.readouterr().out) == {"project": "demo", "run_id": "trial", "attempt_id": "attempt-001", "unit": "nats/token", "protocol": "validation", "variant": "test"}
     assert len(calls) == 1 and not calls[0][1]
 
 
@@ -379,3 +379,15 @@ def test_failed_durable_marker_prevents_corresponding_http_mutation(tmp_path, mo
     forbidden = {"prepare": "/api/attempts/demo/trial%3A%3Aattempt-001/cancel",
                  "authorize": "/api/actions/authorize", "execute": "/api/actions/execute"}[phase]
     assert not any(p == forbidden for p, _ in api.calls)
+
+
+@pytest.mark.parametrize("view", ["logs", "metrics"])
+@pytest.mark.parametrize("field", ["project", "run_id", "attempt_id"])
+def test_attempt_read_reply_must_match_exact_requested_identity(view, field):
+    class Wrong:
+        def call(self, path, **kwargs):
+            value = {"project": "demo", "run_id": "trial", "attempt_id": "attempt-001"}
+            value[field] = "other"
+            return value
+    with pytest.raises(ClientError, match="read response differs"):
+        read_attempt(Wrong(), view, "demo", "trial", "attempt-001")

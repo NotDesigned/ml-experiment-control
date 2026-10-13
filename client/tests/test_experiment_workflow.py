@@ -32,9 +32,9 @@ class API:
         if "experiment-preparations" in path:
             if self.preparation is None:
                 self.built = True; self.builds += 1
-                self.preparation = {"preparation_id": "preparation-" + "d" * 32, "status": "READY", "runtime_id": "runtime." + "b" * 64,
-                    "run": {"run_id": "trial"}, "matching": {"executor": "gpu"},
-                    "submission": {"submission_id": "action-" + "c" * 16, "status": "PREPARED", "ready": True,
+                self.preparation = {"project": "demo", "run_id": "trial", "preparation_id": "preparation-" + "d" * 32, "status": "READY", "runtime_id": "runtime." + "b" * 64,
+                    "run": {"project": "demo", "run_id": "trial"}, "matching": {"executor": "gpu"},
+                    "submission": {"project": "demo", "run_id": "trial", "submission_id": "action-" + "c" * 16, "status": "PREPARED", "ready": True,
                                    "confirmation": "EXECUTE test", "attempt_id": "attempt-001"}}
                 if self.uncertain == "prepare":
                     self.uncertain = None
@@ -47,15 +47,15 @@ class API:
             return {"project": "demo", "runtime_id": "runtime." + "b" * 64, "status": "READY" if self.built else "PREPARED", "confirmation": "BUILD test"}
         if path.endswith("/runs"): return {"run_id": "trial"}
         if "submissions" in path:
-            if path.endswith("/progress"): return {"phase": "RUNNING", "queue": {"reason": None}}
+            if path.endswith("/progress"): return {"submission_id": "action-" + "c" * 16, "run_id": "trial", "attempt_id": "attempt-001", "phase": "RUNNING", "queue": {"reason": None}}
             if path.endswith("/authorize"): self.authorized = True
             if path.endswith("/execute"):
                 if self.uncertain == "submit": raise ClientError("lost submit response")
                 self.submitted = True
-            return {"submission_id": "action-" + "c" * 16, "status": "VERIFIED" if self.submitted else "AUTHORIZED" if self.authorized else "PREPARED",
+            return {"project": "demo", "run_id": "trial", "submission_id": "action-" + "c" * 16, "status": "VERIFIED" if self.submitted else "AUTHORIZED" if self.authorized else "PREPARED",
                     "ready": True, "confirmation": "EXECUTE test", "attempt_id": "attempt-001"}
-        if path.endswith("/attempts"): return {"current_attempt_id": "attempt-001"}
-        if path.startswith("/api/runs/"): return {"scheduler_state": "SUCCEEDED", "run_id": "trial"}
+        if path.endswith("/attempts"): return {"project": "demo", "run_id": "trial", "current_attempt_id": "attempt-001"}
+        if path.startswith("/api/runs/"): return {"project": "demo", "scheduler_state": "SUCCEEDED", "run_id": "trial"}
         raise AssertionError(path)
 
 
@@ -413,3 +413,210 @@ def test_resume_ack_rejects_corrupt_or_different_local_proof(configuration, fail
         experiment(api, COLLECTION_HEALTH, configuration, state, resume=True)
     assert sum(path.endswith("/artifacts/ack") for path, _ in api.calls) == calls
     assert api.downloads == 1 and api.collection_reads == 1
+
+
+@pytest.mark.parametrize("effect", [False, True])
+def test_lost_authorization_is_observed_without_replaying_request(configuration, effect):
+    class LostAuthorization(API):
+        def call(self, path, **kwargs):
+            if path.endswith("/authorize"):
+                if effect:
+                    super().call(path, **kwargs)
+                else:
+                    self.calls.append((path, kwargs))
+                raise ClientError("lost authorization reply")
+            return super().call(path, **kwargs)
+    api = LostAuthorization(); state = configuration.with_name("state.json")
+    with pytest.raises(ClientError, match="lost authorization"):
+        experiment(api, HEALTH, configuration, state, execute=True)
+    assert json.loads(state.read_text())["scheduler_authorization_requested"] is True
+    before = sum(path.endswith("/authorize") for path, _ in api.calls)
+    if effect:
+        assert experiment(api, HEALTH, configuration, state, execute=True, resume=True)["result"]["scheduler_state"] == "SUCCEEDED"
+    else:
+        with pytest.raises(ClientError, match="authorization outcome is uncertain"):
+            experiment(api, HEALTH, configuration, state, execute=True, resume=True)
+    assert sum(path.endswith("/authorize") for path, _ in api.calls) == before
+
+
+@pytest.mark.parametrize("marker", ["scheduler_requested", "scheduler_authorization_requested"])
+def test_corrupt_workflow_marker_rejected_before_any_http(configuration, marker):
+    api = API(); state = configuration.with_name("state.json")
+    experiment(api, HEALTH, configuration, state)
+    value = json.loads(state.read_text()); value[marker] = "false"; state.write_text(json.dumps(value)); api.calls.clear()
+    with pytest.raises(ClientError, match="effect marker"):
+        experiment(api, HEALTH, configuration, state, resume=True, execute=True)
+    assert not api.calls
+
+
+@pytest.mark.parametrize("field", ["server", "project", "run_id"])
+def test_new_workflow_identity_cannot_be_rebound(configuration, field):
+    api = API(); api.base = "https://api.example"; state = configuration.with_name("state.json")
+    experiment(api, HEALTH, configuration, state)
+    value = json.loads(state.read_text()); value[field] = "other"; state.write_text(json.dumps(value)); api.calls.clear()
+    with pytest.raises(ClientError, match="different server or Run"):
+        experiment(api, HEALTH, configuration, state, resume=True, execute=True)
+    assert not api.calls
+
+
+def test_legacy_workflow_state_preserves_request_identity(configuration):
+    api = API(); api.base = "https://api.example"; state = configuration.with_name("state.json")
+    experiment(api, HEALTH, configuration, state)
+    value = json.loads(state.read_text())
+    for key in ("server", "project", "run_id"):
+        value.pop(key)
+    state.write_text(json.dumps(value))
+    result = experiment(api, HEALTH, configuration, state, resume=True, execute=True)
+    assert result["server"] == api.base and result["result"]["scheduler_state"] == "SUCCEEDED"
+    assert sum(path.endswith("/experiment-preparations") for path, _ in api.calls) == 1
+
+
+@pytest.mark.parametrize("boundary", ["authorize", "execute"])
+def test_failed_workflow_durable_marker_prevents_http_effect(configuration, monkeypatch, boundary):
+    from ml_exp_client.api import save as durable_save
+    api = API(); state = configuration.with_name("state.json")
+    experiment(api, HEALTH, configuration, state)
+    marker = "scheduler_requested" if boundary == "execute" else "scheduler_authorization_requested"
+    def fail_marker(path, value):
+        if value.get(marker):
+            raise OSError("fsync failed")
+        durable_save(path, value)
+    monkeypatch.setattr("ml_exp_client.workflow.save", fail_marker)
+    with pytest.raises(OSError, match="fsync failed"):
+        experiment(api, HEALTH, configuration, state, resume=True, execute=True)
+    assert not any(path.endswith("/" + boundary) for path, _ in api.calls)
+
+
+def test_changed_submission_identity_rejected_before_execution(configuration):
+    class ChangedSubmission(API):
+        def call(self, path, **kwargs):
+            value = super().call(path, **kwargs)
+            if path.startswith("/api/submissions/") and not path.endswith("/progress"):
+                value["attempt_id"] = "attempt-009"
+            return value
+    api = ChangedSubmission(); state = configuration.with_name("state.json")
+    with pytest.raises(ClientError, match="Submission identity differs"):
+        experiment(api, HEALTH, configuration, state, execute=True)
+    assert not any(path.endswith(("/authorize", "/execute")) for path, _ in api.calls)
+
+
+
+def test_uncertain_scheduler_marker_never_reauthorizes_regressed_submission(configuration):
+    api = API(); state = configuration.with_name("state.json")
+    experiment(api, HEALTH, configuration, state)
+    value = json.loads(state.read_text()); value["scheduler_requested"] = True; state.write_text(json.dumps(value))
+    api.calls.clear()
+    with pytest.raises(ClientError, match="scheduler request outcome is uncertain"):
+        experiment(api, HEALTH, configuration, state, resume=True, execute=True)
+    assert not any(path.endswith(("/authorize", "/execute")) for path, _ in api.calls)
+
+
+@pytest.mark.parametrize("resource", ["preparation", "submission", "preparation_request"])
+@pytest.mark.parametrize("field", ["project", "run_id"])
+def test_mixed_run_in_saved_nested_plan_cannot_dispatch_effects(configuration, resource, field):
+    api = API(); state = configuration.with_name("state.json")
+    experiment(api, HEALTH, configuration, state)
+    value = json.loads(state.read_text())
+    if resource == "preparation_request":
+        # Run requests carry run_id only; project is bound by the API path.
+        value[resource]["run"]["run_id"] = "other"
+    else:
+        value[resource][field] = "other"
+    state.write_text(json.dumps(value)); api.calls.clear()
+    with pytest.raises(ClientError, match="identity differs|request differs"):
+        experiment(api, HEALTH, configuration, state, resume=True, execute=True)
+    assert not api.calls
+
+
+@pytest.mark.parametrize("resource", ["preparation", "run", "submission"])
+@pytest.mark.parametrize("field", ["project", "run_id"])
+def test_wrong_preparation_reply_binding_never_dispatches_scheduler(configuration, resource, field):
+    from copy import deepcopy
+    class Wrong(API):
+        def call(self, path, **kwargs):
+            value = deepcopy(super().call(path, **kwargs))
+            if "experiment-preparations" in path:
+                target = value if resource == "preparation" else value[resource]
+                target[field] = "other"
+            return value
+    api = Wrong()
+    with pytest.raises(ClientError, match="identity differs"):
+        experiment(api, HEALTH, configuration, configuration.with_name("state.json"), execute=True)
+    assert not any(path.endswith(("/authorize", "/execute")) for path, _ in api.calls)
+
+
+def test_changed_preparation_id_is_rejected_before_explicit_continue(configuration):
+    from copy import deepcopy
+    class Changed(API):
+        def call(self, path, **kwargs):
+            value = deepcopy(super().call(path, **kwargs))
+            if "experiment-preparations/" in path:
+                value["preparation_id"] = "preparation-" + "e" * 32
+                value["status"] = "RECONCILE_REQUIRED"
+            return value
+    api = Changed(); state = configuration.with_name("state.json")
+    with pytest.raises(ClientError, match="Preparation identity differs"):
+        experiment(api, HEALTH, configuration, state)
+    api.calls.clear()
+    with pytest.raises(ClientError, match="Preparation identity differs"):
+        experiment(api, HEALTH, configuration, state, resume=True, continue_preparation=True)
+    assert not any(path.endswith("/continue") for path, _ in api.calls)
+
+
+@pytest.mark.parametrize("field", ["project", "run_id"])
+def test_wrong_submission_reply_binding_never_authorizes_or_executes(configuration, field):
+    class Wrong(API):
+        def call(self, path, **kwargs):
+            value = super().call(path, **kwargs)
+            if path.startswith("/api/submissions/") and not path.endswith("/progress"):
+                value[field] = "other"
+            return value
+    api = Wrong()
+    with pytest.raises(ClientError, match="Submission identity differs"):
+        experiment(api, HEALTH, configuration, configuration.with_name("state.json"), execute=True)
+    assert not any(path.endswith(("/authorize", "/execute")) for path, _ in api.calls)
+
+
+@pytest.mark.parametrize("boundary", ["run", "attempts"])
+@pytest.mark.parametrize("field", ["project", "run_id"])
+def test_wrong_training_poll_identity_is_not_accepted(configuration, boundary, field):
+    class Wrong(API):
+        def call(self, path, **kwargs):
+            value = super().call(path, **kwargs)
+            if path.startswith("/api/runs/") and path.endswith("/attempts") == (boundary == "attempts"):
+                value[field] = "other"
+            return value
+    api = Wrong(); state = configuration.with_name("state.json")
+    with pytest.raises(ClientError, match="response differs|listing differs"):
+        experiment(api, HEALTH, configuration, state, execute=True)
+    assert "result" not in json.loads(state.read_text())
+    assert sum(path.endswith("/execute") for path, _ in api.calls) == 1
+
+
+@pytest.mark.parametrize("field", ["submission_id", "run_id", "attempt_id"])
+def test_wrong_submission_progress_is_not_reported_as_current_training(configuration, field):
+    class Wrong(API):
+        def call(self, path, **kwargs):
+            value = super().call(path, **kwargs)
+            if path.startswith("/api/submissions/") and path.endswith("/progress"):
+                value[field] = "other"
+            return value
+    api = Wrong(); state = configuration.with_name("state.json")
+    with pytest.raises(ClientError, match="Submission progress identity differs"):
+        experiment(api, HEALTH, configuration, state, execute=True)
+    assert "result" not in json.loads(state.read_text())
+    assert sum(path.endswith("/execute") for path, _ in api.calls) == 1
+
+
+def test_wait_resource_validates_progress_before_reporting_or_sleeping(monkeypatch):
+    from ml_exp_client.saved_plan import bound_response
+    calls = []
+    class Waiting:
+        def call(self, path):
+            calls.append(path)
+            return {"status": "EXECUTING"} if not path.endswith("/progress") else {"attempt_id": "other"}
+    monkeypatch.setattr("ml_exp_client.workflow.report", lambda value: pytest.fail("unbound progress was reported"))
+    with pytest.raises(ClientError):
+        wait_resource(Waiting(), "/api/submissions/saved", 60,
+                      progress_validate=lambda value: bound_response(value, {"attempt_id": "attempt-001"}))
+    assert calls == ["/api/submissions/saved", "/api/submissions/saved/progress"]

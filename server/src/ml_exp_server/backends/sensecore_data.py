@@ -2,7 +2,8 @@
 from __future__ import annotations
 import shlex
 from urllib.parse import urlsplit
-from experiment_control.backends.sensecore_rest import SenseCoreREST, create_document
+from experiment_control.backends.sensecore_rest import SenseCoreREST
+from .sensecore_cpu import document, find_job, verify_spec
 
 class SenseCoreDataOperations:
     """Provider-specific operations sharing the owning service state."""
@@ -14,18 +15,10 @@ class SenseCoreDataOperations:
         return self._rest
 
     def find(self, value):
-        matches = self.rest.find(value["copy_profile"], value["scheduler_name"])
-        if len(matches) > 1:
-            raise ValueError("ambiguous data-copy scheduler identity")
-        return matches[0] if matches else None
+        return find_job(self.rest, value["copy_profile"], value["scheduler_name"], value.get("job_uid"))
 
     def verify_cpu(self, copy):
-        specs = [r for r in self.rest.specs(copy) if r["name"] == copy["worker_spec"]]
-        if len(specs) != 1:
-            raise ValueError("ACP CPU-only data-copy spec is unavailable")
-        spec = specs[0]
-        if (spec["device"]["number"], spec["cpu"]["vcpu_allocatable"], spec["memory"]["allocatable"]) != (0, 2, 4):
-            raise ValueError("ACP data-copy spec unexpectedly allocates GPUs or different CPU resources")
+        verify_spec(self.rest, copy)
 
     def create_document(self, value):
         copy = value["copy_profile"]
@@ -39,7 +32,4 @@ class SenseCoreDataOperations:
                    "ML_EXPD_DATA_COPY_ROOT=" + copy["data_root"], "ML_EXPD_DATA_COPY_IMAGE=" + value["image"],
                    "ML_EXPD_DATA_COPY_SECONDS=" + str(copy["copy_timeout_seconds"]),
                    "python", "/usr/local/lib/ml-expd/data_copy_worker.py"]
-        body = create_document(copy, value["scheduler_name"], value["image"], shlex.join(command), cpu_copy=True)
-        body["roles"][0]["resource_spec"][0].update(
-            requests={"cpu": "2", "memory": "3Gi"}, limits={"cpu": "2", "memory": "4Gi"})
-        return body
+        return document(copy, value["scheduler_name"], value["image"], shlex.join(command))

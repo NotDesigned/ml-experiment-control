@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 import re
 import time
-import yaml
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -17,12 +16,11 @@ from ..application_errors import ApplicationError
 from ..results.checkpoint_registry import CheckpointRegistry
 from ..container_execution import ContainerExecutionService, DockerfileRuntimeSpec, RunRequest
 from ..data.data_assets import AssetStore
-from ..data.data_delivery import DataDeliveryService
 from .executor_capabilities import ExecutionRequirements, ExecutorSelector, match, validate_worker, validate_script_asset
 from ..tracking.tracking_service import store_for, preparation_record
 from ..projects.source_imports import IDENTITY
 from ..storage import DurableJsonState, utc_now
-from ..backends.wyd import WydDataStager
+from ..backends.operations import backend_operations
 
 
 PREPARATION_ID = re.compile(r"^preparation-[0-9a-f]{32}$")
@@ -58,8 +56,9 @@ class ExperimentPreparationRequest(BaseModel):
 
 
 class ExperimentPreparationService:
-    def __init__(self, runtime, submissions):
+    def __init__(self, runtime, submissions, *, backends=None):
         self.runtime = runtime
+        self.backends = backends
         self.submissions = submissions
         self.containers = ContainerExecutionService(runtime)
         self.root = runtime.config.project_registry_root_path() / "experiment-preparations"
@@ -158,9 +157,9 @@ class ExperimentPreparationService:
         value = self.read(project, preparation_id)
         script = value.get("data_script")
         if script:
-            from ..backends.sensecore_preparation import SenseCoreScriptPreparation
-            script = SenseCoreScriptPreparation(self.runtime.config.container_execution.artifact_store_file,
-                self.runtime.config.project_registry_root_path()).read(project, script["operation_id"])
+            with self.state(project, preparation_id) as (_, snapshot):
+                kind = snapshot.value["matching"]["profile"]["backend"]["kind"]
+            script = backend_operations(kind, self.backends).script_progress(self, project, script)
         started = datetime.fromisoformat(value["phase_started_at"].replace("Z", "+00:00"))
         return {"phase": value["phase"], "phase_started_at": value["phase_started_at"],
                 "phase_seconds": max(0, (datetime.now(timezone.utc) - started).total_seconds()),
@@ -213,60 +212,17 @@ class ExperimentPreparationService:
                 if selected["capabilities"]["data"]["asset_preparation"] != "before_job" or asset.get("remote_storage") != "desktop-builder":
                     continue
                 validate_worker(request.run, bundle, selected["capabilities"], request.requirements, cache_required=True)
-                if selected["profile"]["backend"]["kind"] == "slurm":
-                    stager = WydDataStager(self.runtime)
-                    marker = "wyd:" + item.asset_id
-                    verified = stager.check(project, item.asset_id, selected["profile"])
-                    if verified["status"] != "READY":
-                        if marker in value["delivery_requested"]:
-                            raise ApplicationError("saved WYD transfer is not verified; inspect shared storage, never replay", code="WYD_DATA_NOT_READY")
-                        value["delivery_requested"].append(marker)
-                        self.update(project, preparation_id, delivery_requested=value["delivery_requested"])
-                        receipt = stager.publish(project, item.asset_id, selected["profile"])
-                    else:
-                        receipt = stager.receipt(project, item.asset_id, selected["profile"])
-                    value.setdefault("data_receipts", {})[item.asset_id] = receipt
-                    self.update(project, preparation_id, data_receipts=value["data_receipts"])
-                    continue
-                delivery_service = DataDeliveryService(self.runtime)
-                delivery = (delivery_service.read(project, value["deliveries"][item.asset_id]) if item.asset_id in value["deliveries"]
-                            else delivery_service.prepare(project, item.asset_id, selected["executor"]))
-                value["deliveries"][item.asset_id] = delivery["delivery_id"]
-                self.update(project, preparation_id, deliveries=value["deliveries"])
-                if delivery["status"] == "PREPARED" and delivery["delivery_id"] not in value["delivery_requested"]:
-                    value["delivery_requested"].append(delivery["delivery_id"])
-                    self.update(project, preparation_id, delivery_requested=value["delivery_requested"])
-                    owned = delivery_service.begin(project, delivery["delivery_id"], delivery["confirmation"])
-                    if owned is not None:
-                        delivery_service.finish(owned)
-                delivery = delivery_service.read(project, delivery["delivery_id"])
-                if delivery["status"] in {"EXECUTING", "BUILDING_IMAGE", "IMAGE_READY", "SUBMITTING", "QUEUED", "COPYING"}:
-                    delivery = observe_dependency(lambda: delivery_service.read(project, delivery["delivery_id"]),
-                                                  {"EXECUTING", "BUILDING_IMAGE", "IMAGE_READY", "SUBMITTING", "QUEUED", "COPYING"})
-                if delivery["status"] != "READY":
-                    raise ApplicationError("inspect the saved data delivery; uncertain copy jobs are never replayed", code="PREPARATION_DATA_NOT_READY")
+                backend_operations(selected["profile"]["backend"]["kind"], self.backends).prepare_asset(
+                    self, project, preparation_id, value, selected, item.asset_id, observe_dependency)
             self.check_profile(selected)
             self.update(project, preparation_id, phase="FREEZING_RUN")
             definition = request.run.model_dump(exclude_none=True)
             definition.update(executor=selected["executor"], runtime_id=bundle["runtime_id"])
             run = self.containers.create_run(project, RunRequest.model_validate(definition), profile_snapshot=selected["profile"], prepared_assets=set(value.get("data_receipts", {})),
                 tracking=value.get("tracking", {"enabled": False, "requested": True, "reason": "HISTORICAL_RUN_NOT_BOUND", "entity": None, "project": project}))
-            if request.run.data_preparation is not None and selected["profile"]["backend"]["kind"] == "sensecore" and run["data_preparation_execution"]["phase"] == "before_job":
-                if not self.runtime.config.action_runtime.allow_scheduler_mutations:
-                    raise ApplicationError("CPU data preparation is disabled by scheduler policy", code="DATA_SCRIPT_DISABLED")
-                from ..backends.sensecore_preparation import SenseCoreScriptPreparation
-                self.update(project, preparation_id, phase="PREPARING_DATA_SCRIPT", run=run)
-                campaign = Path(self.runtime.project(project).base_dir) / "experiments" / "campaigns" / (run["campaign"] + ".yaml")
-                frozen = yaml.safe_load(campaign.read_text())["runs"][0]
-                scripts = SenseCoreScriptPreparation(self.runtime.config.container_execution.artifact_store_file,
-                    self.runtime.config.project_registry_root_path())
-                reference = scripts.reference(frozen)
-                previous = value.get("data_script")
-                if previous is not None and previous["operation_id"] != reference["operation_id"]:
-                    raise ApplicationError("original CPU data preparation identity changed", code="DATA_SCRIPT_IDENTITY_CHANGED")
-                self.update(project, preparation_id, data_script=reference)
-                receipt = scripts.ensure(project, frozen)
-                self.update(project, preparation_id, data_script=receipt)
+            if request.run.data_preparation is not None:
+                backend_operations(selected["profile"]["backend"]["kind"], self.backends).prepare_script(
+                    self, project, preparation_id, value, run)
             self.update(project, preparation_id, run=run, phase="CHECKING_SUBMISSION")
             submission = self.submissions.prepare_first_attempt(project, run["run_id"], max_gpu_hours=request.max_gpu_hours, reason="server-prepared experiment")
             return self.public(self.update(project, preparation_id, submission=submission, status="READY", phase="READY",

@@ -47,8 +47,6 @@ from .tracking_routes import RECORD_PATH, router as tracking_router
 from ..tracking.tracking_service import TrackingPublisher
 from ..results.result_collection import ResultCollectionService
 from .result_routes import RESULT_PATH, router as result_router
-from ..results.artifact_lifecycle import ArtifactLifecycle
-from ..data.multipart_upload import UploadStore
 from ..execution_queue import BoundedExecutor, QueueUnavailable, job_lane
 
 
@@ -76,9 +74,7 @@ def _poll_loop(app: FastAPI, collector: Collector) -> None:
             try:
                 config_file = app.state.runtime.config.container_execution.artifact_store_file
                 if config_file and app.state.runtime.config.action_runtime.allow_project_writes:
-                    objects = ResultCollectionService(app.state.runtime).objects
-                    UploadStore(objects.root.parent, objects.config).prune()
-                    ArtifactLifecycle(objects).run_due()
+                    app.state.runtime.storage_service.maintain()
                 app.state.index.set_meta("storage_maintenance_last_error", "")
             except Exception as exc:
                 # A storage maintenance fault must not hide scheduler progress.

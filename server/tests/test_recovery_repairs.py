@@ -170,7 +170,7 @@ def test_repair_service_guards(recovery, monkeypatch, case):
     receipt = service.objects.receive(*IDENTITY, token, io.BytesIO(data), len(data))
     if case != 'no-files': output(root)
     if case == 'active': row.attempts[0].state = 'RUNNING'
-    if case == 'cloud-active': cpu(recovery, monkeypatch).describe.return_value = {'state': 'RUNNING'}
+    if case == 'cloud-active': cpu(recovery, monkeypatch).describe.side_effect = lambda profile, name: {'name': name, 'uid': 'a'*32, 'state': 'RUNNING'}
     if case == 'unsupported':
         definition = yaml.safe_load((root/'attempts/attempt-001/attempt.yaml').read_text())
         definition['backend']['kind'] = 'unsupported'
@@ -178,10 +178,10 @@ def test_repair_service_guards(recovery, monkeypatch, case):
     if case == 'no-receipt':
         with service.objects.record(*IDENTITY) as (p, v):
             v['receipt'] = None; p.write_text(json.dumps(v))
-    if case == 'capacity': monkeypatch.setattr('ml_exp_server.results.result_collection.shutil.disk_usage', lambda _: Mock(free=0))
+    if case == 'capacity': monkeypatch.setattr('ml_exp_server.storage_capacity.shutil.disk_usage', lambda _: Mock(free=0))
     if case == 'late-capacity':
         values = iter([10**20, 0])
-        monkeypatch.setattr('ml_exp_server.results.result_collection.shutil.disk_usage', lambda _: Mock(free=next(values)))
+        monkeypatch.setattr('ml_exp_server.storage_capacity.shutil.disk_usage', lambda _: Mock(free=next(values)))
     with pytest.raises(ApplicationError): service.repair(*IDENTITY, '0'*64 if case == 'wrong-base' else receipt['sha256'])
 
 

@@ -159,6 +159,13 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
             scheduler_state="SUCCEEDED", attempts=[AttemptSummary(attempt_id="attempt-001", state="SUCCEEDED")]))
         store = ArtifactStore(s3_file, config.project_registry_root_path())
         _, capability, limit = store.issue("quickstart", "wyd-l40s", "attempt-001", run_root, ["**/*"])
+        before_publication = cli(base, auth, "status", "--project", "quickstart", "--run", "wyd-l40s")
+        assert before_publication["attempt_id"] == "attempt-001"
+        assert before_publication["scheduler"]["state"] == "SUCCEEDED"
+        assert before_publication["training"]["status"] == "UNKNOWN"
+        assert before_publication["publication"]["status"] == "NOT_COLLECTED"
+        assert not before_publication["publication"]["download_available"]
+        assert "evidence" not in before_publication
         archive = io.BytesIO()
         assert archive_outputs(outputs, archive, limit, ["**/*"]) == 2
         data = archive.getvalue()
@@ -168,6 +175,11 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
             assert response.status == 200
         watched = cli(base, auth, "watch", "--project", "quickstart", "--run", "wyd-l40s", "--seconds", "1")
         assert watched["attempts"]["current_attempt_id"] == "attempt-001"
+        published = cli(base, auth, "status", "--project", "quickstart", "--run", "wyd-l40s", "--details")
+        assert published["publication"]["status"] == "AVAILABLE"
+        assert published["publication"]["download_available"]
+        assert published["verification"]["status"] == "SHA256_VERIFIED"
+        assert published["evidence"]["attempt"]["attempt"]["attempt_id"] == "attempt-001"
         destination = tmp_path / "download"
         report = cli(base, auth, "download", "--project", "quickstart", "--run", "wyd-l40s", "--attempt", "attempt-001", "--out", destination)
         assert report["archive_sha256"] == hashlib.sha256(data).hexdigest()

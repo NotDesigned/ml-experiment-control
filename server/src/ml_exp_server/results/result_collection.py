@@ -1,41 +1,33 @@
 """Durable exact-Attempt result recovery; never restart a training job."""
 from __future__ import annotations
 
-import base64
 from contextlib import contextmanager, nullcontext
 import fcntl
 import fnmatch
-import gzip
 import hashlib
 import io
 import json
 import os
-import shutil
-import re
 import stat
 from pathlib import Path, PurePosixPath
-import shlex
-import subprocess
 import tempfile
 import time
 
 import yaml
-from experiment_control.backends.sensecore_rest import SenseCoreREST, RESTError, create_document
+from experiment_control.backends.sensecore_rest import SenseCoreREST, RESTError
 
 from ..application_errors import ApplicationError
 from ..execution_queue import QueueUnavailable
-from ..storage_capacity import StorageCapacity, CapacityError
-from .artifact_store import ArtifactStore, ATTEMPT, artifact_released
-from .artifacts import ArtifactService
-from .checkpoint_registry import CheckpointRegistry
+from ..storage_capacity import CapacityError
+from .artifact_store import ATTEMPT, artifact_released
 from ..container_execution import ContainerExecutionService
-from ..data.data_delivery import DataDeliveryService
 from ..workers.result_worker import sha
-from ..projects.source_imports import IDENTITY, remove_staging
+from ..projects.source_imports import IDENTITY
 from ..storage import DurableJsonState, utc_now, atomic_json
 from ..workers.worker_artifacts import archive_outputs
 from ..backends.sensecore_results import SenseCoreResultOperations
 from ..backends.wyd import WydResultOperations
+from ..backends.operations import backend_operations
 
 from ..backends.states import TERMINAL
 from .errors import RecoveryError
@@ -45,12 +37,13 @@ ACTIVE = {"QUEUED", "COLLECTING", "SUBMITTING", "WAITING"}
 
 
 class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
-    def __init__(self, runtime):
+    def __init__(self, runtime, *, backends=None):
         self.runtime = runtime
+        self.backends = backends
         config = runtime.config.container_execution.artifact_store_file
         if not config:
             raise ApplicationError("result storage is not configured", code="RESULT_COLLECTION_DISABLED")
-        self.objects = ArtifactStore(Path(config), runtime.config.project_registry_root_path())
+        self.objects = runtime.storage_service.objects
         self.root = runtime.config.project_registry_root_path() / "result-collections"
         self.stopping = lambda: False
 
@@ -236,10 +229,11 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
             raise ApplicationError("archive repair requires the exact unacknowledged receipt", code="ARCHIVE_REPAIR_BLOCKED")
         job = json.loads((root / "attempts" / attempt / "backend.json").read_text())["backend_job_id"]
         backend = definition["backend"]
-        if backend["kind"] == "slurm":
-            self.verify_wyd_terminal(backend, job)
-        elif backend["kind"] != "sensecore" or SenseCoreREST.from_environment().describe(backend, job)["state"] not in TERMINAL:
-            raise ApplicationError("provider job is not confirmed terminal", code="ORIGINAL_JOB_NOT_TERMINAL")
+        try:
+            adapter = backend_operations(backend["kind"], self.backends)
+        except ValueError:
+            raise ApplicationError("provider job is not confirmed terminal", code="ORIGINAL_JOB_NOT_TERMINAL") from None
+        adapter.confirm_terminal(self, backend, job)
         local = self.local_outputs(root, attempt)
         if local is None:
             raise ApplicationError("archive repair needs collected outputs", code="RESULT_FILES_NOT_FOUND")
@@ -327,49 +321,26 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
                 value = snapshot.value
             backend = definition["backend"]
             local = self.local_outputs(root, identity[2])
-            if backend["kind"] == "slurm" and local == root / "attempts" / identity[2] / "collected_run" / "attempts" / identity[2] / "outputs":
-                # Generic mirrors may contain filtered or partially copied files.
-                # A recovery needs a completed copy of the actual output directory.
-                local = None
-            if backend["kind"] == "sensecore":
-                rest = SenseCoreREST.from_environment()
-                job = json.loads((root / "attempts" / identity[2] / "backend.json").read_text())["backend_job_id"]
-                if rest.describe(backend, job)["state"] not in TERMINAL:
-                    raise RecoveryError("ORIGINAL_JOB_NOT_TERMINAL", "provider Attempt is still running")
-            elif backend["kind"] == "slurm":
-                job = json.loads((root / "attempts" / identity[2] / "backend.json").read_text())["backend_job_id"]
-                self.verify_wyd_terminal(backend, job)
+            adapter = backend_operations(backend["kind"], self.backends)
+            job = json.loads((root / "attempts" / identity[2] / "backend.json").read_text())["backend_job_id"]
+            adapter.confirm_terminal(self, backend, job)
             # Preserve original capability, Run, job and pending upload identity.
             with self.objects.record(*identity) as (path, current):
                 from ..storage import atomic_json
                 current["cache_outputs"] = False
                 atomic_json(path, current)
-            if local is None and backend["kind"] == "slurm":
-                phase = "READING_SHARED_STORAGE"
-                self.update(identity, status="COLLECTING", phase=phase)
-                local = root / "attempts" / identity[2] / "recovered_outputs"
-                size = self.wyd_output_bytes(backend, definition, identity[2])
-                with self.capacity().reserve(4 * size + 128 * 1024 ** 2) as reservation:
-                    self.read_wyd_outputs(backend, definition, identity[2], local)
-                    phase = "VERIFYING_AND_PUBLISHING"
-                    self.update(identity, status="COLLECTING", phase=phase)
-                    self.publish_local(identity, local, transfer, reservation=reservation)
-            elif local is not None:
-                phase = "VERIFYING_AND_PUBLISHING"
-                self.update(identity, status="COLLECTING", phase=phase)
-                self.publish_local(identity, local, transfer)
-            elif backend["kind"] == "sensecore":
-                phase = "CPU_NAS_RECOVERY"
-                if not self.sensecore(identity, definition, transfer, value, rest):
-                    return
-            else:
-                raise ValueError("backend does not support independent result collection")
+            if not adapter.collect(self, identity, root, definition, transfer, value, local):
+                return
             self.update(identity, status="AVAILABLE", phase="VERIFIED", diagnostic=None)
         except RESTError as error:
+            with self.state(*identity) as (_, snapshot):
+                phase = snapshot.value.get("phase", phase)
             uncertain = error.details["uncertain"] or self.provider_effect_pending(identity)
             self.update(identity, status="RECONCILE_REQUIRED" if uncertain else "FAILED",
                         phase=phase, diagnostic="PROVIDER_REQUEST_UNCERTAIN" if uncertain else "PROVIDER_REQUEST_FAILED")
         except Exception as error:
+            with self.state(*identity) as (_, snapshot):
+                phase = snapshot.value.get("phase", phase)
             capacity = ({"http_status": error.status_code, "required_free_bytes": error.required_free_bytes,
                          "available_bytes": error.available_bytes, "reserved_bytes": error.reserved_bytes}
                         if isinstance(error, CapacityError) else None)
@@ -407,7 +378,7 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
         return found[0] if found else None
 
     def capacity(self):
-        return StorageCapacity(self.objects.root.parent, self.objects.config)
+        return self.objects.capacity
 
     @staticmethod
     def archive_peak(outputs, patterns):

@@ -231,12 +231,13 @@ def test_explicit_legacy_cache_request_is_supported(storage):
 @pytest.mark.parametrize('enabled', [True,False])
 def test_collector_respects_project_write_pause(sealed,monkeypatch,enabled):
     from ml_exp_server.api import app as module
+    from ml_exp_server.storage_service import StorageService
     calls=[]
     class Stop:
         def is_set(self):return False
         def wait(self,seconds):return True
     state=SimpleNamespace(_stop=Stop(),index=SimpleNamespace(set_meta=lambda *args:None),
-                          runtime=SimpleNamespace(config=SimpleNamespace(
+                          runtime=SimpleNamespace(storage_service=StorageService(sealed[0]), config=SimpleNamespace(
                               container_execution=SimpleNamespace(artifact_store_file='configured'),
                               action_runtime=SimpleNamespace(allow_project_writes=enabled))),submit_job=lambda *args:None)
     service=SimpleNamespace(objects=sealed[0],automatic=lambda submit:calls.append('observe'))

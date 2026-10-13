@@ -104,3 +104,19 @@ def test_http_diagnostics_requires_bearer_and_never_starts_jobs(recovery, tmp_pa
         assert client.get(endpoint, params={"refresh": True}, headers=headers).status_code == 200
         assert client.get(endpoint.replace('run-a', 'foreign'), headers=headers).status_code == 404
         submit.assert_not_called()
+
+
+def test_confirmed_cpu_diagnostics_reject_replacement_before_reading_logs(recovery, monkeypatch):
+    from tests.test_result_collection import cpu
+    service, _, _, _, _, _, _ = recovery
+    rest = cpu(recovery, monkeypatch)
+    service.update(IDENTITY, scheduler_name='cpu-exact', cpu_profile={
+        **service.objects.config['data_delivery'], 'workspace': 'ws', 'storage_mount': 'volume/user:/data'},
+        job_uid='original', status='RECONCILE_REQUIRED')
+    rest.describe.side_effect = lambda profile, name: {'name': name, 'uid': 'replacement', 'state': 'FAILED'}
+    value = service.result_job_diagnostics(IDENTITY, refresh=True)
+    assert value['logs']['status'] == 'UNAVAILABLE' and value['job_uid'] == 'original'
+    assert value['errors'] == [{'operation': 'describe', 'error': 'ValueError', 'http_status': None}]
+    rest.logs.assert_not_called()
+    rest.create.assert_not_called()
+    rest.stop.assert_not_called()

@@ -17,6 +17,7 @@ from .api import Client, ClientError, _safe_error_json, _safe_error_text, acknow
 from .workflow import experiment, validate_dockerfile, report
 from .data_delivery import deliver_data
 from .operations import read_attempt, training_operation
+from .status import run_status
 
 
 def parser():
@@ -107,6 +108,12 @@ def parser():
     watch.add_argument("--project", required=True)
     watch.add_argument("--run", required=True)
     watch.add_argument("--seconds", type=float, default=1800)
+    status = commands.add_parser("status", help="read separate preparation, scheduler, training and publication status")
+    status.add_argument("--project", required=True)
+    status.add_argument("--run", required=True)
+    status.add_argument("--attempt", help="exact attempt-NNN; otherwise resolve current Attempt once")
+    status.add_argument("--state", type=Path, help="optional saved experiment state for preparation/submission evidence")
+    status.add_argument("--details", action="store_true", help="expand existing API evidence; never submit or recover work")
     logs = commands.add_parser("logs", help="read stored Attempt stdout/stderr; defaults to the current Attempt")
     metrics = commands.add_parser("metrics", help="read recorded Attempt metrics with their units, protocols and variants")
     for reading in (logs, metrics):
@@ -192,6 +199,9 @@ def main(argv=None):
             endpoint = f"/api/runs/{segment(args.project)}/{segment(args.run)}/attempts/{segment(args.attempt)}/collection"
             result = (client.call(endpoint, data={"retry": args.retry, "reconcile": args.reconcile})
                       if args.start or args.retry or args.reconcile else client.call(endpoint))
+        elif args.command == "status":
+            result = run_status(client, health, args.project, args.run, args.attempt,
+                                state_path=args.state, details=args.details)
         elif args.command in {"logs", "metrics"}:
             options = ({"stream": args.stream, "lines": args.lines} if args.command == "logs"
                        else {"keys": args.keys, "max_points": args.max_points})

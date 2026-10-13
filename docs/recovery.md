@@ -15,6 +15,19 @@ tokens, launch commands or signed URLs. Query exact IDs, not an arbitrary latest
 | Artifact receipt / COMPLETE upload | Complete result archive published | Signed download and file hashes |
 | Archive 404 | No published archive receipt; files may already exist | Exact-Attempt files and collection status |
 
+For a compact read of these separate stages:
+
+```bash
+ml-exp status --project PROJECT --run RUN --state experiment.state.json
+ml-exp status --project PROJECT --run RUN --attempt attempt-001 --details
+```
+
+Status never submits, collects, retries or refreshes a provider. `--state`
+observes the saved preparation/submission and pins its Attempt; `--details`
+expands existing evidence. A missing collection binding remains `NOT_OBSERVED`
+with its HTTP error, rather than making results appear available. Use logs and
+metrics for their existing exact-Attempt views.
+
 Polling time is not a process heartbeat. Submission preparation history is not
 current training progress. Preserve each evidence layer's Attempt binding,
 observation time and stale status. Queue reasons can be reported; reliable ETA
