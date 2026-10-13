@@ -8,11 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 import shlex
 import time
-from experiment_control.backends.sensecore_rest import create_document, SenseCoreREST, RESTError, component
+from experiment_control.backends.sensecore_rest import SenseCoreREST, RESTError, component
 from experiment_control.redaction import redact_line
 from ..application_errors import ApplicationError
 from ..results.checkpoint_registry import CheckpointRegistry
-from ..data.data_delivery import DataDeliveryService
+from .sensecore_cpu import checked_job, describe_job, document, find_job, stop_job, validate_profile, verify_spec
 
 from ..results.errors import RecoveryError
 from .states import TERMINAL
@@ -61,6 +61,8 @@ class SenseCoreResultOperations:
             result["logs"].update(status="UNAVAILABLE", unavailable_reason="CPU_CONFIGURATION_UNAVAILABLE")
             return result
         secrets = [transfer["token"]] + [rest.config.get(key) for key in ("access_key_id", "access_key_secret")]
+        if operation.get("job_uid"):
+            result["job_uid"] = operation["job_uid"]
         result = self.collect_result_job_diagnostics(rest, profile, name, secrets, result)
         if isinstance(cached, dict) and cached.get("scheduler_name") == name and result.get("job_uid"):
             evidence = exit_event_evidence(cached.get("events", []), result["job_uid"], secrets)
@@ -105,6 +107,8 @@ class SenseCoreResultOperations:
             job = rest.describe(profile, name)
             if not isinstance(job, dict):
                 raise ValueError("invalid recovery job observation")
+            if result.get("job_uid") is not None:
+                checked_job(job, name, result["job_uid"])
         except (RESTError, ValueError) as error:
             failed("describe", error)
             result["logs"].update(status="UNAVAILABLE", unavailable_reason="JOB_QUERY_FAILED")
@@ -180,9 +184,8 @@ class SenseCoreResultOperations:
                 "storage_mount": backend["storage_mount"], "quota_type": "reserved", "worker_nodes": 1}
         if operation.get("reconcile"):
             copy = operation["cpu_profile"]
-        if "debug" not in copy["aec2"].lower():
-            raise ValueError("NAS recovery requires the configured debug CPU pool")
-        DataDeliveryService(self.runtime).verify_cpu(copy)
+        validate_profile(copy, debug=True)
+        verify_spec(rest, copy)
         image = backend["image"]
         for path in sorted((self.objects.root.parent / "data-deliveries" / identity[0]).glob("delivery.*.json")):
             value = json.loads(path.read_text())
@@ -206,18 +209,21 @@ class SenseCoreResultOperations:
             for name, source in sources.items()) + "\nraise SystemExit(sys.modules['result_worker'].main(" + repr(payload) + "))"
         encoded = base64.b64encode(gzip.compress(script.encode(), mtime=0)).decode()
         command = ["python", "-u", "-c", "import base64,gzip;exec(gzip.decompress(base64.b64decode(" + repr(encoded) + ")))"]
-        body = create_document(copy, operation["scheduler_name"], image, shlex.join(command), cpu_copy=True)
-        body["roles"][0]["resource_spec"][0].update(requests={"cpu": "2", "memory": "3Gi"}, limits={"cpu": "2", "memory": "4Gi"})
+        body = document(copy, operation["scheduler_name"], image, shlex.join(command))
         if operation.get("reconcile"):
-            jobs = rest.find(copy, operation["scheduler_name"])
-            if len(jobs) != 1:
+            try:
+                job = find_job(rest, copy, operation["scheduler_name"], operation.get("job_uid"))
+            except ValueError:
+                job = None
+            if job is None:
                 self.update(identity, status="RECONCILE_REQUIRED", phase="CPU_SUBMISSION", diagnostic="EXACT_CPU_JOB_UNCONFIRMED")
                 return False
         else:
             self.update(identity, status="SUBMITTING", phase="CPU_SUBMISSION", cpu_profile=copy,
                         deadline_at=time.time() + 1500)
-            rest.create(copy, body, timeout=120)
-        self.update(identity, status="WAITING", phase="CPU_NAS_RECOVERY", cpu_profile=copy)
+            job = checked_job(rest.create(copy, body, timeout=120), operation["scheduler_name"])
+        uid = job["uid"]
+        self.update(identity, status="WAITING", phase="CPU_NAS_RECOVERY", cpu_profile=copy, job_uid=uid)
         with self.state(*identity) as (_, snapshot):
             deadline_at = snapshot.value["deadline_at"]
         deadline = time.monotonic() + max(0, deadline_at - time.time())
@@ -225,7 +231,7 @@ class SenseCoreResultOperations:
             with self.objects.record(*identity) as (_, current):
                 if current.get("receipt"):
                     return True
-            job = rest.describe(copy, operation["scheduler_name"])
+            job = describe_job(rest, copy, operation["scheduler_name"], uid)
             self.update(identity, job_state=job["state"])
             if job["state"] in TERMINAL:
                 raise RecoveryError("CPU_JOB_EXITED_WITHOUT_RECEIPT", "CPU result recovery ended without verified archive")
@@ -233,6 +239,6 @@ class SenseCoreResultOperations:
                 self.update(identity, status="RECONCILE_REQUIRED", diagnostic="DAEMON_INTERRUPTED")
                 return False
             if time.monotonic() >= deadline:
-                rest.stop(copy, operation["scheduler_name"])
+                stop_job(rest, copy, operation["scheduler_name"], uid)
                 raise TimeoutError("CPU result collection exceeded its fixed budget")
             time.sleep(2)

@@ -13,6 +13,7 @@ import time
 from urllib.parse import urlencode
 
 from .api import ClientError, acknowledge, data_archive, download, save, segment, source_archive, upload_asset_parts
+from .saved_plan import SavedPlan, bound_response
 
 
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "PREEMPTED", "TIMEOUT"}
@@ -179,13 +180,16 @@ def report(value):
     print(json.dumps({key: progress.get(key) for key in ("phase", "message", "seconds_since_progress", "diagnostic", "queue")}), file=sys.stderr)
 
 
-def wait_resource(client, endpoint, seconds, *, pending=("EXECUTING",)):
+def wait_resource(client, endpoint, seconds, *, pending=("EXECUTING",), validate=None, progress_validate=None):
     deadline = time.monotonic() + seconds
     while True:
         value = client.call(endpoint)
+        if validate is not None:
+            value = validate(value)
         if value["status"] not in pending:
             return value
-        report(client.call(endpoint + "/progress"))
+        progress = client.call(endpoint + "/progress")
+        report(progress_validate(progress) if progress_validate is not None else progress)
         if time.monotonic() >= deadline:
             raise ClientError("waiting timed out; execution continues; resume to inspect saved IDs, never resubmit")
         time.sleep(5)
@@ -259,6 +263,47 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         raise ClientError("state file exists; use --resume to inspect and continue the same experiment")
     if state.get("config_sha256") != fingerprint:
         raise ClientError("resume configuration changed; use a new Run and state file")
+    identity = {"project": config["project"], "run_id": config["run_id"]}
+    if getattr(client, "base", None):
+        identity["server"] = client.base
+    if any(state.get(key, value) != value for key, value in identity.items()):
+        raise ClientError("workflow state belongs to a different server or Run")
+    for marker in ("scheduler_requested", "scheduler_authorization_requested"):
+        if marker in state and type(state[marker]) is not bool:
+            raise ClientError("invalid saved workflow effect marker")
+    state.update(identity)
+    plan = SavedPlan(client, state, state_path, persist=save)
+    binding = {"project": config["project"], "run_id": config["run_id"]}
+    def validate_submission(value, original=None):
+        expected = dict(binding)
+        if original is not None:
+            expected.update(submission_id=original[0], attempt_id=original[1])
+        value = bound_response(value, expected, message="Submission identity differs from the saved exact Run/Attempt")
+        if (not re.fullmatch(r"action-[a-f0-9]{16}", str(value.get("submission_id", "")))
+                or not re.fullmatch(r"attempt-[0-9]{3,}", str(value.get("attempt_id", "")))):
+            raise ClientError("Submission lacks an exact scheduler identity")
+        return value
+    def validate_preparation(value):
+        expected = dict(binding)
+        previous = state.get("preparation")
+        if previous:
+            expected["preparation_id"] = previous["preparation_id"]
+        value = bound_response(value, expected, message="Preparation identity differs from the saved experiment Run")
+        if not re.fullmatch(r"preparation-[a-f0-9]{32}", str(value.get("preparation_id", ""))):
+            raise ClientError("Preparation lacks an exact identity")
+        if value.get("run") is not None:
+            bound_response(value["run"], binding, message="prepared Run identity differs from the experiment")
+        if value.get("submission") is not None:
+            validate_submission(value["submission"])
+        return value
+    if state.get("preparation"):
+        validate_preparation(state["preparation"])
+    if state.get("submission"):
+        validate_submission(state["submission"])
+    if "preparation_request" in state:
+        request = state["preparation_request"]
+        if not isinstance(request, dict) or not isinstance(request.get("run"), dict) or request["run"].get("run_id") != config["run_id"]:
+            raise ClientError("saved preparation request differs from the experiment Run")
     if out is not None:
         if state.get("download_directory") and Path(state["download_directory"]).resolve() != out.resolve():
             raise ClientError("download directory differs from saved workflow state; resume with the original directory")
@@ -324,16 +369,14 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
             # The server binds one request to project/run_id before starting
             # effects. A lost POST response can be safely retrieved by the same
             # request; it never creates another build or copy task.
-            state["preparation"] = client.call(f"/api/projects/{project}/experiment-preparations", data=state["preparation_request"])
-            save(state_path, state)
+            plan.request("preparation", f"/api/projects/{project}/experiment-preparations", data=state["preparation_request"], validate=validate_preparation)
         endpoint = f"/api/projects/{project}/experiment-preparations/{segment(state['preparation']['preparation_id'])}"
         if continue_preparation:
-            current = client.call(endpoint)
+            current = validate_preparation(client.call(endpoint))
             if current["status"] == "RECONCILE_REQUIRED":
                 client.call(endpoint + "/continue", data={})
-        preparation = wait_resource(client, endpoint, seconds)
-        state["preparation"] = preparation
-        save(state_path, state)
+        preparation = wait_resource(client, endpoint, seconds, validate=validate_preparation)
+        plan.store("preparation", preparation)
         if preparation["status"] != "READY":
             raise ClientError("server preparation requires dependency inspection; saved Runtime/delivery IDs must be reconciled, never resubmitted")
         state.update(run=preparation["run"], submission=preparation["submission"], matching=preparation["matching"])
@@ -341,19 +384,26 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         save(state_path, state)
     submission = state["submission"]
     endpoint = "/api/submissions/" + segment(submission["submission_id"])
-    submission = client.call(endpoint)
+    original = (submission["submission_id"], submission["attempt_id"])
+    validate = lambda value: validate_submission(value, original)
+    def validate_progress(value):
+        return bound_response(value, {"submission_id": original[0], "run_id": config["run_id"], "attempt_id": original[1]},
+                              message="Submission progress identity differs from the saved exact Run/Attempt")
+    submission = plan.observe("submission", endpoint, validate=validate)
     if execute:
+        if state.get("scheduler_requested") and submission["status"] in {"PREPARED", "AUTHORIZED"}:
+            raise ClientError("scheduler request outcome is uncertain; inspect saved Submission before explicit execution")
         if submission["status"] == "PREPARED" and submission["ready"]:
-            submission = client.call(endpoint + "/authorize", data={"note": "explicit ml-exp experiment --execute"})
+            submission = plan.request("submission", endpoint + "/authorize",
+                data={"note": "explicit ml-exp experiment --execute"}, marker="scheduler_authorization_requested",
+                validate=validate,
+                uncertain="scheduler authorization outcome is uncertain; inspect saved Submission before explicit execution")
         if submission["status"] == "AUTHORIZED":
-            if state.get("scheduler_requested"):
-                raise ClientError("scheduler request outcome is uncertain; inspect saved Submission before explicit execution")
-            state["scheduler_requested"] = True
-            save(state_path, state)
-            client.call(endpoint + "/execute", data={"confirmation": submission["confirmation"]})
-        submission = wait_resource(client, endpoint, seconds)
-    state["submission"] = submission
-    save(state_path, state)
+            plan.request("submission", endpoint + "/execute", data={"confirmation": submission["confirmation"]},
+                marker="scheduler_requested", validate=validate,
+                uncertain="scheduler request outcome is uncertain; inspect saved Submission before explicit execution")
+        submission = wait_resource(client, endpoint, seconds, validate=validate, progress_validate=validate_progress)
+    plan.store("submission", submission, validate=validate)
     if resume:
         retry_download_acknowledgement(client, config["project"], config["run_id"], submission["attempt_id"],
                                        state, state_path, download_out)
@@ -364,10 +414,11 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
     endpoint = f"/api/runs/{project}/{segment(config['run_id'])}"
     deadline = time.monotonic() + seconds
     while True:
-        result = client.call(endpoint)
-        report(client.call("/api/submissions/" + segment(submission["submission_id"]) + "/progress"))
+        result = bound_response(client.call(endpoint), binding, message="training Run response differs from the experiment")
+        report(validate_progress(client.call("/api/submissions/" + segment(submission["submission_id"]) + "/progress")))
         if result["scheduler_state"] in TERMINAL:
-            attempts = client.call(endpoint + "/attempts")
+            attempts = bound_response(client.call(endpoint + "/attempts"), binding,
+                                      message="training Attempt listing differs from the experiment")
             if attempts["current_attempt_id"] != submission["attempt_id"]:
                 raise ClientError("Run now refers to a different Attempt; inspect the saved exact submission")
             state["result"] = result

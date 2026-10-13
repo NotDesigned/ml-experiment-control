@@ -145,6 +145,8 @@ second Run or replay an uncertain scheduler submission.
 ## Observe and retrieve
 
 ```bash
+ml-exp status --project my-study --run trial-001 --state trial.state.json
+ml-exp status --project my-study --run trial-001 --attempt attempt-001 --details
 ml-exp submission --id SUBMISSION_ID
 ml-exp watch --project my-study --run trial-001 --seconds 1800
 ml-exp logs --project my-study --run trial-001 --attempt attempt-001 --stream both --lines 80
@@ -152,6 +154,17 @@ ml-exp metrics --project my-study --run trial-001 --attempt attempt-001 --keys l
 ml-exp download --project my-study --run trial-001 \
   --attempt attempt-001 --out results/trial-001-copy
 ```
+
+`status` returns a compact summary of preparation, scheduler, training,
+publication and verification. `--state` observes the original saved preparation
+and submission, including while the Run has not yet been created. A saved
+submission pins its exact Attempt; otherwise omitting `--attempt` resolves the
+current Attempt once. Without experiment state, preparation can remain
+`NOT_OBSERVED`. `--details` adds existing API evidence; it neither refreshes
+provider logs nor starts result collection. Training stays `UNKNOWN` when there
+is no completion evidence, even if the scheduler reports `SUCCEEDED`. Publication
+is downloadable only when collection and hash verification are both complete.
+A failed collection is shown separately from successful training.
 
 Use the actual Attempt ID and a new destination directory. Download verifies the
 archive and recorded file hashes. Failed jobs can still have useful outputs.
@@ -162,7 +175,11 @@ job visibility; neither proves training or result publication succeeded.
 once. Metrics retain their recorded units, protocols and variants.
 
 After disconnecting, use the same state with `--resume`. It observes saved
-identities without replaying uncertain build/scheduler requests. Changed code
+identities without replaying uncertain build/scheduler requests. New state files
+also bind the server and Run; historical experiment state remains readable.
+Authorization and scheduling each save a durable request marker before dispatch.
+A lost reply is inspected through the original Submission instead of repeating
+the request. Changed code
 or config needs a new Run ID and state file. See [recovery](recovery.md) for
 `RECONCILE_REQUIRED`, empty results and stalled preparation.
 

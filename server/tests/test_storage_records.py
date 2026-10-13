@@ -171,12 +171,13 @@ def test_storage_maintenance_failure_does_not_hide_scheduler_progress(storage, m
     from types import SimpleNamespace
     from ml_exp_server.api import app as module
     from ml_exp_server.data.multipart_upload import UploadStore
+    from ml_exp_server.storage_service import StorageService
     calls = []
     class Stop:
         def is_set(self): return False
         def wait(self, seconds): return True
     state = SimpleNamespace(_stop=Stop(), index=SimpleNamespace(set_meta=lambda *a: calls.append(a)),
-            runtime=SimpleNamespace(config=SimpleNamespace(container_execution=SimpleNamespace(artifact_store_file='file'),
+            runtime=SimpleNamespace(storage_service=StorageService(storage[0]), config=SimpleNamespace(container_execution=SimpleNamespace(artifact_store_file='file'),
                     action_runtime=SimpleNamespace(allow_project_writes=True))), submit_job=lambda *a: None)
     monkeypatch.setattr(module, 'ResultCollectionService', lambda runtime: SimpleNamespace(objects=storage[0], automatic=lambda submit: None))
     def fail(self): raise OSError(28, 'private')

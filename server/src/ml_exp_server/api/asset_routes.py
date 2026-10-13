@@ -17,7 +17,6 @@ from ..data.data_assets import AssetStore
 from ..results.checkpoint_registry import CheckpointRegistry
 from ..workers.persistent_state import MANIFEST_LIMIT
 from ..archive_limits import exceeds
-from ..storage_capacity import StorageCapacity
 from .container_routes import invoke
 
 router = APIRouter(prefix="/api")
@@ -42,8 +41,7 @@ async def receive(request, service, call, *args):
     if exceeds(expected_size, service.limit):
         raise HTTPException(status_code=413, detail="data archive exceeds upload limit")
     objects = getattr(service, "objects", service)
-    capacity = StorageCapacity(objects.root.parent, objects.config)
-    reservation = capacity.reserve(3 * expected_size)
+    reservation = objects.capacity.reserve(3 * expected_size)
     lease = await invoke(reservation.__enter__)
     try:
         return await receive_body(request, service, call, args, lease, expected_size)

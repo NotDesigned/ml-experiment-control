@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import fcntl
+from functools import cached_property
 import hashlib
 import hmac
 import json
@@ -47,6 +48,10 @@ class ArtifactStore:
         self.root = registry_root / 'artifact-transfers'
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.limit = byte_limit(self.config.get('max_archive_bytes'))
+
+    @cached_property
+    def capacity(self):
+        return StorageCapacity(self.root.parent, self.config)
 
     @contextmanager
     def record(self, project, run, attempt):
@@ -178,8 +183,7 @@ class ArtifactStore:
                 return
             receipt = value['receipt']
             expanded = sum((item['bytes'] + 4095) // 4096 * 4096 for item in receipt['files'])
-            capacity = StorageCapacity(self.root.parent, self.config)
-            with capacity.reserve(receipt['bytes'] + expanded):
+            with self.capacity.reserve(receipt['bytes'] + expanded):
                 temporary = Path(tempfile.mkdtemp(prefix='.restore-', dir=parent))
                 try:
                     with tempfile.TemporaryFile(dir=self.root) as stream:

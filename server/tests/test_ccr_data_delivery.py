@@ -105,7 +105,7 @@ def test_prepare_execute_requires_exact_cpu_scope_and_seals_ready(delivery,monke
         assert spec["limits"] == {"cpu": "2", "memory": "4Gi"}
         service.callback('demo',value['delivery_id'],secret(service,value),receipt(value,'COPYING'))
         service.callback('demo',value['delivery_id'],secret(service,value),receipt(value))
-        return {}
+        return {"name": document["name"], "uid": "a" * 32}
     service._rest = SimpleNamespace(
         find=lambda *a: calls.append("find") or [],
         specs=lambda *a: calls.append("specs") or [{"name":"N6lS.Iu.I10.2c4g", "device":{"number":0},
@@ -164,7 +164,7 @@ def test_reconciliation_never_replays_unknown_submissions(delivery,monkeypatch,c
     pending=service.begin('demo',value['delivery_id'],value['confirmation'])
     created=[];clock=iter([0,0,100])
     def find(copy, name):
-        job={'name':value['scheduler_name'],'state':'SUCCEEDED' if case=='terminal' else 'RUNNING'}
+        job={'name':value['scheduler_name'],'uid':'a'*32,'state':'SUCCEEDED' if case=='terminal' else 'RUNNING'}
         if case=='ambiguous-job': return [job,job]
         return [job] if case in {'terminal','expired','found'} else []
     def create(*args, **kwargs):
@@ -173,6 +173,7 @@ def test_reconciliation_never_replays_unknown_submissions(delivery,monkeypatch,c
         raise ValueError('uncertain ACP create')
     service._rest = SimpleNamespace(find=find, create=create,
         stop=lambda *a: created.append('stop'),
+        describe=lambda *a: {'name':a[1],'uid':'a'*32,'state':'RUNNING'},
         specs=lambda *a: [] if case=='cpu-absent' else [{"name":"N6lS.Iu.I10.2c4g",
             "device":{"number":1 if case=='wrong-cpu' else 0},
             "cpu":{"vcpu_allocatable":2}, "memory":{"allocatable":4}}])
@@ -253,7 +254,7 @@ def test_disabled_delivery_and_rest_configuration_fail_closed(client,stored,monk
     with pytest.raises(ApplicationError):DataDeliveryService(runtime)
     config=json.loads(stored[0].read_text());config['data_delivery']={'configured':True};stored[0].write_text(json.dumps(config))
     service=DataDeliveryService(runtime)
-    monkeypatch.setattr(module.SenseCoreREST, "from_environment", lambda: SimpleNamespace())
+    monkeypatch.setattr("ml_exp_server.backends.sensecore_data.SenseCoreREST.from_environment", lambda: SimpleNamespace())
     assert service.rest is service.rest
 
 
@@ -288,3 +289,38 @@ def test_debug_cpu_copy_remains_allowed_and_historical_delivery_remains_readable
     assert document['resource_pool']['name'] == 'DEBUG-cluster'
     assert document['roles'][0]['resource_spec'][0]['requests']['cpu'] == '2'
     assert service.read('demo', value['delivery_id'])['status'] == 'PREPARED'
+
+
+def test_confirmed_job_uid_is_retained_when_ready_callback_wins_create_race(delivery):
+    _, service, value, _ = delivery
+    pending = service.begin('demo', value['delivery_id'], value['confirmation'])
+    def create(profile, body, **kwargs):
+        service.callback('demo', value['delivery_id'], secret(service, value), receipt(value))
+        return {'name': body['name'], 'uid': 'original'}
+    service._rest = SimpleNamespace(find=lambda *_: [], create=create,
+        specs=lambda *_: [{'name': 'N6lS.Iu.I10.2c4g', 'device': {'number': 0},
+                          'cpu': {'vcpu_allocatable': 2}, 'memory': {'allocatable': 4}}])
+    assert service.finish(pending)['status'] == 'READY'
+    with service.state('demo', value['delivery_id']) as (_, snapshot):
+        assert snapshot.value['job_uid'] == 'original'
+        assert snapshot.value['receipt'] == receipt(value)
+
+
+@pytest.mark.parametrize('bound', [False, True])
+def test_reconcile_binds_legacy_exact_uid_and_never_stops_a_replacement(delivery, monkeypatch, bound):
+    _, service, value, _ = delivery
+    service.update('demo', value['delivery_id'], status='RECONCILE_REQUIRED', image=IMAGE,
+                   data_image_id='data-image.'+'c'*64, **({'job_uid': 'original'} if bound else {}))
+    pending = service.begin('demo', value['delivery_id'], value['confirmation'], reconcile=True)
+    calls = []
+    def find(profile, name):
+        calls.append('find')
+        return [{'name': name, 'uid': 'replacement' if bound or len(calls) > 1 else 'original', 'state': 'RUNNING'}]
+    service._rest = SimpleNamespace(find=find, create=lambda *_a, **_kw: pytest.fail('never replay create'),
+                                   stop=lambda *_: pytest.fail('never stop replacement'))
+    monkeypatch.setattr(module.time, 'sleep', lambda *_: None)
+    result = service.finish(pending)
+    assert result['status'] == 'RECONCILE_REQUIRED'
+    with service.state('demo', value['delivery_id']) as (_, snapshot):
+        assert snapshot.value['job_uid'] == 'original'
+    assert len(calls) == (1 if bound else 2)

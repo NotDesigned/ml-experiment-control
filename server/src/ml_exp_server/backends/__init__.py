@@ -1,1 +1,1 @@
-"""Provider storage and CPU-copy operations; scheduling lives in core."""
+"""Provider preparation, storage and CPU operations beside core scheduling."""

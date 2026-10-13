@@ -19,8 +19,7 @@ from starlette.responses import JSONResponse, StreamingResponse, Response
 from ..application_errors import ApplicationError
 from ..execution_queue import admitted_handoff
 from ..results.artifacts import ArtifactService
-from ..results.artifact_store import ArtifactStore, require_artifact_available
-from ..results.artifact_lifecycle import ArtifactLifecycle
+from ..results.artifact_store import require_artifact_available
 from ..archive_limits import exceeds
 from ..container_execution import ContainerExecutionService, RunRequest, DockerfileRuntimeSpec
 from ..image_builder import builder_request
@@ -208,7 +207,7 @@ async def artifact_transfer(project: str, run_id: str, attempt_id: str, request:
     config = runtime.config.container_execution.artifact_store_file
     if not config:
         raise HTTPException(status_code=404, detail="artifact transfer is not configured")
-    service = ArtifactStore(Path(config), runtime.config.project_registry_root_path())
+    service = runtime.storage_service.objects
     scheme, _, token = request.headers.get("Authorization", "").partition(" ")
     try:
         if scheme.lower() != "bearer":
@@ -227,7 +226,7 @@ async def launch_transfer(project: str, run_id: str, attempt_id: str, digest: st
     config = runtime.config.container_execution.artifact_store_file
     if not config:
         raise HTTPException(status_code=404, detail="launch transfer is not configured")
-    store = ArtifactStore(Path(config), runtime.config.project_registry_root_path())
+    store = runtime.storage_service.objects
     scheme, _, token = request.headers.get("Authorization", "").partition(" ")
     try:
         if scheme.lower() != "bearer":
@@ -244,7 +243,7 @@ async def launch_diagnostic(project: str, run_id: str, attempt_id: str, digest: 
     config = runtime.config.container_execution.artifact_store_file
     if not config:
         raise HTTPException(status_code=404, detail="launch transfer is not configured")
-    store = ArtifactStore(Path(config), runtime.config.project_registry_root_path())
+    store = runtime.storage_service.objects
     scheme, _, token = request.headers.get("Authorization", "").partition(" ")
     try:
         if scheme.lower() != "bearer":
@@ -276,7 +275,7 @@ async def artifact_archive(project: str, run_id: str, attempt_id: str, request: 
     config = runtime.config.container_execution.artifact_store_file
     if not config:
         raise HTTPException(status_code=404, detail="object storage is not configured")
-    store = ArtifactStore(Path(config), runtime.config.project_registry_root_path())
+    store = runtime.storage_service.objects
     def fetch():
         with store.record(project, run_id, attempt_id) as (_, value):
             if not value or not value.get("receipt"):
@@ -302,7 +301,7 @@ async def artifact_download_link(project: str, run_id: str, attempt_id: str, req
     config = runtime.config.container_execution.artifact_store_file
     if not config:
         raise HTTPException(status_code=404, detail="object storage is not configured")
-    store = ArtifactStore(Path(config), runtime.config.project_registry_root_path())
+    store = runtime.storage_service.objects
     if not store.config.get("public_endpoint"):
         raise HTTPException(status_code=404, detail="direct downloads are not configured")
     value = await invoke(store.artifact_download, project, run_id, attempt_id)
@@ -318,7 +317,7 @@ async def acknowledge_artifact_download(project: str, run_id: str, attempt_id: s
     config = runtime.config.container_execution.artifact_store_file
     if not config:
         raise HTTPException(status_code=404, detail="object storage is not configured")
-    lifecycle = ArtifactLifecycle(ArtifactStore(Path(config), runtime.config.project_registry_root_path()))
+    lifecycle = runtime.storage_service.lifecycle
     return await invoke(lifecycle.acknowledge, project, run_id, attempt_id,
                         data.model_dump(exclude={"release"}), release=data.release)
 

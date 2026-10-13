@@ -8,6 +8,7 @@ import re
 from urllib.parse import urlencode
 
 from .api import ClientError, save, segment
+from .saved_plan import SavedPlan, bound_response
 
 
 _ATTEMPT = re.compile(r"attempt-[0-9]{3,}\Z")
@@ -21,6 +22,22 @@ def _attempt(value):
     if not isinstance(value, str) or not _ATTEMPT.fullmatch(value):
         raise ClientError("choose an exact attempt-NNN identity")
     return value
+
+
+def resolve_attempt(client, project, run, attempt=None):
+    """Resolve once and pin the original exact Attempt for subsequent reads."""
+    project_path, run_path = segment(project), segment(run)
+    if attempt is None:
+        listing = client.call(f"/api/runs/{project_path}/{run_path}/attempts")
+        if not isinstance(listing, dict) or listing.get("project") != project or listing.get("run_id") != run:
+            raise ClientError("Attempt listing differs from the requested Run")
+        attempt = _attempt(listing.get("current_attempt_id"))
+        entries = listing.get("attempts")
+        if not isinstance(entries, list) or not any(isinstance(item, dict) and item.get("attempt_id") == attempt
+                   and item.get("identity") == run + "::" + attempt
+                   for item in entries):
+            raise ClientError("current Attempt is absent from the Run listing")
+    return _attempt(attempt)
 
 
 def read_attempt(client, view, project, run, attempt=None, *, stream="both", lines=80,
@@ -39,18 +56,11 @@ def read_attempt(client, view, project, run, attempt=None, *, stream="both", lin
             query["keys"] = keys
     else:
         raise ClientError("unknown Attempt read operation")
-    if attempt is None:
-        listing = client.call(f"/api/runs/{project_path}/{run_path}/attempts")
-        if not isinstance(listing, dict) or listing.get("project") != project or listing.get("run_id") != run:
-            raise ClientError("Attempt listing differs from the requested Run")
-        attempt = _attempt(listing.get("current_attempt_id"))
-        entries = listing.get("attempts")
-        if not isinstance(entries, list) or not any(isinstance(item, dict) and item.get("attempt_id") == attempt
-                   and item.get("identity") == run + "::" + attempt
-                   for item in entries):
-            raise ClientError("current Attempt is absent from the Run listing")
+    attempt = resolve_attempt(client, project, run, attempt)
     identity = segment(run + "::" + _attempt(attempt))
-    return client.call(f"/api/attempts/{project_path}/{identity}/{view}?" + urlencode(query))
+    response = client.call(f"/api/attempts/{project_path}/{identity}/{view}?" + urlencode(query))
+    return bound_response(response, {"project": project, "run_id": run, "attempt_id": attempt},
+                          message="read response differs from the requested exact Run/Attempt")
 
 
 def _validate_action(saved, action, *, reviewed=True):
@@ -161,10 +171,10 @@ def training_operation(client, operation, path: Path, *, project=None, run=None,
         # Keep intent before HTTP: an interrupted preparation is inspected, never replayed.
         save(path, saved)
         endpoint = f"/api/attempts/{segment(project)}/{segment(run + '::' + attempt)}/{operation}"
-        response = client.call(endpoint, data=request)
-        action = _validate_action(saved, response.get("action") if isinstance(response, dict) else None, reviewed=False)
-        saved.update(plan=action, action=action)
-        save(path, saved)
+        plan = SavedPlan(client, saved, path, persist=save)
+        action = plan.request("plan", endpoint, data=request, validate=lambda response:
+            _validate_action(saved, response.get("action") if isinstance(response, dict) else None, reviewed=False))
+        plan.store("action", action)
         return _result(saved, path)
 
     saved = json.loads(path.read_text())
@@ -207,26 +217,19 @@ def training_operation(client, operation, path: Path, *, project=None, run=None,
     aid = saved["plan"]["action_id"]
     if action_id is not None and action_id != aid:
         raise ClientError("Action identity differs from the saved plan")
-    action = _validate_action(saved, client.call("/api/actions/" + aid))
-    saved["action"] = action
-    save(path, saved)
+    plan = SavedPlan(client, saved, path, persist=save)
+    validate = lambda value: _validate_action(saved, value)
+    action = plan.observe("action", "/api/actions/" + aid, validate=validate)
     status = action["execution"].get("status")
     if reconcile and status in {"EXECUTING", "RECONCILE_REQUIRED"}:
-        action = _validate_action(saved, client.call("/api/actions/reconcile", data={"action_id": aid}))
+        action = plan.request("action", "/api/actions/reconcile", data={"action_id": aid}, validate=validate)
     elif execute and not saved["execution_requested"] and action.get("ready"):
         if status == "PREPARED" and not saved["authorization_requested"]:
-            saved["authorization_requested"] = True
-            save(path, saved)
-            action = _validate_action(saved, client.call("/api/actions/authorize", data={
-                "action_id": aid, "note": "explicit CLI execution of the saved training plan"}))
-            saved["action"] = action
-            save(path, saved)
+            action = plan.request("action", "/api/actions/authorize", marker="authorization_requested",
+                data={"action_id": aid, "note": "explicit CLI execution of the saved training plan"}, validate=validate)
         if action["execution"].get("status") == "AUTHORIZED":
             # Durable dispatch marker must precede HTTP; even a lost reply cannot cause a replay.
-            saved["execution_requested"] = True
-            save(path, saved)
-            action = _validate_action(saved, client.call("/api/actions/execute", data={
-                "action_id": aid, "confirmation": "EXECUTE " + aid}))
-    saved["action"] = action
-    save(path, saved)
+            action = plan.request("action", "/api/actions/execute", marker="execution_requested",
+                data={"action_id": aid, "confirmation": "EXECUTE " + aid}, validate=validate)
+    plan.store("action", action)
     return _result(saved, path)

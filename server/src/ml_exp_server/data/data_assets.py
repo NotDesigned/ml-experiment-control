@@ -64,8 +64,7 @@ class AssetStore:
                            if p.is_dir() and ASSET_ID.fullmatch(p.name)]}
 
     def limits(self) -> dict:
-        from ..storage_capacity import StorageCapacity
-        capacity = StorageCapacity(self.objects.root.parent, self.objects.config)
+        capacity = self.objects.capacity
         with capacity.locked():
             local = capacity.snapshot()
         value = {"asset_archive_bytes": wire_limit(self.limit), "asset_expanded_bytes": wire_limit(self.expanded_limit),

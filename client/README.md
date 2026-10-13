@@ -39,6 +39,25 @@ Checkpoint storage and experiment metadata remain separate. Keep your local
 results; see [retention and recovery](../docs/recovery.md#download-confirmation-and-server-storage).
 See [development](../docs/development.md) for independent build/tests.
 
+## Observe an experiment
+
+```bash
+ml-exp status --project my-study --run trial-001 --state trial.state.json
+ml-exp status --project my-study --run trial-001 --attempt attempt-001 --details
+ml-exp logs --project my-study --run trial-001 --attempt attempt-001
+ml-exp metrics --project my-study --run trial-001 --attempt attempt-001
+```
+
+`status` is read-only and defaults to a compact JSON summary: preparation,
+scheduler, training, publication and verification stay separate. `--state`
+adds the original experiment's preparation/submission observations, including
+before the Run exists. Without it, preparation can remain `NOT_OBSERVED`.
+Omitting `--attempt` resolves the current Attempt once; a saved submission pins
+its original Attempt. `--details` expands existing evidence without refreshing
+providers or starting collection. Scheduler success does not imply completed
+training or a downloadable archive. A failed collection stays visible even
+when training completed.
+
 Optional W&B publication: [configuration and per-Run projects](../docs/wandb.md).
 
 ## Training metrics

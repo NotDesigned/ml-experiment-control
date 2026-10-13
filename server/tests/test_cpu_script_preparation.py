@@ -33,8 +33,8 @@ def script(tmp_path):
         specs=lambda _: [{"name": copy["worker_spec"], "device": {"number": 0},
                           "cpu": {"vcpu_allocatable": 2}, "memory": {"allocatable": 4}}],
         create=lambda *a, **kw: creates.append((a, kw)) or {"name": a[1]["name"], "uid": "e" * 32},
-        find=lambda *a: [{"uid": "e" * 32}],
-        describe=lambda *a: {"state": "SUCCEEDED", "uid": "e" * 32},
+        find=lambda *a: [{"name": a[1], "uid": "e" * 32}],
+        describe=lambda *a: {"name": a[1], "state": "SUCCEEDED", "uid": "e" * 32},
         logs=lambda *a: {"text": "noise\n" + PREFIX + json.dumps(receipt)},
         stop=lambda *a: stops.append(a),
     )
@@ -142,7 +142,7 @@ def test_changed_job_uid_refused(script):
 
 def test_terminal_failure_preserved_and_not_restarted(script):
     service, run, _, creates, _ = script
-    service.rest.describe = lambda *a: {"uid": "e" * 32, "state": "FAILED"}
+    service.rest.describe = lambda *a: {"name": a[1], "uid": "e" * 32, "state": "FAILED"}
     for _ in range(2):
         with pytest.raises(ApplicationError) as error:
             service.ensure("demo", run)
@@ -153,7 +153,7 @@ def test_terminal_failure_preserved_and_not_restarted(script):
 @pytest.mark.parametrize("state, stopped", [("RUNNING", True), ("SUCCEEDED", False)])
 def test_deadline_stops_only_original_active_cpu(script, monkeypatch, state, stopped):
     service, run, _, _, stops = script
-    service.rest.describe = lambda *a: {"uid": "e" * 32, "state": state}
+    service.rest.describe = lambda *a: {"name": a[1], "uid": "e" * 32, "state": state}
     service.rest.logs = lambda *a: {"text": "not indexed yet"}
     times = iter([0, 1000])
     monkeypatch.setattr("ml_exp_server.backends.sensecore_preparation.time.time", lambda: next(times))

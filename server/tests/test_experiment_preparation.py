@@ -317,8 +317,8 @@ def cpu_download(client, stored, service, monkeypatch):
         specs=lambda _: [{"name": "N6lS.Iu.I10.2c4g", "device": {"number": 0},
                           "cpu": {"vcpu_allocatable": 2}, "memory": {"allocatable": 4}}],
         create=create,
-        find=lambda profile, name: [{"uid": control.jobs[name]["uid"]}] if name in control.jobs else [],
-        describe=lambda profile, name: {"uid": control.jobs[name]["uid"], "state": control.state},
+        find=lambda profile, name: [{"name": name, "uid": control.jobs[name]["uid"]}] if name in control.jobs else [],
+        describe=lambda profile, name: {"name": name, "uid": control.jobs[name]["uid"], "state": control.state},
         logs=lambda profile, name, lines: {"text": PREFIX + json.dumps(control.jobs[name]["receipt"])},
         stop=lambda *args: control.stops.append(args))
     monkeypatch.setattr(SenseCoreScriptPreparation, "rest", property(lambda self: rest))
