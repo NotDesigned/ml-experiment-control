@@ -213,6 +213,8 @@ async def artifact_transfer(project: str, run_id: str, attempt_id: str, request:
         if scheme.lower() != "bearer":
             raise ValueError()
         await run_in_threadpool(service.authorize, project, run_id, attempt_id, token)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
     except ValueError:
         raise HTTPException(status_code=401, detail="invalid Attempt upload capability")
     from .asset_routes import receive
@@ -232,6 +234,8 @@ async def launch_transfer(project: str, run_id: str, attempt_id: str, digest: st
         if scheme.lower() != "bearer":
             raise ValueError()
         body = await run_in_threadpool(store.launch, project, run_id, attempt_id, digest, token)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
     except ValueError:
         raise HTTPException(status_code=401, detail="invalid Attempt launch capability or identity")
     return Response(body, media_type="application/json", headers={"Cache-Control": "no-store", "ETag": '"' + digest + '"'})
@@ -249,6 +253,8 @@ async def launch_diagnostic(project: str, run_id: str, attempt_id: str, digest: 
         if scheme.lower() != "bearer":
             raise ValueError()
         await run_in_threadpool(store.launch, project, run_id, attempt_id, digest, token)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
     except ValueError:
         raise HTTPException(status_code=401, detail="invalid Attempt launch capability or identity")
     body = bytearray()
@@ -259,6 +265,8 @@ async def launch_diagnostic(project: str, run_id: str, attempt_id: str, digest: 
     try:
         data = json.loads(body)
         return await run_in_threadpool(store.launch_report, project, run_id, attempt_id, digest, token, data)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
     except (ValueError, TypeError):
         raise HTTPException(status_code=422, detail="invalid launch diagnostic")
 

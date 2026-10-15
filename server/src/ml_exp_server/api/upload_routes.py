@@ -17,8 +17,10 @@ from ..container_execution import ContainerExecutionService
 from ..storage_service import StorageService
 from ..archive_limits import minimum_limit
 from ..data.remote_data_uploads import remote_uploads
+from ..application_errors import ApplicationError
 from .asset_routes import store, token
 from .container_routes import invoke
+from .errors import application_http_error
 
 router = APIRouter(prefix="/api")
 WORKER_UPLOAD_PATH = re.compile(r"^/api/attempt-uploads/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/attempt-[0-9]{3,}/(?:artifacts|checkpoint)(?:/upload\.[0-9a-f]{64}(?:/complete|/parts/[0-9]+)?)?$")
@@ -41,6 +43,8 @@ async def target(request, project, run=None, attempt=None, kind="asset"):
             value = await run_in_threadpool(service.objects.authorize, project, run, attempt, token(request))
             if kind == "checkpoint" and not value.get("checkpoint_upload"):
                 raise ValueError("checkpoint publication is not enabled")
+        except ApplicationError as error:
+            raise application_http_error(error) from error
         except ValueError:
             raise HTTPException(status_code=401, detail="invalid Attempt transfer capability") from None
         binding.update(run_id=run, attempt_id=attempt)

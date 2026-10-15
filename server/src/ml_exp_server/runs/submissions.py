@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import nullcontext
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from ml_exp_server.application import ApplicationError, ExperimentServerApplicat
 from ml_exp_server.runs.failures import evidence_digest
 from ..projects.code_identity import project_code_identity
 from ..runtime import ExperimentServerRuntime
+from ..deletion_state import RunFence
 from ..schemas import CampaignRevision, OperationScope, OperationScopeType
 
 
@@ -225,6 +227,11 @@ class ExperimentSubmissionService:
         self, project: str, run_id: str, *, max_gpu_hours: float,
         reason: str,
     ) -> dict[str, Any]:
+        root = getattr(self.runtime.config, "project_registry_root_path", None)
+        with RunFence(root()).guard(project, run_id) if callable(root) else nullcontext():
+            return self._prepare_first_attempt_live(project, run_id, max_gpu_hours=max_gpu_hours, reason=reason)
+
+    def _prepare_first_attempt_live(self, project, run_id, *, max_gpu_hours, reason):
         """Prepare a first-Attempt intent without authorizing or scheduling it."""
         with self._prepare_lock:
             try:

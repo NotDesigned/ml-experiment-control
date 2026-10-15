@@ -53,7 +53,7 @@ def admit_upload(registry, barrier, queue, digit):
     store = UploadStore(registry, {"local_storage_headroom_bytes": 0})
     barrier.wait(timeout=5)
     try:
-        store.create({"project": "demo", "kind": "artifacts"}, digit * 64, 600, None)
+        store.create({"project": "demo", "run_id": "run-" + digit, "attempt_id": "attempt-001", "kind": "artifacts"}, digit * 64, 600, None)
         queue.put("accepted")
     except CapacityError:
         queue.put("rejected")
@@ -77,7 +77,7 @@ def test_committed_parts_are_not_double_reserved_and_expired_promises_are_ignore
     free = [3000]
     monkeypatch.setattr("shutil.disk_usage", lambda _: SimpleNamespace(free=free[0]))
     uploads = UploadStore(tmp_path, {"upload_part_bytes": 1024, "local_storage_headroom_bytes": 0})
-    binding = {"project": "demo", "kind": "artifacts"}
+    binding = {"project": "demo", "run_id": "run-a", "attempt_id": "attempt-001", "kind": "artifacts"}
     value = uploads.create(binding, "a" * 64, 2048, None)
     part = tmp_path / "part"; part.write_bytes(b"a" * 1024)
     uploads.part(value["upload_id"], binding, 0, part, hashlib.sha256(b"a" * 1024).hexdigest(), 1024)

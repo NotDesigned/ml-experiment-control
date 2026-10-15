@@ -190,6 +190,11 @@ KEEP/release choice. It does not download again. Keep the results directory and
 `verification.json`; `ml-exp acknowledge --directory results/trial-001` performs
 the same local verification and ACK retry directly.
 
+ACK releases only the downloaded archive. Experiment records and backend
+checkpoint state remain. To remove an entire completed managed Run, use the
+separately enabled, reviewed [administrative deletion](resource-deletion.md)
+workflow; it can also remove result objects without a download ACK.
+
 Cancellation and retry use separately saved plans. The first command prepares an
 exact-Attempt Action for review; only the second explicit invocation executes it:
 

@@ -12,7 +12,10 @@ from ..tracking.tracking_contract import WandbOptions, WandbSettings
 from ..tracking.tracking_service import store_for, normalized_metric, backfill
 from ..records.store import RecordStore
 from ..wandb_exporter import default_entity
+from ..application_errors import ApplicationError
+from ..deletion_state import RunFence
 from .container_routes import invoke
+from .errors import application_http_error
 
 router = APIRouter(prefix="/api")
 RECORD_PATH = re.compile(r"^/api/record-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/attempt-[0-9]{3,}$")
@@ -77,6 +80,7 @@ async def record_transfer(project: str, run: str, attempt: str, request: Request
         if not capability.get("record_stream"):
             raise ValueError("record stream was not authorized")
         binding = store.binding(project, run)
+        RunFence(runtime.config.project_registry_root_path()).require_live(project, run)
         data = json.loads(body)
         if not isinstance(data, dict) or set(data) != {"records"} or not isinstance(data["records"], list) or not 1 <= len(data["records"]) <= 64:
             raise ValueError("invalid record batch")
@@ -99,5 +103,7 @@ async def record_transfer(project: str, run: str, attempt: str, request: Request
         scope = store.scope(project, run, attempt)
         sequence = await invoke(store.append, scope, events)
         return {"accepted": len(events), "last_sequence": sequence}
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=409, detail="record batch is invalid or conflicts with its frozen identity") from exc

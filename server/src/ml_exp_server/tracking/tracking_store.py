@@ -63,7 +63,7 @@ class TrackingStore(RecordStore):
     def pending(self):
         with self.connection() as conn:
             rows = conn.execute("SELECT s.* FROM scopes s JOIN runs r ON r.project=s.project AND r.run=s.run WHERE json_extract(r.route,'$.enabled')=1 AND ( confirmed < (SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=s.id) OR (confirmed>0 AND (display_version<2 OR display_confirmed<confirmed))) ORDER BY COALESCE(last_attempt_at,'')").fetchall()
-        return [dict(row) for row in rows]
+        return [dict(row) for row in rows if not self.is_deleted(row["project"], row["run"])]
 
     def outcome(self, scope, *, confirmed=None, error=None, display_version=None):
         with self.connection() as conn:

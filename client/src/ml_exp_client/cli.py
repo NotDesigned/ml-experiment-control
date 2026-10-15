@@ -17,6 +17,7 @@ from .api import Client, ClientError, _safe_error_json, _safe_error_text, acknow
 from .workflow import experiment, validate_dockerfile, report
 from .data_delivery import deliver_data
 from .operations import read_attempt, training_operation
+from .run_deletion import run_deletion
 from .status import run_status
 
 
@@ -138,6 +139,15 @@ def parser():
         confirmation.add_argument("--reconcile", action="store_true", help="observe the original uncertain Action; never resubmit")
     retry.add_argument("--max-gpu-hours", type=float, help="finite positive budget; required when first preparing")
     retry.add_argument("--new-attempt", help="optional exact new attempt-NNN identity")
+    deletion = commands.add_parser("delete", help="prepare permanent administrative deletion of one managed Run; review before --execute")
+    deletion.add_argument("--project", help="required when first preparing the deletion plan")
+    deletion.add_argument("--run", help="exact managed Run; required when first preparing")
+    deletion.add_argument("--reason", help="required administrative deletion reason")
+    deletion.add_argument("--state", type=Path, required=True, help="saved deletion Action; existing state is observed without replay")
+    deletion.add_argument("--action-id", help="attach the exact original Action after a lost preparation reply, for review")
+    deletion_confirmation = deletion.add_mutually_exclusive_group()
+    deletion_confirmation.add_argument("--execute", action="store_true", help="explicitly authorize permanent deletion of the reviewed saved targets")
+    deletion_confirmation.add_argument("--reconcile", action="store_true", help="resume observation of the original deletion Action")
     fetch = commands.add_parser("download", help="download exact-Attempt outputs and verify against archive")
     fetch.add_argument("--project", required=True)
     fetch.add_argument("--run", required=True)
@@ -212,6 +222,11 @@ def main(argv=None):
                 reconcile=args.reconcile, action_id=args.action_id,
                 max_gpu_hours=getattr(args, "max_gpu_hours", None),
                 new_attempt=getattr(args, "new_attempt", None))
+        elif args.command == "delete":
+            if "resource-deletion.v1" not in health.get("capabilities", []):
+                raise ClientError("server lacks resource-deletion.v1")
+            result = run_deletion(client, args.state, project=args.project, run=args.run,
+                reason=args.reason, execute=args.execute, reconcile=args.reconcile, action_id=args.action_id)
         elif args.command == "experiment":
             result = experiment(client, health, args.config, args.state, resume=args.resume,
                                 execute=args.execute, seconds=args.seconds, out=args.download_to,
@@ -377,6 +392,8 @@ def main(argv=None):
         if args.command == "execute" and result["status"] != "VERIFIED":
             return 2
         if args.command in {"cancel", "retry"} and args.execute and result["action"]["execution"]["status"] not in {"EXECUTING", "VERIFIED"}:
+            return 2
+        if args.command == "delete" and args.execute and not result["deleted"]:
             return 2
         if args.command == "watch" and result["run"]["scheduler_state"] != "SUCCEEDED":
             return 2

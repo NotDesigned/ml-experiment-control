@@ -24,6 +24,7 @@ IntentKind = Literal[
     "ARCHIVE_RUN",
     "ARCHIVE_ATTEMPT",
     "REBUILD_LOCAL_EVIDENCE",
+    "DELETE_RUN_RESOURCES",
 ]
 
 

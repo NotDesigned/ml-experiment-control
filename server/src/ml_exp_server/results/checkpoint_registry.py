@@ -9,6 +9,7 @@ from ..application_errors import ApplicationError
 from ..workers.persistent_state import CHECKPOINT_ID, document, digest
 from ..projects.source_imports import IDENTITY
 from ..storage import atomic_json, utc_now
+from ..deletion_state import RunFence
 
 
 def storage_scope(backend, project_root):
@@ -28,6 +29,10 @@ class CheckpointRegistry:
         return self.root / project / run / attempt
 
     def read(self, project, run, attempt, checkpoint_id):
+        with RunFence(self.root.parent).guard(project, run):
+            return self._read(project, run, attempt, checkpoint_id)
+
+    def _read(self, project, run, attempt, checkpoint_id):
         if not CHECKPOINT_ID.fullmatch(checkpoint_id):
             raise ValueError("invalid persistent checkpoint identity")
         path = self.directory(project, run, attempt) / (checkpoint_id + ".json")
@@ -40,8 +45,9 @@ class CheckpointRegistry:
         return value
 
     def list(self, project, run, attempt):
-        directory = self.directory(project, run, attempt)
-        return {"checkpoints": [self.read(project, run, attempt, path.stem) for path in sorted(directory.glob("checkpoint.*.json"))]}
+        with RunFence(self.root.parent).guard(project, run):
+            directory = self.directory(project, run, attempt)
+            return {"checkpoints": [self._read(project, run, attempt, path.stem) for path in sorted(directory.glob("checkpoint.*.json"))]}
 
     def receive(self, project, run, attempt, token, ready):
         self.objects.authorize(project, run, attempt, token)

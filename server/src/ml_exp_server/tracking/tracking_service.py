@@ -9,6 +9,7 @@ import threading
 from ..ingest.runscan import train_metric_records
 from .metric_contract import observations
 from ..storage import utc_now
+from ..application_errors import ApplicationError
 from .tracking_store import TrackingStore, digest
 from ..wandb_exporter import export, PublisherProcess
 from experiment_control.manifest import ExperimentStateStore
@@ -40,6 +41,8 @@ def preparation_record(runtime, value):
     if not route or not route["enabled"]:
         return
     store = store_for(runtime)
+    if store.is_deleted(value["project"], value["run_id"]):
+        return
     # Preparation and actual Attempts have distinct W&B runs. Failure to build
     # does not fabricate a GPU Attempt or a successful training record.
     project, run = value["project"], value["run_id"]
@@ -62,6 +65,8 @@ def observe(runtime, store):
     for path in (runtime.config.project_registry_root_path() / "experiment-preparations").glob("*/*.json"):
         preparation_record(runtime, json.loads(path.read_text()))
     for row in runtime.index.list_runs():
+        if store.is_deleted(row.project, row.run_id):
+            continue
         binding = store.binding(row.project, row.run_id)
         publication_run = row.run_id
         if binding is None or not binding["route"]["enabled"]:
@@ -159,7 +164,12 @@ class TrackingPublisher:
                 delay = 10 if awaiting_ack else min(300, 10 * 2 ** min(scope["failures"], 5))
                 if (datetime.now(timezone.utc) - last).total_seconds() < delay:
                     continue
-            export(self.store, scope, self.publisher)
+            try:
+                with self.store.run_guard(scope["project"], scope["run"]):
+                    export(self.store, scope, self.publisher)
+            except ApplicationError as error:
+                if error.code != "RUN_DELETED":
+                    raise
 
     def loop(self):
         while not self.stop.wait(10):

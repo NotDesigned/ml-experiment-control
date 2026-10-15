@@ -12,6 +12,7 @@ and acceptance reports belong in private operator configuration/evidence.
 4. [Metrics](metrics.md): units, completeness and scoring provenance.
 5. [W&B](wandb.md): optional per-Run routing and confirmed publication.
 6. [Recovery](recovery.md): diagnose a failed stage without duplicating work.
+7. [Administrative deletion](resource-deletion.md): review and delete a completed managed Run and its storage.
 
 ## Operator: provide the service
 

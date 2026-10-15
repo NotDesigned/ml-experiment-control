@@ -58,6 +58,8 @@ class ExperimentServerApplication(RunContext, RunEvidence, RunValidation, RunQue
     def _authorize_action_local(self, action_id: str, note: str = "") -> dict[str, Any]:
         try:
             return self.runtime.action_service.authorize(action_id, note)
+        except ApplicationError:
+            raise
         except FileNotFoundError as exc:
             raise ApplicationError("action not found", status_code=404,
                                    code="UNKNOWN_ACTION") from exc
@@ -81,6 +83,8 @@ class ExperimentServerApplication(RunContext, RunEvidence, RunValidation, RunQue
         """Durably claim an Action and return before slow controller work."""
         try:
             return self.runtime.action_service.begin_execute(action_id, confirmation)
+        except ApplicationError:
+            raise
         except FileNotFoundError as exc:
             raise ApplicationError(
                 "action not found", status_code=404, code="UNKNOWN_ACTION",
@@ -125,6 +129,8 @@ class ExperimentServerApplication(RunContext, RunEvidence, RunValidation, RunQue
             try:
                 action = self.runtime.action_store.snapshot(action_id)
                 result = self.runtime.action_service.reconcile(action_id)
+            except ApplicationError:
+                raise
             except FileNotFoundError as exc:
                 raise ApplicationError(
                     "action not found", status_code=404, code="UNKNOWN_ACTION",

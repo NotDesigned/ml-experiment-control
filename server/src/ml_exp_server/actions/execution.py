@@ -194,6 +194,11 @@ class ActionExecution:
             return {"status": "UNAVAILABLE", "reason": "Managed preparation binding or observation could not be verified", "error_class": type(error).__name__}
 
     def authorize(self, action_id: str, note: str) -> dict[str, Any]:
+        from ..runs.deletion_guards import action_guard
+        with action_guard(self, self.store.snapshot(action_id)):
+            return self._authorize_live(action_id, note)
+
+    def _authorize_live(self, action_id: str, note: str) -> dict[str, Any]:
         snapshot = self.store.snapshot(action_id)
         execution = snapshot["execution"]
         if not snapshot.get("ready") or execution.get("status") != "PREPARED":
@@ -224,6 +229,11 @@ class ActionExecution:
     def begin_execute(
         self, action_id: str, confirmation: str,
     ) -> tuple[dict[str, Any], PendingActionExecution | None]:
+        from ..runs.deletion_guards import action_guard
+        with action_guard(self, self.store.snapshot(action_id)):
+            return self._begin_execute_live(action_id, confirmation)
+
+    def _begin_execute_live(self, action_id, confirmation):
         """Claim an authorized Action without waiting for its slow executor.
 
         The claim is committed before this method returns.  A caller may safely
@@ -275,6 +285,11 @@ class ActionExecution:
         return started, pending
 
     def finish_execute(self, pending: PendingActionExecution) -> dict[str, Any]:
+        from ..runs.deletion_guards import action_guard
+        with action_guard(self, pending.plan):
+            return self._finish_execute_live(pending)
+
+    def _finish_execute_live(self, pending):
         """Complete one previously claimed Action."""
         snapshot = pending.plan
         execution = pending.execution
@@ -283,7 +298,26 @@ class ActionExecution:
             return self._execute_write(snapshot, execution)
         if dispatch.local_evidence_rebuild:
             return self._execute_local_evidence_rebuild(snapshot, execution)
+        if dispatch.resource_deletion:
+            return self._execute_resource_deletion(snapshot, execution)
         return self._execute_controller(snapshot, execution)
+
+    def _execute_resource_deletion(self, plan, execution):
+        if self.deletion_service is None:
+            raise ActionError("resource deletion service is unavailable")
+        try:
+            result = self.deletion_service.execute(plan)
+        except Exception as error:
+            # A destructive external effect may already have happened. Never
+            # advertise retrying a new deletion or expose credentials/paths.
+            from ..application_errors import ApplicationError
+            code = error.code if isinstance(error, ApplicationError) else "RUN_DELETION_RECONCILE_REQUIRED"
+            execution.update(status="RECONCILE_REQUIRED", finished_at=utc_now(), error=code,
+                             resolution="UNKNOWN_DO_NOT_RETRY", safe_to_retry=False, next_action="RECONCILE")
+        else:
+            execution.update(status="VERIFIED", finished_at=utc_now(), error=None, result=result,
+                             resolution="APPLIED", safe_to_retry=False, next_action="OBSERVE_RESULT")
+        return self.store.set_execution(plan["action_id"], execution, event="resource_deletion_" + execution["status"].lower())
 
     def execute(self, action_id: str, confirmation: str) -> dict[str, Any]:
         """Synchronous compatibility wrapper used outside the HTTP adapter."""

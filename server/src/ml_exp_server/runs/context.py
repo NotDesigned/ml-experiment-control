@@ -22,6 +22,12 @@ class RunContext:
             raise ApplicationError(str(exc).strip("'"), status_code=404,
                                    code="UNKNOWN_PROJECT") from exc
         kind = OperationScopeType(scope_type)
+        if kind in {OperationScopeType.RUN, OperationScopeType.ATTEMPT}:
+            from ..deletion_state import RunFence
+            root = getattr(getattr(self.runtime, "config", None), "project_registry_root_path", None)
+            if callable(root):
+                run_id = object_id.rsplit("::", 1)[0] if kind == OperationScopeType.ATTEMPT else object_id
+                RunFence(root()).require_observed_live(project_name, run_id)
         if kind == OperationScopeType.PROJECT:
             if object_id != project.project:
                 raise ApplicationError("project object_id must equal project",

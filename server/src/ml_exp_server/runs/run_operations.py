@@ -321,6 +321,8 @@ class RunOperations:
     ) -> dict[str, Any]:
         try:
             return self.runtime.action_service.prepare(scope, project, intent)
+        except ApplicationError:
+            raise
         except (RuntimeError, ValueError) as exc:
             raise ApplicationError(str(exc), code="ACTION_BLOCKED") from exc
 

@@ -60,6 +60,24 @@ when training completed.
 
 Optional W&B publication: [configuration and per-Run projects](../docs/wandb.md).
 
+## Delete a managed Run
+
+Administrative deletion includes all Attempts, experiment records, persistent
+checkpoints and retained result objects, including unacknowledged/`KEEP` archives.
+Prepare and review the exact targets before explicitly executing:
+
+```bash
+ml-exp delete --project my-study --run trial-001 \
+  --reason 'Remove this completed experiment' --state trial-001.deletion.json
+ml-exp delete --state trial-001.deletion.json --execute
+```
+
+The server must support `resource-deletion.v1` and enable administrative deletion.
+Active or uncertain Attempts and referenced checkpoints block deletion. Local
+downloads, shared assets (including uploaded checkpoint snapshots), original
+Action records, object receipts and W&B cloud records are retained. See the
+[deletion contract and interruption recovery](../docs/resource-deletion.md).
+
 ## Training metrics
 
 `ml-exp init source` includes a standalone `ml_exp_metrics.py` and a training

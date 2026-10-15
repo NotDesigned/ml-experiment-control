@@ -191,6 +191,7 @@ INTENT_SCOPES: dict[str, tuple[OperationScopeType, ...]] = {
     "ARCHIVE_RUN": (OperationScopeType.RUN,),
     "ARCHIVE_ATTEMPT": (OperationScopeType.ATTEMPT,),
     "REBUILD_LOCAL_EVIDENCE": (OperationScopeType.ATTEMPT,),
+    "DELETE_RUN_RESOURCES": (OperationScopeType.RUN,),
 }
 
 def intent_scope_error(kind: str, scope_type: OperationScopeType) -> str | None:

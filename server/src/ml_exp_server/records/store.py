@@ -13,6 +13,8 @@ from pathlib import Path
 import sqlite3
 import uuid
 from ..storage import utc_now
+from ..deletion_state import RunFence
+from ..application_errors import ApplicationError
 
 
 def encoded(value):
@@ -70,6 +72,10 @@ class RecordStore:
 
 
     def bind(self, project, run, route, config):
+        with self.run_guard(project, run, config=config):
+            return self._bind(project, run, route, config)
+
+    def _bind(self, project, run, route, config):
         with self.connection() as conn:
             conn.execute("INSERT OR IGNORE INTO runs VALUES (?,?,?,?)",
                          (project, run, encoded(route), encoded(config)))
@@ -85,6 +91,10 @@ class RecordStore:
 
 
     def scope(self, project, run, attempt):
+        with self.run_guard(project, run):
+            return self._scope(project, run, attempt)
+
+    def _scope(self, project, run, attempt):
         binding = self.binding(project, run)
         if binding is None:
             raise ValueError("Run records are not bound")
@@ -100,6 +110,11 @@ class RecordStore:
 
 
     def append(self, scope, events):
+        project, run, _ = json.loads(scope)
+        with self.run_guard(project, run):
+            return self._append(scope, events)
+
+    def _append(self, scope, events):
         # The whole batch and its export queue position commit together. An HTTP
         # retry acknowledges the original IDs, never logs a second observation.
         with self.connection() as conn:
@@ -121,6 +136,71 @@ class RecordStore:
                 conn.execute("INSERT INTO events VALUES (?,?,?,?,?)", (scope, seq, event_id, body, dedup))
             conn.execute("UPDATE scopes SET status='PENDING' WHERE confirmed<? AND error IS NULL AND status NOT IN ('LOCAL_ONLY','PENDING') AND id=?", (seq, scope))
         return seq
+
+    @staticmethod
+    def run_identities(run):
+        return (run, run + "--preparation", run + "--backfill")
+
+    def is_deleted(self, project, run):
+        fence = RunFence(self.root.parent)
+        return any(fence.is_deleted(project, name) for name in self._fence_names(project, run))
+
+    def _fence_names(self, project, run, config=None):
+        names = [run]
+        if config is None:
+            binding = self.binding(project, run)
+            config = binding["config"] if binding else {}
+        data = config.get("ml_expd", {})
+        kind, parent = data.get("record_type"), data.get("run_id")
+        if kind in {"preparation", "backfill"} and isinstance(parent, str) and run == parent + "--" + kind:
+            names.append(parent)
+        return names
+
+    @contextmanager
+    def run_guard(self, project, run, *, config=None):
+        fence = RunFence(self.root.parent)
+        names = self._fence_names(project, run, config)
+        with fence.observation_guard(project, names[0]):
+            for name in names[1:]:
+                fence.require_observed_live(project, name)
+            yield
+
+    def delete_run(self, project, run):
+        """Remove canonical local records after the permanent fence was committed."""
+        fence = RunFence(self.root.parent)
+        fence.path(project, run)
+        if not fence.is_deleted(project, run):
+            raise ApplicationError("Run deletion must be durably fenced first", code="RUN_DELETION_NOT_STARTED")
+        with self.connection() as conn:
+            rows = conn.execute("SELECT run,config FROM runs WHERE project=? AND run IN (?,?,?)",
+                                (project, *self.run_identities(run))).fetchall()
+        names = [run]
+        for row in rows:
+            if row["run"] != run and run in self._fence_names(project, row["run"], json.loads(row["config"]))[1:]:
+                names.append(row["run"])
+        # Preserve the proven publication identities too: after removing their
+        # binding, a late record must not recreate an orphan event stream.
+        with fence.exclusive():
+            for name in names[1:]:
+                fence.mark(project, name, {"publication_parent": run})
+        predicate = "project=? AND run IN (" + ",".join("?" for _ in names) + ")"
+        arguments = (project, *names)
+        scopes = []
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            scopes = [row["id"] for row in conn.execute(
+                "SELECT id FROM scopes WHERE " + predicate, arguments)]
+            for scope in scopes:
+                conn.execute("DELETE FROM events WHERE scope=?", (scope,))
+                conn.execute("DELETE FROM event_ids WHERE scope=?", (scope,))
+            conn.execute("DELETE FROM scopes WHERE " + predicate, arguments)
+            conn.execute("DELETE FROM runs WHERE " + predicate, arguments)
+            # Destination schemas contain no metric values. Cloud Runs remain,
+            # so their public names must stay bound to the same unit/protocol
+            # even when every local event using that schema has been deleted.
+        for scope in scopes:
+            self._display_cache.pop(scope, None)
+        return {"status": "DELETED", "scopes_removed": len(scopes)}
 
 
     def events(self, scope, *, after=0, limit=128):
