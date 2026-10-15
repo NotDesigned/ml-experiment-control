@@ -25,7 +25,8 @@ from ..container_execution import ContainerExecutionService, RunRequest, Dockerf
 from ..builds.builder_client import builder_request
 from ..projects.source_imports import SourceImportService
 from ..tracking.metric_contract import MetricSchema
-from .errors import application_http_error
+from .contract import ConfirmRequest
+from .errors import application_http_error, invoke
 
 
 router = APIRouter(prefix="/api")
@@ -36,11 +37,6 @@ class GitImportRequest(BaseModel):
     project: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
     url: str = Field(max_length=4096)
     commit: str = Field(pattern=r"^[0-9a-f]{40}$")
-
-
-class ConfirmRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    confirmation: str = Field(min_length=1, max_length=256)
 
 
 class DownloadedFile(BaseModel):
@@ -55,15 +51,6 @@ class DownloadAcknowledgement(BaseModel):
     archive_bytes: int = Field(strict=True, gt=0)
     files: dict[str, DownloadedFile] = Field(max_length=20000)
     release: bool = Field(default=True, strict=True)
-
-
-async def invoke(call, *args, **kwargs):
-    try:
-        return await run_in_threadpool(call, *args, **kwargs)
-    except ApplicationError as exc:
-        raise application_http_error(exc) from exc
-    except (KeyError, ValueError, OSError) as exc:
-        raise HTTPException(status_code=409, detail="operation is unavailable or its frozen identity is invalid") from exc
 
 
 @router.post("/source-imports/git")
@@ -217,7 +204,7 @@ async def artifact_transfer(project: str, run_id: str, attempt_id: str, request:
         raise application_http_error(exc) from exc
     except ValueError:
         raise HTTPException(status_code=401, detail="invalid Attempt upload capability")
-    from .asset_routes import receive
+    from .transfers import receive
     receipt = await receive(request, service, service.receive, project, run_id, attempt_id, token)
     return {"sha256": receipt["sha256"], "bytes": receipt["bytes"], "files": len(receipt["files"])}
 

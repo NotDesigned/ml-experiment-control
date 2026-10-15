@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from ml_exp_server import processes
-from ml_exp_server.processes import SubprocessRunner, run_process
+from experiment_control import runner as processes
+from experiment_control.runner import SubprocessRunner, run_process
 
 
 def test_runner_input_check_and_safe_launch_failure(tmp_path):
@@ -67,3 +67,14 @@ def test_timeout_with_already_gone_process_group_preserves_original_timeout(monk
     monkeypatch.setattr(processes.subprocess, "Popen", lambda *a, **kw: Gone())
     monkeypatch.setattr(processes.os, "killpg", lambda *a: (_ for _ in ()).throw(ProcessLookupError()))
     with pytest.raises(subprocess.TimeoutExpired): run_process(["child"], timeout=1)
+
+
+def test_process_capture_can_be_disabled_without_pipe_or_result_confusion():
+    result = run_process([sys.executable, "-c", "pass"], timeout=5, capture_output=False)
+    assert result.returncode == 0
+    assert result.stdout is None and result.stderr is None
+
+
+def test_runner_normalizes_argument_types_in_returned_identity(tmp_path):
+    result = SubprocessRunner().run([Path(sys.executable), "-c", "pass"])
+    assert result.args == (sys.executable, "-c", "pass")

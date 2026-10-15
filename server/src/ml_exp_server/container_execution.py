@@ -426,18 +426,25 @@ class ContainerExecutionService:
             config = self.runtime.config.container_execution.artifact_store_file
             assets = AssetStore(Path(config), self.runtime.config.project_registry_root_path())
             for binding in request.inputs:
-                asset = assets.read(project, binding.asset_id)
+                from .data.locations import for_backend
+                asset = for_backend(assets.read(project, binding.asset_id), selected_profile, project)
                 validate_script_asset(request, capability, asset)
                 inputs.append({**binding.model_dump(), "sha256": asset["sha256"],
                                "archive_bytes": asset["archive_bytes"], "files": asset["files"]})
                 if prepared_assets and binding.asset_id in prepared_assets:
                     validate_worker(request, bundle, capability, cache_required=True)
                     inputs[-1]["require_cached"] = True
-                if asset.get("remote_storage") == "desktop-builder" and selected_profile["backend"]["kind"] == "sensecore":
+                if asset.get("remote_storage") in {"desktop-builder", "sensecore-ccr"} and selected_profile["backend"]["kind"] == "sensecore":
                     if "data-cache-required.v1" not in bundle.get("capabilities", []):
                         raise ApplicationError("CCR data delivery requires a newly built runtime with data-cache-required.v1", code="CONTAINER_EXECUTION_BLOCKED")
                     from .data.data_delivery import DataDeliveryService
                     inputs[-1].update(require_cached=True, data_delivery=DataDeliveryService(self.runtime).ready_for(project, binding.asset_id, request.executor))
+                elif asset.get("remote_storage") == "wyd":
+                    from .backends.wyd import WydDataStager
+                    if WydDataStager(self.runtime).check(project, binding.asset_id, selected_profile)["status"] != "READY":
+                        raise ApplicationError("WYD input cache is unavailable; inspect the original upload", code="INPUT_NOT_READY")
+                    validate_worker(request, bundle, capability, cache_required=True)
+                    inputs[-1]["require_cached"] = True
             if len(json.dumps(inputs).encode()) > 32768:
                 raise ApplicationError("input manifests exceed the scheduler command limit", code="CONTAINER_EXECUTION_BLOCKED")
         source_id = bundle["spec"]["source_id"]
@@ -547,6 +554,9 @@ class ContainerExecutionService:
             if existing is None:
                 if preparation is not None and backend["kind"] == "sensecore" and capability["data"]["download_script"] == "before_job":
                     run["data_preparation_mode"] = "before_job"
+                    run["data_preparation_receipt_mode"] = "callback_v1"
+                    from .backends.sensecore_preparation import script_receipt_worker_sha256
+                    run["data_preparation_receipt_worker_sha256"] = script_receipt_worker_sha256()
                     run["data_preparation_cpu"] = json.loads(Path(self.runtime.config.container_execution.artifact_store_file).read_text())["data_delivery"]
                 run["records"] = {"enabled": "experiment-records.v1" in bundle.get("capabilities", [])}
                 run["tracking"] = dict(tracking or store_for(self.runtime).route(request.wandb, project))
@@ -556,6 +566,10 @@ class ContainerExecutionService:
                 previous_run = existing["runs"][0]
                 if "data_preparation_mode" in previous_run:
                     run["data_preparation_mode"] = previous_run["data_preparation_mode"]
+                if "data_preparation_receipt_mode" in previous_run:
+                    run["data_preparation_receipt_mode"] = previous_run["data_preparation_receipt_mode"]
+                if "data_preparation_receipt_worker_sha256" in previous_run:
+                    run["data_preparation_receipt_worker_sha256"] = previous_run["data_preparation_receipt_worker_sha256"]
                 if "data_preparation_cpu" in previous_run:
                     run["data_preparation_cpu"] = previous_run["data_preparation_cpu"]
                 if "records" in previous_run:

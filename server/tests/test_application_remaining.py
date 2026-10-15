@@ -741,4 +741,4 @@ def test_action_reconcile_refresh_policy_and_project_adapter_edges(monkeypatch):
 
     project_service = SimpleNamespace(unregister=lambda *args, **kwargs: "removed")
     value.project_service = project_service
-    assert value.project_unregister("demo") == "removed"
+    assert value.project_service.unregister("demo") == "removed"

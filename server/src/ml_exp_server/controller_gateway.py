@@ -25,7 +25,7 @@ from uuid import uuid4
 import yaml
 
 from experiment_control.runner import CommandRunner as CoreCommandRunner
-from .processes import SubprocessRunner, run_process
+from experiment_control.runner import SubprocessRunner, run_process
 from .controller_output import completed_result, timeout_result
 
 from .schemas import ResearchProject
@@ -68,7 +68,7 @@ class CommandRunner:
         """Execute a reviewed interpreter/cwd through already-open descriptors."""
         try:
             completed = run_process(
-                command, cwd=cwd, check=False, text=True, capture_output=True,
+                command, cwd=cwd, check=False, text=True, encoding="utf-8", errors="replace", capture_output=True,
                 timeout=timeout, env=env, pass_fds=pass_fds,
             )
         except subprocess.TimeoutExpired as exc:

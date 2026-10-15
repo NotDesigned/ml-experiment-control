@@ -31,7 +31,7 @@ additionally needs glibc/Bash; Alpine is unsuitable for that ACP payload.
 ## Publication and reuse
 
 The private image builder checks the caller's Unix peer UID. The daemon itself
-has no Docker socket permission. BuildKit is the only new-image publisher;
+has no Docker socket permission. BuildKit publishes training Runtime images;
 Skopeo verifies remote manifest/config digests against build metadata. Runs use
 the verified digest, not a mutable cache tag or local RepoDigests assertion.
 
@@ -69,15 +69,16 @@ Configure the root-owned builder with `docker_host` set to
 `unix:///run/ml-expd-desktop/docker.sock`, `publisher: buildkit`,
 `ephemeral_buildkit: true`, pinned `buildkit_image`, repository/auth and allowlist.
 **Remove local `build_storage_path` in remote mode.** Provision the pinned tool
-image on the desktop before probes, which use pull=never. Configure/provision the
-private data helper with `tools/provision_desktop_data.py --builder-config FILE`
-while uploads/builds are idle. It refuses unrelated containers/volumes and
-preserves its owned data volume. Match configured client-data part sizes.
+image on the desktop before probes, which use pull=never. New dataset uploads
+bypass Docker and the desktop: WYD receives parts over SSH, while SenseCore
+receives a streamed CCR data image. The old desktop data helper is retained only
+for historical assets/sessions; do not provision it for new input uploads.
 
 Source contexts are bounded gzip archives, sent using Docker's archive API,
 SHA/size checked and sealed on the desktop before BuildKit reads them across
 the private bridge. This avoids WAN BuildKit filesystem-session transfer.
-Scoped leases remove only that source context; dataset assets remain separate.
+Scoped leases remove only that source context. Historical desktop dataset assets
+remain separate and are not removed by build cleanup.
 A broken tunnel fails closed; reconcile uncertain publication before retrying.
 
 ## Capacity and progress

@@ -635,3 +635,24 @@ def test_wait_resource_validates_progress_before_reporting_or_sleeping(monkeypat
         wait_resource(Waiting(), "/api/submissions/saved", 60,
                       progress_validate=lambda value: bound_response(value, {"attempt_id": "attempt-001"}))
     assert calls == ["/api/submissions/saved", "/api/submissions/saved/progress"]
+
+
+def test_targeted_resume_before_submission_does_not_rematch_original_executor(configuration):
+    health = {'capabilities': [*HEALTH['capabilities'], 'target-backed-data-upload.v1']}
+    api = API()
+    path = configuration.with_name('state.json')
+    state = experiment(api, health, configuration, path)
+    # Model interruption before a scheduler submission response is saved while
+    # keeping the previously selected data target and original preparation.
+    state.pop('submission', None)
+    path.write_text(json.dumps(state))
+    api.calls.clear()
+    original = api.call
+    def no_rematch(endpoint, **kwargs):
+        if endpoint == '/api/executors/match':
+            pytest.fail('resume must use its frozen upload executor')
+        return original(endpoint, **kwargs)
+    api.call = no_rematch
+    restored = experiment(api, health, configuration, path, resume=True)
+    assert restored['upload_target'] == {'executor': 'gpu'}
+    assert not any(endpoint == '/api/executors/match' for endpoint, _ in api.calls)

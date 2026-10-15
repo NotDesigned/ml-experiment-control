@@ -6,12 +6,8 @@ import re
 import subprocess
 from typing import Any
 
-from experiment_control.redaction import redact_line
+from experiment_control.redaction import redact_line, sensitive_json_key
 
-_SECRET = re.compile(
-    r"(?i)(?:^|[_-])(?:secret|token|password|credential|access[_-]?key|"
-    r"api[_-]?key|proxy|authorization|cookie)(?:$|[_-])"
-)
 STDOUT_LOG_BYTES = 32 * 1024
 STDERR_LOG_BYTES = 64 * 1024
 _ENCODED_CONTENT = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{128,}={0,2}")
@@ -25,7 +21,7 @@ def redact(value: Any) -> Any:
     """Remove common credential shapes from controller results."""
     if isinstance(value, dict):
         return {
-            str(key): ("[REDACTED]" if _SECRET.search(str(key)) else redact(item))
+            str(key): ("[REDACTED]" if sensitive_json_key(str(key)) else redact(item))
             for key, item in value.items()
         }
     if isinstance(value, list):

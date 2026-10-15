@@ -49,21 +49,26 @@ flowchart LR
 The daemon freezes metadata and controls schedulers; it does not run training
 code. A private builder owns Docker and publication. In SSH desktop mode, actual
 build contexts/layers live on the desktop. Training runs inside backend containers.
+Dataset transfers use the API's global 1 GiB disk buffer, with durable per-part
+ACK before local removal: WYD writes directly to shared datapool; SenseCore streams
+an OCI data layer to CCR and copies it into NAS with a debug CPU job. The desktop
+is not on the new dataset path. Output archives still use object storage and a
+separate client-ACK lifecycle; total API/Garage disk usage is not capped at 1 GiB.
 
 ## Server code map
 
 | Concern | Main modules under `server/src/ml_exp_server/` |
 |---|---|
-| HTTP and auth | `api/boundary.py`: bearer/protocol checks and queue admission; `api/auth.py` loads the token; `api/contract.py` defines response models |
+| HTTP and auth | `api/boundary.py`: bearer/protocol checks and queue admission; `api/auth.py` loads the token; `api/contract.py` defines models; `api/errors.py` and `api/transfers.py` own shared transport boundaries |
 | Composition and lifetime | `api/app.py`: routes and app construction; `api/lifecycle.py`: lease, recovery, collector, execution owners and shutdown; `runtime.py`: domain services |
-| Projects and source identities | `projects/`: imports, revisions, registry, lifecycle and authored Runs |
-| Checked mutations | `application.py`, `actions/`, `runs/submissions.py`; controller planning in `actions/controller_planning.py`, subprocess execution in `controller_gateway.py` |
+| Projects and source identities | `projects/`: concrete import, revision, registry and lifecycle services; HTTP calls these services directly |
+| Checked mutations | `application.py`, `actions/`, `runs/submissions.py`; one first-submission intent in `runs/first_submission.py`; controller planning in `actions/controller_planning.py`, subprocess execution in `controller_gateway.py` |
 | Run queries and diagnosis | `runs/queries.py`, `evidence.py`, `validation.py`, `failures.py` |
 | Capability matching/preparation | `runs/executor_capabilities.py`, `experiment_preparation.py` |
 | Dispatch | `container_controller.py` → core `backends/` |
 | Observation | `collectord.py`, `ingest/`, `runs/terminal_snapshot.py`, `execution_progress.py`, `input_progress.py` |
 | Images | `image_builder.py`: builder daemon; `builds/builder_client.py`: private socket protocol and receipts; `dockerfile_build.py`, `builds/`: build context and execution |
-| Data | `data/`: assets, multipart upload, remote upload and delivery; `desktop_upload.py` is the standalone process entry |
+| Data | `data/`: target-bound assets, transfer buffer, WYD receiver/CCR upload and NAS delivery; `desktop_upload.py` serves historical desktop data |
 | Backend preparation/collection boundary | `backends/operations.py`; provider implementations in `wyd.py`, `sensecore_data.py`, `sensecore_preparation.py`, `sensecore_results.py`; shared CPU checks in `sensecore_cpu.py` |
 | Results/state | `results/`: artifact storage, download lifecycle, checkpoint registry and independent collection |
 | Administrative Run deletion | `runs/deletion.py`, `deletion_state.py`, `results/admin_deletion.py`, `backends/run_deletion.py`, `workers/delete_run.py`: reviewed Run purge, permanent write fence and exact backend/object deletion |
@@ -99,8 +104,17 @@ database and event identities; they are not two copies of experiment history.
 Archive publication imports verified metrics before allowing artifact release;
 releasing an acknowledged archive does not delete its registered observations.
 
-`ExperimentServerApplication` and `ActionService` remain stable facades. Their
-stateless operation classes group existing methods by responsibility and share
+`ExperimentServerApplication` and `ActionService` compose Run and Action operations.
+The unused Project lifecycle forwarding mixin is removed: routes call the existing
+concrete Project/source services. HTTP endpoints and durable Project formats stay
+unchanged. Shared upload and error helpers no longer import route modules.
+
+`runs/first_submission.py` is the single first-submission intent builder. Both the
+scoped operation and idempotent Submission resource use its exact source binding,
+Attempt selection and budget checks. The Submission service still owns its existing
+reuse lock and idempotency policy; Action authorization and execution stay separate.
+
+Stateless operation classes group existing methods by responsibility and share
 the facade's one runtime/store; they do not own separate mutable state or add
 another workflow engine. `actions/planning.py` owns preparation locks, idempotency,
 digests and saving the plan. `controller_planning.py` separates source binding,
@@ -119,6 +133,12 @@ rejects new reservations and retains the workspace lease until admitted handoffs
 and jobs finish. Automatic collection reserves capacity before consuming a retry.
 Experiment orchestration still waits synchronously for dependencies in its own
 lane; these lanes isolate pressure rather than implement a dependency scheduler.
+
+`ingest/legacy.py` contains read-only configuration guesses for historical
+identified project layouts. Managed container Runs use their own generic
+configuration and metric schema, without project-specific constants or inferred
+research roles. Freshness uses observation age; training throughput does not imply
+a fixed logging interval. Historical files are never rewritten by indexing.
 
 `runtime.py` initializes daemon services; the public **Runtime resource** denotes
 a code/environment image. `controller_gateway.py` is the project-controller
@@ -201,6 +221,11 @@ These files under `workers/` are injected into new images:
 - `data_copy_worker.py`: separate zero-GPU NAS dataset copy.
 - `result_worker.py`: recover exact-Attempt outputs without running training.
 
+`data_receiver.py` is a separate SSH-invoked WYD shared-storage receiver.
+`script_preparation.py` is a server-frozen SenseCore CPU wrapper: it runs a download
+script, revalidates its sealed NAS receipt, and reports through a narrow HTTPS
+capability. It is not injected into historical training images.
+
 Worker fingerprints participate in image identity. Updating server source does
 not change workers in existing images. Backend implementations are core
 `backends/wyd.py`, `sensecore.py`, `sensecore_rest.py` and development `local.py`.
@@ -274,9 +299,9 @@ claim a complete dynamic-plugin interface.
 
 Public CLI/process entries remain at the package root because service units and
 frozen project controllers reference them. Internal modules have one canonical
-domain location, with no old-path forwarding modules. Worker basenames and
-injected contents remain unchanged; recipe changes affect future Runtime
-identities, never existing images or Run manifests.
+domain location, with no old-path forwarding modules. Shared process execution
+uses the core runner's explicit process-group mode where required. Worker/recipe
+changes affect future identities, never existing images or Run manifests.
 
 Programs live in `/root/ml-expd`; config in `/etc/ml-expd`; state in
 `/var/lib/ml-expd` and configured project/builder roots. Backend storage and

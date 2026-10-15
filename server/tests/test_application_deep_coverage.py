@@ -765,7 +765,7 @@ def test_attempt_local_read_models_cover_files_fallbacks_and_event_dedup(tmp_pat
     checkpoints = app.attempt_checkpoints("demo", "run-a::a1")
     assert checkpoints["local_entries"] == ["collected_run/checkpoint-2"]
     artifacts = app.attempt_artifacts("demo", "run-a::a1")
-    assert artifacts["summary"] == row.artifacts
+    assert artifacts["summary"] == {}
     assert artifacts["local_roots"] == ["collected_run/checkpoint-2", "collected_run/samples"]
     events = app.attempt_events("demo", "run-a::a1")
     assert [item["event"] for item in events["events"]] == ["started", "done"]

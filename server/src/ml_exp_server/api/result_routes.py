@@ -10,8 +10,8 @@ from ..results.result_collection import ResultCollectionService
 from ..application_errors import ApplicationError
 from ..execution_queue import admitted_handoff
 from .errors import application_http_error
-from .container_routes import invoke
-from .asset_routes import token
+from .errors import invoke
+from .transfers import token
 
 router = APIRouter(prefix="/api")
 RESULT_PATH = re.compile(r"^/api/result-ready-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/attempt-[0-9]{3,}$")

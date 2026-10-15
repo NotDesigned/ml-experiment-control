@@ -3,92 +3,27 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
-import shutil
-import tempfile
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Request
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse, StreamingResponse
 
 from ..results.artifacts import ArtifactService
-from ..container_execution import ContainerExecutionService
 from ..data.data_assets import AssetStore
 from ..results.checkpoint_registry import CheckpointRegistry
 from ..workers.persistent_state import MANIFEST_LIMIT
-from ..archive_limits import exceeds
 from ..application_errors import ApplicationError
 from .errors import application_http_error
-from .container_routes import invoke
+from .errors import invoke
+from .transfers import receive, store, token
 
 router = APIRouter(prefix="/api")
-
-
-def store(request):
-    runtime = request.app.state.runtime
-    config = runtime.config.container_execution.artifact_store_file
-    if not config:
-        raise HTTPException(status_code=404, detail="data asset storage is not configured")
-    return AssetStore(Path(config), runtime.config.project_registry_root_path())
-
-
-async def receive(request, service, call, *args):
-    raw_size = request.headers.get("Content-Length")
-    try:
-        expected_size = int(raw_size) if raw_size is not None else 0
-        if expected_size < 0:
-            raise ValueError()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="invalid Content-Length") from None
-    if exceeds(expected_size, service.limit):
-        raise HTTPException(status_code=413, detail="data archive exceeds upload limit")
-    objects = getattr(service, "objects", service)
-    reservation = objects.capacity.reserve(3 * expected_size)
-    lease = await invoke(reservation.__enter__)
-    try:
-        return await receive_body(request, service, call, args, lease, expected_size)
-    finally:
-        await run_in_threadpool(reservation.__exit__, None, None, None)
-
-
-async def receive_body(request, service, call, args, lease, expected_size):
-    size = 0
-    with tempfile.TemporaryFile(dir=service.root) as stream:
-        async for chunk in request.stream():
-            size += len(chunk)
-            if exceeds(size, service.limit):
-                raise HTTPException(status_code=413, detail="data archive exceeds upload limit")
-            if not expected_size or size > expected_size:
-                await invoke(lease.resize, 3 * size)
-            stream.write(chunk)
-        stream.seek(0)
-        return await invoke(call, *args, stream, size)
-
-
-def token(request):
-    scheme, _, value = request.headers.get("Authorization", "").partition(" ")
-    if scheme.lower() != "bearer" or not value:
-        raise HTTPException(status_code=401, detail="invalid Attempt transfer capability")
-    return value
 
 
 @router.get("/storage-limits")
 async def limits(request: Request):
     return await invoke(store(request).limits)
-
-
-@router.post("/assets/archive")
-async def upload_asset(request: Request,
-                       project: str = Query(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"),
-                       sha256: str = Query(pattern=r"^[0-9a-f]{64}$")):
-    runtime = request.app.state.runtime
-    await invoke(ContainerExecutionService(runtime).require_enabled)
-    await invoke(runtime.project, project)
-    service = store(request)
-    if service.objects.config.get("data_upload_storage") == "desktop-builder":
-        raise HTTPException(status_code=409, detail="desktop data uploads require the resumable asset-uploads endpoints")
-    # The archive's content digest is the idempotency key.
-    return await receive(request, service, lambda p, data, size: service.receive(p, data, sha256, size), project)
 
 
 @router.get("/projects/{project}/assets")
@@ -117,6 +52,10 @@ async def asset_archive(project: str, asset_id: str, request: Request):
 @router.get("/projects/{project}/assets/{asset_id}/download")
 async def asset_download_link(project: str, asset_id: str, request: Request):
     service = store(request)
+    asset = await invoke(service.read, project, asset_id)
+    if asset.get("remote_storage") in {"desktop-builder", "wyd", "sensecore-ccr"}:
+        # Report the asset's frozen storage contract even without an S3 endpoint.
+        await invoke(service.download, project, asset_id)
     if not service.objects.config.get("public_endpoint"):
         raise HTTPException(status_code=404, detail="direct downloads are not configured")
     return JSONResponse(await invoke(service.download, project, asset_id), headers={"Cache-Control": "no-store"})

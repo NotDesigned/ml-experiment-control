@@ -43,7 +43,7 @@ def test_real_http_download_hashes_files_and_reuses_without_network(tmp_path, mo
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
     try:
         workspace = tmp_path / "source"
-        spec = definition(workspace, "import os, sys, urllib.request\nfrom pathlib import Path\nassert 'OUTPUT_DIR' not in os.environ\nassert not any(k.startswith('ML_EXPD_') for k in os.environ)\nPath(os.environ['DATA_DIR'], 'tokens.bin').write_bytes(urllib.request.urlopen(sys.argv[1]).read())\n",
+        spec = definition(workspace, "import os, sys, urllib.request\nfrom pathlib import Path\nassert 'OUTPUT_DIR' not in os.environ\nassert os.environ['INPUTS_DIR'] == '/inputs'\nassert not any(k.startswith('ML_EXPD_') for k in os.environ)\nPath(os.environ['DATA_DIR'], 'tokens.bin').write_bytes(urllib.request.urlopen(sys.argv[1]).read())\n",
                           arguments=[f"http://127.0.0.1:{server.server_port}/dataset"], env={"DATA_VERSION": "1"})
         monkeypatch.setenv("ML_EXPD_UPLOAD_TOKEN", "do-not-pass")
         monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "outputs"))

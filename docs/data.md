@@ -4,42 +4,60 @@ Source contains code/Dockerfile. Dataset assets are separate. Complete recovery
 state belongs in persistent backend storage; selected weights and reports are
 outputs. Do not include datasets or checkpoint archives in source uploads.
 
-## Upload once, reference by identity
+## Upload once, select backend storage
 
 ```bash
-ml-exp asset-upload --project my-study --directory ./data --state data.state.json
-ml-exp asset-upload --project my-study --directory ./data --state data.state.json --resume
+ml-exp asset-upload --project my-study --executor wyd-l40s \
+  --directory ./data --state data.state.json
+ml-exp asset-upload --project my-study --executor wyd-l40s \
+  --directory ./data --state data.state.json --resume
 ml-exp assets --project my-study
 ```
 
-Create the project first by source import/Runtime preparation. Resume requires
-unchanged data: the client recreates a deterministic tar.gz and checks its hash.
-It streams to a local temporary file, so the client needs packing disk space.
-Bind the returned asset to a Run with
+Create the project first by source import/Runtime preparation. A new upload
+requires `--executor`; use an ID from `/api/executors`. Resume uses the saved
+session and its frozen storage target, not a newly resolved backend profile.
+Data must be unchanged: the client recreates a deterministic tar.gz and checks
+its hash. Packing uses a client-side temporary file, so the client needs that
+disk space. Bind the returned asset with
 `{"inputs":[{"asset_id":"asset.ACTUAL_HASH","mount_path":"/inputs/data"}]}`.
-`ml-exp experiment` also accepts a local `directory` and uploads automatically.
+`ml-exp experiment` accepts a local `directory`, selects the executor first,
+and performs the upload and required delivery automatically.
 
-An uploaded asset is READY only after the whole archive, extracted regular files
-and publication have passed validation. On `desktop-data-upload.v1` deployments,
-client data parts pass through bounded API memory into the desktop's private
-staging helper. The API host retains metadata, not a full dataset copy. The
-desktop helper uses separate code/data volumes and no public port. Other
-deployments can use the server/object-store transfer path.
+The API has one global **1 GiB disk transfer buffer**, shared by input and worker
+multipart transfers. It accounts conservatively for part bytes, sidecars and
+filesystem blocks. A part is sealed by SHA256 and fsync, forwarded to its frozen
+destination, then removed only after a durable matching ACK. Lost ACKs retain
+resumable bytes; explicit POST create/complete can confirm the original part
+again. A full buffer returns HTTP 503 `TRANSFER_BUFFER_BUSY` with `Retry-After`.
+It never stages the complete new dataset archive on the API host or desktop.
 
 ## Backend delivery
 
-| Backend | Uploaded data path |
+| Backend | New uploaded data path |
 |---|---|
-| WYD | Worker fetches/reuses a verified cache on shared `/datapool`, then exposes the configured `/inputs/...` path |
-| SenseCore desktop assets | Build/push a separate data-only CCR image; zero-GPU ACP copies/verifies it into NAS before creating the GPU Run |
-| Historical object-store assets | Worker fetches/verifies its cache through an exact-Attempt input capability |
+| WYD | Client → API part buffer → SSH receiver on shared `/datapool`; archive and files are verified there before use |
+| SenseCore | Client → API part buffer → CCR data-image layer; zero-GPU debug ACP copies and verifies it on NAS before GPU submission |
 
-SenseCore's data image is a delivery vehicle, not the training Runtime. CPU copy
-uses the configured debug cluster, 2CPU/4GiB/0GPU spec and RESERVED quota in the
-current deployment. GPU jobs exclude debug clusters. The common worker verifies
-the NAS cache before training; dataset files are not copied into final outputs.
-`ml-exp experiment` handles desktop delivery automatically, or use
-`asset-upload … --executor SENSECORE_EXECUTOR`.
+WYD uses the executor's `storage_root` beneath shared datapool. Compute nodes
+need no external data download. The immutable asset records whole-archive and
+regular-file hashes plus its storage scope. Reuse requires the same bytes and
+compatible backend storage; a missing or corrupt cache fails before training.
+
+SenseCore's data image is a delivery vehicle, separate from the training Runtime.
+The API streams it through registry HTTP requests using an operator-provisioned
+base; Docker and the desktop builder are not involved. Asset publication records
+`verification=PENDING_BACKEND`: a published CCR image alone does not prove NAS
+readiness. The CPU copy uses the configured debug cluster, 2CPU/4GiB/0GPU and
+RESERVED quota. GPU jobs exclude debug clusters. Training verifies the sealed
+NAS cache again; dataset files are excluded from final outputs.
+
+New target-backed assets expose metadata and backend references. Their API
+`/archive` and `/download` return typed HTTP 404 `DIRECT_DOWNLOAD_UNAVAILABLE`;
+there is no client dataset-download command. Keep the original data or use its
+backend storage reference. Historical object-store and desktop assets retain
+read/reuse behavior at their original locations; new uploads never select those
+old storage paths.
 
 Delivery routes:
 
@@ -91,10 +109,25 @@ verifies regular-file SHA256 and publishes atomic readiness. Reuse rehashes;
 partial/corrupt cache fails without silent redownload. Preparation metadata is
 exported as `data-preparation.json`, even with custom output patterns.
 
-This script runs inside the allocated training job and its wall-time/GPU budget;
-it is not a separate CPU downloader. SenseCore compute connectivity may differ
-from the debug cluster, so direct Internet download must be validated. Desktop
-CCR delivery avoids making GPU training depend on a large external download.
+New SenseCore Runs prepare scripts before GPU submission on the configured
+debug CPU pool (2CPU/4GiB/0GPU, RESERVED quota). The wrapper rereads the sealed NAS
+receipt and verifies file SHA256, source/script/image and frozen CPU-profile
+identities. It reports readiness through a separate short-lived HTTPS capability,
+without depending on provider stdout indexing. A callback arriving before the
+create response is saved as pending; READY requires the original confirmed job
+UID. The wrapper starts Python in isolated mode without site initialization,
+then removes the capability before executing the user's download script. It
+does not grant access to other Runs or the administrative API.
+Data readiness is separate from the CPU job's final state: a verified receipt
+can establish READY even if its acknowledgement later fails and the original
+CPU job exits unsuccessfully. Its observed state, exit code and prior diagnostic
+remain visible; the platform does not relabel that job as successful.
+
+Historical Runs retain their frozen inside-job or stdout-receipt behavior.
+Reconciliation observes the original job; it never silently creates a replacement.
+WYD prepares scripts on its Internet-connected gateway before GPU submission.
+External source connectivity still needs validation on the chosen preparation
+node; a verified backend cache avoids repeating that download during training.
 The data-preparation receipt has 20,000-file/8-MiB bounds and requires a Runtime
 with `data-preparation.v1`. Backend disk/quota still applies.
 
@@ -102,8 +135,13 @@ with `data-preparation.v1`. Backend disk/quota still applies.
 
 For client data, the root is `/api/projects/P/asset-uploads`:
 
-1. POST `{"sha256":"whole archive hash","bytes":N}` returns session ID,
-   negotiated `part_bytes`, `part_count`, confirmed `parts`, status and expiry.
+1. POST `{"sha256":"whole archive hash","bytes":N,"target":{"executor":"ID"},
+   "files":[{"path":"train.bin","bytes":M,"sha256":"file hash"}],
+   "transport_sha256":"payload layer hash"}` returns session ID, negotiated
+   `part_bytes`, `part_count`, confirmed `parts`, status and expiry. The standard
+   client computes the inventory and transport hash required by SenseCore;
+   they are not arbitrary labels. See `client/archives.py::data_transport_identity` when integrating
+   another client.
 2. GET `/{upload_id}` before resuming or after losing an acknowledgement.
 3. PUT `/{upload_id}/parts/{number}?sha256=PART_HASH` sends exact raw part bytes.
 4. POST `/{upload_id}/complete` validates/publishes the complete asset.
@@ -112,8 +150,9 @@ For client data, the root is `/api/projects/P/asset-uploads`:
 Part numbers start at **0**. Identical duplicate parts are idempotent; different
 bytes cannot replace a confirmed part. Only the final part may be shorter.
 Missing parts/conflicts yield 409; wrong bytes/hash 400; size/part limits 413;
-expiry 410; staging capacity failures 507. Desktop RPC transport failures can
-return typed 503 errors. Keep response bodies and IDs for diagnosis, never tokens.
+expiry 410; disk admission failures 507; transfer-buffer saturation or backend
+transport failures return typed 503 errors. Keep response bodies and IDs for
+diagnosis, never tokens.
 
 Workers use `/api/attempt-uploads/P/R/A/{artifacts|checkpoint}` with the same
 create/read/parts/complete/abort sequence and narrow Attempt credentials.
@@ -129,30 +168,40 @@ remains in code. An operator can still set positive byte quotas; null means no
 configured cap, not infinite storage. Some protocol-2 limit fields use a large
 integer for compatibility; `configured_byte_limits` disambiguates them.
 
-Defaults: 16-MiB parts, 65,536 parts, 24-hour unfinished-session TTL and 20,000
-asset files. The part count implies at most 1 TiB at 16 MiB, or 64 GiB at the
-1-MiB size used by the desktop deployment. Expanded bytes/single files have their
-own optional quota and real disk constraints. Source retains its smaller limits.
+Default part policy is 16 MiB with at most 65,536 parts, a 24-hour unfinished
+session TTL and 20,000 asset files. SenseCore registry upload defaults to 1 MiB
+when `upload_part_bytes` is absent; configure it explicitly for consistent policy.
+The negotiated session is authoritative. The part count implies a 1 TiB archive
+at 16 MiB or 64 GiB at 1 MiB. Expanded bytes/single files have independent optional
+quotas and backend disk constraints. Source retains its smaller limits.
 
-Completed publication removes its own part files and retains the journal.
-Published desktop archives, NAS datasets, registry images and outputs have no
-automatic retention cleanup. Worker outputs still use server/object-store
-storage; moving client data staging to the desktop did not move that path.
-Direct signed output downloads bypass ML-Expd staging; a local object store can
-still use the same physical server's disk/network. It is not an off-host backup.
+The **1 GiB limit covers the transfer buffer only**. It does not bound total
+server disk: source snapshots, journals, result packaging/recovery and the local
+Garage object store still occupy separate space. Outputs continue to use
+server/object-store storage. A verified client download with release enabled
+permits archive release on the next maintenance cycle without a 24-hour delay;
+a GET alone is not an ACK. KEEP/unacknowledged outputs remain, and Garage physical
+reclamation is asynchronous. Metrics and persistent checkpoints survive release.
 
-## WYD preparation without compute-node internet
+Confirmed parts are removed after their durable destination ACK; unconfirmed
+sealed bytes are retained for reconciliation. Session journals preserve identity.
+Maintenance prunes expired unfinished local multipart staging; it does not
+pretend an uncertain remote write was acknowledged. Backend datasets, NAS
+checkpoint generations and registry images have separate retention
+and no automatic scientific-data deletion. Direct signed output downloads bypass
+API staging, but a same-host Garage still consumes this server's disk.
 
-The one-config server workflow prepares desktop assets through SSH into shared
-`/datapool` before GPU submission. API memory is bounded; archive staging and
-unpacking use backend disk. The helper has a 1800-second total transfer/validation
-budget, separate from the GPU walltime. A verified shared cache is frozen as a
-required input. Corruption fails closed; uncertain transfers are never repeated
-automatically. Existing low-level/historical Runs keep their original HTTP worker
-path. See [backend preparation](backends.md).
+## WYD without compute-node Internet
 
-On WYD executors configured with an API TCP relay, download-script preparation
-runs on the connected SSH gateway in the same runtime SIF before GPU allocation.
-Training verifies and reuses the shared `data-preparations` cache; it never
-reruns the script if the prepared cache is missing. See
+New uploads already reside on shared datapool before Run preparation. Dataset
+verification uses the connected SSH gateway and backend disk, not a GPU worker's
+Internet access. The preparation helper has its own bounded validation timeout,
+separate from GPU walltime. Existing frozen low-level Runs retain their original
+HTTP worker path; an API upgrade does not rewrite their inputs.
+
+For relay-configured WYD executors, download scripts run on the connected gateway
+in the same Runtime SIF before GPU allocation. Training verifies and reuses the
+shared `data-preparations` cache; it never reruns a missing preparation script on
+an offline node. API checkpoint registration, metrics and result upload can use
+the fixed TLS-preserving gateway relay. See
 [WYD offline compute nodes](backends.md#wyd-compute-nodes-without-internet-access).

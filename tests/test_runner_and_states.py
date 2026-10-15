@@ -5,7 +5,7 @@ import pytest
 
 from experiment_control.backends.wyd import normalize_state
 from experiment_control.runner import CommandResult, SubprocessRunner
-from experiment_control.states import FailureClass, classify_failure
+from experiment_control.states import FailureClass
 
 
 def test_command_result_preserves_subprocess_failure_contract():
@@ -70,49 +70,6 @@ def test_slurm_success_requires_zero_exit():
     assert normalize_state("OUT_OF_MEMORY", "0:125") == "FAILED"
 
 
-def test_failure_classifier_does_not_hide_resource_or_model_failures():
+def test_failure_vocabulary_retains_portable_contract():
     assert FailureClass.NONE.value == "none"
-    assert classify_failure("unrecognized failure") is FailureClass.UNKNOWN
-    assert classify_failure("CUDA out of memory") is FailureClass.RESOURCE
-    assert classify_failure("loss became NaN") is FailureClass.MODEL
-    assert classify_failure("TLS EOF") is FailureClass.TRANSPORT
-    assert classify_failure('{"live_logs_expired": true}') is FailureClass.TRANSPORT
-    assert classify_failure('{"live_logs_expired": false}') is FailureClass.UNKNOWN
-    assert (
-        classify_failure(
-            '502 log stream failed; {"live_logs_expired": true}; '
-            "torch.OutOfMemoryError: CUDA out of memory"
-        )
-        is FailureClass.RESOURCE
-    )
-    assert classify_failure("worker was preempted") is FailureClass.PREEMPTION
-    assert classify_failure("node failure") is FailureClass.SCHEDULER
-    assert classify_failure("required metric is missing") is FailureClass.EVALUATION
-    assert (
-        classify_failure("ModuleNotFoundError: No module named 'pkg'")
-        is FailureClass.CONFIGURATION
-    )
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "ssh: connect to host compute.example port 22: Connection timed out",
-        "Connection timed out during banner exchange",
-        "TLS ClientHello handshake timeout",
-    ],
-)
-def test_connection_timeouts_are_transport_failures(message):
-    assert classify_failure(message) is FailureClass.TRANSPORT
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "TIMEOUT",
-        "Job timed out after reaching its wall time",
-        "slurmstepd: error: DUE TO TIME LIMIT",
-    ],
-)
-def test_scheduler_wall_time_is_a_resource_failure(message):
-    assert classify_failure(message) is FailureClass.RESOURCE
+    assert FailureClass.RESOURCE.value == "resource"

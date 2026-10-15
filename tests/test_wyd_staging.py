@@ -259,3 +259,19 @@ def test_private_failure_log_uses_current_pull_credentials(tmp_path, capsys):
     stderr = capsys.readouterr().err
     assert secret not in stderr and "FATAL: registry refused <redacted>" in stderr
     assert secret not in " ".join(fake.commands[-1])
+
+
+@pytest.mark.parametrize('credentials', [{'UNREVIEWED_ENVIRONMENT': 'fake-value'}, ['APPTAINER_DOCKER_PASSWORD']])
+def test_oci_launcher_rejects_unreviewed_credentials_under_python_optimization(tmp_path, credentials):
+    import sys
+    fake = QueueRunner([CommandResult((), 0), CommandResult((), 0)])
+    injected = replace(services(tmp_path, fake), oci_pull_environment=lambda: {'APPTAINER_DOCKER_PASSWORD': 'fake-password'})
+    run = slurm_run()
+    run['backend']['oci_image'] = 'registry@' + run['image_id']
+    WydSlurmBackend(injected)._stage_oci_image(run)
+    launcher = shlex.split(fake.commands[-1][-1])[2]
+    result = subprocess.run([sys.executable, '-O', '-c', launcher, 'must-not-execute'],
+        input=json.dumps(credentials), text=True, capture_output=True, timeout=5)
+    assert result.returncode != 0
+    assert 'unexpected OCI credential fields' in result.stderr
+    assert 'FileNotFoundError' not in result.stderr

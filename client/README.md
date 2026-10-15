@@ -39,6 +39,22 @@ Checkpoint storage and experiment metadata remain separate. Keep your local
 results; see [retention and recovery](../docs/recovery.md#download-confirmation-and-server-storage).
 See [development](../docs/development.md) for independent build/tests.
 
+## Data upload
+
+New 1.0 servers require an executor for independent data upload:
+
+```bash
+ml-exp asset-upload --project my-study --executor wyd-l40s \
+  --directory ./data --state data.state.json
+# Repeat with --resume after an interrupted transfer, keeping the same directory.
+```
+
+The one-config `experiment` command selects its executor before uploading local
+inputs. WYD stores data on shared datapool; SenseCore streams a data image to CCR
+and prepares NAS before GPU submission. No desktop dataset staging is involved.
+Keep the original dataset: target-backed asset archive/download routes are
+unavailable. See [data and limits](../docs/data.md) and [1.0 migration](../docs/migration-1.0.md).
+
 ## Observe an experiment
 
 ```bash

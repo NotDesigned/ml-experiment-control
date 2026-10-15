@@ -25,6 +25,15 @@ def policy(stored):
 
 
 def begin(client, data, endpoint='/api/projects/demo/asset-uploads', **kwargs):
+    if endpoint == '/api/projects/demo/asset-uploads':
+        # Seed the pre-1.0 local session format; HTTP still resumes it against
+        # its saved binding. New targeted sessions have their own API tests.
+        from ml_exp_server.data.data_assets import AssetStore
+        runtime = client.app.state.runtime
+        registry = runtime.config.project_registry_root_path()
+        assets = AssetStore(Path(runtime.config.container_execution.artifact_store_file), registry)
+        return UploadStore(registry, assets.objects.config).create(
+            {'project': 'demo', 'kind': 'asset'}, hashlib.sha256(data).hexdigest(), len(data), assets.limit)
     response = client.post(endpoint, json={'sha256':hashlib.sha256(data).hexdigest(),'bytes':len(data)}, **kwargs)
     assert response.status_code == 200, response.text
     return response.json()
@@ -130,7 +139,9 @@ def test_checkpoint_opt_in_limits_and_wrong_binding(client, stored, monkeypatch)
     value=begin(client,data)
     upload=UploadStore(client.app.state.runtime.config.project_registry_root_path(),json.loads(stored[0].read_text()))
     with pytest.raises(ApplicationError):upload.read(value['upload_id'],{'project':'other','kind':'asset'})
-    assert client.post('/api/projects/demo/asset-uploads',json={'sha256':'a'*64,'bytes':4*1024**3+1}).status_code==413
+    with pytest.raises(ApplicationError) as error:
+        upload.create({'project':'demo','kind':'asset'}, 'a'*64, 4*1024**3+1, 4*1024**3)
+    assert error.value.status_code == 413
     assert client.post('/api/projects/demo/asset-uploads',json={'sha256':'invalid','bytes':100}).status_code==422
 
 
@@ -169,6 +180,9 @@ def test_upload_journal_rejects_corruption_and_cleans_owned_expired_staging(tmp_
     record=json.loads((directory/'upload.json').read_text());record['sha256']='a'*64;atomic_json(directory/'upload.json',record)
     with pytest.raises(ValueError,match='archive SHA'):store.complete(value['upload_id'],binding,publish,0)
     record['expires_at']='2000-01-01T00:00:00+00:00';atomic_json(directory/'upload.json',record)
+    store.prune()
+    assert (directory/'parts').exists()  # Unknown content identity never authorizes cleanup.
+    record['sha256']=hashlib.sha256(data).hexdigest();atomic_json(directory/'upload.json',record)
     (store.root/'upload.invalid').mkdir()
     (store.root/('upload.'+'c'*64)).mkdir()
     with (store.root/(value['upload_id']+'.lock')).open('a') as lock:

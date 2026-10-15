@@ -19,7 +19,7 @@ class UploadClient:
 
     def call(self, path, **kwargs):
         self.requests.append((path,kwargs))
-        if path.endswith('/asset-uploads'):
+        if path.endswith('/asset-uploads') or path.endswith('/upload.'+'a'*64):
             value={'upload_id':'upload.'+'a'*64,'status':'UPLOADING','part_bytes':1024,
                    'part_count':(len(self.data)+1023)//1024,'sha256':hashlib.sha256(self.data).hexdigest(),
                    'bytes':len(self.data),'parts':dict(self.parts)}

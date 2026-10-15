@@ -48,6 +48,8 @@ def test_redact_lines_structurally_redacts_evidence_secrets() -> None:
         "submission_token": "alpha",
         "refreshToken": "bravo",
         "WANDB_API_KEY": "echo",
+        "APIKey": "compact-api-secret",
+        "privateKey": "compact-private-secret",
         "nested": {
             "access_key_secret": "foxtrot",
             "metric_url": "https://user:pass@example.test/?token=charlie",
@@ -59,6 +61,7 @@ def test_redact_lines_structurally_redacts_evidence_secrets() -> None:
     assert result.returncode == 0
     for secret in (
         "alpha", "bravo", "echo", "foxtrot", "user:pass", "charlie", "delta",
+        "compact-api-secret", "compact-private-secret",
     ):
         assert secret not in result.stdout
     evidence = json.loads(result.stdout.removeprefix(prefix))
@@ -114,3 +117,18 @@ def test_prefixed_environment_credentials_and_signed_downloads():
     assert result.returncode == 0
     for secret in ("private-capability", "private-bootstrap", "private-key", "private-id", "private-sign"):
         assert secret not in result.stdout
+
+
+def test_plain_diagnostics_match_python_redaction_for_signed_urls():
+    from experiment_control.redaction import redact_line
+    cases = [
+        "https://user:pass@objects.test/data?X-Goog-Credential=owner&X-Goog-Signature=private&Expires=600",
+        "https://objects.test/data?X-Amz-Credential=owner&X-Amz-Signature=private&Expires=600",
+        "https://objects.test/data?signature=private&Expires=600",
+        "https://objects.test/data?sig=private&Expires=600",
+        "https://objects.test/data?page=2&X-Goog-Credential=owner&token=private",
+        "PRIVATE_KEY=hidden loss=2.5",
+    ]
+    result = run_redactor("\n".join(cases) + "\n")
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [redact_line(case) for case in cases]

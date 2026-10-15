@@ -697,3 +697,32 @@ def test_execute_snapshot_detects_inode_drift_and_supports_plain_runner(tmp_path
     snapshot["manifest"]["python"]["inode"] = 0
     with pytest.raises(ValueError, match="python inode drifted"):
         gateway.execute_snapshot(snapshot, [], timeout=1)
+
+
+def test_pinned_process_uses_the_same_safe_utf8_boundary_as_normal_commands(tmp_path):
+    import os
+    import sys
+    result = CommandRunner().run_pinned([sys.executable, '-c',
+        "import os;os.write(1,b'output=\\xff\\n');os.write(2,b'error=\\x88\\n')"],
+        cwd=tmp_path, timeout=5, env=dict(os.environ), pass_fds=())
+    assert result['returncode'] == 0
+    assert result['stdout'] == 'output=�\n' and result['stderr'] == 'error=�\n'
+
+
+def test_controller_structured_redaction_retains_science_and_masks_nested_credentials():
+    from ml_exp_server.controller_output import redact
+    science = {'token_recon_ppl': 23.3, 'oracle_plan_token_denoising_l2': 2.1,
+               'proxy_loss': 0.4, 'tokenizer_path': '/data/tokenizer', 'token_count': 128}
+    raw = {'latest_metric': science, 'items': [{'api_token': 'fake-one', 'refreshToken': 'fake-two',
+        'WANDB_API_KEY': 'fake-three', 'APIKey': 'fake-four', 'access-key-secret': 'fake-five',
+        'privateKey': 'fake-six', 'authorization_header': 'fake-seven',
+        'safe_metric': {'name': 'token_recon_ppl', 'value': 23.3}}],
+        'download': 'https://objects.example/data?X-Goog-Signature=fake-signed&Expires=600'}
+    clean = redact(raw)
+    assert clean['latest_metric'] == science
+    assert clean['items'][0]['safe_metric'] == {'name': 'token_recon_ppl', 'value': 23.3}
+    for key, value in clean['items'][0].items():
+        if key != 'safe_metric':
+            assert value == '[REDACTED]'
+    assert clean['download'] == 'https://objects.example/data?[REDACTED]'
+    assert 'fake-' not in json.dumps(clean)

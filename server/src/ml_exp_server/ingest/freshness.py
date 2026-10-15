@@ -12,19 +12,9 @@ from typing import Optional
 
 from ..schemas import RunIndexRow
 
-# When the scheduler says RUNNING but a layer's evidence is older than this,
-# flag the layer. Model layer gets a dynamic bound from observed throughput
-# (3 consecutive missed log windows) with this as the floor/fallback.
+# Without an explicit heartbeat contract, use the same conservative age bound
+# for every workload. Training throughput does not imply a logging interval.
 DEFAULT_STALE_AFTER_SECONDS = 30 * 60
-_LOG_FREQ_STEPS = 100  # LOG_FREQ used by the training side
-
-
-def _model_stale_bound(row: RunIndexRow) -> float:
-    steps_per_sec = row.latest_metrics.get("steps_per_sec")
-    if isinstance(steps_per_sec, (int, float)) and steps_per_sec > 0:
-        bound = 3 * _LOG_FREQ_STEPS / float(steps_per_sec)
-        return max(bound, DEFAULT_STALE_AFTER_SECONDS / 3)
-    return DEFAULT_STALE_AFTER_SECONDS
 
 
 def _age(now: float, as_of: Optional[float]) -> Optional[float]:
@@ -50,7 +40,7 @@ def apply_freshness(row: RunIndexRow, *, now: float) -> None:
     checks = (
         ("worker", row.evidence.worker, DEFAULT_STALE_AFTER_SECONDS),
         ("process", row.evidence.process, DEFAULT_STALE_AFTER_SECONDS),
-        ("model", row.evidence.model, _model_stale_bound(row)),
+        ("model", row.evidence.model, DEFAULT_STALE_AFTER_SECONDS),
     )
     for name, layer, bound in checks:
         age = _age(now, layer.as_of)

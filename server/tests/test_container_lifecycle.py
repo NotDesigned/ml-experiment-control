@@ -255,3 +255,27 @@ def test_historical_preemption_terminal_lifecycle_survives_stop_classification_f
     assert result['state'] == 'PREEMPTED' and result['failure_class'] is None
     assert result['detail']['observed_normalized_state'] == 'CANCELLED'
     assert controller.store.load_status_payload('attempt-001')['state'] == 'PREEMPTED'
+
+
+@pytest.mark.parametrize('timed_out', [False, True])
+@pytest.mark.parametrize('stdout', ['copy started\n', None])
+def test_cli_preserves_bounded_underlying_subprocess_diagnostics(controller, tmp_path, monkeypatch, capsys, timed_out, stdout):
+    import subprocess
+    path = tmp_path / 'campaign.yaml'
+    path.write_text(yaml.safe_dump(controller.campaign))
+    monkeypatch.setattr(module, 'Controller', lambda *args: controller)
+    command = ['ssh', 'gateway', 'embedded-private-command']
+    stderr = 'received 1024 bytes\nPermission denied\nAPI_TOKEN=hidden-token\n' + repr(command)
+    error = (subprocess.TimeoutExpired(command, 30, output=stdout.encode() if stdout else None, stderr=stderr.encode())
+             if timed_out else subprocess.CalledProcessError(65, command, output=stdout, stderr=stderr))
+    def fail(*args):
+        raise error
+    monkeypatch.setattr(controller, 'stage', fail)
+    with pytest.raises(SystemExit) as stopped:
+        module.cli([str(path), 'stage', '--run', 'gpu'])
+    output = capsys.readouterr().err
+    assert stopped.value.code == 1
+    assert 'received 1024 bytes' in output and 'Permission denied' in output
+    assert ('copy started' in output) == bool(stdout)
+    assert 'hidden-token' not in output and 'embedded-private-command' not in output
+    assert type(error).__name__ in output

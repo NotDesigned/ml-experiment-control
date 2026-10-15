@@ -78,8 +78,8 @@ def test_relay_frozen_before_launch_and_capabilities_do_not_leak_address(gateway
     for args, kwargs in calls[1:]:
         command = shlex.split(args[-1])
         assert 'apptainer' in command and '--nv' not in command and 'sbatch' not in command
-        assert json.loads(kwargs['input_text']) == ctl.run['data_preparation']
-    assert shlex.split(calls[-1][0][-1])[-1] == '1'
+        assert json.loads(kwargs['input_text']) == {'preparation': ctl.run['data_preparation'], 'inputs': []}
+    assert shlex.split(calls[-1][0][-1])[-2] == '1'
     assert ('--unsquash' in shlex.split(calls[-1][0][-1])) == unsquash
     monkey = pytest.MonkeyPatch()
     try:
@@ -129,3 +129,59 @@ def test_prepared_data_missing_never_runs_download_or_training(tmp_path, monkeyp
     monkeypatch.setattr(worker, 'upload', lambda *args: None)
     assert worker.main(['python3', '-c', 'raise SystemExit("training must not run")']) == 65
     assert json.loads((root/'data-preparation.json').read_text())['error'] == 'DATA_PREPARED_CACHE_MISSING'
+
+
+def test_gateway_asset_and_script_mount_cached_input_before_script(gateway, tmp_path, monkeypatch):
+    import hashlib
+    import io
+    import sys
+    from ml_exp_server.workers import data_input, managed_worker
+    from tests.test_multipart_upload import begin, send
+    payload = archive({'tokens.bin': b'tokens'})
+    upload = begin(gateway[0], payload)
+    endpoint = send(gateway[0], payload, upload)
+    asset = gateway[0].post(endpoint + '/complete')
+    assert asset.status_code == 200, asset.text
+    ctl = controller(gateway, data_preparation={'script': 'download.py'},
+                     inputs=[{'asset_id': asset.json()['asset_id'], 'mount_path': '/inputs/data'}])
+    calls = []
+    ctl.runner = SimpleNamespace(run=lambda args, **kwargs: calls.append((args, kwargs)))
+    ctl.prepare_gateway_data(require_cached=False)
+    argv, options = calls[0]
+    remote = shlex.split(argv[-1])
+    inputs_root = ctl.run['storage']['run_dir'] + '/attempts/attempt-001/inputs'
+    assert inputs_root + ':/inputs' in remote
+    assert remote.index('apptainer') < remote.index(inputs_root + ':/inputs')
+    value = json.loads(options['input_text'])
+    assert value['inputs'] == ctl.run['inputs']
+    # Execute the actual generated gateway code with filesystem mounts mapped
+    # into this test's directory. The cache verifier and script are real.
+    workspace = tmp_path / 'source'
+    script = ("import os\nfrom pathlib import Path\n"
+              "assert os.environ['INPUTS_DIR'] == '/inputs'\n"
+              "assert not any(key.startswith('ML_EXPD_') for key in os.environ)\n"
+              "Path(os.environ['DATA_DIR'],'copy.bin').write_bytes(Path(os.environ['TEST_INPUT'],'tokens.bin').read_bytes())\n")
+    local_inputs = tmp_path / 'inputs'
+    value['preparation'] = definition(workspace, script, env={'TEST_INPUT': str(local_inputs / 'data')})
+    cache = tmp_path / 'data-assets'
+    cached = cache / value['inputs'][0]['asset_id']
+    cached.mkdir(parents=True)
+    (cached / 'tokens.bin').write_bytes(b'tokens')
+    expected_sha = hashlib.sha256(b'tokens').hexdigest()
+    assert value['inputs'][0]['files'][0]['sha256'] == expected_sha
+    links = []
+    def link(target, path):
+        links.append(path)
+        managed_worker.link_path(target, local_inputs / path.relative_to('/inputs'))
+    monkeypatch.setitem(sys.modules, 'data_input', data_input)
+    monkeypatch.setitem(sys.modules, 'managed_worker', SimpleNamespace(link_path=link))
+    monkeypatch.setitem(sys.modules, 'data_preparation', SimpleNamespace(
+        prepare=lambda *args, **kwargs: data.prepare(*args, workspace=workspace, **kwargs)))
+    code = remote[remote.index('-c') + 1]
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(value)))
+    monkeypatch.setattr(sys, 'argv', ['gateway', str(tmp_path / 'prepared'), '0', str(cache)])
+    monkeypatch.setenv('ML_EXPD_UPLOAD_TOKEN', 'must-not-reach-data-script')
+    exec(compile(code, '<gateway-data-script>', 'exec'), {})
+    assert links == [Path('/inputs/data')]
+    tree = tmp_path / 'prepared' / value['preparation']['preparation_id'] / 'tree'
+    assert (tree / 'copy.bin').read_bytes() == b'tokens'

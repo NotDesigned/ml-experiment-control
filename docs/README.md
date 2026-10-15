@@ -14,6 +14,8 @@ and acceptance reports belong in private operator configuration/evidence.
 6. [Recovery](recovery.md): diagnose a failed stage without duplicating work.
 7. [Administrative deletion](resource-deletion.md): review and delete a completed managed Run and its storage.
 
+For existing installations, read the [1.0 migration notes](migration-1.0.md).
+
 ## Operator: provide the service
 
 - [Deployment](operator-guide.md): installation, configuration and verification.

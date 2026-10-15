@@ -12,8 +12,7 @@ from ml_exp_server.storage import atomic_json
 from ml_exp_server.application_errors import ApplicationError
 from tests.test_sensecore_data_workflow import client, stored, custom_runtime
 from tests.test_artifact_store import archive
-from tests.test_desktop_data_upload import stage, remote_client
-from tests.test_multipart_upload import begin, send
+from tests.test_desktop_data_upload import stage, remote_client, historical_asset
 
 IMAGE='registry.example/data@sha256:'+'b'*64
 
@@ -25,8 +24,7 @@ def delivery(remote_client,stored,monkeypatch):
         'gpus':0,'cpus':2,'memory_gb':4,'copy_timeout_seconds':5,'queue_timeout_seconds':5}
     stored[0].write_text(json.dumps(config))
     data=archive({'tokens.bin':b'training tokens'})
-    upload=begin(remote_client,data);root=send(remote_client,data,upload)
-    asset=remote_client.post(root+'/complete').json()
+    asset=historical_asset(remote_client,data)
     service=DataDeliveryService(remote_client.app.state.runtime)
     value=service.prepare('demo',asset['asset_id'],'cloud')
     image={'project':'demo','asset_id':asset['asset_id'],'files_sha256':value['files_sha256'],

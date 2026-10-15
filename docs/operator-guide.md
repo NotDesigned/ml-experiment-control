@@ -99,10 +99,46 @@ environments:
 ```
 
 Catalogue metadata is operator-verified, not automatic package detection.
-Use [builds](builds.md) to configure local or SSH desktop construction and its
-data staging helper. For desktop data, artifact-store configuration additionally
-sets `data_upload_storage: desktop-builder`, private `data_upload_socket`, and
-the bounded CPU `data_delivery` profile described in [data](data.md).
+Use [builds](builds.md) to configure local or SSH desktop Runtime construction.
+New input uploads always select backend storage; `data_upload_storage` and
+`data_upload_socket` are legacy-session settings, not a way to select new uploads.
+For SenseCore, add the registry and bounded `data_delivery` configuration below
+to the private artifact-store JSON:
+
+```json
+{
+  "upload_part_bytes": 16777216,
+  "data_registry": {
+    "repository": "REGISTRY_HOST/TEAM/ml-expd-data",
+    "base_image": "REGISTRY_HOST/TEAM/ml-expd-data@sha256:ACTUAL_64_HEX_DIGEST",
+    "registry_auth_file": "/etc/ml-expd/data-registry-auth.json",
+    "blob_hosts": ["ACTUAL_CCR_BLOB_HOST"]
+  },
+  "data_delivery": {
+    "aec2": "debug-CLUSTER_ID",
+    "worker_spec": "ACTUAL_CPU_SPEC.2c4g",
+    "gpus": 0, "cpus": 2, "memory_gb": 4,
+    "quota_type": "reserved",
+    "queue_timeout_seconds": 1800,
+    "copy_timeout_seconds": 1800
+  }
+}
+```
+
+Publish an ACP-compatible linux/amd64 Python/glibc/Bash base into this **same
+repository** first; `base_image` must be its immutable digest. The API reads base
+metadata and appends fixed dataset/worker layers through registry REST, without
+BuildKit. The daemon needs push/pull Docker auth in the private `registry_auth_file`;
+this file is distinct from the builder's auth unless deliberately provisioned for
+both. Give the service UID read access to this narrow credential, for example
+`root:ml-expd` mode 0640; retain the original root-only builder auth unchanged.
+Include only the required CCR host entry and do not copy unrelated registry logins.
+`blob_hosts` contains
+only the actual CCR blob redirect hostnames verified by the operator, without
+scheme, paths or wildcards; redirects use TLS and receive no registry credentials.
+Workspace, storage mount and dataset root are derived from the chosen executor.
+Verify the CPU spec is exactly 2 CPUs, 4 GiB and 0 GPUs in the selected debug pool.
+No new dataset upload requires the desktop SSH tunnel; environment builds still do.
 
 ## Backend preconditions
 
@@ -159,7 +195,7 @@ recovery point. Never restore an old DB over newer production state. Refuse
 program rollback if guard conditions or active/newer operations make it unsafe.
 See [Action storage](action-storage.md).
 
-Registry images, backend datasets/state and published desktop archives require
+Registry images, backend datasets/state and historical desktop archives require
 explicit retention. No global Docker prune or automatic NAS cleanup exists.
 Record exact commit/package versions and verification privately; these docs
 are not a list of live jobs or historical test counts. Known defects and
@@ -198,6 +234,11 @@ failures appear as `storage_maintenance_error` in `GET /api/health`, while
 scheduler polling continues. A download GET is not an ACK. Scientific receipts, registered metrics, datasets and backend
 checkpoints survive archive release. Garage physical block reclamation is
 asynchronous.
+
+The shared multipart transfer buffer is capped at 1 GiB including conservative
+filesystem overhead; saturation returns 503 and retains unconfirmed parts. It is
+not a cap on source, result/recovery caches, journals or Garage objects. Review
+`transfer_buffer` and `local_storage` independently in `/api/storage-limits`.
 
 Treat API disk, desktop builder disk, WYD datapool and SenseCore NAS as distinct
 capacity domains. Check each domain's actual write/quota/inode state. In

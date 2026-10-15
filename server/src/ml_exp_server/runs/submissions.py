@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import hashlib
 from contextlib import nullcontext
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-import yaml
+from ..application_errors import ApplicationError
 
-from ml_exp_server.application import ApplicationError, ExperimentServerApplication
-from ml_exp_server.runs.failures import evidence_digest
+if TYPE_CHECKING:
+    from ..application import ExperimentServerApplication
+from .first_submission import first_submission_intent
 from ..projects.code_identity import project_code_identity
 from ..runtime import ExperimentServerRuntime
 from ..deletion_state import RunFence
@@ -289,51 +289,21 @@ class ExperimentSubmissionService:
                 view["reused"] = True
                 return view
             row = self.runtime.index.get_run(project, run_id)
-            if row is not None:
-                state = str(row.scheduler_state or "NOT_SUBMITTED").upper()
-                if state != "NOT_SUBMITTED":
-                    raise ApplicationError(
-                        f"Run state {state} is not eligible for first submission",
-                        code="RUN_NOT_SUBMITTABLE",
-                    )
-                if any(attempt.has_submission for attempt in row.attempts):
-                    raise ApplicationError(
-                        "Run already has submitted Attempt evidence",
-                        code="RUN_ALREADY_SUBMITTED",
-                    )
-                existing_attempts = [attempt.attempt_id for attempt in row.attempts]
-            else:
-                existing_attempts = []
-            attempt_id = existing_attempts[-1] if existing_attempts else "attempt-001"
             scope = OperationScope(
                 project=project, scope_type=OperationScopeType.RUN, object_id=run_id,
             )
-            draft = yaml.safe_dump({
-                "campaign_file": str(campaign),
-                "run_id": run_id,
-                "attempt_id": attempt_id,
-                "max_gpu_hours": max_gpu_hours,
-            }, sort_keys=False)
-            digest = evidence_digest({
-                "project": project,
-                "run_id": run_id,
-                "campaign_revision": revision.model_dump(mode="json"),
-                "indexed_run": row.model_dump(mode="json") if row is not None else None,
-            })
-            action = self.runtime.action_service.prepare(scope, configured, {
-                "kind": "SUBMIT_RUN",
-                "title": f"Launch {run_id} as {attempt_id}",
-                "target": f"run://{project}/{run_id}",
-                "change_summary": reason or "submit the authored Run's first Attempt",
-                "resource_estimate": f"up to {max_gpu_hours:g} GPU-hours",
-                "rationale": "materialize one authored Campaign membership",
-                "risk": "scheduler mutation requires separate authorization and execution",
-                "draft": draft,
-                "evidence_digest": digest,
-                "idempotency_key": "submission-" + hashlib.sha256(
-                    f"{project}:{run_id}:{attempt_id}:{len(existing) + 1}".encode()
-                ).hexdigest()[:20],
-            })
+            intent = first_submission_intent(
+                configured, row, run_id=run_id, campaign_file=lambda: campaign,
+                max_gpu_hours=max_gpu_hours, resource_approval="budget_cap", reason=reason,
+                evidence=lambda: {
+                    "project": project, "run_id": run_id,
+                    "campaign_revision": revision.model_dump(mode="json"),
+                    "indexed_run": row.model_dump(mode="json") if row is not None else None,
+                },
+                source_service=getattr(self.application, "source_revision_service", None),
+                submission_number=len(existing) + 1,
+            )
+            action = self.runtime.action_service.prepare(scope, configured, intent)
             return self._view(action)
 
     def authorize(self, submission_id: str, note: str) -> dict[str, Any]:

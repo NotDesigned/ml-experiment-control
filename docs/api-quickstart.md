@@ -80,7 +80,7 @@ ml-exp experiment experiment.json --state trial.state.json --resume \
 
 The first command uploads source/data and submits one preparation request. The
 server matches the executor, builds/reuses the image, prepares data, freezes the
-Run and prepares gates. It does not submit GPU training. Adding desktop SenseCore inputs
+Run and prepares gates. It does not submit GPU training. Adding SenseCore inputs
 can launch a bounded zero-GPU data-copy job during preparation. `--execute`
 authorizes scheduling within the budget. `--seconds` limits each client wait stage;
 `resources.max_time` controls worker/job duration. Disconnecting does not cancel.
@@ -104,6 +104,11 @@ Add data when needed:
 {"inputs": [{"directory": "./data", "mount_path": "/inputs/data"}]}
 ```
 
+The client uploads data to the selected executor: shared datapool on WYD,
+or a CCR data image followed by a zero-GPU copy to SenseCore NAS. The desktop
+builds only the Runtime image. Standalone uploads require
+`ml-exp asset-upload --project my-study --executor wyd-l40s --directory ./data --state data.state.json`.
+Target-backed datasets have metadata/references, not an API archive download.
 Use `asset_id` instead of `directory` to reuse an upload. A source download
 script can instead prepare persistent `DATA_DIR`. See [data](data.md).
 Use `STATE_DIR` for complete recovery state ([checkpoints](persistent-checkpoints.md)),

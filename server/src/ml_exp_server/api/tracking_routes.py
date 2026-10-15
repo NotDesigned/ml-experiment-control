@@ -14,7 +14,7 @@ from ..records.store import RecordStore
 from ..wandb_exporter import default_entity
 from ..application_errors import ApplicationError
 from ..deletion_state import RunFence
-from .container_routes import invoke
+from .errors import invoke
 from .errors import application_http_error
 
 router = APIRouter(prefix="/api")

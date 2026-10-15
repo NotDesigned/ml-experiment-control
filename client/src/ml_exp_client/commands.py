@@ -230,12 +230,18 @@ def create_run(args, client, health):
 def upload_asset(args, client, health):
     if args.state.exists() and not args.resume:
         raise ClientError("state file exists; inspect the saved asset ID instead of replaying upload")
+    targeted = "target-backed-data-upload.v1" in health.get("capabilities", [])
+    if targeted and not args.executor:
+        raise ClientError("asset-upload requires --executor to select persistent backend storage")
+    kind = None
     if args.executor:
-        if "ccr-data-delivery.v1" not in health.get("capabilities", []):
-            raise ClientError("server lacks ccr-data-delivery.v1")
         catalogue = client.call("/api/executors")["executors"]
-        if not any(item["id"] == args.executor and item.get("kind") == "sensecore" for item in catalogue):
-            raise ClientError("data preparation requires a published SenseCore executor")
+        matches = [item for item in catalogue if item["id"] == args.executor]
+        if len(matches) != 1 or matches[0].get("kind") not in {"slurm", "sensecore"}:
+            raise ClientError("data upload requires a published WYD or SenseCore executor")
+        kind = matches[0]["kind"]
+        if kind == "sensecore" and "ccr-data-delivery.v1" not in health.get("capabilities", []):
+            raise ClientError("server lacks ccr-data-delivery.v1")
     limits = client.call("/api/storage-limits")
     with tempfile.TemporaryFile() as stream:
         digest, length = data_archive(args.directory, stream)
@@ -245,16 +251,21 @@ def upload_asset(args, client, health):
             saved = json.loads(args.state.read_text())
             if saved.get("project") != args.project or saved.get("asset_id") != "asset." + digest:
                 raise ClientError("resume directory differs from the saved upload archive")
+            if targeted and (saved.get("target", {}).get("executor", saved.get("executor", args.executor)) != args.executor):
+                raise ClientError("resume upload belongs to another executor")
             if saved.get("status") == "READY" and not args.executor:
                 return saved
-        save(args.state, {"project": args.project, "asset_id": "asset." + digest, "status": "UPLOADING"})
+        save(args.state, {**(saved if args.resume else {}), "project": args.project, "asset_id": "asset." + digest, "status": "UPLOADING",
+                          **({"target": {"executor": args.executor}} if targeted else {})})
         if "multipart-upload.v1" in health.get("capabilities", []):
-            result = upload_asset_parts(client, args.project, stream, digest, length, args.state)
+            result = upload_asset_parts(client, args.project, stream, digest, length, args.state,
+                                        target={"executor": args.executor} if targeted else None)
         else:
             query = urlencode({"project": args.project, "sha256": digest})
             result = client.call("/api/assets/archive?" + query, raw=stream, length=length)
-    save(args.state, result)
-    if args.executor:
+    saved_upload = json.loads(args.state.read_text())
+    save(args.state, {**saved_upload, **result})
+    if args.executor and kind == "sensecore":
         result = {**result, "data_delivery": deliver_data(client, args.project, result["asset_id"], args.executor,
                   args.state.with_name(args.state.name + ".delivery.json"), args.wait_seconds)}
     return result

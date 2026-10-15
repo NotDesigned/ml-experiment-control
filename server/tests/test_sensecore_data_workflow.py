@@ -92,11 +92,15 @@ def controller(client, bundle, **extra):
 
 
 def put_asset(client, data=None, **params):
+    """Seed a pre-1.0 object asset without using a removed upload endpoint."""
     data = archive({"tokens.bin": b"tokens for a separate data asset"}) if data is None else data
-    return client.post("/api/assets/archive", params={"project": "demo", "sha256": hashlib.sha256(data).hexdigest(), **params}, content=data)
+    runtime = client.app.state.runtime
+    assets = AssetStore(Path(runtime.config.container_execution.artifact_store_file), runtime.config.project_registry_root_path())
+    value = assets.receive(params.get("project", "demo"), io.BytesIO(data), params.get("sha256", hashlib.sha256(data).hexdigest()), len(data))
+    return SimpleNamespace(status_code=200, text=json.dumps(value), json=lambda: value)
 
 
-def test_client_can_upload_mount_publish_and_reuse_checkpoint(client, stored, monkeypatch):
+def test_historical_asset_can_mount_publish_and_reuse_checkpoint(client, stored, monkeypatch):
     data = archive({"tokens.bin": b"tokens for a separate data asset"})
     asset = put_asset(client, data).json()
     assert asset["status"] == "READY" and asset["files"][0]["sha256"] == hashlib.sha256(b"tokens for a separate data asset").hexdigest()
@@ -161,11 +165,11 @@ def test_multistage_dockerfile_uses_pinned_images_and_prior_stages(tmp_path):
 
 
 def test_asset_upload_limits_hash_and_symlinks(client, stored):
-    assert put_asset(client, sha256="a" * 64).status_code == 409
-    assert put_asset(client, b"a" * (2 * 1024 ** 2 + 1)).status_code == 413
+    with pytest.raises(ValueError):put_asset(client, sha256="a" * 64)
+    with pytest.raises(ValueError):put_asset(client, b"a" * (2 * 1024 ** 2 + 1))
     assert client.get("/api/storage-limits").json()["asset_archive_bytes"] == 2 * 1024 ** 2
-    assert put_asset(client, archive({"../escape": b"x"})).status_code == 409
-    assert put_asset(client, archive({".env": b"secret"})).status_code == 409
+    with pytest.raises(ValueError):put_asset(client, archive({"../escape": b"x"}))
+    with pytest.raises(ValueError):put_asset(client, archive({".env": b"secret"}))
     assert client.get("/api/projects/demo/assets/asset." + "c" * 64).status_code == 404
     assert client.get("/api/projects/demo/assets/invalid").status_code == 409
 

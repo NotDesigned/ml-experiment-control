@@ -26,6 +26,7 @@ from .preparation_routes import router as preparation_router
 from .tracking_routes import router as tracking_router
 from .deletion_routes import router as deletion_router
 from .result_routes import router as result_router
+from .script_preparation_routes import router as script_preparation_router
 
 
 def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
@@ -89,6 +90,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.include_router(tracking_router)
     app.include_router(deletion_router)
     app.include_router(result_router)
+    app.include_router(script_preparation_router)
 
     @app.get(VERSIONED_OPENAPI_PATH, include_in_schema=False)
     async def versioned_openapi():

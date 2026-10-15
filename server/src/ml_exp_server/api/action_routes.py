@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from ..application import ApplicationError
+from ..application_errors import ApplicationError
 from ..execution_queue import admitted_handoff
 from .contract import ActionSnapshotResponse
 from ..runs.intent_protocol import OperationIntent

@@ -66,3 +66,31 @@ def data_archive(directory: Path, stream):
     digest, _ = copy_stream(stream)
     stream.seek(0)
     return digest, length
+
+
+def data_transport_identity(stream, length):
+    """Declare file identities and the deterministic, uncompressed OCI layer.
+
+    The backend still verifies the actual archive/files before training. This
+    lets CCR verify an upload after a server restart without storing its bytes.
+    """
+    inventory = []
+    stream.seek(0)
+    with tarfile.open(fileobj=stream, mode="r|*") as archive:
+        for member in archive:
+            if not member.isfile():
+                raise ClientError("data archive must contain regular files")
+            body = archive.extractfile(member)
+            sha, size = copy_stream(body)
+            if size != member.size:
+                raise ClientError("data archive file is truncated")
+            inventory.append({"path": member.name, "sha256": sha, "bytes": size})
+    member = tarfile.TarInfo("payload/dataset.tar")
+    member.size, member.mode = length, 0o444
+    sha = hashlib.sha256(member.tobuf(format=tarfile.GNU_FORMAT))
+    stream.seek(0)
+    while chunk := stream.read(1024 ** 2):
+        sha.update(chunk)
+    sha.update(b"\0" * ((-length) % 512 + 1024))
+    stream.seek(0)
+    return sorted(inventory, key=lambda item: item["path"]), sha.hexdigest()

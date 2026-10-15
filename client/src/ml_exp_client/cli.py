@@ -69,7 +69,7 @@ def parser():
     upload.add_argument("--directory", type=Path, required=True)
     upload.add_argument("--state", type=Path, required=True)
     upload.add_argument("--resume", action="store_true", help="resume the exact saved data archive; completed parts are retained")
-    upload.add_argument("--executor", help="also prepare data on this SenseCore executor's NAS using a CPU-only ACP job")
+    upload.add_argument("--executor", help="target executor: store data on WYD shared storage or prepare SenseCore NAS through CCR")
     upload.add_argument("--wait-seconds", type=int, default=1800)
     assets = commands.add_parser("assets", help="list immutable project data assets")
     assets.add_argument("--project", required=True)

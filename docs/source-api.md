@@ -49,6 +49,23 @@ accepted. Image identity binds source, Dockerfile, managed worker and transport
 recipe. Old READY images remain usable; an obsolete unbuilt definition needs
 fresh preparation. See [builds](builds.md) for admission and uncertainty.
 
+## Upload data to a target
+
+New datasets use only `POST /api/projects/P/asset-uploads` with `target.executor`
+and archive SHA/size, followed by numbered part PUTs and `/complete`. SenseCore
+also requires file inventory and transport-layer hash; the standard client
+computes and sends these for target-backed uploads. GET observes the
+saved session; explicit POST create/complete confirms any previously forwarded
+part whose ACK was lost. `POST /api/assets/archive` is removed. See the complete
+[multipart contract](data.md#multipart-http-contract).
+
+WYD completion proves a verified shared-storage cache. SenseCore completion
+publishes a data-image identity; its separate zero-GPU NAS delivery must become
+READY before Run submission. Metadata remains available through
+`GET /api/projects/P/assets/ASSET_ID`. New target-backed `/archive` and `/download`
+return typed 404 `DIRECT_DOWNLOAD_UNAVAILABLE`; these are not output-download
+routes. Old immutable assets retain their original read behavior.
+
 ## Freeze a Run and submit
 
 ```json
@@ -108,7 +125,7 @@ Artifacts never fall back to another Attempt. See [recovery](recovery.md).
 
 Internal `/launch-transfers`, `/asset-transfers`, `/checkpoint-transfers` and
 `/attempt-uploads` routes use narrow worker capabilities. They are not substitutes
-for client control API credentials. `/record-transfers` is also a narrow worker
-write path. Optional [W&B publication](wandb.md) has authenticated configuration
+for client control API credentials. `/record-transfers` and `/data-script-transfers` also use narrow worker
+capabilities. Script receipts do not accept the administrative API token. Optional [W&B publication](wandb.md) has authenticated configuration
 and per-Run status routes. No research-question entity is required; evaluation
 is an ordinary Run with checkpoint/data/protocol inputs.

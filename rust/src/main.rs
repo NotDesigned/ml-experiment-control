@@ -9,7 +9,7 @@ const HELP: &str = "Redact credentials in experiment log text from standard inpu
 
 static SECRET_ASSIGNMENT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r#"(?i)(\b(?:[\w.-]*[_-])?(?:secret|token|password|passwd|credential|access[_-]?key(?:[_-]?(?:id|secret))?|api[_-]?key|private[_-]?key|proxy|authorization|cookie)[\w.-]*\b[\s"']*[=:][\s"']*)([^\s,;"']+)"#,
+        r#"(?i)(\b(?:[\w.-]*[_-])?(?:secret|token|password|passwd|credential|access[_-]?key(?:[_-]?(?:id|secret))?|api[_-]?key|private[_-]?key|proxy|authorization|cookie)[\w.-]*\b[\s"']*[=:][\s"']*)([^\s,;&"']+)"#,
     )
     .expect("secret assignment regex is valid")
 });
@@ -22,9 +22,17 @@ static URL_USERINFO_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static SENSITIVE_QUERY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)([?&](?:access[_-]?key(?:[_-]?(?:id|secret))?|api[_-]?key|secret|token|signature|x-amz-(?:credential|signature|security-token))=)[^&#\s]+",
+        r"(?i)([?&](?:access[_-]?key(?:[_-]?(?:id|secret))?|api[_-]?key|secret|token|signature|x-amz-[\w-]+|x-goog-[\w-]+|sig)=)[^&#\s]+",
     )
     .expect("sensitive query regex is valid")
+});
+static URL_QUERY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"([a-zA-Z][a-zA-Z0-9+.-]*://[^?\s]+)\?([^#\s"']*)"#)
+        .expect("URL query regex is valid")
+});
+static SIGNED_QUERY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|&)(?:x-amz-signature|x-goog-signature|signature|sig)=")
+        .expect("signed query regex is valid")
 });
 const STRUCTURED_EVIDENCE_PREFIX: &str = "EXPERIMENT_EVIDENCE_JSON=";
 const STRUCTURED_EVIDENCE_MAX_CHARS: usize = 1_048_576;
@@ -32,6 +40,13 @@ const STRUCTURED_EVIDENCE_MAX_CHARS: usize = 1_048_576;
 fn redact_line(input: &str) -> String {
     let value = URL_USERINFO_RE.replace_all(input, "$1<redacted>@");
     let value = BEARER_RE.replace_all(&value, "$1<redacted>");
+    let value = URL_QUERY_RE.replace_all(&value, |captures: &regex::Captures<'_>| {
+        if SIGNED_QUERY_RE.is_match(&captures[2]) {
+            format!("{}?<redacted>", &captures[1])
+        } else {
+            captures[0].to_owned()
+        }
+    });
     let value = SENSITIVE_QUERY_RE.replace_all(&value, "$1<redacted>");
     SECRET_ASSIGNMENT_RE
         .replace_all(&value, "$1<redacted>")
@@ -74,6 +89,11 @@ fn sensitive_json_key(key: &str) -> bool {
         "access_key_id",
         "access_key_secret",
         "private_key",
+        "apikey",
+        "accesskey",
+        "accesskeyid",
+        "accesskeysecret",
+        "privatekey",
     ]
     .iter()
     .any(|suffix| key == *suffix || key.ends_with(&format!("_{suffix}")));

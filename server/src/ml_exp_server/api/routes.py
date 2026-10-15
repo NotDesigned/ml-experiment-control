@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from .sse import IndexEventResponse
 from pydantic import BaseModel, Field, model_validator
 
-from ..application import ApplicationError
+from ..application_errors import ApplicationError
 from .contract import DaemonHealth, ProjectRegistrationResponse
 from ..projects.campaign_lifecycle import campaign_snapshot
 from ..collectord import Collector
@@ -175,7 +175,7 @@ def _project_lifecycle_response(request: Request, project: str, action: str,
                                 state: ProjectLifecycleState,
                                 data: ProjectLifecycleRequest):
     try:
-        return request.app.state.application.project_lifecycle_transition(
+        return request.app.state.application.project_service.transition(
             project, action, state, reason=data.reason,
         )
     except ApplicationError as exc:
@@ -191,7 +191,7 @@ def _run_or_404(index: RunIndex, project: str, run_id: str) -> RunIndexRow:
 
 @router.get("/project-lifecycle")
 def project_lifecycle_list(request: Request):
-    return request.app.state.application.project_lifecycle_list()
+    return request.app.state.application.project_service.lifecycle_list()
 
 
 @router.post(
@@ -202,7 +202,7 @@ def project_lifecycle_register(
 ) -> ProjectRegistrationResponse:
     try:
         return ProjectRegistrationResponse.model_validate(
-            request.app.state.application.project_register(data.daemon_manifest_path())
+            request.app.state.application.project_service.register(data.daemon_manifest_path())
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -211,7 +211,7 @@ def project_lifecycle_register(
 @router.post("/project-imports/preview")
 def project_import_preview(data: ProjectImportPreviewRequest, request: Request):
     try:
-        return request.app.state.application.project_import_preview(
+        return request.app.state.application.project_import_service.preview(
             data.repository_root(), project=data.project, title=data.title,
         )
     except ApplicationError as exc:
@@ -223,7 +223,7 @@ def project_import_execute(
     import_id: str, data: ProjectImportExecuteRequest, request: Request,
 ):
     try:
-        return request.app.state.application.project_import_execute(
+        return request.app.state.application.project_import_service.execute(
             import_id, data.confirmation,
         )
     except ApplicationError as exc:
@@ -233,7 +233,7 @@ def project_import_execute(
 @router.post("/source-revisions/preview")
 def source_revision_preview(data: SourceRevisionPreviewRequest, request: Request):
     try:
-        return request.app.state.application.source_revision_preview(
+        return request.app.state.application.source_revision_service.preview(
             data.project, data.proposal,
         )
     except ApplicationError as exc:
@@ -245,7 +245,7 @@ def source_revision_execute(
     import_id: str, data: SourceRevisionExecuteRequest, request: Request,
 ):
     try:
-        return request.app.state.application.source_revision_execute(
+        return request.app.state.application.source_revision_service.execute(
             import_id, data.confirmation,
         )
     except ApplicationError as exc:
@@ -255,7 +255,7 @@ def source_revision_execute(
 @router.get("/projects/{project}/source-revisions/{source_id}")
 def source_revision_get(project: str, source_id: str, request: Request):
     try:
-        return request.app.state.application.source_revision_get(project, source_id)
+        return request.app.state.application.source_revision_service.get(project, source_id)
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
@@ -291,14 +291,14 @@ def project_lifecycle_restore(project: str, data: ProjectLifecycleRequest, reque
 @router.post("/project-lifecycle/{project}/unregister")
 def project_lifecycle_unregister(project: str, data: ProjectLifecycleRequest, request: Request):
     try:
-        return request.app.state.application.project_unregister(project, reason=data.reason)
+        return request.app.state.application.project_service.unregister(project, reason=data.reason)
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
 
 
 @router.post("/project-lifecycle/unregister-all")
 def project_lifecycle_unregister_all(data: ProjectLifecycleRequest, request: Request):
-    return request.app.state.application.project_unregister_all(reason=data.reason)
+    return request.app.state.application.project_service.unregister_all(reason=data.reason)
 
 
 def _stale_layers(row: RunIndexRow) -> list[str]:

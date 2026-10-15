@@ -32,7 +32,7 @@ Current adapters declare:
 |---|---|---|
 | Runtime | OCI → Apptainer SIF | OCI |
 | Allocation | Flexible, bounded by configured catalogue capacity | Exact GPU count of fixed worker spec |
-| Uploaded desktop asset | Stream by SSH/verify on datapool before the job | Bounded zero-GPU ACP copy into NAS before training |
+| Uploaded input | Multipart directly to shared datapool over SSH | Multipart to CCR data image, then zero-GPU debug ACP copy into NAS |
 | Script download | Before allocation on the connected gateway when relay is configured | Zero-GPU debug ACP before training when CPU preparation is configured |
 | Queue/exit/preemption reasons | Supported | Not declared as reliable structured fields |
 | Walltime | Scheduler and worker | Worker |
@@ -131,15 +131,14 @@ do not resubmit historical GPU jobs automatically.
 
 ### WYD shared-data staging
 
-The server-owned workflow streams desktop-backed uploaded assets through bounded
-API memory into `/datapool` over the configured WYD SSH connection. Archive and
-expanded files are staged only on backend storage; GPU nodes need no external
-HTTPS data access. The backend checks archive/file hashes and atomically publishes
-the shared cache. A bounded read-only cache check permits reuse. Interrupted or
-unacknowledged transfers require inspection; continuation only accepts a verified
-cache and never repeats an uncertain transfer. New frozen inputs require the
-cache and fail closed if it disappears. Old low-level Runs retain their original
-worker download behavior.
+New target-backed uploads stream parts through the shared 1 GiB API disk buffer
+to a pinned WYD receiver over SSH. Each part is removed locally after matching
+durable ACK; the whole archive and expanded files live only on shared datapool.
+The backend validates archive/file hashes and atomically publishes the cache.
+A bounded read-only check permits reuse before GPU submission. GPU nodes need no
+external data access. New frozen inputs require the verified cache and fail closed
+if it disappears. Historical desktop-backed assets retain their original staging
+path, and old low-level Runs retain their frozen worker download behavior.
 
 ### WYD compute nodes without Internet access
 
@@ -195,8 +194,8 @@ job with 2 CPUs, 4 GiB and no GPU. The exact training image supplies the helper,
 source and script. Already staged inputs are verified and linked at their frozen
 mount paths before the script starts. The script writes into NAS; its hash-based
 cache and READY receipt are reused by the training worker.
-Inputs combined with CPU script preparation must use the desktop-backed,
-pre-staged asset path. API-hosted inputs without that transport are rejected
+Inputs combined with CPU script preparation must already be staged on NAS
+through the CCR data-delivery path (including historical pre-staged assets). API-hosted inputs without that transport are rejected
 before building or creating the CPU job (`DATA_SCRIPT_INPUT_TRANSPORT_UNSUPPORTED`);
 the platform does not attempt an unauthenticated download in the helper.
 
@@ -210,9 +209,14 @@ script timeout before building. It is not a free-resource or startup-time guaran
 The CPU intent is persisted before its single REST create. Confirmed UID, image,
 script and profile are checked when observing the original job. A lost reply or
 missing receipt requires reconciliation; continue never creates a replacement.
-Delayed offline logs remain observable until the bounded deadline. Config changes
-do not rebind an existing frozen Run. Historical Runs without this mode retain
-inside-job preparation; an API upgrade does not rewrite them.
+New Runs freeze a callback wrapper identity. After the script, that wrapper
+rereads the sealed NAS receipt and verifies actual file SHA256 before sending an
+independent expiring capability callback. Provider stdout indexing is not required
+for readiness. A fast callback waits for the original confirmed UID; wrong or
+replacement UIDs are rejected. Verified data may be READY even if callback ACK
+failure makes the CPU job fail; its original job status is preserved. The token
+is removed before the user's script runs. Config changes do not rebind old Runs;
+historical inside-job/stdout receipt modes remain unchanged. See [data](data.md).
 
 ## Internal boundary for another backend
 

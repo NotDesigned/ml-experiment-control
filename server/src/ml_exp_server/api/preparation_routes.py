@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..runs.experiment_preparation import ExperimentPreparationRequest, PreparationRun
 from ..runs.executor_capabilities import ExecutionRequirements, ExecutorSelector
 from ..execution_queue import admitted_handoff
-from .container_routes import invoke
+from .errors import invoke
 
 
 router = APIRouter(prefix="/api")

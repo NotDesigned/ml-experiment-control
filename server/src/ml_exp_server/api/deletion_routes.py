@@ -4,7 +4,7 @@ import re
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from .container_routes import invoke
+from .errors import invoke
 from .contract import ActionSnapshotResponse
 
 router = APIRouter(prefix="/api")

@@ -166,8 +166,21 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
     selection = {"requirements": requirements}
     if "executor_selector" in config:
         selection["executor_selector"] = config["executor_selector"]
-    if "submission" not in state:
+    frozen_upload_target = state.get("upload_target") if "target-backed-data-upload.v1" in health.get("capabilities", []) else None
+    if "submission" not in state and frozen_upload_target is None:
         state["matching_preview"] = client.call("/api/executors/match", data={"project": config["project"], "run": definition, **selection})
+    upload_target = None
+    if "target-backed-data-upload.v1" in health.get("capabilities", []):
+        chosen = (frozen_upload_target.get("executor") if isinstance(frozen_upload_target, dict)
+                  else state.get("matching_preview", {}).get("executor"))
+        if not isinstance(chosen, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", chosen):
+            raise ClientError("executor matching did not return a data upload target")
+        upload_target = {"executor": chosen}
+        if state.get("upload_target", upload_target) != upload_target:
+            raise ClientError("resume executor changed; inspect the saved data target")
+        state["upload_target"] = upload_target
+        definition["executor"] = chosen
+        selection.pop("executor_selector", None)
     payload = source_archive(source)
     source_hash = hashlib.sha256(gzip.decompress(payload)).hexdigest()
     if state.get("source_archive_content_sha256", source_hash) != source_hash:
@@ -191,7 +204,7 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
                 limits = client.call("/api/storage-limits")
                 if limits["asset_archive_bytes"] is not None and length > limits["asset_archive_bytes"]:
                     raise ClientError("data archive exceeds server upload limit")
-                asset_id = upload_asset_parts(client, config["project"], stream, digest, length, upload_state)["asset_id"]
+                asset_id = upload_asset_parts(client, config["project"], stream, digest, length, upload_state, target=upload_target)["asset_id"]
         bindings.append({"asset_id": asset_id, "mount_path": item["mount_path"]})
     state["input_bindings"] = bindings
     save(state_path, state)

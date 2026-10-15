@@ -710,7 +710,8 @@ stage_event SIF_PUBLISH READY
             # Private stdin avoids credentials in SSH argv, scripts and manifests.
             launcher = ("import json,os,subprocess,sys; credentials=json.load(sys.stdin); "
                         "allowed={'APPTAINER_DOCKER_USERNAME','APPTAINER_DOCKER_PASSWORD'}; "
-                        "assert set(credentials)<=allowed; "
+                        "\nif not isinstance(credentials,dict) or not set(credentials)<=allowed: "
+                        "raise ValueError('unexpected OCI credential fields')\n"
                         "sys.exit(subprocess.call(sys.argv[1:],env={**os.environ,**credentials}))")
             result = self.s.run_command([self.ssh_bin, "-o", "BatchMode=yes", backend["ssh_alias"],
                                 shlex.join(["python3", "-c", launcher, *arguments])],

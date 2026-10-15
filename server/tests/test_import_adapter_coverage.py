@@ -21,19 +21,10 @@ from ml_exp_server.schemas import (
 from ml_exp_server.projects.source_revisions import resolve_source_tree
 
 
-def test_minimal_embedded_application_reports_import_services_unavailable(tmp_path):
+def test_minimal_embedded_application_has_no_import_services():
     value = ExperimentServerApplication(SimpleNamespace())
-
-    calls = (
-        lambda: value.project_import_preview(tmp_path),
-        lambda: value.project_import_execute("import-" + "a" * 24, "confirm"),
-        lambda: value.source_revision_preview("demo", {}),
-        lambda: value.source_revision_execute("source-import-" + "a" * 24, "confirm"),
-        lambda: value.source_revision_get("demo", "source." + "a" * 64),
-    )
-    for call in calls:
-        with pytest.raises(ApplicationError, match="service is unavailable"):
-            call()
+    assert value.project_import_service is None
+    assert value.source_revision_service is None
 
 
 def test_submit_of_authored_imported_source_requires_source_service(tmp_path, monkeypatch):

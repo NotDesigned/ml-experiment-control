@@ -12,6 +12,7 @@ from ..results.artifact_store import TRANSFER_PATH, LAUNCH_PATH
 from ..data.data_assets import WORKER_PATH
 from .upload_routes import WORKER_UPLOAD_PATH
 from ..data.data_delivery import COPY_TRANSFER
+from ..backends.sensecore_preparation import CALLBACK_PATH
 from .tracking_routes import RECORD_PATH
 from .deletion_routes import DELETION_TRANSFER
 from .result_routes import RESULT_PATH
@@ -45,6 +46,7 @@ def install_http_boundary(app: FastAPI, bearer_token: str | None) -> None:
         worker_transfer = worker_transfer or (request.method == "POST" and bool(DELETION_TRANSFER.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method in {"GET", "PUT"} and bool(LAUNCH_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method == "PUT" and bool(COPY_TRANSFER.fullmatch(request.url.path)))
+        worker_transfer = worker_transfer or (request.method == "PUT" and bool(CALLBACK_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method in {"GET", "PUT"} and bool(WORKER_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method in {"GET", "POST", "PUT", "DELETE"} and bool(WORKER_UPLOAD_PATH.fullmatch(request.url.path)))
         if bearer_token is not None and not worker_transfer:
