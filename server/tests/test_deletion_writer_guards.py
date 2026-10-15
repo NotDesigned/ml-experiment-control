@@ -243,6 +243,63 @@ def test_generic_campaign_prepare_http_preserves_deleted_run_error(deletion_api)
     assert not (env.root / "managed/demo/experiments/campaigns/candidate.yml").exists()
 
 
+@pytest.mark.parametrize("runs,run_refs,status,code", [
+    ([{"run_id": "run-a"}], [{"run_id": "run-a"}], 410, "RUN_DELETED"),
+    ([{"run_id": "run-a"}, {"run_id": "run-a"}], [], 410, "RUN_DELETED"),
+    ([{"run_id": "../run-a"}], [], 422, "INVALID_RUN_IDENTITY"),
+])
+def test_invalid_campaign_run_identities_cannot_authorize_or_bypass_deletion_fence(
+    deletion_api, monkeypatch, runs, run_refs, status, code,
+):
+    from ml_exp_server.runs.failures import evidence_digest
+    api, env = deletion_api
+    service = env.runtime.action_service
+    service.config.allow_project_writes = True
+    service.config.allow_scheduler_mutations = True
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid Campaign identity reached an effect executor")
+    monkeypatch.setattr(service, "_execute_write", forbidden)
+    monkeypatch.setattr(service, "_execute_controller", forbidden)
+    fence = RunFence(env.root)
+    fence.mark("demo", "run-a")
+    original_fence = fence.path("demo", "run-a").read_bytes()
+    original_catalogue = env.project_file.read_bytes()
+    application = api.app.state.application
+    scope, project, resolved = application.resolve_scope("demo", "project", "demo")
+    intent = {"kind": "CREATE_CAMPAIGN_DRAFT", "title": "reject invalid identity", "target": "candidate",
+        "risk": "isolated validation", "idempotency_key": "invalid-campaign-identity",
+        "evidence_digest": evidence_digest(application.bounded_evidence(scope, project, resolved)),
+        "draft": yaml.safe_dump({"schema_version": 1, "project": "demo", "campaign": "candidate",
+            "runs": runs, "run_refs": run_refs, "budget": {"gpu_hours": 1}})}
+    response = api.post("/api/actions/prepare", json={"project": "demo", "scope_type": "project",
+        "object_id": "demo", "intent": intent})
+    assert response.status_code == 200, response.text
+    plan = response.json()
+    assert not plan["ready"] and plan["execution"]["status"] == "BLOCKED"
+    assert next(gate for gate in plan["gates"] if gate["name"] == "immutable_run_ids")["status"] == "FAIL"
+    action_id = plan["action_id"]
+    authorization = api.post("/api/actions/authorize", json={"action_id": action_id, "note": "cannot override invalid IDs"})
+    execution = api.post("/api/actions/execute", json={"action_id": action_id, "confirmation": "EXECUTE " + action_id})
+    assert authorization.status_code == execution.status_code == status
+    assert authorization.headers["X-ML-Expd-Error-Code"] == execution.headers["X-ML-Expd-Error-Code"] == code
+    assert fence.path("demo", "run-a").read_bytes() == original_fence
+    assert env.project_file.read_bytes() == original_catalogue
+    assert not (env.root / "managed/demo/experiments/campaigns/candidate.yml").exists()
+    assert not env.backend.calls and not env.deleted
+
+
+@pytest.mark.parametrize("project,run", [("demo", "../run-a"), ("demo", None), ("demo", 7), ("../demo", "run-a")])
+def test_action_run_guard_returns_validation_error_for_invalid_identity_without_effects(deletion_env, project, run):
+    env = deletion_env
+    original_catalogue = env.project_file.read_bytes()
+    with pytest.raises(ApplicationError) as caught:
+        require_action_runs(env.runtime.action_service, project, [run])
+    assert (caught.value.status_code, caught.value.code) == (422, "INVALID_RUN_IDENTITY")
+    assert env.project_file.read_bytes() == original_catalogue
+    assert not RunFence(env.root).is_deleted("demo", "run-a")
+    assert not env.backend.calls and not env.deleted
+
+
 def test_startup_campaign_write_cannot_restore_deleted_run_or_hide_other_failure(deletion_env, monkeypatch):
     env = deletion_env
     service = env.runtime.action_service

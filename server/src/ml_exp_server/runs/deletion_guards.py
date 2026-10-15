@@ -4,6 +4,7 @@ from functools import wraps
 import yaml
 
 from ..deletion_state import RunFence
+from ..application_errors import ApplicationError
 from ..schemas import OperationScopeType
 
 
@@ -20,7 +21,14 @@ def require_action_runs(service, project, runs):
     deletion = getattr(service, "deletion_service", None)
     if deletion is not None:
         for run in runs:
-            deletion.fence.require_live(project, run)
+            require_live(deletion.fence, project, run)
+
+
+def require_live(fence, project, run):
+    try:
+        fence.require_live(project, run)
+    except ValueError:
+        raise ApplicationError("invalid Run identity", status_code=422, code="INVALID_RUN_IDENTITY") from None
 
 
 def action_guard(service, snapshot):
@@ -49,5 +57,5 @@ def _action_guard(fence, scope, snapshot):
                 if isinstance(reference, dict) and isinstance(reference.get("run_id"), str):
                     runs.add(reference["run_id"])
         for run in runs:
-            fence.require_live(scope["project"], run)
+            require_live(fence, scope["project"], run)
         yield
