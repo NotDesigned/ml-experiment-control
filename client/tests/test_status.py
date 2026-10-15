@@ -245,3 +245,68 @@ def test_malformed_saved_resource_is_rejected_before_http(tmp_path, key, value):
     with pytest.raises(ClientError, match="invalid saved"):
         run_status(api, HEALTH, "demo", "trial", state_path=state(tmp_path / "state", **{key: value}))
     assert not api.calls
+
+
+@pytest.mark.parametrize("missing_run", [False, True])
+@pytest.mark.parametrize("phase", ["VALIDATING_SOURCE", "STAGING", "FAILED_BEFORE_SUBMISSION"])
+def test_exact_saved_submission_can_precede_attempt_materialization(tmp_path, missing_run, phase):
+    api = Reader()
+    api.submission["status"] = "FAILED" if phase == "FAILED_BEFORE_SUBMISSION" else "EXECUTING"
+    if phase == "FAILED_BEFORE_SUBMISSION":
+        api.submission["execution"] = {"resolution": phase}
+    api.progress["phase"] = phase
+    # Existing history must not be mistaken for the new planned Attempt.
+    api.attempts.update(current_attempt_id="attempt-001", attempts=api.attempts["attempts"][:1])
+    if missing_run:
+        api.run = ClientError("not found", status=404)
+    saved = state(tmp_path / "state")
+    original = saved.read_bytes()
+    result = run_status(api, HEALTH, "demo", "trial", state_path=saved, details=True)
+    assert result["attempt_id"] == "attempt-002"
+    assert result["scheduler"]["state"] == "NOT_SUBMITTED" and result["scheduler"]["stale"]
+    assert result["training"]["status"] == "UNKNOWN" and result["training"]["process_state"] is None
+    assert not result["publication"]["download_available"]
+    assert result["evidence"]["progress"]["phase"] == phase
+    assert "attempt" not in result["evidence"]
+    assert not any(path.endswith(("/collection", "/show")) or kwargs for path, kwargs in api.calls)
+    assert saved.read_bytes() == original
+
+
+@pytest.mark.parametrize("status,phase,resolution", [
+    ("EXECUTING", "SCHEDULER_SUBMITTING", None),
+    ("EXECUTING", "VERIFYING_SUBMISSION", None),
+    ("EXECUTING", "RUNNING", None),
+    ("VERIFIED", "STAGING", None),
+    ("RECONCILE_REQUIRED", "STAGING", None),
+    ("FAILED", "FAILED", "SUBMISSION_UNCERTAIN"),
+    ("FAILED", "FAILED", None),
+])
+def test_missing_attempt_is_not_guessed_from_uncertain_or_later_submission(tmp_path, status, phase, resolution):
+    api = Reader()
+    api.attempts.update(current_attempt_id=None, attempts=[])
+    api.submission.update(status=status, execution={"resolution": resolution})
+    api.progress["phase"] = phase
+    with pytest.raises(ClientError, match="absent from the Run listing"):
+        run_status(api, HEALTH, "demo", "trial", state_path=state(tmp_path / "state"))
+    assert not any(path.endswith(("/collection", "/show")) or kwargs for path, kwargs in api.calls)
+
+
+@pytest.mark.parametrize("contradiction", ["current", "identity"])
+def test_before_submission_does_not_hide_contradictory_attempt_listing(tmp_path, contradiction):
+    api = Reader()
+    api.submission["status"] = "EXECUTING"
+    api.progress["phase"] = "STAGING"
+    if contradiction == "current":
+        api.attempts["attempts"] = []
+    else:
+        api.attempts["attempts"][-1]["identity"] = "other::attempt-002"
+    with pytest.raises(ClientError, match="absent from the Run listing"):
+        run_status(api, HEALTH, "demo", "trial", state_path=state(tmp_path / "state"))
+
+
+def test_staging_without_bound_progress_does_not_excuse_missing_attempt(tmp_path):
+    api = Reader()
+    api.submission["status"] = "EXECUTING"
+    api.attempts.update(current_attempt_id=None, attempts=[])
+    with pytest.raises(ClientError, match="absent from the Run listing"):
+        run_status(api, {}, "demo", "trial", state_path=state(tmp_path / "state"))

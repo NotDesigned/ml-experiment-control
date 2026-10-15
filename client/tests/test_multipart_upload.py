@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from ml_exp_client.api import Client, ClientError, upload_asset_parts, data_archive
+from ml_exp_client.api import Client, ClientError
+from ml_exp_client.assets import upload_asset_parts
+from ml_exp_client.archives import data_archive
 from ml_exp_client.cli import main
 
 
@@ -42,7 +44,7 @@ def run(client,tmp_path,data):
 
 @pytest.mark.parametrize('failure',[ClientError('lost response',retryable=True),ClientError('temporary outage',status=503),ClientError('rate limit',status=429)])
 def test_lost_part_response_resumes_without_resending_committed_data(tmp_path,monkeypatch,failure):
-    monkeypatch.setattr('ml_exp_client.api.time.sleep',lambda seconds:None)
+    monkeypatch.setattr('ml_exp_client.assets.time.sleep',lambda seconds:None)
     data=b'a'*1024+b'b'*900
     client=UploadClient(data,fail=failure)
     result=run(client,tmp_path,data)
@@ -60,7 +62,7 @@ def test_invalid_receipt_is_not_retried(tmp_path,change):
 
 
 def test_completed_upload_conflicts_and_exhausted_retries(tmp_path,monkeypatch):
-    monkeypatch.setattr('ml_exp_client.api.time.sleep',lambda seconds:None)
+    monkeypatch.setattr('ml_exp_client.assets.time.sleep',lambda seconds:None)
     client=UploadClient(b'data',change={'status':'COMPLETED','result':{'status':'READY'}})
     assert run(client,tmp_path,b'data')=={'status':'READY'}
     client=UploadClient(b'data',change={'parts':{'0':{'sha256':'a'*64,'bytes':4}}})

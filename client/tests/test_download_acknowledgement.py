@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from ml_exp_client.api import ClientError, acknowledge, download
+from ml_exp_client.api import ClientError
+from ml_exp_client.artifacts import acknowledge, download
 from test_direct_download import archive
 
 
@@ -37,7 +38,7 @@ class API:
 def test_download_acknowledges_only_after_full_validation_and_durable_save(tmp_path,keep,monkeypatch):
     api=API();api.out=tmp_path/'out'
     synced=[]
-    from ml_exp_client import api as transport
+    from ml_exp_client import artifacts as transport
     original=transport.os.fsync
     def fsync(fd):synced.append(fd);return original(fd)
     monkeypatch.setattr(transport.os,'fsync',fsync)

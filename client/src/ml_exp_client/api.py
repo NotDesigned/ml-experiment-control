@@ -1,31 +1,21 @@
-"""Protocol-2 HTTP transport, source packaging and verified artifact retrieval.
-
-Only resumable archive transfers retry transient failures. Scheduler operations
-are never replayed automatically. See docs/api-quickstart.md.
-"""
+"""Protocol-2 HTTP transport with bounded safe diagnostics and no request replay."""
 from __future__ import annotations
 
-import hashlib
-import gzip
-import io
 import ipaddress
 import json
 import math
-import os
-from pathlib import Path, PurePosixPath
 import re
-import tarfile
-import tempfile
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 ERROR_BODY_BYTES = 16 * 1024
 _SENSITIVE_FIELD = re.compile(r"token|secret|password|credential|authorization|cookie|(?:api|private|access|client)[_-]?key|signature|url|argv|command|environment|^env$|^input$|headers|body|^auth$|^key$", re.I)
+_ATTEMPT = re.compile(r"attempt-[0-9]{3,}\Z")
 
 
 def _safe_error_text(value, token):
@@ -87,6 +77,14 @@ class ClientError(RuntimeError):
         self.body_truncated = body_truncated
 
 
+def error_payload(error, token=""):
+    """Render one bounded diagnostic consistently in CLI and partial checks."""
+    return {"error": _safe_error_text(str(error), token), **{
+        key: _safe_error_json(getattr(error, key), token)
+        for key in ("status", "retryable", "error_code", "retry_after", "details", "response_body", "body_truncated")
+    }}
+
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         # Never forward a bearer token to another URL after a proxy redirect.
@@ -97,6 +95,12 @@ def segment(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}", value):
         raise ClientError("invalid API identity")
     return quote(value, safe="")
+
+
+def attempt_id(value):
+    if not isinstance(value, str) or not _ATTEMPT.fullmatch(value):
+        raise ClientError("choose an exact attempt-NNN identity")
+    return value
 
 
 class Client:
@@ -194,298 +198,3 @@ class Client:
             if time.monotonic() >= deadline:
                 raise ClientError(f"poll timed out: GET {path}; execution continues on the server")
             time.sleep(interval)
-
-
-def save(path: Path, value):
-    # State contains recovery IDs and sanitized API responses, never auth headers.
-    output = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
-                                         prefix="." + path.name + ".", delete=False)
-    temporary = Path(output.name)
-    try:
-        with output:
-            json.dump(value, output, indent=2)
-            output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
-        temporary.replace(path)
-        if os.name != "nt":
-            directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def source_archive(directory: Path) -> bytes:
-    if not directory.is_dir() or directory.is_symlink():
-        raise ClientError("source must be a regular directory")
-    stream = io.BytesIO()
-    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
-        for path in sorted(directory.rglob("*")):
-            relative = path.relative_to(directory)
-            # Skip developer metadata; never silently skip credential-looking files.
-            if any(p in {".git", ".venv", "__pycache__"} for p in relative.parts):
-                continue
-            if path.is_symlink() or not (path.is_dir() or path.is_file()):
-                raise ClientError("source contains a link or special file")
-            if (any(p.startswith(".env") or p.lower() in {"credentials", "secrets", ".ssh"}
-                    for p in relative.parts) or path.suffix.lower() in {".pem", ".key", ".p12", ".pfx"}):
-                raise ClientError("remove credential-looking paths before uploading source")
-            if path.is_file():
-                archive.add(path, arcname=relative.as_posix(), recursive=False)
-    value = stream.getvalue()
-    if len(value) > 64 * 1024 ** 2:
-        raise ClientError("client limits source uploads to 64 MiB")
-    return value
-
-
-def download(client: Client, project: str, run: str, attempt: str, out: Path, *, keep_server_copy=False):
-    endpoint = f"/api/runs/{segment(project)}/{segment(run)}/attempts/{segment(attempt)}"
-    try:
-        ticket = client.call(endpoint + "/artifacts/download")
-    except ClientError as exc:
-        if exc.status != 404:
-            raise
-        report = _download_proxy(client, project, run, attempt, out)
-        if "artifact-retention.v1" in getattr(client, "capabilities", []) and report.get("archive_sha256"):
-            return _acknowledge_report(client, out, report, keep_server_copy=keep_server_copy)
-        return report
-    report = _download_object(client, project, run, attempt, out, ticket)
-    if ticket.get("acknowledgement", {}).get("contract") == "artifact-retention.v1":
-        return _acknowledge_report(client, out, report, keep_server_copy=keep_server_copy)
-    return report
-
-
-def _sync_download(out):
-    # Confirm durable local bytes before granting remote deletion. Windows does
-    # not expose POSIX directory fsync, but file fsync is still required.
-    for path in out.rglob("*"):
-        if path.is_file():
-            with path.open("r+b") as stream:
-                os.fsync(stream.fileno())
-    if os.name != "nt":
-        for directory in [*reversed(sorted(p for p in out.rglob("*") if p.is_dir())), out]:
-            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-
-
-def _acknowledge_report(client, out, report, *, keep_server_copy=False):
-    _sync_download(out)
-    report["acknowledgement"] = {"status": "PENDING", "keep_server_copy": keep_server_copy}
-    save(out / "verification.json", report)
-    endpoint = f"/api/runs/{segment(report['project'])}/{segment(report['run_id'])}/attempts/{segment(report['attempt_id'])}/artifacts/ack"
-    proof = {k: report[k] for k in ("archive_sha256", "archive_bytes", "files")}
-    try:
-        report["acknowledgement"] = client.call(endpoint, data={**proof, "release": not keep_server_copy})
-    except ClientError as error:
-        # Local results remain usable. Retry only the acknowledgement, never
-        # redownload or replay training because its response was lost.
-        report["acknowledgement"].update(http_status=error.status, retry_command="ml-exp acknowledge --directory " + str(out))
-    save(out / "verification.json", report)
-    return report
-
-
-def acknowledge(client, out: Path, *, keep_server_copy=None):
-    """Revalidate saved local results and retry only their exact acknowledgement."""
-    report = json.loads((out / "verification.json").read_text())
-    if keep_server_copy is None:
-        previous = report.get("acknowledgement", {})
-        keep_server_copy = previous.get("keep_server_copy", previous.get("status") == "KEEP")
-    if not report.get("archive_sha256") or not report.get("archive_bytes"):
-        raise ClientError("archive proof is unavailable; keep the server copy")
-    archive = out / "artifacts.tar"
-    if archive.is_symlink():
-        raise ClientError("downloaded archive must be a regular local file")
-    with archive.open("rb") as stream:
-        if copy_stream(stream) != (report["archive_sha256"], report["archive_bytes"]):
-            raise ClientError("saved archive differs from verification report")
-    for name, expected in report["files"].items():
-        relative = PurePosixPath(name)
-        if not relative.parts or relative.parts[0] != "outputs" or ".." in relative.parts or "\\" in name:
-            raise ClientError("saved verification path is invalid")
-        file = out / relative
-        if file.is_symlink() or not file.resolve().is_relative_to(out.resolve()):
-            raise ClientError("saved verification path is outside the download")
-        with file.open("rb") as stream:
-            if copy_stream(stream) != (expected["sha256"], expected["bytes"]):
-                raise ClientError("saved file differs from verification report")
-    return _acknowledge_report(client, out, report, keep_server_copy=keep_server_copy)
-
-
-def _download_object(client, project, run, attempt, out, ticket):
-    if ticket.get("transport") != "s3-presigned-get" or not re.fullmatch(r"[0-9a-f]{64}", ticket.get("sha256", "")):
-        raise ClientError("invalid object storage download receipt")
-    expected = {}
-    for item in ticket["files"]:
-        path = PurePosixPath(item["path"])
-        if (not path.parts or path.is_absolute() or ".." in path.parts or "\\" in item["path"]
-                or any(p.startswith(".") for p in path.parts) or path.as_posix() in expected):
-            raise ClientError("download receipt contains an unsafe or duplicate path")
-        expected[path.as_posix()] = item
-    out.mkdir(parents=True, exist_ok=False)
-    with client.open_object(ticket["url"]) as response, (out / "artifacts.tar").open("xb") as output:
-        digest, size = copy_stream(response, output)
-    if digest != ticket["sha256"] or size != ticket["bytes"]:
-        raise ClientError("artifact archive differs from download receipt")
-    downloaded = {}
-    with tarfile.open(out / "artifacts.tar", mode="r:") as archive:
-        for member in archive:
-            if member.isdir():
-                continue
-            path = PurePosixPath(member.name)
-            name = path.as_posix()
-            if not member.isfile() or name not in expected or name in downloaded:
-                raise ClientError("archive contains an unexpected or duplicate file")
-            target = out / "outputs" / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.extractfile(member) as body, target.open("xb") as output:
-                sha, count = copy_stream(body, output)
-            if count != expected[name]["bytes"] or expected[name].get("sha256", sha) != sha:
-                raise ClientError("artifact file differs from download receipt")
-            downloaded[name] = {"sha256": sha, "bytes": count}
-    if set(downloaded) != set(expected):
-        raise ClientError("archive and download receipt file sets differ")
-    report = {"project": project, "run_id": run, "attempt_id": attempt,
-              "archive_sha256": digest, "archive_bytes": size, "transport": "s3-presigned-get",
-              "files": {"outputs/" + name: value for name, value in downloaded.items()}}
-    save(out / "verification.json", report)
-    return report
-
-
-def _download_proxy(client: Client, project: str, run: str, attempt: str, out: Path):
-    endpoint = f"/api/runs/{segment(project)}/{segment(run)}/attempts/{segment(attempt)}"
-    listing = client.call(endpoint + "/files?checksums=true")
-    if not listing["files"] or listing.get("truncated"):
-        raise ClientError("files are unavailable or listing is truncated; inspect this exact Attempt")
-    out.mkdir(parents=True, exist_ok=False)
-    downloaded = {}
-    for item in listing["files"]:
-        path = PurePosixPath(item["path"])
-        if (path.is_absolute() or ".." in path.parts or "\\" in item["path"]
-                or not path.parts or path.parts[0] != "outputs"
-                or any(p.startswith(".") for p in path.parts)):
-            continue  # Backend logs/metadata are separate from uploaded outputs.
-        target = out.joinpath(*path.parts)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with client.open(endpoint + "/files/" + quote(item["path"], safe="/")) as response:
-            with target.open("xb") as output:
-                digest, size = copy_stream(response, output)
-        if size != item["bytes"]:
-            raise ClientError("downloaded file size differs from listing")
-        if item.get("sha256", digest) != digest:
-            raise ClientError("downloaded file SHA256 differs from listing")
-        downloaded[path.as_posix()] = {"sha256": digest, "bytes": size}
-    try:
-        response = client.open(endpoint + "/artifacts/archive")
-    except ClientError as error:
-        if error.status != 404:
-            raise
-        expected = {"outputs/" + item["path"].removeprefix("outputs/"): item for item in listing["files"] if item["path"].startswith("outputs/")}
-        if not downloaded or set(expected) != set(downloaded) or any(expected[name].get("sha256") != value["sha256"] for name, value in downloaded.items()):
-            raise ClientError("archive is unavailable and complete file SHA256 evidence is missing") from error
-        report = {"project": project, "run_id": run, "attempt_id": attempt,
-                  "archive_sha256": None, "archive_bytes": None, "transport": "http-files",
-                  "files": downloaded}
-        save(out / "verification.json", report)
-        return report
-    with response:
-        expected = response.headers.get("ETag", "").strip('"')
-        with (out / "artifacts.tar").open("xb") as output:
-            digest, size = copy_stream(response, output)
-    if not re.fullmatch(r"[0-9a-f]{64}", expected) or digest != expected:
-        raise ClientError("artifact archive SHA256 differs from server receipt")
-    members = set()
-    with tarfile.open(out / "artifacts.tar", mode="r:") as archive:
-        for member in archive:
-            if member.isdir():
-                continue
-            relative = PurePosixPath(member.name)
-            if relative.is_absolute() or ".." in relative.parts or "\\" in member.name:
-                raise ClientError("archive contains an unsafe path")
-            name = "outputs/" + relative.as_posix()
-            if not member.isfile() or name in members or name not in downloaded:
-                raise ClientError("archive contains an unexpected or duplicate file")
-            members.add(name)
-            with archive.extractfile(member) as body:
-                actual, count = copy_stream(body)
-            if downloaded[name] != {"sha256": actual, "bytes": count}:
-                raise ClientError("individual file differs from uploaded archive")
-    if members != set(downloaded):
-        raise ClientError("archive and downloaded file sets differ")
-    report = {"project": project, "run_id": run, "attempt_id": attempt,
-              "archive_sha256": digest, "archive_bytes": size, "files": downloaded}
-    save(out / "verification.json", report)
-    return report
-
-
-def copy_stream(source, target=None):
-    digest, size = hashlib.sha256(), 0
-    while chunk := source.read(1024 * 1024):
-        digest.update(chunk)
-        size += len(chunk)
-        if target is not None:
-            target.write(chunk)
-    return digest.hexdigest(), size
-
-
-def data_archive(directory: Path, stream):
-    if not directory.is_dir() or directory.is_symlink():
-        raise ClientError("data asset must be a regular directory")
-    with gzip.GzipFile(filename="", fileobj=stream, mode="wb", mtime=0) as compressed, \
-            tarfile.open(fileobj=compressed, mode="w") as archive:
-        for path in sorted(directory.rglob("*")):
-            relative = path.relative_to(directory)
-            if path.is_symlink() or not (path.is_dir() or path.is_file()):
-                raise ClientError("data asset contains a link or special file")
-            if any(p.startswith(".") for p in relative.parts) or path.suffix.lower() in {".pem", ".key", ".p12", ".pfx"}:
-                raise ClientError("data asset contains a hidden or credential-looking path")
-            if path.is_file():
-                member = archive.gettarinfo(str(path), arcname=relative.as_posix())
-                member.uid = member.gid = member.mtime = 0
-                member.uname = member.gname = ""
-                member.mode = 0o400
-                with path.open("rb") as body:
-                    archive.addfile(member, body)
-    length = stream.tell()
-    stream.seek(0)
-    digest, _ = copy_stream(stream)
-    stream.seek(0)
-    return digest, length
-
-
-def upload_asset_parts(client, project, stream, digest, length, state):
-    endpoint = f"/api/projects/{segment(project)}/asset-uploads"
-    for attempt in range(3):
-        try:
-            value = client.call(endpoint, data={"sha256": digest, "bytes": length})
-            part_bytes = value["part_bytes"]
-            if (not 1024 <= part_bytes <= 64 * 1024 ** 2 or value["sha256"] != digest or value["bytes"] != length
-                    or value["part_count"] != (length + part_bytes - 1) // part_bytes
-                    or not re.fullmatch(r"upload\.[0-9a-f]{64}", value["upload_id"])):
-                raise ClientError("invalid multipart upload receipt")
-            if value["status"] == "COMPLETED":
-                return value["result"]
-            save(state, {"project": project, "asset_id": "asset." + digest, "archive_bytes": length,
-                         "upload_id": value["upload_id"], "status": "UPLOADING"})
-            root = endpoint + "/" + value["upload_id"]
-            stream.seek(0)
-            for number in range(value["part_count"]):
-                data = stream.read(part_bytes)
-                sha = hashlib.sha256(data).hexdigest()
-                previous = value["parts"].get(str(number))
-                if previous:
-                    if previous != {"sha256": sha, "bytes": len(data)}:
-                        raise ClientError("sealed upload part differs from the local archive")
-                    continue
-                client.call(root + "/parts/" + str(number) + "?sha256=" + sha, raw=data, method="PUT",
-                            timeout=getattr(client, "upload_timeout", 1200))
-            return client.call(root + "/complete", data={}, timeout=getattr(client, "upload_timeout", 1200))
-        except ClientError as exc:
-            if attempt == 2 or not (exc.retryable or exc.status == 429 or exc.status is not None and exc.status >= 500):
-                raise
-            time.sleep(2 ** attempt)

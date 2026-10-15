@@ -179,3 +179,59 @@ def test_cli_rechecks_diagnostic_sanitization_and_preserves_other_errors(monkeyp
     error = OSError("local file unavailable")
     assert cli.main(["--url", "https://api.example", "check"]) == 2
     assert capsys.readouterr().err == "error: local file unavailable\n"
+
+
+def test_optional_storage_check_failure_preserves_successes_and_nonzero_status(tmp_path, monkeypatch, capsys):
+    from ml_exp_client.cli import main
+    calls = []
+    class PartialCheck:
+        def __init__(self, url, token):
+            self.token = token
+        def negotiate(self):
+            return {"version": "test", "capabilities": ["data-assets.v1", "environments.v1"],
+                    "openapi_path": "/api/v2/openapi.json"}
+        def call(self, path):
+            calls.append(path)
+            if path == "/api/storage-limits":
+                raise ClientError("capacity private-bearer https://private.example", status=503,
+                    error_code="DESKTOP_RPC_FAILED", retry_after=2,
+                    details={"available_bytes": 12, "password": "private-password"},
+                    response_body={"detail": "temporarily unavailable", "authorization": "private-auth"})
+            return {"path": path}
+    monkeypatch.setenv("ML_EXPD_API_TOKEN", "private-bearer")
+    monkeypatch.setattr("ml_exp_client.cli.Client", PartialCheck)
+    schema = tmp_path / "openapi.json"
+    assert main(["--url", "https://api.example", "check", "--schema", str(schema)]) == 2
+    output = capsys.readouterr()
+    report = json.loads(output.out)
+    assert output.err == ""
+    assert report["health"]["version"] == "test"
+    assert report["policy"] == {"path": "/api/actions/policy"}
+    assert report["executors"] == {"path": "/api/executors"}
+    assert report["environments"] == {"path": "/api/environments"}
+    error = report["storage_limits_error"]
+    assert error["status"] == 503 and error["error_code"] == "DESKTOP_RPC_FAILED" and error["retry_after"] == 2
+    assert error["details"]["available_bytes"] == 12
+    assert "storage_limits" not in report
+    assert json.loads(schema.read_text()) == {"path": "/api/v2/openapi.json"}
+    assert calls.count("/api/storage-limits") == 1
+    for secret in ("private-bearer", "private.example", "private-password", "private-auth"):
+        assert secret not in output.out
+
+
+def test_check_still_fails_closed_when_required_executor_query_fails(monkeypatch, capsys):
+    from ml_exp_client.cli import main
+    class FailedCheck:
+        def __init__(self, *args):
+            pass
+        def negotiate(self):
+            return {"capabilities": ["data-assets.v1"]}
+        def call(self, path):
+            if path == "/api/actions/policy":
+                return {}
+            assert path == "/api/executors"
+            raise ClientError("executors unavailable", status=503)
+    monkeypatch.setattr("ml_exp_client.cli.Client", FailedCheck)
+    assert main(["--url", "https://api.example", "check"]) == 2
+    output = capsys.readouterr()
+    assert output.out == "" and json.loads(output.err)["status"] == 503

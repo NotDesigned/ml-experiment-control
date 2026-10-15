@@ -8,7 +8,8 @@ from urllib.error import HTTPError
 
 import pytest
 
-from ml_exp_client.api import Client, ClientError, download
+from ml_exp_client.api import Client, ClientError
+from ml_exp_client.artifacts import download
 
 
 def archive(files):
@@ -69,7 +70,7 @@ def test_download_fallback_occurs_only_for_missing_feature(tmp_path, monkeypatch
     class API:
         def call(self, path):
             raise ClientError("HTTP error", status=status)
-    monkeypatch.setattr("ml_exp_client.api._download_proxy", lambda *args: "legacy-download")
+    monkeypatch.setattr("ml_exp_client.artifacts._download_proxy", lambda *args: "legacy-download")
     if status == 404:
         assert download(API(), "demo", "run-a", "attempt-001", tmp_path) == "legacy-download"
     else:

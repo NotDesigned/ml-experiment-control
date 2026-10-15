@@ -2,23 +2,14 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-from importlib.resources import files
 import json
 import os
 from pathlib import Path
 import sys
-import time
-import tempfile
-from urllib.parse import urlencode
 
 from . import __version__
-from .api import Client, ClientError, _safe_error_json, _safe_error_text, acknowledge, data_archive, download, save, segment, source_archive, upload_asset_parts
-from .workflow import experiment, validate_dockerfile, report
-from .data_delivery import deliver_data
-from .operations import read_attempt, training_operation
-from .run_deletion import run_deletion
-from .status import run_status
+from .api import Client, ClientError, error_payload
+from .commands import dispatch, initialize
 
 
 def parser():
@@ -174,221 +165,17 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         if args.command == "init":
-            args.directory.mkdir(parents=True, exist_ok=False)
-            template = files("ml_exp_client").joinpath("templates", "train.py.txt")
-            (args.directory / "train.py").write_bytes(template.read_bytes())
-            # The exact stdlib module also works without installing the client
-            # in a training image. Keep one canonical implementation.
-            helper = files("ml_exp_client").joinpath("metrics.py")
-            (args.directory / "ml_exp_metrics.py").write_bytes(helper.read_bytes())
-            base = args.base_image or "REPLACE_WITH_APPROVED_BASE@sha256:" + "0" * 64
-            (args.directory / "Dockerfile").write_text(f"FROM {base}\nWORKDIR /workspace\n", encoding="utf-8")
-            print(json.dumps({"source_dir": str(args.directory), "entrypoint": ["python", "train.py"]}, indent=2))
+            print(json.dumps(initialize(args), indent=2))
             return 0
         token = os.environ.get("ML_EXPD_API_TOKEN", "")
         if not token and os.environ.get("ML_EXPD_API_TOKEN_FILE"):
             token = Path(os.environ["ML_EXPD_API_TOKEN_FILE"]).read_text().strip()
         client = Client(args.url or "", token)
         health = client.negotiate()
-        def wait(endpoint, **kwargs):
-            if "execution-progress.v1" in health.get("capabilities", []):
-                kwargs["observer"] = lambda value: report(client.call(endpoint + "/progress"))
-            return client.wait(endpoint, **kwargs)
-        if args.command == "check":
-            result = {"health": health, "policy": client.call("/api/actions/policy"),
-                      "executors": client.call("/api/executors")}
-            if "environments.v1" in health.get("capabilities", []):
-                result["environments"] = client.call("/api/environments")
-            if "data-assets.v1" in health.get("capabilities", []):
-                result["storage_limits"] = client.call("/api/storage-limits")
-            if args.schema:
-                save(args.schema, client.call(health["openapi_path"]))
-        elif args.command == "collect":
-            if "result-collection.v1" not in health.get("capabilities", []):
-                raise ClientError("server lacks result-collection.v1")
-            endpoint = f"/api/runs/{segment(args.project)}/{segment(args.run)}/attempts/{segment(args.attempt)}/collection"
-            result = (client.call(endpoint, data={"retry": args.retry, "reconcile": args.reconcile})
-                      if args.start or args.retry or args.reconcile else client.call(endpoint))
-        elif args.command == "status":
-            result = run_status(client, health, args.project, args.run, args.attempt,
-                                state_path=args.state, details=args.details)
-        elif args.command in {"logs", "metrics"}:
-            options = ({"stream": args.stream, "lines": args.lines} if args.command == "logs"
-                       else {"keys": args.keys, "max_points": args.max_points})
-            result = read_attempt(client, args.command, args.project, args.run, args.attempt, **options)
-        elif args.command in {"cancel", "retry"}:
-            result = training_operation(client, args.command, args.state, project=args.project,
-                run=args.run, attempt=args.attempt, reason=args.reason, execute=args.execute,
-                reconcile=args.reconcile, action_id=args.action_id,
-                max_gpu_hours=getattr(args, "max_gpu_hours", None),
-                new_attempt=getattr(args, "new_attempt", None))
-        elif args.command == "delete":
-            if "resource-deletion.v1" not in health.get("capabilities", []):
-                raise ClientError("server lacks resource-deletion.v1")
-            result = run_deletion(client, args.state, project=args.project, run=args.run,
-                reason=args.reason, execute=args.execute, reconcile=args.reconcile, action_id=args.action_id)
-        elif args.command == "experiment":
-            result = experiment(client, health, args.config, args.state, resume=args.resume,
-                                execute=args.execute, seconds=args.seconds, out=args.download_to,
-                                continue_preparation=args.continue_preparation, keep_server_copy=args.keep_server_copy)
-        elif args.command == "acknowledge":
-            result = acknowledge(client, args.directory, keep_server_copy=args.keep_server_copy)
-        elif args.command in {"tracking", "wandb"}:
-            if "wandb-sync.v1" not in health.get("capabilities", []):
-                raise ClientError("server lacks wandb-sync.v1")
-            if args.command == "tracking":
-                endpoint = f"/api/runs/{segment(args.project)}/{segment(args.run)}/tracking"
-                result = client.call(endpoint + "/retry", data={}) if args.retry else client.call(endpoint)
-            elif args.key_file or args.entity or args.project or args.disable or args.enable or args.clear_credentials:
-                if args.enable and args.disable:
-                    raise ClientError("choose --enable or --disable")
-                definition = {}
-                if args.enable or args.disable:
-                    definition["enabled"] = args.enable
-                for key in ("entity", "project"):
-                    if getattr(args, key) is not None:
-                        definition[key] = getattr(args, key)
-                if args.clear_credentials:
-                    definition["clear_credentials"] = True
-                if args.key_file:
-                    definition["api_key"] = args.key_file.read_text().strip()
-                result = client.call("/api/tracking/wandb", data=definition, method="PUT")
-            else:
-                result = client.call("/api/tracking/wandb")
-        elif args.command == "pack":
-            if args.state.exists():
-                raise ClientError("state file exists; inspect it with runtime instead of replaying pack")
-            if "dockerfile-build.v1" not in health.get("capabilities", []):
-                raise ClientError("server does not advertise the Dockerfile build capability")
-            validate_dockerfile(args.source, args.dockerfile)
-            source = source_archive(args.source)
-            query = urlencode({"project": args.project, "sha256": hashlib.sha256(source).hexdigest()})
-            imported = client.call("/api/source-imports/archive?" + query, raw=source)
-            save(args.state, imported)
-            endpoint = "/api/projects/" + segment(args.project) + "/runtimes"
-            definition = {"source_id": imported["source_id"], "entrypoint": args.entrypoint}
-            definition["dockerfile"] = args.dockerfile
-            result = client.call(endpoint + "/prepare", data=definition)
-            save(args.state, result)  # Recovery identity is saved before starting packaging.
-            endpoint += "/" + segment(result["runtime_id"])
-            if result["status"] == "PREPARED":
-                client.call(endpoint + "/execute", data={"confirmation": result["confirmation"]})
-            result = wait(endpoint, pending=("PREPARED", "EXECUTING"))
-            save(args.state, result)
-            if result["status"] != "READY":
-                raise ClientError("packaging requires inspection; use runtime --state FILE --reconcile")
-        elif args.command == "runtime":
-            saved = json.loads(args.state.read_text())
-            endpoint = f"/api/projects/{segment(saved['project'])}/runtimes/{segment(saved['runtime_id'])}"
-            result = client.call(endpoint)
-            if args.reconcile and result["status"] in {"RECONCILE_REQUIRED", "EXECUTING"}:
-                client.call(endpoint + "/reconcile", data={"confirmation": result["confirmation"]})
-            result = wait(endpoint)
-            save(args.state, result)
-            if args.logs:
-                result = {"runtime": result, "build_logs": client.call(endpoint + "/logs")}
-        elif args.command == "create":
-            saved = json.loads(args.runtime_state.read_text())
-            definition = {
-                "runtime_id": saved["runtime_id"], "run_id": args.run, "executor": args.executor,
-                "arguments": args.arguments, "resources": {"gpus": args.gpus, "cpus": args.cpus,
-                "memory_gb": args.memory_gb, "max_time": args.max_time}, "outputs": ["**/*"], "inputs": args.inputs}
-            if args.wandb is not None:
-                definition["wandb"] = args.wandb
-            if args.parameters is not None:
-                definition["parameters"] = args.parameters
-            if args.checkpoint_interval is not None:
-                definition["checkpoint_upload"] = {"interval_seconds": args.checkpoint_interval}
-            if args.data_preparation is not None:
-                if "data-preparation.v1" not in health.get("capabilities", []):
-                    raise ClientError("server lacks data-preparation.v1; upgrade before using a download script")
-                definition["data_preparation"] = args.data_preparation
-            if args.checkpoint_state_interval is not None or args.resume_from is not None:
-                if "persistent-checkpoints.v1" not in health.get("capabilities", []):
-                    raise ClientError("server lacks persistent-checkpoints.v1")
-                if args.checkpoint_state_interval is not None:
-                    definition["checkpoint_persistence"] = {"interval_seconds": args.checkpoint_state_interval}
-                if args.resume_from is not None:
-                    definition["resume_from"] = args.resume_from
-            result = client.call(f"/api/projects/{segment(saved['project'])}/runs", data=definition)
-        elif args.command == "asset-upload":
-            if args.state.exists() and not args.resume:
-                raise ClientError("state file exists; inspect the saved asset ID instead of replaying upload")
-            if args.executor:
-                if "ccr-data-delivery.v1" not in health.get("capabilities", []):
-                    raise ClientError("server lacks ccr-data-delivery.v1")
-                catalogue = client.call("/api/executors")["executors"]
-                if not any(item["id"] == args.executor and item.get("kind") == "sensecore" for item in catalogue):
-                    raise ClientError("data preparation requires a published SenseCore executor")
-            limits = client.call("/api/storage-limits")
-            with tempfile.TemporaryFile() as stream:
-                digest, length = data_archive(args.directory, stream)
-                if limits["asset_archive_bytes"] is not None and length > limits["asset_archive_bytes"]:
-                    raise ClientError("data archive exceeds server upload limit")
-                if args.resume:
-                    saved = json.loads(args.state.read_text())
-                    if saved.get("project") != args.project or saved.get("asset_id") != "asset." + digest:
-                        raise ClientError("resume directory differs from the saved upload archive")
-                    if saved.get("status") == "READY" and not args.executor:
-                        print(json.dumps(saved, indent=2))
-                        return 0
-                save(args.state, {"project": args.project, "asset_id": "asset." + digest, "status": "UPLOADING"})
-                if "multipart-upload.v1" in health.get("capabilities", []):
-                    result = upload_asset_parts(client, args.project, stream, digest, length, args.state)
-                else:
-                    query = urlencode({"project": args.project, "sha256": digest})
-                    result = client.call("/api/assets/archive?" + query, raw=stream, length=length)
-            save(args.state, result)
-            if args.executor:
-                result = {**result, "data_delivery": deliver_data(client, args.project, result["asset_id"], args.executor,
-                          args.state.with_name(args.state.name + ".delivery.json"), args.wait_seconds)}
-        elif args.command == "assets":
-            result = client.call(f"/api/projects/{segment(args.project)}/assets")
-        elif args.command == "snapshots":
-            result = client.call(f"/api/runs/{segment(args.project)}/{segment(args.run)}/attempts/{segment(args.attempt)}/snapshots")
-        elif args.command == "checkpoints":
-            if "persistent-checkpoints.v1" not in health.get("capabilities", []):
-                raise ClientError("server lacks persistent-checkpoints.v1")
-            result = client.call(f"/api/runs/{segment(args.project)}/{segment(args.run)}/attempts/{segment(args.attempt)}/checkpoints")
-        elif args.command == "prepare":
-            if args.state.exists():
-                raise ClientError("state file exists; inspect the saved Submission")
-            result = client.call(f"/api/experiments/{segment(args.project)}/{segment(args.run)}/submissions/prepare",
-                                 data={"max_gpu_hours": args.max_gpu_hours, "reason": "API client trial"})
-            save(args.state, result)
-        elif args.command in {"execute", "submission"}:
-            saved = json.loads(args.state.read_text()) if args.command == "execute" else None
-            sid = saved["submission_id"] if saved else args.id
-            endpoint = "/api/submissions/" + segment(sid)
-            result = client.call(endpoint)
-            if args.command == "execute":
-                if args.confirm != result["confirmation"] or args.confirm != saved["confirmation"]:
-                    raise ClientError("confirmation does not match the saved Submission")
-                if result["status"] == "PREPARED" and result["ready"]:
-                    result = client.call(endpoint + "/authorize", data={"note": "explicit API client execution"})
-                if result["status"] == "AUTHORIZED":
-                    client.call(endpoint + "/execute", data={"confirmation": args.confirm})
-            elif args.reconcile and result["status"] == "RECONCILE_REQUIRED":
-                client.call(endpoint + "/reconcile", data={})
-            result = wait(endpoint)
-            if saved:
-                save(args.state, result)
-        elif args.command == "watch":
-            endpoint = f"/api/runs/{segment(args.project)}/{segment(args.run)}"
-            deadline = time.monotonic() + args.seconds
-            while True:
-                result = client.call(endpoint)
-                state = result.get("scheduler_state")
-                print("scheduler_state=" + str(state), file=sys.stderr)
-                if state in {"SUCCEEDED", "FAILED", "CANCELLED", "PREEMPTED", "TIMEOUT"}:
-                    result = {"run": result, "attempts": client.call(endpoint + "/attempts")}
-                    break
-                if time.monotonic() >= deadline:
-                    raise ClientError("watch timed out; Run continues on server; use watch again")
-                time.sleep(5)
-        else:
-            result = download(client, args.project, args.run, args.attempt, args.out, keep_server_copy=args.keep_server_copy)
+        result = dispatch(args, client, health)
         print(json.dumps(result, indent=2))
+        if args.command == "check" and "storage_limits_error" in result:
+            return 2
         if args.command == "execute" and result["status"] != "VERIFIED":
             return 2
         if args.command in {"cancel", "retry"} and args.execute and result["action"]["execution"]["status"] not in {"EXECUTING", "VERIFIED"}:
@@ -399,15 +186,7 @@ def main(argv=None):
             return 2
         return 0
     except ClientError as exc:
-        error_token = locals().get("token", "")
-        print(json.dumps({"error": _safe_error_text(str(exc), error_token),
-                          "status": _safe_error_json(exc.status, error_token),
-                          "retryable": _safe_error_json(exc.retryable, error_token),
-                          "error_code": _safe_error_json(exc.error_code, error_token),
-                          "retry_after": _safe_error_json(exc.retry_after, error_token),
-                          "details": _safe_error_json(exc.details, error_token),
-                          "response_body": _safe_error_json(exc.response_body, error_token),
-                          "body_truncated": _safe_error_json(exc.body_truncated, error_token)}, ensure_ascii=False), file=sys.stderr)
+        print(json.dumps(error_payload(exc, locals().get("token", "")), ensure_ascii=False), file=sys.stderr)
         return 2
     except (OSError, ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)

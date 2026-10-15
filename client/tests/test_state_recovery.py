@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ml_exp_client.api import save
+from ml_exp_client.state import save
 from ml_exp_client.cli import main
 
 
@@ -30,7 +30,7 @@ def test_failed_save_preserves_previous_state_and_cleans_its_temp(tmp_path, monk
     if failure == "replace":
         monkeypatch.setattr(Path, "replace", fail)
     if failure == "sync":
-        monkeypatch.setattr("ml_exp_client.api.os.fsync", fail)
+        monkeypatch.setattr("ml_exp_client.state.os.fsync", fail)
     with pytest.raises((TypeError, OSError)):
         save(path, value)
     assert json.loads(path.read_text()) == {"previous": True}
@@ -57,3 +57,32 @@ def test_explicit_cli_recovery_looks_up_receipt_without_replaying_build(tmp_path
     assert not any(item.endswith("/execute") for item in calls)
     assert json.loads(path.read_text())["status"] == "READY"
     capsys.readouterr()
+
+
+@pytest.mark.parametrize("saved", [
+    [], None, {}, {"project": "demo", "source_id": "source." + "a" * 64},
+    {"project": "demo", "runtime_id": "asset." + "a" * 64},
+    {"project": "demo", "runtime_id": "runtime.short"},
+    {"project": None, "runtime_id": "runtime." + "a" * 64},
+    {"project": "../other", "runtime_id": "runtime." + "a" * 64},
+])
+@pytest.mark.parametrize("command", ["runtime", "create"])
+def test_unrelated_runtime_state_fails_locally_without_resource_requests(tmp_path, monkeypatch, capsys, saved, command):
+    class API:
+        def __init__(self, *args):
+            pass
+        def negotiate(self):
+            return {}
+        def call(self, *args, **kwargs):
+            pytest.fail("invalid runtime state must not issue a resource request")
+    monkeypatch.setattr("ml_exp_client.cli.Client", API)
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps(saved))
+    original = path.read_bytes()
+    argv = (["runtime", "--state", str(path), "--reconcile"] if command == "runtime" else
+            ["create", "--runtime-state", str(path), "--run", "trial", "--executor", "gpu"])
+    assert main(argv) == 2
+    report = json.loads(capsys.readouterr().err)
+    assert report["status"] is None and report["retryable"] is False
+    assert "runtime state" in report["error"] or "invalid API identity" in report["error"]
+    assert path.read_bytes() == original

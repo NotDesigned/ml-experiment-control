@@ -1,5 +1,7 @@
 """Standalone HTTP client for ml-expd; no server or backend dependencies."""
-from .api import Client, ClientError, acknowledge, download, source_archive
+from .api import Client, ClientError
+from .archives import source_archive
+from .artifacts import acknowledge, download
 from .metrics import MetricWriter
 
 __version__ = "0.1.18"

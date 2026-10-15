@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import urlencode
 
-from .api import ClientError, segment
-from .operations import _attempt
-from .saved_plan import bound_response
+from .api import ClientError, attempt_id, segment
+from .state import bound_response
 
 
 def _mapping(value):
@@ -26,11 +26,20 @@ def _identity(value, project, run, *, attempt=None):
     return bound_response(value, expected, message="status response differs from the requested exact Run/Attempt")
 
 
+def _before_submission(evidence):
+    """Only exact saved-Submission evidence can explain an absent Attempt."""
+    submission = evidence.get("submission", {})
+    return (submission.get("status") == "EXECUTING"
+            and evidence.get("progress", {}).get("phase") in {"VALIDATING_SOURCE", "STAGING"}
+            or submission.get("status") == "FAILED"
+            and _mapping(submission.get("execution")).get("resolution") == "FAILED_BEFORE_SUBMISSION")
+
+
 def run_status(client, health, project, run, attempt=None, *, state_path=None, details=False):
     """Observe existing resources only; never prepare, collect or refresh providers."""
     project_path, run_path = segment(project), segment(run)
     if attempt is not None:
-        _attempt(attempt)
+        attempt_id(attempt)
     evidence = {}
     preparation = {"status": "NOT_OBSERVED", "phase": None}
     saved = {}
@@ -60,7 +69,7 @@ def run_status(client, health, project, run, attempt=None, *, state_path=None, d
                 raise ClientError("Submission identity differs from the saved exact Attempt")
             if attempt is not None and attempt != current["attempt_id"]:
                 raise ClientError("status Attempt differs from the saved experiment")
-            attempt = _attempt(current["attempt_id"])
+            attempt = attempt_id(current["attempt_id"])
             evidence["submission"] = current
             if "execution-progress.v1" in health.get("capabilities", []):
                 progress = client.call("/api/submissions/" + sid + "/progress")
@@ -76,11 +85,13 @@ def run_status(client, health, project, run, attempt=None, *, state_path=None, d
     except ClientError as exc:
         # A preparation can exist before its Run has been frozen. Other 404s
         # and all unexpected failures remain errors instead of guessed states.
-        if exc.status != 404 or "preparation" not in evidence or saved.get("submission"):
+        if exc.status != 404 or not (_before_submission(evidence)
+                or "preparation" in evidence and not saved.get("submission")):
             raise
         run_value = {}
     listing = {}
     selected = {}
+    materialized = False
     if run_value:
         listing = _identity(client.call(endpoint + "/attempts"), project, run)
         entries = listing.get("attempts")
@@ -88,19 +99,24 @@ def run_status(client, health, project, run, attempt=None, *, state_path=None, d
             raise ClientError("invalid Run Attempt listing")
         attempt = attempt or listing.get("current_attempt_id")
         if attempt is not None:
-            _attempt(attempt)
+            attempt_id(attempt)
             selected = next((item for item in entries if isinstance(item, dict)
                 and item.get("attempt_id") == attempt and item.get("identity") == run + "::" + attempt), None)
             if selected is None:
-                raise ClientError("requested exact Attempt is absent from the Run listing")
+                if (not _before_submission(evidence) or listing.get("current_attempt_id") == attempt
+                        or any(isinstance(item, dict) and item.get("attempt_id") == attempt for item in entries)):
+                    raise ClientError("requested exact Attempt is absent from the Run listing")
+                selected = {}
+            else:
+                materialized = True
         elif entries:
             raise ClientError("Run has Attempts but no current Attempt; choose --attempt")
-    scheduler = _bound_layer(run_value, "scheduler", attempt)
-    process = _bound_layer(run_value, "process", attempt)
+    scheduler = _bound_layer(run_value, "scheduler", attempt if materialized else None)
+    process = _bound_layer(run_value, "process", attempt if materialized else None)
     scheduler_detail = _mapping(scheduler.get("detail"))
     collection = {}
     collection_error = None
-    if attempt is not None and "result-collection.v1" in health.get("capabilities", []):
+    if materialized and "result-collection.v1" in health.get("capabilities", []):
         try:
             collection = _identity(client.call(endpoint + f"/attempts/{segment(attempt)}/collection"),
                                    project, run, attempt=attempt)
@@ -115,7 +131,7 @@ def run_status(client, health, project, run, attempt=None, *, state_path=None, d
     result = {
         "project": project, "run_id": run, "attempt_id": attempt,
         "preparation": preparation,
-        "scheduler": {"state": scheduler.get("state") or selected.get("state") or ("NOT_SUBMITTED" if attempt is None else "UNKNOWN"),
+        "scheduler": {"state": scheduler.get("state") or selected.get("state") or ("UNKNOWN" if materialized else "NOT_SUBMITTED"),
                       "observed_at": scheduler.get("as_of"), "stale": scheduler.get("stale", True),
                       "reason": scheduler_detail.get("reason") or scheduler_detail.get("pending_reason")},
         "training": {"status": training.get("status", "UNKNOWN"), "exit_code": training.get("exit_code"),
@@ -130,7 +146,7 @@ def run_status(client, health, project, run, attempt=None, *, state_path=None, d
     }
     if details:
         evidence.update(run=run_value, attempts=listing, collection=collection)
-        if attempt is not None and run_value:
+        if materialized:
             shown = client.call(f"/api/attempts/{project_path}/{segment(run + '::' + attempt)}/show")
             if (not isinstance(shown, dict) or shown.get("run_id") != run
                     or _mapping(shown.get("attempt")).get("attempt_id") != attempt
@@ -139,3 +155,42 @@ def run_status(client, health, project, run, attempt=None, *, state_path=None, d
             evidence["attempt"] = shown
         result["evidence"] = evidence
     return result
+
+
+def resolve_attempt(client, project, run, attempt=None):
+    """Resolve once and pin the original exact Attempt for subsequent reads."""
+    project_path, run_path = segment(project), segment(run)
+    if attempt is None:
+        listing = client.call(f"/api/runs/{project_path}/{run_path}/attempts")
+        if not isinstance(listing, dict) or listing.get("project") != project or listing.get("run_id") != run:
+            raise ClientError("Attempt listing differs from the requested Run")
+        attempt = attempt_id(listing.get("current_attempt_id"))
+        entries = listing.get("attempts")
+        if not isinstance(entries, list) or not any(isinstance(item, dict) and item.get("attempt_id") == attempt
+                   and item.get("identity") == run + "::" + attempt
+                   for item in entries):
+            raise ClientError("current Attempt is absent from the Run listing")
+    return attempt_id(attempt)
+
+
+def read_attempt(client, view, project, run, attempt=None, *, stream="both", lines=80,
+                 keys=None, max_points=2000):
+    """Read one exact Attempt; return metric dimensions without transformation."""
+    project_path, run_path = segment(project), segment(run)
+    if view == "logs":
+        if stream not in {"both", "stdout", "stderr"} or not 1 <= lines <= 10000:
+            raise ClientError("logs require stdout/stderr/both and 1..10000 lines")
+        query = {"stream": stream, "lines": lines}
+    elif view == "metrics":
+        if max_points <= 0:
+            raise ClientError("max-points must be positive")
+        query = {"max_points": max_points}
+        if keys is not None:
+            query["keys"] = keys
+    else:
+        raise ClientError("unknown Attempt read operation")
+    attempt = resolve_attempt(client, project, run, attempt)
+    identity = segment(run + "::" + attempt_id(attempt))
+    response = client.call(f"/api/attempts/{project_path}/{identity}/{view}?" + urlencode(query))
+    return bound_response(response, {"project": project, "run_id": run, "attempt_id": attempt},
+                          message="read response differs from the requested exact Run/Attempt")

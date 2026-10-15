@@ -145,7 +145,7 @@ def test_dockerfile_data_upload_and_input_binding_use_only_http(tmp_path,monkeyp
 
 
 def test_data_archives_are_compressed_reproducible_and_preserve_file_hashes(tmp_path):
-    from ml_exp_client.api import data_archive
+    from ml_exp_client.archives import data_archive
     data=tmp_path/"data";data.mkdir();body=b"training data\n"*10000
     (data/"tokens.txt").write_bytes(body)
     first=io.BytesIO();second=io.BytesIO()

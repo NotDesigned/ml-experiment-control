@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from ml_exp_client.api import ClientError
-from ml_exp_client.workflow import experiment, read_config, validate_dockerfile, wait_resource
+from ml_exp_client.config import read_config, validate_dockerfile
+from ml_exp_client.workflow import experiment, wait_resource
 
 
 @pytest.fixture
@@ -214,6 +215,18 @@ def test_matching_request_precedes_source_upload_and_transmits_requirements(conf
     assert prepared["matching"]["executor"] == "gpu"
 
 
+@pytest.mark.parametrize("required", [True, False])
+def test_before_job_data_requirement_is_frozen_without_client_side_delivery(configuration, required):
+    value = json.loads(configuration.read_text())
+    value["requirements"] = {"data_preparation_before_job": required}
+    configuration.write_text(json.dumps(value))
+    api = API()
+    result = experiment(api, HEALTH, configuration, configuration.with_name("state.json"))
+    assert api.calls[0][1]["data"]["requirements"] == value["requirements"]
+    assert result["preparation_request"]["requirements"] == value["requirements"]
+    assert not any("/deliveries/" in path for path, _ in api.calls)
+
+
 @pytest.mark.parametrize("extra", [
     {"executor_selector": {"backend": "sensecore"}},
     {"executor": None}, {"executor": []},
@@ -223,6 +236,8 @@ def test_matching_request_precedes_source_upload_and_transmits_requirements(conf
     {"executor": None, "executor_selector": {"candidates": "gpu"}},
     {"executor": None, "executor_selector": {"candidates": ["../gpu"]}},
     {"requirements": {"exit_code": "yes"}}, {"requirements": {"unknown": True}},
+    {"requirements": {"data_preparation_before_job": "yes"}},
+    {"requirements": {"data_preparation_before_job": 1}},
     {"requirements": {"platform": []}},
 ])
 def test_invalid_matching_config_fails_before_any_api(configuration, extra):
@@ -473,7 +488,7 @@ def test_legacy_workflow_state_preserves_request_identity(configuration):
 
 @pytest.mark.parametrize("boundary", ["authorize", "execute"])
 def test_failed_workflow_durable_marker_prevents_http_effect(configuration, monkeypatch, boundary):
-    from ml_exp_client.api import save as durable_save
+    from ml_exp_client.state import save as durable_save
     api = API(); state = configuration.with_name("state.json")
     experiment(api, HEALTH, configuration, state)
     marker = "scheduler_requested" if boundary == "execute" else "scheduler_authorization_requested"
@@ -609,7 +624,7 @@ def test_wrong_submission_progress_is_not_reported_as_current_training(configura
 
 
 def test_wait_resource_validates_progress_before_reporting_or_sleeping(monkeypatch):
-    from ml_exp_client.saved_plan import bound_response
+    from ml_exp_client.state import bound_response
     calls = []
     class Waiting:
         def call(self, path):
