@@ -1,6 +1,8 @@
 # Simplification: current design and boundaries
 
-Server 0.3.34 and client 0.1.17 implement the three structural steps below.
+The three structural steps below were introduced in server 0.3.34 and client
+0.1.17. The subsequent [client/server refactor](client-server-refactor.md)
+separates their internal responsibilities without adding another workflow engine.
 Source/image/data identities, Run/Attempt history, budgets, explicit execution,
 reconciliation, metric provenance and verified download acknowledgements remain.
 

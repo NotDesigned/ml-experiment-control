@@ -54,15 +54,15 @@ build contexts/layers live on the desktop. Training runs inside backend containe
 
 | Concern | Main modules under `server/src/ml_exp_server/` |
 |---|---|
-| HTTP and auth | `api/`: routes, `auth.py` bearer loading and `contract.py` versioned response models |
-| Composition | `runtime.py`, `api/app.py` |
+| HTTP and auth | `api/boundary.py`: bearer/protocol checks and queue admission; `api/auth.py` loads the token; `api/contract.py` defines response models |
+| Composition and lifetime | `api/app.py`: routes and app construction; `api/lifecycle.py`: lease, recovery, collector, execution owners and shutdown; `runtime.py`: domain services |
 | Projects and source identities | `projects/`: imports, revisions, registry, lifecycle and authored Runs |
-| Checked mutations | `application.py`, `actions/`, `runs/submissions.py`, `controller_gateway.py` |
+| Checked mutations | `application.py`, `actions/`, `runs/submissions.py`; controller planning in `actions/controller_planning.py`, subprocess execution in `controller_gateway.py` |
 | Run queries and diagnosis | `runs/queries.py`, `evidence.py`, `validation.py`, `failures.py` |
 | Capability matching/preparation | `runs/executor_capabilities.py`, `experiment_preparation.py` |
 | Dispatch | `container_controller.py` → core `backends/` |
 | Observation | `collectord.py`, `ingest/`, `runs/terminal_snapshot.py`, `execution_progress.py`, `input_progress.py` |
-| Images | `image_builder.py`, `dockerfile_build.py`, `builds/` |
+| Images | `image_builder.py`: builder daemon; `builds/builder_client.py`: private socket protocol and receipts; `dockerfile_build.py`, `builds/`: build context and execution |
 | Data | `data/`: assets, multipart upload, remote upload and delivery; `desktop_upload.py` is the standalone process entry |
 | Backend preparation/collection boundary | `backends/operations.py`; provider implementations in `wyd.py`, `sensecore_data.py`, `sensecore_preparation.py`, `sensecore_results.py`; shared CPU checks in `sensecore_cpu.py` |
 | Results/state | `results/`: artifact storage, download lifecycle, checkpoint registry and independent collection |
@@ -102,8 +102,10 @@ releasing an acknowledged archive does not delete its registered observations.
 `ExperimentServerApplication` and `ActionService` remain stable facades. Their
 stateless operation classes group existing methods by responsibility and share
 the facade's one runtime/store; they do not own separate mutable state or add
-another workflow engine. Action planning, execution and reconciliation live in
-`actions/planning.py`, `execution.py` and `recovery.py` respectively.
+another workflow engine. `actions/planning.py` owns preparation locks, idempotency,
+digests and saving the plan. `controller_planning.py` separates source binding,
+Campaign freezing, dry-run checks, resources and cancellation checks. Execution
+and reconciliation remain in `execution.py` and `recovery.py`.
 
 The API has five bounded execution lanes: Action (4 threads/16 admitted jobs),
 experiment orchestration (2/4), builds (1/4), data delivery (1/4), and result
@@ -120,15 +122,39 @@ lane; these lanes isolate pressure rather than implement a dependency scheduler.
 
 `runtime.py` initializes daemon services; the public **Runtime resource** denotes
 a code/environment image. `controller_gateway.py` is the project-controller
-subprocess boundary. Managed projects use the generic container controller;
+subprocess boundary; `controller_output.py` supplies the shared bounded output
+parser and redaction policy. Managed projects use the generic container controller;
 library consumers can supply adapters. A single managed Run currently generates
 an internal Campaign file, without requiring clients to design a Campaign.
 
 ## Client workflow and observation
 
-`client/src/ml_exp_client/workflow.py` owns one experiment configuration and its saved preparation,
-Submission, execution and download references. `operations.py` owns explicit
-cancel/retry plans. Both use `saved_plan.py` only to save, observe, and record a
+Modules under `client/src/ml_exp_client/` have these responsibilities:
+
+| Concern | Module |
+|---|---|
+| Arguments, output and exit codes | `cli.py` |
+| Concrete CLI operations | `commands.py` |
+| HTTPS, authentication, protocol and safe errors | `api.py` |
+| Configuration and Dockerfile admission | `config.py` |
+| Source/data archives | `archives.py` |
+| Multipart uploads and backend data delivery | `assets.py` |
+| Verified download and acknowledgement | `artifacts.py` |
+| Atomic state and single-request dispatch | `state.py` |
+| One experiment's preparation, submission and recovery | `workflow.py` |
+| Read-only status, logs and metrics | `status.py` |
+| Explicit cancel/retry plans | `operations.py` |
+| Reviewed whole-Run deletion | `run_deletion.py` |
+| Standalone training-side metric writer | `metrics.py` |
+
+The public package exports remain `Client`, `ClientError`, `source_archive`,
+`download`, `acknowledge` and `MetricWriter`; import them from `ml_exp_client`.
+The CLI and durable state formats remain stable. Internal helpers have one
+canonical module rather than old-path forwarding wrappers.
+
+`workflow.py` owns an experiment's saved preparation, Submission, execution and
+download references. `operations.py` and `run_deletion.py` own their reviewed
+plans. They use `state.py` only to save, observe, and record a
 durable marker before a single request; policy and reconciliation remain with
 their callers. An unknown response does not authorize a replacement request.
 
@@ -138,6 +164,28 @@ scheduler, training, publication and verification. `--details` expands the
 original evidence. Observation is pinned to an exact Attempt; absent/stale
 evidence remains unknown instead of being interpreted as a completed stage.
 Training completion and downloadable results are independent facts.
+
+When a saved Submission has reserved an Attempt but source staging has not yet
+materialized it, status uses that exact Submission's preparation evidence.
+It does not read another Attempt's training or result state. Missing Attempt
+evidence after submission remains an error.
+
+```mermaid
+flowchart LR
+    CLI[cli: parse and print] --> Commands[commands: concrete operations]
+    Commands --> Workflow[workflow / operations / deletion]
+    Commands --> Status[status: read only]
+    Workflow --> State[state: persist before effects]
+    Workflow --> Transfer[assets / artifacts]
+    Workflow --> HTTP[api: HTTPS and protocol]
+    Transfer --> HTTP
+    Status --> HTTP
+    HTTP --> Boundary[server boundary: auth and admission]
+    Boundary --> Routes[HTTP routes]
+    Routes --> Services[application and domain services]
+    Services --> Journal[durable Actions / manifests / receipts]
+    Services --> Backend[core scheduling and server backend operations]
+```
 
 ## Worker code executes on compute
 

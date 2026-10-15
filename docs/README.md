@@ -26,6 +26,7 @@ and acceptance reports belong in private operator configuration/evidence.
 
 - [Simplification](simplification-plan.md): shared client/backend/storage services and remaining acceptance boundaries.
 - [Architecture](architecture.md): packages, execution locations and ownership.
+- [Client and server refactor](client-server-refactor.md): branch scope, preserved contracts and verification.
 - [Backend capabilities and preparation](backends.md): matching, server workflow and data diagnostics.
 - [API workflow](source-api.md): source, Runtime, Run, Submission and result routes.
 - [HTTP contract](http_contract.md): authentication, protocol, async execution and SSE.
