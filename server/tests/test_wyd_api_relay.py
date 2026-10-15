@@ -133,9 +133,9 @@ def test_prepared_data_missing_never_runs_download_or_training(tmp_path, monkeyp
 
 def test_gateway_asset_and_script_mount_cached_input_before_script(gateway, tmp_path, monkeypatch):
     import hashlib
-    import io
+    import os
     import sys
-    from ml_exp_server.workers import data_input, managed_worker
+    from ml_exp_server.worker_contract import install_workers
     from tests.test_multipart_upload import begin, send
     payload = archive({'tokens.bin': b'tokens'})
     upload = begin(gateway[0], payload)
@@ -154,8 +154,8 @@ def test_gateway_asset_and_script_mount_cached_input_before_script(gateway, tmp_
     assert remote.index('apptainer') < remote.index(inputs_root + ':/inputs')
     value = json.loads(options['input_text'])
     assert value['inputs'] == ctl.run['inputs']
-    # Execute the actual generated gateway code with filesystem mounts mapped
-    # into this test's directory. The cache verifier and script are real.
+    # Run the generated command in a fresh interpreter with the actual image
+    # filenames. Source-package imports or mocks would hide a broken image import.
     workspace = tmp_path / 'source'
     script = ("import os\nfrom pathlib import Path\n"
               "assert os.environ['INPUTS_DIR'] == '/inputs'\n"
@@ -169,19 +169,26 @@ def test_gateway_asset_and_script_mount_cached_input_before_script(gateway, tmp_
     (cached / 'tokens.bin').write_bytes(b'tokens')
     expected_sha = hashlib.sha256(b'tokens').hexdigest()
     assert value['inputs'][0]['files'][0]['sha256'] == expected_sha
-    links = []
-    def link(target, path):
-        links.append(path)
-        managed_worker.link_path(target, local_inputs / path.relative_to('/inputs'))
-    monkeypatch.setitem(sys.modules, 'data_input', data_input)
-    monkeypatch.setitem(sys.modules, 'managed_worker', SimpleNamespace(link_path=link))
-    monkeypatch.setitem(sys.modules, 'data_preparation', SimpleNamespace(
-        prepare=lambda *args, **kwargs: data.prepare(*args, workspace=workspace, **kwargs)))
+    image_workers = tmp_path / 'image-workers'
+    image_workers.mkdir()
+    install_workers(image_workers)
+    assert (image_workers / 'worker.py').is_file()
+    assert not (image_workers / 'managed_worker.py').exists()
+    # These paths stand in for Apptainer's /workspace and /inputs binds; all
+    # import, cache verification, linking and script execution remain real.
+    value['inputs'][0]['mount_path'] = str(local_inputs / 'data')
     code = remote[remote.index('-c') + 1]
-    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(value)))
-    monkeypatch.setattr(sys, 'argv', ['gateway', str(tmp_path / 'prepared'), '0', str(cache)])
-    monkeypatch.setenv('ML_EXPD_UPLOAD_TOKEN', 'must-not-reach-data-script')
-    exec(compile(code, '<gateway-data-script>', 'exec'), {})
-    assert links == [Path('/inputs/data')]
+    driver = ("import sys\nfrom pathlib import Path\n"
+              "sys.path.insert(0,sys.argv.pop(1))\n"
+              "from data_preparation import prepare\n"
+              "prepare.__kwdefaults__['workspace']=Path(sys.argv.pop(1))\n"
+              "code=sys.argv.pop(1)\nexec(compile(code,'<gateway-data-script>','exec'),{})")
+    result = subprocess.run([sys.executable, '-I', '-S', '-c', driver, str(image_workers), str(workspace),
+                             code, str(tmp_path / 'prepared'), '0', str(cache)],
+                            input=json.dumps(value), text=True, capture_output=True, timeout=15,
+                            env={**os.environ, 'ML_EXPD_UPLOAD_TOKEN': 'must-not-reach-data-script'})
+    assert result.returncode == 0, result.stderr
+    assert (local_inputs / 'data').is_symlink()
+    assert (local_inputs / 'data').samefile(cached)
     tree = tmp_path / 'prepared' / value['preparation']['preparation_id'] / 'tree'
     assert (tree / 'copy.bin').read_bytes() == b'tokens'

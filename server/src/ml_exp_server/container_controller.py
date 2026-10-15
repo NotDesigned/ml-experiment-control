@@ -300,7 +300,7 @@ class Controller:
         backend = self.run["backend"]
         cache = self.run["storage"]["project_data_root"] + "/data-preparations"
         code = ("import json,sys\nfrom pathlib import Path\nsys.path.insert(0,'/usr/local/lib/ml-expd')\n"
-                "from data_input import deliver\nfrom managed_worker import link_path\n"
+                "from data_input import deliver\nfrom worker import link_path\n"
                 "from data_preparation import prepare\nvalue=json.load(sys.stdin)\n"
                 "for item in value['inputs']:\n"
                 " location=deliver({**item,'require_cached':True},None,Path(sys.argv[3]))\n"
