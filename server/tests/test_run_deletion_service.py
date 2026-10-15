@@ -192,6 +192,7 @@ def test_preparation_is_reviewable_idempotent_and_does_not_delete(deletion_env):
     assert plan["scope"] == {"project": "demo", "scope_type": "run", "object_id": "run-a"}
     assert plan["intent_id"] == "review-key" and plan["target_digest"] == digest(plan["target_manifest"])
     assert len(plan["target_manifest"]["objects"]) == 2
+    assert plan["target_manifest"]["retained"]["metric_definitions"] is True
     assert prepare(env) == plan
     with pytest.raises(ActionError, match="different operation intent"):
         prepare(env, reason="changed reason")
@@ -236,6 +237,7 @@ def test_whole_run_purge_keeps_audit_receipts_shared_assets_and_real_suffix_run(
     assert receipt.read_bytes() == original
     assert len(env.deleted) == 2 and not env.remote
     assert completion["retained"]["object_receipts"] and completion["retained"]["provider_history"] == "UNSUPPORTED"
+    assert completion["retained"]["metric_definitions"] is True
     assert env.runtime.action_store.snapshot(plan["action_id"])["target_manifest"] == plan["target_manifest"]
     with pytest.raises(ApplicationError) as late:
         env.runtime.storage_service.objects.authorize("demo", "run-a", "attempt-001", env.tokens["run-a"])

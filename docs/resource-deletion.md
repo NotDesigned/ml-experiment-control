@@ -45,8 +45,10 @@ Client downloads remain on the client's computer. Shared source, images and data
 assets remain available. Uploaded checkpoint snapshot assets follow the separate
 shared-asset lifecycle and are retained in this release; deleting backend-resident
 persistent checkpoints does not delete those uploaded backups. W&B cloud records
-are retained. Provider job history deletion is unsupported and is explicitly
-reported under
+are retained. The display schema for each W&B destination also remains so future
+Runs cannot reuse a curve name for a different unit, protocol or dataset. These
+mappings contain no metric values. Provider job history deletion is unsupported
+and is explicitly reported under
 `execution.result.retained.provider_history`; it is not counted as reclaimed
 storage. The server retains the original Action records, download ACK proofs and
 complete current and historical object receipts for audit, plus a deletion

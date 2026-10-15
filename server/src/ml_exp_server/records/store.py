@@ -169,7 +169,6 @@ class RecordStore:
         """Remove canonical local records after the permanent fence was committed."""
         if not RunFence(self.root.parent).is_deleted(project, run):
             raise ApplicationError("Run deletion must be durably fenced first", code="RUN_DELETION_NOT_STARTED")
-        from ..tracking.wandb_display import identity
         with self.connection() as conn:
             rows = conn.execute("SELECT run,config FROM runs WHERE project=? AND run IN (?,?,?)",
                                 (project, *self.run_identities(run))).fetchall()
@@ -188,33 +187,16 @@ class RecordStore:
         scopes = []
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            bindings = {row["run"]: json.loads(row["route"]) for row in conn.execute(
-                "SELECT run,route FROM runs WHERE " + predicate, arguments)}
             scopes = [row["id"] for row in conn.execute(
                 "SELECT id FROM scopes WHERE " + predicate, arguments)]
-            candidates = set()
-            for row in conn.execute("SELECT e.payload,s.run FROM events e JOIN scopes s ON s.id=e.scope WHERE " + predicate.replace("project=", "s.project=").replace("run IN", "s.run IN"), arguments):
-                route = bindings.get(row["run"], {})
-                if route.get("entity") and route.get("project"):
-                    destination = encoded([route["entity"], route["project"]])
-                    for item in json.loads(row["payload"]).get("observations", []):
-                        candidates.add((destination, identity(item)))
             for scope in scopes:
                 conn.execute("DELETE FROM events WHERE scope=?", (scope,))
                 conn.execute("DELETE FROM event_ids WHERE scope=?", (scope,))
             conn.execute("DELETE FROM scopes WHERE " + predicate, arguments)
             conn.execute("DELETE FROM runs WHERE " + predicate, arguments)
-            # Display names are shared per W&B destination. Preserve mappings
-            # still used by another Run instead of breaking its metric names.
-            surviving = set()
-            for row in conn.execute("SELECT e.payload,r.route FROM events e JOIN scopes s ON s.id=e.scope JOIN runs r ON r.project=s.project AND r.run=s.run"):
-                route = json.loads(row["route"])
-                if route.get("entity") and route.get("project"):
-                    destination = encoded([route["entity"], route["project"]])
-                    for item in json.loads(row["payload"]).get("observations", []):
-                        surviving.add((destination, identity(item)))
-            for destination, signature in candidates - surviving:
-                conn.execute("DELETE FROM display_metrics WHERE destination=? AND signature=?", (destination, signature))
+            # Destination schemas contain no metric values. Cloud Runs remain,
+            # so their public names must stay bound to the same unit/protocol
+            # even when every local event using that schema has been deleted.
         for scope in scopes:
             self._display_cache.pop(scope, None)
         return {"status": "DELETED", "scopes_removed": len(scopes)}

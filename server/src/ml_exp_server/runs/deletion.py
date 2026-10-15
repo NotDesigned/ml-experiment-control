@@ -357,7 +357,7 @@ class RunDeletionService:
                 "retained_snapshot_assets": snapshots,
                 "dependencies": self._dependencies(project, run),
                 "retained": {"action_audit": True, "object_receipts": True, "tombstone": True,
-                             "shared_assets": True, "wandb_cloud": True, "provider_history": "UNSUPPORTED"}}
+                             "shared_assets": True, "metric_definitions": True, "wandb_cloud": True, "provider_history": "UNSUPPORTED"}}
 
     def prepare(self, project, run, reason, idempotency_key):
         if not reason.strip():

@@ -34,6 +34,7 @@ def test_prepare_execute_get_and_reconcile_exact_action_over_http(deletion_api):
     action_id = plan["action_id"]
     assert plan["deletion_request"] == request and plan["intent_id"] == request["idempotency_key"]
     assert plan["target_manifest"]["run_id"] == "run-a" and not env.deleted
+    assert plan["target_manifest"]["retained"]["metric_definitions"] is True
     assert api.post("/api/runs/demo/run-a/deletion", json=request).json() == plan
     listing = api.get("/api/actions", params={"project": "demo", "scope_type": "run", "object_id": "run-a"})
     assert listing.status_code == 200
@@ -51,6 +52,7 @@ def test_prepare_execute_get_and_reconcile_exact_action_over_http(deletion_api):
         time.sleep(0.01)
     assert observed["execution"]["status"] == "VERIFIED", observed
     assert observed["execution"]["result"]["target_digest"] == plan["target_digest"]
+    assert observed["execution"]["result"]["retained"]["metric_definitions"] is True
     assert len(env.deleted) == 2 and receipt.read_bytes() == original
     assert api.post("/api/actions/reconcile", json={"action_id": action_id}).json() == observed
     late = api.put("/api/artifact-transfers/demo/run-a/attempt-001", content=b"late", headers={

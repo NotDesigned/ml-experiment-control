@@ -95,9 +95,40 @@ def test_records_delete_aliases_and_shared_display_without_resurrection(tmp_path
     with store.connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM event_ids").fetchone()[0] == 1
-        assert [row[0] for row in conn.execute("SELECT public_name FROM display_metrics")] == ["loss"]
+        assert [row[0] for row in conn.execute("SELECT public_name FROM display_metrics ORDER BY public_name")] == ["loss", "private"]
     assert set(store._display_cache) == {scopes["other"]}
     assert len(store.events(scopes["other"])) == 1
+
+
+@pytest.mark.parametrize("changed", [{"unit": "squared-error"}, {"protocol_id": "protocol-new"}])
+def test_deleted_run_keeps_destination_schema_for_retained_cloud_curves(tmp_path, changed):
+    store = TrackingStore(tmp_path)
+    route = {"enabled": True, "entity": "person", "project": "retained-cloud-project"}
+    original = {"name": "loss", "unit": "nats/token", "protocol_id": "protocol-original",
+                "dataset_id": "dataset-original", "value": 1.25, "step": 1, "status": "VALID"}
+    store.bind("demo", "old-run", route, {})
+    old_scope = store.scope("demo", "old-run", "attempt-001")
+    store.append(old_scope, [("original", {"kind": "metrics", "observations": [original]})])
+    old_series = next(iter(store.display(old_scope, 1)["series"].values()))
+    assert old_series["curve"] == "curves/loss"
+    RunFence(tmp_path).mark("demo", "old-run")
+    assert store.delete_run("demo", "old-run")["scopes_removed"] == 1
+    assert old_scope not in store._display_cache and store.events(old_scope) == []
+    # The cloud Run remains. A restarted publisher must preserve the meaning of
+    # its public curve key even after every local numeric observation was removed.
+    restarted = TrackingStore(tmp_path)
+    restarted.bind("demo", "future-run", route, {})
+    future_scope = restarted.scope("demo", "future-run", "attempt-001")
+    future = {**original, **changed, "value": 9.0}
+    restarted.append(future_scope, [("future", {"kind": "metrics", "observations": [future]})])
+    future_series = next(iter(restarted.display(future_scope, 1)["series"].values()))
+    assert future_series["curve"] != old_series["curve"]
+    assert future_series["curve"].startswith("curves/loss/")
+    # The exact same scientific schema still receives its original name.
+    restarted.bind("demo", "same-schema", route, {})
+    same_scope = restarted.scope("demo", "same-schema", "attempt-001")
+    restarted.append(same_scope, [("same", {"kind": "metrics", "observations": [original]})])
+    assert next(iter(restarted.display(same_scope, 1)["series"].values()))["curve"] == old_series["curve"]
 
 
 @pytest.mark.parametrize("retention", [None, "KEEP", "RELEASED"])
