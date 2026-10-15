@@ -171,6 +171,11 @@ def metric_result(records, schema=None, *, protocol_id=None, source=None, normal
             current = max(groups, key=lambda group: (group["identity"]["epoch"] or 0, group["identity"]["step"]))
         elif len(groups) == 1:
             current = groups[0]
-    return {"state": current["state"] if current else "PARTIAL" if items else "NOT_OBSERVED",
-            "required_metrics": required, "missing_metrics": current["missing_metrics"] if current else required,
+    # An ambiguous current selection is not missing evidence. Summarize each
+    # independent context without borrowing required metrics from another one.
+    states = {group["state"] for group in groups}
+    aggregate = "FAILED" if "FAILED" in states else "PARTIAL" if "PARTIAL" in states else "COMPLETE"
+    missing = [name for name in required if any(name in group["missing_metrics"] for group in groups)]
+    return {"state": current["state"] if current else aggregate if items else "NOT_OBSERVED",
+            "required_metrics": required, "missing_metrics": current["missing_metrics"] if current else missing if items else required,
             "records": items, "contexts": groups, "current": current, "protocol_id": protocol_id}
