@@ -107,7 +107,8 @@ def test_foreign_checkpoint_scope_invalid_generation_and_action_path_fail_closed
     with pytest.raises(ValueError, match="dependency identity"): env.service._dependencies("demo", "run-a")
     write(path, {"project": "demo", "run_id": "consumer"})
     monkeypatch.setattr(env.runtime.action_store, "list_all", lambda: [{
-        "action_id": "action-" + "d" * 16, "scope": {"project": "demo"}, "run_id": "consumer",
+        "action_id": "action-" + "d" * 16, "operation": "SUBMIT_RUN",
+        "scope": {"project": "demo"}, "run_id": "consumer",
         "execution_campaign_file": str(env.definitions["consumer"])}])
     with pytest.raises(ValueError, match="outside its Action"): env.service._dependencies("demo", "run-a")
 
