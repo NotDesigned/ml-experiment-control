@@ -9,7 +9,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 import yaml
-from ..controller_gateway import redact as _redact
+from ..controller_output import redact as _redact
 from .errors import ActionError
 from .policy import ExecutionDispatch
 

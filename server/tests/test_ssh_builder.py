@@ -4,7 +4,8 @@ from contextlib import nullcontext
 
 import pytest
 
-from ml_exp_server.image_builder import ImageBuilder, BuildStorageError
+from ml_exp_server.image_builder import ImageBuilder
+from ml_exp_server.builds.builder_client import BuildStorageError
 
 
 def config(tmp_path):

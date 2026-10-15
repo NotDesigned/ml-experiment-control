@@ -17,7 +17,7 @@ from experiment_control.backends.sensecore_rest import RESTError
 from ..application_errors import ApplicationError
 from .data_assets import AssetStore, ASSET_ID
 from ..builds.data_image_build import data_worker_digest
-from ..image_builder import builder_request, IMAGE, BuildStorageError, BuildTransportError
+from ..builds.builder_client import builder_request, IMAGE, BuildStorageError, BuildTransportError
 from ..projects.source_imports import IDENTITY
 from ..storage import DurableJsonState, utc_now
 from ..backends.sensecore_data import SenseCoreDataOperations

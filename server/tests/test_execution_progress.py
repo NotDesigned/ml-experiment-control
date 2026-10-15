@@ -8,7 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ml_exp_server.runs.execution_progress import record_progress, progress_view
-from ml_exp_server.image_builder import ImageBuilder, BUILD_CACHE, BUILD_PROGRESS, MANIFEST_TYPE
+from ml_exp_server.image_builder import ImageBuilder, BUILD_CACHE, BUILD_PROGRESS
+from ml_exp_server.builds.builder_client import MANIFEST_TYPE
 from ml_exp_server.schemas import RunIndexRow
 from ml_exp_server.container_execution import DockerfileRuntimeSpec
 from tests.test_container_api import client, import_source, archive, wait_runtime, runtime

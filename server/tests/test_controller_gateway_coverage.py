@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from ml_exp_server import controller_gateway as module
+from ml_exp_server import controller_output as output
 from ml_exp_server.controller_gateway import CommandRunner, ProjectControllerGateway
 from ml_exp_server.schemas import (
     ControllerConfig,
@@ -206,9 +207,9 @@ def test_failed_command_logs_are_bounded_after_redaction(monkeypatch, tmp_path, 
 
 
 def test_log_tail_preserves_short_safe_strings_and_tuple_argv(tmp_path):
-    assert module._safe_log_tail(None, limit=10, command=["controller"]) == ""
-    assert module._safe_log_tail("safe", limit=10, command=["controller"]) == "safe"
-    assert module._safe_log_tail("('controller',)", limit=100, command=["controller"]) == "[COMMAND_REDACTED]"
+    assert output.safe_log_tail(None, limit=10, command=["controller"]) == ""
+    assert output.safe_log_tail("safe", limit=10, command=["controller"]) == "safe"
+    assert output.safe_log_tail("('controller',)", limit=100, command=["controller"]) == "[COMMAND_REDACTED]"
 
 
 def test_runner_and_call_builder_cover_transport_edges(tmp_path):
@@ -222,7 +223,7 @@ def test_runner_and_call_builder_cover_transport_edges(tmp_path):
     result = CommandRunner(core)(["controller"], cwd=tmp_path, timeout=1)
     assert result["payload"]["api_token"] == "[REDACTED]"
     assert "[REDACTED]" in result["payload"]["url"]
-    assert module.redact([{"safe": 1}, 2]) == [{"safe": 1}, 2]
+    assert output.redact([{"safe": 1}, 2]) == [{"safe": 1}, 2]
 
     gateway = ProjectControllerGateway(runner=lambda *_args, **_kwargs: {"ok": True})
     project = _project(tmp_path)

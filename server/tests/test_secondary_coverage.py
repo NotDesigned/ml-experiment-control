@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ml_exp_server.api import lifecycle as api_lifecycle
+
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
@@ -192,7 +194,7 @@ def test_app_poll_loop_records_success_and_failure(monkeypatch, tmp_path):
             # cycle instead of racing the next cycle's started-at marker.
             self.config.poll_interval_seconds = 10
 
-    monkeypatch.setattr(api_app, "Collector", FakeCollector)
+    monkeypatch.setattr(api_lifecycle, "Collector", FakeCollector)
     app = api_app.create_app(console_config(tmp_path), poll=True, projects=[])
     with TestClient(app) as client:
         assert client.get("/api/health").json()["collector_enabled"] is True
@@ -219,7 +221,7 @@ def test_health_exposes_collector_loop_failure(monkeypatch, tmp_path):
         def run_cycle(self):
             raise RuntimeError("scheduler observation failed")
 
-    monkeypatch.setattr(api_app, "Collector", FailingCollector)
+    monkeypatch.setattr(api_lifecycle, "Collector", FailingCollector)
     app = api_app.create_app(console_config(tmp_path), poll=True, projects=[])
     with TestClient(app) as client:
         import time

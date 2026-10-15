@@ -11,7 +11,8 @@ from ml_exp_server.application_errors import ApplicationError
 
 from ml_exp_server.builds import data_image_build as module
 from ml_exp_server import image_builder as builder_module
-from ml_exp_server.image_builder import ImageBuilder, BuilderServer, Handler, UnixConnection, BUILD_REMOTE_CONTEXT, BUILD_CONTEXT_BYTES
+from ml_exp_server.image_builder import ImageBuilder, BuilderServer, Handler, BUILD_REMOTE_CONTEXT, BUILD_CONTEXT_BYTES
+from ml_exp_server.builds.builder_client import UnixConnection
 from ml_exp_server.data.remote_data_uploads import stage_request, remote_archive
 from ml_exp_server.storage import atomic_json
 
@@ -72,6 +73,9 @@ def test_module_entry_builder_keeps_remote_context_and_progress(data_builder):
     spec = importlib.util.spec_from_file_location('ml_exp_server._entry_probe', builder_module.__file__)
     entry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(entry)
+    from ml_exp_server.builds.builder_client import BuildReceiptMissingError, BuildStorageError, BuildTransportError
+    assert entry.BuildReceiptMissingError is BuildReceiptMissingError
+    assert entry.BuildStorageError is BuildStorageError and entry.BuildTransportError is BuildTransportError
     builder = entry.ImageBuilder(original.config)
     builder.desktop_stage = original.desktop_stage
     manifest = {'mediaType': entry.MANIFEST_TYPE, 'config': {'digest': 'sha256:' + 'd'*64}}

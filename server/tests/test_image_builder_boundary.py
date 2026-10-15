@@ -12,7 +12,9 @@ import threading
 import pytest
 
 from ml_exp_server import image_builder as module
-from ml_exp_server.image_builder import BuilderServer, ImageBuilder, builder_request
+from ml_exp_server.builds import builder_client
+from ml_exp_server.image_builder import BuilderServer, ImageBuilder
+from ml_exp_server.builds.builder_client import builder_request
 from ml_exp_server.projects.source_imports import seal_tree
 from ml_exp_server.projects.source_revisions import _tree_digest
 
@@ -156,7 +158,7 @@ def test_unix_builder_accepts_only_authorized_bounded_requests(tmp_path, case):
         config = {"client_uid": os.getuid() + (case == "wrong-uid")}
         def request(self, payload):
             if case == "storage":
-                raise module.BuildStorageError("BUILD_STORAGE_INSUFFICIENT", {"available_bytes": 7, "required_bytes": 20})
+                raise builder_client.BuildStorageError("BUILD_STORAGE_INSUFFICIENT", {"available_bytes": 7, "required_bytes": 20})
             if case == "rejected-request":
                 raise ValueError("invalid packaging operation")
             return {"accepted": payload["operation"]}
@@ -168,7 +170,7 @@ def test_unix_builder_accepts_only_authorized_bounded_requests(tmp_path, case):
             if case == "authorized":
                 assert builder_request(path, {"operation": "get"}) == {"accepted": "get"}
             elif case == "storage":
-                with pytest.raises(module.BuildStorageError) as error:
+                with pytest.raises(builder_client.BuildStorageError) as error:
                     builder_request(path, {"operation": "build"})
                 assert error.value.code == "BUILD_STORAGE_INSUFFICIENT"
                 assert error.value.details == {"available_bytes": 7, "required_bytes": 20}
@@ -176,7 +178,7 @@ def test_unix_builder_accepts_only_authorized_bounded_requests(tmp_path, case):
                 with pytest.raises(ValueError, match="packaging request failed"):
                     builder_request(path, {"operation": "get"})
         else:
-            conn = module.UnixConnection(path, timeout=5)
+            conn = builder_client.UnixConnection(path, timeout=5)
             body = b"invalid" if case == "invalid-json" else b""
             length = "16385" if case == "oversized" else "2" if case in {"wrong-uid", "bad-path"} else str(len(body))
             conn.request("POST", "/other" if case == "bad-path" else "/", body=body,
@@ -184,6 +186,29 @@ def test_unix_builder_accepts_only_authorized_bounded_requests(tmp_path, case):
             response = conn.getresponse()
             assert response.status == 409 and json.loads(response.read())["error"] == "image packaging request failed"
             conn.close()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_receipt_missing_signal_never_covers_a_conflicting_publication(builder, tmp_path, published):
+    value, request, _ = builder
+    if published:
+        receipt = value.request(request)
+        path = value.root / (receipt["bundle_id"] + ".json")
+        path.write_text(json.dumps({**receipt, "project": "other"}))
+    value.config["client_uid"] = os.getuid()
+    path = str(tmp_path / "receipt.sock")
+    server = BuilderServer(path, module.Handler)
+    server.builder = value
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(ValueError) as caught:
+            builder_request(path, {**request, "operation": "get"})
+        assert isinstance(caught.value, builder_client.BuildReceiptMissingError) is (not published)
     finally:
         server.shutdown()
         thread.join()

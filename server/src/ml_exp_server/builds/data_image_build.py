@@ -10,11 +10,11 @@ import tempfile
 
 from ..storage import atomic_json
 from ..data_image_recipe import RECIPE, recipe, data_worker_digest
+from .builder_client import IMAGE, PROJECT
 
 
 
 def build(builder, request):
-    from ..image_builder import IMAGE, PROJECT
     from .image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_REMOTE_CONTEXT, BUILD_CONTEXT_BYTES
     from ..runs.execution_progress import record_progress, progress_view
     project, asset_id = request.get("project", ""), request.get("asset_id", "")

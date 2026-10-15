@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 import yaml
 
 from .application_errors import ApplicationError
-from .image_builder import IMAGE, builder_request, bundle_id, BuildStorageError, BuildTransportError
+from .builds.builder_client import IMAGE, builder_request, bundle_id, BuildStorageError, BuildTransportError, BuildReceiptMissingError
 from .source_paths import relative_source_path, argument_vector
 from .dockerfile_build import DOCKERFILE_RECIPE, inspect_dockerfile, managed_dockerfile, worker_digest
 from .data.data_assets import AssetStore
@@ -329,7 +329,10 @@ class ContainerExecutionService:
                     and not (value.get("build_error") or {}).get("retry_safe", False)):
                 raise ApplicationError("runtime publication is uncertain; reconcile before preparing a new build", code="CONTAINER_EXECUTION_BLOCKED")
             self.require_current_build(project, value)
-            value.update(status="EXECUTING", error=None, build_error=None)
+            # Receipt lookup creates no publication. Keep the prior evidence
+            # until reconciliation finds a valid receipt or a new build starts.
+            value.update(status="EXECUTING", error=None,
+                         build_error=value.get("build_error") if reconcile else None)
             from .runs.execution_progress import record_progress
             record_progress(self.root / project / (runtime_id + ".progress.json"), "WAITING_BUILD_WORKER",
                             "Build claimed by daemon; waiting for builder request or receipt reconciliation")
@@ -359,17 +362,20 @@ class ContainerExecutionService:
                     or result.get("dockerfile_sha256") != hashlib.sha256(value["dockerfile"].encode()).hexdigest()
                     or result.get("dockerfile") != value["client_dockerfile"]):
                 raise ValueError("Dockerfile worker receipt does not match the frozen definition")
-            value.update(status="READY", image=result["image"], bundle_id=result["bundle_id"],
+            value.update(status="READY", image=result["image"], bundle_id=result["bundle_id"], build_error=None,
                          completed_at=utc_now(), capabilities=result["capabilities"])
+        except BuildReceiptMissingError:
+            value.update(status="RECONCILE_REQUIRED", error="image bundle has not been published")
         except BuildStorageError as exc:
             value.update(status="RECONCILE_REQUIRED", error=exc.code,
                          build_error={"code": exc.code, "details": exc.details,
-                                      "retry_safe": exc.code in {"BUILD_STORAGE_INSUFFICIENT", "BUILD_STORAGE_UNCHECKED"}})
+                                      "retry_safe": not pending.reconcile and exc.code in {"BUILD_STORAGE_INSUFFICIENT", "BUILD_STORAGE_UNCHECKED"}})
         except BuildTransportError as exc:
             value.update(status="RECONCILE_REQUIRED", error=exc.code,
                          build_error={"code": exc.code, "details": exc.details, "retry_safe": False})
         except Exception:
-            value.update(status="RECONCILE_REQUIRED", error="image packaging failed or is uncertain; inspect worker and reconcile")
+            value.update(status="RECONCILE_REQUIRED", build_error=None,
+                         error="image packaging failed or is uncertain; inspect worker and reconcile")
         return self.finish_state(pending, value)
 
     def finish_state(self, pending: PendingRuntimeBuild, value: dict) -> dict:

@@ -8,9 +8,10 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from ..controller_gateway import (
-    redact as _redact, _safe_log_tail, _open_regular_nofollow,
-    _STDOUT_LOG_BYTES, _STDERR_LOG_BYTES,
+from ..controller_gateway import _open_regular_nofollow
+from ..controller_output import (
+    redact as _redact, safe_log_tail as _safe_log_tail,
+    STDOUT_LOG_BYTES as _STDOUT_LOG_BYTES, STDERR_LOG_BYTES as _STDERR_LOG_BYTES,
 )
 from ..storage import utc_now
 from .errors import ActionError

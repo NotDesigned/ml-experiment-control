@@ -6,7 +6,7 @@ import json
 from urllib.parse import urlencode
 
 from ..application_errors import ApplicationError
-from ..image_builder import UnixConnection
+from ..builds.builder_client import UnixConnection
 
 
 def stage_request(socket, operation, metadata, body=b""):

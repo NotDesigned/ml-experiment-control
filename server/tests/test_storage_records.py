@@ -169,7 +169,7 @@ def test_local_journal_can_be_explicitly_backfilled_after_archive_release(client
 
 def test_storage_maintenance_failure_does_not_hide_scheduler_progress(storage, monkeypatch):
     from types import SimpleNamespace
-    from ml_exp_server.api import app as module
+    from ml_exp_server.api import lifecycle as module
     from ml_exp_server.data.multipart_upload import UploadStore
     from ml_exp_server.storage_service import StorageService
     calls = []
