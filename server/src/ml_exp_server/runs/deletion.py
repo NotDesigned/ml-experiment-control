@@ -256,6 +256,7 @@ class RunDeletionService:
                 ("original_job_identities_known", not identities, json.dumps(identities))]
 
     def _dependencies(self, project, run):
+        from ..actions.policy import ActionExecutionPolicy
         from ..ingest.runscan import discover_run_dirs
         dependencies = {}
 
@@ -308,7 +309,12 @@ class RunDeletionService:
             if isinstance(summary, dict):
                 scientific(summary, "action_resume", owner=owner)
             raw = action.get("execution_campaign_file")
-            if raw:
+            # Cancel Actions borrow the original submission's Campaign without
+            # creating a consumer. Its submission is scanned under its own path
+            # binding; summaries above remain protected for every operation.
+            if raw and action.get("operation") != "CANCEL_RUN":
+                if action.get("operation") not in ActionExecutionPolicy.IDENTITY_PINNED_OPERATIONS:
+                    raise ValueError("unknown frozen Action Campaign consumer operation")
                 path = Path(raw)
                 if path.parent != self.runtime.action_store.directory(action["action_id"]):
                     raise ValueError("frozen Action Campaign is outside its Action")
