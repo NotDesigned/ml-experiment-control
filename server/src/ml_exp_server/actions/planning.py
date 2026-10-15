@@ -105,7 +105,10 @@ class ActionPlanning:
         # Preparation writes preview artifacts before the immutable plan.  Keep
         # that whole sequence under the same cross-process lock as save_plan so
         # competing payloads cannot overwrite the winner's reviewed artifacts.
-        with self.store.locked():
+        from ..runs.deletion_guards import action_guard
+        kind = intent.get("kind") if isinstance(intent, dict) else intent.kind
+        guard = action_guard(self, {"scope": scope.model_dump(mode="json"), "operation": kind})
+        with guard, self.store.locked():
             return self._prepare_locked(scope, project, intent)
 
     def _prepare_locked(self, scope: OperationScope, project: ResearchProject,
@@ -152,6 +155,8 @@ class ActionPlanning:
             plan = self._prepare_local_evidence_rebuild(
                 action_id, scope, project, payload,
             )
+        elif kind == "DELETE_RUN_RESOURCES" and self.deletion_service is not None:
+            plan = self.deletion_service.prepare_action(action_id, scope, project, payload)
         else:
             raise ActionError(f"intent kind {kind!r} has no executor")
         plan["request_digest"] = request_digest
@@ -214,6 +219,13 @@ class ActionPlanning:
             len(run_ids) == len(entries) == len(set(run_ids))
             and all(_SAFE_ID.fullmatch(item) for item in run_ids)
         )
+        if unique:
+            from ..runs.deletion_guards import require_action_runs
+            require_action_runs(self, project.project, run_ids)
+            for run in runs:
+                reference = run.get("resume_from")
+                if isinstance(reference, dict) and isinstance(reference.get("run_id"), str):
+                    require_action_runs(self, project.project, [reference["run_id"]])
         intent_kind = str(intent.get("kind") or "")
         experiments_root = (project.base_dir or Path(".")) / "experiments"
         root = experiments_root / "campaigns"

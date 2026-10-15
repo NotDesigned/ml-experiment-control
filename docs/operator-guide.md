@@ -122,6 +122,14 @@ After provisioning, deliberately enable the required `action_runtime` source
 imports/project writes/scheduler mutations and finite GPU budget policy. Do not
 enable unrelated permissions just to bypass a failed gate.
 
+Administrative Run deletion is separately disabled by default. Deliberately set
+`action_runtime.allow_resource_deletions: true` only when the API bearer holder
+may delete completed managed Runs, including persistent checkpoints and unacknowledged
+or KEEP result objects. SenseCore deletion additionally requires scheduler
+mutations and the bounded debug CPU profile. There is no separate RBAC role in
+the current single-credential API. Each deletion still requires its reviewed
+Action's explicit authorization and execution; see [resource deletion](resource-deletion.md).
+
 ## Start and verify
 
 Review/adapt the [daemon](../server/examples/ml-expd.service) and

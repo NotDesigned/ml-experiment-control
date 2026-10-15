@@ -44,6 +44,7 @@ from .data_delivery_routes import router as data_delivery_router
 from ..runs.experiment_preparation import ExperimentPreparationService
 from .preparation_routes import router as preparation_router
 from .tracking_routes import RECORD_PATH, router as tracking_router
+from .deletion_routes import DELETION_TRANSFER, router as deletion_router
 from ..tracking.tracking_service import TrackingPublisher
 from ..results.result_collection import ResultCollectionService
 from .result_routes import RESULT_PATH, router as result_router
@@ -353,6 +354,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
         worker_transfer = request.method == "PUT" and bool(TRANSFER_PATH.fullmatch(request.url.path))
         worker_transfer = worker_transfer or (request.method == "PUT" and bool(RESULT_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method == "POST" and bool(RECORD_PATH.fullmatch(request.url.path)))
+        worker_transfer = worker_transfer or (request.method == "POST" and bool(DELETION_TRANSFER.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method in {"GET", "PUT"} and bool(LAUNCH_PATH.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method == "PUT" and bool(COPY_TRANSFER.fullmatch(request.url.path)))
         worker_transfer = worker_transfer or (request.method in {"GET", "PUT"} and bool(WORKER_PATH.fullmatch(request.url.path)))
@@ -456,6 +458,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.include_router(data_delivery_router)
     app.include_router(preparation_router)
     app.include_router(tracking_router)
+    app.include_router(deletion_router)
     app.include_router(result_router)
 
     @app.get(VERSIONED_OPENAPI_PATH, include_in_schema=False)

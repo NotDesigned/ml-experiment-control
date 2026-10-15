@@ -17,6 +17,8 @@ from ..data.data_assets import AssetStore
 from ..results.checkpoint_registry import CheckpointRegistry
 from ..workers.persistent_state import MANIFEST_LIMIT
 from ..archive_limits import exceeds
+from ..application_errors import ApplicationError
+from .errors import application_http_error
 from .container_routes import invoke
 
 router = APIRouter(prefix="/api")
@@ -125,6 +127,8 @@ async def worker_input(project: str, run_id: str, attempt_id: str, asset_id: str
     service = store(request)
     try:
         await run_in_threadpool(service.authorize_input, project, run_id, attempt_id, asset_id, token(request))
+    except ApplicationError as error:
+        raise application_http_error(error) from error
     except (ValueError, OSError):
         raise HTTPException(status_code=401, detail="invalid input asset capability") from None
     return await stream_archive(service, project, asset_id)
@@ -138,6 +142,8 @@ async def worker_snapshot(project: str, run_id: str, attempt_id: str, request: R
         value = await run_in_threadpool(service.objects.authorize, project, run_id, attempt_id, capability)
         if not value.get("checkpoint_upload"):
             raise ValueError("checkpoint publication is not enabled")
+    except ApplicationError as error:
+        raise application_http_error(error) from error
     except ValueError:
         raise HTTPException(status_code=401, detail="invalid checkpoint capability") from None
     return await receive(request, service, service.snapshot, project, run_id, attempt_id, capability)
@@ -162,6 +168,8 @@ async def worker_checkpoint(project: str, run_id: str, attempt_id: str, request:
         transfer = await run_in_threadpool(service.objects.authorize, project, run_id, attempt_id, capability)
         if not transfer.get("checkpoint_state"):
             raise ValueError("checkpoint state is not enabled")
+    except ApplicationError as error:
+        raise application_http_error(error) from error
     except ValueError:
         raise HTTPException(status_code=401, detail="invalid persistent checkpoint capability") from None
     raw = bytearray()

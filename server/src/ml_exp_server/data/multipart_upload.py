@@ -76,6 +76,17 @@ class UploadStore:
             raise ValueError("invalid multipart upload policy")
 
     @contextmanager
+    def run_binding_guard(self, binding):
+        if binding.get("kind") in {"artifacts", "checkpoint"}:
+            # The standalone desktop asset helper intentionally ships only
+            # stdlib storage modules and never handles Run-bound capabilities.
+            from ..deletion_state import RunFence
+            with RunFence(self.root.parent).guard(binding["project"], binding["run_id"]):
+                yield
+        else:
+            yield
+
+    @contextmanager
     def record(self, upload_id):
         if not UPLOAD_ID.fullmatch(upload_id):
             raise ValueError("invalid upload ID")
@@ -86,6 +97,10 @@ class UploadStore:
             yield directory, path, json.loads(path.read_text()) if path.exists() else None
 
     def create(self, binding, digest, size, limit):
+        with self.run_binding_guard(binding):
+            return self._create(binding, digest, size, limit)
+
+    def _create(self, binding, digest, size, limit):
         if not re.fullmatch(r"[0-9a-f]{64}", digest) or size <= 0 or exceeds(size, limit) or (size + self.part_bytes - 1) // self.part_bytes > self.max_parts:
             raise ApplicationError("archive exceeds upload limit or has an invalid identity", status_code=413, code="UPLOAD_LIMIT")
         self.prune()
@@ -132,6 +147,10 @@ class UploadStore:
         return min(value["part_bytes"], value["bytes"] - number * value["part_bytes"])
 
     def part(self, upload_id, binding, number, temporary, digest, size):
+        with self.run_binding_guard(binding):
+            return self._part(upload_id, binding, number, temporary, digest, size)
+
+    def _part(self, upload_id, binding, number, temporary, digest, size):
         with self.record(upload_id) as (directory, path, value):
             self.checked(value, binding, active=True)
             if size != self.part_size(value, number):
@@ -157,6 +176,10 @@ class UploadStore:
             return item
 
     def complete(self, upload_id, binding, publish, reserve):
+        with self.run_binding_guard(binding):
+            return self._complete(upload_id, binding, publish, reserve)
+
+    def _complete(self, upload_id, binding, publish, reserve):
         with self.record(upload_id) as (directory, path, value):
             self.checked(value, binding)
             if value["status"] == "COMPLETED":
@@ -203,6 +226,10 @@ class UploadStore:
         return result
 
     def abort(self, upload_id, binding):
+        with self.run_binding_guard(binding):
+            return self._abort(upload_id, binding)
+
+    def _abort(self, upload_id, binding):
         with self.record(upload_id) as (directory, path, value):
             self.checked(value, binding, allow_expired=True)
             if value["status"] == "COMPLETED":

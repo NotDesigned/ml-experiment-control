@@ -30,6 +30,7 @@ class ActionService(ActionPlanning, ActionExecution, ActionRecovery):
         self.project_write_transaction = ProjectWriteTransaction(store)
         self.actor_provider = actor_provider or self._local_actor
         self.source_resolver = source_resolver
+        self.deletion_service = None
 
     @staticmethod
     def _local_actor() -> str:

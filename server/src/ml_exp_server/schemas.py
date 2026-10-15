@@ -113,6 +113,7 @@ class ActionRuntimeConfig(BaseModel):
     allow_source_imports: bool = False
     allow_scheduler_mutations: bool = False
     allow_local_evidence_rebuild: bool = False
+    allow_resource_deletions: bool = False
     scheduler_resource_approval: Literal["budget_cap", "review_exact"] = "budget_cap"
     max_gpu_hours_per_action: Optional[float] = Field(default=1.0, gt=0)
     timeout_seconds: int = 300

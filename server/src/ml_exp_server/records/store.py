@@ -13,6 +13,8 @@ from pathlib import Path
 import sqlite3
 import uuid
 from ..storage import utc_now
+from ..deletion_state import RunFence
+from ..application_errors import ApplicationError
 
 
 def encoded(value):
@@ -70,6 +72,10 @@ class RecordStore:
 
 
     def bind(self, project, run, route, config):
+        with self.run_guard(project, run, config=config):
+            return self._bind(project, run, route, config)
+
+    def _bind(self, project, run, route, config):
         with self.connection() as conn:
             conn.execute("INSERT OR IGNORE INTO runs VALUES (?,?,?,?)",
                          (project, run, encoded(route), encoded(config)))
@@ -85,6 +91,10 @@ class RecordStore:
 
 
     def scope(self, project, run, attempt):
+        with self.run_guard(project, run):
+            return self._scope(project, run, attempt)
+
+    def _scope(self, project, run, attempt):
         binding = self.binding(project, run)
         if binding is None:
             raise ValueError("Run records are not bound")
@@ -100,6 +110,11 @@ class RecordStore:
 
 
     def append(self, scope, events):
+        project, run, _ = json.loads(scope)
+        with self.run_guard(project, run):
+            return self._append(scope, events)
+
+    def _append(self, scope, events):
         # The whole batch and its export queue position commit together. An HTTP
         # retry acknowledges the original IDs, never logs a second observation.
         with self.connection() as conn:
@@ -121,6 +136,88 @@ class RecordStore:
                 conn.execute("INSERT INTO events VALUES (?,?,?,?,?)", (scope, seq, event_id, body, dedup))
             conn.execute("UPDATE scopes SET status='PENDING' WHERE confirmed<? AND error IS NULL AND status NOT IN ('LOCAL_ONLY','PENDING') AND id=?", (seq, scope))
         return seq
+
+    @staticmethod
+    def run_identities(run):
+        return (run, run + "--preparation", run + "--backfill")
+
+    def is_deleted(self, project, run):
+        fence = RunFence(self.root.parent)
+        return any(fence.is_deleted(project, name) for name in self._fence_names(project, run))
+
+    def _fence_names(self, project, run, config=None):
+        names = [run]
+        if config is None:
+            binding = self.binding(project, run)
+            config = binding["config"] if binding else {}
+        data = config.get("ml_expd", {})
+        kind, parent = data.get("record_type"), data.get("run_id")
+        if kind in {"preparation", "backfill"} and isinstance(parent, str) and run == parent + "--" + kind:
+            names.append(parent)
+        return names
+
+    @contextmanager
+    def run_guard(self, project, run, *, config=None):
+        fence = RunFence(self.root.parent)
+        names = self._fence_names(project, run, config)
+        with fence.guard(project, names[0]):
+            for name in names[1:]:
+                fence.require_live(project, name)
+            yield
+
+    def delete_run(self, project, run):
+        """Remove canonical local records after the permanent fence was committed."""
+        if not RunFence(self.root.parent).is_deleted(project, run):
+            raise ApplicationError("Run deletion must be durably fenced first", code="RUN_DELETION_NOT_STARTED")
+        from ..tracking.wandb_display import identity
+        with self.connection() as conn:
+            rows = conn.execute("SELECT run,config FROM runs WHERE project=? AND run IN (?,?,?)",
+                                (project, *self.run_identities(run))).fetchall()
+        names = [run]
+        for row in rows:
+            if row["run"] != run and run in self._fence_names(project, row["run"], json.loads(row["config"]))[1:]:
+                names.append(row["run"])
+        # Preserve the proven publication identities too: after removing their
+        # binding, a late record must not recreate an orphan event stream.
+        fence = RunFence(self.root.parent)
+        with fence.exclusive():
+            for name in names[1:]:
+                fence.mark(project, name, {"publication_parent": run})
+        predicate = "project=? AND run IN (" + ",".join("?" for _ in names) + ")"
+        arguments = (project, *names)
+        scopes = []
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            bindings = {row["run"]: json.loads(row["route"]) for row in conn.execute(
+                "SELECT run,route FROM runs WHERE " + predicate, arguments)}
+            scopes = [row["id"] for row in conn.execute(
+                "SELECT id FROM scopes WHERE " + predicate, arguments)]
+            candidates = set()
+            for row in conn.execute("SELECT e.payload,s.run FROM events e JOIN scopes s ON s.id=e.scope WHERE " + predicate.replace("project=", "s.project=").replace("run IN", "s.run IN"), arguments):
+                route = bindings.get(row["run"], {})
+                if route.get("entity") and route.get("project"):
+                    destination = encoded([route["entity"], route["project"]])
+                    for item in json.loads(row["payload"]).get("observations", []):
+                        candidates.add((destination, identity(item)))
+            for scope in scopes:
+                conn.execute("DELETE FROM events WHERE scope=?", (scope,))
+                conn.execute("DELETE FROM event_ids WHERE scope=?", (scope,))
+            conn.execute("DELETE FROM scopes WHERE " + predicate, arguments)
+            conn.execute("DELETE FROM runs WHERE " + predicate, arguments)
+            # Display names are shared per W&B destination. Preserve mappings
+            # still used by another Run instead of breaking its metric names.
+            surviving = set()
+            for row in conn.execute("SELECT e.payload,r.route FROM events e JOIN scopes s ON s.id=e.scope JOIN runs r ON r.project=s.project AND r.run=s.run"):
+                route = json.loads(row["route"])
+                if route.get("entity") and route.get("project"):
+                    destination = encoded([route["entity"], route["project"]])
+                    for item in json.loads(row["payload"]).get("observations", []):
+                        surviving.add((destination, identity(item)))
+            for destination, signature in candidates - surviving:
+                conn.execute("DELETE FROM display_metrics WHERE destination=? AND signature=?", (destination, signature))
+        for scope in scopes:
+            self._display_cache.pop(scope, None)
+        return {"status": "DELETED", "scopes_removed": len(scopes)}
 
 
     def events(self, scope, *, after=0, limit=128):

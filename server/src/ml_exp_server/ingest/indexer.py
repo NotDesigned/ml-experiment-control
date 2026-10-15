@@ -7,6 +7,7 @@ import json
 import sqlite3
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -54,6 +55,7 @@ class RunIndex:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
         self._lock = threading.Lock()
+        self.deletion_fence = None
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
@@ -77,6 +79,12 @@ class RunIndex:
 
     def upsert_run(self, row: RunIndexRow) -> bool:
         """Insert or update one run. Returns True when content changed."""
+        with self.deletion_fence.shared() if self.deletion_fence else nullcontext():
+            if self.deletion_fence and self.deletion_fence.is_deleted(row.project, row.run_id):
+                return False
+            return self._upsert_run(row)
+
+    def _upsert_run(self, row):
         payload = row.model_dump_json()
         with self._lock:
             cursor = self._conn.execute(
@@ -107,6 +115,8 @@ class RunIndex:
         return changed
 
     def get_run(self, project: str, run_id: str) -> Optional[RunIndexRow]:
+        if self.deletion_fence and self.deletion_fence.is_deleted(project, run_id):
+            return None
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT row_json FROM runs WHERE project=? AND run_id=?",
@@ -127,6 +137,8 @@ class RunIndex:
         with self._lock:
             rows = self._conn.execute(query, params).fetchall()
         parsed = [RunIndexRow.model_validate_json(r[0]) for r in rows]
+        if self.deletion_fence:
+            parsed = [row for row in parsed if not self.deletion_fence.is_deleted(row.project, row.run_id)]
         if campaign is not None:
             parsed = [
                 row for row in parsed
@@ -140,6 +152,12 @@ class RunIndex:
     def record_poll(self, project: str, run_id: str, verb: str,
                     error: Optional[str] = None, *, now: Optional[float] = None,
                     outcome: Optional[str] = None) -> None:
+        with self.deletion_fence.shared() if self.deletion_fence else nullcontext():
+            if self.deletion_fence and self.deletion_fence.is_deleted(project, run_id):
+                return
+            self._record_poll(project, run_id, verb, error, now=now, outcome=outcome)
+
+    def _record_poll(self, project, run_id, verb, error=None, *, now=None, outcome=None):
         observed_at = now if now is not None else time.time()
         resolved_outcome = outcome or ("failed" if error else "succeeded")
         with self._lock:
@@ -200,6 +218,17 @@ class RunIndex:
             record = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return record[0] if record else None
 
+    def delete_run(self, project: str, run_id: str) -> bool:
+        """Remove exactly one deleted Run's disposable query projections."""
+        with self._lock:
+            polls = self._conn.execute("DELETE FROM collector_status WHERE project=? AND run_id=?", (project, run_id))
+            rows = self._conn.execute("DELETE FROM runs WHERE project=? AND run_id=?", (project, run_id))
+            removed = bool(polls.rowcount or rows.rowcount)
+            self._conn.commit()
+        if removed and self.on_update is not None:
+            self.on_update(project, run_id)
+        return removed
+
     def prune_project_runs(self, project: str, keep_run_ids: set[str]) -> list[str]:
         """Remove projections whose canonical Run disappeared from a complete scan."""
 
@@ -234,9 +263,12 @@ def index_project(index: RunIndex, project: ResearchProject,
     complete_scan = all(root.is_dir() for root in roots)
     for root in roots:
         for run_dir in discover_run_dirs(root):
-            row = scan_run_dir(run_dir, project.project, now=now)
-            _reconcile_campaign_binding(row, project)
-            rows.append(row)
+            with index.deletion_fence.shared() if index.deletion_fence else nullcontext():
+                if index.deletion_fence and index.deletion_fence.is_deleted(project.project, run_dir.name):
+                    continue
+                row = scan_run_dir(run_dir, project.project, now=now)
+                _reconcile_campaign_binding(row, project)
+                rows.append(row)
 
     by_id: dict[str, list[RunIndexRow]] = {}
     for row in rows:

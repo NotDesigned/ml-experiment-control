@@ -66,6 +66,7 @@ build contexts/layers live on the desktop. Training runs inside backend containe
 | Data | `data/`: assets, multipart upload, remote upload and delivery; `desktop_upload.py` is the standalone process entry |
 | Backend preparation/collection boundary | `backends/operations.py`; provider implementations in `wyd.py`, `sensecore_data.py`, `sensecore_preparation.py`, `sensecore_results.py`; shared CPU checks in `sensecore_cpu.py` |
 | Results/state | `results/`: artifact storage, download lifecycle, checkpoint registry and independent collection |
+| Administrative Run deletion | `runs/deletion.py`, `deletion_state.py`, `results/admin_deletion.py`, `backends/run_deletion.py`, `workers/delete_run.py`: reviewed Run purge, permanent write fence and exact backend/object deletion |
 | Local storage policy | `storage_service.py`: existing upload/lifecycle services and shared `storage_capacity.py` admission |
 | Experiment records | `records/`: canonical durable journal and verified-archive metric import |
 | Metrics and W&B | `tracking/`: metric/route contracts, publication cursors and display; `wandb_exporter.py` is the SDK process entry |

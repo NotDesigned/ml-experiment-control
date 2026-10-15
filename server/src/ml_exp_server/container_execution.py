@@ -31,6 +31,7 @@ from .workers.worker_http import relay_environment
 from .runs.executor_capabilities import declaration, ExecutionRequirements, mismatches, validate_worker, validate_script_asset
 from .tracking.tracking_contract import WandbOptions, finite_parameters
 from .tracking.tracking_service import store_for, bind_run
+from .runs.deletion_guards import request_run
 
 
 SECRET_KEY = re.compile(r"(?i)(?:^|_)(?:token|secret|password|credential|api_key|proxy|authorization)(?:$|_)")
@@ -382,6 +383,7 @@ class ContainerExecutionService:
         self.finish_state(pending, {**pending.value, "status": "RECONCILE_REQUIRED",
                                    "error": "packaging could not be queued; inspect or reconcile"})
 
+    @request_run
     def create_run(self, project: str, request: RunRequest, *, profile_snapshot=None, prepared_assets=None, tracking=None) -> dict:
         self.require_enabled()
         bundle = self.read(project, request.runtime_id)

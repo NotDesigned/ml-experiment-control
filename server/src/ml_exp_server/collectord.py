@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -31,6 +32,7 @@ from .schemas import (
     TERMINAL_RUN_STATES,
 )
 from .storage import atomic_text
+from .application_errors import ApplicationError
 
 # Hard allowlist. Anything else — most importantly submit/cancel/stage/prepare —
 # must raise before a subprocess is even constructed.
@@ -614,7 +616,14 @@ class Collector:
                 )
                 continue
             error: Optional[str] = None
-            result = self.controller.execute(call, timeout=_SUBPROCESS_TIMEOUT)
+            fence = getattr(self.index, "deletion_fence", None)
+            try:
+                with fence.guard(call.project, call.run_id) if fence else nullcontext():
+                    result = self.controller.execute(call, timeout=_SUBPROCESS_TIMEOUT)
+            except ApplicationError as error:
+                if error.code == "RUN_DELETED":
+                    continue
+                raise
             if result.get("returncode") != 0:
                 error = str(result.get("stderr") or result.get("stdout") or "").strip()[
                     -500:

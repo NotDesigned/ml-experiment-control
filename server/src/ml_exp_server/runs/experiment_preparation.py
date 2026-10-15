@@ -21,6 +21,8 @@ from ..tracking.tracking_service import store_for, preparation_record
 from ..projects.source_imports import IDENTITY
 from ..storage import DurableJsonState, utc_now
 from ..backends.operations import backend_operations
+from .deletion_guards import request_run
+from ..deletion_state import RunFence
 
 
 PREPARATION_ID = re.compile(r"^preparation-[0-9a-f]{32}$")
@@ -67,14 +69,21 @@ class ExperimentPreparationService:
     def state(self, project, preparation_id):
         if not IDENTITY.fullmatch(project) or not PREPARATION_ID.fullmatch(preparation_id):
             raise ValueError("invalid experiment preparation identity")
-        directory = self.root / project
-        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with (directory / (preparation_id + ".lock")).open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            store = DurableJsonState(directory / (preparation_id + ".json"), directory / (preparation_id + ".jsonl"))
-            snapshot = store.snapshot({})
-            store.repair_journal(snapshot)
-            yield store, snapshot
+        fence = RunFence(self.runtime.config.project_registry_root_path())
+        # Preparation IDs do not contain their Run ID. Hold the workspace
+        # shared fence before reading that binding or repairing its journal,
+        # then keep it through the caller's entire state transition.
+        with fence.shared():
+            directory = self.root / project
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with (directory / (preparation_id + ".lock")).open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                store = DurableJsonState(directory / (preparation_id + ".json"), directory / (preparation_id + ".jsonl"))
+                snapshot = store.snapshot({})
+                if snapshot.value:
+                    fence.require_live(project, snapshot.value["run_id"])
+                store.repair_journal(snapshot)
+                yield store, snapshot
 
     @staticmethod
     def public(value):
@@ -90,6 +99,8 @@ class ExperimentPreparationService:
 
     def update(self, project, preparation_id, **fields):
         with self.state(project, preparation_id) as (store, snapshot):
+            if not snapshot.value:
+                raise ApplicationError("unknown experiment preparation", status_code=404, code="UNKNOWN_PREPARATION")
             value = {**snapshot.value, **fields, "updated_at": utc_now()}
             if value["phase"] != snapshot.value["phase"]:
                 value["phase_started_at"] = value["updated_at"]
@@ -98,6 +109,7 @@ class ExperimentPreparationService:
             preparation_record(self.runtime, value)
             return value
 
+    @request_run
     def accept(self, project, request):
         self.containers.require_enabled()
         request_body = request.model_dump(mode="json")
@@ -169,11 +181,11 @@ class ExperimentPreparationService:
                 "diagnostic": value.get("error_code"), "message": "Server preparation; scheduler and training have separate observations"}
 
     def continue_preparation(self, project, preparation_id):
-        self.containers.require_enabled()
         with self.state(project, preparation_id) as (store, snapshot):
             value = dict(snapshot.value)
             if not value:
                 raise ApplicationError("unknown experiment preparation", status_code=404, code="UNKNOWN_PREPARATION")
+            self.containers.require_enabled()
             if value["status"] != "RECONCILE_REQUIRED":
                 return self.public(value), None
             # The original per-effect request markers are retained. Continuing
@@ -187,6 +199,10 @@ class ExperimentPreparationService:
         project, preparation_id = pending
         with self.state(project, preparation_id) as (_, snapshot):
             value = dict(snapshot.value)
+        if not value:
+            raise ApplicationError("unknown experiment preparation", status_code=404, code="UNKNOWN_PREPARATION")
+        if value["status"] != "EXECUTING":
+            return self.public(value)
         try:
             request = ExperimentPreparationRequest.model_validate(value["request"])
             selected = value["matching"]
@@ -247,13 +263,17 @@ class ExperimentPreparationService:
         for path in sorted(self.root.glob("*/*.json")):
             if not IDENTITY.fullmatch(path.parent.name) or not PREPARATION_ID.fullmatch(path.stem):
                 continue
-            with self.state(path.parent.name, path.stem) as (store, snapshot):
-                value = dict(snapshot.value)
-                if value.get("status") != "EXECUTING":
-                    continue
-                value.update(status="RECONCILE_REQUIRED", next_action="INSPECT_DEPENDENCY",
-                             error="daemon interrupted preparation; inspect exact saved dependencies", updated_at=utc_now())
-                store.commit(value, expected_revision=snapshot.revision,
-                             event={"event": "preparation_interrupted", "timestamp": value["updated_at"]})
-                count += 1
+            try:
+                with self.state(path.parent.name, path.stem) as (store, snapshot):
+                    value = dict(snapshot.value)
+                    if value.get("status") != "EXECUTING":
+                        continue
+                    value.update(status="RECONCILE_REQUIRED", next_action="INSPECT_DEPENDENCY",
+                                 error="daemon interrupted preparation; inspect exact saved dependencies", updated_at=utc_now())
+                    store.commit(value, expected_revision=snapshot.revision,
+                                 event={"event": "preparation_interrupted", "timestamp": value["updated_at"]})
+                    count += 1
+            except ApplicationError as error:
+                if error.code != "RUN_DELETED":
+                    raise
         return count

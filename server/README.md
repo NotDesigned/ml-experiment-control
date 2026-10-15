@@ -8,6 +8,7 @@ backend; this daemon owns definitions, checked submissions and observations.
 - [Architecture](../docs/architecture.md): API, builder, controller and workers.
 - [HTTP contract](../docs/http_contract.md) and [API workflow](../docs/source-api.md).
 - [Recovery](../docs/recovery.md) and [development](../docs/development.md).
+- [Administrative Run deletion](../docs/resource-deletion.md): separately enabled, reviewed storage cleanup.
 
 From a development checkout, start the read-only loopback scaffold:
 

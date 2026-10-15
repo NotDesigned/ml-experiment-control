@@ -16,6 +16,7 @@ from ..application_errors import ApplicationError
 from ..results.artifact_store import ArtifactStore, stream_digest
 from ..projects.source_imports import IDENTITY, SHA256, unpack_source, seal_tree, remove_staging
 from ..storage import atomic_json, utc_now
+from ..deletion_state import RunFence
 from ..archive_limits import byte_limit, exceeds, wire_limit
 
 ASSET_ID = re.compile(r"^asset\.[0-9a-f]{64}$")
@@ -177,6 +178,10 @@ class AssetStore:
             return value
 
     def authorize_input(self, project: str, run: str, attempt: str, asset_id: str, token: str):
+        with RunFence(self.root.parent).guard(project, run):
+            return self._authorize_input(project, run, attempt, asset_id, token)
+
+    def _authorize_input(self, project, run, attempt, asset_id, token):
         value = self.objects.authorize(project, run, attempt, token)
         import yaml
         manifest = yaml.safe_load((Path(value["run_dir"]) / "manifest.yaml").read_text())
@@ -186,6 +191,10 @@ class AssetStore:
         return self.read(project, asset_id)
 
     def snapshot(self, project: str, run: str, attempt: str, token: str, stream, size: int):
+        with RunFence(self.root.parent).guard(project, run):
+            return self._snapshot(project, run, attempt, token, stream, size)
+
+    def _snapshot(self, project, run, attempt, token, stream, size):
         value = self.objects.authorize(project, run, attempt, token)
         if not value.get("checkpoint_upload"):
             raise ValueError("checkpoint publication is not enabled for this Attempt")

@@ -16,6 +16,7 @@ from .files import file_sha
 class ExecutionDispatch:
     project_write: bool
     local_evidence_rebuild: bool
+    resource_deletion: bool = False
 
 
 class ActionExecutionPolicy:
@@ -63,10 +64,13 @@ class ActionExecutionPolicy:
             raise ActionError("authorization does not match the gate bundle")
 
         operation = str(snapshot["operation"])
-        if operation not in self.PROJECT_WRITE_OPERATIONS | self.IDENTITY_PINNED_OPERATIONS | {"REBUILD_LOCAL_EVIDENCE", "CANCEL_RUN"}:
+        if operation not in self.PROJECT_WRITE_OPERATIONS | self.IDENTITY_PINNED_OPERATIONS | {"REBUILD_LOCAL_EVIDENCE", "CANCEL_RUN", "DELETE_RUN_RESOURCES"}:
             raise ActionError("unsupported historical operation; this Action is read-only")
         project_write = operation in self.PROJECT_WRITE_OPERATIONS
         local_evidence_rebuild = operation == "REBUILD_LOCAL_EVIDENCE"
+        resource_deletion = operation == "DELETE_RUN_RESOURCES"
+        if resource_deletion and not self.config.allow_resource_deletions:
+            raise ActionError("resource deletion Actions are disabled by daemon policy")
         if project_write and not self.config.allow_project_writes:
             raise ActionError("project writes are disabled by daemon policy")
         if local_evidence_rebuild and not self.config.allow_local_evidence_rebuild:
@@ -74,6 +78,7 @@ class ActionExecutionPolicy:
         if (
             not project_write
             and not local_evidence_rebuild
+            and not resource_deletion
             and not self.config.allow_scheduler_mutations
         ):
             raise ActionError("scheduler mutations are disabled by daemon policy")
@@ -104,4 +109,5 @@ class ActionExecutionPolicy:
         return ExecutionDispatch(
             project_write=project_write,
             local_evidence_rebuild=local_evidence_rebuild,
+            resource_deletion=resource_deletion,
         )

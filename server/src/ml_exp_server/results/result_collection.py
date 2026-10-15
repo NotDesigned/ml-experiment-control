@@ -18,6 +18,7 @@ from experiment_control.backends.sensecore_rest import SenseCoreREST, RESTError
 
 from ..application_errors import ApplicationError
 from ..execution_queue import QueueUnavailable
+from ..deletion_state import RunFence
 from ..storage_capacity import CapacityError
 from .artifact_store import ATTEMPT, artifact_released
 from ..container_execution import ContainerExecutionService
@@ -45,20 +46,24 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
             raise ApplicationError("result storage is not configured", code="RESULT_COLLECTION_DISABLED")
         self.objects = runtime.storage_service.objects
         self.root = runtime.config.project_registry_root_path() / "result-collections"
+        self.fence = RunFence(self.root.parent)
         self.stopping = lambda: False
 
     @contextmanager
     def state(self, project, run, attempt):
         if not IDENTITY.fullmatch(project) or not IDENTITY.fullmatch(run) or not ATTEMPT.fullmatch(attempt):
             raise ValueError("invalid collection identity")
-        parent = self.root / project / run
-        parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-        with (parent / (attempt + ".lock")).open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            store = DurableJsonState(parent / (attempt + ".json"), parent / (attempt + ".jsonl"))
-            snapshot = store.snapshot({})
-            store.repair_journal(snapshot)
-            yield store, snapshot
+        # Always claim the Run before its state lock. Deletion's nonblocking
+        # exclusive claim then cannot cross a collector or invert these locks.
+        with self.fence.guard(project, run):
+            parent = self.root / project / run
+            parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            with (parent / (attempt + ".lock")).open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                store = DurableJsonState(parent / (attempt + ".json"), parent / (attempt + ".jsonl"))
+                snapshot = store.snapshot({})
+                store.repair_journal(snapshot)
+                yield store, snapshot
 
     def update(self, identity, **changes):
         with self.state(*identity) as (store, snapshot):
@@ -186,6 +191,10 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
         return result
 
     def begin(self, project, run, attempt, *, retry=False, reconcile=False):
+        with self.fence.guard(project, run):
+            return self._begin(project, run, attempt, retry=retry, reconcile=reconcile)
+
+    def _begin(self, project, run, attempt, *, retry=False, reconcile=False):
         ContainerExecutionService(self.runtime).require_enabled()
         identity = (project, run, attempt)
         _, _, transfer, observed = self.evidence(*identity)
@@ -216,6 +225,10 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
 
     def repair(self, project, run, attempt, expected_sha256):
         """Add missing files to an unacknowledged archive, retaining its old receipt/object."""
+        with self.fence.guard(project, run):
+            return self._repair(project, run, attempt, expected_sha256)
+
+    def _repair(self, project, run, attempt, expected_sha256):
         ContainerExecutionService(self.runtime).require_enabled()
         identity = (project, run, attempt)
         root, definition, transfer, observed = self.evidence(*identity)
@@ -251,12 +264,16 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
     def recover_interrupted(self):
         count = 0
         for path in self.root.glob("*/*/attempt-*.json"):
-            with self.state(path.parent.parent.name, path.parent.name, path.stem) as (store, snapshot):
-                if snapshot.value.get("status") in ACTIVE:
-                    value = {**snapshot.value, "status": "RECONCILE_REQUIRED", "diagnostic": "DAEMON_INTERRUPTED",
-                             "updated_at": utc_now()}
-                    store.commit(value, event={"type": "RESULT_COLLECTION_INTERRUPTED"}, expected_revision=snapshot.revision)
-                    count += 1
+            try:
+                with self.state(path.parent.parent.name, path.parent.name, path.stem) as (store, snapshot):
+                    if snapshot.value.get("status") in ACTIVE:
+                        value = {**snapshot.value, "status": "RECONCILE_REQUIRED", "diagnostic": "DAEMON_INTERRUPTED",
+                                 "updated_at": utc_now()}
+                        store.commit(value, event={"type": "RESULT_COLLECTION_INTERRUPTED"}, expected_revision=snapshot.revision)
+                        count += 1
+            except ApplicationError as error:
+                if error.code != "RUN_DELETED":
+                    raise
         return count
 
     def register_training(self, project, run, attempt, token, value):
@@ -298,6 +315,14 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
                 continue
 
     def finish(self, identity):
+        try:
+            with self.fence.guard(*identity[:2]):
+                return self._finish(identity)
+        except ApplicationError as error:
+            if error.code != "RUN_DELETED":
+                raise
+
+    def _finish(self, identity):
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Serialize recoveries to avoid keeping several large incomplete
         # archives plus their validation trees on the API host at once.
@@ -314,6 +339,10 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
             self.finish_one(identity)
 
     def finish_one(self, identity):
+        with self.fence.guard(*identity[:2]):
+            return self._finish_one(identity)
+
+    def _finish_one(self, identity):
         phase = "CHECKING"
         try:
             root, definition, transfer, _ = self.evidence(*identity)
@@ -400,6 +429,10 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
         return 3 * (total + 10240) + count * 4096
 
     def publish_local(self, identity, outputs, transfer, *, repair_sha256=None, reservation=None):
+        with self.fence.guard(*identity[:2]):
+            return self._publish_local(identity, outputs, transfer, repair_sha256=repair_sha256, reservation=reservation)
+
+    def _publish_local(self, identity, outputs, transfer, *, repair_sha256=None, reservation=None):
         from ..workers.result_worker import checked_directory
         checked_directory(outputs)
         claim = nullcontext(reservation) if reservation is not None else self.capacity().reserve(self.archive_peak(outputs, transfer["outputs"]))

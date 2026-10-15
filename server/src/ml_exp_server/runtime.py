@@ -95,6 +95,8 @@ class ExperimentServerRuntime:
         # SQLite connection, telemetry provider, or managed local service.
         with ExitStack() as cleanup:
             run_index = index or RunIndex(config.index_db_path())
+            from .deletion_state import RunFence
+            run_index.deletion_fence = RunFence(config.project_registry_root_path())
             cleanup.callback(run_index.close)
             project_registry = ProjectRegistry(config.project_registry_root_path())
             if projects is None:
@@ -140,6 +142,8 @@ class ExperimentServerRuntime:
                 telemetry=telemetry,
                 workspace_id=workspace_id,
             )
+            from .runs.deletion import RunDeletionService
+            runtime.action_service.deletion_service = RunDeletionService(runtime)
             cleanup.pop_all()
             return runtime
 

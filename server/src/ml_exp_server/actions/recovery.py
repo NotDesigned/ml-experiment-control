@@ -12,6 +12,11 @@ class ActionRecovery:
     """Recovery operations; state belongs to the application facade."""
 
     def reconcile(self, action_id: str) -> dict[str, Any]:
+        from ..runs.deletion_guards import action_guard
+        with action_guard(self, self.store.snapshot(action_id)):
+            return self._reconcile_live(action_id)
+
+    def _reconcile_live(self, action_id):
         """Observe an uncertain submission without ever issuing submit again."""
         snapshot = self.store.snapshot(action_id)
         execution = snapshot["execution"]
@@ -23,6 +28,12 @@ class ActionRecovery:
             # worker.  Startup recovery converts abandoned claims to
             # RECONCILE_REQUIRED before the API begins serving requests.
             return snapshot
+        if snapshot.get("operation") == "DELETE_RUN_RESOURCES":
+            if not self.config.allow_resource_deletions:
+                raise ActionError("resource deletion Actions are disabled by daemon policy")
+            if execution.get("status") != "RECONCILE_REQUIRED":
+                raise ActionError("resource deletion is not awaiting reconciliation")
+            return self._execute_resource_deletion(snapshot, execution)
         if snapshot.get("operation") == "REBUILD_LOCAL_EVIDENCE":
             if not self.config.allow_local_evidence_rebuild:
                 raise ActionError("local evidence rebuild Actions are disabled by daemon policy")
@@ -211,9 +222,15 @@ class ActionRecovery:
             } for action in pending]
         recovered: list[dict[str, Any]] = []
         for action in pending:
-            recovered.append(self._execute_write(
-                action, dict(action["execution"]),
-            ))
+            from ..runs.deletion_guards import action_guard
+            from ..application_errors import ApplicationError
+            try:
+                with action_guard(self, action):
+                    recovered.append(self._execute_write(action, dict(action["execution"])))
+            except ApplicationError as error:
+                if error.code != "RUN_DELETED":
+                    raise
+                recovered.append({**action, "execution": {**action["execution"], "error": error.code}})
         return recovered
 
     def recover_interrupted_executions(self) -> list[dict[str, Any]]:

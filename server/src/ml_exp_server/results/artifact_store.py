@@ -1,7 +1,7 @@
 """S3 storage and write-only, exact-Attempt capabilities for worker transfers."""
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 import fcntl
 from functools import cached_property
@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from ..projects.source_imports import IDENTITY, unpack_source, seal_tree, remove_staging
 from ..storage import atomic_json, utc_now
+from ..deletion_state import RunFence
 from ..storage_capacity import StorageCapacity
 from ..archive_limits import byte_limit, exceeds, wire_limit
 from ..workers.worker_launcher import LAUNCH_PATH, encode, endpoint
@@ -54,15 +55,16 @@ class ArtifactStore:
         return StorageCapacity(self.root.parent, self.config)
 
     @contextmanager
-    def record(self, project, run, attempt):
+    def record(self, project, run, attempt, *, bypass_fence=False):
         if not IDENTITY.fullmatch(project) or not IDENTITY.fullmatch(run) or not ATTEMPT.fullmatch(attempt):
             raise ValueError('invalid transfer identity')
-        directory = self.root / project / run
-        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with (directory / (attempt + '.lock')).open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            path = directory / (attempt + '.json')
-            yield path, json.loads(path.read_text()) if path.exists() else None
+        with nullcontext() if bypass_fence else RunFence(self.root.parent).guard(project, run):
+            directory = self.root / project / run
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with (directory / (attempt + '.lock')).open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                path = directory / (attempt + '.json')
+                yield path, json.loads(path.read_text()) if path.exists() else None
 
     def issue(self, project, run, attempt, run_dir: Path, outputs: list[str], *, checkpoint_upload=False, checkpoint_state=None, record_stream=False, required_outputs=()):
         with self.record(project, run, attempt) as (path, value):
