@@ -78,8 +78,8 @@ def test_relay_frozen_before_launch_and_capabilities_do_not_leak_address(gateway
     for args, kwargs in calls[1:]:
         command = shlex.split(args[-1])
         assert 'apptainer' in command and '--nv' not in command and 'sbatch' not in command
-        assert json.loads(kwargs['input_text']) == ctl.run['data_preparation']
-    assert shlex.split(calls[-1][0][-1])[-1] == '1'
+        assert json.loads(kwargs['input_text']) == {'preparation': ctl.run['data_preparation'], 'inputs': []}
+    assert shlex.split(calls[-1][0][-1])[-2] == '1'
     assert ('--unsquash' in shlex.split(calls[-1][0][-1])) == unsquash
     monkey = pytest.MonkeyPatch()
     try:
@@ -129,3 +129,66 @@ def test_prepared_data_missing_never_runs_download_or_training(tmp_path, monkeyp
     monkeypatch.setattr(worker, 'upload', lambda *args: None)
     assert worker.main(['python3', '-c', 'raise SystemExit("training must not run")']) == 65
     assert json.loads((root/'data-preparation.json').read_text())['error'] == 'DATA_PREPARED_CACHE_MISSING'
+
+
+def test_gateway_asset_and_script_mount_cached_input_before_script(gateway, tmp_path, monkeypatch):
+    import hashlib
+    import os
+    import sys
+    from ml_exp_server.worker_contract import install_workers
+    from tests.test_multipart_upload import begin, send
+    payload = archive({'tokens.bin': b'tokens'})
+    upload = begin(gateway[0], payload)
+    endpoint = send(gateway[0], payload, upload)
+    asset = gateway[0].post(endpoint + '/complete')
+    assert asset.status_code == 200, asset.text
+    ctl = controller(gateway, data_preparation={'script': 'download.py'},
+                     inputs=[{'asset_id': asset.json()['asset_id'], 'mount_path': '/inputs/data'}])
+    calls = []
+    ctl.runner = SimpleNamespace(run=lambda args, **kwargs: calls.append((args, kwargs)))
+    ctl.prepare_gateway_data(require_cached=False)
+    argv, options = calls[0]
+    remote = shlex.split(argv[-1])
+    inputs_root = ctl.run['storage']['run_dir'] + '/attempts/attempt-001/inputs'
+    assert inputs_root + ':/inputs' in remote
+    assert remote.index('apptainer') < remote.index(inputs_root + ':/inputs')
+    value = json.loads(options['input_text'])
+    assert value['inputs'] == ctl.run['inputs']
+    # Run the generated command in a fresh interpreter with the actual image
+    # filenames. Source-package imports or mocks would hide a broken image import.
+    workspace = tmp_path / 'source'
+    script = ("import os\nfrom pathlib import Path\n"
+              "assert os.environ['INPUTS_DIR'] == '/inputs'\n"
+              "assert not any(key.startswith('ML_EXPD_') for key in os.environ)\n"
+              "Path(os.environ['DATA_DIR'],'copy.bin').write_bytes(Path(os.environ['TEST_INPUT'],'tokens.bin').read_bytes())\n")
+    local_inputs = tmp_path / 'inputs'
+    value['preparation'] = definition(workspace, script, env={'TEST_INPUT': str(local_inputs / 'data')})
+    cache = tmp_path / 'data-assets'
+    cached = cache / value['inputs'][0]['asset_id']
+    cached.mkdir(parents=True)
+    (cached / 'tokens.bin').write_bytes(b'tokens')
+    expected_sha = hashlib.sha256(b'tokens').hexdigest()
+    assert value['inputs'][0]['files'][0]['sha256'] == expected_sha
+    image_workers = tmp_path / 'image-workers'
+    image_workers.mkdir()
+    install_workers(image_workers)
+    assert (image_workers / 'worker.py').is_file()
+    assert not (image_workers / 'managed_worker.py').exists()
+    # These paths stand in for Apptainer's /workspace and /inputs binds; all
+    # import, cache verification, linking and script execution remain real.
+    value['inputs'][0]['mount_path'] = str(local_inputs / 'data')
+    code = remote[remote.index('-c') + 1]
+    driver = ("import sys\nfrom pathlib import Path\n"
+              "sys.path.insert(0,sys.argv.pop(1))\n"
+              "from data_preparation import prepare\n"
+              "prepare.__kwdefaults__['workspace']=Path(sys.argv.pop(1))\n"
+              "code=sys.argv.pop(1)\nexec(compile(code,'<gateway-data-script>','exec'),{})")
+    result = subprocess.run([sys.executable, '-I', '-S', '-c', driver, str(image_workers), str(workspace),
+                             code, str(tmp_path / 'prepared'), '0', str(cache)],
+                            input=json.dumps(value), text=True, capture_output=True, timeout=15,
+                            env={**os.environ, 'ML_EXPD_UPLOAD_TOKEN': 'must-not-reach-data-script'})
+    assert result.returncode == 0, result.stderr
+    assert (local_inputs / 'data').is_symlink()
+    assert (local_inputs / 'data').samefile(cached)
+    tree = tmp_path / 'prepared' / value['preparation']['preparation_id'] / 'tree'
+    assert (tree / 'copy.bin').read_bytes() == b'tokens'

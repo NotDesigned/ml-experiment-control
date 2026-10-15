@@ -32,6 +32,7 @@ from ml_exp_server.schemas import (
 import ml_exp_server.actions.files as action_files
 import ml_exp_server.actions.helpers as action_helpers
 import ml_exp_server.controller_gateway as controller_gateway
+import ml_exp_server.controller_output as controller_output
 
 
 def operation_intent(kind: str, draft: str, idempotency_key: str = "intent-123456abcdef"):
@@ -61,7 +62,7 @@ def test_action_helpers_reject_unsafe_inputs_and_classify_changes(tmp_path):
         "EXPERIMENT_DESIGN", "RESOURCE", "EXECUTION_IDENTITY", "METADATA",
     }
     assert action_helpers._semantic_changes({"same": 1}, {"same": 1}) == []
-    assert controller_gateway.redact({
+    assert controller_output.redact({
         "api_token": "secret", "tokenizer_path": "tokenizer.model",
         "train_batch_tokens": 65536,
     }) == {
@@ -76,11 +77,11 @@ def test_command_runner_handles_timeout_and_non_json_output(monkeypatch, tmp_pat
     def timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
 
-    monkeypatch.setattr("ml_exp_server.processes.run_process", timeout)
+    monkeypatch.setattr("experiment_control.runner.run_process", timeout)
     assert runner(["slow"], cwd=tmp_path, timeout=1)["timeout"] is True
 
     monkeypatch.setattr(
-        "ml_exp_server.processes.run_process",
+        "experiment_control.runner.run_process",
         lambda *args, **kwargs: SimpleNamespace(
             returncode=2, stdout="not json", stderr="https://secret@example.test/error",
         ),

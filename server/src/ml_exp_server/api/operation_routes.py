@@ -8,7 +8,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from ..application import ApplicationError
+from ..application_errors import ApplicationError
 from ..schemas import OperationScopeType
 from .errors import application_http_error
 

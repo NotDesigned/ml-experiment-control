@@ -11,8 +11,7 @@ from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.container_execution import ContainerExecutionService
 from ml_exp_server.runs.experiment_preparation import ExperimentPreparationRequest
 from ml_exp_server.backends.wyd import WydDataStager
-from tests.test_desktop_data_upload import remote_client, stage, stored, client
-from tests.test_multipart_upload import begin, send
+from tests.test_desktop_data_upload import remote_client, stage, stored, client, historical_asset
 from tests.test_artifact_store import archive
 from tests.test_experiment_preparation import service, spec
 
@@ -20,8 +19,7 @@ from tests.test_experiment_preparation import service, spec
 @pytest.fixture
 def backend(remote_client, tmp_path, monkeypatch):
     data=archive({'nested/tokens.bin':b'training data'*1024})
-    upload=begin(remote_client,data);root=send(remote_client,data,upload)
-    asset=remote_client.post(root+'/complete').json()['asset_id']
+    asset=historical_asset(remote_client,data)['asset_id']
     profile=ContainerExecutionService(remote_client.app.state.runtime).profiles()['gpu']
     profile['storage_root']=str(tmp_path/'backend')
     original=subprocess.Popen

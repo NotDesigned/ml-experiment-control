@@ -19,6 +19,9 @@ VERSIONED_OPENAPI_PATH = "/api/v2/openapi.json"
 CLIENT_PROTOCOL_HEADER = "X-ML-Expd-Client-Protocol"
 
 SERVER_CAPABILITIES = (
+    "target-backed-data-upload.v1",
+    "fixed-transfer-buffer.v1",
+    "ccr-streamed-data-image.v1",
     "resource-deletion.v1",
     "artifact-retention.v1",
     "wandb-sync.v1",
@@ -154,3 +157,8 @@ class ActionSnapshotResponse(BaseModel):
     operation: str
     execution: ActionExecutionResponse
     journal: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmation: str = Field(min_length=1, max_length=256)

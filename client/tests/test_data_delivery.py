@@ -3,7 +3,7 @@ import json
 import pytest
 
 from ml_exp_client.api import ClientError
-from ml_exp_client.data_delivery import deliver_data
+from ml_exp_client.assets import deliver_data
 from ml_exp_client.workflow import experiment
 from test_experiment_workflow import API, HEALTH, configuration
 

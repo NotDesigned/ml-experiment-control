@@ -6,7 +6,6 @@ import argparse
 import errno
 import fcntl
 import hashlib
-import http.client
 from http.server import BaseHTTPRequestHandler
 import json
 import os
@@ -30,64 +29,12 @@ from dockerfile_parse import DockerfileParser
 from .projects.source_revisions import _tree_digest
 from .storage import atomic_json
 from .dockerfile_build import DOCKERFILE_RECIPE, INTERNAL, inspect_dockerfile, managed_dockerfile, worker_digest
-from .worker_contract import CAPABILITIES, WORKER_CONTRACT, install_workers, recipe_digest
+from .worker_contract import CAPABILITIES, WORKER_CONTRACT, install_workers
 from .runs.execution_progress import record_progress, progress_view
 from .application_errors import ApplicationError
 from .builds.build_contexts import CONTEXT_ID, MAX_BYTES
 from .builds.image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE, BUILD_REMOTE_CONTEXT, BUILD_CONTEXT_BYTES
-
-
-IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
-ID = re.compile(r"^[0-9a-f]{64}$")
-PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
-BUILD_REVISION = "sealed-context-transfer.v1"
-MANIFEST_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
-
-
-class BuildStorageError(ValueError):
-    """Only reviewed storage diagnostics may cross the private builder socket."""
-
-    def __init__(self, code: str, details: dict):
-        super().__init__(code)
-        self.code, self.details = code, details
-
-
-class BuildTransportError(ValueError):
-    """Bounded transport evidence; uncertain publications are never replayed."""
-
-    def __init__(self, code, details):
-        super().__init__(code)
-        self.code, self.details = code, details
-
-
-def bundle_id(project: str, source_id: str, base_image: str, *, dockerfile_path: str = "Dockerfile") -> str:
-    fields = [project, source_id, base_image, DOCKERFILE_RECIPE, WORKER_CONTRACT,
-              worker_digest(), recipe_digest(), BUILD_REVISION, dockerfile_path]
-    return hashlib.sha256(json.dumps(fields, separators=(",", ":")).encode()).hexdigest()
-
-
-class UnixConnection(http.client.HTTPConnection):
-    def connect(self):
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(self.timeout)
-        self.sock.connect(self.host)
-
-
-def builder_request(path: str, payload: dict, *, timeout: int = 1200) -> dict:
-    connection = UnixConnection(path, timeout=timeout)
-    try:
-        connection.request("POST", "/", body=json.dumps(payload), headers={"Content-Type": "application/json"})
-        response = connection.getresponse()
-        data = json.loads(response.read(65536))
-        if response.status != 200:
-            if data.get("code") in {"BUILD_STORAGE_INSUFFICIENT", "BUILD_STORAGE_UNCHECKED", "BUILD_DISK_EXHAUSTED"}:
-                raise BuildStorageError(data["code"], data["details"])
-            if data.get("code") in {"BUILD_SESSION_TIMEOUT", "BUILD_CONTEXT_TRANSPORT", "DESKTOP_RPC_TIMEOUT", "DESKTOP_RPC_UNAVAILABLE", "DESKTOP_RPC_FAILED", "DESKTOP_RPC_RESPONSE"}:
-                raise BuildTransportError(data["code"], data["details"])
-            raise ValueError(data.get("error", "image packaging failed"))
-        return data
-    finally:
-        connection.close()
+from .builds.builder_client import IMAGE, ID, PROJECT, MANIFEST_TYPE, bundle_id, BuildStorageError, BuildTransportError, BuildReceiptMissingError
 
 
 class ImageBuilder:
@@ -143,7 +90,7 @@ class ImageBuilder:
                 raise ValueError("historical packaging receipt is unavailable")
             if operation == "get":
                 if not receipt.is_file():
-                    raise ValueError("image bundle has not been published")
+                    raise BuildReceiptMissingError("image bundle has not been published")
                 return value
             path = self.root / f"{pinned}.log"
             content = ""
@@ -655,6 +602,8 @@ class Handler(BaseHTTPRequestHandler):
             self.connection.settimeout(15)
             payload = json.loads(self.rfile.read(size))
             result = self.server.builder.request(payload)
+        except BuildReceiptMissingError:
+            status, result = 409, {"error": "image bundle has not been published", "code": "BUILD_RECEIPT_MISSING"}
         except BuildStorageError as exc:
             status, result = 409, {"error": exc.code, "code": exc.code, "details": exc.details}
         except BuildTransportError as exc:

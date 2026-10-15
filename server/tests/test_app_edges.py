@@ -12,10 +12,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ml_exp_server.api import app as app_module
-from ml_exp_server.api.app import (
-    _poll_loop, _shutdown, _start_daemon_thread, create_app,
-)
+from ml_exp_server.api import lifecycle as app_module
+from ml_exp_server.api.app import create_app
+from ml_exp_server.api.lifecycle import _poll_loop, _shutdown, _start_daemon_thread
 from ml_exp_server.api.contract import CLIENT_PROTOCOL_HEADER
 from ml_exp_server.schemas import ServerConfig
 

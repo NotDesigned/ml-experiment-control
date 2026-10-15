@@ -434,12 +434,14 @@ class SenseCoreBackend:
         structured = _structured_evidence(
             lines, run=run, attempt_id=str(record["attempt_id"]),
         )
-        metrics = [metric for line in lines if (metric := self.s.parse_metric(campaign, line))]
+        parsed_metrics = [(line, metric) for line in lines
+                          if (metric := self.s.parse_metric(campaign, line))]
+        metrics = [metric for _, metric in parsed_metrics]
         checkpoints = [
             checkpoint for line in lines
             if (checkpoint := self.s.parse_checkpoint(campaign, line))
         ]
-        metric_lines = [line for line in lines if "Step " in line or "gPPL:" in line or ("plan" in line.lower() and "ppl" in line.lower())]
+        metric_lines = [line for line, _ in parsed_metrics]
         process_lines = [
             line for line in lines if _STRUCTURED_EVIDENCE_PREFIX not in line
         ][-_PROCESS_EVIDENCE_LOG_TAIL:]

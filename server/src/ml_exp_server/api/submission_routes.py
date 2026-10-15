@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from ..application import ApplicationError
+from ..application_errors import ApplicationError
 from ..execution_queue import admitted_handoff
 from .errors import application_http_error
 

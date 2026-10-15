@@ -16,10 +16,9 @@ from .runs.evidence import RunEvidence
 from .runs.validation import RunValidation
 from .runs.queries import RunQueries
 from .runs.run_operations import RunOperations
-from .projects.lifecycle import ProjectLifecycle
 
 
-class ExperimentServerApplication(RunContext, RunEvidence, RunValidation, RunQueries, RunOperations, ProjectLifecycle):
+class ExperimentServerApplication(RunContext, RunEvidence, RunValidation, RunQueries, RunOperations):
     """Compose domain operations without introducing additional mutable state."""
 
     def __init__(self, runtime: ExperimentServerRuntime):

@@ -246,6 +246,7 @@ def test_sensecore_collects_metrics_checkpoints_and_worker_fallback(tmp_path, mo
     monkeypatch.setattr(backend, "workers", lambda *args: (_ for _ in ()).throw(RuntimeError()))
     result = backend.collect({}, {"run_id": "run"})
     assert result["latest_metric"] == {"loss": 1.0}
+    assert result["metric_log_lines"] == ["Step 2 loss"]
     assert result["latest_completed_checkpoint_step"] == 2
     assert result["worker_state"] == "UNKNOWN"
     assert result["evidence_unavailable_reason"] == "live_logs_expired"

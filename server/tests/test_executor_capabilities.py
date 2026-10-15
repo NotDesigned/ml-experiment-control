@@ -37,7 +37,7 @@ def test_local_and_unmounted_storage_are_not_declared_container_capable():
     assert local["runtime"]["platforms"] == [] and local["storage"]["storage_id"] is None
     cloud = declaration({"backend": {"kind": "sensecore"}, "storage_root": "/workspace"}, artifact_store=True, desktop=True)
     assert not cloud["storage"]["persistent"] and cloud["data"]["download_script"] is None
-    assert cloud["data"]["asset_preparation"] == "before_job"
+    assert cloud["data"]["asset_preparation"] == "inside_job"
 
 
 @pytest.mark.parametrize("fields, requirements, expected", [
@@ -198,7 +198,7 @@ def test_gateway_preparation_requires_the_runtime_relay_worker(client):
     validate_worker(request(), {"capabilities": ["api-tcp-relay.v1"]}, cap)
 
 
-@pytest.mark.parametrize("desktop,cpu,script,rejected", [(False, True, True, True),
+@pytest.mark.parametrize("desktop,cpu,script,rejected", [(False, True, True, False),
     (True, True, True, False), (False, True, False, False), (False, False, True, False)])
 def test_cpu_scripts_require_inputs_prepared_before_job_only_when_needed(client, desktop, cpu, script, rejected):
     profile = ContainerExecutionService(client.app.state.runtime).profiles()["cloud"]

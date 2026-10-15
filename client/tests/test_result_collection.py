@@ -4,7 +4,8 @@ import io
 import json
 from types import SimpleNamespace
 import pytest
-from ml_exp_client.api import ClientError, _download_proxy
+from ml_exp_client.api import ClientError
+from ml_exp_client.artifacts import _download_proxy
 from ml_exp_client.cli import main
 
 

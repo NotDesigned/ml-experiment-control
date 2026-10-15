@@ -230,7 +230,7 @@ def test_explicit_legacy_cache_request_is_supported(storage):
 
 @pytest.mark.parametrize('enabled', [True,False])
 def test_collector_respects_project_write_pause(sealed,monkeypatch,enabled):
-    from ml_exp_server.api import app as module
+    from ml_exp_server.api import lifecycle as module
     from ml_exp_server.storage_service import StorageService
     calls=[]
     class Stop:

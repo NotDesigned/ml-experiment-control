@@ -31,3 +31,12 @@ def test_unsigned_queries_preserve_safe_parameters_and_remove_credentials():
     assert redact_line(value) == (
         "https://objects.test/files?page=2&X-Amz-Credential=<redacted>&token=<redacted>"
     )
+
+
+def test_structured_key_policy_distinguishes_credentials_from_scientific_fields():
+    from experiment_control.redaction import sensitive_json_key
+    for field in ['token_recon_ppl', 'proxy_loss', 'tokenizer_path', 'training_tokens', 'token_count']:
+        assert not sensitive_json_key(field)
+    for field in ['api_token', 'refreshToken', 'WANDB_API_KEY', 'access-key-secret', 'APIKey',
+                  'privateKey', 'authorization_header', 'cookie', 'http_proxy', 'signature']:
+        assert sensitive_json_key(field)

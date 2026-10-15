@@ -12,11 +12,12 @@ from .project_writes import ProjectWriteTransaction
 from .store import ActionStore
 
 from .planning import ActionPlanning
+from .controller_planning import ControllerPlanning
 from .execution import ActionExecution
 from .recovery import ActionRecovery
 
 
-class ActionService(ActionPlanning, ActionExecution, ActionRecovery):
+class ActionService(ActionPlanning, ControllerPlanning, ActionExecution, ActionRecovery):
     """Compose domain operations without introducing additional mutable state."""
 
     def __init__(self, store: ActionStore, config: ActionRuntimeConfig,

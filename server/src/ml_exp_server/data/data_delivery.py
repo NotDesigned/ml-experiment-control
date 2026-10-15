@@ -17,7 +17,7 @@ from experiment_control.backends.sensecore_rest import RESTError
 from ..application_errors import ApplicationError
 from .data_assets import AssetStore, ASSET_ID
 from ..builds.data_image_build import data_worker_digest
-from ..image_builder import builder_request, IMAGE, BuildStorageError, BuildTransportError
+from ..builds.builder_client import builder_request, IMAGE, BuildStorageError, BuildTransportError
 from ..projects.source_imports import IDENTITY
 from ..storage import DurableJsonState, utc_now
 from ..backends.sensecore_data import SenseCoreDataOperations
@@ -147,7 +147,8 @@ class DataDeliveryService(SenseCoreDataOperations):
         profile = containers.profiles().get(executor)
         if not profile or profile["backend"]["kind"] != "sensecore":
             raise ApplicationError("CCR data preparation requires a SenseCore executor", code="DATA_BACKEND_UNSUPPORTED")
-        asset = self.assets.read(project, asset_id)
+        from .locations import for_backend
+        asset = for_backend(self.assets.read(project, asset_id), profile, project)
         copy = {**self.config, "workspace": profile["backend"]["workspace"],
                 "storage_mount": profile["backend"]["storage_mount"],
                 "data_root": profile["storage_root"].rstrip("/") + "/" + project + "/data-assets"}
@@ -156,6 +157,15 @@ class DataDeliveryService(SenseCoreDataOperations):
         definition = {"project": project, "asset_id": asset_id, "archive_sha256": asset["sha256"],
                       "files_sha256": digest(asset["files"]), "copy_profile": copy,
                       "worker_sha256": data_worker_digest(), "control_revision": CONTROL_REVISION}
+        if asset.get("remote_storage") == "sensecore-ccr":
+            uploaded = asset["remote_locator"]
+            if (uploaded.get("project") != project or uploaded.get("asset_id") != asset_id
+                    or uploaded.get("files_sha256") != definition["files_sha256"]
+                    or not IMAGE.fullmatch(uploaded.get("image", ""))
+                    or not re.fullmatch(r"[0-9a-f]{64}", uploaded.get("data_worker_sha256", ""))
+                    or uploaded.get("recipe") != "acp-data-image.stream.v1"):
+                raise ValueError("uploaded data image receipt differs")
+            definition.update(uploaded_image=uploaded, worker_sha256=uploaded["data_worker_sha256"])
         delivery_id = "delivery." + digest(definition)
         ready = self.ready_candidate(definition)
         if ready is not None:
@@ -185,7 +195,7 @@ class DataDeliveryService(SenseCoreDataOperations):
                 raise ApplicationError("data delivery requires inspection/reconciliation", code="DATA_DELIVERY_UNCERTAIN")
             if reconcile and value["status"] != "RECONCILE_REQUIRED":
                 raise ValueError("only an interrupted delivery can be reconciled")
-            if not reconcile and value["worker_sha256"] != data_worker_digest():
+            if not reconcile and not value.get("uploaded_image") and value["worker_sha256"] != data_worker_digest():
                 raise ValueError("data-copy worker changed; prepare a new delivery")
             if not reconcile and value.get("control_revision") != CONTROL_REVISION:
                 raise ValueError("data-copy control revision changed; prepare a new delivery")
@@ -202,7 +212,10 @@ class DataDeliveryService(SenseCoreDataOperations):
         project, delivery_id, value, reconcile = pending
         phase = "IMAGE_PUBLICATION"
         try:
-            image = ({"image": value["image"], "asset_id": value["asset_id"], "project": project,
+            if value.get("uploaded_image"):
+                image = value["uploaded_image"]
+            else:
+                image = ({"image": value["image"], "asset_id": value["asset_id"], "project": project,
                       "files_sha256": value["files_sha256"], "data_worker_sha256": value["worker_sha256"],
                       "data_image_id": value["data_image_id"]} if reconcile and value.get("image") else builder_request(self.runtime.config.container_execution.builder_socket,
                                     {"operation": "data-image", "action": "get" if reconcile else "build",

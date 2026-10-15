@@ -13,7 +13,7 @@ import time
 from experiment_control.backends.sensecore_rest import SenseCoreREST
 
 from ..application_errors import ApplicationError
-from ..processes import run_process
+from experiment_control.runner import run_process
 from ..workers.delete_run import checked_target
 from .sensecore_cpu import checked_job, describe_job, document, stop_job, validate_profile, verify_spec
 from .states import TERMINAL

@@ -10,7 +10,8 @@ import pytest
 from ml_exp_server import container_controller
 from ml_exp_server.data.data_assets import AssetStore
 from ml_exp_server.dockerfile_build import DOCKERFILE_RECIPE, INTERNAL, inspect_dockerfile
-from ml_exp_server.image_builder import BUILD_LOG, ImageBuilder, MANIFEST_TYPE, bundle_id
+from ml_exp_server.image_builder import BUILD_LOG, ImageBuilder
+from ml_exp_server.builds.builder_client import MANIFEST_TYPE, bundle_id
 from ml_exp_server.container_execution import DockerfileRuntimeSpec
 from ml_exp_server.projects.source_imports import seal_tree
 from ml_exp_server.projects.source_revisions import _tree_digest
@@ -126,13 +127,18 @@ def test_data_metadata_and_limits_fail_closed(client,stored,tmp_path):
 
 
 def test_upload_headers_stream_limits_and_snapshot_capabilities(client,stored,monkeypatch):
-    data=archive({"data":b"abc"}); params={"project":"demo","sha256":hashlib.sha256(data).hexdigest()}
+    data=archive({"data":b"abc"})
+    ctl=controller(client,custom_runtime(client,monkeypatch))
+    objects=AssetStore(stored[0],client.app.state.runtime.config.project_registry_root_path()).objects
+    _, capability, _=objects.issue("demo","trial","attempt-001",ctl.root,["**/*"],checkpoint_upload=True)
+    endpoint="/api/snapshot-transfers/demo/trial/attempt-001"
+    headers={"Authorization":"Bearer "+capability}
     for length in ("invalid","-1"):
-        assert client.post("/api/assets/archive",params=params,content=data,headers={"Content-Length":length}).status_code==400
-    assert client.post("/api/assets/archive",params=params,content=data,headers={"Content-Length":str(3*1024**2)}).status_code==413
-    monkeypatch.setattr("ml_exp_server.api.asset_routes.shutil.disk_usage",lambda p:SimpleNamespace(free=1))
-    assert client.post("/api/assets/archive",params=params,content=data).status_code==507
-    monkeypatch.undo()
+        assert client.put(endpoint,content=data,headers={**headers,"Content-Length":length}).status_code==400
+    assert client.put(endpoint,content=data,headers={**headers,"Content-Length":str(3*1024**2)}).status_code==413
+    with monkeypatch.context() as scoped:
+        scoped.setattr("ml_exp_server.storage_capacity.shutil.disk_usage",lambda p:SimpleNamespace(free=1))
+        assert client.put(endpoint,content=data,headers=headers).status_code==507
     service=client.app.state.runtime.config.container_execution
     assert client.put("/api/snapshot-transfers/demo/trial/attempt-001",content=data).status_code==401
     assert client.put("/api/snapshot-transfers/demo/trial/attempt-001",content=data,headers={"Authorization":"Bearer invalid"}).status_code==401
@@ -167,9 +173,12 @@ def test_snapshots_require_explicit_attempt_policy_and_repeat_issue_is_stable(cl
     assert store.objects.issue("demo","trial","attempt-001",ctl.root,["**/*"],checkpoint_upload=True)==(url,token,limit)
 
 
-def test_streamed_upload_is_bounded_even_without_content_length(client,stored):
+def test_streamed_upload_is_bounded_even_without_content_length(client,stored,monkeypatch):
+    ctl=controller(client,custom_runtime(client,monkeypatch))
+    objects=AssetStore(stored[0],client.app.state.runtime.config.project_registry_root_path()).objects
+    _, capability, _=objects.issue("demo","trial","attempt-001",ctl.root,["**/*"],checkpoint_upload=True)
     chunks=iter([b"a"*(1024**2),b"b"*(1024**2),b"c"])
-    response=client.post("/api/assets/archive?project=demo&sha256="+"a"*64,content=chunks)
+    response=client.put("/api/snapshot-transfers/demo/trial/attempt-001",content=chunks,headers={"Authorization":"Bearer "+capability})
     assert response.status_code==413
 
 

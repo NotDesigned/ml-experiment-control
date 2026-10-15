@@ -22,7 +22,6 @@ from ml_exp_server.storage import atomic_json
 from ml_exp_server.data_image_recipe import DATA_WORKERS
 from tests.test_artifact_store import archive
 from tests.test_sensecore_data_workflow import client, stored
-from tests.test_multipart_upload import begin, send
 
 
 @pytest.fixture
@@ -48,23 +47,34 @@ def remote_client(client, stored, stage, monkeypatch):
         body.iter_chunks=lambda chunk_size:iter(lambda:body.read(chunk_size),b'')
         return body
     monkeypatch.setattr(remote, 'remote_archive', stream)
+    registry = client.app.state.runtime.config.project_registry_root_path()
+    client.legacy_desktop = remote.RemoteDataUploads(AssetStore(stored[0], registry), 'desktop.sock')
     return client
+
+
+def historical_asset(client, data):
+    """Create the old desktop format directly, then exercise current readers."""
+    driver = client.legacy_desktop
+    binding = {'project': 'demo', 'kind': 'asset'}
+    value = driver.create(binding, hashlib.sha256(data).hexdigest(), len(data), None)
+    for number in range(value['part_count']):
+        part = data[number * value['part_bytes']:(number + 1) * value['part_bytes']]
+        driver.part(value['upload_id'], binding, number, part, hashlib.sha256(part).hexdigest(), len(part))
+    return driver.complete(value['upload_id'], binding)
 
 
 def test_desktop_parts_resume_publish_and_archive_without_server_bytes(remote_client, stage, stored):
     client=remote_client
     data=archive({'nested/tokens.bin':b'data'*700})
-    value=begin(client,data)
-    root=send(client,data,value,numbers=[0])
-    assert list(begin(client,data)['parts'])==['0']
-    assert client.get(root).json()['parts']['0']['bytes']==1024
-    send(client,data,value)
-    result=client.post(root+'/complete')
-    assert result.status_code==200,result.text
-    result=result.json()
+    driver=client.legacy_desktop;binding={'project':'demo','kind':'asset'}
+    value=driver.create(binding,hashlib.sha256(data).hexdigest(),len(data),None)
+    driver.part(value['upload_id'],binding,0,data[:1024],hashlib.sha256(data[:1024]).hexdigest(),1024)
+    assert list(driver.create(binding,hashlib.sha256(data).hexdigest(),len(data),None)['parts'])==['0']
+    assert driver.read(value['upload_id'],binding)['parts']['0']['bytes']==1024
+    result=historical_asset(client,data)
     assert result['remote_storage']=='desktop-builder'
-    assert client.post(root+'/complete').json()==result
-    assert begin(client,data)['result']==result
+    assert driver.complete(value['upload_id'],binding)==result
+    assert driver.create(binding,hashlib.sha256(data).hexdigest(),len(data),None)['result']==result
     assert client.get('/api/projects/demo/assets/'+result['asset_id']+'/archive').content==data
     server=client.app.state.runtime.config.project_registry_root_path()
     assert not (server/'multipart-uploads').exists() and not stored[1]
@@ -73,12 +83,15 @@ def test_desktop_parts_resume_publish_and_archive_without_server_bytes(remote_cl
     assert not list(stage.root.glob('assets/demo/.validate-*'))
     limits=client.get('/api/storage-limits').json()
     assert limits['configured_byte_limits']['asset_archive_bytes'] is None
-    assert limits['data_upload_storage']=='desktop-builder' and limits['data_upload_free_bytes']>0
-    assert client.post('/api/assets/archive?project=demo&sha256='+hashlib.sha256(data).hexdigest(),content=data).status_code==409
-    assert client.delete(root).status_code==409
+    assert limits['data_upload_storage']=='target-executor' and limits['transfer_buffer']['available_bytes']>0
+    assert client.post('/api/assets/archive?project=demo&sha256='+hashlib.sha256(data).hexdigest(),content=data).status_code==405
+    assert 'post' not in client.get('/openapi.json').json()['paths'].get('/api/assets/archive', {})
+    with pytest.raises(ValueError):driver.abort(value['upload_id'],binding)
+    assert client.post('/api/projects/demo/asset-uploads',json={'sha256':hashlib.sha256(data).hexdigest(),'bytes':len(data)}).status_code==422
     assert client.get('/api/executors').json()['executors'][0]['data_asset_transport']=='ccr-cpu-nas'
     assets=AssetStore(stored[0],server)
-    with pytest.raises(ApplicationError,match='authenticated archive'):assets.download('demo',result['asset_id'])
+    with pytest.raises(ApplicationError) as error:assets.download('demo',result['asset_id'])
+    assert error.value.code == 'DIRECT_DOWNLOAD_UNAVAILABLE'
     out=io.BytesIO();desktop.context(stage,'demo',result['asset_id'],out)
     out.seek(0)
     with tarfile.open(fileobj=out) as context:
@@ -97,14 +110,13 @@ def test_desktop_parts_resume_publish_and_archive_without_server_bytes(remote_cl
     assert stage.publish({'project':'demo'},io.BytesIO(data),len(data),result['sha256'],value)==result
 
 
-def test_remote_upload_abort_and_bad_parts_do_not_persist(remote_client, stage):
-    client=remote_client;data=archive({'x':b'x'*3000});value=begin(client,data)
-    endpoint='/api/projects/demo/asset-uploads/'+value['upload_id']+'/parts/0?sha256='+hashlib.sha256(data[:1024]).hexdigest()
-    assert client.put(endpoint,content=data[:100]).status_code==400
-    assert client.put(endpoint,content=b'x'*1024).status_code==400
-    assert client.put(endpoint,content=data[:1025],headers={'Content-Length':'1024'}).status_code==413
-    assert client.put(endpoint,content=b'x',headers={'Content-Length':'1024'}).status_code==400
-    assert client.delete('/api/projects/demo/asset-uploads/'+value['upload_id']).json()['status']=='ABORTED'
+def test_legacy_desktop_upload_abort_and_bad_parts_do_not_persist(remote_client, stage):
+    client=remote_client;data=archive({'x':b'x'*3000});binding={'project':'demo','kind':'asset'}
+    driver=client.legacy_desktop
+    value=driver.create(binding,hashlib.sha256(data).hexdigest(),len(data),None)
+    for part in (data[:100], b'x'*1024, data[:1025], b'x'):
+        with pytest.raises(ValueError):driver.part(value['upload_id'],binding,0,part,hashlib.sha256(data[:1024]).hexdigest(),1024)
+    assert driver.abort(value['upload_id'],binding)['status']=='ABORTED'
     assert remote.RemoteDataUploads(SimpleNamespace(root=stage.root),'test').part_size(value,0)==1024
     with pytest.raises(ValueError):remote.RemoteDataUploads(SimpleNamespace(root=stage.root),'test').part(value['upload_id'],{},0,b'x','a'*64,1)
 

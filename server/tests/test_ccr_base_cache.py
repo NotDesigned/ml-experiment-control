@@ -313,17 +313,17 @@ def test_prewarm_rejects_unknown_identity_or_capacity_before_remote_write(tmp_pa
 
 
 def test_build_request_wait_does_not_expire_before_private_900_second_builder(monkeypatch):
-    from ml_exp_server import image_builder
+    from ml_exp_server.builds import builder_client
     seen = []
     class Connection:
         def __init__(self, path, *, timeout): seen.append(timeout)
         def request(self, *a, **kw): pass
         def getresponse(self): return SimpleNamespace(status=200, read=lambda *a: b'{"image":"verified"}')
         def close(self): pass
-    monkeypatch.setattr(image_builder, 'UnixConnection', Connection)
-    assert image_builder.builder_request('/private.sock', {'operation': 'build'}) == {'image': 'verified'}
+    monkeypatch.setattr(builder_client, 'UnixConnection', Connection)
+    assert builder_client.builder_request('/private.sock', {'operation': 'build'}) == {'image': 'verified'}
     assert seen == [1200]
-    image_builder.builder_request('/private.sock', {'operation': 'logs'}, timeout=15)
+    builder_client.builder_request('/private.sock', {'operation': 'logs'}, timeout=15)
     assert seen == [1200, 15]
 
 

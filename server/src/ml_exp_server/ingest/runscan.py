@@ -37,6 +37,7 @@ from ..schemas import (
     RunIndexRow,
 )
 from ..runs.evidence_conflicts import classify_evidence_conflicts
+from . import legacy
 from ..tracking.metric_contract import metric_result, finite
 
 # collection.json keys that are operational rather than scientific metrics.
@@ -119,13 +120,6 @@ _ROLE_PATTERN = re.compile(r"^[a-z]+-([a-z]\d+)-")
 
 _PROVENANCE_KEYS = ("git_commit", "source_id", "image_id", "config_path", "seed",
                     "campaign_id", "runtime_tree_id", "created_at")
-_CONFIG_EXCERPT_KEYS = (
-    "seed", "seeds", "max_length", "global_batch_size", "epochs",
-    "grad_accum_steps",
-    "use_sentence_plan", "sentence_encoder_type", "sentence_encoder_grad",
-    "plan_aux_passes", "plan_aux_token_context",
-    "depth", "device_batch_size",
-)
 
 _CHECKPOINT_KEYS = (
     "latest_completed_checkpoint",
@@ -407,8 +401,9 @@ def evaluation_variants(
             and source.attempt_id != selected_attempt
         ):
             continue
-        candidates = list((source.root / "train_sampling_eval").glob("*/metrics.jsonl"))
-        candidates.extend(source.root.glob("*/metrics.jsonl"))
+        candidates = list(source.root.glob("*/metrics.jsonl"))
+        if legacy.applies(_science_manifest(run_dir)):
+            candidates.extend((source.root / "train_sampling_eval").glob("*/metrics.jsonl"))
         for path in sorted(set(candidates)):
             if path in seen_paths:
                 continue
@@ -469,24 +464,6 @@ def _mtime(path: Path) -> Optional[float]:
         return path.stat().st_mtime
     except OSError:
         return None
-
-
-def _autoresearch_source_parameters(run_dir: Path) -> dict[str, int]:
-    """Read a tiny allowlist of immutable constants from a harness snapshot."""
-    path = run_dir / "source" / "train.py"
-    if not path.is_file():
-        return {}
-    try:
-        source = path.read_text(encoding="utf-8")
-    except OSError:
-        return {}
-    parameters = {}
-    for authored, canonical in (("DEPTH", "depth"),
-                                ("DEVICE_BATCH_SIZE", "device_batch_size")):
-        match = re.search(rf"^\s*{authored}\s*=\s*(\d+)\b", source, re.MULTILINE)
-        if match:
-            parameters[canonical] = int(match.group(1))
-    return parameters
 
 
 def _scan_attempts(run_dir: Path) -> list[AttemptSummary]:
@@ -644,6 +621,7 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
     from .freshness import apply_freshness  # local import to avoid cycle
 
     manifest = _science_manifest(run_dir)
+    historical = legacy.applies(manifest)
     status = _load_json(run_dir / "status.json")
     collection = _load_json(run_dir / "collection.json")
     decision = _observation_decision(_load_json(run_dir / "decision.json"))
@@ -687,7 +665,7 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
 
     role = manifest.get("research_role")
     role_source = "manifest" if role else None
-    if role is None:
+    if role is None and historical:
         role = _infer_role(run_id)
         role_source = "heuristic" if role else None
 
@@ -814,14 +792,17 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
             "train_py_sha256": source_identity.get("train_py_sha256"),
         })
         provenance = {key: value for key, value in provenance.items() if value is not None}
-        source_parameters = _autoresearch_source_parameters(run_dir)
+        source_parameters = legacy.source_parameters(run_dir) if historical else {}
         if source_parameters:
             provenance["resolved_config_excerpt"] = source_parameters
     resolved = manifest.get("resolved_config")
     if isinstance(resolved, dict):
-        provenance["resolved_config_excerpt"] = {
-            k: resolved[k] for k in _CONFIG_EXCERPT_KEYS if k in resolved
-        }
+        provenance["resolved_config_excerpt"] = (
+            legacy.config_excerpt(resolved) if historical else {
+                key: value for key, value in list(resolved.items())[:64]
+                if isinstance(value, (str, int, float, bool)) or value is None
+            }
+        )
     if "seed" not in provenance:
         aggregate_seed = manifest.get("seeds")
         if aggregate_seed is None and isinstance(resolved, dict):

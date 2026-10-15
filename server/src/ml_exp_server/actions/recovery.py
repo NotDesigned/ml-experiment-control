@@ -2,7 +2,7 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Any
-from ..controller_gateway import redact as _redact
+from ..controller_output import redact as _redact
 from ..storage import utc_now
 from .errors import ActionError
 from .files import file_sha as _file_sha

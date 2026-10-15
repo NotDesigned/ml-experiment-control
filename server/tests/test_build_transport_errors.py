@@ -8,9 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server.image_builder import BuilderServer, Handler, ImageBuilder, BuildTransportError, builder_request, BUILD_LOG
+from ml_exp_server.image_builder import BuilderServer, Handler, ImageBuilder, BUILD_LOG
+from ml_exp_server.builds.builder_client import BuildTransportError, builder_request
 from ml_exp_server.data.remote_data_uploads import stage_request
 from ml_exp_server import image_builder as module
+from ml_exp_server.builds import builder_client
 from tests.test_container_api import client, import_source, archive, wait_runtime
 from tests.test_image_builder_boundary import builder
 
@@ -58,8 +60,8 @@ def test_failed_historical_build_logs_survive_transport_upgrade(builder,monkeypa
     old=value.request(request)
     (value.root/(old['bundle_id']+'.json')).unlink()
     (value.root/(old['bundle_id']+'.log')).write_text('new failed build\n')
-    monkeypatch.setattr(module,'BUILD_REVISION','next-transfer')
-    assert module.bundle_id(request['project'],request['source_id'],request['base_image'])!=old['bundle_id']
+    monkeypatch.setattr(builder_client,'BUILD_REVISION','next-transfer')
+    assert builder_client.bundle_id(request['project'],request['source_id'],request['base_image'])!=old['bundle_id']
     assert value.request({**request,'operation':'logs','bundle_id':old['bundle_id']})['lines']==['new failed build']
     path=value.root/(old['bundle_id']+'.definition.json')
     path.write_text('{}')

@@ -13,7 +13,9 @@ from fastapi.testclient import TestClient
 from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
 
-from ml_exp_server.api.app import _execution_lane, create_app, CollectorLease
+from ml_exp_server.api.app import create_app
+from ml_exp_server.api.boundary import _execution_lane
+from ml_exp_server.collectord import CollectorLease
 from ml_exp_server.api.contract import CLIENT_PROTOCOL_HEADER
 from ml_exp_server.execution_queue import BoundedExecutor, QueueUnavailable, admitted_handoff, job_lane
 from ml_exp_server.application_errors import ApplicationError

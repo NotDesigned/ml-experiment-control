@@ -23,6 +23,9 @@ class WydOperations:
         marker = "wyd:" + asset
         verified = stager.check(project, asset, selected["profile"])
         if verified["status"] != "READY":
+            from ..data.locations import for_backend
+            if for_backend(stager.assets.read(project, asset), selected["profile"], project).get("remote_storage") == "wyd":
+                raise ApplicationError("WYD remote upload cache is unavailable; inspect the original upload", code="WYD_DATA_NOT_READY")
             if marker in value["delivery_requested"]:
                 raise ApplicationError("saved WYD transfer is not verified; inspect shared storage, never replay", code="WYD_DATA_NOT_READY")
             value["delivery_requested"].append(marker)

@@ -12,6 +12,7 @@ import math
 from pathlib import Path
 import re
 import shlex
+import subprocess
 import sys
 
 import yaml
@@ -298,21 +299,28 @@ class Controller:
             return
         backend = self.run["backend"]
         cache = self.run["storage"]["project_data_root"] + "/data-preparations"
-        code = ("import json,sys;from pathlib import Path;sys.path.insert(0,'/usr/local/lib/ml-expd');"
-                "from data_preparation import prepare;prepare(json.load(sys.stdin),Path(sys.argv[1]),"
-                "require_cached=sys.argv[2]=='1')")
+        code = ("import json,sys\nfrom pathlib import Path\nsys.path.insert(0,'/usr/local/lib/ml-expd')\n"
+                "from data_input import deliver\nfrom worker import link_path\n"
+                "from data_preparation import prepare\nvalue=json.load(sys.stdin)\n"
+                "for item in value['inputs']:\n"
+                " location=deliver({**item,'require_cached':True},None,Path(sys.argv[3]))\n"
+                " link_path(location,Path(item['mount_path']))\n"
+                "prepare(value['preparation'],Path(sys.argv[1]),require_cached=sys.argv[2]=='1')")
         seconds = self.run["data_preparation"]["timeout_seconds"] + 60
         cache_dir = backend.get("apptainer_cache_dir", self.run["storage"]["project_data_root"] + "/apptainer/cache")
         temp_dir = backend.get("apptainer_tmp_dir", self.run["storage"]["project_data_root"] + "/apptainer/tmp")
+        inputs_root = self.run["storage"]["run_dir"] + "/attempts/" + self.attempt_id + "/inputs"
         command = ["env", "APPTAINER_CACHEDIR=" + cache_dir, "APPTAINER_TMPDIR=" + temp_dir,
                    "timeout", "--signal=TERM", "--kill-after=30s", str(seconds) + "s",
                    "apptainer", "exec", *(["--unsquash"] if backend.get("apptainer_unsquash") else []),
                    "--bind", backend["mount_root"] + ":" + backend["mount_root"],
+                   "--bind", inputs_root + ":/inputs",
                    "--pwd", self.run["container"]["workdir"], backend["sif_path"],
-                   "python3", "-c", code, cache, "1" if require_cached else "0"]
+                   "python3", "-c", code, cache, "1" if require_cached else "0",
+                   self.run["storage"]["project_data_root"] + "/data-assets"]
         self.runner.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", backend["ssh_alias"],
-                         shlex.join(["mkdir", "-p", cache_dir, temp_dir]) + " && " + shlex.join(command)],
-                        input_text=json.dumps(self.run["data_preparation"]),
+                         shlex.join(["mkdir", "-p", cache_dir, temp_dir, inputs_root]) + " && " + shlex.join(command)],
+                        input_text=json.dumps({"preparation": self.run["data_preparation"], "inputs": self.run.get("inputs", [])}),
                         timeout_seconds=seconds + 60)
 
     def submit(self, campaign_id: str | None):
@@ -491,6 +499,12 @@ def cli(argv=None):
             controller.store.write_status_payload(controller.attempt_id, result)
         print(json.dumps([result], allow_nan=False))
     except Exception as exc:
+        if isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+            from .controller_output import safe_log_tail, STDOUT_LOG_BYTES, STDERR_LOG_BYTES
+            for output, limit in ((exc.stdout, STDOUT_LOG_BYTES), (exc.stderr, STDERR_LOG_BYTES)):
+                safe = safe_log_tail(output, limit=limit, command=list(exc.cmd))
+                if safe:
+                    print(safe, file=sys.stderr)
         print("container controller failed: " + type(exc).__name__, file=sys.stderr)
         raise SystemExit(1) from exc
 

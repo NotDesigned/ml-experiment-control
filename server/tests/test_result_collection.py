@@ -489,7 +489,7 @@ def test_artifact_completion_reserves_validation_and_colocated_object_storage(re
 
 def test_poll_loop_automatically_enqueues_new_results(recovery):
     from fastapi import FastAPI
-    from ml_exp_server.api.app import _poll_loop
+    from ml_exp_server.api.lifecycle import _poll_loop
     service, _, token, _, _, _, _ = recovery
     value = dict(zip(("project", "run_id", "attempt_id"), IDENTITY), contract="training-result.v1", exit_code=0)
     service.register_training(*IDENTITY, token, value)

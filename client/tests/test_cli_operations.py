@@ -6,7 +6,8 @@ import pytest
 
 from ml_exp_client.api import ClientError
 from ml_exp_client.cli import main, parser
-from ml_exp_client.operations import read_attempt, training_operation
+from ml_exp_client.operations import training_operation
+from ml_exp_client.status import read_attempt
 
 
 ACTION_ID = "action-" + "a" * 16
@@ -359,7 +360,7 @@ def test_cli_execute_first_and_blocked_execution_report_error(tmp_path, monkeypa
 
 @pytest.mark.parametrize("phase", ["prepare", "authorize", "execute"])
 def test_failed_durable_marker_prevents_corresponding_http_mutation(tmp_path, monkeypatch, phase):
-    from ml_exp_client.api import save as durable_save
+    from ml_exp_client.state import save as durable_save
     api, path = API(), tmp_path / "plan.json"
     if phase != "prepare":
         prepare(api, path)

@@ -7,60 +7,17 @@ from pathlib import Path
 import re
 from urllib.parse import urlencode
 
-from .api import ClientError, save, segment
-from .saved_plan import SavedPlan, bound_response
+from .api import ClientError, attempt_id, segment
+from .state import SavedPlan, save
 
 
-_ATTEMPT = re.compile(r"attempt-[0-9]{3,}\Z")
 _ACTION = re.compile(r"action-[a-f0-9]{16}\Z")
 _DIGEST = re.compile(r"sha256:[a-f0-9]{64}\Z")
 _OPERATIONS = {"cancel": "CANCEL_RUN", "retry": "RETRY_ATTEMPT"}
 _CONTRACT = "training-operation.v1"
 
 
-def _attempt(value):
-    if not isinstance(value, str) or not _ATTEMPT.fullmatch(value):
-        raise ClientError("choose an exact attempt-NNN identity")
-    return value
 
-
-def resolve_attempt(client, project, run, attempt=None):
-    """Resolve once and pin the original exact Attempt for subsequent reads."""
-    project_path, run_path = segment(project), segment(run)
-    if attempt is None:
-        listing = client.call(f"/api/runs/{project_path}/{run_path}/attempts")
-        if not isinstance(listing, dict) or listing.get("project") != project or listing.get("run_id") != run:
-            raise ClientError("Attempt listing differs from the requested Run")
-        attempt = _attempt(listing.get("current_attempt_id"))
-        entries = listing.get("attempts")
-        if not isinstance(entries, list) or not any(isinstance(item, dict) and item.get("attempt_id") == attempt
-                   and item.get("identity") == run + "::" + attempt
-                   for item in entries):
-            raise ClientError("current Attempt is absent from the Run listing")
-    return _attempt(attempt)
-
-
-def read_attempt(client, view, project, run, attempt=None, *, stream="both", lines=80,
-                 keys=None, max_points=2000):
-    """Read one exact Attempt; return metric dimensions without transformation."""
-    project_path, run_path = segment(project), segment(run)
-    if view == "logs":
-        if stream not in {"both", "stdout", "stderr"} or not 1 <= lines <= 10000:
-            raise ClientError("logs require stdout/stderr/both and 1..10000 lines")
-        query = {"stream": stream, "lines": lines}
-    elif view == "metrics":
-        if max_points <= 0:
-            raise ClientError("max-points must be positive")
-        query = {"max_points": max_points}
-        if keys is not None:
-            query["keys"] = keys
-    else:
-        raise ClientError("unknown Attempt read operation")
-    attempt = resolve_attempt(client, project, run, attempt)
-    identity = segment(run + "::" + _attempt(attempt))
-    response = client.call(f"/api/attempts/{project_path}/{identity}/{view}?" + urlencode(query))
-    return bound_response(response, {"project": project, "run_id": run, "attempt_id": attempt},
-                          message="read response differs from the requested exact Run/Attempt")
 
 
 def _validate_action(saved, action, *, reviewed=True):
@@ -74,7 +31,7 @@ def _validate_action(saved, action, *, reviewed=True):
                                        "object_id": saved["run_id"] + "::" + saved["source_attempt_id"]}
             or action.get("run_id") != saved["run_id"]):
         raise ClientError("Action identity differs from the saved training operation")
-    target = _attempt(action.get("attempt_id"))
+    target = attempt_id(action.get("attempt_id"))
     if saved["operation"] == "cancel":
         expected = saved["source_attempt_id"]
     else:
@@ -142,7 +99,7 @@ def training_operation(client, operation, path: Path, *, project=None, run=None,
     if reason is not None and len(reason) > 4000:
         raise ClientError("reason must contain at most 4000 characters")
     if new_attempt is not None:
-        _attempt(new_attempt)
+        attempt_id(new_attempt)
     if not path.exists():
         if execute or reconcile or action_id:
             raise ClientError("prepare and review a saved plan before executing or reconciling it")
@@ -150,7 +107,7 @@ def training_operation(client, operation, path: Path, *, project=None, run=None,
             raise ClientError("preparation requires --project, --run and an exact --attempt")
         segment(project)
         segment(run)
-        _attempt(attempt)
+        attempt_id(attempt)
         if operation == "retry" and max_gpu_hours is None:
             raise ClientError("retry preparation requires --max-gpu-hours")
         if operation == "cancel" and (max_gpu_hours is not None or new_attempt is not None):
@@ -193,7 +150,7 @@ def training_operation(client, operation, path: Path, *, project=None, run=None,
             raise ClientError("invalid saved retry budget")
     segment(saved["project"])
     segment(saved["run_id"])
-    _attempt(saved["source_attempt_id"])
+    attempt_id(saved["source_attempt_id"])
     for actual, expected in ((project, saved["project"]), (run, saved["run_id"]),
                              (attempt, saved["source_attempt_id"]),
                              (max_gpu_hours, saved["request"].get("max_gpu_hours")),

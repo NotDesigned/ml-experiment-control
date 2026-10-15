@@ -229,8 +229,8 @@ def test_object_data_is_delivered_by_worker_without_cpu_copy(client, stored, ser
     from tests.test_artifact_store import archive
     import hashlib
     content = archive({"data.txt": b"training input"})
-    imported = client.post("/api/assets/archive", params={"project": "demo", "sha256": hashlib.sha256(content).hexdigest()}, content=content)
-    assert imported.status_code == 200, imported.text
+    from tests.test_sensecore_data_workflow import put_asset
+    imported = put_asset(client, content)
     body = spec(client, run={"run_id": "object-data", "executor": "cloud", "inputs": [{"asset_id": imported.json()["asset_id"], "mount_path": "/inputs/data"}]})
     _, pending = service.accept("demo", ExperimentPreparationRequest.model_validate(body))
     assert service.finish(pending)["status"] == "READY"
@@ -307,9 +307,19 @@ def cpu_download(client, stored, service, monkeypatch):
         control.events.append("cpu-script")
         prepared = service.read("demo", control.preparation_id)
         assert prepared["phase"] == "PREPARING_DATA_SCRIPT" and prepared["run"]["state"] == "NOT_SUBMITTED"
-        control.jobs[body["name"]] = {"uid": "e" * 32, "receipt": {
-            "preparation_id": definition["definition"]["preparation_id"], "content_sha256": "d" * 64,
-            "dataset_id": "dataset." + "d" * 64, "bytes": 17}}
+        files = [{"path": "tokens.bin", "bytes": 17, "sha256": "f" * 64}]
+        from ml_exp_server.workers.data_preparation import identity
+        sealed = {"schema_version": 1, "status": "READY", "definition": definition["definition"],
+                  "preparation_id": definition["definition"]["preparation_id"], "files": files,
+                  "content_sha256": identity(files), "dataset_id": "dataset." + identity(files), "bytes": 17}
+        control.jobs[body["name"]] = {"uid": "e" * 32, "receipt": sealed}
+        if definition["contract"] == "cpu-script-preparation.v2" and control.state == "SUCCEEDED":
+            command = shlex.split(body["roles"][0]["startup_script"])
+            environment = dict(item.split("=", 1) for item in command[5:7])
+            request = json.loads(environment["ML_EXPD_SCRIPT_RECEIPT_REQUEST"])
+            callback = SenseCoreScriptPreparation(control.config, service.runtime.config.project_registry_root_path())
+            callback.callback("demo", request["operation_id"], environment["ML_EXPD_SCRIPT_RECEIPT_TOKEN"],
+                              {key: value for key, value in request.items() if key != "url"} | {"receipt": sealed})
         if control.uncertain:
             raise RuntimeError("private provider URL and token")
         return {"name": body["name"], "uid": "e" * 32}
@@ -319,7 +329,7 @@ def cpu_download(client, stored, service, monkeypatch):
         create=create,
         find=lambda profile, name: [{"name": name, "uid": control.jobs[name]["uid"]}] if name in control.jobs else [],
         describe=lambda profile, name: {"name": name, "uid": control.jobs[name]["uid"], "state": control.state},
-        logs=lambda profile, name, lines: {"text": PREFIX + json.dumps(control.jobs[name]["receipt"])},
+        logs=lambda profile, name, lines: {"text": ""},
         stop=lambda *args: control.stops.append(args))
     monkeypatch.setattr(SenseCoreScriptPreparation, "rest", property(lambda self: rest))
     monkeypatch.setattr(service.submissions, "prepare_first_attempt",
@@ -354,6 +364,10 @@ def test_download_script_preparation_finishes_zero_gpu_phase_before_submission(c
     _, frozen = frozen_campaign(control.client, result["run"])
     assert frozen["backend"]["aec2"] == "compute" and frozen["backend"]["quota_type"] == "spot"
     assert frozen["data_preparation_cpu"]["gpus"] == 0
+    assert frozen["data_preparation_receipt_mode"] == "callback_v1"
+    from ml_exp_server.backends.sensecore_preparation import script_receipt_worker_sha256
+    assert frozen["data_preparation_receipt_worker_sha256"] == script_receipt_worker_sha256()
+    assert result["data_script"]["receipt_source"] == "NAS_SEALED_CALLBACK"
     assert control.service.progress(*pending)["data_script"] == result["data_script"]
     journal = control.service.root / "demo" / (value["preparation_id"] + ".jsonl")
     assert '"PREPARING_DATA_SCRIPT"' in journal.read_text()
@@ -395,6 +409,8 @@ def test_legacy_run_repeat_create_does_not_upgrade_data_mode_or_identity(cpu_dow
     assert first.status_code == 200, first.text
     path, frozen = frozen_campaign(control.client, first.json())
     assert "data_preparation_mode" not in frozen and "data_preparation_cpu" not in frozen
+    assert "data_preparation_receipt_mode" not in frozen
+    assert "data_preparation_receipt_worker_sha256" not in frozen
     before = path.read_bytes()
     config["data_delivery"] = configured
     control.config.write_text(json.dumps(config))
@@ -514,10 +530,9 @@ def test_cpu_script_controller_requires_ready_cache_and_launch_cannot_redownload
 def test_wyd_desktop_data_preparation_records_receipt_and_never_replays_uncertain_copy(remote_client, service, monkeypatch, mode):
     from ml_exp_server.backends.wyd import WydDataStager
     from tests.test_artifact_store import archive
-    from tests.test_multipart_upload import begin, send
+    from tests.test_desktop_data_upload import historical_asset
     body = archive({"tokens.bin": b"training tokens"})
-    upload = begin(remote_client, body)
-    asset = remote_client.post(send(remote_client, body, upload) + "/complete").json()
+    asset = historical_asset(remote_client, body)
     calls = []
     real_receipt = WydDataStager.receipt
     monkeypatch.setattr(WydDataStager, "check", lambda *a: {"status": "READY" if mode == "cached" else "NOT_FOUND"})
@@ -548,24 +563,24 @@ def object_input(control):
     import hashlib
     from tests.test_artifact_store import archive
     content = archive({"tokens.bin": b"input tokens"})
-    response = control.client.post("/api/assets/archive", params={"project": "demo", "sha256": hashlib.sha256(content).hexdigest()}, content=content)
-    assert response.status_code == 200, response.text
+    from tests.test_sensecore_data_workflow import put_asset
+    response = put_asset(control.client, content)
     return response.json()
 
 
-def test_cpu_script_with_worker_delivered_inputs_is_rejected_before_build_or_asset_read(cpu_download, monkeypatch):
+def test_cpu_script_with_worker_delivered_inputs_is_rejected_before_build(cpu_download, monkeypatch):
     from ml_exp_server.data.data_assets import AssetStore
     control = cpu_download
     control.body["run"]["inputs"] = [{"asset_id": "asset." + "a" * 64, "mount_path": "/inputs/data"}]
     control.body["runtime"] = {"source_id": "source." + "b" * 64, "entrypoint": ["python3", "train.py"]}
     control.body["run"].pop("runtime_id")
     monkeypatch.setattr(control.service.containers, "prepare", lambda *a: pytest.fail("unsupported transport must not build"))
-    monkeypatch.setattr(AssetStore, "read", lambda *a: pytest.fail("matching rejects before asset access"))
+    reads = []
+    monkeypatch.setattr(AssetStore, "read", lambda *a: reads.append(a) or {"remote_storage": None})
     with pytest.raises(ApplicationError) as error:
         accept_cpu(control)
-    assert error.value.code == "NO_MATCHING_EXECUTOR"
-    assert "data.download_script.inputs_require_before_job" in str(error.value)
-    assert not control.creates
+    assert error.value.code == "DATA_SCRIPT_INPUT_TRANSPORT_UNSUPPORTED"
+    assert len(reads) == 1 and not control.creates
 
 
 @pytest.mark.parametrize("entry", ["preparation", "create"])
@@ -593,14 +608,11 @@ def test_cpu_script_rejects_historical_object_asset_even_under_desktop_policy(cp
 def test_cpu_script_accepts_desktop_asset_and_freezes_only_cached_input(cpu_download, remote_client, stage, monkeypatch):
     from ml_exp_server.data.data_delivery import DataDeliveryService
     from tests.test_artifact_store import archive
-    from tests.test_multipart_upload import begin, send
+    from tests.test_desktop_data_upload import historical_asset
     control = cpu_download
     stage.uploads.capacity.headroom = 0  # This tiny transfer verifies routing, not disk admission.
     content = archive({"tokens.bin": b"desktop input"})
-    upload = begin(remote_client, content)
-    response = remote_client.post(send(remote_client, content, upload) + "/complete")
-    assert response.status_code == 200, response.text
-    asset = response.json()
+    asset = historical_asset(remote_client, content)
     assert asset["remote_storage"] == "desktop-builder"
     control.body["run"]["inputs"] = [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]
     value, pending = accept_cpu(control)
@@ -652,3 +664,39 @@ def test_legacy_script_with_object_inputs_keeps_inside_job_transport_on_repeat_c
     assert again.status_code == 200, again.text
     assert again.json()["data_preparation_execution"]["phase"] == "inside_job"
     assert path.read_bytes() == original and not control.creates
+
+
+def test_historical_before_job_run_keeps_stdout_receipt_mode_on_repeat_create(cpu_download):
+    control = cpu_download
+    request = control.body["run"]
+    first = control.client.post("/api/projects/demo/runs", json=request)
+    assert first.status_code == 200, first.text
+    path, frozen = frozen_campaign(control.client, first.json())
+    document = yaml.safe_load(path.read_text())
+    document["runs"][0].pop("data_preparation_receipt_mode")
+    document["runs"][0].pop("data_preparation_receipt_worker_sha256")
+    path.write_text(yaml.safe_dump(document, sort_keys=False))
+    original = path.read_bytes()
+    again = control.client.post("/api/projects/demo/runs", json=request)
+    assert again.status_code == 200, again.text
+    assert path.read_bytes() == original
+    _, preserved = frozen_campaign(control.client, again.json())
+    assert preserved["data_preparation_mode"] == "before_job"
+    assert "data_preparation_receipt_mode" not in preserved
+    assert "data_preparation_receipt_worker_sha256" not in preserved
+    assert not control.creates
+
+
+def test_existing_callback_worker_pin_survives_server_wrapper_change(cpu_download, monkeypatch):
+    control = cpu_download
+    request = control.body["run"]
+    first = control.client.post("/api/projects/demo/runs", json=request)
+    assert first.status_code == 200, first.text
+    path, frozen = frozen_campaign(control.client, first.json())
+    original = path.read_bytes()
+    monkeypatch.setattr("ml_exp_server.backends.sensecore_preparation.script_receipt_worker_sha256", lambda: "0" * 64)
+    again = control.client.post("/api/projects/demo/runs", json=request)
+    assert again.status_code == 200, again.text
+    assert path.read_bytes() == original
+    assert frozen_campaign(control.client, again.json())[1]["data_preparation_receipt_worker_sha256"] == frozen["data_preparation_receipt_worker_sha256"]
+    assert not control.creates

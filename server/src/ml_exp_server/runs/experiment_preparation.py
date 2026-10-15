@@ -133,9 +133,10 @@ class ExperimentPreparationService:
                 raise ApplicationError("GPU-hour budget is smaller than requested GPU count times duration", code="GPU_BUDGET_EXCEEDED")
             cache_required = False
             for item in request.run.inputs:
-                asset = AssetStore(Path(objects), self.runtime.config.project_registry_root_path()).read(project, item.asset_id)
+                from ..data.locations import for_backend, REMOTE
+                asset = for_backend(AssetStore(Path(objects), self.runtime.config.project_registry_root_path()).read(project, item.asset_id), matching["profile"], project)
                 validate_script_asset(request.run, matching["capabilities"], asset)
-                cache_required |= asset.get("remote_storage") == "desktop-builder" and matching["capabilities"]["data"]["asset_preparation"] == "before_job"
+                cache_required |= asset.get("remote_storage") in REMOTE and matching["capabilities"]["data"]["asset_preparation"] == "before_job"
             bundle = (self.containers.prepare(project, request.runtime) if request.runtime is not None
                       else self.containers.read(project, request.run.runtime_id))
             if bundle["status"] == "READY":
@@ -224,8 +225,9 @@ class ExperimentPreparationService:
             validate_worker(request.run, bundle, selected["capabilities"], request.requirements)
             self.update(project, preparation_id, phase="PREPARING_DATA")
             for item in request.run.inputs:
-                asset = AssetStore(Path(self.runtime.config.container_execution.artifact_store_file), self.runtime.config.project_registry_root_path()).read(project, item.asset_id)
-                if selected["capabilities"]["data"]["asset_preparation"] != "before_job" or asset.get("remote_storage") != "desktop-builder":
+                from ..data.locations import for_backend, REMOTE
+                asset = for_backend(AssetStore(Path(self.runtime.config.container_execution.artifact_store_file), self.runtime.config.project_registry_root_path()).read(project, item.asset_id), selected["profile"], project)
+                if selected["capabilities"]["data"]["asset_preparation"] != "before_job" or asset.get("remote_storage") not in REMOTE:
                     continue
                 validate_worker(request.run, bundle, selected["capabilities"], request.requirements, cache_required=True)
                 backend_operations(selected["profile"]["backend"]["kind"], self.backends).prepare_asset(

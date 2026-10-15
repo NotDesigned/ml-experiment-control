@@ -13,7 +13,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import threading
-from ..processes import run_process
+from experiment_control.runner import run_process
 
 from ..application_errors import ApplicationError
 from ..results.checkpoint_registry import storage_scope

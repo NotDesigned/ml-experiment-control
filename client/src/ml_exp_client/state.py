@@ -1,7 +1,34 @@
-"""Small durable save/observe/request helpers; protocols retain their own policy."""
+"""Private durable client state and exact-response save/observe helpers."""
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+import tempfile
+
 from .api import ClientError
+
+
+def save(path: Path, value):
+    # State contains recovery IDs and sanitized API responses, never auth headers.
+    output = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix="." + path.name + ".", delete=False)
+    temporary = Path(output.name)
+    try:
+        with output:
+            json.dump(value, output, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        temporary.replace(path)
+        if os.name != "nt":
+            directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def bound_response(value, expected, *, message="response differs from the requested exact identity"):

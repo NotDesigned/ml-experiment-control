@@ -4,7 +4,7 @@ import json
 import pytest
 
 from ml_exp_server.data import data_delivery as module
-from ml_exp_server.image_builder import BuildStorageError, BuildTransportError
+from ml_exp_server.builds.builder_client import BuildStorageError, BuildTransportError
 from tests.test_ccr_data_delivery import delivery, receipt, secret, IMAGE
 from tests.test_sensecore_data_workflow import client, stored, custom_runtime
 from tests.test_desktop_data_upload import stage, remote_client

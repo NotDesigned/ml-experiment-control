@@ -19,6 +19,8 @@ ERROR = ApplicationError("blocked", status_code=418, code="BLOCKED")
 
 class Failing:
     def __getattr__(self, _name):
+        if _name in {"project_service", "project_import_service", "source_revision_service"}:
+            return self
         return lambda *_args, **_kwargs: (_ for _ in ()).throw(ERROR)
 
 

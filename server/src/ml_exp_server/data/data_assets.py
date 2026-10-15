@@ -55,6 +55,12 @@ class AssetStore:
                 if any(staged[key] != value[key] for key in ("sha256", "archive_bytes", "files")):
                     raise ValueError("desktop asset locator differs")
                 value = {**value, "remote_storage": "desktop-builder"}
+            locations = self.root.parent / "remote-data-assets" / project / (asset_id + ".json")
+            if locations.exists():
+                staged = json.loads(locations.read_text())
+                if any(staged[key] != value[key] for key in ("sha256", "archive_bytes", "files")):
+                    raise ValueError("remote asset locator differs")
+                value = {**value, "remote_locations": staged["locations"]}
             return value
 
     def list(self, project: str) -> dict:
@@ -82,19 +88,17 @@ class AssetStore:
                 "scheduler_input_manifest_bytes": 32768,
                 "storage_quota_bytes": self.objects.config.get("storage_quota_bytes"),
                 "checkpoint_publication": "atomic-ready-manifest", "input_write_protection": "file-permissions"}
-        if self.objects.config.get("data_upload_storage") == "desktop-builder":
-            from .remote_data_uploads import stage_request
-            remote = stage_request(self.objects.config["data_upload_socket"], "info", {})
-            value.update(data_upload_storage=remote["storage"], data_upload_free_bytes=remote["free_bytes"],
-                         data_upload_total_bytes=remote["total_bytes"])
-        else:
-            value["data_upload_storage"] = "api-server"
+        from .transfer_buffer import TransferBuffer
+        buffer = TransferBuffer(self.root.parent)
+        with buffer.locked():
+            value["transfer_buffer"] = buffer.snapshot()
+        value["data_upload_storage"] = "target-executor"
         return value
 
     def download(self, project: str, asset_id: str):
         value = self.read(project, asset_id)
-        if value.get("remote_storage") == "desktop-builder":
-            raise ApplicationError("desktop assets use the authenticated archive endpoint", status_code=404,
+        if value.get("remote_storage") in {"desktop-builder", "wyd", "sensecore-ccr"}:
+            raise ApplicationError("remote assets use their frozen backend storage", status_code=404,
                                    code="DIRECT_DOWNLOAD_UNAVAILABLE")
         return self.objects.download('/'.join(['data-assets', project, asset_id + '.tar']),
                                      value['sha256'], value['archive_bytes'], files=value['files'])
@@ -148,34 +152,65 @@ class AssetStore:
         if value.get("remote_storage") == "desktop-builder":
             from .remote_data_uploads import remote_archive
             return value, remote_archive(self.objects.config["data_upload_socket"], project, asset_id, value["archive_bytes"])
+        if value.get("remote_storage") in {"wyd", "sensecore-ccr"}:
+            raise ApplicationError("this data archive is held on its frozen executor storage",
+                                   status_code=404, code="DIRECT_DOWNLOAD_UNAVAILABLE")
         response = self.objects.client().get_object(Bucket=self.objects.config["bucket"],
                     Key="/".join(["data-assets", project, asset_id + ".tar"]))
         return value, response["Body"]
 
     def publish_remote(self, project, value):
-        if (value.get("project") != project or value.get("remote_storage") != "desktop-builder"
+        if (value.get("project") != project or value.get("remote_storage") not in {"desktop-builder", "wyd", "sensecore-ccr"}
                 or value.get("asset_id") != "asset." + value.get("sha256", "")
                 or not SHA256.fullmatch(value.get("sha256", "")) or value.get("archive_bytes", 0) <= 0):
-            raise ValueError("desktop asset identity differs")
+            raise ValueError("remote asset identity differs")
         files = value.get("files", [])
-        if not files or len(files) > self.file_limit or len({item["path"] for item in files}) != len(files):
-            raise ValueError("desktop asset file inventory differs")
-        from ..workers.managed_worker import relative_path
-        for item in files:
-            relative_path(item["path"])
-            if not SHA256.fullmatch(item["sha256"]) or item["bytes"] < 0:
-                raise ValueError("desktop asset file identity differs")
+        self.validate_inventory(files)
+        remote = value["remote_storage"] != "desktop-builder"
+        if remote:
+            scope = value.get("storage_scope", "")
+            if (not re.fullmatch(r"storage\.[0-9a-f]{64}", scope)
+                    or not isinstance(value.get("remote_locator"), dict)):
+                raise ValueError("remote asset storage scope differs")
         with self.record(project, value["asset_id"]) as destination:
             if destination.exists():
                 previous = json.loads((destination / "asset.json").read_text())
                 if any(previous[key] != value[key] for key in ("sha256", "archive_bytes", "files")):
-                    raise ValueError("desktop asset is already sealed")
+                    raise ValueError("remote asset is already sealed")
+            else:
+                destination.mkdir(mode=0o700)
+                atomic_json(destination / "asset.json", value)
+                destination.chmod(0o500)
+                previous = value
+            if not remote:
                 atomic_json(self.root.parent / "desktop-data-assets" / project / (value["asset_id"] + ".json"), value)
                 return {**previous, "remote_storage": "desktop-builder"}
-            destination.mkdir(mode=0o700)
-            atomic_json(destination / "asset.json", value)
-            destination.chmod(0o500)
-            return value
+            path = self.root.parent / "remote-data-assets" / project / (value["asset_id"] + ".json")
+            current = json.loads(path.read_text()) if path.exists() else {
+                "sha256": value["sha256"], "archive_bytes": value["archive_bytes"], "files": files, "locations": {}}
+            if any(current[key] != value[key] for key in ("sha256", "archive_bytes", "files")):
+                raise ValueError("remote asset location has another content identity")
+            location = {key: value[key] for key in ("remote_storage", "storage_scope", "remote_locator")}
+            location.update({key: value[key] for key in ("verification", "executor") if key in value})
+            existing = current["locations"].get(scope)
+            if existing and {key: item for key, item in existing.items() if key != "executor"} != {
+                    key: item for key, item in location.items() if key != "executor"}:
+                raise ValueError("remote asset storage scope is already bound")
+            current["locations"][scope] = location
+            atomic_json(path, current)
+            return {**previous, **location, "remote_locations": current["locations"]}
+
+    def validate_inventory(self, files):
+        if not files or len(files) > self.file_limit or len({item["path"] for item in files}) != len(files):
+            raise ValueError("remote asset file inventory differs")
+        from ..workers.managed_worker import relative_path
+        for item in files:
+            relative_path(item["path"])
+            if not SHA256.fullmatch(item["sha256"]) or type(item["bytes"]) is not int or item["bytes"] < 0:
+                raise ValueError("remote asset file identity differs")
+        if exceeds(sum(item["bytes"] for item in files), self.expanded_limit):
+            raise ValueError("remote asset expanded bytes exceed policy")
+        return files
 
     def authorize_input(self, project: str, run: str, attempt: str, asset_id: str, token: str):
         with RunFence(self.root.parent).guard(project, run):

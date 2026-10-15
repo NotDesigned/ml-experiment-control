@@ -14,7 +14,8 @@ import yaml
 from ml_exp_server.actions.service import ActionService
 from ml_exp_server.actions.helpers import _missing_frozen_match_fields
 from ml_exp_server.actions.store import ActionStore
-from ml_exp_server.api.app import _shutdown, create_app
+from ml_exp_server.api.app import create_app
+from ml_exp_server.api.lifecycle import _shutdown
 from ml_exp_server.application import ApplicationError, ExperimentServerApplication
 from ml_exp_server.container_execution import RunRequest
 from ml_exp_server.projects.project_service import ProjectApplicationService
@@ -44,7 +45,7 @@ def test_shutdown_retains_runtime_and_lease_until_failed_action_finishes(executo
 
 
 def test_startup_failure_without_collector_ownership_releases_no_foreign_lease(tmp_path, monkeypatch):
-    from ml_exp_server.api import app as module
+    from ml_exp_server.api import lifecycle as module
     class Lease:
         def __init__(self, path):
             pass

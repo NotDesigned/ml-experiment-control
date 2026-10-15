@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import fcntl
+import errno
 import hashlib
 import io
 import json
@@ -11,7 +12,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
+import sys
 import time
+from uuid import uuid4
 
 from ..application_errors import ApplicationError
 from ..storage import atomic_json, utc_now
@@ -20,6 +24,7 @@ from ..storage_capacity import StorageCapacity, CapacityError
 
 UPLOAD_ID = re.compile(r"^upload\.[0-9a-f]{64}$")
 PART_BYTES = 16 * 1024 ** 2
+RMTREE_DIRECTORY_FD = sys.version_info >= (3, 11)
 
 
 class PartStream(io.RawIOBase):
@@ -64,6 +69,10 @@ class PartStream(io.RawIOBase):
 
 
 class UploadStore:
+    @staticmethod
+    def identity(binding, digest, size):
+        return "upload." + hashlib.sha256(json.dumps([binding, digest, size], sort_keys=True).encode()).hexdigest()
+
     def __init__(self, root, config, *, capacity=None):
         self.root = Path(root) / "multipart-uploads"
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -94,6 +103,8 @@ class UploadStore:
             fcntl.flock(lock, fcntl.LOCK_EX)
             directory = self.root / upload_id
             path = directory / "upload.json"
+            if directory.is_symlink() or path.is_symlink() or (directory / "parts").is_symlink():
+                raise ValueError("multipart upload state contains a link")
             yield directory, path, json.loads(path.read_text()) if path.exists() else None
 
     def create(self, binding, digest, size, limit):
@@ -104,7 +115,7 @@ class UploadStore:
         if not re.fullmatch(r"[0-9a-f]{64}", digest) or size <= 0 or exceeds(size, limit) or (size + self.part_bytes - 1) // self.part_bytes > self.max_parts:
             raise ApplicationError("archive exceeds upload limit or has an invalid identity", status_code=413, code="UPLOAD_LIMIT")
         self.prune()
-        upload_id = "upload." + hashlib.sha256(json.dumps([binding, digest, size], sort_keys=True).encode()).hexdigest()
+        upload_id = self.identity(binding, digest, size)
         with self.record(upload_id) as (directory, path, value):
             if value and value["status"] == "COMPLETED":
                 return value
@@ -157,11 +168,13 @@ class UploadStore:
                 raise ValueError("upload part length differs")
             item = {"sha256": digest, "bytes": size}
             previous = value["parts"].get(str(number))
+            destination = directory / "parts" / str(number)
             if previous:
                 if previous != item:
                     raise ValueError("upload part is already sealed with another digest")
+                self.verify_part(destination, item)
                 return previous
-            destination = directory / "parts" / str(number)
+            self.verify_part(temporary, item)
             temporary.replace(destination)
             with destination.open("rb") as part:
                 os.fsync(part.fileno())
@@ -174,6 +187,17 @@ class UploadStore:
                 value["parts"][str(number)] = item
                 atomic_json(path, value)
             return item
+
+    @staticmethod
+    def verify_part(path, expected):
+        digest, size = hashlib.sha256(), 0
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 ** 2):
+                digest.update(chunk)
+                size += len(chunk)
+            os.fsync(stream.fileno())
+        if {"sha256": digest.hexdigest(), "bytes": size} != expected:
+            raise ValueError("stored upload part checksum differs")
 
     def complete(self, upload_id, binding, publish, reserve):
         with self.run_binding_guard(binding):
@@ -242,22 +266,83 @@ class UploadStore:
     def prune(self):
         # Only this feature's expired staging is removed. Published objects and
         # historical scientific records are never candidates for this cleanup.
-        for directory in self.root.glob("upload.*"):
-            if not directory.is_dir() or not UPLOAD_ID.fullmatch(directory.name):
-                continue
-            with (self.root / (directory.name + ".lock")).open("a") as lock:
+        root = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            with os.scandir(root) as entries:
+                names = [entry.name for entry in entries]
+            for name in names:
+                if not UPLOAD_ID.fullmatch(name):
+                    continue
                 try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
+                    lock = os.open(name + ".lock", os.O_CREAT | os.O_APPEND | os.O_WRONLY | os.O_NOFOLLOW, 0o600, dir_fd=root)
+                    directory = None
+                    with os.fdopen(lock, "a") as stream:
+                        try:
+                            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            continue
+                        directory = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+                        try:
+                            descriptor = os.open("upload.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+                            with os.fdopen(descriptor) as record:
+                                value = json.load(record)
+                            if (value.get("upload_id") != name
+                                    or self.identity(value.get("binding"), value.get("sha256"), value.get("bytes")) != name):
+                                continue
+                            try:
+                                parts = os.stat("parts", dir_fd=directory, follow_symlinks=False)
+                            except FileNotFoundError:
+                                parts = None
+                            if parts is not None and not stat.S_ISDIR(parts.st_mode):
+                                continue
+                            if value["status"] == "UPLOADING" and self.expired(value):
+                                if parts is not None:
+                                    self.remove_expired_parts(directory)
+                                value.update(status="EXPIRED", parts={})
+                                self.expire_record(directory, value)
+                        finally:
+                            os.close(directory)
+                except OSError as error:
+                    if error.errno not in {errno.ENOENT, errno.ELOOP, errno.ENOTDIR}:
+                        raise
+            for name in names:
+                if not name.startswith(".part-"):
                     continue
-                path = directory / "upload.json"
-                if not path.exists():
-                    continue
-                value = json.loads(path.read_text())
-                if value["status"] == "UPLOADING" and self.expired(value):
-                    shutil.rmtree(directory / "parts", ignore_errors=True)
-                    value.update(status="EXPIRED", parts={})
-                    atomic_json(path, value)
-        for path in self.root.glob(".part-*"):
-            if path.stat().st_mtime < time.time() - self.ttl:
-                path.unlink(missing_ok=True)
+                try:
+                    value = os.stat(name, dir_fd=root, follow_symlinks=False)
+                    if stat.S_ISREG(value.st_mode) and value.st_mtime < time.time() - self.ttl:
+                        os.unlink(name, dir_fd=root)
+                except FileNotFoundError:
+                    pass
+        finally:
+            os.close(root)
+
+    @staticmethod
+    def remove_expired_parts(directory):
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise ValueError("multipart expiry requires fd-safe directory removal")
+        if RMTREE_DIRECTORY_FD:
+            shutil.rmtree("parts", dir_fd=directory)
+        else:
+            # Python 3.10 has the same fd-safe rmtree engine but no dir_fd
+            # argument. Linux procfs pins its parent to our open descriptor.
+            shutil.rmtree("/proc/self/fd/" + str(directory) + "/parts")
+
+    @staticmethod
+    def expire_record(directory, value):
+        """Atomically write inside the already-open, no-follow staging folder."""
+        temporary = ".upload-" + uuid4().hex + ".tmp"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        try:
+            with os.fdopen(descriptor, "w") as stream:
+                json.dump(value, stream, ensure_ascii=False, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, "upload.json", src_dir_fd=directory, dst_dir_fd=directory)
+            os.fsync(directory)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass

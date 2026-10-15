@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ml_exp_server.ingest import runscan
+from ml_exp_server.ingest import legacy, runscan
 
 
 DIMENSIONS = {
@@ -73,13 +73,13 @@ def test_manifest_mtime_source_attempt_and_discovery_edges(tmp_path, monkeypatch
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     assert runscan._science_manifest(run_dir) == {}
-    assert runscan._autoresearch_source_parameters(run_dir) == {}
+    assert legacy.source_parameters(run_dir) == {}
     assert runscan.discover_run_dirs(tmp_path / "missing") == []
 
     source = run_dir / "source" / "train.py"
     source.parent.mkdir()
     source.write_text("OTHER = 1\nDEVICE_BATCH_SIZE = 8\n", encoding="utf-8")
-    assert runscan._autoresearch_source_parameters(run_dir) == {
+    assert legacy.source_parameters(run_dir) == {
         "device_batch_size": 8,
     }
 
@@ -91,7 +91,7 @@ def test_manifest_mtime_source_attempt_and_discovery_edges(tmp_path, monkeypatch
         return real_read_text(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", denied_read)
-    assert runscan._autoresearch_source_parameters(run_dir) == {}
+    assert legacy.source_parameters(run_dir) == {}
 
     real_stat = Path.stat
 

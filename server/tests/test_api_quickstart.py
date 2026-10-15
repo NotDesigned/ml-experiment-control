@@ -17,11 +17,13 @@ import uvicorn
 import yaml
 
 from ml_exp_client import api as client_module
+from ml_exp_client import source_archive
+from ml_exp_client.state import save
 from ml_exp_server.api.app import create_app
 from ml_exp_server.results.artifact_store import ArtifactStore
 from ml_exp_server.container_controller import Controller
 from ml_exp_server.workers.worker_artifacts import archive_outputs
-from ml_exp_server.image_builder import bundle_id
+from ml_exp_server.builds.builder_client import bundle_id
 from ml_exp_server.dockerfile_build import managed_dockerfile, inspect_dockerfile
 from ml_exp_server.worker_contract import WORKER_CONTRACT, CAPABILITIES, worker_digest
 from ml_exp_server.schemas import AttemptSummary, RunIndexRow, ServerConfig
@@ -262,11 +264,11 @@ def test_client_rejects_credential_paths_links_and_redirects(tmp_path):
     (source / "train.py").write_text("pass\n")
     (source / ".env").write_text("private")
     with pytest.raises(client_module.ClientError, match="credential"):
-        client_module.source_archive(source)
+        source_archive(source)
     (source / ".env").unlink()
     (source / "link").symlink_to(source / "train.py")
     with pytest.raises(client_module.ClientError, match="link"):
-        client_module.source_archive(source)
+        source_archive(source)
     from starlette.applications import Starlette
     from starlette.responses import JSONResponse, RedirectResponse
     from starlette.routing import Route
@@ -307,6 +309,6 @@ def test_lost_execute_response_is_observed_without_replaying_submit(tmp_path):
         client.timeout = 5
         assert client.wait(endpoint, interval=0.01)["status"] == "VERIFIED"
         state = tmp_path / "submission.json"
-        client_module.save(state, prepared)
+        save(state, prepared)
         assert cli(base, auth, "execute", "--state", state, "--confirm", prepared["confirmation"])["status"] == "VERIFIED"
         assert len([call for call in runner.calls if call[3] == "submit" and "--dry-run" not in call]) == 1

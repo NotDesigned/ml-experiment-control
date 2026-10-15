@@ -4,7 +4,8 @@ import pytest
 
 from ml_exp_client.api import ClientError
 from ml_exp_client.cli import main
-from ml_exp_client.workflow import read_config, experiment
+from ml_exp_client.config import read_config
+from ml_exp_client.workflow import experiment
 from test_experiment_workflow import configuration, API, HEALTH
 
 REFERENCE={"run_id":"first","attempt_id":"attempt-001","checkpoint_id":"checkpoint."+"a"*64}

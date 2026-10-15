@@ -45,7 +45,7 @@ def declaration(profile, *, artifact_store: bool, desktop: bool, cpu_preparation
     if relay and kind != "slurm":
         raise ApplicationError("API TCP relay requires a Slurm gateway", code="EXECUTOR_TRANSPORT_INVALID")
     script_mode = ("before_job" if relay or kind == "sensecore" and cpu_preparation else "inside_job") if persistent and artifact_store else None
-    asset_mode = "before_job" if desktop and kind in {"slurm", "sensecore"} else "inside_job"
+    asset_mode = "before_job" if persistent and artifact_store and kind in {"slurm", "sensecore"} else "inside_job"
     return {
         "contract": CONTRACT,
         "runtime": {"platforms": ["linux/amd64"] if kind != "local" else [],
@@ -113,8 +113,8 @@ def mismatches(capabilities, profile, request, requirements) -> list[str]:
 def validate_script_asset(request, capabilities, asset):
     if (request.data_preparation is not None
             and capabilities["data"]["preparation"]["transport"] == "cpu-acp-shared-storage"
-            and asset.get("remote_storage") != "desktop-builder"):
-        raise ApplicationError("CPU download scripts require pre-staged desktop-backed input assets", code="DATA_SCRIPT_INPUT_TRANSPORT_UNSUPPORTED")
+            and asset.get("remote_storage") not in {"desktop-builder", "sensecore-ccr"}):
+        raise ApplicationError("CPU download scripts require pre-staged CCR input assets", code="DATA_SCRIPT_INPUT_TRANSPORT_UNSUPPORTED")
 
 
 def match(profiles, declarations, request, requirements, selector, *, resume_scope=None, project=None):

@@ -13,7 +13,7 @@ import yaml
 
 from ml_exp_server.api.app import create_app
 from ml_exp_server.container_controller import Controller
-from ml_exp_server.image_builder import bundle_id
+from ml_exp_server.builds.builder_client import bundle_id
 from ml_exp_server.worker_contract import CAPABILITIES, WORKER_CONTRACT, worker_digest
 from ml_exp_server.schemas import ServerConfig, RunIndexRow, AttemptSummary
 

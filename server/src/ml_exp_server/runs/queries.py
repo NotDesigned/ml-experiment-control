@@ -136,12 +136,10 @@ class RunQueries:
     def attempt_checkpoints(self, project: str, identity: str) -> dict[str, Any]:
         _, _, row, attempt, attempt_dir = self._attempt_context(project, identity)
         collection = self._read_mapping(attempt_dir / "collection.json")
-        latest = collection.get("latest_completed_checkpoint") or row.checkpoint.get(
-            "latest_completed_checkpoint"
-        )
-        step = collection.get("latest_completed_checkpoint_step") or row.checkpoint.get(
-            "latest_completed_checkpoint_step"
-        )
+        # Run-index summaries describe the selected Attempt, which may differ
+        # from this query. Only evidence from the exact Attempt is applicable.
+        latest = collection.get("latest_completed_checkpoint")
+        step = collection.get("latest_completed_checkpoint_step")
         local_root = attempt_dir / "collected_run"
         local = []
         if local_root.is_dir():
@@ -161,7 +159,7 @@ class RunQueries:
         collection = self._read_mapping(attempt_dir / "collection.json")
         artifacts = collection.get("artifacts")
         if not isinstance(artifacts, dict):
-            artifacts = row.artifacts
+            artifacts = {}
         roots = []
         collected = attempt_dir / "collected_run"
         if collected.is_dir():

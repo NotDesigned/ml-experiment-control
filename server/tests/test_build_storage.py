@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from ml_exp_server.image_builder import ImageBuilder, BuildStorageError, BUILD_LOG
+from ml_exp_server.image_builder import ImageBuilder, BUILD_LOG
+from ml_exp_server.builds.builder_client import BuildStorageError
 from tests.test_image_builder_boundary import builder
 from tests.test_container_api import client, import_source, prepare_runtime, wait_runtime
 

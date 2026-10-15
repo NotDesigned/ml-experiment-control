@@ -108,7 +108,7 @@ def test_wide_legacy_records_remain_queryable_without_invented_units():
 def test_distinct_checkpoint_dataset_protocol_and_variant_contexts_are_not_mixed():
     for field in ("checkpoint_id", "dataset_id", "protocol_id", "variant_id"):
         result = metric_result([row(**{field: "a"}), row(step=5, **{field: "b"})], SCHEMA)
-        assert result["current"] is None and result["state"] == "PARTIAL"
+        assert result["current"] is None and result["state"] == "COMPLETE"
         assert len(result["contexts"]) == 2
     # Interleaved steps never fill the missing validation loss at another step.
     result = metric_result([row(step=1), {"name": "encoded_loss", "unit": "bits/raw byte", "value": 1, "step": 2}], SCHEMA)

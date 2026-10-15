@@ -1,3 +1,4 @@
+from ml_exp_server.api import lifecycle as api_lifecycle
 """API routes against the real fixture data (A1 + smoke run)."""
 
 import textwrap
@@ -400,8 +401,8 @@ def test_lease_loss_fails_before_runtime_construction(monkeypatch, tmp_path):
         def release(self):
             pass
 
-    monkeypatch.setattr(api_app, "CollectorLease", StandbyLease)
-    monkeypatch.setattr(api_app, "index_project", lambda index, project: indexed.append(project.project))
+    monkeypatch.setattr(api_lifecycle, "CollectorLease", StandbyLease)
+    monkeypatch.setattr(api_lifecycle, "index_project", lambda index, project: indexed.append(project.project))
     config = ServerConfig(
         index_db=str(tmp_path / "index.sqlite"),
         action_root=str(tmp_path / "actions"),
@@ -454,7 +455,7 @@ def test_startup_failure_releases_workspace_lease(tmp_path):
 
 def test_thread_start_failure_releases_workspace_lease(tmp_path, monkeypatch):
     config = ServerConfig(index_db=str(tmp_path / "index.sqlite"), projects=[])
-    original_start = api_app.threading.Thread.start
+    original_start = api_lifecycle.threading.Thread.start
     failed_once = False
 
     def fail_collector_once(thread):
@@ -464,7 +465,7 @@ def test_thread_start_failure_releases_workspace_lease(tmp_path, monkeypatch):
             raise RuntimeError("collector thread failed to start")
         return original_start(thread)
 
-    monkeypatch.setattr(api_app.threading.Thread, "start", fail_collector_once)
+    monkeypatch.setattr(api_lifecycle.threading.Thread, "start", fail_collector_once)
     with pytest.raises(RuntimeError, match="collector thread failed"):
         with TestClient(create_app(config)):
             pass
