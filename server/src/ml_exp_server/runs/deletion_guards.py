@@ -46,16 +46,20 @@ def _action_guard(fence, scope, snapshot):
     with fence.shared():
         runs = set()
         if scope.get("scope_type") in {OperationScopeType.RUN.value, OperationScopeType.ATTEMPT.value}:
-            runs.add(scope["object_id"].split("::", 1)[0])
+            run = scope["object_id"]
+            if scope["scope_type"] == OperationScopeType.ATTEMPT.value:
+                run = run.rsplit("::", 1)[0]
+            runs.add(run)
         if snapshot.get("run_id"):
             runs.add(snapshot["run_id"])
+        for run in runs:
+            fence.require_observed_live(scope["project"], run)
         if snapshot.get("operation") == "WRITE_CAMPAIGN":
             proposed = yaml.safe_load(snapshot["proposed_content"])
-            runs.update(item["run_id"] for item in [*proposed.get("runs", []), *proposed.get("run_refs", [])])
+            for item in [*proposed.get("runs", []), *proposed.get("run_refs", [])]:
+                require_live(fence, scope["project"], item.get("run_id") if isinstance(item, dict) else None)
             for item in proposed.get("runs", []):
-                reference = item.get("resume_from")
-                if isinstance(reference, dict) and isinstance(reference.get("run_id"), str):
-                    runs.add(reference["run_id"])
-        for run in runs:
-            require_live(fence, scope["project"], run)
+                reference = item.get("resume_from") if isinstance(item, dict) else None
+                if isinstance(reference, dict) and "run_id" in reference:
+                    require_live(fence, scope["project"], reference["run_id"])
         yield

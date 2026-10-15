@@ -171,8 +171,11 @@ class RunDeletionService:
                 remember(value.get("attempt_id"), value.get("backend_job_id"))
         for action in self.runtime.action_store.list_all():
             scope = action.get("scope", {})
+            scope_run = scope.get("object_id", "")
+            if scope.get("scope_type") == "attempt":
+                scope_run = scope_run.rsplit("::", 1)[0]
             if (scope.get("project") != project
-                    or action.get("run_id") != run and scope.get("object_id", "").split("::", 1)[0] != run):
+                    or action.get("run_id") != run and scope_run != run):
                 continue
             identity = action.get("attempt_id")
             if identity is None and scope.get("scope_type") == "attempt":
@@ -319,8 +322,11 @@ class RunDeletionService:
         busy = []
         for action in self.runtime.action_store.list_all():
             scope = action.get("scope", {})
+            scope_run = scope.get("object_id", "")
+            if scope.get("scope_type") == "attempt":
+                scope_run = scope_run.rsplit("::", 1)[0]
             if (action["action_id"] != own_action and scope.get("project") == project
-                    and (action.get("run_id") == run or scope.get("object_id", "").split("::")[0] == run)
+                    and (action.get("run_id") == run or scope_run == run)
                     and action.get("execution", {}).get("status") in _ACTIVE):
                 busy.append({"kind": "action", "id": action["action_id"]})
         for path in (self.root / "experiment-preparations" / project).glob("*.json"):

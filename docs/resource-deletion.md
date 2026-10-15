@@ -5,6 +5,9 @@ Run, including all its Attempts. It requires the server's
 `resource-deletion.v1` capability, the private API bearer credential and enabled
 `action_runtime.allow_resource_deletions` policy. That policy defaults to false;
 a disabled policy returns a blocked plan with reviewable gates.
+Only daemon-managed Runs are deletion targets. Older imported or indexed Runs
+remain queryable under their historical identity rules; this endpoint does not
+infer permission to delete their arbitrary storage locations.
 
 ```bash
 ml-exp delete --project my-study --run trial-001 \

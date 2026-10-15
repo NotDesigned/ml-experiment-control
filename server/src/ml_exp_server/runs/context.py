@@ -26,7 +26,8 @@ class RunContext:
             from ..deletion_state import RunFence
             root = getattr(getattr(self.runtime, "config", None), "project_registry_root_path", None)
             if callable(root):
-                RunFence(root()).require_live(project_name, object_id.split("::", 1)[0])
+                run_id = object_id.rsplit("::", 1)[0] if kind == OperationScopeType.ATTEMPT else object_id
+                RunFence(root()).require_observed_live(project_name, run_id)
         if kind == OperationScopeType.PROJECT:
             if object_id != project.project:
                 raise ApplicationError("project object_id must equal project",

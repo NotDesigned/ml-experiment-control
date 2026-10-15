@@ -618,7 +618,7 @@ class Collector:
             error: Optional[str] = None
             fence = getattr(self.index, "deletion_fence", None)
             try:
-                with fence.guard(call.project, call.run_id) if fence else nullcontext():
+                with fence.observation_guard(call.project, call.run_id) if fence else nullcontext():
                     result = self.controller.execute(call, timeout=_SUBPROCESS_TIMEOUT)
             except ApplicationError as error:
                 if error.code == "RUN_DELETED":

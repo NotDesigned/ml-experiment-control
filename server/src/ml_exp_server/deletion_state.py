@@ -63,11 +63,28 @@ class RunFence:
     def is_deleted(self, project, run):
         # Atomic tombstone publication makes this safe inside an exclusive
         # section too. A malformed or unreadable tombstone still fences the ID.
-        return self.path(project, run).exists()
+        try:
+            path = self.path(project, run)
+        except ValueError:
+            # Historical observation identities were not restricted to the
+            # managed Run contract. They cannot have a managed tombstone, and
+            # querying one must not construct an arbitrary filesystem path.
+            return False
+        return path.exists()
 
     def require_live(self, project, run):
+        self.path(project, run)
+        self.require_observed_live(project, run)
+
+    def require_observed_live(self, project, run):
         if self.is_deleted(project, run):
             raise ApplicationError("Run was deleted by an administrator", status_code=410, code="RUN_DELETED")
+
+    @contextmanager
+    def observation_guard(self, project, run):
+        with self.shared():
+            self.require_observed_live(project, run)
+            yield
 
     @contextmanager
     def guard(self, project, run):

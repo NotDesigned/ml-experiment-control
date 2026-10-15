@@ -224,7 +224,7 @@ class ActionPlanning:
             require_action_runs(self, project.project, run_ids)
             for run in runs:
                 reference = run.get("resume_from")
-                if isinstance(reference, dict) and isinstance(reference.get("run_id"), str):
+                if isinstance(reference, dict) and "run_id" in reference:
                     require_action_runs(self, project.project, [reference["run_id"]])
         intent_kind = str(intent.get("kind") or "")
         experiments_root = (project.base_dir or Path(".")) / "experiments"

@@ -160,14 +160,16 @@ class RecordStore:
     def run_guard(self, project, run, *, config=None):
         fence = RunFence(self.root.parent)
         names = self._fence_names(project, run, config)
-        with fence.guard(project, names[0]):
+        with fence.observation_guard(project, names[0]):
             for name in names[1:]:
-                fence.require_live(project, name)
+                fence.require_observed_live(project, name)
             yield
 
     def delete_run(self, project, run):
         """Remove canonical local records after the permanent fence was committed."""
-        if not RunFence(self.root.parent).is_deleted(project, run):
+        fence = RunFence(self.root.parent)
+        fence.path(project, run)
+        if not fence.is_deleted(project, run):
             raise ApplicationError("Run deletion must be durably fenced first", code="RUN_DELETION_NOT_STARTED")
         with self.connection() as conn:
             rows = conn.execute("SELECT run,config FROM runs WHERE project=? AND run IN (?,?,?)",
@@ -178,7 +180,6 @@ class RecordStore:
                 names.append(row["run"])
         # Preserve the proven publication identities too: after removing their
         # binding, a late record must not recreate an orphan event stream.
-        fence = RunFence(self.root.parent)
         with fence.exclusive():
             for name in names[1:]:
                 fence.mark(project, name, {"publication_parent": run})
