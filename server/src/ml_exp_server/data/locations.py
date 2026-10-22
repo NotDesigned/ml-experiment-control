@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from ..application_errors import ApplicationError
 from ..results.checkpoint_registry import storage_scope
-from .data_assets import AssetStore
 
 REMOTE = frozenset({"desktop-builder", "wyd", "sensecore-ccr"})
 
@@ -21,5 +20,4 @@ def for_backend(asset, profile, project):
         return {**asset, **location}
     if asset.get("remote_storage") in {"wyd", "sensecore-ccr"}:
         raise ApplicationError("upload this asset to the selected executor's storage before submission", code="INPUT_STORAGE_SCOPE_MISMATCH")
-    AssetStore.require_available(asset)
     return asset

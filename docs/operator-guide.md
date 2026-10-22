@@ -114,8 +114,9 @@ so this is not a hard filesystem quota. Garage physical GC is asynchronous.
 
 Keep original datasets and long-lived model state on backend storage or on the
 client. Download selected results before expiry. An expired uploaded legacy
-asset must be uploaded to executor storage again; a frozen backend reference
-can still be used without the local copy. This policy deliberately does not
+asset must be uploaded to executor storage again if no verified backend copy
+exists. Preparation first reuses and verifies an existing backend cache; local
+expiry must not block that reuse. This policy deliberately does not
 change NAS/datapool/CCR retention or require a GPU job to delete local bytes.
 
 The approved base catalogue is an operator-owned YAML selected with

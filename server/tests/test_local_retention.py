@@ -278,12 +278,31 @@ def test_replace_between_stat_open_and_second_open_never_authorizes_delete(tmp_p
     assert weight.read_bytes() == b'changed'
 
 
-def test_expired_legacy_input_fails_preflight_but_remote_reference_still_works():
+def test_expired_local_input_can_still_resolve_backend_storage_without_local_read():
     profile = {'backend': {'kind': 'slurm', 'ssh_alias': 'wyd'}, 'storage_root': '/datapool/ml-expd'}
     asset = {'local_retention': {'status': 'EXPIRED'}}
-    with pytest.raises(ApplicationError) as error:
-        for_backend(asset, profile, 'demo')
-    assert error.value.code == 'ASSET_EXPIRED'
+    assert for_backend(asset, profile, 'demo') == asset
+
+
+def test_verified_wyd_cache_reuses_expired_local_asset_without_download(monkeypatch):
+    from ml_exp_server.backends import operations
+    asset = 'asset.' + 'a' * 64
+    receipt = {'status': 'READY', 'asset_id': asset}
+    class Cached:
+        def __init__(self, runtime):
+            pass
+        def check(self, project, asset_id, profile):
+            return {'status': 'READY'}
+        def receipt(self, project, asset_id, profile):
+            return receipt
+        def publish(self, *args):
+            pytest.fail('verified backend data must not be downloaded again')
+    monkeypatch.setattr(operations, 'WydDataStager', Cached)
+    updates = []
+    owner = SimpleNamespace(runtime=object(), update=lambda *args, **kwargs: updates.append(kwargs))
+    value = {'delivery_requested': []}
+    operations.WydOperations().prepare_asset(owner, 'demo', 'preparation', value, {'profile': {}}, asset, None)
+    assert value['data_receipts'][asset] == receipt and len(updates) == 1
 
 
 def test_old_repaired_archive_expires_without_redeleting_current_ack_released_object(storage, monkeypatch):
