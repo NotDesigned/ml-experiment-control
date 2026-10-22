@@ -46,7 +46,7 @@ def test_daemon_restart_marks_interrupted_build_without_touching_ready_or_rebuil
         assert restarted.get(endpoint).json()["status"] == "RECONCILE_REQUIRED"
         assert calls == [] and all(p.read_bytes() == data for p, data in original.items())
         assert restarted.post(endpoint + "/reconcile", json={"confirmation": waiting["confirmation"]}).json()["status"] == "READY"
-        assert calls == ["get"]
+        assert calls == ["reconcile"]
         assert restarted.get("/api/projects/demo/runtimes/" + untouched["runtime_id"]).json()["status"] == "PREPARED"
         assert restarted.get("/api/projects/demo/runtimes/" + ready["runtime_id"]).json() == ready
 
@@ -94,7 +94,7 @@ def test_canceled_reconcile_keeps_build_owner_until_receipt_is_saved(client, mon
     release, started = threading.Event(), threading.Event()
     original = __import__("ml_exp_server.container_execution", fromlist=["builder_request"]).builder_request
     def slow(socket, payload):
-        assert payload["operation"] == "get"
+        assert payload["operation"] == "reconcile"
         started.set()
         assert release.wait(5)
         return original(socket, payload)

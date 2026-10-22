@@ -37,6 +37,10 @@ class BuildTransportError(ValueError):
 class BuildReceiptMissingError(ValueError):
     """The builder verified the lookup identity and found no published receipt."""
 
+    def __init__(self, message, *, retry_proof=None):
+        super().__init__(message)
+        self.retry_proof = retry_proof
+
 
 def bundle_id(project: str, source_id: str, base_image: str, *, dockerfile_path: str = "Dockerfile") -> str:
     fields = [project, source_id, base_image, DOCKERFILE_RECIPE, WORKER_CONTRACT,
@@ -59,10 +63,10 @@ def builder_request(path: str, payload: dict, *, timeout: int = 1200) -> dict:
         data = json.loads(response.read(65536))
         if response.status != 200:
             if data.get("code") == "BUILD_RECEIPT_MISSING":
-                raise BuildReceiptMissingError("image bundle has not been published")
+                raise BuildReceiptMissingError("image bundle has not been published", retry_proof=data.get("retry_proof"))
             if data.get("code") in {"BUILD_STORAGE_INSUFFICIENT", "BUILD_STORAGE_UNCHECKED", "BUILD_DISK_EXHAUSTED"}:
                 raise BuildStorageError(data["code"], data["details"])
-            if data.get("code") in {"BUILD_SESSION_TIMEOUT", "BUILD_CONTEXT_TRANSPORT", "DESKTOP_RPC_TIMEOUT", "DESKTOP_RPC_UNAVAILABLE", "DESKTOP_RPC_FAILED", "DESKTOP_RPC_RESPONSE"}:
+            if data.get("code") in {"BUILD_SESSION_TIMEOUT", "BUILD_CONTEXT_TRANSPORT", "DESKTOP_RPC_TIMEOUT", "DESKTOP_RPC_UNAVAILABLE", "DESKTOP_RPC_FAILED", "DESKTOP_RPC_RESPONSE", "BUILDER_DOCKER_UNAVAILABLE", "BUILD_PUBLICATION_UNRESOLVED", "BUILD_RECOVERY_UNCHECKED"}:
                 raise BuildTransportError(data["code"], data["details"])
             raise ValueError(data.get("error", "image packaging failed"))
         return data

@@ -8,6 +8,13 @@ from ml_exp_server.image_builder import ImageBuilder
 from ml_exp_server.builds.builder_client import BuildStorageError
 
 
+@pytest.fixture(autouse=True)
+def mocked_desktop_ping(monkeypatch):
+    # This module mocks Docker command transport; HTTP reachability is tested
+    # independently in test_build_recovery.py.
+    monkeypatch.setattr('ml_exp_server.image_builder.desktop_ready', lambda config: None)
+
+
 def config(tmp_path):
     return {'state_root': str(tmp_path), 'publisher': 'buildkit', 'ephemeral_buildkit': True,
             'docker_host': 'unix:///run/private/docker.sock', 'buildkit_image': 'moby/buildkit@sha256:'+'a'*64}

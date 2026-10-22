@@ -23,6 +23,7 @@ from .projects.source_imports import IDENTITY, source_lock
 from .projects.source_revisions import resolve_source_tree
 from .storage import DurableJsonState, atomic_text, utc_now
 from .builds.runtime_jobs import PendingRuntimeBuild
+from .builds.build_recovery import valid_absence
 from .worker_contract import CAPABILITIES, WORKER_CONTRACT
 from .tracking.metric_contract import MetricSchema, protocol_identity
 from .workers.data_preparation import identity as data_identity, file_record
@@ -329,6 +330,8 @@ class ContainerExecutionService:
                     and not (value.get("build_error") or {}).get("retry_safe", False)):
                 raise ApplicationError("runtime publication is uncertain; reconcile before preparing a new build", code="CONTAINER_EXECUTION_BLOCKED")
             self.require_current_build(project, value)
+            if not reconcile and value.get('build_error'):
+                value.setdefault('build_error_history', []).append(value['build_error'])
             # Receipt lookup creates no publication. Keep the prior evidence
             # until reconciliation finds a valid receipt or a new build starts.
             value.update(status="EXECUTING", error=None,
@@ -347,7 +350,7 @@ class ContainerExecutionService:
             if not socket:
                 raise ValueError("image packaging worker is not configured")
             resolve_source_tree(self.runtime.config, project, spec.source_id)
-            payload = {"operation": "get" if pending.reconcile else "build", "project": project,
+            payload = {"operation": "reconcile" if pending.reconcile else "build", "project": project,
                                               "source_id": spec.source_id, "base_image": value["base_image"],
                                               "packaging_revision": spec.packaging_revision}
             payload["dockerfile"] = spec.dockerfile
@@ -364,17 +367,27 @@ class ContainerExecutionService:
                 raise ValueError("Dockerfile worker receipt does not match the frozen definition")
             value.update(status="READY", image=result["image"], bundle_id=result["bundle_id"], build_error=None,
                          completed_at=utc_now(), capabilities=result["capabilities"])
-        except BuildReceiptMissingError:
+        except BuildReceiptMissingError as exc:
             value.update(status="RECONCILE_REQUIRED", error="image bundle has not been published")
+            if exc.retry_proof is not None:
+                safe = valid_absence(exc.retry_proof, value['build_bundle_id'])
+                value['build_error'] = {'code': 'BUILD_PUBLICATION_ABSENT' if safe else 'BUILD_RECOVERY_EVIDENCE_INVALID',
+                                        'details': exc.retry_proof if safe else {}, 'retry_safe': safe}
         except BuildStorageError as exc:
             value.update(status="RECONCILE_REQUIRED", error=exc.code,
                          build_error={"code": exc.code, "details": exc.details,
                                       "retry_safe": not pending.reconcile and exc.code in {"BUILD_STORAGE_INSUFFICIENT", "BUILD_STORAGE_UNCHECKED"}})
         except BuildTransportError as exc:
+            safe = (not pending.reconcile and exc.code == 'BUILDER_DOCKER_UNAVAILABLE'
+                    and isinstance(exc.details, dict) and exc.details.get('publication_uncertain') is False
+                    and exc.details.get('scheduler_submitted') is False)
             value.update(status="RECONCILE_REQUIRED", error=exc.code,
-                         build_error={"code": exc.code, "details": exc.details, "retry_safe": False})
-        except Exception:
-            value.update(status="RECONCILE_REQUIRED", build_error=None,
+                         build_error={"code": exc.code, "details": exc.details, "retry_safe": safe})
+        except Exception as exc:
+            value.update(status="RECONCILE_REQUIRED", build_error={
+                             'code': 'BUILD_UNCLASSIFIED_FAILURE', 'retry_safe': False,
+                             'details': {'error_class': type(exc).__name__, 'publication_uncertain': True,
+                                         'scheduler_submitted': False}},
                          error="image packaging failed or is uncertain; inspect worker and reconcile")
         return self.finish_state(pending, value)
 

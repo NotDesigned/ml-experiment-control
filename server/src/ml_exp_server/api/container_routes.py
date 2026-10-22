@@ -165,7 +165,8 @@ async def runtime_build_observation(project, runtime_id, request, operation):
             from ..runs.execution_progress import progress_view
             result["progress"] = progress_view(service.root / project / (runtime_id + ".progress.json"), value["status"], active=value["status"] == "EXECUTING")
         if value["status"] != "EXECUTING":
-            result["progress"].update(status=value["status"], phase=value["status"], no_progress_warning=False, diagnostic=None)
+            result["progress"].update(status=value["status"], phase=value["status"], no_progress_warning=False,
+                                      diagnostic=(value.get('build_error') or {}).get('code'))
     return result
 
 

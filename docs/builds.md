@@ -44,6 +44,31 @@ cold construction. Cached layers do not guarantee GPU capacity or fast cold pull
 WYD converts OCI to a digest/checksum-bound SIF on shared storage, retaining the
 SIF and removing the converter's private temporary OCI cache.
 
+## Diagnose and resume a failed build
+
+`/runtimes/{id}/progress` includes a structured `build_error` and diagnostic
+code. Stage messages, including remote bytes/inodes and their required budget,
+are written to build logs before BuildKit starts. `BUILDER_DOCKER_UNAVAILABLE`
+means the configured Docker tunnel/engine could not be reached; it does not mean
+that either the API disk or the desktop disk is full. Historical discarded
+stderr cannot be reconstructed.
+
+Keep the original Runtime and call its `/reconcile` with its saved confirmation.
+A missing local receipt alone never permits a new build. For a current remote
+BuildKit definition, reconciliation can additionally check under both private
+locks that no lease/container remains and the authenticated registry returns
+404 for the exact bundle tag. Only this positive, identity-bound observation
+can grant `BUILD_PUBLICATION_ABSENT` with `retry_safe: true`. Registry/network
+errors, busy builders, malformed observations and existing-but-unverified
+manifests do not grant retry. Reconcile never builds or deletes an image.
+
+An explicit `/execute` can then retry the same Runtime; the worker checks
+publication absence again under its locks immediately before creating a builder.
+Old observations cannot overwrite a newly published image. Prior error evidence
+is kept in `build_error_history`; unknown failures have a structured error and
+remain unsafe. When the Runtime is READY, continue the original Preparation.
+This prepares a Submission; GPU authorization/execution remain separate.
+
 ## SSH desktop setup
 
 On the API host, create/recreate a root-private socket directory:

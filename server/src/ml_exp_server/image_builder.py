@@ -33,8 +33,9 @@ from .worker_contract import CAPABILITIES, WORKER_CONTRACT, install_workers
 from .runs.execution_progress import record_progress, progress_view
 from .application_errors import ApplicationError
 from .builds.build_contexts import CONTEXT_ID, MAX_BYTES
-from .builds.image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE, BUILD_REMOTE_CONTEXT, BUILD_CONTEXT_BYTES
+from .builds.image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE, BUILD_REMOTE_CONTEXT, BUILD_CONTEXT_BYTES, BUILD_RETRY
 from .builds.builder_client import IMAGE, ID, PROJECT, MANIFEST_TYPE, bundle_id, BuildStorageError, BuildTransportError, BuildReceiptMissingError
+from .builds.build_recovery import desktop_ready, publication_absence, observe_absence
 
 
 class ImageBuilder:
@@ -72,7 +73,7 @@ class ImageBuilder:
             raise ValueError("invalid image packaging identity")
         operation = request.get("operation")
         custom_path = request.get("dockerfile")
-        if operation in {"get", "logs", "progress"}:
+        if operation in {"get", "reconcile", "logs", "progress"}:
             current = bundle_id(project, source_id, image, dockerfile_path=custom_path) if isinstance(custom_path, str) else None
             pinned = request.get("bundle_id", current)
             if not isinstance(pinned, str) or not ID.fullmatch(pinned):
@@ -88,9 +89,11 @@ class ImageBuilder:
                     raise ValueError("historical packaging receipt identity mismatch")
             elif pinned != current:
                 raise ValueError("historical packaging receipt is unavailable")
-            if operation == "get":
+            if operation in {"get", "reconcile"}:
                 if not receipt.is_file():
-                    raise BuildReceiptMissingError("image bundle has not been published")
+                    proof = (publication_absence(self, pinned)
+                             if operation == "reconcile" and pinned == current and evidence is not None else None)
+                    raise BuildReceiptMissingError("image bundle has not been published", retry_proof=proof)
                 return value
             path = self.root / f"{pinned}.log"
             content = ""
@@ -119,6 +122,7 @@ class ImageBuilder:
                 return metadata
             if operation != "build":
                 raise ValueError("unsupported image packaging operation")
+            retried = (self.root / (identity + '.definition.json')).is_file()
             if not self.config.get("allow_dockerfile_builds") or self.config.get("publisher") != "buildkit":
                 raise ValueError("Dockerfile builds require an enabled BuildKit publisher")
             prefixes = self.config.get("base_image_prefixes", [])
@@ -174,6 +178,7 @@ class ImageBuilder:
                             "source_id": source_id, "base_image": image})
                 log_context = BUILD_LOG.set(self.root / f"{identity}.log")
                 progress_context = BUILD_PROGRESS.set(progress_path)
+                retry_context = BUILD_RETRY.set(identity if retried else None)
                 # One mutable acceleration tag per project; not part of source,
                 # Docker context, execution identity or local persistent storage.
                 cache_context = BUILD_CACHE.set(registry + ":buildcache-" + hashlib.sha256(project.encode()).hexdigest()[:24]
@@ -184,6 +189,7 @@ class ImageBuilder:
                     BUILD_LOG.reset(log_context)
                     BUILD_PROGRESS.reset(progress_context)
                     BUILD_CACHE.reset(cache_context)
+                    BUILD_RETRY.reset(retry_context)
             result = {"bundle_id": identity, "project": project, "source_id": source_id,
                       "base_image": image, "image": published, "recipe": DOCKERFILE_RECIPE,
                       "manifest_type": MANIFEST_TYPE, "worker_contract": WORKER_CONTRACT,
@@ -332,7 +338,14 @@ class ImageBuilder:
         with (self.root / "ephemeral-buildkit.lock").open("a") as lock:
             self._progress("WAITING_BUILDER", "Waiting for the private image builder; no scheduler submission has occurred")
             fcntl.flock(lock, fcntl.LOCK_EX)
+            desktop_ready(self.config)
             self._recover_probe()
+            if (BUILD_RETRY.get() is not None and self.config.get('docker_host')
+                    and observe_absence(self, BUILD_RETRY.get()) is None):
+                raise BuildTransportError('BUILD_PUBLICATION_UNRESOLVED', {
+                    'publication_uncertain': True, 'scheduler_submitted': False,
+                    'reason': 'worker_or_lease_present',
+                })
             self._recover_builder()
             self._storage_preflight(context)
             name = "ml-expd-" + uuid.uuid4().hex
@@ -393,7 +406,7 @@ class ImageBuilder:
         # still gets a distinct error and owned ephemeral-builder cleanup.
         if details["available_bytes"] < required or details["available_inodes"] < details["required_inodes"]:
             raise BuildStorageError("BUILD_STORAGE_INSUFFICIENT", details)
-        self._progress("BUILD_STORAGE_READY", "Builder storage preflight passed; Dockerfile growth remains bounded by disk capacity")
+        self._progress("BUILD_STORAGE_READY", f"Builder storage ready: {details['available_bytes']} bytes / {details['available_inodes']} inodes available; {required} bytes / {details['required_inodes']} inodes required")
 
     def _endpoint(self) -> str:
         return self.config.get("docker_host", "unix:///var/run/docker.sock")
@@ -486,6 +499,10 @@ class ImageBuilder:
         return reference
 
     def _progress(self, phase, message):
+        log = BUILD_LOG.get()
+        if log is not None:
+            with log.open('a') as output:
+                output.write(phase + ': ' + message + '\n')
         path = BUILD_PROGRESS.get()
         if path is not None:
             record_progress(path, phase, message, timeout_seconds=self.config.get("timeout_seconds", 600))
@@ -602,8 +619,10 @@ class Handler(BaseHTTPRequestHandler):
             self.connection.settimeout(15)
             payload = json.loads(self.rfile.read(size))
             result = self.server.builder.request(payload)
-        except BuildReceiptMissingError:
+        except BuildReceiptMissingError as exc:
             status, result = 409, {"error": "image bundle has not been published", "code": "BUILD_RECEIPT_MISSING"}
+            if exc.retry_proof is not None:
+                result["retry_proof"] = exc.retry_proof
         except BuildStorageError as exc:
             status, result = 409, {"error": exc.code, "code": exc.code, "details": exc.details}
         except BuildTransportError as exc:
