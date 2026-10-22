@@ -59,6 +59,13 @@ backend storage reference. Historical object-store and desktop assets retain
 read/reuse behavior at their original locations; new uploads never select those
 old storage paths.
 
+Operators can enable a finite local payload lifetime. When
+`/api/storage-limits.local_payload_retention.max_age_seconds` is set, historical
+local dataset content expires and its archive/download returns HTTP410
+`ASSET_EXPIRED`; its identity/manifest remains. New backend assets and their
+NAS/datapool/CCR contents are unaffected. Re-upload an expired legacy dataset
+to an executor rather than assuming the API host is a permanent data store.
+
 Delivery routes:
 
 ```text

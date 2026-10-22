@@ -79,7 +79,7 @@ class ExperimentServerRuntime:
         # Loading lazily preserves transport-neutral/partial daemon construction.
         # A new facade observes the current config file, just as the stores did
         # before consolidation; concurrency ownership remains in their OS locks.
-        return StorageService(ArtifactStore(Path(config), self.config.project_registry_root_path()))
+        return StorageService(ArtifactStore(Path(config), self.config.project_registry_root_path()), index=self.index)
 
     @classmethod
     def create(
