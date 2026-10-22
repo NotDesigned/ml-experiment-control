@@ -27,12 +27,15 @@ TRANSFER_PATH = re.compile(r'^/api/artifact-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{
 
 
 def artifact_released(value):
-    return bool(value and value.get('retention', {}).get('status') in {'RELEASING', 'RELEASED'})
+    return bool(value and value.get('retention', {}).get('status') in {'RELEASING', 'RELEASED', 'EXPIRING', 'EXPIRED'})
 
 
 def require_artifact_available(value):
     if artifact_released(value):
         from ..application_errors import ApplicationError
+        if value['retention']['status'] in {'EXPIRING', 'EXPIRED'}:
+            raise ApplicationError('local archive retention has expired; use backend storage or collect again explicitly',
+                                   status_code=410, code='ARTIFACT_EXPIRED')
         raise ApplicationError('server archive was released after verified client download', status_code=410, code='ARTIFACT_RELEASED')
 
 
@@ -45,6 +48,7 @@ def stream_digest(stream):
 
 class ArtifactStore:
     def __init__(self, config_file: Path, registry_root: Path):
+        self.config_file = config_file
         self.config = json.loads(config_file.read_text())
         self.root = registry_root / 'artifact-transfers'
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -211,6 +215,8 @@ class ArtifactStore:
         with self.record(project, run, attempt) as (path, value):
             if not value or not hmac.compare_digest(value['token'], token) or datetime.fromisoformat(value['expires_at']) < datetime.now(timezone.utc):
                 raise ValueError('invalid transfer capability')
+            if value.get('retention', {}).get('status') in {'EXPIRING', 'EXPIRED'}:
+                require_artifact_available(value)
             run_dir = Path(value['run_dir'])
             manifest = json.loads((run_dir / 'manifest.json').read_text()) if (run_dir / 'manifest.json').exists() else None
             if manifest is None:

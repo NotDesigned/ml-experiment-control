@@ -27,9 +27,12 @@ class ArtifactLifecycle:
             receipt = None if not value else value.get("receipt")
             if not receipt:
                 raise ApplicationError("archive is not published", status_code=404, code="ARTIFACT_UNAVAILABLE")
+            retention = value.get("retention", {})
+            if retention.get('status') in {'EXPIRING', 'EXPIRED'}:
+                from .artifact_store import require_artifact_available
+                require_artifact_available(value)
             if not self.matches(receipt, proof):
                 raise ApplicationError("download verification differs from the sealed receipt", code="DOWNLOAD_PROOF_CONFLICT")
-            retention = value.get("retention", {})
             if retention.get("status") in {"RELEASING", "RELEASED"}:
                 return retention
             now = datetime.now(timezone.utc)

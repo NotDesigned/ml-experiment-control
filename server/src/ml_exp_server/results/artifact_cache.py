@@ -43,7 +43,7 @@ def signature(metadata):
             metadata.st_mtime_ns, metadata.st_ctime_ns]
 
 
-def evict_file(path, item, retained, key):
+def evict_file(path, item, retained, key, *, expected_signature=None):
     with directory(path.parent) as parent:
         if parent is None:
             return None
@@ -56,6 +56,8 @@ def evict_file(path, item, retained, key):
         with os.fdopen(descriptor, 'rb') as stream:
             before = os.fstat(stream.fileno())
             if not stat.S_ISREG(before.st_mode) or before.st_size != item['bytes']:
+                return None
+            if expected_signature is not None and signature(before) != expected_signature:
                 return None
             # Do not rehash unchanged mismatches on every collector cycle.
             if retained.get(key) == signature(before):

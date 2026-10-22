@@ -87,6 +87,37 @@ successful root-shell login does not prove the service can authenticate. Verify
 manifest reads and publication as the service inside its sandbox. Never copy
 credentials into source/images or expose the whole home to fix authentication.
 
+## Keep the API host temporary
+
+For a host that must not retain datasets/weights, set
+`"local_payload_retention_seconds": 86400` in its private artifact-store JSON.
+This is an explicit destructive retention policy, disabled when omitted. It is
+visible as `local_payload_retention` in `/api/storage-limits`.
+
+- New inputs continue directly to WYD datapool or CCR/NAS. Their backend copies
+  and persistent checkpoints are outside this policy.
+- Historical local dataset archives expire after the configured age. Their
+  extracted local files are removed too; immutable asset manifests remain.
+- Published result archives expire after that age, including unacknowledged
+  archives and `KEEP`. `KEEP` does not override this host maximum. Verified ACK
+  with release still removes an archive earlier, with no grace period.
+- Terminal Attempts' local binary weight/data caches are removed once locally
+  unchanged for that age. Active/unknown Attempts, active/uncertain collection,
+  source, logs, metrics, receipts and checkpoint registration are retained.
+
+Expiry records `EXPIRING` before deleting an exact canonical object and `EXPIRED`
+after confirmation. A crash retries that same deletion; it never fabricates a
+client ACK. Download/restore returns HTTP410 `ARTIFACT_EXPIRED` or `ASSET_EXPIRED`,
+instead of silently rebuilding a missing cache. Metadata remains queryable.
+The collector runs cleanup; in-flight work and unavailable storage can defer it,
+so this is not a hard filesystem quota. Garage physical GC is asynchronous.
+
+Keep original datasets and long-lived model state on backend storage or on the
+client. Download selected results before expiry. An expired uploaded legacy
+asset must be uploaded to executor storage again; a frozen backend reference
+can still be used without the local copy. This policy deliberately does not
+change NAS/datapool/CCR retention or require a GPU job to delete local bytes.
+
 The approved base catalogue is an operator-owned YAML selected with
 `container_execution.environments_file`:
 

@@ -49,6 +49,11 @@ class AssetStore:
             value = json.loads((path / "asset.json").read_text())
             if value["project"] != project or value["asset_id"] != asset_id:
                 raise ValueError("data asset metadata identity mismatch")
+            marker = path / 'local-retention.json'
+            if marker.is_symlink():
+                raise ValueError('local retention marker is a symlink')
+            if marker.exists():
+                value = {**value, 'local_retention': json.loads(marker.read_text())}
             locator = self.root.parent / "desktop-data-assets" / project / (asset_id + ".json")
             if locator.exists():
                 staged = json.loads(locator.read_text())
@@ -93,10 +98,16 @@ class AssetStore:
         with buffer.locked():
             value["transfer_buffer"] = buffer.snapshot()
         value["data_upload_storage"] = "target-executor"
+        from ..local_retention import retention_seconds
+        value['local_payload_retention'] = {'max_age_seconds': retention_seconds(self.objects.config),
+                                            'scope': 'local-datasets-result-archives-and-terminal-payload-caches',
+                                            'keep_overrides_max_age': False,
+                                            'backend_storage_deleted': False}
         return value
 
     def download(self, project: str, asset_id: str):
         value = self.read(project, asset_id)
+        self.require_available(value)
         if value.get("remote_storage") in {"desktop-builder", "wyd", "sensecore-ccr"}:
             raise ApplicationError("remote assets use their frozen backend storage", status_code=404,
                                    code="DIRECT_DOWNLOAD_UNAVAILABLE")
@@ -114,6 +125,9 @@ class AssetStore:
         with self.record(project, asset_id) as destination:
             if destination.exists():
                 value = json.loads((destination / "asset.json").read_text())
+                marker = destination / 'local-retention.json'
+                if marker.exists():
+                    self.require_available({**value, 'local_retention': json.loads(marker.read_text())})
                 if value["sha256"] != digest or value["archive_bytes"] != size:
                     raise ValueError("data asset identity is already bound")
                 return value
@@ -149,6 +163,7 @@ class AssetStore:
 
     def archive(self, project: str, asset_id: str):
         value = self.read(project, asset_id)
+        self.require_available(value)
         if value.get("remote_storage") == "desktop-builder":
             from .remote_data_uploads import remote_archive
             return value, remote_archive(self.objects.config["data_upload_socket"], project, asset_id, value["archive_bytes"])
@@ -158,6 +173,13 @@ class AssetStore:
         response = self.objects.client().get_object(Bucket=self.objects.config["bucket"],
                     Key="/".join(["data-assets", project, asset_id + ".tar"]))
         return value, response["Body"]
+
+    @staticmethod
+    def require_available(value):
+        if (not value.get('remote_storage') and
+                value.get('local_retention', {}).get('status') in {'EXPIRING', 'EXPIRED'}):
+            raise ApplicationError('local dataset retention has expired; upload it to an executor or use backend data',
+                                   status_code=410, code='ASSET_EXPIRED')
 
     def publish_remote(self, project, value):
         if (value.get("project") != project or value.get("remote_storage") not in {"desktop-builder", "wyd", "sensecore-ccr"}

@@ -13,8 +13,8 @@ from .results.artifact_lifecycle import ArtifactLifecycle
 
 
 class StorageService:
-    def __init__(self, objects):
-        self.objects = objects
+    def __init__(self, objects, *, index=None):
+        self.objects, self.index = objects, index
 
     @property
     def capacity(self):
@@ -32,4 +32,7 @@ class StorageService:
         # Expired upload bytes free local capacity first. ACK release retains
         # all receipt/identity guards and retries cache cleanup independently.
         self.uploads.prune()
-        return self.lifecycle.run_due()
+        released = self.lifecycle.run_due()
+        from .local_retention import LocalRetention
+        LocalRetention(self.objects, self.index).maintain()
+        return released
