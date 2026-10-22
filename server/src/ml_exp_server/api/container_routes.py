@@ -96,6 +96,14 @@ async def environments(request: Request):
     return await invoke(ContainerExecutionService(request.app.state.runtime).environments)
 
 
+@router.get("/executors/{executor_id}/status")
+async def executor_status(executor_id: str, request: Request):
+    profiles = ContainerExecutionService(request.app.state.runtime).profiles()
+    if executor_id not in profiles:
+        raise HTTPException(status_code=404, detail="unknown executor")
+    return await invoke(request.app.state.allocation_status.get, executor_id, profiles[executor_id])
+
+
 @router.get("/projects/{project}/metrics-schema")
 async def project_metrics_schema(project: str, request: Request):
     return await invoke(ContainerExecutionService(request.app.state.runtime).metrics_schema, project)

@@ -23,7 +23,7 @@ def test_public_capabilities_are_private_readonly_and_not_inventory(client):
     for v in values:
         cap = v["capabilities"]
         assert cap["contract"] == "backend-capabilities.v1"
-        assert not cap["resources"]["inventory_query"]
+        assert cap["resources"]["inventory_query"] is (v["kind"] == "slurm")
         assert not cap["outputs"]["offline_export"]
         assert not cap["storage"]["checkpoint_registration"]
         assert cap["storage"]["storage_id"].startswith("storage.")
@@ -155,7 +155,7 @@ def test_data_preparation_contract_explains_phase_budget_transport_and_bound(cli
     assert cap["data"]["download_script"] == phase
     assert cap["data"]["preparation"] == {"phase": phase, "budget": "preparation" if phase == "before_job" else "training",
                                           "transport": transport, "max_timeout_seconds": maximum}
-    assert cap["resources"]["inventory_query"] is False
+    assert cap["resources"]["inventory_query"] is (kind != "sensecore")
     assert not cap["outputs"]["offline_export"]
 
 
