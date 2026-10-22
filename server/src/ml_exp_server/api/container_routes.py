@@ -104,6 +104,21 @@ async def executor_status(executor_id: str, request: Request):
     return await invoke(request.app.state.allocation_status.get, executor_id, profiles[executor_id])
 
 
+@router.get("/backends/sensecore/clusters")
+async def sensecore_clusters(request: Request, executor_id: str | None = None):
+    profiles = ContainerExecutionService(request.app.state.runtime).profiles()
+    choices = sorted(name for name, profile in profiles.items() if profile['backend']['kind'] == 'sensecore')
+    if executor_id is None:
+        if not choices:
+            raise HTTPException(status_code=404, detail="SenseCore is not configured")
+        executor_id = choices[0]
+    if executor_id not in profiles:
+        raise HTTPException(status_code=404, detail="unknown executor")
+    if executor_id not in choices:
+        raise HTTPException(status_code=422, detail="executor is not SenseCore")
+    return await invoke(request.app.state.allocation_status.clusters, executor_id, profiles[executor_id])
+
+
 @router.get("/projects/{project}/metrics-schema")
 async def project_metrics_schema(project: str, request: Request):
     return await invoke(ContainerExecutionService(request.app.state.runtime).metrics_schema, project)

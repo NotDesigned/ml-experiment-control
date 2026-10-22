@@ -1,5 +1,6 @@
 """Read-only Slurm allocation snapshots, bounded and cached per SSH/partition scope."""
 from copy import deepcopy
+from decimal import Decimal, InvalidOperation
 import os
 import re
 import shlex
@@ -7,11 +8,38 @@ import subprocess
 import threading
 import time
 from experiment_control.runner import run_process
+from experiment_control.backends.sensecore_rest import SenseCoreREST, RESTError
 
 from ..storage import utc_now
 
 TTL = 25
 MARKER = '\nML_EXPD_QUEUE\n'
+
+
+def cards(value):
+    try:
+        number = Decimal(str(value))
+        if not number.is_finite() or number < 0 or number > 2147483647:
+            return None
+        return int(number) if number == int(number) else float(number)
+    except InvalidOperation:
+        return None
+
+
+def sensecore_pools(backend):
+    rows = SenseCoreREST.from_environment().pools(backend, fresh=True)
+    clusters = []
+    for row in rows:
+        shares = row.get('spot_status')
+        counts = [cards(item.get('spot_quota', {}).get('device'))
+                  if isinstance(item, dict) and isinstance(item.get('spot_quota'), dict) else None
+                  for item in shares] if isinstance(shares, list) else []
+        spot = cards(sum(Decimal(str(n)) for n in counts)) if counts and all(n is not None for n in counts) else None
+        clusters.append({'name': row['name'], 'zone': row['zone'], 'state': row['state'],
+                         'is_debug': 'debug' in row['name'].casefold(),
+                         'reported_remaining_cards': cards(row.get('reserved_number')),
+                         'spot_allowance_cards': spot})
+    return {'clusters': sorted(clusters, key=lambda item: item['name'])}
 
 
 def count(value):
@@ -84,20 +112,28 @@ class AllocationStatus:
             return {**base, 'source': None, 'status': 'UNSUPPORTED', 'resources': None,
                     'nodes': [], 'observed_at': None, 'pending_queue_entries': None}
         key = (backend.get('ssh_alias'), backend.get('partition'))
+        return self.cached(('slurm', *key), lambda: observe(*key), base,
+                           {'resources': None, 'nodes': [], 'pending_queue_entries': None})
+
+    def clusters(self, executor, profile):
+        backend = profile['backend']
+        return self.cached(('sensecore', backend['workspace']), lambda: sensecore_pools(backend),
+                           {'executor_id': executor, 'source': 'sensecore_workspace_bindings',
+                            'admission_guaranteed': False, 'cache_ttl_seconds': TTL}, {'clusters': None})
+
+    def cached(self, key, observe, base, empty):
         if not self.lock.acquire(blocking=False):
-            return {**base, 'status': 'UNKNOWN', 'resources': None, 'nodes': [],
-                    'observed_at': None, 'pending_queue_entries': None, 'error': 'QUERY_IN_PROGRESS'}
+            return {**base, **empty, 'status': 'UNKNOWN', 'observed_at': None, 'error': 'QUERY_IN_PROGRESS'}
         try:
             now = time.monotonic()
             previous = self.cache.get(key)
             if previous is None or now - previous['checked'] >= TTL:
                 try:
-                    data = {**observe(*key), 'observed_at': utc_now(), 'status': 'OBSERVED', 'error': None}
-                except (OSError, ValueError, KeyError, subprocess.TimeoutExpired):
+                    data = {**observe(), 'observed_at': utc_now(), 'status': 'OBSERVED', 'error': None}
+                except (OSError, ValueError, KeyError, subprocess.TimeoutExpired, RESTError):
                     data = ({**previous['data'], 'status': 'STALE'}
                             if previous and previous['data']['observed_at'] else
-                            {'status': 'UNKNOWN', 'resources': None, 'nodes': [], 'observed_at': None,
-                             'pending_queue_entries': None})
+                            {**empty, 'status': 'UNKNOWN', 'observed_at': None})
                     data['error'] = 'SCHEDULER_QUERY_FAILED'
                 if len(self.cache) >= 64 and key not in self.cache:
                     self.cache.pop(next(iter(self.cache)))

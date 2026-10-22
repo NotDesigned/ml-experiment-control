@@ -87,3 +87,50 @@ def test_http_executor_status_is_readonly_and_unknown_is_404(client,monkeypatch)
     assert client.get('/api/executors/missing/status').status_code==404
     assert client.get('/api/executors/cloud/status').json()['status']=='UNSUPPORTED'
     assert client.get('/api/executors').json()['executors'][1]['capabilities']['resources']['inventory_query'] is True
+
+
+@pytest.mark.parametrize('value,expected',[(None,None),('NaN',None),('Infinity',None),('-1',None),
+    ('2147483648',None),('0',0),('2.5',2.5),('seven',None),(True,None)])
+def test_provider_counts_are_unknown_when_unusable(value,expected):
+    assert a.cards(value)==expected
+
+
+@pytest.mark.parametrize('shares,expected',[(None,None),([],None),('invalid',None),
+    ([None],None),([{'spot_quota':None}],None),([{'spot_quota':{}}],None),
+    ([{'spot_quota':{'device':'2'}},{'spot_quota':{'device':'3'}}],5),
+    ([{'spot_quota':{'device':'0'}}],0),([{'spot_quota':{'device':'-1'}}],None)])
+def test_sensecore_whitelist_and_complete_share_counts(monkeypatch,shares,expected):
+    calls=[]
+    class Client:
+        def pools(self,backend,*,fresh):
+            calls.append((backend,fresh))
+            return [{'name':'debug-pool','zone':'cn-sh-01e','state':'ACTIVE','reserved_number':'42',
+                     'spot_status':shares,'vpc_id':'private','user':'private'}]
+    monkeypatch.setattr(a.SenseCoreREST,'from_environment',lambda:Client())
+    v=a.sensecore_pools({'workspace':'ws'})
+    assert calls==[({'workspace':'ws'},True)]
+    assert v=={'clusters':[{'name':'debug-pool','zone':'cn-sh-01e','state':'ACTIVE','is_debug':True,
+                           'reported_remaining_cards':42,'spot_allowance_cards':expected}]}
+
+
+def test_sensecore_http_scope_cache_failure_and_unsupported_configuration(client,monkeypatch):
+    calls=[]
+    def observe(backend):
+        calls.append(backend)
+        return {'clusters':[{'name':'pool','reported_remaining_cards':50,'spot_allowance_cards':7}]}
+    monkeypatch.setattr(a,'sensecore_pools',observe)
+    endpoint='/api/backends/sensecore/clusters'
+    first=client.get(endpoint).json()
+    assert first['status']=='OBSERVED' and first['executor_id']=='cloud'
+    assert client.get(endpoint+'?executor_id=cloud').json()['clusters']==first['clusters']
+    assert len(calls)==1
+    assert client.get(endpoint+'?executor_id=gpu').status_code==422
+    assert client.get(endpoint+'?executor_id=missing').status_code==404
+    client.app.state.allocation_status.cache.clear()
+    monkeypatch.setattr(a,'sensecore_pools',lambda *args:(_ for _ in ()).throw(a.RESTError('GET query',status=403)))
+    unknown=client.get(endpoint).json()
+    assert unknown['status']=='UNKNOWN' and unknown['clusters'] is None
+    assert '403' not in str(unknown)
+    from ml_exp_server.container_execution import ContainerExecutionService
+    monkeypatch.setattr(ContainerExecutionService,'profiles',lambda self:{})
+    assert client.get(endpoint).status_code==404

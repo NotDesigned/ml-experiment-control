@@ -76,6 +76,28 @@ Reservations, priorities, node flags and resource combinations can prevent
 allocation. `admission_guaranteed` is always false; no ETA, submission or provider
 mutation is performed by this GET.
 
+### SenseCore cluster list
+
+`GET /api/backends/sensecore/clusters` reuses the existing workspace-binding
+REST query. Optionally pass `executor_id` to choose a configured SenseCore
+executor's workspace; by default the first SenseCore executor in sorted ID order
+is used, and its ID is returned. Only active bindings visible to that workspace
+are listed. No subscription, VPC, credentials or raw provider payload is exposed.
+
+Each item contains `name`, `zone`, `state`, `is_debug`,
+`reported_remaining_cards` (provider `reserved_number`) and
+`spot_allowance_cards` (complete sum of `spot_status[].spot_quota.device`).
+Absent/invalid remaining counts or any unreadable SPOT share yield null, not 0.
+These are distinct provider figures; they do not establish physical GPU
+utilization, a reliable occupied/total ratio, or availability of a particular
+worker spec. Normal and debug pools are labelled; listing a debug pool does not
+make it eligible for GPU ACP training. Existing highest-SPOT selection is unchanged.
+
+The same 25-second cache and OBSERVED/STALE/UNKNOWN semantics apply, with a
+`clusters: null` payload if no successful evidence exists. Missing configuration
+or unknown executor returns 404; a non-SenseCore selector returns 422. This GET
+does not create/stop a workload, change pool selection or refresh a frozen Run.
+
 ## Matching
 
 Use either an explicit `executor`, or an `executor_selector`:
