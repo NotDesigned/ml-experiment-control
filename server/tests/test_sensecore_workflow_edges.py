@@ -50,7 +50,9 @@ def test_custom_dockerfile_is_built_with_managed_source_and_immutable_receipt(tm
     from ml_exp_server.worker_contract import CAPABILITIES
     assert result["image"].endswith(digest) and result["capabilities"] == list(CAPABILITIES)
     assert value.request({**request,"operation":"get"}) == result
-    logs = value.request({**request,"operation":"logs"}); assert logs["lines"] == [] and not logs["truncated"]
+    logs = value.request({**request,"operation":"logs"})
+    assert [line.split(":", 1)[0] for line in logs["lines"]] == ["BUILDING_AND_PUSHING", "VERIFYING_IMAGE"]
+    assert not logs["truncated"]
     path = value.root / (result["bundle_id"] + ".log"); path.write_text("x"*9000+"\nlast build line\n")
     logs = value.request({**request,"operation":"logs"}); assert logs["truncated"] and logs["lines"][-1] == "last build line"
 

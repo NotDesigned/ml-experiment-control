@@ -59,7 +59,7 @@ def test_missing_receipt_preserves_durable_safe_evidence_and_explicit_retry(clie
     assert client.post(endpoint + "/execute", json={"confirmation": value["confirmation"]}).status_code == 202
     result = wait_runtime(client, endpoint)
     assert result["status"] == "READY" and result["build_error"] is None
-    assert operations == ["build", "get", "build"]
+    assert operations == ["build", "reconcile", "build"]
 
 
 def test_daemon_recovery_keeps_preflight_evidence_during_readonly_reconcile(client, monkeypatch):
@@ -81,7 +81,7 @@ def test_successful_receipt_reconcile_clears_prior_preflight_evidence(client, mo
     result = ContainerExecutionService(client.app.state.runtime).execute(
         "demo", value["runtime_id"], value["confirmation"], reconcile=True)
     assert result["status"] == "READY" and result["build_error"] is None
-    assert operations == ["build", "get"]
+    assert operations == ["build", "reconcile"]
     assert client.get(endpoint).json()["build_error"] is None
 
 
@@ -114,7 +114,7 @@ def test_contradictory_or_unknown_receipt_lookup_never_authorizes_new_build(clie
     assert result["status"] == "RECONCILE_REQUIRED"
     assert not (result.get("build_error") or {}).get("retry_safe", False)
     assert client.post(endpoint + "/execute", json={"confirmation": value["confirmation"]}).status_code == 409
-    assert operations == ["build", "get"]
+    assert operations == ["build", "reconcile"]
 
 
 def test_preflight_error_on_receipt_lookup_cannot_override_uncertain_publication(client, monkeypatch):
@@ -134,7 +134,7 @@ def test_preflight_error_on_receipt_lookup_cannot_override_uncertain_publication
     assert result["build_error"]["retry_safe"] is False
     endpoint = "/api/projects/demo/runtimes/" + value["runtime_id"]
     assert client.post(endpoint + "/execute", json={"confirmation": value["confirmation"]}).status_code == 409
-    assert operations == ["build", "get"]
+    assert operations == ["build", "reconcile"]
 
 
 @pytest.mark.parametrize("failure", ["unknown", "transport", "disk"])
@@ -145,7 +145,7 @@ def test_missing_receipt_cannot_turn_uncertain_publication_into_safe_retry(clien
 
     def uncertain(_socket, payload):
         operations.append(payload["operation"])
-        if payload["operation"] == "get":
+        if payload["operation"] == "reconcile":
             raise BuildReceiptMissingError("image bundle has not been published")
         if failure == "transport":
             raise BuildTransportError("BUILD_SESSION_TIMEOUT", {"publication_uncertain": True})
@@ -162,4 +162,4 @@ def test_missing_receipt_cannot_turn_uncertain_publication_into_safe_retry(clien
     assert result.get("build_error") == evidence
     assert not (result.get("build_error") or {}).get("retry_safe", False)
     assert client.post(endpoint + "/execute", json={"confirmation": value["confirmation"]}).status_code == 409
-    assert operations == ["build", "get"]
+    assert operations == ["build", "reconcile"]
