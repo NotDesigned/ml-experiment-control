@@ -14,7 +14,8 @@ from .results.artifact_cache import directory, writable, evict_file, prune_empty
 from .results.artifact_store import stream_digest
 from .storage import atomic_json, utc_now
 
-PAYLOAD_SUFFIXES = {'.pt', '.pth', '.ckpt', '.safetensors', '.onnx', '.bin', '.npy', '.npz'}
+PAYLOAD_SUFFIXES = {'.pt', '.pth', '.ckpt', '.safetensors', '.onnx', '.bin', '.npy', '.npz',
+                    '.gguf', '.h5', '.hdf5', '.pkl', '.pickle', '.msgpack', '.tflite', '.model'}
 
 
 def retention_seconds(config):
@@ -120,21 +121,25 @@ class LocalRetention:
                     'QUEUED', 'COLLECTING', 'SUBMITTING', 'WAITING', 'RECONCILE_REQUIRED'}:
                 return
             receipt = value.get('receipt')
-            if receipt and value.get('retention', {}).get('status') not in {'RELEASED', 'RELEASING', 'EXPIRED'}:
+            status = value.get('retention', {}).get('status')
+            history_only = status == 'RELEASED'
+            receipts = value.get('receipt_history', []) if history_only else [receipt, *value.get('receipt_history', [])]
+            history_expired = history_only and value.get('history_retention', {}).get('status') == 'EXPIRED'
+            if receipt and receipts and status not in {'RELEASING', 'EXPIRED'} and not history_expired:
                 if expired_timestamp(receipt['received_at'], self.seconds, now):
-                    receipts = [receipt, *value.get('receipt_history', [])]
                     for item in receipts:
                         if (not SHA256.fullmatch(item['sha256']) or
                                 item['object_key'] != '/'.join([project, run, attempt, item['sha256'] + '.tar'])):
                             raise ValueError('local archive expiry identity differs')
-                    if value.get('retention') and value['retention'].get('status') != 'EXPIRING':
+                    if not history_only and value.get('retention') and status != 'EXPIRING':
                         value.setdefault('retention_history', []).append(value['retention'])
-                    value['retention'] = {'status': 'EXPIRING', 'reason': 'LOCAL_RETENTION_EXPIRED',
-                                          'sha256': receipt['sha256'], 'expired_at': utc_now()}
+                    marker = 'history_retention' if history_only else 'retention'
+                    value[marker] = {'status': 'EXPIRING', 'reason': 'LOCAL_RETENTION_EXPIRED',
+                                     'sha256': receipt['sha256'], 'expired_at': utc_now()}
                     atomic_json(path, value)
                     for item in receipts:
                         self.objects.client().delete_object(Bucket=self.objects.config['bucket'], Key=item['object_key'])
-                    value['retention']['status'] = 'EXPIRED'
+                    value[marker]['status'] = 'EXPIRED'
                     atomic_json(path, value)
             parent = Path(value['run_dir']) / 'attempts' / attempt
             removed = 0

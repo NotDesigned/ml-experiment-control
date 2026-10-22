@@ -284,3 +284,21 @@ def test_expired_legacy_input_fails_preflight_but_remote_reference_still_works()
     with pytest.raises(ApplicationError) as error:
         for_backend(asset, profile, 'demo')
     assert error.value.code == 'ASSET_EXPIRED'
+
+
+def test_old_repaired_archive_expires_without_redeleting_current_ack_released_object(storage, monkeypatch):
+    objects, _, token, _, _ = storage
+    body = archive({'weights.pt': b'weights'})
+    receipt = objects.receive(*IDENTITY, token, io.BytesIO(body), len(body))
+    history = {**receipt, 'sha256': 'b' * 64, 'object_key': 'demo/run-a/attempt-001/' + 'b' * 64 + '.tar'}
+    with objects.record(*IDENTITY) as (path, value):
+        value['retention'] = {'status': 'RELEASED', 'sha256': receipt['sha256'], 'released_at': receipt['received_at']}
+        value['receipt_history'] = [history]
+        atomic_json(path, value)
+    service, row, deleted = policy(storage, monkeypatch)
+    service.expire_attempt(row, 'attempt-001', NOW)
+    service.expire_attempt(row, 'attempt-001', NOW)
+    assert deleted == [history['object_key']]
+    with objects.record(*IDENTITY) as (_, value):
+        assert value['retention']['status'] == 'RELEASED' and value['history_retention']['status'] == 'EXPIRED'
+        assert value['receipt_history'] == [history]
