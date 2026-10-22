@@ -37,7 +37,7 @@ def test_timeout_kills_grandchild_that_ignores_term_and_closes_its_descriptors(t
     def alive():
         try:
             return status.read_text().split()[2] != "Z"
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             return False
     # SIGKILL delivery and the parent's wait are separate kernel events. The
     # grandchild can briefly be runnable before its pending kill is processed.
@@ -48,7 +48,12 @@ def test_timeout_kills_grandchild_that_ignores_term_and_closes_its_descriptors(t
     descriptors = Path(f"/proc/{pid}/fd")
     try:
         retained = list(descriptors.iterdir())
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        retained = []
+    except PermissionError:
+        # Reparented zombies may deny fd enumeration to an unprivileged CI
+        # user. Require positive exit evidence; a live process must still fail.
+        assert not alive()
         retained = []
     assert not retained
 
