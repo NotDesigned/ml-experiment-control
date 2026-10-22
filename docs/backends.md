@@ -36,7 +36,7 @@ Current adapters declare:
 | Script download | Before allocation on the connected gateway when relay is configured | Zero-GPU debug ACP before training when CPU preparation is configured |
 | Queue/exit/preemption reasons | Supported | Not declared as reliable structured fields |
 | Walltime | Scheduler and worker | Worker |
-| Live resource inventory | Not implemented by this capability contract | Not implemented by this capability contract |
+| Server allocation status | Read-only Slurm partition snapshot | Unsupported |
 | Generic adapter offline-export hook | Not implemented | Not implemented |
 
 The server separately advertises `result-collection.v1` for recovering outputs
@@ -49,6 +49,54 @@ does not rerun training or prepare input data.
 
 A separate resource endpoint may expose backend quota/catalogue data. That is
 not an admission guarantee. Queue ETA remains null without reliable backend data.
+
+### Slurm allocation status
+
+`GET /api/executors/{id}/status` reports a read-only partition snapshot for WYD.
+`resources` contains `gpus`, `cpus`, and `memory_bytes`, each with `total`,
+`allocated`, and `unallocated`. Memory uses Slurm MiB converted to bytes.
+`nodes` includes each unique node's state and allocation; normal/debug partitions
+sharing nodes are separate views of the same resources, and must not be added together.
+`pending_queue_entries` counts visible pending `squeue` rows (an array may be
+compressed into one row); it exposes no users, job names or commands.
+
+The server advertises `resources.inventory_query=true` for Slurm. This server
+endpoint does not change the generic core adapter's capabilities or executor
+matching: configured limits remain distinct from observed allocations.
+Snapshots are cached for 25 seconds with one bounded SSH observation at a time.
+`observed_at` is the last successful sample and `checked_at` the last completed
+query. On failure, prior good data is explicitly `STALE`; without prior evidence
+the response is `UNKNOWN` and resource/queue counts are null. A concurrent query
+can return `UNKNOWN` / `QUERY_IN_PROGRESS`. Unsupported backends return
+`UNSUPPORTED`; unknown executor IDs return 404. Authentication is unchanged.
+
+`unallocated` is arithmetic scheduler allocation headroom, including down/drained
+nodes; it is not physical GPU utilization or immediately usable capacity.
+Reservations, priorities, node flags and resource combinations can prevent
+allocation. `admission_guaranteed` is always false; no ETA, submission or provider
+mutation is performed by this GET.
+
+### SenseCore cluster list
+
+`GET /api/backends/sensecore/clusters` reuses the existing workspace-binding
+REST query. Optionally pass `executor_id` to choose a configured SenseCore
+executor's workspace; by default the first SenseCore executor in sorted ID order
+is used, and its ID is returned. Only active bindings visible to that workspace
+are listed. No subscription, VPC, credentials or raw provider payload is exposed.
+
+Each item contains `name`, `zone`, `state`, `is_debug`,
+`reported_remaining_cards` (provider `reserved_number`) and
+`spot_allowance_cards` (complete sum of `spot_status[].spot_quota.device`).
+Absent/invalid remaining counts or any unreadable SPOT share yield null, not 0.
+These are distinct provider figures; they do not establish physical GPU
+utilization, a reliable occupied/total ratio, or availability of a particular
+worker spec. Normal and debug pools are labelled; listing a debug pool does not
+make it eligible for GPU ACP training. Existing highest-SPOT selection is unchanged.
+
+The same 25-second cache and OBSERVED/STALE/UNKNOWN semantics apply, with a
+`clusters: null` payload if no successful evidence exists. Missing configuration
+or unknown executor returns 404; a non-SenseCore selector returns 422. This GET
+does not create/stop a workload, change pool selection or refresh a frozen Run.
 
 ## Matching
 

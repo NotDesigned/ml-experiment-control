@@ -51,7 +51,7 @@ def declaration(profile, *, artifact_store: bool, desktop: bool, cpu_preparation
         "runtime": {"platforms": ["linux/amd64"] if kind != "local" else [],
                     "materialization": adapter.runtime_materialization},
         "resources": {"allocation_mode": adapter.allocation_mode,
-                      "inventory_query": adapter.resource_inventory_query},
+                      "inventory_query": kind == "slurm" or adapter.resource_inventory_query},
         "network": {"compute_internet": profile.get("compute_internet"),
                     "api_transport": "tcp_relay" if relay else "direct_https"},
         "storage": {"persistent": persistent, "storage_id": storage_id,

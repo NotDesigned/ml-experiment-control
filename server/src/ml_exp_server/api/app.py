@@ -54,6 +54,8 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.state.broker = EventBroker()
     app.state.config = config
     app.state.runtime = None
+    from ..runs.allocation_status import AllocationStatus
+    app.state.allocation_status = AllocationStatus()
     app.state.application = None
     app.state.submission_service = None
     app.state.action_executor = None
