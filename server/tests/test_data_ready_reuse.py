@@ -1,18 +1,49 @@
 """Readiness survives worker upgrades without relaunching uncertain copy jobs."""
 import json
+import io
+import hashlib
 
 import pytest
 
 from ml_exp_server.data import data_delivery as module
 from ml_exp_server.builds.builder_client import BuildStorageError, BuildTransportError
+from ml_exp_server.application_errors import ApplicationError
+from ml_exp_server.storage import atomic_json
 from tests.test_ccr_data_delivery import delivery, receipt, secret, IMAGE
 from tests.test_sensecore_data_workflow import client, stored, custom_runtime
 from tests.test_desktop_data_upload import stage, remote_client
+from tests.test_artifact_store import archive
 
 
 def seal(service, value):
     service.update('demo', value['delivery_id'], status='QUEUED', image=IMAGE)
     return service.callback('demo', value['delivery_id'], secret(service, value), receipt(value))
+
+
+def test_expired_local_dataset_does_not_block_verified_nas_cache(delivery, monkeypatch):
+    api, service, _, _ = delivery
+    body = archive({'tokens.bin': b'legacy-local-dataset'})
+    asset = service.assets.receive('demo', io.BytesIO(body), hashlib.sha256(body).hexdigest(), len(body))
+    old = service.prepare('demo', asset['asset_id'], 'cloud')
+    seal(service, old)
+    path = service.assets.root / 'demo' / asset['asset_id']
+    metadata = (path / 'asset.json').read_bytes()
+    path.chmod(0o700)
+    atomic_json(path / 'local-retention.json', {'status': 'EXPIRED', 'reason': 'LOCAL_RETENTION_EXPIRED'})
+    path.chmod(0o500)
+    with pytest.raises(ApplicationError) as error:
+        service.assets.archive('demo', asset['asset_id'])
+    assert error.value.code == 'ASSET_EXPIRED'
+    monkeypatch.setattr(module, 'builder_request', lambda *args: pytest.fail('verified NAS data must not be rebuilt'))
+    service._rest = object()
+    chosen = service.prepare('demo', asset['asset_id'], 'cloud')
+    assert chosen['status'] == 'READY' and chosen['delivery_id'] == old['delivery_id']
+    assert chosen['receipt'] == receipt(old) and (path / 'asset.json').read_bytes() == metadata
+    bundle = custom_runtime(api, monkeypatch)
+    result = api.post('/api/projects/demo/runs', json={
+        'run_id': 'reuse-expired-local', 'runtime_id': bundle['runtime_id'], 'executor': 'cloud',
+        'inputs': [{'asset_id': asset['asset_id'], 'mount_path': '/inputs/data'}]})
+    assert result.status_code == 200, result.text
 
 
 def test_worker_upgrade_reuses_sealed_data_and_preserves_pending_operation(delivery, monkeypatch):
