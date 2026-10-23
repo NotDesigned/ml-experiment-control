@@ -36,7 +36,7 @@ def _poll_loop(app: FastAPI, collector: Collector) -> None:
             try:
                 config_file = app.state.runtime.config.container_execution.artifact_store_file
                 if config_file and app.state.runtime.config.action_runtime.allow_project_writes:
-                    app.state.runtime.storage_service.maintain()
+                    app.state.runtime.storage_service.maintain(submit=app.state.submit_job)
                 app.state.index.set_meta("storage_maintenance_last_error", "")
             except Exception as exc:
                 # A storage maintenance fault must not hide scheduler progress.

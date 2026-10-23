@@ -104,6 +104,7 @@ class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
                 "verification": "SHA256_VERIFIED" if receipt else "PENDING",
                 "download_available": bool(receipt) and not released, "attempts": value.get("attempts", 0),
                 "retention": transfer.get("retention"),
+                "oss_archive": transfer.get("oss_archive"),
                 "updated_at": value.get("updated_at"), "job_state": value.get("job_state"),
                 "diagnostic": value.get("diagnostic"), "scheduler_name": value.get("scheduler_name"),
                 "archive": None if receipt is None else {**{k: receipt[k] for k in ("sha256", "bytes")},

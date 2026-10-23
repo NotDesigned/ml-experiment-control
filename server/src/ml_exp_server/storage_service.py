@@ -28,10 +28,17 @@ class StorageService:
     def lifecycle(self):
         return ArtifactLifecycle(self.objects)
 
-    def maintain(self):
+    @cached_property
+    def archives(self):
+        from .results.oss_archive import OSSArchiveService
+        return OSSArchiveService(self.objects)
+
+    def maintain(self, submit=None):
         # Expired upload bytes free local capacity first. ACK release retains
         # all receipt/identity guards and retries cache cleanup independently.
         self.uploads.prune()
+        if submit is not None and self.objects.config.get('oss_archive'):
+            self.archives.automatic(submit)
         released = self.lifecycle.run_due()
         from .local_retention import LocalRetention
         LocalRetention(self.objects, self.index).maintain()

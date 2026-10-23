@@ -168,8 +168,13 @@ The builder creates exactly these CPFS mounts:
 | `/mnt/models` | `/public/models/` | RO |
 | `/mnt/datasets` | `/public/datasets/` | RO |
 
-It explicitly selects `/mnt/workspace` as DSW's `WorkspaceSource` and pins the
-matching user VPC. No project or filesystem-root mount is created. Project
+DSW automatically binds its workspace source to `/mnt/workspace`. The personal
+CPFS dataset is therefore registered at `/mnt/ml-expd-personal` and that alias is
+selected as `WorkspaceSource`; both paths reference the same approved personal
+directory. Registering the dataset directly at `/mnt/workspace` creates duplicate
+volume mounts on this platform and prevents startup. Public paths stay as shown.
+For a VPC endpoint, use the matching user VPC. A native VSC endpoint can omit
+`user_vpc` only after the official filesystem/HPN affinity API confirms it. No project or filesystem-root mount is created. Project
 mounts require a separate approved configuration and are not part of this option.
 Public access modes are fixed in code; they cannot be upgraded through config.
 The optional OSS mount may coexist at a separate path, but cannot shadow these
@@ -216,3 +221,91 @@ Official references: [Docker in DSW](https://help.aliyun.com/zh/pai/using-docker
 [DSW datasets and OSS mounts](https://help.aliyun.com/zh/pai/developer-reference/api-pai-dsw-2022-01-01-createinstance),
 [shutdown timer](https://help.aliyun.com/zh/pai/developer-reference/api-pai-dsw-2022-01-01-createinstanceshutdowntimer),
 [DLC CreateJob](https://help.aliyun.com/zh/pai/developer-reference/api-pai-dlc-2020-12-03-createjob).
+
+### Personal role and approved OSS prefixes
+
+Add `data_role_arn: "acs:ram::ACCOUNT_ID:role/pai-data-YOUR_RAM_USER"` alongside
+`workspace_user`. The role must exactly match that user. The builder injects it
+through native DSW `CredentialConfig`, separately from storage mount permissions.
+It never gives registry credentials to another user or requests PUBLIC visibility.
+
+To request native OSS mounts with that role, set:
+
+```json
+{
+  "workspace_user": "YOUR_RAM_USER",
+  "data_role_arn": "acs:ram::ACCOUNT_ID:role/pai-data-YOUR_RAM_USER",
+  "oss_uri": "oss://BUCKET.oss-REGION-internal.aliyuncs.com/users/YOUR_RAM_USER/",
+  "oss_mount_path": "/mnt/oss"
+}
+```
+
+This mode requests personal `/mnt/oss` RW, `/mnt/oss-models` from
+`public/models/` RO, and `/mnt/oss-datasets` from `public/datasets/` RO. Each native
+mount carries the same personal `RoleArn`. No project path is requested. Omit
+both OSS fields if provider mount initialization fails; there is no silent
+fallback to an unscoped default role. SDK access using the instance role and
+server-side result archival are independent of native OSS filesystem mounts.
+
+Instance status alone may omit startup errors. The builder now saves sanitized
+`GetLifecycle` failure reasons before deleting its owned instance, and exposes
+them through the existing Runtime build diagnostics/logs.
+
+### Private result archival
+
+An optional `oss_archive` block in the private artifact-store configuration enables
+archival of **newly sealed** result archives:
+
+```json
+{
+  "oss_archive": {
+    "bucket": "ai-oss-h200-1020",
+    "region": "us-southeast-1",
+    "user": "liangluocheng",
+    "credentials_file": "/etc/ml-expd/oss-archive-credentials.json"
+  }
+}
+```
+
+The separate private credential file contains `workspace_user`, `region`,
+`access_key_id`, `access_key_secret` and optional `security_token`. The service
+user must be able to read it; keep the original builder-only credentials private.
+Server archival uses the authenticated personal RAM user and its existing scoped
+OSS permissions. Inside a DSW, native runtime credentials use the personal PAI
+role instead. The server does not pretend to assume a service-only role.
+
+The destination is immutable:
+`users/USER/results/ml-expd/PROJECT/RUN/ATTEMPT/ARCHIVE_SHA256.tar`.
+A bounded collection worker streams from Garage to OSS using the OSS SDK's
+multipart uploader (8 MiB parts, one at a time), then downloads the object stream
+to verify SHA256 and size. No second full local archive is created. The source
+stream verifies the platform SHA256 before completing publication; its S3 client
+uses required transport checks only because Garage's optional response-checksum
+headers have failed real streaming verification. OSS transfer checks remain on.
+An existing exact object is verified and reused after a lost response. A
+conflicting object is never overwritten. Failures remain visible and retry after
+60 seconds; uploading does not restart training.
+
+`GET /api/runs/PROJECT/RUN/attempts/ATTEMPT/collection` includes `oss_archive`
+state, progress and sanitized diagnostics. `VERIFIED` requires actual object-byte
+proof, not metadata or ETag. An authenticated
+`GET /api/runs/PROJECT/RUN/attempts/ATTEMPT/oss-archive/download` returns a private
+five-minute signed download URL and the original file/hash receipt. It works
+after the Garage copy is released. Download and validate the SHA256/file receipt
+as usual; an OSS download does not delete the durable object or require an ACK.
+
+A real client ACK remains recorded immediately. For a newly archive-enabled
+receipt, ACK-triggered Garage deletion waits for OSS verification. The existing
+24-hour local expiry policy is unchanged: an archive still failing when its
+source expires reports `SOURCE_EXPIRED`, never a fabricated success. Monitor
+archival failures before that deadline. Historical receipts are not silently
+backfilled. Repairs retain the previous archive identity and create a new target.
+
+The personal 4 TB budget is **soft**; neither this worker nor OSS automatically
+rejects excess usage. This is result archival, not periodic backup of the entire
+training state or an automatic synchronization of datasets/Git/environments.
+Persistent recovery checkpoints remain on the backend filesystem unless included
+in selected exported outputs. OSS copies are deliberate durable backups and are
+outside automatic local retention, download ACK release, and Run deletion, as are
+existing external W&B records; remove them separately under the personal prefix
+when desired. No Bucket ACL/Policy or lifecycle deletion is changed.

@@ -145,13 +145,14 @@ class ArtifactStore:
                 atomic_json(path, value)
         return {'accepted': True}
 
-    def client(self, *, public=False):
+    def client(self, *, public=False, verified_stream=False):
         import boto3
         from botocore.config import Config
         return boto3.client('s3', endpoint_url=self.config['public_endpoint'] if public else self.config['endpoint'], region_name=self.config.get('region', 'garage'),
                             aws_access_key_id=self.config['access_key'], aws_secret_access_key=self.config['secret_key'],
                             config=Config(signature_version='s3v4', connect_timeout=10, read_timeout=120,
-                                          retries={'max_attempts': 3}, s3={'addressing_style': 'path'}))
+                                          retries={'max_attempts': 3}, s3={'addressing_style': 'path'},
+                                          **({'response_checksum_validation': 'when_required'} if verified_stream else {})))
 
     def download(self, key, digest, size, *, files=None):
         endpoint = urlsplit(self.config.get('public_endpoint', ''))
@@ -240,6 +241,8 @@ class ArtifactStore:
                 if value['receipt']['sha256'] != digest:
                     raise ValueError('Attempt artifacts are already sealed with another digest')
                 return value['receipt']
+            from .oss_archive import target
+            archive = target(self.config, (project, run, attempt), {'sha256': digest, 'bytes': size})
             parent = run_dir / 'attempts' / attempt
             temporary = Path(tempfile.mkdtemp(prefix='.upload-', dir=parent))
             try:
@@ -299,6 +302,10 @@ class ArtifactStore:
                     temporary.rename(destination)
                     destination.chmod(0o500)
                 value['receipt'] = receipt
+                if archive is not None:
+                    if value.get('oss_archive'):
+                        value.setdefault('oss_archive_history', []).append(value['oss_archive'])
+                    value['oss_archive'] = archive
                 if previous is not None:
                     value.setdefault('receipt_history', []).append(previous)
                     if cache.exists():

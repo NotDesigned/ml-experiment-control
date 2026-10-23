@@ -97,7 +97,7 @@ def test_explicit_oss_prefix_is_mounted_and_recorded_in_owned_lease(publisher,in
 def test_cpfs_workspace_is_personal_rw_and_public_mounts_are_read_only(publisher,oss):
     pub,context,api,_=publisher;pub.config.update(CPFS)
     expected=[{'Uri':CPFS['cpfs_uri']+path,'MountPath':mount,'MountAccess':access}
-              for path,mount,access in [('users/researcher/','/mnt/workspace','RW'),
+              for path,mount,access in [('users/researcher/','/mnt/ml-expd-personal','RW'),
                                         ('public/models/','/mnt/models','RO'),
                                         ('public/datasets/','/mnt/datasets','RO')]]
     if oss:
@@ -106,7 +106,7 @@ def test_cpfs_workspace_is_personal_rw_and_public_mounts_are_read_only(publisher
         expected.append({'Uri':uri,'MountPath':'/mnt/ml-expd-oss','MountAccess':'RW'})
     assert pub.publish(TAG,context)==IMAGE
     body=api.calls[0][2]['body']
-    assert body['Datasets']==expected and body['WorkspaceSource']=='/mnt/workspace'
+    assert body['Datasets']==expected and body['WorkspaceSource']=='/mnt/ml-expd-personal'
     assert body['UserVpc']=={**CPFS['user_vpc'],'DefaultRoute':'eth0'}
     assert json.loads(pub.lease.read_text())['datasets']==expected
     assert all(d['MountPath']!='/mnt/project' for d in expected)
@@ -340,3 +340,55 @@ def test_cleanup_failure_keeps_verified_publication_and_requires_operator_follow
     value=json.loads(pub.lease.read_text())
     assert value['phase']=='CLEANUP_REQUIRED' and value['image']==IMAGE and value['workspace_id']=='253'
     assert value['quota_id']=='quota-fixed' and value['gpu']==0
+
+
+def test_native_vsc_mounts_and_own_role_apply_to_both_runtime_and_oss(publisher):
+    pub,context,api,_=publisher
+    pub.config.update(cpfs_uri='bmcpfs://cpfs-example-000001.us-southeast-1.cpfs.aliyuncs.com/',
+                      workspace_user='researcher',data_role_arn='acs:ram::123456:role/pai-data-researcher',
+                      oss_uri='oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/researcher/',oss_mount_path='/mnt/oss')
+    assert pub.publish(TAG,context)==IMAGE
+    body=api.calls[0][2]['body']
+    assert 'UserVpc' not in body
+    assert body['CredentialConfig']['Configs'][0]['Roles']==[{'RoleArn':pub.config['data_role_arn'],'RoleType':'service','AssumeRoleFor':'123456'}]
+    assert len(body['Datasets'])==6
+    assert [(d['MountPath'],d['MountAccess']) for d in body['Datasets']]==[
+        ('/mnt/ml-expd-personal','RW'),('/mnt/models','RO'),('/mnt/datasets','RO'),
+        ('/mnt/oss','RW'),('/mnt/oss-models','RO'),('/mnt/oss-datasets','RO')]
+    assert all(d['RoleArn']==pub.config['data_role_arn'] for d in body['Datasets'][3:])
+
+
+@pytest.mark.parametrize('settings',[
+    {'workspace_user':None}, {'workspace_user':'../other'}, {'data_role_arn':None},
+    {'data_role_arn':'acs:ram::123456:role/pai-data-other'},
+    {'oss_uri':'oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/other/'},
+    {'oss_mount_path':'/mnt/other'},
+])
+def test_personal_role_and_prefix_must_match_before_create(publisher,settings):
+    pub,context,api,_=publisher
+    pub.config.update(workspace_user='researcher',data_role_arn='acs:ram::123456:role/pai-data-researcher',
+                      oss_uri='oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/researcher/',oss_mount_path='/mnt/oss')
+    pub.config.update(settings)
+    with pytest.raises(ValueError):pub.publish(TAG,context)
+    assert not api.calls
+
+
+@pytest.mark.parametrize('lifecycle', ['reason','empty','unavailable'])
+def test_startup_failure_exposes_sanitized_lifecycle_diagnostic_before_cleanup(publisher,monkeypatch,lifecycle,tmp_path):
+    pub,context,api,_=publisher;api.state='Failed';original=api.request
+    def request(product,action,path,**kw):
+        if action=='GetLifecycle':
+            if lifecycle=='unavailable':raise p.PaiError(action,code='Denied',status=403)
+            return {'Lifecycle':[[{'ReasonMessage':'bad mount secret-sk https://example.test/?signature=private'}]]} if lifecycle=='reason' else {}
+        return original(product,action,path,**kw)
+    monkeypatch.setattr(api,'request',request)
+    token=BUILD_LOG.set(tmp_path/'failure.log')
+    try:
+        with pytest.raises(BuildTransportError,match='PAI_DSW_STARTUP_FAILED') as exc:pub.publish(TAG,context)
+    finally:BUILD_LOG.reset(token)
+    details=exc.value.details
+    assert details['instance_id']=='dsw-owned' and api.calls[-1][0]=='DeleteInstance'
+    assert 'secret-sk' not in json.dumps(details) and 'signature=private' not in json.dumps(details)
+    if lifecycle=='reason':assert 'bad mount' in details['reason'] and '[redacted]' in details['reason']
+    if lifecycle=='unavailable':assert details['diagnostic_query_error']=='Denied'
+    assert json.loads(pub.lease.read_text())['startup_diagnostic']==details

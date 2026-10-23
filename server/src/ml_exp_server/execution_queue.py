@@ -162,4 +162,5 @@ def job_lane(call):
         "ContainerExecutionService": "build",
         "DataDeliveryService": "data",
         "ResultCollectionService": "collection",
+        "OSSArchiveService": "collection",
     }.get(type(owner).__name__, "preparation")

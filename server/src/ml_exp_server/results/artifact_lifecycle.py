@@ -61,6 +61,9 @@ class ArtifactLifecycle:
             retention = value.get("retention", {})
             if retention.get("status") not in {"SCHEDULED", "RELEASING", "RELEASED"}:
                 return 0
+            from .oss_archive import pending
+            if retention['status'] != 'RELEASED' and pending(value):
+                return 0
             receipt = value["receipt"]
             canonical = "/".join([*identity, receipt["sha256"] + ".tar"])
             if (receipt["object_key"] != canonical or retention["sha256"] != receipt["sha256"]
