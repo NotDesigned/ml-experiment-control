@@ -42,4 +42,3 @@ Start with one experiment. Data preparation, checkpoint persistence and custom
 metrics are optional additions. No research-question entity is required;
 Campaign is optional user-facing grouping. Designs and one-off operator tools
 are explicitly distinguished from implemented public APIs in recovery.
-

@@ -62,4 +62,3 @@ class PaiStorage:
         if not match:
             raise ValueError("data role must be the approved user's pai-data role")
         return arn, match[1]
-
