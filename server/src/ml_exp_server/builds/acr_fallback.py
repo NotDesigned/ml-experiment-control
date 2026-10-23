@@ -21,10 +21,10 @@ from ..runs.execution_progress import record_progress
 from ..storage import atomic_json
 
 
-def phase(name, message):
+def phase(name, message, *, timeout_seconds=None):
     path = BUILD_PROGRESS.get()
     if path:
-        record_progress(path, name, message)
+        record_progress(path, name, message, timeout_seconds=timeout_seconds)
 
 
 def git(directory, args, *, data=None, stream=None):
@@ -143,7 +143,7 @@ def _publish(builder, context, receipt):
     remote = scope.get('git_repository')
     seconds = scope.get('wait_seconds', 300)
     if (not isinstance(remote, str) or not re.fullmatch(r'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', remote)
-            or type(seconds) is not int or not 0 <= seconds <= 600):
+            or type(seconds) is not int or not 0 <= seconds <= 2700):
         raise ValueError('ACR fallback requires an explicit private GitHub source and bounded wait')
     private_repository(remote)
     path = journal(builder, identity)
@@ -182,7 +182,8 @@ def _publish(builder, context, receipt):
             value.update(phase='PUBLISHED', image=image)
             atomic_json(path, value)
             return image
-        phase('WAITING_ACR_BUILD', 'ACR native build triggered; waiting for authenticated image publication')
+        phase('WAITING_ACR_BUILD', 'ACR native build triggered; waiting for authenticated image publication',
+              timeout_seconds=seconds)
         if time.monotonic() >= end:
             raise BuildTransportError('ACR_NATIVE_BUILD_PENDING', {
                 'publication_uncertain': True, 'scheduler_submitted': False,

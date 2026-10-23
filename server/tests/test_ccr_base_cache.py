@@ -312,7 +312,7 @@ def test_prewarm_rejects_unknown_identity_or_capacity_before_remote_write(tmp_pa
                                                'https://api.example/ml-expd-builder-relay', 'x' * 64)
 
 
-def test_build_request_wait_does_not_expire_before_private_900_second_builder(monkeypatch):
+def test_build_request_wait_covers_build_lifecycle_and_preserves_explicit_log_timeout(monkeypatch):
     from ml_exp_server.builds import builder_client
     seen = []
     class Connection:
@@ -322,9 +322,9 @@ def test_build_request_wait_does_not_expire_before_private_900_second_builder(mo
         def close(self): pass
     monkeypatch.setattr(builder_client, 'UnixConnection', Connection)
     assert builder_client.builder_request('/private.sock', {'operation': 'build'}) == {'image': 'verified'}
-    assert seen == [1200]
+    assert seen == [7200]
     builder_client.builder_request('/private.sock', {'operation': 'logs'}, timeout=15)
-    assert seen == [1200, 15]
+    assert seen == [7200, 15]
 
 
 def test_insufficient_prewarm_memory_fails_before_credentials_or_remote_writes(monkeypatch):

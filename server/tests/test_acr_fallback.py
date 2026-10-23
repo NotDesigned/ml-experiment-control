@@ -118,7 +118,7 @@ def test_poll_waits_for_publication_without_retriggering(setup,monkeypatch):
 
 
 @pytest.mark.parametrize('scope',[{'git_repository':'ssh://other'}, {'git_repository':None},
-    {'git_repository':REMOTE,'wait_seconds':False},{'git_repository':REMOTE,'wait_seconds':601}])
+    {'git_repository':REMOTE,'wait_seconds':False},{'git_repository':REMOTE,'wait_seconds':2701}])
 def test_invalid_fallback_config_performs_no_git_operation(setup,scope):
     b,context,calls,_=setup;b.config['acr_fallback']=scope
     with pytest.raises(BuildTransportError):p.publish(b,context,RECEIPT)
@@ -223,3 +223,15 @@ def test_image_builder_recovers_late_fallback_receipt_via_reconcile(builder,monk
     assert b.request({**request,'operation':'reconcile'})==result
     monkeypatch.setattr(p,'reconcile',lambda *args:None)
     with pytest.raises(ValueError,match='not been published'):b.request({**request,'operation':'reconcile'})
+
+
+def test_forty_five_minute_observation_survives_old_limit_without_retriggering(setup,monkeypatch,tmp_path):
+    b,context,calls,state=setup;b.config['acr_fallback']['wait_seconds']=2700;state['status']=404
+    moments=iter([0,301,2701]);monkeypatch.setattr(p.time,'monotonic',lambda:next(moments))
+    sleeps=[];monkeypatch.setattr(p.time,'sleep',sleeps.append)
+    token=BUILD_PROGRESS.set(tmp_path/'progress.json')
+    try:
+        with pytest.raises(BuildTransportError,match='PENDING'):p.publish(b,context,RECEIPT)
+    finally:BUILD_PROGRESS.reset(token)
+    assert sleeps==[5] and sum(c[0]=='push' for c in calls)==1
+    assert json.loads((tmp_path/'progress.json').read_text())['timeout_seconds']==2700

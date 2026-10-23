@@ -244,7 +244,7 @@ def test_builder_entrypoint_creates_private_socket_and_serves_request(tmp_path, 
     assert ownership == [(socket.parent, 0, os.getgid()), (socket, 0, os.getgid())]
 
 @pytest.mark.parametrize('operation,explicit,expected',[
-    ('build',None,3600),('get',None,1200),('reconcile',None,1200),('build',17,17)])
+    ('build',None,7200),('get',None,1200),('reconcile',None,1200),('build',17,17)])
 def test_build_rpc_leaves_headroom_for_startup_build_cleanup_and_fallback(monkeypatch,operation,explicit,expected):
     from ml_exp_server.builds import builder_client
     seen=[]

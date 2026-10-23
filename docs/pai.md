@@ -228,7 +228,7 @@ Configure these operator-only builder settings (the API request stays unchanged)
   "registry_blob_hosts": ["aliregistry-ap-northeast-1.oss-ap-northeast-1.aliyuncs.com"],
   "acr_fallback": {
     "git_repository": "https://github.com/YOUR_ACCOUNT/YOUR_PRIVATE_BUILD_REPO",
-    "wait_seconds": 300
+    "wait_seconds": 2700
   }
 }
 ```
@@ -254,6 +254,9 @@ be coordinated with its administrator.
 Native ACR requires `git` and an authenticated `gh` CLI on the builder host.
 The target GitHub repository must be verifiably private and bound in ACR to the
 built-in rule `release-v$version` → `$version`, context `/`, file `Dockerfile`.
+`acr_fallback.wait_seconds` accepts 0–2700 seconds; the example observes
+a publication for up to 45 minutes. This observation does not cancel or rerun
+the provider build when it expires; late publication remains reconcilable.
 The fallback publishes only `release-vbundle-BUNDLE_SHA256`; it never updates
 `main` or overwrites a tag. Git plumbing preserves ignored files, executable
 bits and exact bytes without running client filters or hooks. Git cannot deliver
@@ -328,7 +331,7 @@ separate atomic status/receipt and bounded log deltas, avoiding MCP gateway
 timeouts on long calls. Startup has a ten-minute bound. `timeout_seconds` controls
 the complete pull/build/push phase (default 600 seconds; the example above allows
 20 minutes) and is also passed to Docker API socket reads and progress diagnostics.
-The private daemon-to-builder build RPC allows 60 minutes for startup, transfer,
+The private daemon-to-builder build RPC allows 120 minutes for startup, transfer,
 build, cleanup and fallback; read/reconcile RPCs retain their 20-minute default.
 Transfers and cleanup also have individual bounds. The host independently checks the exact
 registry tag's manifest digest before accepting the receipt. A publication and a
