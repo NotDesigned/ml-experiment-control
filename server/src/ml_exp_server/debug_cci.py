@@ -232,12 +232,10 @@ class CciDebug:
         return {"RUNNING": "RUNNING", "SUSPENDED": "STOPPED", "FAILED": "FAILED"}.get(value.get("state"), "STARTING")
 
     def stop(self, record, value, delete=False):
+        if delete:
+            raise ValueError("CCI supports stopping only")
         if value is not None:
             self.checked(record, value)
-        if not delete:
-            if value is not None and value.get("state") != "SUSPENDED":
-                self.api.request(self.url(record) + ":stop", method="POST", body={})
-            return
         if value is not None and value.get("state") not in {"SUSPENDED", "FAILED", "DELETING"}:
             # Release compute before port cleanup: a network error must not
             # keep an expired machine consuming quota.
@@ -252,13 +250,5 @@ class CciDebug:
                 elif row.get("state") == "CREATED":
                     self.api.request(url, method="DELETE")
                 return False
-        if value is not None:
-            self.api.request(self.url(record), method="DELETE")
-            return False
-        service = self.optional(self.url(record, service=True))
-        if service and service.get("uid"):
-            if service["uid"] != record.get("service_uid") or service.get("selector") != {"app": record["name"]}:
-                raise ValueError("CCI debug service was replaced")
-            self.api.request(self.url(record, service=True), method="DELETE")
-            return False
+        # CCI/Service metadata remains stopped; shared NAS is never removed.
         return True

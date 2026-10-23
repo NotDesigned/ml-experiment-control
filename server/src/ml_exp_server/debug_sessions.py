@@ -59,7 +59,9 @@ class DebugSessions:
         return {"enabled": any(p["enabled"] for p in profiles.values()) and self.config.action_runtime.allow_scheduler_mutations,
                 "max_active": self.config.debug_sessions.max_active,
                 "max_duration_seconds": self.config.debug_sessions.max_duration_seconds,
-                "profiles": [{"id": k, **{field: v[field] for field in ("provider", "description", "cpus", "memory_gib", "gpus", "enabled", "unavailable_reason")}}
+                "profiles": [{"id": k, "operations": ["create", "status", "refresh", "stop"] + (["delete"] if v["provider"] == "pai-dsw" else []),
+                              "expiry_action": "delete" if v["provider"] == "pai-dsw" else "stop",
+                              **{field: v[field] for field in ("provider", "description", "cpus", "memory_gib", "gpus", "enabled", "unavailable_reason")}}
                              for k, v in profiles.items()]}
 
     @staticmethod
@@ -162,6 +164,9 @@ class DebugSessions:
                 return self.view(record)
             if record["status"] == "REJECTED" and intent is None:
                 return self.view(record)
+            if intent == "delete" and record["profile"]["provider"] == "sensecore-cci":
+                raise ApplicationError("CCI supports stopping only; provider deletion is not enabled",
+                                       code="DEBUG_DELETE_UNSUPPORTED")
             if intent:
                 # A deletion/expiry can never be downgraded to stop or provisioning.
                 if record.get("intent") != "delete":
@@ -185,7 +190,11 @@ class DebugSessions:
         try:
             provider = provider or adapter(record["profile"])
             if time.time() >= record["expires_at"]:
-                record["intent"] = "delete"
+                record["intent"] = "stop" if record["profile"]["provider"] == "sensecore-cci" else "delete"
+            if record["profile"]["provider"] == "sensecore-cci" and record.get("intent") == "delete":
+                # Preserve the stopped instance: this backend intentionally
+                # offers no app deletion, including for earlier cleanup records.
+                record["intent"] = "stop"
             intent = record.get("intent")
             if intent:
                 record.pop("connection", None)
@@ -200,9 +209,8 @@ class DebugSessions:
                     record["status"] = "RECONCILE_REQUIRED"
                     record["error"] = previous_error or {"code": "DEBUG_CREATION_UNCERTAIN"}
                 elif record["profile"]["provider"] == "sensecore-cci":
-                    complete = provider.stop(record, value, delete=intent == "delete")
-                    record["status"] = ("DELETED" if complete else "DELETING") if intent == "delete" else (
-                        "STOPPED" if value is None or provider.state(value) == "STOPPED" else "STOPPING")
+                    complete = provider.stop(record, value)
+                    record["status"] = "STOPPED" if complete and (value is None or provider.state(value) == "STOPPED") else "STOPPING"
                 elif value is None:
                     record["status"] = "DELETED"
                 else:

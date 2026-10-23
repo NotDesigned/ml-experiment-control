@@ -338,3 +338,20 @@ in selected exported outputs. OSS copies are deliberate durable backups and are
 outside automatic local retention, download ACK release, and Run deletion, as are
 existing external W&B records; remove them separately under the personal prefix
 when desired. No Bucket ACL/Policy or lifecycle deletion is changed.
+
+
+## Failed DSW image builds
+
+DSW pre-pulls pinned external base images and retries downloads up to three
+times before executing Dockerfile commands. Builds and registry pushes are not
+automatically replayed. Network retries cannot guarantee cross-region CCR
+ bandwidth or repair a persistent upstream connection failure.
+
+For a failed Runtime, reconcile its original identity. A PAI retry is permitted
+only after the builder holds the bundle lock, verifies a prior
+`DELETE_REQUESTED` zero-GPU lease, confirms the exact DSW is absent through both
+GetInstance and the scoped inventory, and receives an authenticated registry
+404 for that bundle. A stopped instance, unknown creation, incomplete query,
+403, live worker or published tag grants no retry. The same checks run again
+before creating a replacement CPU builder; the old lease is preserved in
+private history. Source, Dockerfile, worker and bundle identities remain fixed.

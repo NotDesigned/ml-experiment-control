@@ -51,6 +51,7 @@ class Fake:
             self.deleted += 1
             self.exists = False
         else:self.stopped = True
+        return True
 
 
 @pytest.fixture
@@ -200,11 +201,11 @@ def test_factory_and_cci_stop_delete_states(service,monkeypatch):
     assert s.refresh('test-one',intent='stop')['status']=='STOPPING'
     assert s.refresh('test-one')['status']=='STOPPED'
     monkeypatch.setattr(f,'stop',lambda *a,**k:False)
-    assert s.refresh('test-one',intent='delete')['status']=='DELETING'
-    assert s.refresh('test-one',intent='stop')['intent']=='delete'
+    with pytest.raises(ApplicationError,match='stopping only'):s.refresh('test-one',intent='delete')
+    r=s.load('test-one');r['intent']='delete';s.save(r)
     monkeypatch.setattr(f,'stop',lambda *a,**k:True)
-    assert s.refresh('test-one')['status']=='DELETED'
-    s.maintain()  # terminated records are skipped
+    assert s.refresh('test-one')['intent']=='stop'
+    s.maintain()
 
 
 def test_claimed_but_not_visible_creation_retains_generic_diagnostic(service,monkeypatch):
@@ -261,3 +262,23 @@ def test_permission_failure_keeps_machine_evidence_and_requires_explicit_retry(s
 def test_expiry_loop_can_exit_before_first_cloud_query():
     from ml_exp_server.api.lifecycle import _debug_loop
     _debug_loop(SimpleNamespace(state=SimpleNamespace(_stop=SimpleNamespace(is_set=lambda:True))))
+
+
+def test_expiry_poller_observes_stop_between_cycles():
+    from ml_exp_server.api.lifecycle import _debug_loop
+    calls=iter([False,True])
+    app=SimpleNamespace(state=SimpleNamespace(_stop=SimpleNamespace(is_set=lambda:next(calls),wait=lambda t:False),
+                                             debug_sessions=SimpleNamespace(maintain=lambda:None)))
+    _debug_loop(app)
+
+
+def test_cci_expiry_stops_without_deleting_instance(service,monkeypatch):
+    s,f=service;s.create(req());r=s.load('test-one');r['profile']['provider']='sensecore-cci'
+    r['expires_at']=0;r['identity']=d.identity({'request':r['request'],'profile':r['profile']});s.save(r)
+    s.maintain();s.maintain()
+    v=s.read('test-one');assert v['intent']=='stop' and v['status']=='STOPPED' and f.deleted==0
+
+
+def test_dsw_delete_cannot_be_downgraded_to_stop(service):
+    s,f=service;s.create(req());assert s.refresh('test-one',intent='delete')['status']=='DELETING'
+    assert s.refresh('test-one',intent='stop')['intent']=='delete'

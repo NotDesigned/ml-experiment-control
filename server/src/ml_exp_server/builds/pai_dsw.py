@@ -16,6 +16,9 @@ import tarfile
 import tempfile
 import time
 import uuid
+import io
+import shlex
+from dockerfile_parse import DockerfileParser
 
 from experiment_control.backends.pai_api import PaiAPI, PaiError, component
 from experiment_control.redaction import redact_line
@@ -209,7 +212,8 @@ class DswPublisher:
         self.identity = match[1]
         self.lease = self.builder.root / (self.identity + ".dsw.json")
         if self.lease.exists():
-            raise BuildTransportError("PAI_DSW_RECONCILE_REQUIRED", {"publication_uncertain": True, "scheduler_submitted": False})
+            from .pai_build_recovery import preserve_deleted_lease
+            preserve_deleted_lease(self.builder, self.identity)
         host = tag.split("/", 1)[0]
         auths = json.loads(Path(self.builder.config["registry_auth_file"]).read_text())["auths"]
         auth = auths.get(host) or auths.get("https://" + host)
@@ -267,7 +271,14 @@ class DswPublisher:
                 self.phase("TRANSFERRING_DSW_CONTEXT", "Copying the sealed source context over PAI MCP")
                 self.cli(["dsw", "instance", "exec", self.instance, "--code",
                           "from pathlib import Path; p=Path(" + repr(remote) + "); p.mkdir(mode=0o700); (p/'auth').mkdir(mode=0o700); (p/'tools').mkdir(mode=0o700)"], private)
-                request = {"context_sha256": file_sha(archive), "tag": tag}
+                bases = []
+                for row in DockerfileParser(fileobj=io.BytesIO((context / "Dockerfile").read_bytes())).structure:
+                    if row["instruction"] == "FROM":
+                        parts = shlex.split(row["value"])
+                        image = parts[1] if parts[0].startswith("--platform=") else parts[0]
+                        if IMAGE.fullmatch(image) and image not in bases:
+                            bases.append(image)
+                request = {"context_sha256": file_sha(archive), "tag": tag, "base_images": bases}
                 atomic_json(local / "request.json", request)
                 atomic_json(local / "config.json", {"auths": {host: auth}})
                 worker = Path(__file__).parent.parent / "workers/dsw_build_worker.py"

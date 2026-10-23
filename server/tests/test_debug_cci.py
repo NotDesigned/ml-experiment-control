@@ -70,9 +70,10 @@ def test_complete_cci_and_owned_network_lifecycle():
     p.stop(r,value);assert api.app['state']=='SUSPENDED'
     value=p.lookup(r);assert p.state(value)=='STOPPED'
     for _ in range(6):
-        done=p.stop(r,p.lookup(r),delete=True)
+        done=p.stop(r,p.lookup(r))
         if done:break
-    assert done is True and api.app is None and api.service is None and api.rows==[]
+    assert done is True and api.app['state']=='SUSPENDED' and api.service is not None and api.rows==[]
+    assert not any('/apps/' in url and kw.get('method')=='DELETE' for url,kw in api.calls)
     assert p.state({'state':'FAILED'})=='FAILED' and p.state({})=='STARTING'
 
 
@@ -94,7 +95,7 @@ def test_service_replacement_and_wrong_ports_are_never_mutated():
         with pytest.raises(ValueError,match='service'):p.provision(r,lambda:None,claim)
     api,p,r,claim=harness();p.provision(r,lambda:None,claim);api.app=None;api.rows=[]
     api.service['uid']='other'
-    with pytest.raises(ValueError,match='replaced'):p.stop(r,None,delete=True)
+    with pytest.raises(ValueError,match='stopping only'):p.stop(r,None,delete=True)
 
 
 def test_unrelated_port_rule_is_never_bound_unbound_or_deleted():
@@ -158,18 +159,18 @@ def test_pending_visibility_and_inflight_port_writes_are_never_replayed(monkeypa
     before=len(api.calls);p.network(r,lambda:None,lambda k:False)
     assert len(api.calls)==before
     api.rows[0]['state']='CREATING';p.network(r,lambda:None,claim)
-    assert p.stop(r,None) is None
-    api.app['state']='SUSPENDED';assert p.stop(r,api.app) is None
-    api.rows[0]['state']='DELETING';assert p.stop(r,api.app,delete=True) is False
-    r.pop('network_plan');assert p.stop(r,api.app,delete=True) is False
+    assert p.stop(r,None) is False
+    api.app['state']='SUSPENDED';assert p.stop(r,api.app) is False
+    api.rows[0]['state']='DELETING';assert p.stop(r,api.app) is False
+    r.pop('network_plan');assert p.stop(r,api.app) is True
 
 
 def test_delete_stops_compute_before_attempting_port_cleanup():
     api,p,r,claim=harness();p.provision(r,lambda:None,claim)
     api.rows[0]['properties']['internal_port']='22';api.rows[0]['properties']['internal_instance_name']='app-id'
-    assert p.stop(r,api.app,delete=True) is False and api.app['state']=='SUSPENDED'
+    assert p.stop(r,api.app) is False and api.app['state']=='SUSPENDED'
     assert api.calls[-1][0].endswith(':stop')
     api.app['state']='SUSPENDING';before=len(api.calls)
-    assert p.stop(r,api.app,delete=True) is False and len(api.calls)==before
+    assert p.stop(r,api.app) is False and len(api.calls)==before
     api.rows[0]['properties']['internal_port']='23'
     with pytest.raises(ValueError,match='ownership'):p.rule(r)

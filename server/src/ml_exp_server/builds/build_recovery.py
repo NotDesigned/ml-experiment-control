@@ -45,6 +45,14 @@ def publication_absence(builder, identity):
     A missing local receipt, an offline engine or registry error grants nothing.
     """
     config, root = builder.config, builder.root
+    if config.get('publisher') == 'pai-dsw':
+        from .pai_build_recovery import observe_dsw_absence
+        with (root / (identity + '.lock')).open('a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return None
+            return observe_dsw_absence(builder, identity)
     if not config.get('docker_host') or not config.get('ephemeral_buildkit'):
         return None
     with (root / (identity + '.lock')).open('a') as bundle_lock:
@@ -92,7 +100,7 @@ def valid_absence(proof, identity):
     if not isinstance(proof, dict) or set(proof) != {
             'source', 'bundle_id', 'observed_at', 'registry_manifest_status', 'active_builders', 'leases_clear'}:
         return False
-    if (proof['source'] != 'builder-reconcile.v1' or proof['bundle_id'] != identity
+    if (proof['source'] not in ('builder-reconcile.v1', 'pai-dsw-reconcile.v1') or proof['bundle_id'] != identity
             or type(proof['registry_manifest_status']) is not int or proof['registry_manifest_status'] != 404
             or type(proof['active_builders']) is not int
             or proof['active_builders'] != 0 or proof['leases_clear'] is not True):

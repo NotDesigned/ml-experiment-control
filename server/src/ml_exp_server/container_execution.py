@@ -370,6 +370,9 @@ class ContainerExecutionService:
         except BuildReceiptMissingError as exc:
             value.update(status="RECONCILE_REQUIRED", error="image bundle has not been published")
             if exc.retry_proof is not None:
+                previous = value.get('build_error')
+                if previous and previous.get('code') not in {'BUILD_PUBLICATION_ABSENT', 'BUILD_RECOVERY_EVIDENCE_INVALID'}:
+                    value.setdefault('build_error_history', []).append(previous)
                 safe = valid_absence(exc.retry_proof, value['build_bundle_id'])
                 value['build_error'] = {'code': 'BUILD_PUBLICATION_ABSENT' if safe else 'BUILD_RECOVERY_EVIDENCE_INVALID',
                                         'details': exc.retry_proof if safe else {}, 'retry_safe': safe}

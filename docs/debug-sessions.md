@@ -38,14 +38,20 @@ policy. The client never disables SSH host-key checking.
 ```bash
 ml-exp debug stop --id debug-myproject-001
 ml-exp debug refresh --id debug-myproject-001
+# DSW additionally supports deletion:
 ml-exp debug delete --id debug-myproject-001
 ml-exp debug refresh --id debug-myproject-001
 ```
 
+CCI supports create/query/stop; DSW also supports delete. The profile catalog
+returns `operations` and `expiry_action`. Requesting CCI deletion returns
+`DEBUG_DELETE_UNSUPPORTED` without a provider mutation.
+
 Stop/delete requests can remain `STOPPING`/`DELETING` while the provider acts.
 The server continues requested cleanup every 20 seconds. A permission denial
-(HTTP 403) pauses automatic retries; fix the permission and explicitly refresh. Deletion is complete
-only after the machine and its session-owned access resources are absent.
+(HTTP 403) pauses automatic retries; fix the permission and explicitly refresh. DSW deletion is complete
+only after the machine is absent. Stopping CCI releases compute and removes its
+session-owned DNAT rule; the stopped CCI and internal Service metadata remain.
 There is no automatic restart. An expired or deleted identity cannot be reused
 for a new machine; choose a new session ID.
 
@@ -63,7 +69,7 @@ operator configures them, and scheduler mutations must also be enabled.
   deadline never advances on refresh. Server expiry cleanup also deletes the
   stopped instance.
 - CCI: the injected SSH process has an **absolute expiry deadline**, and the
-  server stops/deletes the instance and its own port rule on expiry. This is
+  server stops the instance and removes its own port rule on expiry. This is
   **not a provider-side compute shutdown timer**: if ML-Expd is unavailable,
   SSH expires but compute may remain allocated until server recovery or manual
   cleanup. Closing the shell or stopping sshd does not release cloud resources.
@@ -87,7 +93,7 @@ All routes use the normal bearer authentication and protocol-2 header.
 | GET | `/api/debug-sessions/{id}` | Saved observation |
 | POST | `/api/debug-sessions/{id}/refresh` | Reconcile and finish the same session |
 | POST | `/api/debug-sessions/{id}/stop` | Stop compute |
-| DELETE | `/api/debug-sessions/{id}` | Delete compute and session-owned access resources |
+| DELETE | `/api/debug-sessions/{id}` | Delete a DSW instance; unsupported for CCI |
 
 ```json
 {
@@ -150,5 +156,6 @@ CCI native fields:
 The selected native resource specification must match the profile's CPU,
 memory and GPU count. CCI debug uses RESERVED quota. A new, session-owned DNAT
 rule is assigned an unused high port; no existing rule is migrated. Its UID,
-creator, network and CCI target are checked before bind/unbind/delete. Shared
+creator, network and CCI target are checked before bind/unbind/delete of that
+port rule. CCI app/Service deletion is intentionally not provided. Shared
 EIPs/NAT and unrelated instances/rules are never removed.
