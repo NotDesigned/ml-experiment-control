@@ -9,6 +9,7 @@ import threading
 import time
 from experiment_control.runner import run_process
 from experiment_control.backends.sensecore_rest import SenseCoreREST, RESTError
+from experiment_control.backends.pai_api import PaiAPI, PaiError
 
 from ..storage import utc_now
 
@@ -46,6 +47,37 @@ def count(value):
     if not re.fullmatch(r'\d+', value):
         raise ValueError('invalid scheduler count')
     return int(value)
+
+
+def pai_quota(backend):
+    api = PaiAPI.from_environment()
+    if backend["region"] != api.config["region"]:
+        raise ValueError("PAI query targets another region")
+    quota = api.quota(backend["quota_id"])
+    workspaces = quota.get("Workspaces")
+    if (not isinstance(workspaces, list) or any(not isinstance(row, dict) for row in workspaces)
+            or not any(str(row.get("WorkspaceId")) == str(backend["workspace_id"]) for row in workspaces)):
+        raise ValueError("PAI quota is not bound to this workspace")
+    details = quota.get("QuotaDetails")
+    if not isinstance(details, dict):
+        raise ValueError("PAI quota details are unavailable")
+    total, used = details["ActualMinQuota"], details["AllocatedQuota"]
+    if not isinstance(total, dict) or not isinstance(used, dict):
+        raise ValueError("PAI quota resource evidence is unavailable")
+    def memory(value):
+        match = re.fullmatch(r"([0-9]+)(Ki|Mi|Gi|Ti)", value) if isinstance(value, str) else None
+        if not match:
+            raise ValueError("PAI memory unit is unavailable")
+        return int(match[1]) * {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4}[match[2]]
+    resources = {}
+    for name, a, b in (("gpus", count(str(total["GPU"])), count(str(used["GPU"]))),
+                       ("cpus", count(str(total["CPU"])), count(str(used["CPU"]))),
+                       ("memory_bytes", memory(total["Memory"]), memory(used["Memory"]))):
+        if b > a:
+            raise ValueError("PAI allocation exceeds quota total")
+        resources[name] = {"total": a, "allocated": b, "unallocated": a - b}
+    return {"resources": resources, "nodes": [], "pending_queue_entries": None,
+            "quota_state": quota["Status"], "gpu_type": quota.get("GPUType")}
 
 
 def parse(output, partition):
@@ -108,6 +140,11 @@ class AllocationStatus:
         base = {'executor_id': executor, 'kind': backend['kind'], 'source': 'slurm',
                 'scope': 'partition', 'partition': backend.get('partition'),
                 'admission_guaranteed': False, 'cache_ttl_seconds': TTL}
+        if backend['kind'] == 'pai-dlc':
+            base.update(source='pai-quota', scope='quota', partition=None, quota_id=backend['quota_id'])
+            return self.cached(('pai-dlc', backend['region'], backend['workspace_id'], backend['quota_id']),
+                               lambda: pai_quota(backend), base,
+                               {'resources': None, 'nodes': [], 'pending_queue_entries': None})
         if backend['kind'] != 'slurm':
             return {**base, 'source': None, 'status': 'UNSUPPORTED', 'resources': None,
                     'nodes': [], 'observed_at': None, 'pending_queue_entries': None}
@@ -130,7 +167,7 @@ class AllocationStatus:
             if previous is None or now - previous['checked'] >= TTL:
                 try:
                     data = {**observe(), 'observed_at': utc_now(), 'status': 'OBSERVED', 'error': None}
-                except (OSError, ValueError, KeyError, subprocess.TimeoutExpired, RESTError):
+                except (OSError, ValueError, KeyError, subprocess.TimeoutExpired, RESTError, PaiError):
                     data = ({**previous['data'], 'status': 'STALE'}
                             if previous and previous['data']['observed_at'] else
                             {**empty, 'status': 'UNKNOWN', 'observed_at': None})

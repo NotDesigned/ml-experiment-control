@@ -1,0 +1,104 @@
+"""Docker API wire boundaries and sealed context publication in CPU DSW."""
+import base64
+import hashlib
+import io
+import json
+from pathlib import Path
+import shutil
+from types import SimpleNamespace
+import uuid
+import pytest
+from ml_exp_server.workers import dsw_build_worker as w
+
+TAG='registry.example/repository:bundle-'+'a'*64
+IMAGE='registry.example/repository@sha256:'+'b'*64
+
+@pytest.fixture
+def root():
+    path=Path('/tmp/ml-expd-build-'+uuid.uuid4().hex);path.mkdir(mode=0o700)
+    (path/'auth').mkdir();(path/'auth/config.json').write_text(json.dumps({'auths':{'registry.example':{'auth':base64.b64encode(b'u:password').decode()}}}))
+    (path/'context.tar').write_bytes(b'sealed context')
+    try:yield path
+    finally:shutil.rmtree(path)
+
+
+def spec(root):
+    return {'tag':TAG,'context_sha256':hashlib.sha256((root/'context.tar').read_bytes()).hexdigest()}
+
+
+def test_real_socket_connect_uses_only_private_unix_proxy(monkeypatch):
+    calls=[]
+    class Socket:
+        def settimeout(self,value):calls.append(('timeout',value))
+        def connect(self,path):calls.append(('connect',path))
+    monkeypatch.setattr(w.socket,'socket',lambda *args:calls.append(args) or Socket())
+    c=w.Engine('localhost',timeout=42);c.connect()
+    assert calls==[(w.socket.AF_UNIX,w.socket.SOCK_STREAM),('timeout',42),('connect','/var/docker/proxy/docker-proxy.sock')]
+
+
+@pytest.mark.parametrize('case',['metadata','stream','http','long_metadata','long_line','many_lines','error','detail','malformed'])
+def test_engine_replies_are_bounded_and_stream_errors_fail(case,monkeypatch,capsys):
+    closed=[];calls=[]
+    raw={'metadata':b'{"Version":"28"}', 'stream':b'{"stream":"built"}\n', 'http':b'private',
+         'long_metadata':b' '*65537,'long_line':b' '*65537,
+         'many_lines':b'{"stream":"'+b'x'*60000+b'"}\n',
+         'error':b'{"error":"failed"}\n','detail':b'{"errorDetail":{"message":"failed"}}\n','malformed':b'not-json'}[case]
+    response=io.BytesIO(raw*(40 if case=='many_lines' else 1));response.status=503 if case=='http' else 200
+    class Connection:
+        def __init__(self,*args,**kwargs):pass
+        def request(self,*args,**kwargs):calls.append((args,kwargs))
+        def getresponse(self):return response
+        def close(self):closed.append(True)
+    monkeypatch.setattr(w,'Engine',Connection)
+    if case in {'metadata','stream'}:
+        v=w.request('GET','/version',stream=case=='stream')
+        assert v==({'Version':'28'} if case=='metadata' else None)
+    else:
+        with pytest.raises(ValueError):w.request('GET','/version',stream=case not in {'long_metadata','http','malformed'})
+    assert closed==[True] and calls[0][0]==('GET','/version')
+
+
+@pytest.mark.parametrize('case',['success','hash','tag','digest_missing','digest_duplicate','invalid_root'])
+def test_context_checksum_registry_auth_and_exact_digest(root,monkeypatch,capsys,case):
+    p=spec(root);calls=[]
+    if case=='hash':p['context_sha256']='0'*64
+    if case=='tag':p['tag']='other:latest'
+    def request(method,path,body=None,headers=None,**kwargs):
+        calls.append((method,path,headers,body.read() if body else None,kwargs))
+        if method=='GET':return {'RepoDigests':[] if case=='digest_missing' else [IMAGE,IMAGE] if case=='digest_duplicate' else ['other@sha256:'+'b'*64,IMAGE]}
+    monkeypatch.setattr(w,'request',request)
+    if case=='invalid_root':
+        with pytest.raises(ValueError):w.run(Path('/tmp/unowned'),p)
+    elif case!='success':
+        with pytest.raises(ValueError):w.run(root,p)
+    else:
+        receipt=w.run(root,p)
+        assert calls[0][0]=='POST' and 'version=1' in calls[0][1] and calls[0][3]==b'sealed context'
+        credentials=json.loads(base64.urlsafe_b64decode(calls[0][2]['X-Registry-Config']))
+        assert credentials['registry.example']['password']=='password'
+        assert 'push?' in calls[1][1] and calls[2][0]=='GET'
+        assert receipt=={'image':IMAGE,'context_sha256':p['context_sha256']}
+
+
+def test_entrypoint_always_removes_only_owned_auth(root,monkeypatch):
+    (root/'request.json').write_text(json.dumps(spec(root)))
+    monkeypatch.setattr(w,'run',lambda *args:(_ for _ in ()).throw(ValueError('failed')))
+    with pytest.raises(ValueError):w.main([str(root)])
+    assert not (root/'auth').exists() and (root/'context.tar').exists()
+    with pytest.raises(FileNotFoundError):w.main(['/tmp/unowned-dsw'])
+
+
+def test_completed_receipt_is_atomic_and_entrypoint_cannot_keep_credentials(root,monkeypatch):
+    (root/'request.json').write_text(json.dumps(spec(root)))
+    receipt={'image':IMAGE,'context_sha256':spec(root)['context_sha256']}
+    monkeypatch.setattr(w,'run',lambda *args:receipt)
+    monkeypatch.setattr(w.sys,'argv',['worker.py',str(root)])
+    w.main()
+    assert json.loads((root/'status.json').read_text())=={'status':'SUCCEEDED','receipt':receipt}
+    assert not (root/'status.tmp').exists() and not (root/'auth').exists()
+
+
+def test_python_module_entrypoint_rejects_unowned_directory(monkeypatch):
+    import runpy
+    monkeypatch.setattr(w.sys,'argv',['worker.py','/tmp/unowned-dsw-entrypoint'])
+    with pytest.raises(FileNotFoundError):runpy.run_path(w.__file__,run_name='__main__')

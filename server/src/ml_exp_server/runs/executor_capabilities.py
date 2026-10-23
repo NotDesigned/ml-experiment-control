@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from pathlib import PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,7 +32,7 @@ class ExecutionRequirements(BaseModel):
 
 class ExecutorSelector(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    backend: str | None = Field(default=None, pattern=r"^(slurm|sensecore)$")
+    backend: str | None = Field(default=None, pattern=r"^(slurm|sensecore|pai-dlc)$")
     candidates: list[str] = Field(default_factory=list, max_length=64)
 
 
@@ -40,6 +41,13 @@ def declaration(profile, *, artifact_store: bool, desktop: bool, cpu_preparation
     adapter = DECLARATIONS[kind]
     persistent = bool(adapter.persistent_filesystem and profile.get("storage_root")
                       and (kind != "sensecore" or profile["backend"].get("storage_mount")))
+    if kind == "pai-dlc":
+        backend = profile["backend"]
+        persistent = bool(persistent and backend.get("storage_id") and backend.get("filesystem_type") in {"nas", "cpfs"}
+                          and any(mount.get("MountAccess") == "RW" and mount.get("DataSourceVersion")
+                                  and mount.get("DataSourceId") and PurePosixPath(mount.get("MountPath", ".")).is_absolute()
+                                  and PurePosixPath(profile["storage_root"]).is_relative_to(PurePosixPath(mount["MountPath"]))
+                                  for mount in backend.get("data_sources", [])))
     storage_id = storage_scope(profile["backend"], profile["storage_root"]) if persistent else None
     relay = relay_environment(profile["backend"].get("api_relay"))
     if relay and kind != "slurm":
@@ -57,7 +65,7 @@ def declaration(profile, *, artifact_store: bool, desktop: bool, cpu_preparation
         "storage": {"persistent": persistent, "storage_id": storage_id,
                     "checkpoint_registration": persistent and artifact_store},
         "data": {"asset_preparation": asset_mode,
-                 "assets": persistent and artifact_store,
+                 "assets": persistent and artifact_store and kind != "pai-dlc",
                  "download_script": script_mode,
                  "preparation": {"phase": script_mode,
                                  "max_timeout_seconds": 3600 if kind == "sensecore" and cpu_preparation else 86400,
@@ -134,7 +142,8 @@ def match(profiles, declarations, request, requirements, selector, *, resume_sco
             rejected[name] = ["backend"]
             continue
         reasons = mismatches(declarations[name], profile, request, requirements)
-        if resume_scope is not None and storage_scope(profile["backend"], profile["storage_root"].rstrip("/") + "/" + project) != resume_scope:
+        if resume_scope is not None and (not declarations[name]["storage"]["persistent"] or
+                storage_scope(profile["backend"], profile["storage_root"].rstrip("/") + "/" + project) != resume_scope):
             reasons.append("checkpoint.storage_scope")
         if reasons:
             rejected[name] = reasons

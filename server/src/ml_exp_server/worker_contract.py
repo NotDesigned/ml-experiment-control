@@ -28,7 +28,9 @@ def install_workers(directory: Path) -> None:
     for source, target in WORKERS:
         path = directory / target
         shutil.copyfile((Path(__file__).parent / "workers" / source), path)
-        path.chmod(0o444)
+        # COPY preserves source permissions on both Docker builders. Set the
+        # launcher mode in the sealed context instead of requiring BuildKit.
+        path.chmod(0o555 if target == "launch.py" else 0o444)
 
 
 def worker_dockerfile(source_id: str, prefix: str = "") -> str:
@@ -40,7 +42,7 @@ def worker_dockerfile(source_id: str, prefix: str = "") -> str:
             f"COPY {prefix}data_input.py /usr/local/lib/ml-expd/data_input.py\n"
             f"COPY {prefix}data_preparation.py /usr/local/lib/ml-expd/data_preparation.py\n"
             f"COPY {prefix}persistent_state.py /usr/local/lib/ml-expd/persistent_state.py\n"
-            f"COPY --chmod=0555 {prefix}launch.py /usr/local/bin/ml-exp-worker\n"
+            f"COPY {prefix}launch.py /usr/local/bin/ml-exp-worker\n"
             f"LABEL org.ml-expd.source={source_id}\n"
             "ENTRYPOINT []\nCMD [\"/bin/true\"]\n")
 

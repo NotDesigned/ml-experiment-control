@@ -4,13 +4,16 @@ build-backend = "maturin"
 
 [project]
 name = "ml-experiment-control"
-version = "1.0.0"
+version = "1.1.0.dev0"
 description = "Durable ML experiment backends and project-adapter contracts"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "ml-experiment-control contributors"}]
 dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+pai = ["alibabacloud-tea-openapi>=0.4,<0.5", "alibabacloud-tea-util>=0.3,<0.4"]
 
 [dependency-groups]
 dev = [

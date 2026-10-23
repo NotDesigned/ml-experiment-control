@@ -1,5 +1,9 @@
 # Dockerfile builds and the desktop builder
 
+An optional [CPU DSW publisher](pai.md#dsw-builder-without-enterprise-acr) builds
+through PAI and pushes to an existing OCI registry, without enterprise ACR.
+It is opt-in; desktop configuration remains the default.
+
 ## Dockerfile contract
 
 Clients upload code with a Dockerfile. The server validates it, appends frozen

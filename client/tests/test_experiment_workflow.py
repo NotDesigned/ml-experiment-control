@@ -202,10 +202,11 @@ def test_one_config_transports_project_schema_and_scoring_protocol(configuration
     assert definition["required_outputs"] == value["required_outputs"]
 
 
-def test_matching_request_precedes_source_upload_and_transmits_requirements(configuration):
+@pytest.mark.parametrize("backend", ["slurm", "pai-dlc"])
+def test_matching_request_precedes_source_upload_and_transmits_requirements(configuration, backend):
     value = json.loads(configuration.read_text())
     value.pop("executor")
-    value.update(executor_selector={"backend": "slurm", "candidates": ["gpu"]}, requirements={"exit_code": True})
+    value.update(executor_selector={"backend": backend, "candidates": ["gpu"]}, requirements={"exit_code": True})
     configuration.write_text(json.dumps(value))
     api = API()
     prepared = experiment(api, HEALTH, configuration, configuration.with_name("state.json"))

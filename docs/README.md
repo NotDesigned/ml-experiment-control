@@ -20,6 +20,7 @@ For existing installations, read the [1.0 migration notes](migration-1.0.md).
 
 - [Deployment](operator-guide.md): installation, configuration and verification.
 - [Builds](builds.md): Dockerfile admission, desktop builder, cache and capacity.
+- [PAI](pai.md): DLC executor, native Dataset limits and an optional CPU DSW builder.
 - [SenseCore](sensecore-rest.md): REST, cluster selection, startup and timeouts.
 - [Action storage](action-storage.md): database, backup and offline migration.
 - [Project lifecycle](project_lifecycle.md): registration, pause and archive.

@@ -66,7 +66,25 @@ class SenseCoreBackendConfig(_SenseCoreBackendOptional):
     storage_mount: str
 
 
-BackendConfig: TypeAlias = LocalBackendConfig | SlurmBackendConfig | SenseCoreBackendConfig
+class _PaiBackendOptional(TypedDict, total=False):
+    data_sources: list[JsonObject]
+    user_vpc: JsonObject
+    storage_id: str
+    filesystem_type: str
+
+
+class PaiBackendConfig(_PaiBackendOptional):
+    kind: Literal["pai-dlc"]
+    region: str
+    workspace_id: str
+    quota_id: str
+    gpu_type: str
+    job_name: str
+    image: str
+    time: str
+
+
+BackendConfig: TypeAlias = LocalBackendConfig | SlurmBackendConfig | SenseCoreBackendConfig | PaiBackendConfig
 
 
 class StorageConfig(TypedDict, total=False):
