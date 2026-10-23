@@ -141,6 +141,45 @@ steps. Source context still uses MCP; this option does not persist Docker layers
 or enable a direct client OSS-upload API. OSS is object storage and should not be
 treated as a POSIX checkpoint filesystem.
 
+### Approved CPFS personal workspace
+
+For an existing CPFS AI Edition VPC mount target, add these fields to `pai_dsw`
+after an administrator approves the account's personal directory:
+
+```json
+{
+  "cpfs_uri": "bmcpfs://cpfs-FILESYSTEM-vpc-TARGET.REGION.cpfs.aliyuncs.com/",
+  "workspace_user": "YOUR_RAM_USER",
+  "user_vpc": {
+    "VpcId": "vpc-REPLACE",
+    "VSwitchId": "vsw-REPLACE",
+    "SecurityGroupId": "sg-REPLACE"
+  }
+}
+```
+
+Use the actual active mount-target endpoint and matching VPC from the NAS/CPFS
+API or console; do not guess an endpoint or infer permission from visibility.
+The builder creates exactly these CPFS mounts:
+
+| Container path | CPFS directory | Access |
+| --- | --- | --- |
+| `/mnt/workspace` | `/users/YOUR_RAM_USER/` | RW |
+| `/mnt/models` | `/public/models/` | RO |
+| `/mnt/datasets` | `/public/datasets/` | RO |
+
+It explicitly selects `/mnt/workspace` as DSW's `WorkspaceSource` and pins the
+matching user VPC. No project or filesystem-root mount is created. Project
+mounts require a separate approved configuration and are not part of this option.
+Public access modes are fixed in code; they cannot be upgraded through config.
+The optional OSS mount may coexist at a separate path, but cannot shadow these
+mounts. The operator must bind `workspace_user` to the authenticated account.
+
+The DSW workspace is persistent CPFS. Build control files and registry secrets
+remain under the owned `/tmp/ml-expd-build-*` directory; Docker image layers still
+use the engine's temporary storage. This does not create a cross-instance Docker
+cache or change a client's Dockerfile `WORKDIR` or frozen source identity.
+
 Each build requests 4 CPU, 8 GiB, 0 GPU. A cloud shutdown timer is created and read
 back before upload; its 30-minute stop budget survives the API host exiting.
 Known owned instances are stopped/deleted in cleanup. Uncertain creation or

@@ -14,6 +14,9 @@ from tests.test_image_builder_boundary import builder
 RAW=b'{"manifest":"proof"}'
 IMAGE='registry.example/runtime@'+digest(RAW)
 TAG='registry.example/runtime:bundle-'+'a'*64
+CPFS={'cpfs_uri':'bmcpfs://cpfs-example-vpc-123.us-southeast-1.cpfs.aliyuncs.com/',
+      'workspace_user':'researcher',
+      'user_vpc':{'VpcId':'vpc-123','VSwitchId':'vsw-123','SecurityGroupId':'sg-123'}}
 
 class API:
     def __init__(self):
@@ -88,6 +91,51 @@ def test_explicit_oss_prefix_is_mounted_and_recorded_in_owned_lease(publisher,in
     assert api.calls[0][2]['body']['Datasets']==expected
     assert json.loads(pub.lease.read_text())['datasets']==expected
     assert api.calls[-1][0]=='DeleteInstance'
+
+
+@pytest.mark.parametrize('oss', [False, True])
+def test_cpfs_workspace_is_personal_rw_and_public_mounts_are_read_only(publisher,oss):
+    pub,context,api,_=publisher;pub.config.update(CPFS)
+    expected=[{'Uri':CPFS['cpfs_uri']+path,'MountPath':mount,'MountAccess':access}
+              for path,mount,access in [('users/researcher/','/mnt/workspace','RW'),
+                                        ('public/models/','/mnt/models','RO'),
+                                        ('public/datasets/','/mnt/datasets','RO')]]
+    if oss:
+        uri='oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/researcher/'
+        pub.config['oss_uri']=uri
+        expected.append({'Uri':uri,'MountPath':'/mnt/ml-expd-oss','MountAccess':'RW'})
+    assert pub.publish(TAG,context)==IMAGE
+    body=api.calls[0][2]['body']
+    assert body['Datasets']==expected and body['WorkspaceSource']=='/mnt/workspace'
+    assert body['UserVpc']=={**CPFS['user_vpc'],'DefaultRoute':'eth0'}
+    assert json.loads(pub.lease.read_text())['datasets']==expected
+    assert all(d['MountPath']!='/mnt/project' for d in expected)
+
+
+@pytest.mark.parametrize('key,value', [
+    ('cpfs_uri',None),('cpfs_uri','oss://example/'),
+    ('cpfs_uri','bmcpfs://cpfs-example-vpc-123.cn-hangzhou.cpfs.aliyuncs.com/'),
+    ('cpfs_uri',CPFS['cpfs_uri']+'users/another/'),
+    ('cpfs_uri',CPFS['cpfs_uri']+'?signature=private'),
+    ('cpfs_uri',CPFS['cpfs_uri']+'\n'),
+    ('workspace_user',None),('workspace_user','../other'),('workspace_user','other/child'),
+    ('workspace_user',''),('workspace_user','..'),
+    ('user_vpc',None),('user_vpc',{}),('user_vpc',{**CPFS['user_vpc'],'Other':'unexpected'}),
+    *[('user_vpc',{**CPFS['user_vpc'],key:value})
+      for key in CPFS['user_vpc'] for value in [None,'wrong-value']],
+])
+def test_invalid_cpfs_scope_is_refused_before_any_cloud_request(publisher,key,value):
+    pub,context,api,_=publisher;pub.config.update(CPFS);pub.config[key]=value
+    with pytest.raises(ValueError,match='CPFS workspace'):pub.publish(TAG,context)
+    assert not api.calls
+
+
+@pytest.mark.parametrize('mount',['/mnt/workspace','/mnt/models','/mnt/datasets','/mnt/workspace/child'])
+def test_oss_cannot_shadow_cpfs_working_or_public_directories(publisher,mount):
+    pub,context,api,_=publisher;pub.config.update(CPFS)
+    pub.config.update(oss_uri='oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/researcher/',oss_mount_path=mount)
+    with pytest.raises(ValueError,match='OSS mount'):pub.publish(TAG,context)
+    assert not api.calls
 
 
 @pytest.mark.parametrize('settings', [

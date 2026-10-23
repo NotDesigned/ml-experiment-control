@@ -45,21 +45,37 @@ class DswPublisher:
         self.name = None
         self.secrets = []
 
-    def oss_datasets(self):
-        """An explicit account prefix; never infer or mount the shared bucket root."""
+    def datasets(self):
+        """Approved account workspace and public RO mounts; never mount a root."""
+        datasets = []
+        if any(key in self.config for key in ("cpfs_uri", "workspace_user", "user_vpc")):
+            uri, user, vpc = (self.config.get(key) for key in ("cpfs_uri", "workspace_user", "user_vpc"))
+            host = r"cpfs-[a-z0-9-]+\." + re.escape(self.api.config["region"]) + r"\.cpfs\.aliyuncs\.com/"
+            if (not isinstance(uri, str) or not re.fullmatch("bmcpfs://" + host, uri)
+                    or not isinstance(user, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", user)
+                    or not isinstance(vpc, dict) or set(vpc) != {"VpcId", "VSwitchId", "SecurityGroupId"}
+                    or any(not isinstance(vpc[key], str) or not re.fullmatch(prefix + r"[a-z0-9]+", vpc[key])
+                           for key, prefix in (("VpcId", "vpc-"), ("VSwitchId", "vsw-"), ("SecurityGroupId", "sg-")))):
+                raise ValueError("CPFS workspace requires an explicit same-region endpoint, approved user and matching user_vpc")
+            datasets = [{"Uri": uri + path, "MountPath": mount, "MountAccess": access}
+                        for path, mount, access in (("users/" + user + "/", "/mnt/workspace", "RW"),
+                                                    ("public/models/", "/mnt/models", "RO"),
+                                                    ("public/datasets/", "/mnt/datasets", "RO"))]
         uri = self.config.get("oss_uri")
         mount = self.config.get("oss_mount_path", "/mnt/ml-expd-oss")
         if "oss_uri" not in self.config and "oss_mount_path" not in self.config:
-            return []
+            return datasets
         if not isinstance(uri, str) or not isinstance(mount, str):
             raise ValueError("DSW OSS mount requires a URI and a canonical mount path")
         host = r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.oss-" + re.escape(self.api.config["region"]) + r"(?:-internal)?\.aliyuncs\.com"
         match = re.fullmatch(r"oss://" + host + r"(/[A-Za-z0-9._/-]+/)", uri)
         if (not match or any(p in {"", ".", ".."} for p in match[1].split("/")[1:-1])
                 or not re.fullmatch(r"/(?:mnt|data)/[A-Za-z0-9][A-Za-z0-9._/-]*", mount)
-                or any(p in {"", ".", ".."} for p in mount.split("/")[1:])):
+                or any(p in {"", ".", ".."} for p in mount.split("/")[1:])
+                or any(mount == d["MountPath"] or mount.startswith(d["MountPath"] + "/")
+                       or d["MountPath"].startswith(mount + "/") for d in datasets)):
             raise ValueError("DSW OSS mount must bind an explicit same-region prefix to /mnt or /data")
-        return [{"Uri": uri, "MountPath": mount, "MountAccess": "RW"}]
+        return datasets + [{"Uri": uri, "MountPath": mount, "MountAccess": "RW"}]
 
     def upload(self, source, target, private):
         """Use small parts below MCP's practical request size, then verify SHA256."""
@@ -140,7 +156,7 @@ class DswPublisher:
         previous = json.loads(self.lease.read_text()) if self.lease.exists() else {}
         value = {**previous, "bundle_id": self.identity, "instance_id": self.instance, "name": self.name,
                  "region": self.api.config["region"], "workspace_id": self.config["workspace_id"],
-                 "quota_id": self.config["quota_id"], "datasets": self.oss_datasets(), "phase": phase, "gpu": 0, **details}
+                 "quota_id": self.config["quota_id"], "datasets": self.datasets(), "phase": phase, "gpu": 0, **details}
         atomic_json(self.lease, value)
 
     def checked_instance(self):
@@ -192,7 +208,7 @@ class DswPublisher:
         match = re.fullmatch(re.escape(self.builder.config["repository"]) + r":bundle-([0-9a-f]{64})", tag)
         if not match or any(not self.config.get(k) for k in ("workspace_id", "quota_id", "image_id")):
             raise ValueError("DSW publisher requires fixed scope and a Docker-enabled image")
-        datasets = self.oss_datasets()
+        datasets = self.datasets()
         self.identity = match[1]
         self.lease = self.builder.root / (self.identity + ".dsw.json")
         if self.lease.exists():
@@ -213,6 +229,9 @@ class DswPublisher:
                 "Labels": [{"Key": "ml-expd.bundle", "Value": self.identity}]}
         if datasets:
             body["Datasets"] = datasets
+        if self.config.get("cpfs_uri"):
+            body["WorkspaceSource"] = "/mnt/workspace"
+            body["UserVpc"] = {**self.config["user_vpc"], "DefaultRoute": "eth0"}
         self.record("CREATE_INTENT")
         self.phase("STARTING_DSW_BUILDER", "Starting a private 4CPU/8GiB/0GPU DSW in the fixed resource quota")
         try:
