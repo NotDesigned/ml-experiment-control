@@ -510,6 +510,11 @@ class ContainerExecutionService:
             scheduler_name = "ml-" + re.sub(r"[^a-z0-9-]", "-", request.run_id.lower())[:30].strip("-") + "-" + hashlib.sha256(request.run_id.encode()).hexdigest()[:10]
             backend.update(image=reference + ":bundle-" + bundle["bundle_id"],
                            job_name=scheduler_name, display_name=request.run_id)
+            mirror = self.runtime.config.container_execution.sensecore_image_mirror
+            if backend['kind'] == 'sensecore' and mirror is not None and reference == mirror.source_repository:
+                backend['image'] = mirror.target_repository + ':bundle-' + bundle['bundle_id']
+                backend['image_delivery'] = {'source_image': bundle['image'], 'target_tag': backend['image'],
+                                             'builder_socket': self.runtime.config.container_execution.builder_socket}
         campaign_name = "run-" + request.run_id
         outputs = list(dict.fromkeys([*request.outputs, *request.required_outputs]))
         if preparation is not None and "data-preparation.json" not in outputs:

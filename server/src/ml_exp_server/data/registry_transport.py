@@ -27,6 +27,12 @@ def digest(value):
 
 
 class Registry:
+    @classmethod
+    def from_config(cls, config, *, timeout=60):
+        return cls(config['repository'], config['registry_auth_file'], timeout=timeout,
+                   auth_hosts=config.get('registry_auth_hosts', ()),
+                   blob_hosts=config.get('registry_blob_hosts', ()))
+
     def __init__(self, repository, auth_file, *, timeout=60, blob_hosts=(), auth_hosts=()):
         if (not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]+)?/[a-z0-9][a-z0-9._/-]*", repository)
                 or ".." in repository.split("/")):

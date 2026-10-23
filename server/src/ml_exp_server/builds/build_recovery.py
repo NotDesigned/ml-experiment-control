@@ -45,6 +45,10 @@ def publication_absence(builder, identity):
     A missing local receipt, an offline engine or registry error grants nothing.
     """
     config, root = builder.config, builder.root
+    if (root / (identity + '.acr.json')).exists():
+        # ACR has no native build-status API. An absent image cannot grant a
+        # second builder or another tag push after the first webhook intent.
+        return None
     if config.get('publisher') == 'pai-dsw':
         from .pai_build_recovery import observe_dsw_absence
         with (root / (identity + '.lock')).open('a') as lock:

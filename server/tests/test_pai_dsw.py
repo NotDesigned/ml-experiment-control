@@ -55,6 +55,8 @@ def publisher(tmp_path,monkeypatch):
     pub.cli=cli
     class Registry:
         def __init__(self,*args):self.prefix='/v2/runtime'
+        @classmethod
+        def from_config(cls,*args,**kwargs):return cls()
         def request(self,*args,**kwargs):return 200,{},RAW
     monkeypatch.setattr(p,'Registry',Registry)
     monkeypatch.setattr(p.time,'sleep',lambda _:None)
@@ -110,6 +112,32 @@ def test_cpfs_workspace_is_personal_rw_and_public_mounts_are_read_only(publisher
     assert body['UserVpc']=={**CPFS['user_vpc'],'DefaultRoute':'eth0'}
     assert json.loads(pub.lease.read_text())['datasets']==expected
     assert all(d['MountPath']!='/mnt/project' for d in expected)
+
+
+@pytest.mark.parametrize('route',['eth0','eth1'])
+def test_builder_checks_the_route_the_provider_actually_created(publisher,route):
+    pub,context,api,_=publisher;pub.config.update(CPFS,default_route=route)
+    assert pub.publish(TAG,context)==IMAGE
+    assert api.calls[0][2]['body']['UserVpc']['DefaultRoute']==route
+
+
+@pytest.mark.parametrize('route',[None,'eth2',False,17,'eth1'])
+def test_invalid_or_unscoped_route_creates_no_instance(publisher,route):
+    pub,context,api,_=publisher;pub.config['default_route']=route
+    with pytest.raises(ValueError,match='default_route'):pub.publish(TAG,context)
+    assert not api.calls
+
+
+def test_quota_overriding_requested_private_route_fails_and_cleans(publisher):
+    pub,context,api,_=publisher;pub.config.update(CPFS,default_route='eth1')
+    original=api.request
+    def request(product,action,path,**kw):
+        value=original(product,action,path,**kw)
+        if action=='GetInstance':value={**value,'UserVpc':{**CPFS['user_vpc'],'DefaultRoute':'eth0'}}
+        return value
+    api.request=request
+    with pytest.raises(BuildTransportError,match='NETWORK_MISMATCH') as e:pub.publish(TAG,context)
+    assert e.value.details['actual_route']=='eth0' and api.calls[-1][0]=='DeleteInstance'
 
 
 @pytest.mark.parametrize('key,value', [

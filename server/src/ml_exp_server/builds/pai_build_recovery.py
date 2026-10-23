@@ -54,7 +54,7 @@ def observe_dsw_absence(builder, identity):
                 raise ValueError('incomplete DSW recovery inventory')
         else:
             raise ValueError('DSW recovery inventory exceeds bound')
-        registry = Registry(config['repository'], config['registry_auth_file'], timeout=15)
+        registry = Registry.from_config(config, timeout=15)
         status, _, _ = registry.request('GET', registry.prefix + '/manifests/bundle-' + identity,
                                         headers={'Accept': MANIFEST + ', ' + OCI_MANIFEST}, expected=(200, 404))
         if status != 404:

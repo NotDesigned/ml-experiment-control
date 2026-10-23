@@ -362,6 +362,16 @@ def simple_document(monkeypatch):
     monkeypatch.setattr(backend, "document", lambda profile, name, image, command: {"name": name, "image": image, "command": command})
 
 
+def test_cpu_deletion_delivers_frozen_mirror_before_creating_only_the_cpu_job(tmp_path,simple_document,monkeypatch):
+    from tests.test_image_mirror import DELIVERY,SOURCE,TARGET,TAG
+    rest=Rest();service,run,_,state=setup(tmp_path,kind='sensecore',rest=rest)
+    run['container']={'image':SOURCE};run['backend'].update(image=TAG,image_delivery=DELIVERY)
+    targets=service.plan(run,[]);state['plan_sha256']=backend.digest(targets);calls=[]
+    monkeypatch.setattr('ml_exp_server.builds.image_mirror.ensure_delivery',lambda d:calls.append(d))
+    assert service.execute(targets,state,lambda v:None)['status']=='PENDING'
+    assert targets['image']==TARGET and calls==[DELIVERY] and rest.created[0]['image']==TARGET
+
+
 def test_cpu_single_create_callback_required_and_confirmed_uid_terminal(tmp_path, simple_document):
     rest = Rest(); service, _, targets, state = setup(tmp_path, kind="sensecore", rest=rest)
     persisted = []

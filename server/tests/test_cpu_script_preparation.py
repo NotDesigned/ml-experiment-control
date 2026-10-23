@@ -42,6 +42,18 @@ def script(tmp_path):
     return service, run, receipt, creates, stops
 
 
+def test_script_cpu_preparation_uses_the_same_digest_mirror_and_reuses_it(script,monkeypatch):
+    service,run,receipt,creates,_=script;calls=[]
+    run['backend']['image']='ccr.example/runtime:bundle-'+'a'*64
+    delivery={'source_image':run['container']['image'],'target_tag':run['backend']['image'],'builder_socket':'/run/test.sock'}
+    run['backend']['image_delivery']=delivery
+    monkeypatch.setattr('ml_exp_server.builds.image_mirror.ensure_delivery',lambda d:calls.append(d))
+    assert service.ensure('demo',run)['status']=='READY'
+    assert calls==[delivery]
+    assert creates[0][0][1]['roles'][0]['image_path']=='ccr.example/runtime@sha256:'+'c'*64
+    assert service.ensure('demo',run)['status']=='READY' and len(calls)==1
+
+
 def test_success_cpu_profile_exact_receipt_and_reuse(script):
     service, run, receipt, creates, _ = script
     reference = service.reference(run)

@@ -84,11 +84,16 @@ class BackendRunDeletion:
                 raise ValueError("managed Run is outside frozen NAS mount")
             executor = {"workspace": backend["workspace"], "storage_mount": backend["storage_mount"]}
         image = run.get("container", {}).get("image") or backend.get("image")
+        from ..builds.image_mirror import delivery_for_run, target_image
+        delivery = delivery_for_run(run)
+        if delivery is not None:
+            image = target_image(delivery)
         if kind == "sensecore" and (not isinstance(image, str) or not image):
             raise blocked("RUN_DELETION_CPU_UNAVAILABLE", "frozen Python Runtime image is unavailable")
         return {"contract": "managed-run-deletion.v1", "backend": kind, "project": project,
                 "run_id": run["run_id"], "project_root": root, "target": target,
                 "executor": executor, "image": image, "cpu_profile": profile,
+                **({'image_delivery': delivery} if delivery is not None else {}),
                 "estimated_registered_bytes": None, "provider_history": {"status": "UNSUPPORTED"}}
 
     def terminal(self, run, attempts):
@@ -203,6 +208,9 @@ class BackendRunDeletion:
             raise blocked("RUN_DELETION_CPU_DISABLED", "CPU deletion is disabled by scheduler policy")
         name = "ml-expd-delete-" + digest([state["deletion_id"], state["plan_sha256"]])[:32]
         if not state.get("stage"):
+            if targets.get('image_delivery') is not None:
+                from ..builds.image_mirror import ensure_delivery
+                ensure_delivery(targets['image_delivery'])
             verify_spec(self.rest, profile)
             if self.rest.find(profile, name):
                 raise blocked("RUN_DELETION_CPU_IDENTITY_CONFLICT", "deletion scheduler name already exists")

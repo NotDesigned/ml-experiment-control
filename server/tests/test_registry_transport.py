@@ -21,6 +21,15 @@ def registry(tmp_path, monkeypatch):
     return Registry(memory.repository, auth, blob_hosts=['objects.example']), memory, auth
 
 
+def test_operator_registry_config_keeps_auth_and_blob_trust_explicit(registry):
+    _,memory,auth=registry
+    value=Registry.from_config({'repository':memory.repository,'registry_auth_file':auth,
+                                'registry_auth_hosts':['auth.example'],'registry_blob_hosts':['objects.example']},timeout=15)
+    assert value.auth_hosts=={'auth.example'} and value.blob_hosts=={'objects.example'} and value.timeout==15
+    default=Registry.from_config({'repository':memory.repository,'registry_auth_file':auth})
+    assert default.auth_hosts==frozenset() and default.blob_hosts==frozenset()
+
+
 def test_registry_blob_upload_manifest_and_reuse_verify_exact_bytes(registry):
     registry, memory, _ = registry
     body = b'arbitrary upload data' * 100

@@ -219,6 +219,15 @@ class Controller:
             return {}
         credential = json.loads(Path(path).read_text())
         registry = self.run["backend"].get("oci_image", "").split("/", 1)[0]
+        if 'auths' in credential:
+            import base64
+            selected = credential['auths'].get(registry) or credential['auths'].get('https://' + registry)
+            if selected is None:
+                return {}
+            username, password = base64.b64decode(selected['auth'], validate=True).decode().split(':', 1)
+            if not username or not password or any(c in username + password for c in '\r\n'):
+                raise ValueError('invalid exact-host registry pull credentials')
+            credential = {'registry': registry, 'username': username, 'password': password}
         if registry != credential["registry"]:
             return {}
         return {"APPTAINER_DOCKER_USERNAME": credential["username"],
@@ -271,6 +280,10 @@ class Controller:
         self.backend.validate(self.run)
         self.check_api_transport()
         source = self.source(source_root)
+        from .builds.image_mirror import delivery_for_run, ensure_delivery
+        delivery = delivery_for_run(self.run)
+        if delivery is not None:
+            ensure_delivery(delivery)
         staged = self.backend.stage(self.campaign, self.run, self.run["source_id"], SourceBundle(
             root=source, excludes=(), container_path="/workspace", required_paths=()))
         self.prepare_gateway_data(require_cached=False)

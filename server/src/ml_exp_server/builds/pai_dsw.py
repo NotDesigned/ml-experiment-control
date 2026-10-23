@@ -209,6 +209,9 @@ class DswPublisher:
             raise ValueError("DSW publisher requires fixed scope and a Docker-enabled image")
         datasets = self.datasets()
         role = self.role()
+        route = self.config.get('default_route', 'eth0')
+        if route not in ('eth0', 'eth1') or route == 'eth1' and not self.config.get('user_vpc'):
+            raise ValueError('DSW default_route requires eth0 or an explicitly configured eth1 VPC')
         self.identity = match[1]
         self.lease = self.builder.root / (self.identity + ".dsw.json")
         if self.lease.exists():
@@ -233,7 +236,7 @@ class DswPublisher:
         if self.config.get("cpfs_uri"):
             body["WorkspaceSource"] = "/mnt/ml-expd-personal"
         if "user_vpc" in self.config:
-            body["UserVpc"] = {**self.config["user_vpc"], "DefaultRoute": "eth0"}
+            body["UserVpc"] = {**self.config["user_vpc"], "DefaultRoute": route}
         if role is not None:
             body["CredentialConfig"] = {"Enable": True, "AliyunEnvRoleKey": "0", "Configs": [
                 {"Key": "0", "Type": "Role", "Roles": [
@@ -254,6 +257,12 @@ class DswPublisher:
                 if value.get("Status") in {"Failed", "Stopped", "Deleted"} or time.monotonic() > end:
                     self.startup_failure(value)
                 time.sleep(5)
+            if 'user_vpc' in self.config:
+                expected = {**self.config['user_vpc'], 'DefaultRoute': route}
+                if any(value.get('UserVpc', {}).get(k) != v for k, v in expected.items()):
+                    raise BuildTransportError('PAI_DSW_NETWORK_MISMATCH', {
+                        'publication_uncertain': True, 'scheduler_submitted': False,
+                        'expected_route': route, 'actual_route': value.get('UserVpc', {}).get('DefaultRoute')})
             with tempfile.TemporaryDirectory(prefix="dsw-context-", dir=self.builder.root) as directory:
                 local = Path(directory)
                 private = local / "cli"
@@ -280,7 +289,15 @@ class DswPublisher:
                             bases.append(image)
                 request = {"context_sha256": file_sha(archive), "tag": tag, "base_images": bases}
                 atomic_json(local / "request.json", request)
-                atomic_json(local / "config.json", {"auths": {host: auth}})
+                # Only credentials for the target and pinned private bases enter
+                # the owned instance; unrelated registry logins remain on host.
+                hosts = {host, *(image.split('/', 1)[0] for image in bases)}
+                selected = {h: auths.get(h) or auths.get('https://' + h) for h in hosts}
+                selected = {h: value for h, value in selected.items() if value is not None}
+                for item in selected.values():
+                    self.secrets.extend([item['auth'], base64.b64decode(item['auth'], validate=True).decode().split(':', 1)[1]])
+                self.secrets = [value for value in self.secrets if value]
+                atomic_json(local / "config.json", {"auths": selected})
                 worker = Path(__file__).parent.parent / "workers/dsw_build_worker.py"
                 files = [(archive, "context.tar"), (local / "request.json", "request.json"), (local / "config.json", "auth/config.json"),
                          (worker, "worker.py")]
@@ -292,7 +309,7 @@ class DswPublisher:
                 if (not IMAGE.fullmatch(image) or not image.startswith(tag.rsplit(":", 1)[0] + "@")
                         or receipt.get("context_sha256") != request["context_sha256"]):
                     raise ValueError("DSW publication identity differs")
-                registry = Registry(self.builder.config["repository"], self.builder.config["registry_auth_file"])
+                registry = Registry.from_config(self.builder.config)
                 _, _, raw = registry.request("GET", registry.prefix + "/manifests/" + tag.rsplit(":", 1)[1],
                                              headers={"Accept": MANIFEST + ", " + OCI_MANIFEST})
                 if image.rsplit("@", 1)[1] != digest(raw):

@@ -24,7 +24,7 @@ def setup(tmp_path,monkeypatch):
         return {'Instances':[],'TotalCount':0}
     api.request=request;monkeypatch.setattr(p.PaiAPI,'from_environment',lambda:api)
     registry=SimpleNamespace(prefix='/v2/lab',request=lambda *a,**kw:(404,{},b''))
-    monkeypatch.setattr(p,'Registry',lambda *a,**kw:registry)
+    monkeypatch.setattr(p,'Registry',SimpleNamespace(from_config=lambda *a,**kw:registry))
     return b,api,registry
 
 
