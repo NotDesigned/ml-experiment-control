@@ -27,7 +27,8 @@ def test_dockerfile_shares_worker_receipt_data_mounts_and_checkpoint_support(cli
         assert (internal / "worker.py").read_bytes() == (package / "managed_worker.py").read_bytes()
         assert (internal / "artifacts.py").read_bytes() == (package / "worker_artifacts.py").read_bytes()
         assert (internal / "launch.py").read_bytes() == (package / "worker_launcher.py").read_bytes()
-        assert "COPY --chmod=0555" in (context / "Dockerfile").read_text()
+        assert "COPY --chmod=" not in (context / "Dockerfile").read_text()
+        assert (internal / "launch.py").stat().st_mode & 0o777 == 0o555
         assert (internal / "worker.py").stat().st_mode & 0o777 == 0o444
         assert (internal / "artifacts.py").stat().st_mode & 0o777 == 0o444
         packaged.append((context / "Dockerfile").read_text())

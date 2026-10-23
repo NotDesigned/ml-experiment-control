@@ -18,6 +18,7 @@ from ..contracts import (
 )
 from ..runner import CommandResult
 from .sensecore_rest import SenseCoreREST
+from .pai_api import PaiAPI
 
 
 class RunCommand(Protocol):
@@ -53,3 +54,4 @@ class BackendServices:
     oci_pull_environment: Callable[[], dict[str, str]] = lambda: {}
     run_manifest_path: Callable[[Campaign, RunSpec], Path] | None = None
     sensecore_rest: Callable[[], SenseCoreREST] = lambda: SenseCoreREST.from_environment()
+    pai_api: Callable[[], PaiAPI] = lambda: PaiAPI.from_environment()

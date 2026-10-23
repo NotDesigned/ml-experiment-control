@@ -121,6 +121,33 @@ class SenseCoreOperations:
         return owner.sensecore(identity, definition, transfer, operation, SenseCoreREST.from_environment())
 
 
+class PaiOperations:
+    """Native dataset mounts and the existing worker transfer; no invented CPU replay."""
+
+    def prepare_asset(self, owner, project, preparation, value, selected, asset, observe):
+        raise ApplicationError("PAI uploaded data delivery is not configured; use a frozen native dataset mount",
+                               code="PAI_DATA_DELIVERY_UNAVAILABLE")
+
+    def prepare_script(self, owner, project, preparation, value, run):
+        return None  # The generic worker executes declared scripts inside the mounted job.
+
+    def script_progress(self, owner, project, reference):
+        return reference
+
+    def confirm_terminal(self, owner, backend, name):
+        from experiment_control.backends.pai_api import PaiAPI
+        from experiment_control.backends.pai import normalized
+        if normalized(PaiAPI.from_environment().job(backend, name).get("Status")) not in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+            raise ApplicationError("original PAI job is not terminal", code="ORIGINAL_JOB_NOT_TERMINAL")
+
+    def collect(self, owner, identity, root, definition, transfer, operation, local):
+        if local is None:
+            raise ApplicationError("PAI offline result recovery is not configured; inspect the original worker transfer",
+                                   code="PAI_RECOVERY_UNAVAILABLE")
+        publish_existing(owner, identity, local, transfer)
+        return True
+
+
 def publish_existing(owner, identity, local, transfer):
     owner.update(identity, status="COLLECTING", phase="VERIFYING_AND_PUBLISHING")
     owner.publish_local(identity, local, transfer)
@@ -128,7 +155,7 @@ def publish_existing(owner, identity, local, transfer):
 
 def backend_operations(kind, adapters=None):
     """A small injectable mapping, not plugin discovery or a second registry DB."""
-    implementations = adapters if adapters is not None else {"slurm": WydOperations(), "sensecore": SenseCoreOperations()}
+    implementations = adapters if adapters is not None else {"slurm": WydOperations(), "sensecore": SenseCoreOperations(), "pai-dlc": PaiOperations()}
     try:
         return implementations[kind]
     except KeyError:

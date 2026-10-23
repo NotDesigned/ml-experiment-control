@@ -14,6 +14,9 @@ from ..deletion_state import RunFence
 
 def storage_scope(backend, project_root):
     # Executor names and GPU sizes do not define a storage namespace.
+    if backend["kind"] == "pai-dlc":
+        origin = {key: backend[key] for key in ("region", "workspace_id", "storage_id")}
+        return "storage." + digest({"kind": "pai-dlc", "origin": origin, "project_root": project_root})
     origin = backend.get("storage_mount") if backend["kind"] == "sensecore" else backend["ssh_alias"]
     return "storage." + digest({"kind": backend["kind"], "origin": origin, "project_root": project_root})
 

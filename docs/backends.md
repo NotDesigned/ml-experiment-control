@@ -26,7 +26,11 @@ prove two mounts share a filesystem. Checkpoint matching additionally checks the
 registered project's storage scope. Runtime worker features are validated
 separately: old images do not gain new behavior from a server upgrade.
 
-Current adapters declare:
+PAI DLC is an additional opt-in single-node adapter; see [PAI configuration and
+limits](pai.md). It declares quota queries, versioned native Dataset mounts and
+worker transfers, but no platform-uploaded assets or CPU recovery.
+
+The existing adapters declare:
 
 | Detail | WYD Slurm | SenseCore ACP |
 |---|---|---|

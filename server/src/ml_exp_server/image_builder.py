@@ -123,8 +123,8 @@ class ImageBuilder:
             if operation != "build":
                 raise ValueError("unsupported image packaging operation")
             retried = (self.root / (identity + '.definition.json')).is_file()
-            if not self.config.get("allow_dockerfile_builds") or self.config.get("publisher") != "buildkit":
-                raise ValueError("Dockerfile builds require an enabled BuildKit publisher")
+            if not self.config.get("allow_dockerfile_builds") or self.config.get("publisher") not in {"buildkit", "pai-dsw"}:
+                raise ValueError("Dockerfile builds require an enabled image publisher")
             prefixes = self.config.get("base_image_prefixes", [])
             if prefixes and not any(image.startswith(prefix) for prefix in prefixes):
                 raise ValueError("base image is outside packaging policy")
@@ -184,7 +184,11 @@ class ImageBuilder:
                 cache_context = BUILD_CACHE.set(registry + ":buildcache-" + hashlib.sha256(project.encode()).hexdigest()[:24]
                                                if self.config.get("registry_cache", False) else None)
                 try:
-                    published = self._publish_buildkit(tag, context)
+                    if self.config.get("publisher") == "pai-dsw":
+                        from .builds.pai_dsw import DswPublisher
+                        published = DswPublisher(self).publish(tag, context)
+                    else:
+                        published = self._publish_buildkit(tag, context)
                 finally:
                     BUILD_LOG.reset(log_context)
                     BUILD_PROGRESS.reset(progress_context)

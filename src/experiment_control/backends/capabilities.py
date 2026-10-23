@@ -30,4 +30,9 @@ LOCAL = BackendCapabilities(
     True, (), False,
 )
 
-DECLARATIONS = {"slurm": SLURM, "sensecore": SENSECORE, "local": LOCAL}
+PAI = BackendCapabilities(
+    "oci", "flexible", ("live", "historical"), True, False, False,
+    True, ("scheduler", "worker"), True, resource_inventory_query=True,
+)
+
+DECLARATIONS = {"slurm": SLURM, "sensecore": SENSECORE, "local": LOCAL, "pai-dlc": PAI}

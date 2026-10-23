@@ -14,7 +14,7 @@ def for_backend(asset, profile, project):
         raise ApplicationError("data location metadata is invalid", code="INPUT_STORAGE_SCOPE_MISMATCH")
     location = locations.get(scope)
     if location is not None:
-        expected = "wyd" if profile["backend"]["kind"] == "slurm" else "sensecore-ccr"
+        expected = {"slurm": "wyd", "sensecore": "sensecore-ccr"}.get(profile["backend"]["kind"])
         if not isinstance(location, dict) or location.get("storage_scope") != scope or location.get("remote_storage") != expected:
             raise ApplicationError("data copy belongs to another backend", code="INPUT_STORAGE_SCOPE_MISMATCH")
         return {**asset, **location}

@@ -9,9 +9,10 @@ def build_registry(services: BackendServices) -> BackendRegistry:
     from .local import LocalBackend
     from .sensecore import SenseCoreBackend
     from .wyd import WydSlurmBackend
+    from .pai import PaiBackend
 
     return BackendRegistry(
-        LocalBackend(services), WydSlurmBackend(services), SenseCoreBackend(services)
+        LocalBackend(services), WydSlurmBackend(services), SenseCoreBackend(services), PaiBackend(services)
     )
 
 

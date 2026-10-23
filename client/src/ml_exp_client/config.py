@@ -78,7 +78,7 @@ def read_config(path: Path):
             (not isinstance(executor, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", executor))):
         raise ClientError("choose an executor or an executor_selector")
     if selector is not None and (not isinstance(selector, dict) or set(selector) - {"backend", "candidates"} or
-            not isinstance(selector.get("backend"), (str, type(None))) or selector.get("backend") not in {None, "slurm", "sensecore"} or
+            not isinstance(selector.get("backend"), (str, type(None))) or selector.get("backend") not in {None, "slurm", "sensecore", "pai-dlc"} or
             not isinstance(selector.get("candidates", []), list) or len(selector.get("candidates", [])) > 64 or
             any(not isinstance(i, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", i) for i in selector.get("candidates", [])) or
             not (selector.get("backend") or selector.get("candidates"))):
