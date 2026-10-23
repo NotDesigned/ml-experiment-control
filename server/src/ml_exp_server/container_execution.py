@@ -265,7 +265,7 @@ class ContainerExecutionService:
         storage_config = json.loads(Path(store_file).read_text()) if store_file else {}
         desktop = storage_config.get("data_upload_storage") == "desktop-builder"
         return {name: declaration(profile, artifact_store=bool(store_file), desktop=desktop,
-                                  cpu_preparation=bool(storage_config.get("data_delivery")))
+                                  cpu_preparation=bool(storage_config.get("data_delivery")),oss_datasets=bool(storage_config.get("oss_datasets")))
                 for name, profile in profiles.items()}
 
     def environments(self) -> dict:

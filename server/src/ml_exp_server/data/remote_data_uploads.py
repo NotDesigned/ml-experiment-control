@@ -98,7 +98,7 @@ def freeze_target(runtime, project, requested):
     if not isinstance(executor, str) or not IDENTITY.fullmatch(executor):
         raise ValueError("invalid upload executor")
     profile = ContainerExecutionService(runtime).profiles().get(executor)
-    if not profile or profile.get("backend", {}).get("kind") not in {"slurm", "sensecore"}:
+    if not profile or profile.get("backend", {}).get("kind") not in {"slurm", "sensecore", "pai-dlc"}:
         raise ApplicationError("unknown data upload executor", status_code=404, code="UNKNOWN_EXECUTOR")
     profile = deepcopy(profile)
     root = profile.get("storage_root", "").rstrip("/")
@@ -109,7 +109,16 @@ def freeze_target(runtime, project, requested):
     scope = storage_scope(profile["backend"], project_root)
     if requested.get("storage_scope", scope) != scope:
         raise ApplicationError("executor storage scope differs", code="UPLOAD_TARGET_CHANGED")
-    return {"executor": executor, "backend": profile["backend"]["kind"], "storage_scope": scope,
+    extra = {}
+    if profile["backend"]["kind"] == "pai-dlc":
+        from .oss_datasets import settings
+        from .data_assets import AssetStore
+        extra["oss_datasets"] = settings(AssetStore(Path(runtime.config.container_execution.artifact_store_file),runtime.config.project_registry_root_path()).objects.config)
+        if (extra["oss_datasets"]["user"] != profile["backend"].get("workspace_user")
+                or extra["oss_datasets"]["region"] != profile["backend"]["region"]
+                or not ContainerExecutionService(runtime).profile_capabilities({executor:profile})[executor]["data"]["assets"]):
+            raise ApplicationError("DLC dataset storage does not match the approved personal workspace",code="UPLOAD_TARGET_CHANGED")
+    return {**extra,"executor": executor, "backend": profile["backend"]["kind"], "storage_scope": scope,
             "project_root": project_root, "profile": profile,
             "profile_sha256": hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
 
@@ -236,14 +245,17 @@ class ManagedDataUploads:
         elif target["backend"] == "sensecore":
             from .ccr_uploads import CCRDataUploads
             self.driver = CCRDataUploads(assets, self.target, files, transport_sha256)
+        elif target["backend"] == "pai-dlc":
+            from .oss_uploads import OSSDataUploads
+            self.driver = OSSDataUploads(assets,self.target,files,transport_sha256)
         else:
             raise ValueError("unsupported upload target backend")
         self.binding = saved["binding"] if saved else None
 
     def create(self, binding, digest, size, limit):
         config = self.assets.objects.config
-        part_bytes = config.get("upload_part_bytes", 16 * 1024 ** 2)
-        max_parts = config.get("upload_max_parts", 65536)
+        part_bytes = getattr(self.driver,"part_bytes",config.get("upload_part_bytes",16*1024**2))
+        max_parts = min(config.get("upload_max_parts",65536),getattr(self.driver,"max_parts",65536))
         if (not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
                 or type(size) is not int or size <= 0 or exceeds(size, limit)
                 or type(part_bytes) is not int or not 1024 <= part_bytes <= 64 * 1024 ** 2

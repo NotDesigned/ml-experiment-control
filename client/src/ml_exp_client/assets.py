@@ -50,7 +50,7 @@ def upload_asset_parts(client, project, stream, digest, length, state, *, target
             if target is not None:
                 binding = value.get("binding")
                 actual = binding.get("target") if isinstance(binding, dict) else None
-                if (not isinstance(actual, dict) or actual.get("backend") not in {"slurm", "sensecore"}
+                if (not isinstance(actual, dict) or actual.get("backend") not in {"slurm", "sensecore", "pai-dlc"}
                         or not re.fullmatch(r"storage\.[0-9a-f]{64}", str(actual.get("storage_scope", "")))
                         or not re.fullmatch(r"[0-9a-f]{64}", str(actual.get("profile_sha256", "")))
                         or actual.get("executor") != target.get("executor")
@@ -123,3 +123,48 @@ def deliver_data(client, project, asset_id, executor, state_path, seconds):
         if time.monotonic() >= deadline:
             raise ClientError("data copy is still preparing; resume with the saved state, never resubmit")
         time.sleep(5)
+
+
+def download_asset(client,project,asset_id,out):
+    """Direct object download, SHA/file verification; never ACK/delete a dataset."""
+    import tarfile
+    from pathlib import PurePosixPath
+    from .archives import copy_stream
+    ticket=client.call(f'/api/projects/{segment(project)}/assets/{segment(asset_id)}/download')
+    if (ticket.get('transport')!='oss-presigned-get' or not re.fullmatch(r'[0-9a-f]{64}',str(ticket.get('sha256','')))
+            or asset_id!='asset.'+ticket['sha256'] or ticket.get('asset_id')!=asset_id
+            or type(ticket.get('bytes')) is not int or ticket['bytes']<=0):
+        raise ClientError('invalid OSS dataset download ticket')
+    expected={}
+    for item in ticket['files']:
+        name=item['path'];path=PurePosixPath(name)
+        if (not path.parts or path.is_absolute() or '..' in path.parts or '\\' in name
+                or any(p.startswith('.') for p in path.parts) or path.as_posix()!=name or name in expected
+                or not re.fullmatch(r'[0-9a-f]{64}',str(item['sha256'])) or type(item['bytes']) is not int or item['bytes']<0):
+            raise ClientError('unsafe or invalid dataset file receipt')
+        expected[name]=item
+    if not expected:
+        raise ClientError('empty dataset file receipt')
+    out.mkdir(parents=True,exist_ok=False)
+    archive=out/'dataset.tar'
+    with client.open_object(ticket['url']) as response,archive.open('xb') as body:
+        if copy_stream(response,body)!=(ticket['sha256'],ticket['bytes']):
+            raise ClientError('dataset archive differs from its SHA256 receipt')
+    seen=set();tree=out/'data';tree.mkdir()
+    with tarfile.open(archive,mode='r:*') as package:
+        for member in package:
+            if member.isdir():
+                continue
+            name=PurePosixPath(member.name).as_posix()
+            if not member.isfile() or name not in expected or name in seen or member.size!=expected[name]['bytes']:
+                raise ClientError('dataset archive differs from its file receipt')
+            seen.add(name);path=tree/name;path.parent.mkdir(parents=True,exist_ok=True)
+            with package.extractfile(member) as source,path.open('xb') as body:
+                if copy_stream(source,body)!=(expected[name]['sha256'],expected[name]['bytes']):
+                    raise ClientError('dataset file SHA256 differs')
+    if seen!=set(expected):
+        raise ClientError('dataset archive is missing files')
+    report={'project':project,'asset_id':asset_id,'sha256':ticket['sha256'],'bytes':ticket['bytes'],
+            'files':list(expected.values()),'verified':True,'dataset_deleted':False}
+    save(out/'verification.json',report)
+    return report

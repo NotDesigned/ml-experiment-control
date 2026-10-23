@@ -38,6 +38,7 @@ It never stages the complete new dataset archive on the API host or desktop.
 |---|---|
 | WYD | Client → API part buffer → SSH receiver on shared `/datapool`; archive and files are verified there before use |
 | SenseCore | Client → API part buffer → CCR data-image layer; zero-GPU debug ACP copies and verifies it on NAS before GPU submission |
+| DLC | Client → API part buffer → personal OSS archive; the job downloads and verifies a reusable CPFS cache before training |
 
 WYD uses the executor's `storage_root` beneath shared datapool. Compute nodes
 need no external data download. The immutable asset records whole-archive and
@@ -52,10 +53,10 @@ readiness. The CPU copy uses the configured debug cluster, 2CPU/4GiB/0GPU and
 RESERVED quota. GPU jobs exclude debug clusters. Training verifies the sealed
 NAS cache again; dataset files are excluded from final outputs.
 
-New target-backed assets expose metadata and backend references. Their API
-`/archive` and `/download` return typed HTTP 404 `DIRECT_DOWNLOAD_UNAVAILABLE`;
-there is no client dataset-download command. Keep the original data or use its
-backend storage reference. Historical object-store and desktop assets retain
+WYD and SenseCore target-backed assets expose metadata and backend references.
+Their API `/archive` and `/download` return typed HTTP 404
+`DIRECT_DOWNLOAD_UNAVAILABLE`. Keep the original data or use its backend storage
+reference. OSS dataset copies support verified client download as described below. Historical object-store and desktop assets retain
 read/reuse behavior at their original locations; new uploads never select those
 old storage paths.
 
@@ -212,3 +213,90 @@ shared `data-preparations` cache; it never reruns a missing preparation script o
 an offline node. API checkpoint registration, metrics and result upload can use
 the fixed TLS-preserving gateway relay. See
 [WYD offline compute nodes](backends.md#wyd-compute-nodes-without-internet-access).
+
+
+## Personal OSS dataset originals and DLC caches
+
+OSS can store datasets as well as result archives. When `oss-datasets.v1` is
+available and the operator has enabled `oss_datasets`, use the existing upload
+command with a DLC executor:
+
+```sh
+ml-exp asset-upload --project study --executor pai-h200 --directory ./data --state data-upload.json
+ml-exp assets --project study
+ml-exp asset-download --project study --id asset.SHA256 --out ./downloaded-data
+```
+
+The API forwards bounded upload parts to OSS multipart storage. It retains small
+session/asset records and uses the global 1 GiB part buffer, releasing each part
+only after a matching durable receipt. No complete dataset archive or extracted
+tree stays on the API host or desktop. The OSS object is written only beneath
+`users/USER/datasets/ml-expd/PROJECT/`. Each upload generation has a distinct key;
+completion forbids overwrite. Unknown initiations require explicit inspection or
+abort; lost completion responses reconcile the same object rather than creating
+a replacement. Aborting never deletes published or uncertain completed objects.
+
+The uploaded archive is streamed back through the API host once to verify its
+whole SHA256, regular-file inventory and file hashes before publication. This
+uses bounded memory, not a full local copy. Verification latency scales with
+archive size and network speed; it is not a zero-copy registration. A lost HTTP
+response can be inspected through the original upload session. Upload GET snapshots
+remain readable during verification, including `phase`, bytes read, last progress
+time and a safe diagnostic when verification fails. Completed
+registrations reuse frozen metadata rather than reading the whole object again.
+
+To register an existing tar/tar.gz archive under the approved personal
+`users/USER/datasets/` prefix, or the read-only `public/datasets/` prefix:
+
+```sh
+ml-exp asset-import-oss --project study --executor pai-h200 \
+  --object-key users/USER/datasets/fineweb/v1.tar.gz \
+  --sha256 ARCHIVE_SHA256 --bytes ARCHIVE_BYTES
+```
+
+API: `POST /api/projects/PROJECT/assets/import-oss`, with the same
+`executor`, `object_key`, `sha256`, `bytes` fields. Bucket, region and user come
+from operator configuration; clients cannot choose another bucket or another
+user's directory. Registration computes file hashes from actual object bytes.
+No Bucket ACL/Policy, lifecycle deletion or project permissions are changed.
+
+Both paths return the normal ML-Expd `asset_id`; they do not create a separate
+PAI Dataset catalog entry or mount OSS as a filesystem. Reference it in the experiment:
+
+```json
+{"inputs":[{"asset_id":"asset.SHA256","mount_path":"/inputs/fineweb"}]}
+```
+
+DLC mounts approved personal CPFS at `/mnt/workspace`. Its managed worker verifies
+the archive and every file before starting the user entrypoint, seals the shared
+cache, and reuses it on later jobs. The first cache fill currently streams through
+the authenticated exact-Attempt API input endpoint; the API relays bounded OSS
+chunks without storing the dataset. This happens **inside the allocated DLC job**,
+so download/verification time consumes its running-time budget and GPU allocation.
+There is no automatic pre-job DSW data-copy task. Corrupt/missing bytes fail before
+training. Dataset files are separate from OUTPUT_DIR and are not result uploads.
+Storage identity binds the approved CPFS/user/project; registration does not grant
+cross-backend or other-user filesystem access. WYD/SenseCore upload paths remain
+unchanged.
+
+`GET /api/projects/PROJECT/assets/ASSET/download` returns a private five-minute OSS
+GET ticket. The client downloads directly from OSS without an API-host payload
+copy, checks archive/file hashes, and saves `data/` plus `verification.json`.
+Dataset downloads never send a result ACK and never delete the OSS original.
+The durable OSS dataset is outside local 24-hour expiry and Run deletion.
+Manage it deliberately under the approved prefix. Prefer versioned object names;
+if an external tool later overwrites an object, hash validation fails rather than
+silently accepting different data.
+
+OSS allows at most 10,000 multipart parts. With the OSS-specific default 16 MiB part size (`oss_dataset_part_bytes`) this
+path supports up to 156.25 GiB per archive (subject to configured lower limits),
+not an unlimited object size. This does not change the configured SenseCore part size.
+`/api/storage-limits` reports the actual OSS part size, prefixes and limit. Non-final parts must be at least 100 KiB. The
+personal 4 TB storage budget remains a soft budget, not an automatic deletion or
+write-denial rule. Source archives and dataset archives remain separate.
+
+Operators configure these four keys under `oss_datasets` in the artifact-store
+configuration: `bucket`, `region`, `user`, `credentials_file`. Use the approved
+personal RAM credential file already scoped for OSS; it is never sent to clients
+or training programs. Native OSS filesystem mounts remain disabled. Public
+CPFS `/mnt/datasets` and `/mnt/models` stay read-only.

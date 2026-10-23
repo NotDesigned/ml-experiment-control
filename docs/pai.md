@@ -110,9 +110,9 @@ that identity. Direct personal mounts additionally bind the CPFS endpoint and
 approved user, so identical container paths belonging to different users cannot
 be treated as the same restore location. Declaring an ID does not prove the remote mount exists.
 
-Platform-uploaded data/checkpoint assets, pre-job CPU data preparation, offline
-CPU result recovery and managed remote Run deletion are **not implemented** for
-PAI. Unsupported requirements are refused. Successful managed workers can use
+When configured, platform data assets use [personal OSS dataset storage](data.md#personal-oss-dataset-originals-and-dlc-caches) and an in-job verified CPFS cache.
+Periodic full checkpoint-upload snapshots, pre-job CPU data preparation, offline CPU
+result recovery and managed remote Run deletion remain **not implemented** for PAI. Unsupported requirements are refused. Successful managed workers can use
 the existing result/metric transfer protocol; missing worker uploads do not
 silently schedule a CPU recovery job. Do not equate this initial adapter with
 full WYD/SenseCore feature parity.
@@ -487,11 +487,11 @@ See [PAI idle resource semantics](https://help.aliyun.com/zh/pai/use-idle-resour
 
 ## Dataset storage boundary
 
-OSS can retain versioned dataset originals as well as result archives. CPFS holds
-training-time dataset caches and recovery checkpoints. Current DLC profiles mount
-the approved personal CPFS workspace and read-only public datasets/models. They
-do not enable native OSS filesystem mounts or client dataset-asset ingestion for
-DLC. The existing download-script contract can populate DATA_DIR inside a job;
-a managed OSS-to-CPFS dataset delivery workflow remains separate future work.
-Do not confuse a successful image pull with verified training-container Internet
-access. The current shared gateway has no download throughput guarantee.
+OSS stores versioned dataset originals as well as result archives. CPFS holds
+training-time dataset caches and recovery checkpoints. Approved CPFS personal
+and read-only public mounts remain unchanged. See [OSS dataset upload, import
+and download](data.md#personal-oss-dataset-originals-and-dlc-caches).
+Native OSS filesystem mounts remain disabled; current dataset delivery uses
+object APIs and verifies bytes before training. A successful image pull does not
+prove general training-container Internet access. Shared-gateway throughput has
+no guarantee.

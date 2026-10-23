@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel,ConfigDict,Field
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse, StreamingResponse
@@ -37,6 +38,27 @@ async def asset(project: str, asset_id: str, request: Request):
     return await invoke(store(request).read, project, asset_id)
 
 
+class OSSDatasetRequest(BaseModel):
+    model_config=ConfigDict(extra="forbid",strict=True)
+    executor:str=Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+    object_key:str=Field(min_length=1,max_length=1024)
+    sha256:str=Field(pattern=r"^[0-9a-f]{64}$")
+    bytes:int=Field(gt=0)
+
+
+@router.post("/projects/{project}/assets/import-oss")
+async def import_oss(project:str,data:OSSDatasetRequest,request:Request):
+    from ..container_execution import ContainerExecutionService
+    from ..data.remote_data_uploads import freeze_target
+    from ..data.oss_datasets import OSSDatasets
+    runtime=request.app.state.runtime
+    await invoke(ContainerExecutionService(runtime).require_enabled)
+    await invoke(runtime.project,project)
+    frozen=await invoke(freeze_target,runtime,project,{"executor":data.executor})
+    service=await invoke(OSSDatasets,store(request))
+    return await invoke(service.register,project,frozen,data.object_key,data.sha256,data.bytes)
+
+
 async def stream_archive(service, project, asset_id):
     value, body = await invoke(service.archive, project, asset_id)
     return StreamingResponse(body.iter_chunks(chunk_size=1024 * 1024), media_type="application/x-tar",
@@ -56,6 +78,9 @@ async def asset_download_link(project: str, asset_id: str, request: Request):
     if asset.get("remote_storage") in {"desktop-builder", "wyd", "sensecore-ccr"}:
         # Report the asset's frozen storage contract even without an S3 endpoint.
         await invoke(service.download, project, asset_id)
+    from ..data.oss_datasets import locator
+    if locator(asset) is not None:
+        return JSONResponse(await invoke(service.download,project,asset_id),headers={"Cache-Control":"no-store"})
     if not service.objects.config.get("public_endpoint"):
         raise HTTPException(status_code=404, detail="direct downloads are not configured")
     return JSONResponse(await invoke(service.download, project, asset_id), headers={"Cache-Control": "no-store"})
