@@ -106,7 +106,9 @@ Existing operator-configured native versioned PAI Dataset mounts remain valid:
 Only an explicit RW NAS/CPFS dataset or personal CPFS mount covering `storage_root` enables persistent
 checkpoint and in-job download-script capabilities. Its storage identity includes
 region, workspace, filesystem ID and project path; quota/GPU size does not change
-that identity. Declaring an ID does not prove the remote mount exists.
+that identity. Direct personal mounts additionally bind the CPFS endpoint and
+approved user, so identical container paths belonging to different users cannot
+be treated as the same restore location. Declaring an ID does not prove the remote mount exists.
 
 Platform-uploaded data/checkpoint assets, pre-job CPU data preparation, offline
 CPU result recovery and managed remote Run deletion are **not implemented** for

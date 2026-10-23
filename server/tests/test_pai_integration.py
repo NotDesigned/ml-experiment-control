@@ -164,5 +164,7 @@ def test_personal_cpfs_enables_same_storage_recovery_across_quota():
     assert value['storage']['persistent'] and value['storage']['checkpoint_registration']
     assert value['data']['download_script']=='inside_job' and not value['data']['assets']
     assert storage_scope({**backend,'quota_id':'another'},profile['storage_root'])==value['storage']['storage_id']
+    assert storage_scope({**backend,'workspace_user':'another'},profile['storage_root'])!=value['storage']['storage_id']
+    assert storage_scope({**backend,'cpfs_uri':backend['cpfs_uri'].replace('cpfs-approved','cpfs-other')},profile['storage_root'])!=value['storage']['storage_id']
     for path in ['/mnt/models/weights','/mnt/datasets/data','/other']:
         assert not declaration({**profile,'storage_root':path},artifact_store=True,desktop=False)['storage']['persistent']
