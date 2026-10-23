@@ -1,5 +1,6 @@
 """Personal OSS datasets: immutable identities, resumable bounded I/O and CPFS use."""
 from datetime import timedelta
+import copy
 import hashlib
 import io
 import json
@@ -75,6 +76,35 @@ def put(datasets,content=None):
     content=content if content is not None else archive({'tokens.bin':b'fineweb sample'*200})
     key='users/owner/datasets/fineweb/v1.tar';sha=hashlib.sha256(content).hexdigest();objects[key]=content
     return content,key,sha
+
+
+def test_old_preparation_accepts_only_dlc_input_capability_expansion(datasets):
+    from ml_exp_server.runs.experiment_preparation import ExperimentPreparationService
+    cli,assets,target,*_=datasets
+    service=object.__new__(ExperimentPreparationService)
+    service.containers=ContainerExecutionService(cli.app.state.runtime)
+    current=service.containers.profile_capabilities()['pai']
+    selected={'executor':'pai','profile':copy.deepcopy(target['profile']),
+              'capabilities':copy.deepcopy(current)}
+    selected['capabilities']['data']['assets']=False
+    original=copy.deepcopy(selected)
+    service.check_profile(selected)
+    assert selected==original
+    assert service.containers.profile_capabilities()['pai']==current
+    # This is not a general capability/profile drift exemption.
+    for section,key,value in [('network','compute_internet',True),('storage','storage_id','other')]:
+        changed=copy.deepcopy(selected);changed['capabilities'][section][key]=value
+        with pytest.raises(ApplicationError,match='executor configuration changed'):
+            service.check_profile(changed)
+    changed=copy.deepcopy(selected);changed['profile']['backend']['quota_id']='other'
+    with pytest.raises(ApplicationError):service.check_profile(changed)
+    # Disabling input support is never accepted for a preparation that had it.
+    service.containers.profile_capabilities=lambda _: {'pai':original['capabilities']}
+    changed=copy.deepcopy(selected);changed['capabilities']=current
+    with pytest.raises(ApplicationError):service.check_profile(changed)
+    # A missing executor still fails closed.
+    service.containers.profile_capabilities=lambda _: {}
+    with pytest.raises(ApplicationError):service.check_profile(selected)
 
 
 def test_registered_dataset_is_byte_verified_downloadable_and_mountable(datasets,monkeypatch,tmp_path):

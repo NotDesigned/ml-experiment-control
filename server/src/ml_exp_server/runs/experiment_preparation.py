@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import copy
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -255,7 +256,15 @@ class ExperimentPreparationService:
     def check_profile(self, selected):
         profiles = self.containers.profiles()
         name = selected["executor"]
-        if profiles.get(name) != selected["profile"] or self.containers.profile_capabilities(profiles).get(name) != selected["capabilities"]:
+        current = copy.deepcopy(self.containers.profile_capabilities(profiles).get(name))
+        frozen = selected["capabilities"]
+        # OSS adds input support without changing an existing DLC execution.
+        # Compare against the old declaration without rewriting its identity;
+        # every other capability and the complete profile must still match.
+        if (selected["profile"]["backend"]["kind"] == "pai-dlc" and current is not None
+                and current["data"]["assets"] is True and frozen["data"]["assets"] is False):
+            current["data"]["assets"] = False
+        if profiles.get(name) != selected["profile"] or current != frozen:
             raise ApplicationError("executor configuration changed after matching; inspect the frozen preparation", code="EXECUTOR_CONFIGURATION_CHANGED")
 
     def submission_failed(self, pending):
