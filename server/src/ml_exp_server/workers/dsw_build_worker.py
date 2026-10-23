@@ -21,8 +21,8 @@ class Engine(http.client.HTTPConnection):
         self.sock.connect('/var/docker/proxy/docker-proxy.sock')
 
 
-def request(method, path, body=None, headers=None, *, stream=False):
-    connection = Engine('localhost', timeout=600)
+def request(method, path, body=None, headers=None, *, stream=False, timeout=600):
+    connection = Engine('localhost', timeout=timeout)
     try:
         connection.request(method, path, body=body, headers=headers or {})
         response = connection.getresponse()
@@ -50,7 +50,7 @@ def encoded(value):
     return base64.urlsafe_b64encode(json.dumps(value).encode()).decode()
 
 
-def pull_bases(images, credentials):
+def pull_bases(images, credentials, *, timeout=600):
     """Retry only immutable image downloads, before executing any Dockerfile RUN."""
     if not isinstance(images, list) or len(images) > 64:
         raise ValueError('invalid pinned base image list')
@@ -63,7 +63,7 @@ def pull_bases(images, credentials):
             print(json.dumps({'phase': 'PULLING_BASE_IMAGE', 'attempt': attempt + 1, 'image': image}), flush=True)
             try:
                 request('POST', '/images/create?' + urlencode({'fromImage': image, 'platform': 'linux/amd64'}),
-                        headers={'X-Registry-Auth': encoded(credentials.get(host, {})), 'Content-Length': '0'}, stream=True)
+                        headers={'X-Registry-Auth': encoded(credentials.get(host, {})), 'Content-Length': '0'}, stream=True, timeout=timeout)
                 break
             except (OSError, ValueError, http.client.HTTPException):
                 attempt += 1
@@ -75,6 +75,9 @@ def pull_bases(images, credentials):
 def run(root, spec):
     if not re.fullmatch(r'/tmp/ml-expd-build-[0-9a-f]{32}', str(root)):
         raise ValueError('invalid owned DSW build directory')
+    timeout = spec.get('timeout_seconds', 600)
+    if type(timeout) is not int or timeout <= 0:
+        raise ValueError('DSW build timeout_seconds must be a positive integer')
     archive = root / 'context.tar'
     with archive.open('rb') as stream:
         if hashlib.file_digest(stream, 'sha256').hexdigest() != spec['context_sha256']:
@@ -88,15 +91,15 @@ def run(root, spec):
     for registry, item in auths.items():
         user, password = base64.b64decode(item['auth'], validate=True).decode().split(':', 1)
         credentials[registry] = {'username': user, 'password': password, 'serveraddress': registry}
-    pull_bases(spec.get('base_images', []), credentials)
+    pull_bases(spec.get('base_images', []), credentials, timeout=timeout)
     with archive.open('rb') as stream:
         request('POST', '/build?' + urlencode({'t': tag, 'rm': '1', 'version': '1', 'platform': 'linux/amd64'}),
                 body=stream, headers={'Content-Type': 'application/x-tar', 'Content-Length': str(archive.stat().st_size),
-                                      'X-Registry-Config': encoded(credentials)}, stream=True)
+                                      'X-Registry-Config': encoded(credentials)}, stream=True, timeout=timeout)
     repository, name = tag.rsplit(':', 1)
     request('POST', '/images/' + quote(repository, safe='') + '/push?' + urlencode({'tag': name}),
-            headers={'X-Registry-Auth': encoded(credentials[host]), 'Content-Length': '0'}, stream=True)
-    value = request('GET', '/images/' + quote(tag, safe='') + '/json')
+            headers={'X-Registry-Auth': encoded(credentials[host]), 'Content-Length': '0'}, stream=True, timeout=timeout)
+    value = request('GET', '/images/' + quote(tag, safe='') + '/json', timeout=timeout)
     matches = [d for d in value.get('RepoDigests', [])
                if re.fullmatch(re.escape(repository) + r'@sha256:[0-9a-f]{64}', d)]
     if len(matches) != 1:

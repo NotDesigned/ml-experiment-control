@@ -33,7 +33,9 @@ class API:
                 state=self.initial.pop(0)
                 return {**self.value,'Status':state}
             return {**self.value,'Status':self.state}
-        if action=='GetInstanceShutdownTimer':return {'InstanceId':'dsw-owned','RemainingTimeInMs':1799999,'Success':True}
+        if action=='GetInstanceShutdownTimer':
+            budget=next(c[2]['body']['RemainingTimeInMs'] for c in reversed(self.calls) if c[0]=='CreateInstanceShutdownTimer')
+            return {'InstanceId':'dsw-owned','RemainingTimeInMs':budget-1,'Success':True}
         if action=='StopInstance':self.state='Stopped'
         return {}
 
@@ -433,3 +435,41 @@ def test_all_external_stages_are_prepulled_once_before_dockerfile_execution(publ
         return build(remote,private)
     pub.build=checked
     assert pub.publish(TAG,context)==IMAGE
+
+@pytest.mark.parametrize('seconds',[900,1200])
+def test_configured_build_budget_reaches_worker_progress_and_cloud_guard(publisher,tmp_path,monkeypatch,seconds):
+    old,context,api,calls=publisher
+    old.builder.config['timeout_seconds']=seconds
+    pub=p.DswPublisher(old.builder);pub.cli=old.cli
+    phases=[]
+    monkeypatch.setattr(p,'record_progress',lambda path,phase,message,**kw:phases.append((phase,kw)))
+    build=pub.build
+    def checked(remote,private):
+        spec=json.loads(next(tmp_path.glob('dsw-context-*/request.json')).read_text())
+        assert spec['timeout_seconds']==seconds
+        return build(remote,private)
+    pub.build=checked
+    token=BUILD_PROGRESS.set(tmp_path/'progress.json')
+    try:assert pub.publish(TAG,context)==IMAGE
+    finally:BUILD_PROGRESS.reset(token)
+    assert ('BUILDING_ON_DSW',{'timeout_seconds':seconds}) in phases
+    assert any(c[0]=='CreateInstanceShutdownTimer' and c[2]['body']['RemainingTimeInMs']==(seconds+1200)*1000 for c in api.calls)
+
+
+@pytest.mark.parametrize('seconds',[None,True,0,-1,1.5,'1200'])
+def test_invalid_build_budget_is_rejected_before_cloud_requests(publisher,seconds):
+    pub,_,api,_=publisher;pub.builder.config['timeout_seconds']=seconds
+    with pytest.raises(ValueError,match='positive integer'):p.DswPublisher(pub.builder)
+    assert not api.calls
+
+
+def test_twenty_minute_build_survives_old_limit_and_stops_at_configured_limit(publisher,monkeypatch):
+    old,_,_,_=publisher;old.builder.config['timeout_seconds']=1200;pub=p.DswPublisher(old.builder)
+    calls=[]
+    def cli(args,*a,**kw):
+        calls.append(args)
+        return 'ML_EXPD_DSW_STATUS_JSON='+json.dumps({'status':'RUNNING','log_offset':1})
+    pub.cli=cli;pub.instance='dsw-owned'
+    moments=iter([0,601,1201]);monkeypatch.setattr(p.time,'monotonic',lambda:next(moments))
+    with pytest.raises(ValueError,match='configured build timeout'):pub.build('/tmp/owned',Path('/private'))
+    assert len(calls)==3  # One start and two observations, including after the old600s limit.

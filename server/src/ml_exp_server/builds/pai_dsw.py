@@ -43,6 +43,9 @@ def file_sha(path):
 class DswPublisher:
     def __init__(self, builder):
         self.builder, self.config = builder, builder.config["pai_dsw"]
+        self.timeout = builder.config.get("timeout_seconds", 600)
+        if type(self.timeout) is not int or self.timeout <= 0:
+            raise ValueError("DSW build timeout_seconds must be a positive integer")
         self.api = PaiAPI.from_environment()
         self.instance = None
         self.identity = None
@@ -84,13 +87,14 @@ class DswPublisher:
 
     def shutdown_timer(self):
         """Cloud-side stop budget survives a lost CLI or API-host process."""
+        budget_ms = (self.timeout + 1200) * 1000
         path = "/api/v2/instances/" + self.instance + "/shutdowntimer"
         self.api.request("pai-dsw", "CreateInstanceShutdownTimer", path,
-                         method="POST", body={"RemainingTimeInMs": 1800000})
+                         method="POST", body={"RemainingTimeInMs": budget_ms})
         value = self.api.request("pai-dsw", "GetInstanceShutdownTimer", path)
         if (value.get("InstanceId") != self.instance or value.get("Success") is not True
                 or type(value.get("RemainingTimeInMs")) is not int
-                or not 0 < value["RemainingTimeInMs"] <= 1800000):
+                or not 0 < value["RemainingTimeInMs"] <= budget_ms):
             raise ValueError("DSW cloud shutdown timer could not be verified")
 
     def build(self, remote, private):
@@ -102,7 +106,7 @@ class DswPublisher:
                 "stdin=subprocess.DEVNULL,stdout=(root/'build.log').open('wb'), "
                 "stderr=subprocess.STDOUT,start_new_session=True)")
         self.cli(["dsw", "instance", "exec", self.instance, "--code", code], private, timeout=45)
-        deadline, offset = time.monotonic() + 600, 0
+        deadline, offset = time.monotonic() + self.timeout, 0
         while True:
             code = ("from pathlib import Path; import json; root=Path(" + repr(remote) + "); "
                     "p=root/'build.log'; f=p.open('rb'); f.seek(" + str(offset) + "); chunk=f.read(65536); "
@@ -121,14 +125,15 @@ class DswPublisher:
             if state["status"] == "SUCCEEDED":
                 return state["receipt"]
             if state["status"] != "RUNNING" or time.monotonic() > deadline:
-                raise ValueError("DSW build failed or exceeded ten minutes; inspect bounded build logs")
+                raise ValueError("DSW build failed or exceeded configured build timeout; inspect bounded build logs")
             self.phase("BUILDING_ON_DSW", "Docker build running; observed " + str(offset) + " log bytes")
             time.sleep(3)
 
     def phase(self, phase, message):
         path = BUILD_PROGRESS.get()
         if path:
-            record_progress(path, phase, message)
+            record_progress(path, phase, message,
+                            timeout_seconds=self.timeout if phase == "BUILDING_ON_DSW" else None)
 
     def record(self, phase, **details):
         previous = json.loads(self.lease.read_text()) if self.lease.exists() else {}
@@ -287,7 +292,8 @@ class DswPublisher:
                         image = parts[1] if parts[0].startswith("--platform=") else parts[0]
                         if IMAGE.fullmatch(image) and image not in bases:
                             bases.append(image)
-                request = {"context_sha256": file_sha(archive), "tag": tag, "base_images": bases}
+                request = {"context_sha256": file_sha(archive), "tag": tag, "base_images": bases,
+                           "timeout_seconds": self.timeout}
                 atomic_json(local / "request.json", request)
                 # Only credentials for the target and pinned private bases enter
                 # the owned instance; unrelated registry logins remain on host.

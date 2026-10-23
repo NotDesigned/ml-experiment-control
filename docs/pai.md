@@ -130,6 +130,7 @@ Set the private image-builder configuration to opt in:
 {
   "publisher": "pai-dsw",
   "allow_dockerfile_builds": true,
+  "timeout_seconds": 1200,
   "state_root": "/var/lib/ml-expd/image-builder",
   "source_root": "/var/lib/ml-expd/projects/source-revisions/sources",
   "repository": "REGISTRY/NAMESPACE/RUNTIME",
@@ -304,7 +305,8 @@ this field keep their original path. Do not make ACR public to bypass private
 registry authentication.
 
 Each build requests 4 CPU, 8 GiB, 0 GPU. A cloud shutdown timer is created and read
-back before upload; its 30-minute stop budget survives the API host exiting.
+back before upload; its stop budget is the configured build limit plus 20 minutes
+(40 minutes with `timeout_seconds: 1200`) and survives the API host exiting.
 Known owned instances are stopped/deleted in cleanup. Uncertain creation or
 cleanup retains a durable identity lease and requires operator reconciliation;
 it never repeats CreateInstance or blindly rebuilds an existing bundle.
@@ -323,8 +325,12 @@ hash distinguishes new bundles; frozen historical image identities are retained.
 
 The remote build is launched once in the background. Short observations read a
 separate atomic status/receipt and bounded log deltas, avoiding MCP gateway
-timeouts on long calls. Startup and build each have a ten-minute bound; transfers
-and cleanup also have individual bounds. The host independently checks the exact
+timeouts on long calls. Startup has a ten-minute bound. `timeout_seconds` controls
+the complete pull/build/push phase (default 600 seconds; the example above allows
+20 minutes) and is also passed to Docker API socket reads and progress diagnostics.
+The private daemon-to-builder build RPC allows 60 minutes for startup, transfer,
+build, cleanup and fallback; read/reconcile RPCs retain their 20-minute default.
+Transfers and cleanup also have individual bounds. The host independently checks the exact
 registry tag's manifest digest before accepting the receipt. A publication and a
 cleanup failure retain both facts; cleanup uncertainty prevents reporting a new
 build as successful. No automatic recovery from an uncertain lease is claimed.
