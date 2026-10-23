@@ -3,14 +3,24 @@ from __future__ import annotations
 
 import json
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_serializer
 
 
 class WandbOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = True
+    preparation_enabled: bool = Field(default=False, strict=True)
     entity: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
     project: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+    @model_serializer(mode="wrap")
+    def serialize_options(self, handler):
+        value = handler(self)
+        # Preserve pre-upgrade intent hashes when callers omit this new option.
+        if "preparation_enabled" not in self.model_fields_set:
+            value.pop("preparation_enabled", None)
+        return value
 
 
 class WandbSettings(WandbOptions):
@@ -40,3 +50,11 @@ def resolve(options, settings, project):
     return {"requested": options.enabled, "enabled": reason is None, "reason": reason,
             "entity": options.entity or settings.get("resolved_entity"),
             "project": options.project or settings.get("project") or project}
+
+
+def resolve_preparation(options, settings, project):
+    enabled = (options.preparation_enabled if options is not None and
+               "preparation_enabled" in options.model_fields_set else settings.get("preparation_enabled", False))
+    selected = WandbOptions(enabled=enabled, entity=options.entity if options else None,
+                           project=options.project if options else None)
+    return resolve(selected, settings, project)

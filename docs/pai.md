@@ -130,6 +130,7 @@ Set the private image-builder configuration to opt in:
 {
   "publisher": "pai-dsw",
   "allow_dockerfile_builds": true,
+  "timeout_seconds": 1200,
   "state_root": "/var/lib/ml-expd/image-builder",
   "source_root": "/var/lib/ml-expd/projects/source-revisions/sources",
   "repository": "REGISTRY/NAMESPACE/RUNTIME",
@@ -227,7 +228,7 @@ Configure these operator-only builder settings (the API request stays unchanged)
   "registry_blob_hosts": ["aliregistry-ap-northeast-1.oss-ap-northeast-1.aliyuncs.com"],
   "acr_fallback": {
     "git_repository": "https://github.com/YOUR_ACCOUNT/YOUR_PRIVATE_BUILD_REPO",
-    "wait_seconds": 300
+    "wait_seconds": 2700
   }
 }
 ```
@@ -253,6 +254,9 @@ be coordinated with its administrator.
 Native ACR requires `git` and an authenticated `gh` CLI on the builder host.
 The target GitHub repository must be verifiably private and bound in ACR to the
 built-in rule `release-v$version` → `$version`, context `/`, file `Dockerfile`.
+`acr_fallback.wait_seconds` accepts 0–2700 seconds; the example observes
+a publication for up to 45 minutes. This observation does not cancel or rerun
+the provider build when it expires; late publication remains reconcilable.
 The fallback publishes only `release-vbundle-BUNDLE_SHA256`; it never updates
 `main` or overwrites a tag. Git plumbing preserves ignored files, executable
 bits and exact bytes without running client filters or hooks. Git cannot deliver
@@ -304,7 +308,8 @@ this field keep their original path. Do not make ACR public to bypass private
 registry authentication.
 
 Each build requests 4 CPU, 8 GiB, 0 GPU. A cloud shutdown timer is created and read
-back before upload; its 30-minute stop budget survives the API host exiting.
+back before upload; its stop budget is the configured build limit plus 20 minutes
+(40 minutes with `timeout_seconds: 1200`) and survives the API host exiting.
 Known owned instances are stopped/deleted in cleanup. Uncertain creation or
 cleanup retains a durable identity lease and requires operator reconciliation;
 it never repeats CreateInstance or blindly rebuilds an existing bundle.
@@ -323,8 +328,12 @@ hash distinguishes new bundles; frozen historical image identities are retained.
 
 The remote build is launched once in the background. Short observations read a
 separate atomic status/receipt and bounded log deltas, avoiding MCP gateway
-timeouts on long calls. Startup and build each have a ten-minute bound; transfers
-and cleanup also have individual bounds. The host independently checks the exact
+timeouts on long calls. Startup has a ten-minute bound. `timeout_seconds` controls
+the complete pull/build/push phase (default 600 seconds; the example above allows
+20 minutes) and is also passed to Docker API socket reads and progress diagnostics.
+The private daemon-to-builder build RPC allows 120 minutes for startup, transfer,
+build, cleanup and fallback; read/reconcile RPCs retain their 20-minute default.
+Transfers and cleanup also have individual bounds. The host independently checks the exact
 registry tag's manifest digest before accepting the receipt. A publication and a
 cleanup failure retain both facts; cleanup uncertainty prevents reporting a new
 build as successful. No automatic recovery from an uncertain lease is claimed.
@@ -444,3 +453,45 @@ GetInstance and the scoped inventory, and receives an authenticated registry
 403, live worker or published tag grants no retry. The same checks run again
 before creating a replacement CPU builder; the old lease is preserved in
 private history. Source, Dockerfile, worker and bundle identities remain fixed.
+
+
+## DLC scheduling options
+
+New DLC Runs default to priority **5** and guaranteed quota only. An experiment
+configuration or Run request can select:
+
+```json
+{"resources":{"gpus":8,"cpus":64,"memory_gb":512,"max_time":"08:00:00",
+              "allocation_policy":"allow_idle","priority":5}}
+```
+
+| allocation_policy | Native JobSpec.OversoldType | Behavior |
+| --- | --- | --- |
+| guaranteed (default) | ForbiddenQuotaOverSold | Use guaranteed quota only |
+| allow_idle | AcceptQuotaOverSold | Permit borrowing reclaimable idle resources |
+| idle_only | ForceQuotaOverSold | Use reclaimable idle resources only |
+
+Priority is an integer from 1 to 9; a larger value has higher scheduling priority.
+The low-level client exposes `create --allocation-policy MODE --priority N`.
+`GET /api/executors` advertises these options and default priority 5 for DLC;
+clients require `pai-idle-resources.v1` before sending explicit options. Other
+backends reject them. Each Run freezes the selected policy and priority; old Runs
+retain their original native fields, including omitted fields.
+
+Borrowing is subject to provider admission and reclamation. It does not guarantee
+that all idle cards are available, increase the executor's 1–8 GPU limit, or enable
+paid Spot instances. `UseSpotInstance` remains false; preemption does not trigger
+automatic restart. Save recovery checkpoints on the approved personal CPFS path.
+See [PAI idle resource semantics](https://help.aliyun.com/zh/pai/use-idle-resources-in-dlc-jobs).
+
+
+## Dataset storage boundary
+
+OSS can retain versioned dataset originals as well as result archives. CPFS holds
+training-time dataset caches and recovery checkpoints. Current DLC profiles mount
+the approved personal CPFS workspace and read-only public datasets/models. They
+do not enable native OSS filesystem mounts or client dataset-asset ingestion for
+DLC. The existing download-script contract can populate DATA_DIR inside a job;
+a managed OSS-to-CPFS dataset delivery workflow remains separate future work.
+Do not confuse a successful image pull with verified training-container Internet
+access. The current shared gateway has no download throughput guarantee.

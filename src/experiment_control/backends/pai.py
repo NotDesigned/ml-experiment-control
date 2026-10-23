@@ -16,6 +16,10 @@ from ..redaction import redact_line
 from ..submission import require_submission_intent
 
 
+ALLOCATION_POLICIES = {"guaranteed": "ForbiddenQuotaOverSold", "allow_idle": "AcceptQuotaOverSold",
+                       "idle_only": "ForceQuotaOverSold"}
+
+
 def normalized(raw):
     return {"Creating": "QUEUED", "Queuing": "QUEUED", "Bidding": "QUEUED",
             "Dequeued": "STARTING", "WaitingConfig": "STARTING", "EnvPreparing": "STARTING",
@@ -107,6 +111,10 @@ class PaiBackend:
         scheduler_job_name(backend["job_name"], "attempt-001")
         if backend.get("worker_nodes", 1) != 1:
             raise ValueError("PAI first release supports exactly one worker node")
+        if "oversold_type" in backend and backend["oversold_type"] not in ALLOCATION_POLICIES.values():
+            raise ValueError("invalid PAI idle resource policy")
+        if "priority" in backend and (type(backend["priority"]) is not int or not 1 <= backend["priority"] <= 9):
+            raise ValueError("PAI task priority must be an integer from 1 to 9")
         if type(backend.get("gpu_type_from_quota", False)) is not bool:
             raise ValueError("PAI quota GPU selection must be explicit")
         resources = run.get("resources", {})
@@ -211,6 +219,10 @@ class PaiBackend:
                               "RestartPolicy": "Never", "Image": digest_pinned_image(backend["image"], manifest["image_id"]),
                               "ResourceConfig": {"CPU": str(resources["cpus"]), "Memory": str(resources["memory_gb"]) + "Gi",
                                                  "GPU": str(resources["gpus"]), "GPUType": backend["gpu_type"]}}]}
+        if "oversold_type" in backend:
+            document["JobSpecs"][0]["OversoldType"] = backend["oversold_type"]
+        if "priority" in backend:
+            document["Priority"] = backend["priority"]
         credentials = credential_config(backend)
         if backend.get("gpu_type_from_quota"):
             del document["JobSpecs"][0]["ResourceConfig"]["GPUType"]

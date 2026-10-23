@@ -5,7 +5,7 @@ import fcntl
 import json
 
 from ..storage import atomic_json, utc_now
-from .tracking_contract import resolve
+from .tracking_contract import resolve, resolve_preparation
 from .wandb_display import Projection, identity, fingerprint, stem
 from ..records.store import RecordStore, encoded, digest
 
@@ -19,7 +19,8 @@ class TrackingStore(RecordStore):
 
     def public_settings(self):
         value = self.settings()
-        return {"enabled": value.get("enabled", True), "entity": value.get("entity"),
+        return {"enabled": value.get("enabled", True), "preparation_enabled": value.get("preparation_enabled", False),
+                "entity": value.get("entity"),
                 "resolved_entity": value.get("resolved_entity"), "project": value.get("project"),
                 "credentials_configured": bool(value.get("api_key")), "error": value.get("error"),
                 "project_fallback": "ml-expd-project", "cloud": "https://api.wandb.ai"}
@@ -36,7 +37,9 @@ class TrackingStore(RecordStore):
         entity = request.entity if "entity" in request.model_fields_set else previous.get("entity")
         project = request.project if "project" in request.model_fields_set else previous.get("project")
         enabled = request.enabled if "enabled" in request.model_fields_set else previous.get("enabled", True)
-        value = {"enabled": enabled, "entity": entity, "project": project,
+        preparation = (request.preparation_enabled if "preparation_enabled" in request.model_fields_set
+                       else previous.get("preparation_enabled", False))
+        value = {"enabled": enabled, "preparation_enabled": preparation, "entity": entity, "project": project,
                  "api_key": key, "resolved_entity": entity, "error": None}
         cached = (key == previous.get("api_key") and "entity" not in request.model_fields_set
                   and previous.get("resolved_entity"))
@@ -58,6 +61,10 @@ class TrackingStore(RecordStore):
 
     def route(self, options, project):
         return resolve(options, self.settings(), project)
+
+
+    def preparation_route(self, options, project):
+        return resolve_preparation(options, self.settings(), project)
 
 
     def pending(self):

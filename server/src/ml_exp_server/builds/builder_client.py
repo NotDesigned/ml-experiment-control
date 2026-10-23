@@ -55,7 +55,9 @@ class UnixConnection(http.client.HTTPConnection):
         self.sock.connect(self.host)
 
 
-def builder_request(path: str, payload: dict, *, timeout: int = 1200) -> dict:
+def builder_request(path: str, payload: dict, *, timeout: int | None = None) -> dict:
+    if timeout is None:
+        timeout = 7200 if payload.get("operation") == "build" else 1200
     connection = UnixConnection(path, timeout=timeout)
     try:
         connection.request("POST", "/", body=json.dumps(payload), headers={"Content-Type": "application/json"})

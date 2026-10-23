@@ -56,8 +56,24 @@ target. Changing a Run's destination or parameters requires a new Run identity.
 
 ## What is published
 
-Each Attempt has a stable W&B run, grouped by ML-Expd project/Run. Preparation has
-its own record, so build/data failures can be queried without inventing an Attempt.
+Each Attempt has a stable W&B run, grouped by ML-Expd project/Run. New
+preparations are not published by default. Training publication and preparation
+publication are separate options:
+
+```json
+{"wandb":{"enabled":true,"preparation_enabled":false,"project":"fineweb-lr-search"}}
+```
+
+Set `preparation_enabled:true` to publish a separate preparation record for
+build/data progress, using the same selected destination. `enabled` controls the
+training Run; `preparation_enabled` independently controls preparation, subject to
+the server credential and master enable switch. Omitted preparation options inherit
+the server default (initially false). Use `ml-exp wandb --preparation` or
+`ml-exp wandb --no-preparation` to change the default for future preparations.
+Explicit per-experiment values take precedence. These options require the
+`wandb-preparation-sync.v1` capability. Accepted preparations freeze both routes;
+changing defaults does not rewrite them. Historical preparations retain their
+original publication behavior; existing W&B records are not deleted.
 Publication includes source/image/runtime/data identities, explicit parameters,
 frozen metric schema/protocol, restore lineage, observed scheduler/worker stages,
 exit information, metrics, checkpoint manifests and verified output receipts.

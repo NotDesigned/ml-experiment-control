@@ -9,7 +9,7 @@ from ml_exp_client.workflow import experiment
 from test_experiment_workflow import configuration, API, HEALTH
 
 
-@pytest.mark.parametrize("options", [[], {"enabled": "yes"}, {"project": "bad/name"}, {"api_key": "private"}, {"entity": 3}])
+@pytest.mark.parametrize("options", [[], {"enabled": "yes"}, {"project": "bad/name"}, {"api_key": "private"}, {"entity": 3}, {"preparation_enabled": "yes"}, {"preparation_enabled": None}])
 def test_invalid_wandb_options_do_not_upload_source(configuration, options):
     value = json.loads(configuration.read_text()); value["wandb"] = options
     configuration.write_text(json.dumps(value))
@@ -54,3 +54,44 @@ def test_wandb_commands_read_private_file_without_printing_key(tmp_path, monkeyp
     assert calls[-1][0].endswith("/tracking/retry")
     monkeypatch.setattr(FakeAPI, "negotiate", lambda self: {"capabilities": []})
     assert main(["wandb"]) == 2
+
+
+def test_preparation_override_checks_capability_before_upload_and_is_forwarded(configuration):
+    value=json.loads(configuration.read_text());value['wandb']={'enabled':True,'preparation_enabled':False}
+    configuration.write_text(json.dumps(value));api=API()
+    health={**HEALTH,'capabilities':[*HEALTH['capabilities'],'wandb-sync.v1']}
+    with pytest.raises(ClientError,match='wandb-preparation-sync'):experiment(api,health,configuration,configuration.with_name('state.json'))
+    assert api.calls==[]
+    health['capabilities'].append('wandb-preparation-sync.v1')
+    experiment(api,health,configuration,configuration.with_name('state.json'))
+    body=next(kw['data']['run'] for path,kw in api.calls if path.endswith('experiment-preparations'))
+    assert body['wandb']==value['wandb']
+
+
+def test_preparation_default_cli_can_be_enabled_and_disabled(monkeypatch):
+    calls=[]
+    class API:
+        def __init__(self,*a):pass
+        def negotiate(self):return {'capabilities':['wandb-sync.v1']}
+        def call(self,path,**kw):calls.append(kw);return {}
+    monkeypatch.setattr('ml_exp_client.cli.Client',API)
+    assert main(['wandb','--preparation'])==2 and calls==[]
+    monkeypatch.setattr(API,'negotiate',lambda self:{'capabilities':['wandb-sync.v1','wandb-preparation-sync.v1']})
+    assert main(['wandb','--preparation'])==0 and calls[-1]['data']=={'preparation_enabled':True}
+    assert main(['wandb','--no-preparation'])==0 and calls[-1]['data']=={'preparation_enabled':False}
+
+@pytest.mark.parametrize('resources',[{'allocation_policy':'spot'},{'priority':True},{'priority':0},{'priority':10},{'priority':'5'}])
+def test_invalid_dlc_selection_fails_before_upload(configuration,resources):
+    value=json.loads(configuration.read_text());value.setdefault('resources',{}).update(resources);configuration.write_text(json.dumps(value));api=API()
+    with pytest.raises(ClientError):experiment(api,HEALTH,configuration,configuration.with_name('state.json'))
+    assert api.calls==[]
+
+
+def test_dlc_selection_checks_server_capability_and_is_frozen_in_request(configuration):
+    value=json.loads(configuration.read_text());value.setdefault('resources',{}).update(allocation_policy='idle_only',priority=5);configuration.write_text(json.dumps(value));api=API()
+    with pytest.raises(ClientError,match='pai-idle-resources'):experiment(api,HEALTH,configuration,configuration.with_name('state.json'))
+    assert api.calls==[]
+    health={**HEALTH,'capabilities':[*HEALTH['capabilities'],'pai-idle-resources.v1']}
+    experiment(api,health,configuration,configuration.with_name('state.json'))
+    body=next(kw['data']['run'] for path,kw in api.calls if path.endswith('experiment-preparations'))
+    assert body['resources']['allocation_policy']=='idle_only' and body['resources']['priority']==5

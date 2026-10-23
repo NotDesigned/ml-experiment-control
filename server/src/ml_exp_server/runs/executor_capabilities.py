@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from pydantic import BaseModel, ConfigDict, Field
 
 from experiment_control.backends.capabilities import DECLARATIONS
-from experiment_control.backends.pai import personal_mounts
+from experiment_control.backends.pai import ALLOCATION_POLICIES, personal_mounts
 
 from ..application_errors import ApplicationError
 from ..results.checkpoint_registry import storage_scope
@@ -60,6 +60,7 @@ def declaration(profile, *, artifact_store: bool, desktop: bool, cpu_preparation
         "runtime": {"platforms": ["linux/amd64"] if kind != "local" else [],
                     "materialization": adapter.runtime_materialization},
         "resources": {"allocation_mode": adapter.allocation_mode,
+                      **({"allocation_policies": list(ALLOCATION_POLICIES), "priority": {"min": 1, "max": 9, "default": 5}} if kind == "pai-dlc" else {}),
                       "inventory_query": kind == "slurm" or adapter.resource_inventory_query},
         "network": {"compute_internet": profile.get("compute_internet"),
                     "api_transport": "tcp_relay" if relay else "direct_https"},
@@ -110,6 +111,11 @@ def mismatches(capabilities, profile, request, requirements) -> list[str]:
         problems.append("storage.checkpoint_registration")
     if request.checkpoint_upload is not None and not capabilities["data"]["assets"]:
         problems.append("checkpoint_upload")
+    if (getattr(request.resources, "allocation_policy", None) is not None and
+            request.resources.allocation_policy not in capabilities["resources"].get("allocation_policies", [])):
+        problems.append("resources.allocation_policy")
+    if getattr(request.resources, "priority", None) is not None and "priority" not in capabilities["resources"]:
+        problems.append("resources.priority")
     capacity = profile.get("capacity") or {}
     for key in ("gpus", "cpus", "memory_gb"):
         if key in capacity and getattr(request.resources, key) > capacity[key]:

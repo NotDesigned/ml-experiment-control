@@ -205,3 +205,20 @@ def test_quota_gpu_selection_verifies_frozen_hardware_without_native_gpu_enum(ad
     assert b.preflight(r,scope='submit').ready
     assert 'GPUType' not in b.create_document(manifest(r))['JobSpecs'][0]['ResourceConfig']
     assert r['backend']['gpu_type']=='H200'
+
+@pytest.mark.parametrize('mode',['guaranteed','allow_idle','idle_only'])
+def test_idle_selection_and_priority_are_native_and_not_paid_spot(adapter,mode):
+    from experiment_control.backends.pai import ALLOCATION_POLICIES
+    backend,run,_,_,_=adapter
+    manifest={**run,'attempt_id':'attempt-001','command':['python3','train.py']}
+    manifest['backend'].update(oversold_type=ALLOCATION_POLICIES[mode],priority=5)
+    value=backend.create_document(manifest)
+    assert value['Priority']==5 and value['JobSpecs'][0]['OversoldType']==ALLOCATION_POLICIES[mode]
+    assert value['JobSpecs'][0]['UseSpotInstance'] is False
+
+
+@pytest.mark.parametrize('key,value',[('oversold_type','spot'),('oversold_type',None),('priority',True),('priority',0),('priority',10),('priority','5')])
+def test_invalid_idle_policy_and_priority_never_submit(adapter,key,value):
+    backend,run,_,calls,_=adapter;run['backend'][key]=value
+    with pytest.raises(ValueError):backend.create_document({**run,'attempt_id':'attempt-001','command':['true']})
+    assert not calls

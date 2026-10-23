@@ -146,10 +146,14 @@ def wandb(args, client, health):
     if args.command == "tracking":
         endpoint = f"/api/runs/{segment(args.project)}/{segment(args.run)}/tracking"
         result = client.call(endpoint + "/retry", data={}) if args.retry else client.call(endpoint)
-    elif args.key_file or args.entity or args.project or args.disable or args.enable or args.clear_credentials:
+    elif args.key_file or args.entity or args.project or args.disable or args.enable or args.clear_credentials or args.preparation is not None:
         if args.enable and args.disable:
             raise ClientError("choose --enable or --disable")
         definition = {}
+        if args.preparation is not None:
+            if "wandb-preparation-sync.v1" not in health.get("capabilities", []):
+                raise ClientError("server lacks wandb-preparation-sync.v1")
+            definition["preparation_enabled"] = args.preparation
         if args.enable or args.disable:
             definition["enabled"] = args.enable
         for key in ("entity", "project"):
@@ -209,6 +213,11 @@ def create_run(args, client, health):
         "runtime_id": saved["runtime_id"], "run_id": args.run, "executor": args.executor,
         "arguments": args.arguments, "resources": {"gpus": args.gpus, "cpus": args.cpus,
         "memory_gb": args.memory_gb, "max_time": args.max_time}, "outputs": ["**/*"], "inputs": args.inputs}
+    for key in ("allocation_policy", "priority"):
+        if getattr(args, key) is not None:
+            if "pai-idle-resources.v1" not in health.get("capabilities", []):
+                raise ClientError("server lacks pai-idle-resources.v1")
+            definition["resources"][key] = getattr(args, key)
     if args.wandb is not None:
         definition["wandb"] = args.wandb
     if args.parameters is not None:

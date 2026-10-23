@@ -121,3 +121,33 @@ def test_only_pull_is_retried_before_build_or_push(monkeypatch,capsys):
     assert 'PULLING_BASE_IMAGE' in capsys.readouterr().out
     monkeypatch.setattr(w,'request',lambda *a,**k:(_ for _ in ()).throw(ValueError('reset')))
     with pytest.raises(ValueError):w.pull_bases([IMAGE],{})
+
+@pytest.mark.parametrize('seconds',[None,True,0,-1,1.5,'1200'])
+def test_invalid_worker_budget_is_rejected_before_docker(root,monkeypatch,seconds):
+    value=spec(root);value['timeout_seconds']=seconds;calls=[]
+    monkeypatch.setattr(w,'request',lambda *a,**kw:calls.append(a))
+    with pytest.raises(ValueError,match='positive integer'):w.run(root,value)
+    assert not calls
+
+
+def test_worker_passes_twenty_minute_budget_to_pull_build_push_and_inspect(root,monkeypatch):
+    value=spec(root);value.update(timeout_seconds=1200,base_images=[IMAGE]);calls=[]
+    def request(method,path,**kwargs):
+        calls.append((method,path,kwargs))
+        if method=='GET':return {'RepoDigests':[IMAGE]}
+    monkeypatch.setattr(w,'request',request)
+    assert w.run(root,value)['image']==IMAGE
+    assert len(calls)==4 and all(row[2]['timeout']==1200 for row in calls)
+
+
+def test_docker_socket_uses_configured_read_timeout(monkeypatch):
+    seen=[]
+    class Connection:
+        def __init__(self,*args,**kw):seen.append(kw['timeout'])
+        def request(self,*a,**kw):pass
+        def getresponse(self):
+            response=io.BytesIO(b'{}');response.status=200;return response
+        def close(self):pass
+    monkeypatch.setattr(w,'Engine',Connection)
+    assert w.request('GET','/version',timeout=1200)=={}
+    assert seen==[1200]

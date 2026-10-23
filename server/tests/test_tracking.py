@@ -422,7 +422,7 @@ def test_client_writer_streams_live_through_api_and_builds_loss_curve(client, st
 
 
 def test_preparation_freezes_target_before_build_and_keeps_failure_evidence(client, service, monkeypatch):
-    client.put("/api/tracking/wandb", json={"api_key": "test-key", "entity": "team", "project": "before"})
+    client.put("/api/tracking/wandb", json={"api_key": "test-key", "entity": "team", "project": "before", "preparation_enabled": True})
     from ml_exp_server.runs.experiment_preparation import ExperimentPreparationRequest
     request = ExperimentPreparationRequest.model_validate(spec(client, run={"run_id": "trial", "executor": "gpu", "parameters": {"seed": 42}}))
     accepted, pending = service.accept("demo", request)
@@ -699,3 +699,42 @@ def test_official_http_summary_is_a_mapping_not_an_iterator():
     assert list(summary.keys())==["metrics/loss/step"]
     assert dict(summary)=={"metrics/loss/step":6112}
     with pytest.raises(KeyError):list(summary)
+
+
+def test_default_training_publication_does_not_create_preparation_wandb_run(client,service):
+    client.put('/api/tracking/wandb',json={'api_key':'test-key','entity':'team'})
+    from ml_exp_server.runs.experiment_preparation import ExperimentPreparationRequest
+    request=ExperimentPreparationRequest.model_validate(spec(client,run={'run_id':'only-training','executor':'gpu'}))
+    accepted,pending=service.accept('demo',request)
+    assert accepted['tracking']['enabled'] and not accepted['preparation_tracking']['enabled']
+    assert service.finish(pending)['status']=='READY'
+    store=store_for(client.app.state.runtime);observe(client.app.state.runtime,store)
+    assert store.binding('demo','only-training')['route']['enabled']
+    assert store.binding('demo','only-training--preparation') is None
+    assert client.get('/api/runs/demo/only-training/tracking').json()['preparation']==[]
+
+
+def test_preparation_option_defaults_overrides_and_legacy_intent_serialization(tmp_path):
+    store=TrackingStore(tmp_path)
+    assert store.public_settings()['preparation_enabled'] is False
+    store.configure(WandbSettings(api_key='key',entity='team',preparation_enabled=True),lambda key:'team')
+    assert store.preparation_route(None,'study')['enabled']
+    assert not store.preparation_route(WandbOptions(preparation_enabled=False),'study')['enabled']
+    assert store.preparation_route(WandbOptions(enabled=False,preparation_enabled=True),'study')['enabled']
+    assert not store.route(WandbOptions(enabled=False,preparation_enabled=True),'study')['enabled']
+    store.configure(WandbSettings(project='changed'),lambda key:'team')
+    assert store.public_settings()['preparation_enabled'] is True
+    old={'enabled':True,'entity':None,'project':'study'}
+    assert WandbOptions(project='study').model_dump()==old
+    assert WandbOptions(project='study',preparation_enabled=False).model_dump()=={**old,'preparation_enabled':False}
+    with pytest.raises(ValueError):WandbOptions(preparation_enabled='yes')
+
+
+def test_historical_preparation_binding_keeps_its_frozen_route(client):
+    store=store_for(client.app.state.runtime)
+    store.configure(WandbSettings(api_key='key',entity='team'),lambda key:'team')
+    route=store.route(None,'demo')
+    legacy={'project':'demo','run_id':'old-trial','tracking':route,'preparation_id':'old-preparation','status':'FAILED'}
+    preparation_record(client.app.state.runtime,legacy)
+    assert store.binding('demo','old-trial--preparation')['route']==route
+    assert len(store.events(store.scope('demo','old-trial--preparation','preparation')))==1

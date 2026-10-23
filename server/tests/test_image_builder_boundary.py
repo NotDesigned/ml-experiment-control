@@ -8,6 +8,7 @@ import socketserver
 import subprocess
 import sys
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -241,3 +242,18 @@ def test_builder_entrypoint_creates_private_socket_and_serves_request(tmp_path, 
         runpy.run_module(module.__name__, run_name="__main__")
     assert results == ["unpublished"] and socket.stat().st_mode & 0o777 == 0o660
     assert ownership == [(socket.parent, 0, os.getgid()), (socket, 0, os.getgid())]
+
+@pytest.mark.parametrize('operation,explicit,expected',[
+    ('build',None,7200),('get',None,1200),('reconcile',None,1200),('build',17,17)])
+def test_build_rpc_leaves_headroom_for_startup_build_cleanup_and_fallback(monkeypatch,operation,explicit,expected):
+    from ml_exp_server.builds import builder_client
+    seen=[]
+    class Connection:
+        def __init__(self,path,**kw):seen.append(kw['timeout'])
+        def request(self,*a,**kw):pass
+        def getresponse(self):
+            return SimpleNamespace(status=200,read=lambda size:b'{}')
+        def close(self):pass
+    monkeypatch.setattr(builder_client,'UnixConnection',Connection)
+    assert builder_client.builder_request('/private',{'operation':operation},timeout=explicit)=={}
+    assert seen==[expected]

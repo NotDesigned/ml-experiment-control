@@ -26,6 +26,8 @@ SERVER_CAPABILITIES = (
     "resource-deletion.v1",
     "artifact-retention.v1",
     "wandb-sync.v1",
+    "wandb-preparation-sync.v1",
+    "pai-idle-resources.v1",
     "result-collection.v1",
     "training-result.v1",
     "experiment-records.v1",

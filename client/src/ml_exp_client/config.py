@@ -38,11 +38,11 @@ def read_config(path: Path):
     if not isinstance(value, dict) or set(value) - allowed:
         raise ClientError("experiment config contains unknown fields")
     wandb = value.get("wandb")
-    if wandb is not None and (not isinstance(wandb, dict) or set(wandb) - {"enabled", "entity", "project"} or
-            type(wandb.get("enabled", True)) is not bool or any(item is not None and
+    if wandb is not None and (not isinstance(wandb, dict) or set(wandb) - {"enabled", "preparation_enabled", "entity", "project"} or
+            type(wandb.get("enabled", True)) is not bool or type(wandb.get("preparation_enabled", False)) is not bool or any(item is not None and
                 (not isinstance(item, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", item))
                 for key, item in wandb.items() if key in {"entity", "project"})):
-        raise ClientError("wandb needs a boolean enabled and optional entity/project names")
+        raise ClientError("wandb needs boolean enabled/preparation_enabled and optional entity/project names")
     parameters = value.get("parameters")
     try:
         valid_parameters = parameters is None or isinstance(parameters, dict) and len(json.dumps(parameters, allow_nan=False).encode()) <= 16384
@@ -142,8 +142,12 @@ def read_config(path: Path):
             if not directory.is_dir() or directory.is_relative_to(source):
                 raise ClientError("data must be a separate existing directory outside source")
     resources = value.get("resources", {})
-    if not isinstance(resources, dict) or set(resources) - {"gpus", "cpus", "memory_gb", "max_time"}:
+    if not isinstance(resources, dict) or set(resources) - {"gpus", "cpus", "memory_gb", "max_time", "allocation_policy", "priority"}:
         raise ClientError("invalid resources")
+    if resources.get("allocation_policy") is not None and resources["allocation_policy"] not in ("guaranteed", "allow_idle", "idle_only"):
+        raise ClientError("allocation_policy must be guaranteed, allow_idle or idle_only")
+    if resources.get("priority") is not None and (type(resources["priority"]) is not int or not 1 <= resources["priority"] <= 9):
+        raise ClientError("priority must be an integer from 1 to 9")
     for key, limit in (("gpus", 64), ("cpus", 512), ("memory_gb", 4096)):
         if key in resources and (type(resources[key]) is not int or not 1 <= resources[key] <= limit):
             raise ClientError("resources exceed supported bounds")

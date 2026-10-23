@@ -11,8 +11,10 @@ from pathlib import Path, PurePosixPath
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
 import yaml
+
+from experiment_control.backends.pai import ALLOCATION_POLICIES
 
 from .application_errors import ApplicationError
 from .builds.builder_client import IMAGE, builder_request, bundle_id, BuildStorageError, BuildTransportError, BuildReceiptMissingError
@@ -33,7 +35,6 @@ from .runs.executor_capabilities import declaration, ExecutionRequirements, mism
 from .tracking.tracking_contract import WandbOptions, finite_parameters
 from .tracking.tracking_service import store_for, bind_run
 from .runs.deletion_guards import request_run
-
 
 SECRET_KEY = re.compile(r"(?i)(?:^|_)(?:token|secret|password|credential|api_key|proxy|authorization)(?:$|_)")
 
@@ -69,10 +70,20 @@ class DockerfileRuntimeSpec(BaseModel):
 
 class Resources(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    allocation_policy: Literal["guaranteed", "allow_idle", "idle_only"] | None = None
+    priority: int | None = Field(default=None, ge=1, le=9, strict=True)
     gpus: int = Field(default=1, ge=1, le=64)
     cpus: int = Field(default=8, ge=1, le=512)
     memory_gb: int = Field(default=32, ge=1, le=4096)
     max_time: str = Field(default="00:10:00", pattern=r"^[0-9]{2,3}:[0-5][0-9]:[0-5][0-9]$")
+
+    @model_serializer(mode="wrap")
+    def serialize_resources(self, handler):
+        value = handler(self)
+        for key in ("allocation_policy", "priority"):
+            if value.get(key) is None:
+                value.pop(key, None)
+        return value
 
     @field_validator("max_time")
     @classmethod
@@ -80,6 +91,17 @@ class Resources(BaseModel):
         if not any(int(part) for part in value.split(":")):
             raise ValueError("max_time must be a positive duration")
         return value
+
+
+def pai_scheduling(resources, previous_run):
+    """New defaults are explicit; absent historical choices remain absent."""
+    previous = previous_run.get("backend", {}) if previous_run else {}
+    value = {}
+    if previous_run is None or "oversold_type" in previous or resources.allocation_policy is not None:
+        value["oversold_type"] = ALLOCATION_POLICIES[resources.allocation_policy or "guaranteed"]
+    if previous_run is None or "priority" in previous or resources.priority is not None:
+        value["priority"] = resources.priority if resources.priority is not None else 5
+    return value
 
 
 class InputAsset(BaseModel):
@@ -482,6 +504,8 @@ class ContainerExecutionService:
         if not configured.controller or not configured.controller.capabilities.get("container_execution"):
             raise ApplicationError("project is not container-managed", code="CONTAINER_EXECUTION_BLOCKED")
         backend = profile["backend"]
+        if backend["kind"] == "pai-dlc":
+            backend.update(pai_scheduling(request.resources, frozen_run))
         storage_root = profile["storage_root"].rstrip("/") + "/" + project
         persistence = request.checkpoint_persistence
         resume = None
@@ -522,6 +546,11 @@ class ContainerExecutionService:
         if persistence is not None and "checkpoints.json" not in outputs:
             outputs.append("checkpoints.json")
         resources = request.resources.model_dump()
+        if backend["kind"] == "pai-dlc":
+            if "oversold_type" in backend:
+                resources["allocation_policy"] = request.resources.allocation_policy or "guaranteed"
+            if "priority" in backend:
+                resources["priority"] = backend["priority"]
         if backend["kind"] == "sensecore" and profile.get("capacity"):
             capacity = profile["capacity"]
             resources.update({key: capacity[key] for key in ("gpus", "cpus", "memory_gb")})
