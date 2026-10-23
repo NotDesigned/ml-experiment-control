@@ -39,6 +39,11 @@ async def diagnostics(project: str, run: str, attempt: str, request: Request, re
                         project, run, attempt, refresh=refresh)
 
 
+@router.get("/runs/{project}/{run}/attempts/{attempt}/oss-archive/download")
+async def oss_archive_download(project: str, run: str, attempt: str, request: Request):
+    return await invoke(request.app.state.runtime.storage_service.archives.ticket, project, run, attempt)
+
+
 @router.get("/runs/{project}/{run}/attempts/{attempt}/diagnostics")
 async def training_diagnostics(project: str, run: str, attempt: str, request: Request, refresh: bool = False):
     return await invoke(ResultCollectionService(request.app.state.runtime).training_diagnostics,
