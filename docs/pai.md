@@ -121,6 +121,26 @@ this configuration. The builder uses PAI CLI's MCP upload/exec channel with a
 private temporary CLI profile; creation/status/stop/deletion use signed REST.
 It does not modify the operator's logged-in CLI profile or expose Docker TCP.
 
+Optionally add an OSS mount to `pai_dsw`:
+
+```json
+{
+  "oss_uri": "oss://BUCKET.oss-REGION-internal.aliyuncs.com/users/YOUR_RAM_USER/",
+  "oss_mount_path": "/mnt/ml-expd-oss"
+}
+```
+
+Confirm the bucket, region and account's directory with the operator first; the
+builder does not infer directory ownership from its name. It passes this explicit
+prefix to DSW's native `Datasets` configuration with `MountAccess: RW`. The default
+mount path is `/mnt/ml-expd-oss`; custom paths must be below `/mnt` or `/data`.
+Bucket-root mounts, traversal, signed URLs and cross-region endpoints are rejected
+before creating a DSW. Omit both fields to retain the existing unmounted behavior.
+This makes files available in the DSW, not automatically inside Docker build RUN
+steps. Source context still uses MCP; this option does not persist Docker layers
+or enable a direct client OSS-upload API. OSS is object storage and should not be
+treated as a POSIX checkpoint filesystem.
+
 Each build requests 4 CPU, 8 GiB, 0 GPU. A cloud shutdown timer is created and read
 back before upload; its 30-minute stop budget survives the API host exiting.
 Known owned instances are stopped/deleted in cleanup. Uncertain creation or
@@ -154,5 +174,6 @@ it does not promise warm layers, arbitrary CUDA image capacity or fast cold pull
 A small successful build is not a large-image or training acceptance test.
 
 Official references: [Docker in DSW](https://help.aliyun.com/zh/pai/using-docker-in-dsw),
+[DSW datasets and OSS mounts](https://help.aliyun.com/zh/pai/developer-reference/api-pai-dsw-2022-01-01-createinstance),
 [shutdown timer](https://help.aliyun.com/zh/pai/developer-reference/api-pai-dsw-2022-01-01-createinstanceshutdowntimer),
 [DLC CreateJob](https://help.aliyun.com/zh/pai/developer-reference/api-pai-dlc-2020-12-03-createjob).

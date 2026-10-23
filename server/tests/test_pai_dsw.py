@@ -66,6 +66,7 @@ def test_publisher_uses_only_fixed_cpu_quota_and_cleans_every_success(publisher,
     body=api.calls[0][2]['body']
     assert body['ResourceId']=='quota-fixed' and body['RequestedResource']=={'CPU':'4','Memory':'8Gi','GPU':'0'}
     assert body['Accessibility']=='PRIVATE' and body['DockerConfig']['Enable']
+    assert 'Datasets' not in body
     assert [c[0] for c in api.calls].count('CreateInstance')==1
     assert any(c[0]=='CreateInstanceShutdownTimer' and c[2]['body']['RemainingTimeInMs']==1800000 for c in api.calls)
     assert api.calls[-1][0]=='DeleteInstance'
@@ -74,6 +75,45 @@ def test_publisher_uses_only_fixed_cpu_quota_and_cleans_every_success(publisher,
     assert json.loads(progress.read_text())['events'][-1]['phase']=='STOPPING_DSW_BUILDER'
     with pytest.raises(BuildTransportError,match='RECONCILE_REQUIRED'):pub.publish(TAG,context)
     assert [c[0] for c in api.calls].count('CreateInstance')==1
+
+
+@pytest.mark.parametrize('internal,mount', [(True, None), (False, '/data/account-oss')])
+def test_explicit_oss_prefix_is_mounted_and_recorded_in_owned_lease(publisher,internal,mount):
+    pub,context,api,_=publisher
+    uri='oss://example-bucket.oss-us-southeast-1'+('-internal' if internal else '')+'.aliyuncs.com/users/researcher/'
+    pub.config['oss_uri']=uri
+    if mount is not None:pub.config['oss_mount_path']=mount
+    expected=[{'Uri':uri,'MountPath':mount or '/mnt/ml-expd-oss','MountAccess':'RW'}]
+    assert pub.publish(TAG,context)==IMAGE
+    assert api.calls[0][2]['body']['Datasets']==expected
+    assert json.loads(pub.lease.read_text())['datasets']==expected
+    assert api.calls[-1][0]=='DeleteInstance'
+
+
+@pytest.mark.parametrize('settings', [
+    {'oss_mount_path':'/mnt/account'}, {'oss_uri':None}, {'oss_uri':3},
+    {'oss_uri':'oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/researcher/','oss_mount_path':None},
+    *[{'oss_uri':uri} for uri in [
+        'oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/',
+        'oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users//researcher/',
+        'oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/../researcher/',
+        'oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/./researcher/',
+        'oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/researcher/?key=secret',
+        'oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/researcher/#fragment',
+        'oss://example-bucket.oss-cn-hangzhou-internal.aliyuncs.com/users/researcher/',
+        'oss://user:password@example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/researcher/',
+        'oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com:443/users/researcher/',
+        'oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/%2e%2e/researcher/',
+        'oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/researcher/\n',
+        'oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/researcher',
+    ]],
+    *[{'oss_uri':'oss://example-bucket.oss-us-southeast-1-internal.aliyuncs.com/users/researcher/',
+       'oss_mount_path':mount} for mount in ['/','/tmp/build','/mnt','/mnt/../root','/data//user','/mnt/user/']],
+])
+def test_invalid_oss_mount_fails_before_cloud_creation(publisher,settings):
+    pub,context,api,_=publisher;pub.config.update(settings)
+    with pytest.raises(ValueError,match='OSS mount'):pub.publish(TAG,context)
+    assert not api.calls
 
 
 @pytest.mark.parametrize('case',['tag','config','auth_missing','auth_invalid'])
