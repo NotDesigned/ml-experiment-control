@@ -28,9 +28,10 @@ tests use injected runners/REST responses; they must not submit to a scheduler.
 
 ## Required validation
 
-The repository workflow runs on pull requests and main pushes, using Python
-3.12. Python 3.10 remains the package compatibility floor, not another CI job.
-Before merging implementation changes, run the independent full gates once:
+PRs run the full workflow using Python 3.12. Python 3.10 remains the package
+compatibility floor, not another CI job. During editing, run affected tests; a
+green full PR run does not require another unchanged local full run. To run the
+full gates locally:
 
 ```bash
 cargo fmt --manifest-path rust/Cargo.toml -- --check
@@ -38,12 +39,10 @@ cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
 cargo test --locked --manifest-path rust/Cargo.toml
 uv run mypy
 uv run python tools/coverage_gate.py
-uv run --package ml-experiment-server python tools/coverage_gate.py --suite daemon
-uv run --package ml-experiment-client pytest client/tests -q
+uv run --package ml-experiment-server python tools/coverage_gate.py --suite daemon --workers 2
+uv run --package ml-experiment-client python tools/coverage_gate.py --suite client --min-line 90.9 --min-branch 84.5
 uv run python tools/generate_cli_reference.py --check
-uv run python -m compileall -q src tests tools examples
-uv run --package ml-experiment-server python -m compileall -q server/src server/tests
-uv run --package ml-experiment-client python -m compileall -q client/src client/tests
+uv run python -m compileall -q tools examples
 uv build --all-packages
 ```
 
@@ -51,12 +50,42 @@ CI also installs the client wheel without core/server dependencies and smoke
 tests the installed server/core wheels. Both core and server coverage gates
 require **100% line and 100% branch coverage independently**. Coverage is a
 regression floor; it does not prove all lifecycle combinations or a live backend.
+The standalone client previously had no coverage gate. Its measured baseline is
+90.96% line / 84.57% branch; CI now independently requires 90.9% / 84.5%. This is
+a separate baseline floor, not a claim of 100% client coverage.
 
 Meaningful scenarios include lost create acknowledgments, exact identity
 reconciliation without replay, concurrent execution claims, cancellation of
 only an owned job, corrupt archives/checkpoints, interrupted journal writes,
 metric-context isolation and stale observations. Prefer simplifying code and
 testing these boundaries over tests that merely repeat implementation details.
+
+## CI result reuse and test cost
+
+After every full run passes, CI records the actual checked-out commit and Git
+tree as a small seven-day Actions artifact. On a main push, a read-only job checks
+the merged PR, its successful run of the same workflow, repository, run attempt,
+artifact identity and GitHub's Git object. Only an exact match with the pushed
+code tree reuses that full run. Checking a branch-head SHA alone is insufficient:
+PR CI checks the synthetic merge result. The main job summary links the original
+run; a reused main run does not claim to have executed the suite again.
+
+Direct pushes, changed trees, failed runs, missing/expired artifacts, fork evidence
+or API errors require a fresh full run. `workflow_dispatch` always runs the full
+suite, even when matching evidence exists. Superseded runs of the same PR are
+cancelled; running main checks are not cancelled. Coverage is never inferred from
+changed-file filters, lowered thresholds or an empty test selection.
+
+The daemon suite uses two pytest-xdist workers with file-level scheduling. Every
+test still runs; pytest-cov combines worker coverage before the independent line
+and branch gates. Durations and JUnit results identify future slow scenarios.
+Invalid-input matrices that have no side effects can share one application within
+a test, retaining each case and checking that no state was published. Lifecycles,
+concurrency, crash recovery and cross-process effects keep independent fixtures.
+
+Avoid repeating generated-document checks or source compile checks already
+performed by test imports. Keep installed-wheel/standalone-client checks: they
+validate different packaging and dependency boundaries than source imports.
 
 ## Ownership and durable changes
 

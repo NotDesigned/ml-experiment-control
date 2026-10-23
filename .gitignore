@@ -9,6 +9,10 @@
 /.venv/
 /rust/target/
 .coverage
+.coverage.*
+/core-tests.xml
+/daemon-tests.xml
+/client-tests.xml
 coverage.json
 server-coverage.json
 client-coverage.json

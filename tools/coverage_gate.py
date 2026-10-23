@@ -14,6 +14,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "coverage.json"
 DAEMON_REPORT = ROOT / "server-coverage.json"
+CLIENT_REPORT = ROOT / "client-coverage.json"
 DEFAULT_MIN_LINE = 100.0
 DEFAULT_MIN_BRANCH = 100.0
 
@@ -49,10 +50,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-line", type=float, default=DEFAULT_MIN_LINE)
     parser.add_argument("--min-branch", type=float, default=DEFAULT_MIN_BRANCH)
     parser.add_argument(
-        "--suite", choices=("core", "daemon"), default="core",
+        "--suite", choices=("core", "daemon", "client"), default="core",
         help="coverage suite to execute and verify",
     )
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument("--workers", type=int, choices=(1, 2), default=1,
+                        help="independent pytest workers (loadfile); coverage is combined before gating")
     args = parser.parse_args(argv)
     if args.suite == "daemon":
         report = DAEMON_REPORT
@@ -61,12 +64,19 @@ def main(argv: list[str] | None = None) -> int:
             "--cov-report=term-missing:skip-covered",
             "--cov-report=json:server-coverage.json",
         ]
+    elif args.suite == "client":
+        report = CLIENT_REPORT
+        pytest_args = ["client/tests", "-q", "--cov=ml_exp_client", "--cov-branch",
+                       "--cov-report=term-missing:skip-covered", "--cov-report=json:client-coverage.json"]
     else:
         report = REPORT
         pytest_args = [
             "-q", "--cov=experiment_control", "--cov-branch",
             "--cov-report=term-missing", "--cov-report=json:coverage.json",
         ]
+    pytest_args += ["--durations=20", "--junitxml=" + (args.suite + "-tests.xml")]
+    if args.workers > 1:
+        pytest_args += ["-n", str(args.workers), "--dist=loadfile"]
     if not args.check_only:
         result = subprocess.run(
             [sys.executable, "-m", "pytest", *pytest_args],

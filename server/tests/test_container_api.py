@@ -279,12 +279,12 @@ def test_retry_identity_allows_only_matching_manifest_and_terminal_prior_attempt
     else:controller.check_identity()
 
 
-@pytest.mark.parametrize("name", ["../escape", "/absolute", ".env", ".ssh/id_rsa", "nested/../escape"])
-def test_archive_paths_fail_before_registration(client, name):
-    data = archive({name: b"value"})
-    response = client.post("/api/source-imports/archive", params={"project": "blocked", "sha256": hashlib.sha256(data).hexdigest()}, content=data)
-    assert response.status_code == 409
-    assert all(p["project"] != "blocked" for p in client.get("/api/project-lifecycle").json()["projects"])
+def test_archive_paths_fail_before_registration(client):
+    for name in ["../escape", "/absolute", ".env", ".ssh/id_rsa", "nested/../escape"]:
+        data = archive({name: b"value"})
+        response = client.post("/api/source-imports/archive", params={"project": "blocked", "sha256": hashlib.sha256(data).hexdigest()}, content=data)
+        assert response.status_code == 409, (name, response.text)
+        assert all(p["project"] != "blocked" for p in client.get("/api/project-lifecycle").json()["projects"])
 
 
 def test_archive_digest_limits_and_links(client):

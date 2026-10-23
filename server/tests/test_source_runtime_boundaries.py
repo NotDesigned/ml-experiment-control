@@ -107,20 +107,22 @@ def test_git_import_verifies_exact_commit_and_never_uses_host_credentials(client
     assert calls and not list(client.app.state.runtime.config.project_registry_root_path().glob(".git-import-*"))
 
 
-@pytest.mark.parametrize("field,value", [("entrypoint", ["bad\x00argument"]), ("workdir", "/outside"), ("packaging_revision", "unreviewed")])
-def test_runtime_validation_rejects_unsafe_or_unreviewed_definition(client, field, value):
+def test_runtime_validation_rejects_unsafe_or_unreviewed_definition(client):
     source = import_source(client)
-    spec = {"source_id": source["source_id"], "dockerfile": "Dockerfile", "entrypoint": ["python", "train.py"]}
-    spec[field] = value
-    assert client.post("/api/projects/demo/runtimes/prepare", json=spec).status_code == 422
+    for field, value in [("entrypoint", ["bad\x00argument"]), ("workdir", "/outside"), ("packaging_revision", "unreviewed")]:
+        spec = {"source_id": source["source_id"], "dockerfile": "Dockerfile", "entrypoint": ["python", "train.py"], field: value}
+        response = client.post("/api/projects/demo/runtimes/prepare", json=spec)
+        assert response.status_code == 422, (field, response.text)
+        assert not list((client.app.state.runtime.config.project_registry_root_path() / "runtime-bundles").rglob("*.json"))
 
 
-@pytest.mark.parametrize("field,value", [("arguments", ["bad\x00argument"]), ("env", {"TOKEN": "test"}), ("env", {"OUTPUT_DIR": "/override"}), ("env", {"GOOD": "bad\x00value"}), ("outputs", ["../outside"]), ("outputs", [".hidden"])])
-def test_run_validation_rejects_credential_reserved_and_escaping_fields(client, field, value):
+def test_run_validation_rejects_credential_reserved_and_escaping_fields(client):
     bundle = runtime(client)
-    request = {"run_id": "r", "runtime_id": bundle["runtime_id"], "executor": "gpu"}
-    request[field] = value
-    assert client.post("/api/projects/demo/runs", json=request).status_code == 422
+    for field, value in [("arguments", ["bad\x00argument"]), ("env", {"TOKEN": "test"}), ("env", {"OUTPUT_DIR": "/override"}), ("env", {"GOOD": "bad\x00value"}), ("outputs", ["../outside"]), ("outputs", [".hidden"])]:
+        request = {"run_id": "r", "runtime_id": bundle["runtime_id"], "executor": "gpu", field: value}
+        response = client.post("/api/projects/demo/runs", json=request)
+        assert response.status_code == 422, (field, value, response.text)
+        assert not list(client.app.state.runtime.config.project_run_root_path("demo").rglob("manifest.yaml"))
 
 
 def test_runtime_policy_legacy_project_and_missing_identity(client):

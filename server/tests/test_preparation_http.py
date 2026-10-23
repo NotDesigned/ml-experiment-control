@@ -102,13 +102,13 @@ def test_stdlib_client_matches_both_backends_and_recovers_exact_outputs(client, 
             experiment.write_text(json.dumps({"project": "http-study", "run_id": backend, "source": "source",
                 "executor_selector": {"backend": backend}, "max_gpu_hours": 0.2}))
             state = tmp_path / (backend + ".state.json")
-            prepared = cli(base, auth, "experiment", experiment, "--state", state, "--seconds", "10")
+            prepared = cli(base, auth, "experiment", experiment, "--state", state, "--seconds", "10", fast_poll=True)
             assert prepared["preparation"]["status"] == "READY", prepared
             assert prepared["submission"]["ready"], json.dumps(prepared["submission"], indent=2)
             assert not launches or launches == ["slurm"]
             out = tmp_path / (backend + "-outputs")
-            finished = cli(base, auth, "experiment", experiment, "--state", state, "--resume", "--execute", "--seconds", "10", "--download-to", out)
+            finished = cli(base, auth, "experiment", experiment, "--state", state, "--resume", "--execute", "--seconds", "10", "--download-to", out, fast_poll=True)
             assert finished["result"]["scheduler_state"] == "SUCCEEDED"
             assert json.loads((out / "outputs/summary.json").read_text()) == {"steps": 3, "result": 6}
-            cli(base, auth, "experiment", experiment, "--state", state, "--resume", "--execute", "--seconds", "10", "--download-to", out)
+            cli(base, auth, "experiment", experiment, "--state", state, "--resume", "--execute", "--seconds", "10", "--download-to", out, fast_poll=True)
         assert launches == ["slurm", "sensecore"] and len(builds) == 1
