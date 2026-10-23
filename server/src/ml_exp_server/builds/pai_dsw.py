@@ -45,6 +45,22 @@ class DswPublisher:
         self.name = None
         self.secrets = []
 
+    def oss_datasets(self):
+        """An explicit account prefix; never infer or mount the shared bucket root."""
+        uri = self.config.get("oss_uri")
+        mount = self.config.get("oss_mount_path", "/mnt/ml-expd-oss")
+        if "oss_uri" not in self.config and "oss_mount_path" not in self.config:
+            return []
+        if not isinstance(uri, str) or not isinstance(mount, str):
+            raise ValueError("DSW OSS mount requires a URI and a canonical mount path")
+        host = r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.oss-" + re.escape(self.api.config["region"]) + r"(?:-internal)?\.aliyuncs\.com"
+        match = re.fullmatch(r"oss://" + host + r"(/[A-Za-z0-9._/-]+/)", uri)
+        if (not match or any(p in {"", ".", ".."} for p in match[1].split("/")[1:-1])
+                or not re.fullmatch(r"/(?:mnt|data)/[A-Za-z0-9][A-Za-z0-9._/-]*", mount)
+                or any(p in {"", ".", ".."} for p in mount.split("/")[1:])):
+            raise ValueError("DSW OSS mount must bind an explicit same-region prefix to /mnt or /data")
+        return [{"Uri": uri, "MountPath": mount, "MountAccess": "RW"}]
+
     def upload(self, source, target, private):
         """Use small parts below MCP's practical request size, then verify SHA256."""
         source = Path(source)
@@ -124,7 +140,7 @@ class DswPublisher:
         previous = json.loads(self.lease.read_text()) if self.lease.exists() else {}
         value = {**previous, "bundle_id": self.identity, "instance_id": self.instance, "name": self.name,
                  "region": self.api.config["region"], "workspace_id": self.config["workspace_id"],
-                 "quota_id": self.config["quota_id"], "phase": phase, "gpu": 0, **details}
+                 "quota_id": self.config["quota_id"], "datasets": self.oss_datasets(), "phase": phase, "gpu": 0, **details}
         atomic_json(self.lease, value)
 
     def checked_instance(self):
@@ -176,6 +192,7 @@ class DswPublisher:
         match = re.fullmatch(re.escape(self.builder.config["repository"]) + r":bundle-([0-9a-f]{64})", tag)
         if not match or any(not self.config.get(k) for k in ("workspace_id", "quota_id", "image_id")):
             raise ValueError("DSW publisher requires fixed scope and a Docker-enabled image")
+        datasets = self.oss_datasets()
         self.identity = match[1]
         self.lease = self.builder.root / (self.identity + ".dsw.json")
         if self.lease.exists():
@@ -194,6 +211,8 @@ class DswPublisher:
                 "RequestedResource": {"CPU": "4", "Memory": "8Gi", "GPU": "0"},
                 "DockerConfig": {"Enable": True, "ContainersLimit": 2}, "OversoldType": "ForbiddenQuotaOverSold",
                 "Labels": [{"Key": "ml-expd.bundle", "Value": self.identity}]}
+        if datasets:
+            body["Datasets"] = datasets
         self.record("CREATE_INTENT")
         self.phase("STARTING_DSW_BUILDER", "Starting a private 4CPU/8GiB/0GPU DSW in the fixed resource quota")
         try:
