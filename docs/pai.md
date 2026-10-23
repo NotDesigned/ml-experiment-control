@@ -1,9 +1,11 @@
-# Alibaba PAI: DLC jobs and a CPU DSW builder
+# Alibaba PAI: DLC training and DSW debugging/builds
 
 PAI scheduling and image construction are separate adapters. DLC runs the
 experiment; an optional Docker-enabled DSW builds its OCI image. The normal
 source → Runtime → Run → Submission → Attempt workflow is unchanged. Configuring
 one does not implicitly enable the other or allocate public compute.
+DSW is not a training executor. Production experiments use DLC; DSW is reserved
+for interactive debugging and the optional CPU image builder.
 
 ## DLC executor
 
@@ -42,19 +44,24 @@ executors:
   pai-h200:
     title: PAI H200
     capacity: {gpus: 8, cpus: 216, memory_gb: 1800}
-    storage_root: /data/ml-expd
+    storage_root: /mnt/workspace/ml-expd
     backend:
       kind: pai-dlc
       region: REGION
       workspace_id: WORKSPACE_ID
       quota_id: QUOTA_ID
       gpu_type: H200
+      gpu_type_from_quota: true
       time: '00:10:00'
 ```
 
 Replace capacity with verified per-node limits. The server sets image, job name
 and walltime when freezing a Run. `ResourceId` is mandatory; no public/pay-as-you-go
 fallback is attempted. Clients may name the executor or select backend `pai-dlc`.
+On Lingjun quotas that reject `ResourceConfig.GPUType`, set
+`gpu_type_from_quota: true`. Submission preflight then requires the quota's
+reported GPU type to equal the frozen executor's `gpu_type`, and omits only the
+native per-pod GPU type selector. GPU count and fixed quota remain explicit.
 
 `GET /api/executors/{id}/status` returns the quota's `ActualMinQuota` and
 `AllocatedQuota`, converted to `gpus`, `cpus` and `memory_bytes`. The query verifies
@@ -64,7 +71,27 @@ utilization nor an admission guarantee; pending queue count and ETA are unknown.
 
 ### Data and recovery limits
 
-The first adapter uses operator-configured native versioned PAI Dataset mounts:
+The operator can configure the approved personal CPFS directory directly:
+
+```yaml
+      cpfs_uri: bmcpfs://cpfs-FILESYSTEM-TARGET.REGION.cpfs.aliyuncs.com/
+      workspace_user: YOUR_RAM_USER
+      data_role_arn: acs:ram::ACCOUNT_ID:role/pai-data-YOUR_RAM_USER
+      filesystem_type: cpfs
+      storage_id: IMMUTABLE_CPFS_FILESYSTEM_ID
+```
+
+This generates `/users/YOUR_RAM_USER/` → `/mnt/workspace` RW,
+`/public/models/` → `/mnt/models` RO, and `/public/datasets/` →
+`/mnt/datasets` RO. No filesystem root, other user's directory or project is
+mounted. VPC endpoints also require the matching `user_vpc` with `VpcId`,
+`VSwitchId` and `SecurityGroupId`; VSC endpoint affinity must be verified by the
+operator. Additional versioned Dataset mounts cannot shadow these paths.
+The personal RAM role is injected using DLC's `EnableCredentialInject` and
+`CredentialConfigItems` schema. Host access keys and registry passwords are
+never put into the frozen Run.
+
+Existing operator-configured native versioned PAI Dataset mounts remain valid:
 
 ```yaml
       data_sources:
@@ -76,7 +103,7 @@ The first adapter uses operator-configured native versioned PAI Dataset mounts:
       storage_id: IMMUTABLE_FILESYSTEM_ID
 ```
 
-Only an explicit RW NAS/CPFS dataset covering `storage_root` enables persistent
+Only an explicit RW NAS/CPFS dataset or personal CPFS mount covering `storage_root` enables persistent
 checkpoint and in-job download-script capabilities. Its storage identity includes
 region, workspace, filesystem ID and project path; quota/GPU size does not change
 that identity. Declaring an ID does not prove the remote mount exists.

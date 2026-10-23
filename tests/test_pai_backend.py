@@ -143,3 +143,65 @@ def test_duplicate_native_mount_or_invalid_dataset_version_is_rejected(adapter):
     for k in ['DataSourceId','DataSourceVersion']:
         r['backend']['data_sources']=[dict(source,**{k:True})]
         with pytest.raises(ValueError):b.validate(r)
+
+
+def personal(r):
+    r['backend'].update(cpfs_uri='bmcpfs://cpfs-approved.us-southeast-1.cpfs.aliyuncs.com/',
+        workspace_user='owner',data_role_arn='acs:ram::123456:role/pai-data-owner')
+    return r
+
+
+def test_dlc_personal_cpfs_and_runtime_role_use_native_dlc_fields(adapter):
+    b,r,_,calls,_=adapter;personal(r)
+    d=b.create_document(manifest(r))
+    assert [(m['MountPath'],m['MountAccess']) for m in d['DataSources']]==[
+        ('/mnt/workspace','RW'),('/mnt/models','RO'),('/mnt/datasets','RO')]
+    assert d['DataSources'][0]['Uri'].endswith('/users/owner/')
+    assert d['DataSources'][1]['Uri'].endswith('/public/models/')
+    assert d['DataSources'][2]['Uri'].endswith('/public/datasets/')
+    credentials=d['CredentialConfig']
+    assert credentials['EnableCredentialInject'] and credentials['AliyunEnvRoleKey']=='0'
+    assert credentials['CredentialConfigItems']==[{'Key':'0','Type':'Role','Roles':[
+        {'RoleArn':'acs:ram::123456:role/pai-data-owner','RoleType':'service','AssumeRoleFor':'123456'}]}]
+    assert 'Enable' not in credentials and 'Configs' not in credentials
+    assert not calls
+
+
+@pytest.mark.parametrize('change',[
+    {'cpfs_uri':None},{'user_vpc':None},{'user_vpc':{}},{'user_vpc':{'VpcId':'other'}},
+    {'user_vpc':{'VpcId':None,'VSwitchId':'vsw-ok','SecurityGroupId':'sg-ok'}},
+    {'user_vpc':{'VpcId':'wrong','VSwitchId':'vsw-ok','SecurityGroupId':'sg-ok'}},{'cpfs_uri':'bmcpfs://cpfs-approved.other-region.cpfs.aliyuncs.com/'},
+    {'cpfs_uri':'bmcpfs://cpfs-approved.us-southeast-1.cpfs.aliyuncs.com/users/other/'},
+    {'workspace_user':None},{'workspace_user':'../other'},
+    {'cpfs_uri':'bmcpfs://cpfs-approved-vpc-target.us-southeast-1.cpfs.aliyuncs.com/'},
+    {'data_role_arn':None},{'data_role_arn':'acs:ram::123456:role/pai-data-other'},
+    {'data_sources':[{'DataSourceId':'d','DataSourceVersion':'v1','MountPath':'/mnt','MountAccess':'RW'}]},
+    {'data_sources':[{'DataSourceId':'d','DataSourceVersion':'v1','MountPath':'/mnt/workspace/other','MountAccess':'RO'}]},
+])
+def test_personal_mounts_reject_other_users_roles_regions_and_shadowing(adapter,change):
+    b,r,*_=adapter;personal(r);r['backend'].update(change)
+    with pytest.raises(ValueError):b.validate(r)
+
+
+def test_role_without_cpfs_and_explicit_vpc_mount(adapter):
+    b,r,*_=adapter;personal(r)
+    del r['backend']['cpfs_uri']
+    assert b.create_document(manifest(r))['CredentialConfig']['EnableCredentialInject']
+    r['backend']['workspace_user']=None
+    with pytest.raises(ValueError,match='workspace user'):b.validate(r)
+    personal(r)
+    r['backend']['cpfs_uri']='bmcpfs://cpfs-approved-vpc-target.us-southeast-1.cpfs.aliyuncs.com/'
+    r['backend']['user_vpc']={'VpcId':'vpc-approved','VSwitchId':'vsw-approved','SecurityGroupId':'sg-approved'}
+    assert len(b.create_document(manifest(r))['DataSources'])==3
+
+
+def test_quota_gpu_selection_verifies_frozen_hardware_without_native_gpu_enum(adapter):
+    b,r,api,_,_=adapter
+    r['backend']['gpu_type_from_quota']='yes'
+    with pytest.raises(ValueError,match='explicit'):b.validate(r)
+    r['backend']['gpu_type_from_quota']=True
+    assert not b.preflight(r,scope='submit').ready
+    api.quota=lambda _: {'Status':'Ready','GPUType':'H200'}
+    assert b.preflight(r,scope='submit').ready
+    assert 'GPUType' not in b.create_document(manifest(r))['JobSpecs'][0]['ResourceConfig']
+    assert r['backend']['gpu_type']=='H200'

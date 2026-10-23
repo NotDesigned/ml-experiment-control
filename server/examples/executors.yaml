@@ -1,5 +1,22 @@
 # Replace backend identifiers and paths with operator-provisioned values.
 executors:
+  pai-h200:
+    title: PAI DLC H200
+    storage_root: /mnt/workspace/ml-expd
+    data_root: /mnt/workspace
+    capacity: {gpus: 8, cpus: 216, memory_gb: 1800}
+    backend:
+      kind: pai-dlc
+      region: REPLACE_REGION
+      workspace_id: REPLACE_WORKSPACE
+      quota_id: REPLACE_QUOTA
+      gpu_type: H200
+      gpu_type_from_quota: true
+      storage_id: REPLACE_CPFS_FILESYSTEM
+      filesystem_type: cpfs
+      cpfs_uri: bmcpfs://REPLACE_VERIFIED_CPFS_ENDPOINT/
+      workspace_user: REPLACE_APPROVED_USER
+      data_role_arn: acs:ram::REPLACE_ACCOUNT:role/pai-data-REPLACE_APPROVED_USER
   wyd-l40s:
     title: WYD L40S
     storage_root: /datapool/ml-expd

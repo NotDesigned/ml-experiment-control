@@ -153,3 +153,16 @@ def test_http_source_runtime_freeze_and_status_need_no_cloud_cli(client,api):
     document=json.loads(controller.backend.render(controller.store.load_attempt('attempt-001')))
     assert document['ResourceId']=='quota-test' and document['JobSpecs'][0]['PodCount']==1
     assert 'access_key_secret' not in json.dumps(document) and 'ImageConfig' not in document['JobSpecs'][0]
+
+
+def test_personal_cpfs_enables_same_storage_recovery_across_quota():
+    backend={**B,'storage_id':'cpfs-approved','filesystem_type':'cpfs',
+        'cpfs_uri':'bmcpfs://cpfs-approved.us-southeast-1.cpfs.aliyuncs.com/',
+        'workspace_user':'owner','data_role_arn':'acs:ram::123:role/pai-data-owner'}
+    profile={'backend':backend,'storage_root':'/mnt/workspace/ml-expd'}
+    value=declaration(profile,artifact_store=True,desktop=False)
+    assert value['storage']['persistent'] and value['storage']['checkpoint_registration']
+    assert value['data']['download_script']=='inside_job' and not value['data']['assets']
+    assert storage_scope({**backend,'quota_id':'another'},profile['storage_root'])==value['storage']['storage_id']
+    for path in ['/mnt/models/weights','/mnt/datasets/data','/other']:
+        assert not declaration({**profile,'storage_root':path},artifact_store=True,desktop=False)['storage']['persistent']

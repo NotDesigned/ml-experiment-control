@@ -7,6 +7,7 @@ from pathlib import PurePosixPath
 from pydantic import BaseModel, ConfigDict, Field
 
 from experiment_control.backends.capabilities import DECLARATIONS
+from experiment_control.backends.pai import personal_mounts
 
 from ..application_errors import ApplicationError
 from ..results.checkpoint_registry import storage_scope
@@ -44,10 +45,10 @@ def declaration(profile, *, artifact_store: bool, desktop: bool, cpu_preparation
     if kind == "pai-dlc":
         backend = profile["backend"]
         persistent = bool(persistent and backend.get("storage_id") and backend.get("filesystem_type") in {"nas", "cpfs"}
-                          and any(mount.get("MountAccess") == "RW" and mount.get("DataSourceVersion")
-                                  and mount.get("DataSourceId") and PurePosixPath(mount.get("MountPath", ".")).is_absolute()
+                          and any(mount.get("MountAccess") == "RW" and (mount.get("Uri") or mount.get("DataSourceVersion")
+                                  and mount.get("DataSourceId")) and PurePosixPath(mount.get("MountPath", ".")).is_absolute()
                                   and PurePosixPath(profile["storage_root"]).is_relative_to(PurePosixPath(mount["MountPath"]))
-                                  for mount in backend.get("data_sources", [])))
+                                  for mount in personal_mounts(backend) + backend.get("data_sources", [])))
     storage_id = storage_scope(profile["backend"], profile["storage_root"]) if persistent else None
     relay = relay_environment(profile["backend"].get("api_relay"))
     if relay and kind != "slurm":

@@ -40,6 +40,42 @@ def observed_tags(job):
     return tags
 
 
+def personal_mounts(backend):
+    """Operator-approved personal CPFS plus fixed read-only public directories."""
+    if "cpfs_uri" not in backend:
+        return []
+    uri, user = backend["cpfs_uri"], backend.get("workspace_user")
+    vpc = backend.get("user_vpc")
+    host = r"bmcpfs://cpfs-[a-z0-9-]+\." + re.escape(backend["region"]) + r"\.cpfs\.aliyuncs\.com/"
+    if (not isinstance(uri, str) or not re.fullmatch(host, uri)
+            or not isinstance(user, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", user)
+            or "-vpc-" in uri and not vpc
+            or "user_vpc" in backend and (not isinstance(vpc, dict)
+                or set(vpc) != {"VpcId", "VSwitchId", "SecurityGroupId"}
+                or any(not isinstance(vpc[key], str) or not re.fullmatch(prefix + r"[a-z0-9]+", vpc[key])
+                       for key, prefix in (("VpcId", "vpc-"), ("VSwitchId", "vsw-"), ("SecurityGroupId", "sg-"))))):
+        raise ValueError("DLC CPFS requires an explicit same-region endpoint, approved user and matching VPC")
+    return [{"Uri": uri + path, "MountPath": target, "MountAccess": access}
+            for path, target, access in (("users/" + user + "/", "/mnt/workspace", "RW"),
+                                        ("public/models/", "/mnt/models", "RO"),
+                                        ("public/datasets/", "/mnt/datasets", "RO"))]
+
+
+def credential_config(backend):
+    """DLC uses different field names from DSW's CredentialConfig."""
+    if "data_role_arn" not in backend:
+        return None
+    user, arn = backend.get("workspace_user"), backend["data_role_arn"]
+    if not isinstance(user, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", user):
+        raise ValueError("DLC data role requires the approved workspace user")
+    match = re.fullmatch(r"acs:ram::([0-9]{1,32}):role/pai-data-" + re.escape(user), arn) if isinstance(arn, str) else None
+    if not match:
+        raise ValueError("DLC data role must be the approved user's pai-data role")
+    return {"EnableCredentialInject": True, "AliyunEnvRoleKey": "0", "CredentialConfigItems": [
+        {"Key": "0", "Type": "Role", "Roles": [
+            {"RoleArn": arn, "RoleType": "service", "AssumeRoleFor": match[1]}]}]}
+
+
 class PaiBackend:
     kind = "pai-dlc"
     capabilities = PAI
@@ -71,6 +107,8 @@ class PaiBackend:
         scheduler_job_name(backend["job_name"], "attempt-001")
         if backend.get("worker_nodes", 1) != 1:
             raise ValueError("PAI first release supports exactly one worker node")
+        if type(backend.get("gpu_type_from_quota", False)) is not bool:
+            raise ValueError("PAI quota GPU selection must be explicit")
         resources = run.get("resources", {})
         for key, maximum in (("gpus", 8), ("cpus", 512), ("memory_gb", 4096)):
             if type(resources.get(key)) is not int or not 1 <= resources[key] <= maximum:
@@ -83,7 +121,8 @@ class PaiBackend:
         sources = backend.get("data_sources", [])
         if not isinstance(sources, list):
             raise ValueError("invalid PAI data sources")
-        mounts = set()
+        mounts = {source["MountPath"] for source in personal_mounts(backend)}
+        credential_config(backend)
         for source in sources:
             if (not isinstance(source, dict) or set(source) - {"DataSourceId", "DataSourceVersion", "MountPath", "MountAccess"}
                     or not source.get("DataSourceId") or not source.get("DataSourceVersion")
@@ -93,9 +132,10 @@ class PaiBackend:
                 raise ValueError("PAI data mounts require explicit dataset version, access and canonical path")
             component(source["DataSourceId"])
             component(source["DataSourceVersion"])
-            if source["MountPath"].rstrip("/") in mounts:
+            path = source["MountPath"].rstrip("/")
+            if any(path == other or path.startswith(other + "/") or other.startswith(path + "/") for other in mounts):
                 raise ValueError("PAI dataset mount paths must be unique")
-            mounts.add(source["MountPath"].rstrip("/"))
+            mounts.add(path)
 
     def preflight(self, run, *, scope):
         if scope not in {"stage", "submit", "observe"}:
@@ -107,6 +147,8 @@ class PaiBackend:
                 raise ValueError("PAI host credentials target another region")
             self.api.workspace(backend["workspace_id"])
             quota = self.api.quota(backend["quota_id"])
+            if backend.get("gpu_type_from_quota") and quota.get("GPUType") != backend["gpu_type"]:
+                raise ValueError("PAI quota GPU type differs from the frozen executor")
             if scope != "observe" and quota.get("Status") not in {"Ready", "Scaling"}:
                 raise ValueError("PAI quota is unavailable")
             self.api.jobs(backend, name=backend["job_name"])
@@ -157,11 +199,11 @@ class PaiBackend:
                 else scheduler_job_name(backend["job_name"], attempt))
         command = self.s.dispatch_command(manifest) if token else manifest["command"]
         seconds = sum(int(n) * m for n, m in zip(backend["time"].split(":"), (3600, 60, 1)))
-        return {"WorkspaceId": backend["workspace_id"], "ResourceId": backend["quota_id"],
+        document = {"WorkspaceId": backend["workspace_id"], "ResourceId": backend["quota_id"],
                 "DisplayName": name, "JobType": "PyTorchJob", "Accessibility": "PRIVATE",
                 "UserCommand": shlex.join(["env", "BACKEND_JOB_ID=" + name, *command]),
                 "JobMaxRunningTimeMinutes": (seconds + 59) // 60,
-                "DataSources": backend.get("data_sources", []),
+                "DataSources": personal_mounts(backend) + backend.get("data_sources", []),
                 "UserVpc": backend.get("user_vpc", {}),
                 "Settings": {"Tags": job_tags(manifest, attempt, token), "JobReservedMinutes": 0,
                              "EnableErrorMonitoringInAIMaster": False, "EnableRDMA": False},
@@ -169,6 +211,12 @@ class PaiBackend:
                               "RestartPolicy": "Never", "Image": digest_pinned_image(backend["image"], manifest["image_id"]),
                               "ResourceConfig": {"CPU": str(resources["cpus"]), "Memory": str(resources["memory_gb"]) + "Gi",
                                                  "GPU": str(resources["gpus"]), "GPUType": backend["gpu_type"]}}]}
+        credentials = credential_config(backend)
+        if backend.get("gpu_type_from_quota"):
+            del document["JobSpecs"][0]["ResourceConfig"]["GPUType"]
+        if credentials is not None:
+            document["CredentialConfig"] = credentials
+        return document
 
     def render(self, manifest):
         return json.dumps(self.create_document(manifest), sort_keys=True)
