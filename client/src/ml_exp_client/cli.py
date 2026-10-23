@@ -58,6 +58,8 @@ def parser():
     create.add_argument("--cpus", type=int, default=8)
     create.add_argument("--memory-gb", type=int, default=32)
     create.add_argument("--max-time", default="00:05:00")
+    create.add_argument("--allocation-policy", choices=["guaranteed", "allow_idle", "idle_only"], help="DLC resource policy; default guaranteed")
+    create.add_argument("--priority", type=int, choices=range(1, 10), help="DLC task priority; default 5")
     create.add_argument("--inputs", type=json.loads, default=[], help='JSON array: [{"asset_id":"asset.…","mount_path":"/inputs/data"}]')
     create.add_argument("--checkpoint-interval", type=int, help="publish atomic checkpoint.ready.json every N seconds")
     create.add_argument("--data-preparation", type=json.loads, help='JSON: {"script":"download_data.py","arguments":[],"timeout_seconds":1200}')
@@ -76,6 +78,8 @@ def parser():
     wb.add_argument("--disable", action="store_true")
     wb.add_argument("--enable", action="store_true")
     wb.add_argument("--clear-credentials", action="store_true")
+    wb.add_argument("--preparation", action=argparse.BooleanOptionalAction, default=None,
+                    help="enable/disable preparation W&B runs independently; default disabled")
     upload = commands.add_parser("asset-upload", help="upload a data directory independently from source")
     upload.add_argument("--project", required=True)
     upload.add_argument("--directory", type=Path, required=True)

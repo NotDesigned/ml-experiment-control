@@ -100,6 +100,12 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         raise ClientError("server lacks data-preparation.v1; upgrade before using a download script")
     if ("wandb" in config or "parameters" in config) and "wandb-sync.v1" not in health.get("capabilities", []):
         raise ClientError("server lacks wandb-sync.v1; upgrade before specifying publication options")
+    if ("preparation_enabled" in config.get("wandb", {}) and
+            "wandb-preparation-sync.v1" not in health.get("capabilities", [])):
+        raise ClientError("server lacks wandb-preparation-sync.v1; upgrade before selecting preparation publication")
+    if (any(config.get("resources", {}).get(key) is not None for key in ("allocation_policy", "priority")) and
+            "pai-idle-resources.v1" not in health.get("capabilities", [])):
+        raise ClientError("server lacks pai-idle-resources.v1; upgrade before selecting DLC resource policy")
     if (config.get("checkpoint_persistence") is not None or config.get("resume_from") is not None) and "persistent-checkpoints.v1" not in health.get("capabilities", []):
         raise ClientError("server lacks persistent-checkpoints.v1; upgrade before using backend checkpoint state")
     if state_path.resolve().is_relative_to(source):

@@ -144,6 +144,7 @@ class ExperimentPreparationService:
             now = utc_now()
             value = {"preparation_id": preparation_id, "project": project, "run_id": request.run.run_id,
                      "tracking": store_for(self.runtime).route(request.run.wandb, project),
+                     "preparation_tracking": store_for(self.runtime).preparation_route(request.run.wandb, project),
                      "request": request_body, "request_sha256": request_sha, "matching": matching,
                      "runtime_id": bundle["runtime_id"], "status": "EXECUTING", "phase": "ACCEPTED",
                      "created_at": now, "updated_at": now, "deliveries": {},

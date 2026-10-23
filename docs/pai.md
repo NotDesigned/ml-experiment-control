@@ -453,3 +453,45 @@ GetInstance and the scoped inventory, and receives an authenticated registry
 403, live worker or published tag grants no retry. The same checks run again
 before creating a replacement CPU builder; the old lease is preserved in
 private history. Source, Dockerfile, worker and bundle identities remain fixed.
+
+
+## DLC scheduling options
+
+New DLC Runs default to priority **5** and guaranteed quota only. An experiment
+configuration or Run request can select:
+
+```json
+{"resources":{"gpus":8,"cpus":64,"memory_gb":512,"max_time":"08:00:00",
+              "allocation_policy":"allow_idle","priority":5}}
+```
+
+| allocation_policy | Native JobSpec.OversoldType | Behavior |
+| --- | --- | --- |
+| guaranteed (default) | ForbiddenQuotaOverSold | Use guaranteed quota only |
+| allow_idle | AcceptQuotaOverSold | Permit borrowing reclaimable idle resources |
+| idle_only | ForceQuotaOverSold | Use reclaimable idle resources only |
+
+Priority is an integer from 1 to 9; a larger value has higher scheduling priority.
+The low-level client exposes `create --allocation-policy MODE --priority N`.
+`GET /api/executors` advertises these options and default priority 5 for DLC;
+clients require `pai-idle-resources.v1` before sending explicit options. Other
+backends reject them. Each Run freezes the selected policy and priority; old Runs
+retain their original native fields, including omitted fields.
+
+Borrowing is subject to provider admission and reclamation. It does not guarantee
+that all idle cards are available, increase the executor's 1–8 GPU limit, or enable
+paid Spot instances. `UseSpotInstance` remains false; preemption does not trigger
+automatic restart. Save recovery checkpoints on the approved personal CPFS path.
+See [PAI idle resource semantics](https://help.aliyun.com/zh/pai/use-idle-resources-in-dlc-jobs).
+
+
+## Dataset storage boundary
+
+OSS can retain versioned dataset originals as well as result archives. CPFS holds
+training-time dataset caches and recovery checkpoints. Current DLC profiles mount
+the approved personal CPFS workspace and read-only public datasets/models. They
+do not enable native OSS filesystem mounts or client dataset-asset ingestion for
+DLC. The existing download-script contract can populate DATA_DIR inside a job;
+a managed OSS-to-CPFS dataset delivery workflow remains separate future work.
+Do not confuse a successful image pull with verified training-container Internet
+access. The current shared gateway has no download throughput guarantee.

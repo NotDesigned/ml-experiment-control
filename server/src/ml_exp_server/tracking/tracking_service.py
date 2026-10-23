@@ -37,7 +37,7 @@ def bind_run(runtime, project, run):
 
 
 def preparation_record(runtime, value):
-    route = value.get("tracking")
+    route = value.get("preparation_tracking", value.get("tracking"))
     if not route or not route["enabled"]:
         return
     store = store_for(runtime)
