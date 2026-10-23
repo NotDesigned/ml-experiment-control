@@ -2,6 +2,8 @@
 from copy import deepcopy
 from types import SimpleNamespace
 import pytest
+import json
+from tests.test_container_api import client
 from experiment_control.backends.pai_api import PaiError
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.backends.operations import PaiOperations, backend_operations
@@ -112,3 +114,42 @@ def test_malformed_quota_shapes_fail_closed(api,case):
     elif case=='used_type':q['QuotaDetails']['AllocatedQuota']=None
     else:q['QuotaDetails']['AllocatedQuota']['Memory']=None
     assert a.AllocationStatus().get('pai',{'backend':B})['status']=='UNKNOWN'
+
+
+def test_http_source_runtime_freeze_and_status_need_no_cloud_cli(client,api):
+    """Exercise the real HTTP/storage/controller path; provider and OCI are fakes."""
+    import yaml
+    from pathlib import Path
+    from tests.test_container_api import runtime
+    from ml_exp_server.container_controller import Controller
+    path=Path(client.app.state.runtime.config.container_execution.profiles_file)
+    profiles=yaml.safe_load(path.read_text())
+    profiles['executors']['pai']={'backend':B,'storage_root':'/data/lab',
+                                  'capacity':{'gpus':8,'cpus':216,'memory_gb':1800}}
+    path.write_text(yaml.safe_dump(profiles))
+    listing=client.get('/api/executors').json()['executors']
+    published=next(v for v in listing if v['id']=='pai')
+    assert published['kind']=='pai-dlc' and published['dockerfile_execution']
+    assert not published['capabilities']['data']['assets']
+    assert client.get('/api/executors/pai/status').json()['resources']['gpus']['unallocated']==62
+    image=runtime(client)
+    definition={'run_id':'pai-http','runtime_id':image['runtime_id'],'executor':'pai'}
+    response=client.post('/api/projects/demo/runs',json=definition)
+    assert response.status_code==200,response.text
+    assert response.json()['image']==image['image']
+    root=Path(client.app.state.runtime.project('demo').base_dir)
+    campaign=yaml.safe_load((root/'experiments/campaigns/run-pai-http.yaml').read_text())
+    campaign['local_root']=str(client.app.state.runtime.config.project_run_root_path('demo'))
+    controller=Controller(campaign,'pai-http','attempt-001')
+    controller.prepare('campaign.'+'c'*64)
+    frozen=controller.store.load_manifest()
+    assert frozen['backend']['kind']=='pai-dlc' and frozen['backend']['quota_id']=='quota-test'
+    assert frozen['image_id']==image['image'].split('@')[1]
+    value,_=api
+    value.workspace=lambda identity:{'WorkspaceId':identity}
+    value.jobs=lambda *args,**kw:[]
+    assert controller.backend.preflight(controller.run,scope='submit').ready
+    assert controller.backend.identity(campaign,controller.run,'attempt-001').available
+    document=json.loads(controller.backend.render(controller.store.load_attempt('attempt-001')))
+    assert document['ResourceId']=='quota-test' and document['JobSpecs'][0]['PodCount']==1
+    assert 'access_key_secret' not in json.dumps(document) and 'ImageConfig' not in document['JobSpecs'][0]
