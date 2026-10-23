@@ -36,7 +36,10 @@ def initialize(args):
 
 
 def dispatch(args, client, health):
-    if args.command == "check":
+    if args.command == "debug":
+        from .debug_sessions import debug_session
+        result = debug_session(args, client, health)
+    elif args.command == "check":
         result = check(args, client, health)
     elif args.command == "collect":
         if "result-collection.v1" not in health.get("capabilities", []):

@@ -12,7 +12,8 @@ and acceptance reports belong in private operator configuration/evidence.
 4. [Metrics](metrics.md): units, completeness and scoring provenance.
 5. [W&B](wandb.md): optional per-Run routing and confirmed publication.
 6. [Recovery](recovery.md): diagnose a failed stage without duplicating work.
-7. [Administrative deletion](resource-deletion.md): review and delete a completed managed Run and its storage.
+7. [SSH debug sessions](debug-sessions.md): request a temporary CCI/DSW machine with your public key.
+8. [Administrative deletion](resource-deletion.md): review and delete a completed managed Run and its storage.
 
 For existing installations, read the [1.0 migration notes](migration-1.0.md).
 
@@ -41,3 +42,4 @@ Start with one experiment. Data preparation, checkpoint persistence and custom
 metrics are optional additions. No research-question entity is required;
 Campaign is optional user-facing grouping. Designs and one-off operator tools
 are explicitly distinguished from implemented public APIs in recovery.
+

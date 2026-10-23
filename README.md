@@ -52,3 +52,5 @@ The current HTTP protocol is 2. Obtain installed versions, capabilities,
 executors, policy and limits with `ml-exp check`. Existing READY images keep their
 original workers. Executor specifications do not guarantee free GPUs. Automatic
 preemption recovery and a general CPU artifact-recovery API are not implemented.
+
+SSH 调试机支持参见 [CCI / DSW 调试会话](docs/debug-sessions.md)。训练仍使用 DLC、ACP 或 Slurm。

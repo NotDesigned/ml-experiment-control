@@ -19,6 +19,7 @@ VERSIONED_OPENAPI_PATH = "/api/v2/openapi.json"
 CLIENT_PROTOCOL_HEADER = "X-ML-Expd-Client-Protocol"
 
 SERVER_CAPABILITIES = (
+    "debug-sessions.v1",
     "target-backed-data-upload.v1",
     "fixed-transfer-buffer.v1",
     "ccr-streamed-data-image.v1",

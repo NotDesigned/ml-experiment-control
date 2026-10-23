@@ -47,7 +47,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
-        if request.url.path == "/api/tracking/wandb":
+        if request.url.path in {"/api/tracking/wandb", "/api/debug-sessions"}:
             return JSONResponse({"detail": [{key: value for key, value in error.items() if key in {"loc", "msg", "type"}}
                                             for error in exc.errors()]}, status_code=422)
         return await request_validation_exception_handler(request, exc)
@@ -93,6 +93,8 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.include_router(deletion_router)
     app.include_router(result_router)
     app.include_router(script_preparation_router)
+    from .debug_routes import router as debug_router
+    app.include_router(debug_router)
 
     @app.get(VERSIONED_OPENAPI_PATH, include_in_schema=False)
     async def versioned_openapi():
