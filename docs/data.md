@@ -227,6 +227,11 @@ ml-exp assets --project study
 ml-exp asset-download --project study --id asset.SHA256 --out ./downloaded-data
 ```
 
+Enabling this capability does not invalidate older DLC preparations that had
+no dataset inputs. Their frozen declaration is retained; only the expansion
+of `data.assets` from `false` to `true` is accepted during continuation. Other
+capability or executor configuration changes still require inspection.
+
 The API forwards bounded upload parts to OSS multipart storage. It retains small
 session/asset records and uses the global 1 GiB part buffer, releasing each part
 only after a matching durable receipt. No complete dataset archive or extracted
