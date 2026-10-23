@@ -370,6 +370,9 @@ class ContainerExecutionService:
         except BuildReceiptMissingError as exc:
             value.update(status="RECONCILE_REQUIRED", error="image bundle has not been published")
             if exc.retry_proof is not None:
+                previous = value.get('build_error')
+                if previous and previous.get('code') not in {'BUILD_PUBLICATION_ABSENT', 'BUILD_RECOVERY_EVIDENCE_INVALID'}:
+                    value.setdefault('build_error_history', []).append(previous)
                 safe = valid_absence(exc.retry_proof, value['build_bundle_id'])
                 value['build_error'] = {'code': 'BUILD_PUBLICATION_ABSENT' if safe else 'BUILD_RECOVERY_EVIDENCE_INVALID',
                                         'details': exc.retry_proof if safe else {}, 'retry_safe': safe}
@@ -507,6 +510,11 @@ class ContainerExecutionService:
             scheduler_name = "ml-" + re.sub(r"[^a-z0-9-]", "-", request.run_id.lower())[:30].strip("-") + "-" + hashlib.sha256(request.run_id.encode()).hexdigest()[:10]
             backend.update(image=reference + ":bundle-" + bundle["bundle_id"],
                            job_name=scheduler_name, display_name=request.run_id)
+            mirror = self.runtime.config.container_execution.sensecore_image_mirror
+            if backend['kind'] == 'sensecore' and mirror is not None and reference == mirror.source_repository:
+                backend['image'] = mirror.target_repository + ':bundle-' + bundle['bundle_id']
+                backend['image_delivery'] = {'source_image': bundle['image'], 'target_tag': backend['image'],
+                                             'builder_socket': self.runtime.config.container_execution.builder_socket}
         campaign_name = "run-" + request.run_id
         outputs = list(dict.fromkeys([*request.outputs, *request.required_outputs]))
         if preparation is not None and "data-preparation.json" not in outputs:

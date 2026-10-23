@@ -148,6 +148,27 @@ def test_fixed_recipe_build_receipt_and_legacy_runtime_compatibility(client, mon
         assert service.execute("demo", value["runtime_id"], value["confirmation"])["status"] == "RECONCILE_REQUIRED"
 
 
+@pytest.mark.parametrize('matching',[False,True])
+def test_sensecore_mirror_is_frozen_without_copying_during_run_creation(client,monkeypatch,matching):
+    from ml_exp_server.schemas import ImageMirrorConfig
+    bundle=runtime(client)
+    config=client.app.state.runtime.config.container_execution
+    config.sensecore_image_mirror=ImageMirrorConfig(source_repository='registry.example/lab/project' if matching else 'other.example/build',target_repository='ccr.example/team/runtime')
+    monkeypatch.setattr('ml_exp_server.builds.image_mirror.ensure_delivery',lambda *a:pytest.fail('Run creation must not start delivery'))
+    for executor in ('cloud','gpu'):
+        response=client.post('/api/projects/demo/runs',json={'run_id':'mirror-'+executor,'runtime_id':bundle['runtime_id'],'executor':executor})
+        assert response.status_code==200,response.text
+        path=Path(client.app.state.runtime.project('demo').base_dir)/('experiments/campaigns/run-mirror-'+executor+'.yaml')
+        run=yaml.safe_load(path.read_text())['runs'][0]
+        assert run['container']['image']==bundle['image']
+        if executor=='cloud' and matching:
+            assert run['backend']['image'].startswith('ccr.example/team/runtime:bundle-')
+            assert run['backend']['image_delivery']['source_image']==bundle['image']
+        else:
+            assert 'image_delivery' not in run['backend']
+            if executor=='gpu':assert run['backend']['oci_image']==bundle['image']
+
+
 def test_import_runtime_and_backends_share_frozen_execution(client):
     source = import_source(client)
     assert source["source_id"] == import_source(client)["source_id"]

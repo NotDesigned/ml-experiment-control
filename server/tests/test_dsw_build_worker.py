@@ -102,3 +102,22 @@ def test_python_module_entrypoint_rejects_unowned_directory(monkeypatch):
     import runpy
     monkeypatch.setattr(w.sys,'argv',['worker.py','/tmp/unowned-dsw-entrypoint'])
     with pytest.raises(FileNotFoundError):runpy.run_path(w.__file__,run_name='__main__')
+
+
+@pytest.mark.parametrize('images',[None,'bad',[None],['registry/base:tag'],['x']*65])
+def test_prepull_rejects_unpinned_or_unbounded_image_list(images):
+    with pytest.raises(ValueError):w.pull_bases(images,{})
+
+
+def test_only_pull_is_retried_before_build_or_push(monkeypatch,capsys):
+    calls=[];delays=[]
+    def request(method,path,**kw):
+        calls.append((method,path,kw))
+        if len(calls)<3:raise OSError('connection reset by peer')
+    monkeypatch.setattr(w,'request',request);monkeypatch.setattr(w.time,'sleep',delays.append)
+    w.pull_bases([IMAGE],{})
+    assert len(calls)==3 and delays==[1,2]
+    assert all('/images/create?' in c[1] for c in calls)
+    assert 'PULLING_BASE_IMAGE' in capsys.readouterr().out
+    monkeypatch.setattr(w,'request',lambda *a,**k:(_ for _ in ()).throw(ValueError('reset')))
+    with pytest.raises(ValueError):w.pull_bases([IMAGE],{})

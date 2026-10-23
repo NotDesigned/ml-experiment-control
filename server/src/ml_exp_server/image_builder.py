@@ -64,6 +64,9 @@ class ImageBuilder:
                 self._recover_source_context()
 
     def request(self, request: dict) -> dict:
+        if request.get('operation') == 'mirror':
+            from .builds.image_mirror import mirror
+            return mirror(self, request)
         if request.get("operation") == "data-image":
             from .builds.data_image_build import build
             return build(self, request)
@@ -91,6 +94,11 @@ class ImageBuilder:
                 raise ValueError("historical packaging receipt is unavailable")
             if operation in {"get", "reconcile"}:
                 if not receipt.is_file():
+                    if operation == 'reconcile' and evidence is not None and (self.root / (pinned + '.acr.json')).exists():
+                        from .builds.acr_fallback import reconcile
+                        recovered = reconcile(self, value)
+                        if recovered is not None:
+                            return recovered
                     proof = (publication_absence(self, pinned)
                              if operation == "reconcile" and pinned == current and evidence is not None else None)
                     raise BuildReceiptMissingError("image bundle has not been published", retry_proof=proof)
@@ -183,10 +191,16 @@ class ImageBuilder:
                 # Docker context, execution identity or local persistent storage.
                 cache_context = BUILD_CACHE.set(registry + ":buildcache-" + hashlib.sha256(project.encode()).hexdigest()[:24]
                                                if self.config.get("registry_cache", False) else None)
+                result = {"bundle_id": identity, "project": project, "source_id": source_id,
+                          "base_image": image, "recipe": DOCKERFILE_RECIPE,
+                          "manifest_type": MANIFEST_TYPE, "worker_contract": WORKER_CONTRACT,
+                          "worker_sha256": worker_digest(), "capabilities": list(CAPABILITIES),
+                          "dockerfile_sha256": hashlib.sha256(recipe.encode()).hexdigest(),
+                          "dockerfile": {k: v for k, v in inspection.items() if k != 'text'}}
                 try:
                     if self.config.get("publisher") == "pai-dsw":
-                        from .builds.pai_dsw import DswPublisher
-                        published = DswPublisher(self).publish(tag, context)
+                        from .builds.acr_fallback import publish_runtime
+                        published = publish_runtime(self, tag, context, result)
                     else:
                         published = self._publish_buildkit(tag, context)
                 finally:
@@ -194,12 +208,7 @@ class ImageBuilder:
                     BUILD_PROGRESS.reset(progress_context)
                     BUILD_CACHE.reset(cache_context)
                     BUILD_RETRY.reset(retry_context)
-            result = {"bundle_id": identity, "project": project, "source_id": source_id,
-                      "base_image": image, "image": published, "recipe": DOCKERFILE_RECIPE,
-                      "manifest_type": MANIFEST_TYPE, "worker_contract": WORKER_CONTRACT,
-                      "worker_sha256": worker_digest(), "capabilities": list(CAPABILITIES),
-                      "dockerfile_sha256": hashlib.sha256(recipe.encode()).hexdigest()}
-            result["dockerfile"] = {k: v for k, v in inspection.items() if k != "text"}
+            result['image'] = published
             atomic_json(metadata_path, result)
             record_progress(progress_path, "READY", "Published image manifest and worker identity verified")
             return result

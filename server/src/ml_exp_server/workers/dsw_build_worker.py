@@ -10,6 +10,7 @@ import re
 import shutil
 import socket
 import sys
+import time
 from urllib.parse import quote, urlencode
 
 
@@ -49,6 +50,28 @@ def encoded(value):
     return base64.urlsafe_b64encode(json.dumps(value).encode()).decode()
 
 
+def pull_bases(images, credentials):
+    """Retry only immutable image downloads, before executing any Dockerfile RUN."""
+    if not isinstance(images, list) or len(images) > 64:
+        raise ValueError('invalid pinned base image list')
+    for image in images:
+        if not isinstance(image, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}', image):
+            raise ValueError('DSW base image must be pinned')
+        host = image.split('/', 1)[0]
+        attempt = 0
+        while True:
+            print(json.dumps({'phase': 'PULLING_BASE_IMAGE', 'attempt': attempt + 1, 'image': image}), flush=True)
+            try:
+                request('POST', '/images/create?' + urlencode({'fromImage': image, 'platform': 'linux/amd64'}),
+                        headers={'X-Registry-Auth': encoded(credentials.get(host, {})), 'Content-Length': '0'}, stream=True)
+                break
+            except (OSError, ValueError, http.client.HTTPException):
+                attempt += 1
+                if attempt >= 3:
+                    raise
+                time.sleep(2 ** (attempt - 1))
+
+
 def run(root, spec):
     if not re.fullmatch(r'/tmp/ml-expd-build-[0-9a-f]{32}', str(root)):
         raise ValueError('invalid owned DSW build directory')
@@ -65,6 +88,7 @@ def run(root, spec):
     for registry, item in auths.items():
         user, password = base64.b64decode(item['auth'], validate=True).decode().split(':', 1)
         credentials[registry] = {'username': user, 'password': password, 'serveraddress': registry}
+    pull_bases(spec.get('base_images', []), credentials)
     with archive.open('rb') as stream:
         request('POST', '/build?' + urlencode({'t': tag, 'rm': '1', 'version': '1', 'platform': 'linux/amd64'}),
                 body=stream, headers={'Content-Type': 'application/x-tar', 'Content-Length': str(archive.stat().st_size),

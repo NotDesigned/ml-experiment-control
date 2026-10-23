@@ -16,6 +16,9 @@ import tarfile
 import tempfile
 import time
 import uuid
+import io
+import shlex
+from dockerfile_parse import DockerfileParser
 
 from experiment_control.backends.pai_api import PaiAPI, PaiError, component
 from experiment_control.redaction import redact_line
@@ -26,6 +29,7 @@ from .image_build_context import BUILD_LOG, BUILD_PROGRESS
 from ..data.registry_transport import Registry, MANIFEST, OCI_MANIFEST, digest
 from ..runs.execution_progress import record_progress
 from ..storage import atomic_json
+from ..pai_storage import PaiStorage
 
 
 def file_sha(path):
@@ -46,61 +50,10 @@ class DswPublisher:
         self.secrets = []
 
     def datasets(self):
-        """Approved account workspace and public RO mounts; never mount a root."""
-        datasets = []
-        if any(key in self.config for key in ("cpfs_uri", "user_vpc")):
-            uri, user, vpc = (self.config.get(key) for key in ("cpfs_uri", "workspace_user", "user_vpc"))
-            host = r"cpfs-[a-z0-9-]+\." + re.escape(self.api.config["region"]) + r"\.cpfs\.aliyuncs\.com/"
-            if (not isinstance(uri, str) or not re.fullmatch("bmcpfs://" + host, uri)
-                    or not isinstance(user, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", user)
-                    or "-vpc-" in uri and vpc is None
-                    or "user_vpc" in self.config and (
-                        not isinstance(vpc, dict) or set(vpc) != {"VpcId", "VSwitchId", "SecurityGroupId"}
-                        or any(not isinstance(vpc[key], str) or not re.fullmatch(prefix + r"[a-z0-9]+", vpc[key])
-                               for key, prefix in (("VpcId", "vpc-"), ("VSwitchId", "vsw-"), ("SecurityGroupId", "sg-"))))):
-                raise ValueError("CPFS workspace requires an explicit same-region endpoint, approved user and matching user_vpc")
-            datasets = [{"Uri": uri + path, "MountPath": mount, "MountAccess": access}
-                        for path, mount, access in (("users/" + user + "/", "/mnt/ml-expd-personal", "RW"),
-                                                    ("public/models/", "/mnt/models", "RO"),
-                                                    ("public/datasets/", "/mnt/datasets", "RO"))]
-        uri = self.config.get("oss_uri")
-        mount = self.config.get("oss_mount_path", "/mnt/ml-expd-oss")
-        if "oss_uri" not in self.config and "oss_mount_path" not in self.config:
-            return datasets
-        if not isinstance(uri, str) or not isinstance(mount, str):
-            raise ValueError("DSW OSS mount requires a URI and a canonical mount path")
-        host = r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.oss-" + re.escape(self.api.config["region"]) + r"(?:-internal)?\.aliyuncs\.com"
-        match = re.fullmatch(r"oss://" + host + r"(/[A-Za-z0-9._/-]+/)", uri)
-        if (not match or any(p in {"", ".", ".."} for p in match[1].split("/")[1:-1])
-                or not re.fullmatch(r"/(?:mnt|data)/[A-Za-z0-9][A-Za-z0-9._/-]*", mount)
-                or any(p in {"", ".", ".."} for p in mount.split("/")[1:])
-                or datasets and (mount == "/mnt/workspace" or mount.startswith("/mnt/workspace/"))
-                or any(mount == d["MountPath"] or mount.startswith(d["MountPath"] + "/")
-                       or d["MountPath"].startswith(mount + "/") for d in datasets)):
-            raise ValueError("DSW OSS mount must bind an explicit same-region prefix to /mnt or /data")
-        role = self.role()
-        if role is None:
-            return datasets + [{"Uri": uri, "MountPath": mount, "MountAccess": "RW"}]
-        user = self.config["workspace_user"]
-        if match[1] != "/users/" + user + "/" or mount != "/mnt/oss":
-            raise ValueError("personal OSS mount must use the approved user's prefix at /mnt/oss")
-        root = uri[:-len(match[1])] + "/"
-        return datasets + [{"Uri": root + path, "MountPath": target, "MountAccess": access, "RoleArn": role[0]}
-                           for path, target, access in (("users/" + user + "/", "/mnt/oss", "RW"),
-                                                       ("public/models/", "/mnt/oss-models", "RO"),
-                                                       ("public/datasets/", "/mnt/oss-datasets", "RO"))]
+        return PaiStorage(self.config, self.api).datasets()
 
     def role(self):
-        arn = self.config.get("data_role_arn")
-        if "data_role_arn" not in self.config:
-            return None
-        user = self.config.get("workspace_user")
-        if not isinstance(user, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", user):
-            raise ValueError("personal data role requires the approved workspace user")
-        match = re.fullmatch(r"acs:ram::([0-9]{1,32}):role/pai-data-" + re.escape(user), arn) if isinstance(arn, str) else None
-        if not match:
-            raise ValueError("data role must be the approved user's pai-data role")
-        return arn, match[1]
+        return PaiStorage(self.config, self.api).role()
 
     def upload(self, source, target, private):
         """Use small parts below MCP's practical request size, then verify SHA256."""
@@ -256,10 +209,14 @@ class DswPublisher:
             raise ValueError("DSW publisher requires fixed scope and a Docker-enabled image")
         datasets = self.datasets()
         role = self.role()
+        route = self.config.get('default_route', 'eth0')
+        if route not in ('eth0', 'eth1') or route == 'eth1' and not self.config.get('user_vpc'):
+            raise ValueError('DSW default_route requires eth0 or an explicitly configured eth1 VPC')
         self.identity = match[1]
         self.lease = self.builder.root / (self.identity + ".dsw.json")
         if self.lease.exists():
-            raise BuildTransportError("PAI_DSW_RECONCILE_REQUIRED", {"publication_uncertain": True, "scheduler_submitted": False})
+            from .pai_build_recovery import preserve_deleted_lease
+            preserve_deleted_lease(self.builder, self.identity)
         host = tag.split("/", 1)[0]
         auths = json.loads(Path(self.builder.config["registry_auth_file"]).read_text())["auths"]
         auth = auths.get(host) or auths.get("https://" + host)
@@ -279,7 +236,7 @@ class DswPublisher:
         if self.config.get("cpfs_uri"):
             body["WorkspaceSource"] = "/mnt/ml-expd-personal"
         if "user_vpc" in self.config:
-            body["UserVpc"] = {**self.config["user_vpc"], "DefaultRoute": "eth0"}
+            body["UserVpc"] = {**self.config["user_vpc"], "DefaultRoute": route}
         if role is not None:
             body["CredentialConfig"] = {"Enable": True, "AliyunEnvRoleKey": "0", "Configs": [
                 {"Key": "0", "Type": "Role", "Roles": [
@@ -300,6 +257,12 @@ class DswPublisher:
                 if value.get("Status") in {"Failed", "Stopped", "Deleted"} or time.monotonic() > end:
                     self.startup_failure(value)
                 time.sleep(5)
+            if 'user_vpc' in self.config:
+                expected = {**self.config['user_vpc'], 'DefaultRoute': route}
+                if any(value.get('UserVpc', {}).get(k) != v for k, v in expected.items()):
+                    raise BuildTransportError('PAI_DSW_NETWORK_MISMATCH', {
+                        'publication_uncertain': True, 'scheduler_submitted': False,
+                        'expected_route': route, 'actual_route': value.get('UserVpc', {}).get('DefaultRoute')})
             with tempfile.TemporaryDirectory(prefix="dsw-context-", dir=self.builder.root) as directory:
                 local = Path(directory)
                 private = local / "cli"
@@ -317,9 +280,24 @@ class DswPublisher:
                 self.phase("TRANSFERRING_DSW_CONTEXT", "Copying the sealed source context over PAI MCP")
                 self.cli(["dsw", "instance", "exec", self.instance, "--code",
                           "from pathlib import Path; p=Path(" + repr(remote) + "); p.mkdir(mode=0o700); (p/'auth').mkdir(mode=0o700); (p/'tools').mkdir(mode=0o700)"], private)
-                request = {"context_sha256": file_sha(archive), "tag": tag}
+                bases = []
+                for row in DockerfileParser(fileobj=io.BytesIO((context / "Dockerfile").read_bytes())).structure:
+                    if row["instruction"] == "FROM":
+                        parts = shlex.split(row["value"])
+                        image = parts[1] if parts[0].startswith("--platform=") else parts[0]
+                        if IMAGE.fullmatch(image) and image not in bases:
+                            bases.append(image)
+                request = {"context_sha256": file_sha(archive), "tag": tag, "base_images": bases}
                 atomic_json(local / "request.json", request)
-                atomic_json(local / "config.json", {"auths": {host: auth}})
+                # Only credentials for the target and pinned private bases enter
+                # the owned instance; unrelated registry logins remain on host.
+                hosts = {host, *(image.split('/', 1)[0] for image in bases)}
+                selected = {h: auths.get(h) or auths.get('https://' + h) for h in hosts}
+                selected = {h: value for h, value in selected.items() if value is not None}
+                for item in selected.values():
+                    self.secrets.extend([item['auth'], base64.b64decode(item['auth'], validate=True).decode().split(':', 1)[1]])
+                self.secrets = [value for value in self.secrets if value]
+                atomic_json(local / "config.json", {"auths": selected})
                 worker = Path(__file__).parent.parent / "workers/dsw_build_worker.py"
                 files = [(archive, "context.tar"), (local / "request.json", "request.json"), (local / "config.json", "auth/config.json"),
                          (worker, "worker.py")]
@@ -331,7 +309,7 @@ class DswPublisher:
                 if (not IMAGE.fullmatch(image) or not image.startswith(tag.rsplit(":", 1)[0] + "@")
                         or receipt.get("context_sha256") != request["context_sha256"]):
                     raise ValueError("DSW publication identity differs")
-                registry = Registry(self.builder.config["repository"], self.builder.config["registry_auth_file"])
+                registry = Registry.from_config(self.builder.config)
                 _, _, raw = registry.request("GET", registry.prefix + "/manifests/" + tag.rsplit(":", 1)[1],
                                              headers={"Accept": MANIFEST + ", " + OCI_MANIFEST})
                 if image.rsplit("@", 1)[1] != digest(raw):

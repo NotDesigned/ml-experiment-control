@@ -66,7 +66,7 @@ def builder_request(path: str, payload: dict, *, timeout: int = 1200) -> dict:
                 raise BuildReceiptMissingError("image bundle has not been published", retry_proof=data.get("retry_proof"))
             if data.get("code") in {"BUILD_STORAGE_INSUFFICIENT", "BUILD_STORAGE_UNCHECKED", "BUILD_DISK_EXHAUSTED"}:
                 raise BuildStorageError(data["code"], data["details"])
-            if data.get("code") in {"BUILD_SESSION_TIMEOUT", "BUILD_CONTEXT_TRANSPORT", "DESKTOP_RPC_TIMEOUT", "DESKTOP_RPC_UNAVAILABLE", "DESKTOP_RPC_FAILED", "DESKTOP_RPC_RESPONSE", "BUILDER_DOCKER_UNAVAILABLE", "BUILD_PUBLICATION_UNRESOLVED", "BUILD_RECOVERY_UNCHECKED", "PAI_DSW_BUILD_UNCERTAIN", "PAI_DSW_RECONCILE_REQUIRED", "PAI_DSW_CLEANUP_REQUIRED"}:
+            if data.get("code") in {"BUILD_SESSION_TIMEOUT", "BUILD_CONTEXT_TRANSPORT", "DESKTOP_RPC_TIMEOUT", "DESKTOP_RPC_UNAVAILABLE", "DESKTOP_RPC_FAILED", "DESKTOP_RPC_RESPONSE", "BUILDER_DOCKER_UNAVAILABLE", "BUILD_PUBLICATION_UNRESOLVED", "BUILD_RECOVERY_UNCHECKED", "PAI_DSW_BUILD_UNCERTAIN", "PAI_DSW_RECONCILE_REQUIRED", "PAI_DSW_CLEANUP_REQUIRED", "PAI_DSW_NETWORK_MISMATCH", "ACR_NATIVE_BUILD_PENDING", "ACR_NATIVE_BUILD_UNCERTAIN", "IMAGE_MIRROR_UNAVAILABLE"}:
                 raise BuildTransportError(data["code"], data["details"])
             raise ValueError(data.get("error", "image packaging failed"))
         return data

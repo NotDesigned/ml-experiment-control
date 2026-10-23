@@ -21,6 +21,15 @@ def registry(tmp_path, monkeypatch):
     return Registry(memory.repository, auth, blob_hosts=['objects.example']), memory, auth
 
 
+def test_operator_registry_config_keeps_auth_and_blob_trust_explicit(registry):
+    _,memory,auth=registry
+    value=Registry.from_config({'repository':memory.repository,'registry_auth_file':auth,
+                                'registry_auth_hosts':['auth.example'],'registry_blob_hosts':['objects.example']},timeout=15)
+    assert value.auth_hosts=={'auth.example'} and value.blob_hosts=={'objects.example'} and value.timeout==15
+    default=Registry.from_config({'repository':memory.repository,'registry_auth_file':auth})
+    assert default.auth_hosts==frozenset() and default.blob_hosts==frozenset()
+
+
 def test_registry_blob_upload_manifest_and_reuse_verify_exact_bytes(registry):
     registry, memory, _ = registry
     body = b'arbitrary upload data' * 100
@@ -44,6 +53,40 @@ def test_bearer_token_is_requested_from_same_origin_and_never_returned(registry)
     assert 'scope=repository%3Atest%2Fdata%3Apull%2Cpush' in token_call[2]
     assert token_call[3]['Authorization'].startswith('Basic ')
     assert memory.calls[-1][3]['Authorization'] == 'Bearer fake-bearer-secret'
+
+
+def test_explicit_auth_host_supports_acr_without_trusting_arbitrary_realms(registry, monkeypatch):
+    _, memory, auth = registry
+    original = memory.connection
+    def connect(host, **kwargs):
+        if host != 'auth.example':
+            return original(host, **kwargs)
+        class Auth:
+            def request(self, method, path, body=None, headers=None):
+                assert method == 'GET' and path.startswith('/token?') and body is None
+                assert headers['Authorization'].startswith('Basic ')
+                memory.calls.append((host, method, path, headers, body))
+            def getresponse(self):
+                return Response(200, body=encoded(memory.token_payload))
+            def close(self):
+                memory.closed += 1
+        return Auth()
+    monkeypatch.setattr(module.http.client, 'HTTPSConnection', connect)
+    transport = Registry(memory.repository, auth, auth_hosts=['auth.example'])
+    memory.challenge = 'Bearer realm="https://auth.example/token",service="registry-service"'
+    assert transport.manifest(memory.base_digest) == memory.base
+    assert memory.calls[1][0] == 'auth.example'
+    assert memory.calls[-1][0] == memory.host
+    assert memory.calls[-1][3]['Authorization'] == 'Bearer fake-bearer-secret'
+    assert memory.closed == len(memory.calls)
+
+
+@pytest.mark.parametrize('host', [None, 17, '', 'https://auth.example', 'auth.example:443', 'auth.example/path'])
+def test_auth_host_allowlist_requires_exact_hostnames(registry, host):
+    _, memory, auth = registry
+    with pytest.raises(ValueError, match='allowlist'):
+        Registry(memory.repository, auth, auth_hosts=[host])
+    assert memory.calls == []
 
 
 @pytest.mark.parametrize('location', ['https://other.example/v2/test/data/blobs/uploads/id',

@@ -118,7 +118,7 @@ def test_status_logs_historical_uid_and_cancel_bind_the_exact_attempt(adapter):
     logs=b.logs({},r,tail=1);assert logs['lines']==['last'] and logs['historical']
     assert calls[-1][2]['query']['PodUid']=='uid-1'
     assert b.collect({},r)['model_observed'] is False
-    b.cancel({},r);assert calls[-1][0]=='StopJob' and calls[-1][2]['method']=='PUT'
+    b.cancel({},r);assert calls[-1][0]=='StopJob' and calls[-1][2]['method']=='POST'
     data['job']['Settings']['Tags']['ml-expd.attempt']='attempt-002'
     with pytest.raises(ValueError,match='another'):b.cancel({},r)
     api.request=lambda *a,**kw:{'Logs':[None]};data['job']['Settings']['Tags']=job_tags(r,'attempt-001')

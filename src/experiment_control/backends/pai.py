@@ -255,7 +255,7 @@ class PaiBackend:
     def cancel(self, campaign, run):
         record = self.s.backend_record(campaign, run)
         self.bound_job(campaign, run)
-        self.api.request("pai-dlc", "StopJob", "/api/v1/jobs/" + component(record["backend_job_id"]) + "/stop", method="PUT")
+        self.api.request("pai-dlc", "StopJob", "/api/v1/jobs/" + component(record["backend_job_id"]) + "/stop", method="POST")
         return self.status(campaign, run)
 
     def logs(self, campaign, run, *, tail):

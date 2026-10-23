@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from .tracking.metric_contract import MetricSchema
+from .debug_models import DebugConfig
 
 SCHEMA_VERSION = 1
 SAFE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
@@ -149,6 +150,12 @@ class HttpAuthConfig(BaseModel):
         return Path(str(self.bearer_token_file)).expanduser()
 
 
+class ImageMirrorConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    source_repository: str = Field(pattern=r'^[A-Za-z0-9.-]+/[a-z0-9][a-z0-9._/-]*$')
+    target_repository: str = Field(pattern=r'^[A-Za-z0-9.-]+/[a-z0-9][a-z0-9._/-]*$')
+
+
 class ContainerExecutionConfig(BaseModel):
     """Daemon-owned execution profiles and bounded source import policy."""
 
@@ -159,6 +166,7 @@ class ContainerExecutionConfig(BaseModel):
     builder_socket: Optional[str] = None
     artifact_store_file: Optional[str] = None
     registry_pull_file: Optional[str] = None
+    sensecore_image_mirror: Optional[ImageMirrorConfig] = None
     git_hosts: list[str] = Field(default_factory=lambda: ["github.com", "gitlab.com"])
     max_archive_bytes: int = Field(default=64 * 1024 * 1024, ge=1, le=512 * 1024 * 1024)
     max_source_bytes: int = Field(default=256 * 1024 * 1024, ge=1, le=1024 * 1024 * 1024)
@@ -344,6 +352,7 @@ class ServerConfig(BaseModel):
     action_runtime: ActionRuntimeConfig = Field(default_factory=ActionRuntimeConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     container_execution: ContainerExecutionConfig = Field(default_factory=ContainerExecutionConfig)
+    debug_sessions: DebugConfig = Field(default_factory=DebugConfig)
     # The daemon owns live collection by default. ``--snapshot`` is the
     # explicit offline opt-out.
     collector_enabled: bool = True

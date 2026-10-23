@@ -214,6 +214,95 @@ remain under the owned `/tmp/ml-expd-build-*` directory; Docker image layers sti
 use the engine's temporary storage. This does not create a cross-instance Docker
 cache or change a client's Dockerfile `WORKDIR` or frozen source identity.
 
+### Tokyo registry and native build fallback
+
+Use one private Tokyo ACR repository as the runtime publication target. DSW
+builds are the primary path; ACR Personal's Git-triggered build is the fallback.
+Configure these operator-only builder settings (the API request stays unchanged):
+
+```json
+{
+  "repository": "YOUR_TOKYO_ACR_HOST/ml-expd/build",
+  "registry_auth_hosts": ["dockerauth-ap-northeast-1.aliyuncs.com"],
+  "registry_blob_hosts": ["aliregistry-ap-northeast-1.oss-ap-northeast-1.aliyuncs.com"],
+  "acr_fallback": {
+    "git_repository": "https://github.com/YOUR_ACCOUNT/YOUR_PRIVATE_BUILD_REPO",
+    "wait_seconds": 300
+  }
+}
+```
+
+The Docker auth file must contain exact-host credentials for the target and any
+private pinned bases. The builder sends only those entries to its owned DSW;
+unrelated registry credentials stay on the server. ACR's token and blob hosts
+are independent trust allowlists, not arbitrary redirect permissions.
+WYD accepts a Docker `auths` file as `registry_pull_file`, as well as the original
+single-registry format. PAI uses its own private exact-host `registry_auth_file`.
+Old image references and their credentials remain valid; changing the default
+repository does not rewrite frozen Runtime or Attempt identities.
+
+Configure `pai_dsw.user_vpc` with the approved VPC, vSwitch and security group.
+Set `pai_dsw.default_route` to `eth0` for the shared gateway or `eth1` for the
+private NAT gateway. The default is `eth0`. The builder checks the actual DSW
+response before uploading credentials or running Docker: if the quota overrides
+the requested network, it stops and cleans up that owned instance. A configured
+`eth1` is not proof that a private gateway is usable. Dedicated quotas may inherit
+their gateway from quota configuration; changing that shared configuration must
+be coordinated with its administrator.
+
+Native ACR requires `git` and an authenticated `gh` CLI on the builder host.
+The target GitHub repository must be verifiably private and bound in ACR to the
+built-in rule `release-v$version` → `$version`, context `/`, file `Dockerfile`.
+The fallback publishes only `release-vbundle-BUNDLE_SHA256`; it never updates
+`main` or overwrites a tag. Git plumbing preserves ignored files, executable
+bits and exact bytes without running client filters or hooks. Git cannot deliver
+empty directories; these contexts are refused, as are special files, symlinks,
+individual files above 95 MiB or contexts above 300 MiB. Data and checkpoints
+belong in the platform's data/state paths, not this source-only Git channel.
+Use ACR-compatible base images: same-account, same-region private ACR bases or
+supported public bases. ACR Personal cannot authenticate to a private third-party
+base such as SenseCore CCR.
+
+Fallback starts only after the primary DSW was deleted, native Get and complete
+List confirm its absence, and an authenticated registry request confirms the
+image is absent. An uncertain create, cleanup or registry request cannot trigger
+it. One durable Git publication intent fences out further DSW attempts and Tag
+pushes. If a push response is lost, observe its original tag instead of replaying.
+
+ACR Personal has no public build-status/log API. The platform reports
+`WAITING_ACR_BUILD` while polling the authenticated registry; detailed native
+failure logs remain in the ACR console. After the bounded wait it reports
+`ACR_NATIVE_BUILD_PENDING` and requires `/reconcile`. Reconciliation can accept a
+late image after checking the platform, source label and manifest digest, without
+starting another build. It never turns an absent image into permission to retry.
+Provider-side native builds have their own 30-minute limit.
+
+PAI and WYD consume the published private image using exact-host pull auth.
+For SenseCore, use on-demand digest-preserving delivery to its existing CCR:
+
+```json
+{
+  "sensecore_mirror": {
+    "source_repository": "YOUR_TOKYO_ACR_HOST/ml-expd/build",
+    "target_repository": "YOUR_CCR_HOST/YOUR_NAMESPACE/ml-expd-runtime"
+  }
+}
+```
+
+Set the same pair in the server's `container_execution.sensecore_image_mirror`
+configuration. The builder's private Docker auth file must have both registries.
+The Run freezes its original Tokyo Runtime image and its separate CCR delivery
+target. Run creation performs no transfer. Before scheduler submission, the
+existing staging action streams `skopeo copy --preserve-digests` to the exact CCR
+repository and verifies the published manifest. Identical subsequent requests
+reuse it; conflicting tags are refused. The API host stores only a small receipt,
+without downloading/unpacking image layers to local disk. Copy failure blocks
+scheduling and remains independently retryable; it never causes another build or
+GPU job. Download-script CPU preparation and managed Run deletion also ensure
+the same frozen delivery before launching their CPU job. Existing Runs without
+this field keep their original path. Do not make ACR public to bypass private
+registry authentication.
+
 Each build requests 4 CPU, 8 GiB, 0 GPU. A cloud shutdown timer is created and read
 back before upload; its 30-minute stop budget survives the API host exiting.
 Known owned instances are stopped/deleted in cleanup. Uncertain creation or
@@ -338,3 +427,20 @@ in selected exported outputs. OSS copies are deliberate durable backups and are
 outside automatic local retention, download ACK release, and Run deletion, as are
 existing external W&B records; remove them separately under the personal prefix
 when desired. No Bucket ACL/Policy or lifecycle deletion is changed.
+
+
+## Failed DSW image builds
+
+DSW pre-pulls pinned external base images and retries downloads up to three
+times before executing Dockerfile commands. Builds and registry pushes are not
+automatically replayed. Network retries cannot guarantee cross-region CCR
+ bandwidth or repair a persistent upstream connection failure.
+
+For a failed Runtime, reconcile its original identity. A PAI retry is permitted
+only after the builder holds the bundle lock, verifies a prior
+`DELETE_REQUESTED` zero-GPU lease, confirms the exact DSW is absent through both
+GetInstance and the scoped inventory, and receives an authenticated registry
+404 for that bundle. A stopped instance, unknown creation, incomplete query,
+403, live worker or published tag grants no retry. The same checks run again
+before creating a replacement CPU builder; the old lease is preserved in
+private history. Source, Dockerfile, worker and bundle identities remain fixed.

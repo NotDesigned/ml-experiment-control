@@ -20,6 +20,7 @@ from ..execution_queue import QueueUnavailable
 
 
 _EXECUTION_ROUTES = (
+    ("action", re.compile(r"/api/debug-sessions(?:/[^/]+/(?:refresh|stop))?")),
     ("action", re.compile(r"/api/(?:actions/execute|submissions/[^/]+/execute)")),
     ("preparation", re.compile(r"/api/projects/[^/]+/experiment-preparations(?:/[^/]+/continue)?")),
     ("build", re.compile(r"/api/projects/[^/]+/runtimes/[^/]+/(?:execute|reconcile)")),
@@ -29,6 +30,8 @@ _EXECUTION_ROUTES = (
 
 
 def _execution_lane(method, path):
+    if method == "DELETE" and re.fullmatch(r"/api/debug-sessions/[^/]+", path):
+        return "action"
     if method == "POST":
         for lane, pattern in _EXECUTION_ROUTES:
             if pattern.fullmatch(path):

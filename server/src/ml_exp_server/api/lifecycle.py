@@ -27,6 +27,18 @@ from ..runs.experiment_preparation import ExperimentPreparationService
 from ..tracking.tracking_service import TrackingPublisher
 from ..results.result_collection import ResultCollectionService
 from ..execution_queue import BoundedExecutor, job_lane
+from ..debug_sessions import DebugSessions
+
+
+def _debug_loop(app):
+    while not app.state._stop.is_set():
+        try:
+            app.state.debug_sessions.maintain()
+            app.state.debug_session_error = None
+        except Exception as exc:
+            app.state.debug_session_error = type(exc).__name__
+        if app.state._stop.wait(20):
+            break
 
 
 def _poll_loop(app: FastAPI, collector: Collector) -> None:
@@ -67,6 +79,7 @@ async def _shutdown(app: FastAPI) -> None:
     if stop is not None:
         stop.set()
     thread = getattr(app.state, "_poll_thread", None)
+    debug_thread = getattr(app.state, "_debug_thread", None)
     action_executor = getattr(app.state, "action_executor", None)
     preparation_executor = getattr(app.state, "preparation_executor", None)
     executors = getattr(app.state, "job_executors", None) or {
@@ -88,6 +101,8 @@ async def _shutdown(app: FastAPI) -> None:
         # The collector owns the index while a cycle is in flight. Do not close
         # the runtime until that owner has observed the stop signal.
         await asyncio.to_thread(thread.join, 5.0)
+    if debug_thread is not None:
+        await asyncio.to_thread(debug_thread.join, 5.0)
     lease = getattr(app.state, "collector_lease", None)
     runtime = getattr(app.state, "runtime", None)
     if runtime is None:
@@ -95,7 +110,7 @@ async def _shutdown(app: FastAPI) -> None:
             lease.release()
         return
     owner_threads = [
-        item for item in (thread,) if item is not None
+        item for item in (thread, debug_thread) if item is not None
     ]
     if (not any(item.is_alive() for item in owner_threads) and not action_futures
             and not any(getattr(item, "busy", False) for item in executors)):
@@ -143,6 +158,9 @@ def server_lifespan(config: ServerConfig, *, effective_poll: bool,
         app.state.broker.bind_loop(loop)
         app.state._stop = threading.Event()
         app.state._poll_thread = None
+        app.state._debug_thread = None
+        app.state.debug_sessions = DebugSessions(config)
+        app.state.debug_session_error = None
         # Long orchestration waits must not consume independent image, data,
         # or result workers. Capacity includes queued and reserved requests.
         app.state.job_executors = {
@@ -184,6 +202,8 @@ def server_lifespan(config: ServerConfig, *, effective_poll: bool,
             for initializer in tuple(app.state.runtime_initializers):
                 initializer(runtime)
             app.state.application = ExperimentServerApplication(runtime)
+            if config.debug_sessions.profiles_file or app.state.debug_sessions.root.exists():
+                app.state._debug_thread = _start_daemon_thread(target=_debug_loop, args=(app,), name="debug-session-expiry")
 
             def submit_job(call, pending, *, executor=None):
                 owner = executor if executor is not None else app.state.job_executors[job_lane(call)]

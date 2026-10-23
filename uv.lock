@@ -1267,7 +1267,7 @@ wheels = [
 
 [[package]]
 name = "ml-experiment-client"
-version = "1.1.0"
+version = "1.2.0"
 source = { editable = "client" }
 
 [package.dev-dependencies]
@@ -1282,7 +1282,7 @@ dev = [{ name = "pytest", specifier = ">=8.0" }]
 
 [[package]]
 name = "ml-experiment-control"
-version = "1.1.0"
+version = "1.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "pyyaml" },
@@ -1318,7 +1318,7 @@ dev = [
 
 [[package]]
 name = "ml-experiment-server"
-version = "1.1.0"
+version = "1.2.0"
 source = { editable = "server" }
 dependencies = [
     { name = "alibabacloud-oss-v2" },

@@ -102,6 +102,10 @@ class SenseCoreScriptPreparation:
             raise ValueError("script cache is outside the frozen NAS mount")
         definition = {"contract": "cpu-script-preparation.v1", "definition": run["data_preparation"],
                       "image": run["container"]["image"], "cache": cache, "cpu_profile": copy}
+        from ..builds.image_mirror import target_image, delivery_for_run
+        delivery = delivery_for_run(run)
+        if delivery is not None:
+            definition.update(image=target_image(delivery), image_delivery=delivery)
         if run.get("data_preparation_receipt_mode") == "callback_v1":
             worker_sha = run.get("data_preparation_receipt_worker_sha256")
             if not isinstance(worker_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", worker_sha):
@@ -275,6 +279,9 @@ class SenseCoreScriptPreparation:
             name = "ml-expd-data-script-" + operation.split(".", 1)[1][:32]
             try:
                 if not value:
+                    if definition.get('image_delivery') is not None:
+                        from ..builds.image_mirror import ensure_delivery
+                        ensure_delivery(definition['image_delivery'])
                     verify_spec(self.rest, profile)
                     deadline = time.time() + profile["queue_timeout_seconds"] + definition["definition"]["timeout_seconds"] + 90
                     callback = None

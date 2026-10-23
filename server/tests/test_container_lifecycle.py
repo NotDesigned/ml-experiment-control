@@ -129,6 +129,38 @@ def test_dispatch_credentials_remain_outside_frozen_command(controller, monkeypa
     assert controller.oci_pull_environment()["APPTAINER_DOCKER_PASSWORD"] == "test-password"
 
 
+@pytest.mark.parametrize('prefix',['','https://'])
+def test_multiple_private_registries_select_credentials_only_for_the_exact_image_host(controller,tmp_path,prefix):
+    import base64
+    credentials=tmp_path/'multiple-auth.json'
+    credentials.write_text(json.dumps({'auths':{prefix+'tokyo.example':{'auth':base64.b64encode(b'tokyo-user:tokyo-password').decode()},
+                                              'ccr.example':{'auth':base64.b64encode(b'ccr-user:ccr-password').decode()}}}))
+    controller.campaign['registry_pull']=str(credentials)
+    for host,password in [('tokyo.example','tokyo-password'),('ccr.example','ccr-password'),('unknown.example',None)]:
+        controller.run['backend']['oci_image']=host+'/runtime@sha256:'+'a'*64
+        result=controller.oci_pull_environment()
+        assert result.get('APPTAINER_DOCKER_PASSWORD')==password
+
+
+@pytest.mark.parametrize('auth',[b':password',b'user:',b'user:bad\npassword',b'user:bad\rpassword'])
+def test_invalid_multi_registry_secret_is_not_forwarded(controller,tmp_path,auth):
+    import base64
+    credentials=tmp_path/'invalid-auth.json'
+    credentials.write_text(json.dumps({'auths':{'registry.example':{'auth':base64.b64encode(auth).decode()}}}))
+    controller.campaign['registry_pull']=str(credentials)
+    controller.run['backend']['oci_image']='registry.example/runtime@sha256:'+'a'*64
+    with pytest.raises(ValueError,match='exact-host'):controller.oci_pull_environment()
+
+
+def test_staging_delivers_exact_mirror_before_any_scheduler_submission(controller,monkeypatch):
+    calls=[];run=controller.run
+    run['backend'].update(kind='sensecore',image='ccr.example/runtime:bundle-'+'a'*64)
+    run['backend']['image_delivery']={'source_image':run['container']['image'],'target_tag':run['backend']['image'],'builder_socket':'/run/test.sock'}
+    monkeypatch.setattr('ml_exp_server.builds.image_mirror.ensure_delivery',lambda d:calls.append(d))
+    assert controller.stage() is True and calls==[run['backend']['image_delivery']]
+    assert controller.backend.submissions==[]
+
+
 def test_unavailable_retry_without_prior_evidence_is_blocked(controller):
     controller.backend.identity_report = IdentityReport(available=False, ambiguous=False)
     with pytest.raises(ValueError, match="frozen retry"):
