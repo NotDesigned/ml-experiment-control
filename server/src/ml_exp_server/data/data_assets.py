@@ -98,6 +98,17 @@ class AssetStore:
         with buffer.locked():
             value["transfer_buffer"] = buffer.snapshot()
         value["data_upload_storage"] = "target-executor"
+        if self.objects.config.get("oss_datasets"):
+            from .oss_datasets import settings
+            from ..archive_limits import minimum_limit
+            configured=settings(self.objects.config)
+            part_bytes=self.objects.config.get("oss_dataset_part_bytes",16*1024**2)
+            value["oss_datasets"]={"bucket":configured["bucket"],"region":configured["region"],
+                "read_prefixes":["users/"+configured["user"]+"/datasets/","public/datasets/"],
+                "upload_prefix":"users/"+configured["user"]+"/datasets/ml-expd/",
+                "part_bytes":part_bytes,"max_parts":min(value["upload_max_parts"],10000),"min_part_bytes":100*1024,
+                "max_archive_bytes":minimum_limit(self.limit,part_bytes*min(value["upload_max_parts"],10000)),
+                "download_deletes_dataset":False,"training_cache":"inside-job-cpfs"}
         from ..local_retention import retention_seconds
         value['local_payload_retention'] = {'max_age_seconds': retention_seconds(self.objects.config),
                                             'scope': 'local-datasets-result-archives-and-terminal-payload-caches',
@@ -107,6 +118,9 @@ class AssetStore:
 
     def download(self, project: str, asset_id: str):
         value = self.read(project, asset_id)
+        from .oss_datasets import OSSDatasets,locator
+        if locator(value) is not None:
+            return OSSDatasets(self).ticket(value)
         self.require_available(value)
         if value.get("remote_storage") in {"desktop-builder", "wyd", "sensecore-ccr"}:
             raise ApplicationError("remote assets use their frozen backend storage", status_code=404,
@@ -163,6 +177,9 @@ class AssetStore:
 
     def archive(self, project: str, asset_id: str):
         value = self.read(project, asset_id)
+        from .oss_datasets import OSSDatasets,locator
+        if locator(value) is not None:
+            return value,OSSDatasets(self).archive(value)
         self.require_available(value)
         if value.get("remote_storage") == "desktop-builder":
             from .remote_data_uploads import remote_archive
@@ -182,7 +199,7 @@ class AssetStore:
                                    status_code=410, code='ASSET_EXPIRED')
 
     def publish_remote(self, project, value):
-        if (value.get("project") != project or value.get("remote_storage") not in {"desktop-builder", "wyd", "sensecore-ccr"}
+        if (value.get("project") != project or value.get("remote_storage") not in {"desktop-builder", "wyd", "sensecore-ccr", "oss"}
                 or value.get("asset_id") != "asset." + value.get("sha256", "")
                 or not SHA256.fullmatch(value.get("sha256", "")) or value.get("archive_bytes", 0) <= 0):
             raise ValueError("remote asset identity differs")

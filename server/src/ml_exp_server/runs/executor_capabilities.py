@@ -37,7 +37,7 @@ class ExecutorSelector(BaseModel):
     candidates: list[str] = Field(default_factory=list, max_length=64)
 
 
-def declaration(profile, *, artifact_store: bool, desktop: bool, cpu_preparation: bool = False) -> dict:
+def declaration(profile, *, artifact_store: bool, desktop: bool, cpu_preparation: bool = False, oss_datasets: bool = False) -> dict:
     kind = profile["backend"]["kind"]
     adapter = DECLARATIONS[kind]
     persistent = bool(adapter.persistent_filesystem and profile.get("storage_root")
@@ -67,7 +67,7 @@ def declaration(profile, *, artifact_store: bool, desktop: bool, cpu_preparation
         "storage": {"persistent": persistent, "storage_id": storage_id,
                     "checkpoint_registration": persistent and artifact_store},
         "data": {"asset_preparation": asset_mode,
-                 "assets": persistent and artifact_store and kind != "pai-dlc",
+                 "assets": persistent and artifact_store and (kind != "pai-dlc" or oss_datasets),
                  "download_script": script_mode,
                  "preparation": {"phase": script_mode,
                                  "max_timeout_seconds": 3600 if kind == "sensecore" and cpu_preparation else 86400,
@@ -109,7 +109,7 @@ def mismatches(capabilities, profile, request, requirements) -> list[str]:
         problems.append("data.download_script.inputs_require_before_job")
     if (request.checkpoint_persistence is not None or request.resume_from is not None or requirements.persistent_checkpoints) and not capabilities["storage"]["checkpoint_registration"]:
         problems.append("storage.checkpoint_registration")
-    if request.checkpoint_upload is not None and not capabilities["data"]["assets"]:
+    if request.checkpoint_upload is not None and (not capabilities["data"]["assets"] or profile["backend"]["kind"] == "pai-dlc"):
         problems.append("checkpoint_upload")
     if (getattr(request.resources, "allocation_policy", None) is not None and
             request.resources.allocation_policy not in capabilities["resources"].get("allocation_policies", [])):

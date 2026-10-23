@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 from .api import ClientError, error_payload, segment
 from .archives import data_archive, source_archive
 from .artifacts import acknowledge, download
-from .assets import deliver_data, upload_asset_parts
+from .assets import deliver_data, upload_asset_parts, download_asset
 from .config import validate_dockerfile
 from .operations import training_operation
 from .run_deletion import run_deletion
@@ -36,7 +36,16 @@ def initialize(args):
 
 
 def dispatch(args, client, health):
-    if args.command == "debug":
+    if args.command in {"asset-import-oss","asset-download"}:
+        if "oss-datasets.v1" not in health.get("capabilities",[]):
+            raise ClientError("server lacks oss-datasets.v1")
+        endpoint=f"/api/projects/{segment(args.project)}/assets"
+        if args.command=="asset-import-oss":
+            result=client.call(endpoint+"/import-oss",data={"executor":args.executor,"object_key":args.object_key,
+                                                          "sha256":args.sha256,"bytes":args.bytes},timeout=1200)
+        else:
+            result=download_asset(client,args.project,args.id,args.out)
+    elif args.command == "debug":
         from .debug_sessions import debug_session
         result = debug_session(args, client, health)
     elif args.command == "check":
@@ -249,9 +258,13 @@ def upload_asset(args, client, health):
     if args.executor:
         catalogue = client.call("/api/executors")["executors"]
         matches = [item for item in catalogue if item["id"] == args.executor]
-        if len(matches) != 1 or matches[0].get("kind") not in {"slurm", "sensecore"}:
-            raise ClientError("data upload requires a published WYD or SenseCore executor")
+        if len(matches) != 1 or matches[0].get("kind") not in {"slurm", "sensecore", "pai-dlc"}:
+            raise ClientError("data upload requires a published WYD, SenseCore or DLC executor")
         kind = matches[0]["kind"]
+        if kind == "pai-dlc" and "oss-datasets.v1" not in health.get("capabilities",[]):
+            raise ClientError("server lacks oss-datasets.v1")
+        if kind == "pai-dlc" and not matches[0].get("capabilities",{}).get("data",{}).get("assets"):
+            raise ClientError("DLC OSS dataset storage is not enabled")
         if kind == "sensecore" and "ccr-data-delivery.v1" not in health.get("capabilities", []):
             raise ClientError("server lacks ccr-data-delivery.v1")
     limits = client.call("/api/storage-limits")

@@ -28,6 +28,7 @@ SERVER_CAPABILITIES = (
     "wandb-sync.v1",
     "wandb-preparation-sync.v1",
     "pai-idle-resources.v1",
+    "oss-datasets.v1",
     "result-collection.v1",
     "training-result.v1",
     "experiment-records.v1",
