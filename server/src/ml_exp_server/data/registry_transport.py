@@ -27,7 +27,7 @@ def digest(value):
 
 
 class Registry:
-    def __init__(self, repository, auth_file, *, timeout=60, blob_hosts=()):
+    def __init__(self, repository, auth_file, *, timeout=60, blob_hosts=(), auth_hosts=()):
         if (not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]+)?/[a-z0-9][a-z0-9._/-]*", repository)
                 or ".." in repository.split("/")):
             raise ValueError("invalid data registry repository")
@@ -35,6 +35,10 @@ class Registry:
         self.origin, self.prefix = "https://" + self.host, "/v2/" + self.repository
         self.timeout, self.bearer = timeout, None
         self.blob_hosts = frozenset(blob_hosts)
+        self.auth_hosts = frozenset(auth_hosts)
+        if any(not isinstance(host, str) or not re.fullmatch(r"[A-Za-z0-9.-]+", host)
+               for host in self.auth_hosts):
+            raise ValueError("invalid registry authentication host allowlist")
         config = json.loads(Path(auth_file).read_text())
         auth = config.get("auths", {}).get(self.host) or config.get("auths", {}).get(self.origin)
         if not isinstance(auth, dict) or not isinstance(auth.get("auth"), str):
@@ -52,8 +56,8 @@ class Registry:
             raise ValueError("registry upload location escaped its repository")
         return target.path + ("?" + target.query if target.query else "")
 
-    def _exchange(self, method, path, headers, body, maximum):
-        connection = http.client.HTTPSConnection(self.host, timeout=self.timeout)
+    def _exchange(self, method, path, headers, body, maximum, *, host=None):
+        connection = http.client.HTTPSConnection(host or self.host, timeout=self.timeout)
         try:
             connection.request(method, path, body=body, headers=headers)
             response = connection.getresponse()
@@ -76,12 +80,14 @@ class Registry:
             challenge = response_headers.get("www-authenticate", "")
             fields = dict(re.findall(r'([a-z]+)="([^"\r\n]*)"', challenge))
             realm = urlsplit(fields.get("realm", ""))
-            if (not challenge.startswith("Bearer ") or realm.scheme != "https" or realm.netloc != self.host
+            if (not challenge.startswith("Bearer ") or realm.scheme != "https"
+                    or realm.netloc not in {self.host, *self.auth_hosts}
                     or realm.username or realm.password or realm.fragment):
                 raise ValueError("registry authentication realm is not trusted")
             query = urlencode({"service": fields.get("service", self.host), "scope": "repository:" + self.repository + ":pull,push"})
             token_path = realm.path + ("?" + realm.query + "&" if realm.query else "?") + query
-            code, _, token_raw = self._exchange("GET", token_path, {"Authorization": self.basic}, None, 65536)
+            target = {"host": realm.netloc} if realm.netloc != self.host else {}
+            code, _, token_raw = self._exchange("GET", token_path, {"Authorization": self.basic}, None, 65536, **target)
             if code != 200:
                 raise ApplicationError("data registry authentication failed", status_code=503, code="CCR_AUTHENTICATION")
             token = json.loads(token_raw)

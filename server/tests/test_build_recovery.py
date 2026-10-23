@@ -152,6 +152,8 @@ def test_unknown_runtime_recovers_only_with_fresh_positive_proof(client,monkeypa
     assert result['build_error']['retry_safe'] is (case=='verified')
     assert result['runtime_id']==value['runtime_id'] and result['spec']==value['spec']
     if case=='verified':
+        again=client.post(endpoint+'/reconcile',json={'confirmation':value['confirmation']}).json()
+        assert again['build_error_history']==result['build_error_history']
         monkeypatch.setattr(container_execution,'builder_request',original)
         assert client.post(endpoint+'/execute',json={'confirmation':value['confirmation']}).status_code==202
         final=wait_runtime(client,endpoint)
