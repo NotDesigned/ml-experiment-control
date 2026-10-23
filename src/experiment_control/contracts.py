@@ -71,6 +71,10 @@ class _PaiBackendOptional(TypedDict, total=False):
     user_vpc: JsonObject
     storage_id: str
     filesystem_type: str
+    cpfs_uri: str
+    workspace_user: str
+    data_role_arn: str
+    gpu_type_from_quota: bool
 
 
 class PaiBackendConfig(_PaiBackendOptional):
