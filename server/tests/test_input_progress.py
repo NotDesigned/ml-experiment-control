@@ -48,7 +48,8 @@ def test_reader_handles_historical_and_unsafe_or_missing_logs(tmp_path):
 
 
 @pytest.mark.parametrize('value', ['bad json', json.dumps([]), json.dumps({'at':None}), json.dumps(event(at='yesterday')),
-    json.dumps(event(at='2026-01-01T00:00:00')), json.dumps(event(phase='evil')), json.dumps(event(asset_id='private-secret'))])
+    json.dumps(event(at='2026-01-01T00:00:00')), json.dumps(event(phase='evil')), json.dumps(event(asset_id='private-secret'))],
+    ids=['invalid-json','array','missing-time','invalid-time','naive-time','unknown-phase','invalid-asset'])
 def test_reader_ignores_malformed_events(tmp_path, value):
     (tmp_path/'stdout.log').write_text(MARKER+value+'\n')
     assert read_input_progress(tmp_path) is None
