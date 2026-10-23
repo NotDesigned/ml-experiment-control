@@ -35,13 +35,10 @@ def test_transfer_configuration_authentication_and_size_are_checked(client, stor
     assert not objects
 
 
-@pytest.mark.parametrize("uploaded", [False, True])
-def test_archive_download_requires_receipt_and_closes_s3_body(client, storage, monkeypatch, uploaded):
+def test_archive_download_requires_receipt_and_closes_s3_body(client, storage, monkeypatch):
     store, root, token, objects = configure(client, storage)
     endpoint = "/api/runs/demo/run-a/attempts/attempt-001/artifacts/archive"
-    if not uploaded:
-        assert client.get(endpoint).status_code == 404
-        return
+    assert client.get(endpoint).status_code == 404
     data = archive({"result.bin": b"result"})
     receipt = store.receive("demo", "run-a", "attempt-001", token, io.BytesIO(data), len(data))
     bodies = []
@@ -63,17 +60,17 @@ def test_archive_download_requires_receipt_and_closes_s3_body(client, storage, m
     assert client.get(endpoint).status_code == 404
 
 
-@pytest.mark.parametrize("selected,expected", [("bytes=-", 416), ("invalid", 416), ("bytes=5-3", 416), ("bytes=-2", 206)])
-def test_artifact_suffix_and_invalid_ranges(client, storage, selected, expected):
+def test_artifact_suffix_and_invalid_ranges(client, storage):
     store, root, token, _ = configure(client, storage)
     data = archive({"result.bin": b"0123456789"})
     store.receive("demo", "run-a", "attempt-001", token, io.BytesIO(data), len(data))
     endpoint = "/api/runs/demo/run-a/attempts/attempt-001/files/outputs/result.bin"
-    response = client.get(endpoint, headers={"Range": selected})
-    assert response.status_code == expected
-    if expected == 206:
-        assert response.content == b"89"
-    full = client.get(endpoint, headers={"Range": "bytes=2-5", "If-Range": '"old-etag"'})
+    for selected, expected in [("bytes=-", 416), ("invalid", 416), ("bytes=5-3", 416), ("bytes=-2", 206)]:
+        response = client.get(endpoint, headers={"Range": selected})
+        assert response.status_code == expected, (selected, response.text)
+        if expected == 206:
+            assert response.content == b"89"
+    full = client.get(endpoint, headers={"Range": "bytes=2-5", "If-Range": '\"old-etag\"'})
     assert full.status_code == 200 and full.content == b"0123456789"
 
 

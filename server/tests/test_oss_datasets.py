@@ -172,18 +172,20 @@ def test_upload_uses_standard_parts_and_lost_completion_is_not_replayed(datasets
     assert not list((assets.root.parent/'transfer-buffer').rglob('*.part'))
 
 
-@pytest.mark.parametrize('key',['users/other/datasets/a.tar','users/owner/results/a.tar','users/owner/datasets/../secret','users/owner/datasets//a','users/owner/datasets/.key','users/owner/datasets/a\\b','users/owner/datasets/a\n','users/owner/datasets/'])
-def test_registration_cannot_read_or_sign_outside_personal_scope(datasets,key):
-    cli,*_=datasets
-    assert cli.post('/api/projects/demo/assets/import-oss',json={'executor':'pai','object_key':key,'sha256':'a'*64,'bytes':1}).status_code==409
+def test_registration_cannot_read_or_sign_outside_personal_scope(datasets):
+    cli,assets,*_=datasets
+    for key in ['users/other/datasets/a.tar','users/owner/results/a.tar','users/owner/datasets/../secret','users/owner/datasets//a','users/owner/datasets/.key','users/owner/datasets/a\\b','users/owner/datasets/a\n','users/owner/datasets/']:
+        response=cli.post('/api/projects/demo/assets/import-oss',json={'executor':'pai','object_key':key,'sha256':'a'*64,'bytes':1})
+        assert response.status_code==409,(key,response.text)
+        assert assets.list('demo')['assets']==[]
 
 
-@pytest.mark.parametrize('change',[{'sha256':'0'*64},{'bytes':1},{'bytes':100000},{'object_key':'users/owner/datasets/missing'}])
-def test_registration_does_not_publish_corrupt_or_missing_objects(datasets,change):
+def test_registration_does_not_publish_corrupt_or_missing_objects(datasets):
     cli,assets,*_=datasets;data,key,sha=put(datasets)
-    response=cli.post('/api/projects/demo/assets/import-oss',json={'executor':'pai','object_key':key,'sha256':sha,'bytes':len(data),**change})
-    assert response.status_code in {409,503}
-    assert assets.list('demo')['assets']==[]
+    for change in [{'sha256':'0'*64},{'bytes':1},{'bytes':100000},{'object_key':'users/owner/datasets/missing'}]:
+        response=cli.post('/api/projects/demo/assets/import-oss',json={'executor':'pai','object_key':key,'sha256':sha,'bytes':len(data),**change})
+        assert response.status_code in {409,503},(change,response.text)
+        assert assets.list('demo')['assets']==[]
 
 
 def test_settings_disabled_and_object_scope_mismatches_are_closed(datasets,monkeypatch):

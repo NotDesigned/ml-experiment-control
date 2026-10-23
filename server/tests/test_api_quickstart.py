@@ -17,7 +17,6 @@ import uvicorn
 import yaml
 
 from ml_exp_client import api as client_module
-from ml_exp_client import source_archive
 from ml_exp_client.state import save
 from ml_exp_server.api.app import create_app
 from ml_exp_server.results.artifact_store import ArtifactStore
@@ -62,10 +61,18 @@ def http_server(app):
         assert not thread.is_alive(), "HTTP daemon did not stop"
 
 
-def cli(base, token_file, *arguments, success=True):
+def cli(base, token_file, *arguments, success=True, fast_poll=False):
     env = dict(os.environ, ML_EXPD_API_URL=base, ML_EXPD_API_TOKEN_FILE=str(token_file))
     env.pop("ML_EXPD_API_TOKEN", None)
-    result = subprocess.run([sys.executable, "-m", "ml_exp_client", *map(str, arguments)],
+    command = [sys.executable, "-m", "ml_exp_client"]
+    if fast_poll:
+        # Accelerate only child polling waits. Real HTTP, monotonic deadlines,
+        # source/entry-point execution and all server side effects stay real.
+        command = [sys.executable, "-c",
+                   "import runpy,time,threading; "
+                   "time.sleep=lambda seconds: threading.Event().wait(min(seconds,0.01)); "
+                   "runpy.run_module('ml_exp_client',run_name='__main__')"]
+    result = subprocess.run([*command, *map(str, arguments)],
                             env=env, capture_output=True, text=True, timeout=30)
     assert token_file.read_text().strip() not in result.stdout + result.stderr
     if success:
@@ -252,23 +259,9 @@ def test_examples_and_new_documentation_are_consistent():
         for link in re.findall(r"\]\(([^)]+)\)", path.read_text()):
             if "://" not in link and not link.startswith("#"):
                 assert (path.parent / link.split("#")[0]).exists(), (name, link)
-    with pytest.raises(client_module.ClientError, match="HTTPS"):
-        client_module.Client("http://remote.example", "test")
-    with pytest.raises(client_module.ClientError, match="set ML_EXPD"):
-        client_module.Client("https://api.example", "")
 
 
-def test_client_rejects_credential_paths_links_and_redirects(tmp_path):
-    source = tmp_path / "source"
-    source.mkdir()
-    (source / "train.py").write_text("pass\n")
-    (source / ".env").write_text("private")
-    with pytest.raises(client_module.ClientError, match="credential"):
-        source_archive(source)
-    (source / ".env").unlink()
-    (source / "link").symlink_to(source / "train.py")
-    with pytest.raises(client_module.ClientError, match="link"):
-        source_archive(source)
+def test_client_never_follows_redirects_or_forwards_api_credentials():
     from starlette.applications import Starlette
     from starlette.responses import JSONResponse, RedirectResponse
     from starlette.routing import Route

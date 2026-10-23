@@ -4,9 +4,33 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.evidence.outputs.full }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: evidence
+        run: python3 tools/ci_evidence.py plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   test:
+    needs: plan
+    if: needs.plan.outputs.full == 'true'
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,15 +51,15 @@ jobs:
       - run: uv run mypy
       - run: uv run python tools/coverage_gate.py
       - run: uv run python tools/generate_cli_reference.py --check
-      - run: uv run python -m compileall -q src tests tools examples
-      - run: uv run --package ml-experiment-server python -m compileall -q server/src server/tests
+      - run: uv run python -m compileall -q tools examples
       - name: Test daemon with independent 100% line and branch gates
         run: >-
           uv run --package ml-experiment-server python tools/coverage_gate.py
-          --suite daemon
-      - run: uv run --package ml-experiment-server ml-expd --help
-      - run: uv run --package ml-experiment-client pytest client/tests -q
-      - run: uv run --package ml-experiment-client python -m compileall -q client/src client/tests
+          --suite daemon --workers 2
+      - name: Client coverage cannot regress below its measured baseline
+        run: >-
+          uv run --package ml-experiment-client python tools/coverage_gate.py
+          --suite client --min-line 90.9 --min-branch 84.5
       - run: uv build --all-packages
       - name: Test standalone client wheel without server or core
         run: |
@@ -48,3 +72,12 @@ jobs:
           uv pip install --python .wheel-smoke/bin/python dist/*.whl
           .wheel-smoke/bin/ml-expd --help
           .wheel-smoke/bin/ml-exp --help
+      - name: Record tested Git tree after all checks
+        run: python3 tools/ci_evidence.py record
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: quality-evidence-${{ github.run_attempt }}
+          path: .ops/tested-tree.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

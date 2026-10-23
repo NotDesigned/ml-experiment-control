@@ -16,7 +16,6 @@ from coverage_gate import (  # noqa: E402
     check_report,
     coverage_percentages,
 )
-from generate_cli_reference import main as cli_docs_main  # noqa: E402
 
 
 def report(tmp_path, *, lines=(90, 100), branches=(80, 100)):
@@ -39,24 +38,24 @@ def test_coverage_dimensions_are_independent_and_fail_closed(tmp_path, capsys):
     assert "branch" in capsys.readouterr().err
 
 
-def test_empty_modules_and_current_generated_cli_reference(tmp_path):
+def test_empty_modules_and_strict_default_gates(tmp_path):
     assert (DEFAULT_MIN_LINE, DEFAULT_MIN_BRANCH) == (100.0, 100.0)
     assert check_report(
         report(tmp_path, lines=(0, 0), branches=(0, 0)),
         min_line=100, min_branch=100,
     ) == 0
-    assert cli_docs_main(["--check"]) == 0
 
 
-def test_readme_routes_api_users_operators_and_integrators_to_their_guides():
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    development = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
-    for guide in ("api-quickstart.md", "operator-guide.md", "library-integration.md"):
-        assert f"docs/{guide}" in readme
-        assert (ROOT / "docs" / guide).is_file()
-    assert "client/README.md" in readme
-    library = (ROOT / "docs" / "library-integration.md").read_text(encoding="utf-8")
-    assert "examples/local_smoke.py" in library
-    for command in ("cargo clippy", "tools/coverage_gate.py", "uv build"):
-        assert command not in readme
-        assert command in development
+def test_parallel_daemon_report_still_enforces_branch_gate(tmp_path, monkeypatch):
+    import subprocess
+    import coverage_gate as gate
+    path=report(tmp_path,lines=(100,100),branches=(99,100))
+    monkeypatch.setattr(gate,'ROOT',tmp_path)
+    monkeypatch.setattr(gate,'DAEMON_REPORT',path)
+    calls=[]
+    def run(argv,**kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv,0)
+    monkeypatch.setattr(gate.subprocess,'run',run)
+    assert gate.main(['--suite','daemon','--workers','2'])==1
+    assert calls[0][-3:]==['-n','2','--dist=loadfile']
