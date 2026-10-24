@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 from importlib.resources import files
 import json
+import math
 import re
 import sys
 import tempfile
@@ -19,6 +20,7 @@ from .operations import training_operation
 from .run_deletion import run_deletion
 from .state import save
 from .status import read_attempt, run_status
+from .observation import resolve_observation
 from .workflow import experiment, report
 
 
@@ -36,6 +38,14 @@ def initialize(args):
 
 
 def dispatch(args, client, health):
+    if args.command in {"logs", "metrics", "download"}:
+        reference = resolve_observation(client, args.project, args.run, args.attempt,
+                                        state_path=args.state)
+        args.project, args.run, args.attempt = (reference[key] for key in ("project", "run_id", "attempt_id"))
+        if args.command != "status" and args.state is not None and args.attempt is None:
+            raise ClientError("saved state has no bound Attempt yet; use status --state to inspect preparation")
+        if args.command == "download" and args.attempt is None:
+            raise ClientError("download requires an exact --attempt or a state file that binds one")
     if args.command in {"asset-import-oss","asset-download"}:
         if "oss-datasets.v1" not in health.get("capabilities",[]):
             raise ClientError("server lacks oss-datasets.v1")
@@ -63,13 +73,20 @@ def dispatch(args, client, health):
         result = (client.call(endpoint, data={"retry": args.retry, "reconcile": args.reconcile})
                   if args.start or args.retry or args.reconcile else client.call(endpoint))
     elif args.command == "status":
-        result = run_status(client, health, args.project, args.run, args.attempt,
-                            state_path=args.state, details=args.details)
+        result = query_status(args, client, health)
     elif args.command in {"logs", "metrics"}:
         options = ({"stream": args.stream, "lines": args.lines} if args.command == "logs"
                    else {"keys": args.keys, "names": getattr(args, "name", None), "max_points": args.max_points})
         result = read_attempt(client, args.command, args.project, args.run, args.attempt, **options)
     elif args.command in {"cancel", "retry"}:
+        if args.from_state is not None:
+            if args.from_state.resolve() == args.state.resolve():
+                raise ClientError("--from-state is the original experiment; save the operation in a separate --state file")
+            reference = resolve_observation(client, args.project, args.run, args.attempt,
+                                            state_path=args.from_state)
+            args.project, args.run, args.attempt = (reference[key] for key in ("project", "run_id", "attempt_id"))
+            if args.attempt is None:
+                raise ClientError("source state has no bound Attempt; inspect its preparation before retrying")
         result = training_operation(client, args.command, args.state, project=args.project,
             run=args.run, attempt=args.attempt, reason=args.reason, execute=args.execute,
             reconcile=args.reconcile, action_id=args.action_id,
@@ -83,7 +100,8 @@ def dispatch(args, client, health):
     elif args.command == "experiment":
         result = experiment(client, health, args.config, args.state, resume=args.resume,
                             execute=args.execute, seconds=args.seconds, out=args.download_to,
-                            continue_preparation=args.continue_preparation, keep_server_copy=args.keep_server_copy)
+                            continue_preparation=args.continue_preparation, keep_server_copy=args.keep_server_copy,
+                            json_output=args.json)
     elif args.command == "acknowledge":
         result = acknowledge(client, args.directory, keep_server_copy=args.keep_server_copy)
     elif args.command in {"tracking", "wandb"}:
@@ -113,6 +131,60 @@ def dispatch(args, client, health):
     else:
         result = download(client, args.project, args.run, args.attempt, args.out, keep_server_copy=args.keep_server_copy)
     return result
+
+
+def query_status(args, client, health):
+    """Watch only the original Attempt; a polling timeout never starts new work."""
+    if args.watch and (not math.isfinite(args.seconds) or args.seconds < 0):
+        raise ClientError("status --seconds must be finite and nonnegative")
+    deadline = time.monotonic() + args.seconds
+    project, run, attempt = args.project, args.run, args.attempt
+    while True:
+        value = run_status(client, health, project, run, attempt,
+                           state_path=args.state, details=args.details)
+        project, run, attempt = (value[key] for key in ("project", "run_id", "attempt_id"))
+        value["next_actions"] = status_actions(value, client.base, args.state)
+        if args.state is not None:
+            value["state_file"] = str(args.state)
+        if not args.watch:
+            return value
+        # Backend completion and output publication remain separate. Stop when
+        # both have settled, or when the chosen client observation window ends.
+        terminal = value["scheduler"]["state"] in {"SUCCEEDED", "FAILED", "CANCELLED", "PREEMPTED", "TIMEOUT"}
+        published = value["publication"]["status"] in {"AVAILABLE", "RELEASED", "EXPIRED", "FAILED"}
+        if terminal and published or time.monotonic() >= deadline:
+            return value
+        from .presentation import status_summary
+        print(json.dumps(value) if args.json else status_summary(value), file=sys.stderr)
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
+
+
+def status_actions(value, server, state_path):
+    """Suggest reads and reviewed plans, never automatic effects or retries."""
+    base = ["ml-exp", "--url", server]
+    identity = ["--project", value["project"], "--run", value["run_id"]]
+    if value["attempt_id"] is not None:
+        identity += ["--attempt", value["attempt_id"]]
+    reference = ["--state", str(state_path)] if state_path is not None else identity
+    actions = []
+    if value["publication"]["download_available"]:
+        actions.append({"kind": "DOWNLOAD", "reason": "Verified outputs are available; download verifies hashes before acknowledgement",
+                        "argv": base + ["download", *reference, "--out", "results/" + value["run_id"]],
+                        "requires_execution": False})
+    elif value["publication"]["status"] == "RELEASED":
+        actions.append({"kind": "USE_LOCAL_RESULTS", "reason": "Server copy was released; use the previously verified local results or durable archive"})
+    elif value["scheduler"]["state"] == "NOT_SUBMITTED":
+        actions.append({"kind": "OBSERVE_PREPARATION", "reason": "Scheduler submission is not observed; inspect the original preparation or reviewed operation plan",
+                        "argv": base + ["status", *reference], "requires_execution": False})
+    elif value["attempt_id"] is not None:
+        actions.append({"kind": "READ_LOGS", "reason": "Inspect the exact Attempt without restarting training",
+                        "argv": base + ["logs", *reference], "requires_execution": False})
+    else:
+        actions.append({"kind": "OBSERVE_PREPARATION", "reason": "No Attempt is bound yet; inspect the original preparation",
+                        "argv": base + ["status", *reference], "requires_execution": False})
+    if value["scheduler"]["state"] in {"FAILED", "CANCELLED", "PREEMPTED", "TIMEOUT"}:
+        actions.append({"kind": "REVIEW_RETRY", "reason": "Retry needs a separate reviewed plan and GPU-hour budget; it keeps the frozen Run, including any original checkpoint reference"})
+    return actions
 
 
 def check(args, client, health):

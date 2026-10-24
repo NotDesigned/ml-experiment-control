@@ -763,3 +763,46 @@ def test_provider_suspended_is_stopped_without_proven_preemption(tmp_path):
     assert status['state'] == 'CANCELLED' and status['failure_class'] is None
     assert status['reason'] == 'provider_stopped_cause_unknown'
     assert status['raw_state'] == 'SUSPENDED'
+
+
+@pytest.mark.parametrize('reason', ['Resources', 'Priority', 'QOSMaxGRESPerUser', ''])
+def test_slurm_pending_accounting_is_supplemented_with_exact_queue_reason(tmp_path, reason):
+    runner = QueueRunner([
+        CommandResult(('sacct',), 0, '1234|backend-run|accelerator|PENDING|00:00|0:0\n'),
+        CommandResult(('squeue',), 0, f'1234|backend-run|accelerator|PENDING|00:00|0:0|{reason}\n'),
+    ])
+    value = SlurmBackend(services(tmp_path, runner)).status({}, slurm_run())
+    assert value['state'] == 'QUEUED' and value['raw_state'] == 'PENDING'
+    assert value['reason'] == (reason or None)
+    assert value['detail']['queue'] == {'source': 'slurm-squeue', 'availability': 'OBSERVED', 'reason': reason or None}
+    assert value['observation_source'] == 'sacct'
+    assert 'squeue -j 1234' in runner.commands[-1][-1]
+
+
+@pytest.mark.parametrize('row', [
+    '', '\n', '999|backend-run|accelerator|PENDING|00:00|0:0|Resources\n',
+    '1234|backend-run|other|PENDING|00:00|0:0|Resources\n',
+    '1234|backend-run|accelerator|PENDING|00:00|0:0\n',
+    '1234|backend-run|accelerator|PENDING|00:00|0:0|Resources|extra\n',
+    '1234|backend-run|accelerator|RUNNING|00:01|0:0|node01\n',
+    '1234|backend-run|accelerator|PENDING|00:00|0:0|Resources\n' * 2,
+])
+def test_slurm_queue_race_or_wrong_identity_keeps_known_pending_state(tmp_path, row):
+    runner = QueueRunner([
+        CommandResult(('sacct',), 0, '1234|backend-run|accelerator|PENDING|00:00|0:0\n'),
+        CommandResult(('squeue',), 0, row),
+    ])
+    value = SlurmBackend(services(tmp_path, runner)).status({}, slurm_run())
+    assert value['state'] == 'QUEUED' and value['reason'] is None
+    assert value['detail']['queue']['availability'] == 'NOT_OBSERVED'
+
+
+def test_slurm_queue_failure_does_not_erase_accounting_or_expose_stderr(tmp_path):
+    runner = QueueRunner([
+        CommandResult(('sacct',), 0, '1234|backend-run|accelerator|PENDING|00:00|0:0\n'),
+        CommandResult(('squeue',), 1, stderr='private transport details'),
+    ])
+    value = SlurmBackend(services(tmp_path, runner)).status({}, slurm_run())
+    assert value['state'] == 'QUEUED'
+    assert value['detail']['queue']['availability'] == 'UNAVAILABLE'
+    assert 'private' not in json.dumps(value)

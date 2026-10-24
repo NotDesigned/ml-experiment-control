@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from ..application_errors import ApplicationError
+from ..records.store import RecordStore, encoded
 
 if TYPE_CHECKING:
     from ..application import ExperimentServerApplication
@@ -23,6 +25,36 @@ _SUBMISSION_OPERATIONS = {"SUBMIT_RUN", "RETRY_ATTEMPT", "RUN_EVALUATION"}
 _ACTIVE_EXECUTION_STATES = {
     "PREPARED", "AUTHORIZED", "EXECUTING", "RECONCILE_REQUIRED", "VERIFIED",
 }
+
+
+def _journal_observations(root, identity):
+    """Read exact-Attempt evidence without initializing journal state."""
+    if not (root / "tracking" / "outbox.sqlite").is_file():
+        return None, None
+    try:
+        store = RecordStore(root, read_only=True)
+        scope = encoded(identity)
+        return store.latest_worker_lifecycle(scope), store.latest_metric_observation(scope)
+    except (sqlite3.Error, OSError, ValueError):
+        return None, None
+
+
+def _worker_phase(event):
+    """Preserve stage timestamps; a stage transition is not a heartbeat."""
+    if event is None:
+        return None
+    timestamp = event.pop("timestamp")
+    age = None
+    if isinstance(timestamp, str):
+        try:
+            observed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            if observed.utcoffset() is not None:
+                age = (datetime.now(timezone.utc) - observed).total_seconds()
+        except (ValueError, OverflowError):
+            pass
+    valid_time = age is not None and age >= 0
+    return {**event, "observed_at": timestamp if valid_time else None,
+            "age_seconds": age if valid_time else None, "source": "worker-records"}
 
 
 def _reusable(view: dict[str, Any]) -> bool:
@@ -167,8 +199,11 @@ class ExperimentSubmissionService:
         queue = queue if isinstance(queue, dict) else {}
         reason = scheduler.detail.get("reason") or scheduler.detail.get("pending_reason") if exact else observed.get("reason")
         reason = queue.get("reason") or reason
+        worker_event, last_metric = _journal_observations(self.runtime.config.project_registry_root_path(),
+                                                        [view["project"], view["run_id"], view["attempt_id"]])
         result.update(submission_id=submission_id, run_id=view["run_id"], attempt_id=view["attempt_id"],
                       scheduler_state=state,
+                      worker_phase=_worker_phase(worker_event), last_metric=last_metric,
                       queue={**{key: queue[key] for key in ("source", "availability", "code", "code_type", "provider_code",
                                                           "blocker", "position", "priority", "enqueued_at", "status", "query_error") if key in queue},
                              "reason": str(reason)[:2048] if reason else None,
@@ -196,6 +231,11 @@ class ExperimentSubmissionService:
             result["progress_availability"] = "NOT_OBSERVED"
             if state in {"RUNNING", "STARTING"}:
                 result["diagnostic"] = "Scheduler state is not a training heartbeat; inspect data preparation and process logs"
+            worker = result["worker_phase"]
+            if state == "RUNNING" and worker is not None and worker["age_seconds"] is not None:
+                result.update(phase=worker["phase"], progress_availability="WORKER_REPORTED",
+                              message="Worker last reported " + worker["phase"] +
+                                      "; this is a stage transition, not a training heartbeat")
         from .input_progress import read_input_progress
         transfer = read_input_progress(Path(row.run_dir) / "attempts" / view["attempt_id"]) if row is not None else None
         result["input_delivery"] = transfer

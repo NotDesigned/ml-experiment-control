@@ -1,10 +1,10 @@
 """Read-only compact experiment status, preserving separate evidence layers."""
 from __future__ import annotations
 
-import json
 from urllib.parse import urlencode
 
 from .api import ClientError, attempt_id, segment
+from .observation import resolve_observation
 from .state import bound_response
 
 
@@ -29,56 +29,83 @@ def _identity(value, project, run, *, attempt=None):
 def _before_submission(evidence):
     """Only exact saved-Submission evidence can explain an absent Attempt."""
     submission = evidence.get("submission", {})
-    return (submission.get("status") == "EXECUTING"
+    action = evidence.get("action", {})
+    execution = _mapping(action.get("execution"))
+    if not submission and action.get("operation") == "RETRY_ATTEMPT":
+        submission = {"status": execution.get("status"), "execution": execution}
+    return (action.get("operation") == "RETRY_ATTEMPT" and execution.get("status") in {"BLOCKED", "PREPARED", "AUTHORIZED"}
+            or submission.get("status") == "EXECUTING"
             and evidence.get("progress", {}).get("phase") in {"VALIDATING_SOURCE", "STAGING"}
             or submission.get("status") == "FAILED"
             and _mapping(submission.get("execution")).get("resolution") == "FAILED_BEFORE_SUBMISSION")
 
 
-def run_status(client, health, project, run, attempt=None, *, state_path=None, details=False):
+def _progress(client, submission, project, run, attempt):
+    sid = segment(submission)
+    value = client.call("/api/submissions/" + sid + "/progress")
+    return bound_response(value, {"submission_id": submission, "run_id": run, "attempt_id": attempt},
+                          message="progress identity differs from the saved exact Submission")
+
+
+def _discover_progress(client, project, run, attempt, evidence):
+    """Select only a unique exact submission, never a latest/different Attempt."""
+    try:
+        value = _identity(client.call(f"/api/experiments/{segment(project)}/{segment(run)}/submissions"), project, run)
+        rows = value.get("submissions")
+        if not isinstance(rows, list):
+            raise ClientError("invalid Submission listing")
+        matches = []
+        for item in rows:
+            if not isinstance(item, dict) or item.get("project") != project or item.get("run_id") != run:
+                raise ClientError("Submission listing contains a different Run identity")
+            if item.get("attempt_id") == attempt:
+                matches.append(item)
+        if len(matches) != 1:
+            return {"availability": "UNAVAILABLE", "diagnostic": "AMBIGUOUS_SUBMISSIONS" if matches else "NO_EXACT_SUBMISSION"}
+        selected = matches[0]
+        evidence["submission"] = selected
+        value = _progress(client, selected.get("submission_id"), project, run, attempt)
+        evidence["progress"] = value
+        return value
+    except ClientError as exc:
+        if exc.status in {401, 403} or exc.status is None:
+            raise
+        return {"availability": "UNAVAILABLE", "diagnostic": "SUBMISSION_PROGRESS_UNAVAILABLE",
+                "error": {"status": exc.status, "error_code": exc.error_code}}
+
+
+def run_status(client, health, project=None, run=None, attempt=None, *, state_path=None, details=False):
     """Observe existing resources only; never prepare, collect or refresh providers."""
+    reference = resolve_observation(client, project, run, attempt, state_path)
+    project, run, attempt = (reference[key] for key in ("project", "run_id", "attempt_id"))
     project_path, run_path = segment(project), segment(run)
-    if attempt is not None:
-        attempt_id(attempt)
     evidence = {}
     preparation = {"status": "NOT_OBSERVED", "phase": None}
-    saved = {}
+    saved = reference["saved"]
     if state_path is not None:
-        saved = json.loads(state_path.read_text())
-        if not isinstance(saved, dict) or any(saved.get(key, value) != value for key, value in (
-                ("server", client.base), ("project", project), ("run_id", run))):
-            raise ClientError("status state belongs to a different server or Run")
-        # Read-only status accepts experiment state, not an unrelated operation plan.
-        if "config_sha256" not in saved:
-            raise ClientError("status --state requires an experiment state file")
-        if any(saved.get(key) is not None and not isinstance(saved[key], dict)
-               for key in ("preparation", "submission")):
-            raise ClientError("invalid saved preparation or Submission identity")
         if saved.get("preparation"):
-            pid = segment(saved["preparation"]["preparation_id"])
-            current = _identity(client.call(f"/api/projects/{project_path}/experiment-preparations/{pid}"), project, run)
+            current = reference["preparation"]
+            if current is None:
+                pid = segment(saved["preparation"]["preparation_id"])
+                current = _identity(client.call(f"/api/projects/{project_path}/experiment-preparations/{pid}"), project, run)
             if current.get("preparation_id") != saved["preparation"]["preparation_id"]:
                 raise ClientError("Preparation identity differs from the saved experiment")
             evidence["preparation"] = current
             preparation = {key: current.get(key) for key in ("status", "phase", "error_code")}
-        if saved.get("submission"):
-            original = saved["submission"]
-            sid = segment(original["submission_id"])
-            current = _identity(client.call("/api/submissions/" + sid), project, run)
-            if (current.get("submission_id"), current.get("attempt_id")) != (original["submission_id"], original["attempt_id"]):
-                raise ClientError("Submission identity differs from the saved exact Attempt")
-            if attempt is not None and attempt != current["attempt_id"]:
-                raise ClientError("status Attempt differs from the saved experiment")
-            attempt = attempt_id(current["attempt_id"])
+        if reference["submission"]:
+            current = reference["submission"]
             evidence["submission"] = current
             if "execution-progress.v1" in health.get("capabilities", []):
-                progress = client.call("/api/submissions/" + sid + "/progress")
-                if not isinstance(progress, dict) or any(progress.get(key) != current[key]
-                        for key in ("submission_id", "run_id", "attempt_id")):
-                    raise ClientError("progress identity differs from the saved exact Submission")
-                evidence["progress"] = progress
+                evidence["progress"] = _progress(client, current["submission_id"], project, run, attempt)
             if preparation["status"] == "NOT_OBSERVED":
                 preparation = {"status": current["status"], "phase": None}
+        if reference["action"]:
+            action = reference["action"]
+            evidence["action"] = action
+            if action["operation"] == "RETRY_ATTEMPT":
+                preparation = {"status": action["execution"].get("status"), "phase": None}
+                if "execution-progress.v1" in health.get("capabilities", []):
+                    evidence["progress"] = _progress(client, action["action_id"], project, run, attempt)
     endpoint = f"/api/runs/{project_path}/{run_path}"
     try:
         run_value = _identity(client.call(endpoint), project, run)
@@ -97,7 +124,7 @@ def run_status(client, health, project, run, attempt=None, *, state_path=None, d
         entries = listing.get("attempts")
         if not isinstance(entries, list):
             raise ClientError("invalid Run Attempt listing")
-        attempt = attempt or listing.get("current_attempt_id")
+        attempt = attempt or (listing.get("current_attempt_id") if not reference["state_kind"] else None)
         if attempt is not None:
             attempt_id(attempt)
             selected = next((item for item in entries if isinstance(item, dict)
@@ -109,10 +136,16 @@ def run_status(client, health, project, run, attempt=None, *, state_path=None, d
                 selected = {}
             else:
                 materialized = True
-        elif entries:
+        elif entries and not reference["state_kind"]:
             raise ClientError("Run has Attempts but no current Attempt; choose --attempt")
     scheduler = _bound_layer(run_value, "scheduler", attempt if materialized else None)
     process = _bound_layer(run_value, "process", attempt if materialized else None)
+    worker = _bound_layer(run_value, "worker", attempt if materialized else None)
+    model = _bound_layer(run_value, "model", attempt if materialized else None)
+    progress = evidence.get("progress") or {"availability": "NOT_OBSERVED", "diagnostic": None}
+    if materialized and "execution-progress.v1" in health.get("capabilities", []) and "progress" not in evidence:
+        progress = _discover_progress(client, project, run, attempt, evidence)
+    queue = _mapping(progress.get("queue")) or _mapping(_mapping(scheduler.get("detail")).get("queue"))
     scheduler_detail = _mapping(scheduler.get("detail"))
     collection = {}
     collection_error = None
@@ -128,12 +161,25 @@ def run_status(client, health, project, run, attempt=None, *, state_path=None, d
             collection_error = {"status": exc.status, "error_code": exc.error_code}
             evidence["collection_error"] = {**collection_error, "details": exc.details}
     training = _mapping(collection.get("training"))
+    model_view = {"state": model.get("state"), "step": _mapping(model.get("detail")).get("step"),
+                  "last_metric": model.get("detail") or None, "observed_at": model.get("as_of"), "stale": model.get("stale", True),
+                  "metric_record": {"source": "indexed-model", "sequence": None, "event_id": None} if model.get("detail") else None}
+    metric = _mapping(progress.get("last_metric"))
+    observation = _mapping(metric.get("observation"))
+    if model.get("state") is None and observation:
+        step, timestamp = observation.get("step"), observation.get("timestamp")
+        model_view = {"state": "present" if step is None else f"step {step}", "step": step,
+                      "last_metric": observation, "metric_record": {key: metric.get(key) for key in ("sequence", "event_id", "source")},
+                      "observed_at": timestamp,
+                      "stale": True if timestamp is None else None}
     result = {
         "project": project, "run_id": run, "attempt_id": attempt,
         "preparation": preparation,
         "scheduler": {"state": scheduler.get("state") or selected.get("state") or ("UNKNOWN" if materialized else "NOT_SUBMITTED"),
+                      "backend": scheduler_detail.get("backend"), "job_id": scheduler_detail.get("backend_job_id"),
+                      "native_state": scheduler_detail.get("raw_state"),
                       "observed_at": scheduler.get("as_of"), "stale": scheduler.get("stale", True),
-                      "reason": scheduler_detail.get("reason") or scheduler_detail.get("pending_reason")},
+                      "reason": queue.get("reason") or scheduler_detail.get("reason") or scheduler_detail.get("pending_reason")},
         "training": {"status": training.get("status", "UNKNOWN"), "exit_code": training.get("exit_code"),
                      "process_state": process.get("state"), "observed_at": process.get("as_of"),
                      "stale": process.get("stale", True)},
@@ -143,6 +189,13 @@ def run_status(client, health, project, run, attempt=None, *, state_path=None, d
                             and collection.get("download_available") is True,
                         "diagnostic": collection.get("diagnostic"), "error": collection_error},
         "verification": {"status": collection.get("verification", "NOT_OBSERVED")},
+        "progress": {key: progress[key] for key in ("availability", "phase", "message", "phase_started_at", "last_progress_unix",
+                    "seconds_since_progress", "no_progress_warning", "diagnostic", "error") if key in progress},
+        "queue": queue or None,
+        "worker": {"state": worker.get("state"), "observed_at": worker.get("as_of"), "stale": worker.get("stale", True)},
+        "model": model_view,
+        "input_delivery": progress.get("input_delivery"),
+        "worker_phase": progress.get("worker_phase"),
     }
     if details:
         evidence.update(run=run_value, attempts=listing, collection=collection)

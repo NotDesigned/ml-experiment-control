@@ -10,6 +10,8 @@ import sys
 from . import __version__
 from .api import Client, ClientError, error_payload
 from .commands import dispatch, initialize
+from .observation import observation_reference, observation_server
+from .presentation import status_summary, operation_summary, experiment_summary
 
 
 def parser():
@@ -42,6 +44,7 @@ def parser():
     workflow.add_argument("--seconds", type=int, default=1800)
     workflow.add_argument("--download-to", type=Path)
     workflow.add_argument("--keep-server-copy", action="store_true", help="retain server archives after verified download")
+    workflow.add_argument("--json", action="store_true", help="print machine-readable results and progress")
     check = commands.add_parser("check", help="GET health, policy, executors and optionally schema")
     check.add_argument("--schema", type=Path)
     check.add_argument("--json", action="store_true", help="print full machine-readable evidence instead of the short summary")
@@ -134,17 +137,21 @@ def parser():
     watch.add_argument("--run", required=True)
     watch.add_argument("--seconds", type=float, default=1800)
     status = commands.add_parser("status", help="read separate preparation, scheduler, training and publication status")
-    status.add_argument("--project", required=True)
-    status.add_argument("--run", required=True)
+    status.add_argument("--project")
+    status.add_argument("--run")
     status.add_argument("--attempt", help="exact attempt-NNN; otherwise resolve current Attempt once")
     status.add_argument("--state", type=Path, help="optional saved experiment state for preparation/submission evidence")
-    status.add_argument("--details", action="store_true", help="expand existing API evidence; never submit or recover work")
+    status.add_argument("--details", action="store_true", help="expand evidence in --json output; never submit or recover work")
+    status.add_argument("--json", action="store_true", help="print the structured status; combine with --details for all evidence")
+    status.add_argument("--watch", action="store_true", help="poll the same exact Attempt without submitting or restarting it")
+    status.add_argument("--seconds", type=float, default=1800, help="polling budget with --watch; in-flight HTTP reads keep their request timeout")
     logs = commands.add_parser("logs", help="read stored Attempt stdout/stderr; defaults to the current Attempt")
     metrics = commands.add_parser("metrics", help="read recorded Attempt metrics with their units, protocols and variants")
     for reading in (logs, metrics):
-        reading.add_argument("--project", required=True)
-        reading.add_argument("--run", required=True)
+        reading.add_argument("--project")
+        reading.add_argument("--run")
         reading.add_argument("--attempt", help="exact attempt-NNN; otherwise resolve the current Attempt once")
+        reading.add_argument("--state", type=Path, help="read the original identities from saved experiment or operation state")
     logs.add_argument("--stream", choices=("both", "stdout", "stderr"), default="both")
     logs.add_argument("--lines", type=int, default=80)
     metrics.add_argument("--name", action="append", help="metric name to include; repeat for multiple names")
@@ -158,6 +165,8 @@ def parser():
         operation.add_argument("--attempt", help="exact source attempt-NNN; required when first preparing")
         operation.add_argument("--reason", help="operator reason saved in the plan")
         operation.add_argument("--state", type=Path, required=True, help="saved Action plan; existing state is observed without replay")
+        operation.add_argument("--from-state", type=Path, help="use the exact Attempt from experiment or earlier operation state; --state is a separate new plan")
+        operation.add_argument("--json", action="store_true", help="print the complete reviewed Action and evidence")
         operation.add_argument("--action-id", help="attach the exact original Action after a lost preparation reply, for review")
         confirmation = operation.add_mutually_exclusive_group()
         confirmation.add_argument("--execute", action="store_true", help="explicitly authorize and execute an already saved, reviewed plan")
@@ -174,9 +183,10 @@ def parser():
     deletion_confirmation.add_argument("--execute", action="store_true", help="explicitly authorize permanent deletion of the reviewed saved targets")
     deletion_confirmation.add_argument("--reconcile", action="store_true", help="resume observation of the original deletion Action")
     fetch = commands.add_parser("download", help="download exact-Attempt outputs and verify against archive")
-    fetch.add_argument("--project", required=True)
-    fetch.add_argument("--run", required=True)
-    fetch.add_argument("--attempt", required=True)
+    fetch.add_argument("--project")
+    fetch.add_argument("--run")
+    fetch.add_argument("--attempt", help="exact Attempt; required unless saved state binds one")
+    fetch.add_argument("--state", type=Path, help="download the exact Attempt saved by experiment or an operation")
     fetch.add_argument("--out", type=Path, required=True, help="new destination directory")
     fetch.add_argument("--keep-server-copy", action="store_true", help="retain server archive after verified download")
     ack = commands.add_parser("acknowledge", help="reverify saved results and retry download confirmation without redownloading")
@@ -233,6 +243,18 @@ def main(argv=None):
         if args.command == "init":
             print(json.dumps(initialize(args), indent=2))
             return 0
+        # Validate a saved server before sending the token, including negotiate.
+        reference_path = (getattr(args, "from_state", None)
+                          or (getattr(args, "state", None) if args.command in
+                              {"status", "logs", "metrics", "download", "retry", "cancel"} else None))
+        if reference_path is not None and reference_path.exists():
+            saved_server = (observation_server(reference_path) if args.command in {"retry", "cancel"}
+                            and getattr(args, "from_state", None) is None
+                            else observation_reference(reference_path).get("server"))
+            if saved_server:
+                if args.url and args.url.rstrip("/") != saved_server.rstrip("/"):
+                    raise ClientError("saved state belongs to a different server; no request was sent")
+                args.url = saved_server
         token = os.environ.get("ML_EXPD_API_TOKEN", "")
         token_file = os.environ.get("ML_EXPD_API_TOKEN_FILE")
         if token and token_file:
@@ -242,7 +264,17 @@ def main(argv=None):
         client = Client(args.url or "", token)
         health = client.negotiate()
         result = dispatch(args, client, health)
-        print(check_summary(result) if args.command == "check" and not args.json else json.dumps(result, indent=2))
+        if args.command == "check" and not args.json:
+            output = check_summary(result)
+        elif args.command == "status" and not args.json:
+            output = status_summary(result)
+        elif args.command in {"cancel", "retry"} and not args.json:
+            output = operation_summary(result)
+        elif args.command == "experiment" and not args.json:
+            output = experiment_summary(result, state_file=str(args.state), executed=args.execute)
+        else:
+            output = json.dumps(result, indent=2)
+        print(output)
         if args.command == "check" and "storage_limits_error" in result:
             return 2
         if args.command == "check" and args.training and result.get("readiness", {}).get("training") != "CONFIGURED":

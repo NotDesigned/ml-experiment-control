@@ -8,11 +8,19 @@ Never infer permission to resubmit from a timeout or an empty log.
 ## Identify the failed stage
 
 ```bash
-ml-exp status --project PROJECT --run RUN --state experiment.state.json
-ml-exp status --project PROJECT --run RUN --attempt attempt-001 --details
-ml-exp logs --project PROJECT --run RUN --attempt attempt-001
-ml-exp metrics --project PROJECT --run RUN --attempt attempt-001
+ml-exp status --state experiment.state.json
+ml-exp status --state experiment.state.json --watch --seconds 60
+ml-exp status --state experiment.state.json --details --json
+ml-exp logs --state experiment.state.json
+ml-exp metrics --state experiment.state.json
 ```
+
+`status` defaults to a short human-readable summary; `--json` keeps its machine
+interface. Use `--details --json` for all existing evidence; `--details` alone
+does not expand the text summary. Other low-level reads retain JSON output.
+Saved state supplies the server and exact identities without local source or
+repeated project/Run/Attempt arguments. Without state, supply these identities
+explicitly. Before an Attempt is bound, only status can inspect preparation.
 
 | Evidence | Meaning |
 | --- | --- |
@@ -27,7 +35,12 @@ ml-exp metrics --project PROJECT --run RUN --attempt attempt-001
 
 Status/metrics/log reads do not submit, collect, retry or refresh a provider.
 `--state` binds observation to saved dependencies and the original Attempt.
+`status --watch --seconds N` polls that Attempt for a bounded client interval;
+it does not switch to a later Attempt or authorize a restart.
+The interval is checked between polls; an in-flight HTTP read keeps its own
+request timeout and can finish after the polling interval.
 Absent/stale evidence remains unknown. Poll timestamps are not training heartbeats;
+the last reported worker phase retains its own observation time and age.
 FAILED/SUSPENDED alone proves neither timeout nor preemption.
 
 For pre-submission failures, read:
@@ -75,29 +88,34 @@ upload merely because publication returned 507; resolve storage capacity first.
 ## Cancel or retry an exact Attempt
 
 ```bash
-ml-exp cancel --project PROJECT --run RUN --attempt attempt-001 --state cancel.state.json
+ml-exp cancel --from-state experiment.state.json --state cancel.state.json
 # Review the returned Action, then explicitly execute.
 ml-exp cancel --state cancel.state.json --execute
 
-ml-exp retry --project PROJECT --run RUN --attempt attempt-001 \
-  --max-gpu-hours 0.2 --state retry.state.json
+ml-exp retry --from-state experiment.state.json --state retry.state.json --max-gpu-hours 0.2
 ml-exp retry --state retry.state.json --execute
 ```
 
 Preparation and execution are separate invocations. Each operation keeps its own
-state file. Execution rechecks exact scope, digests, gates and the saved budget.
+state file; never overwrite the source experiment state with the operation plan.
+The default text summary shows source/target Attempt, gates, budget and next
+action; `--json` includes the full reviewed evidence. Without `--from-state`,
+provide `--project`, `--run` and the exact source `--attempt` when creating a plan.
+Execution rechecks exact scope, digests, gates and the saved budget.
 The client writes dispatch markers before HTTP and never automatically replays
 an uncertain authorization or execution. Repeat with only `--state` to observe;
-use the corresponding `--reconcile` to reconcile the original Action.
+if the result is unknown, use only the corresponding `--reconcile` to reconcile
+the original Action before considering another execution.
 
 A lost preparation reply leaves the original request and recovery URL. Find the
 Action with the exact saved intent, then attach it using `--action-id ACTION_ID`.
 Attachment is observation/review, not execution. Changed requests need a new
 reviewed operation only after the prior outcome is resolved.
 
-Retry creates a new Attempt within the same frozen Run; it does not choose a
-checkpoint. To change `resume_from`, create a new Run with an explicit registered
-checkpoint reference. Reconcile the prior job before replacement training.
+Retry creates a new Attempt within the same frozen Run, retaining its original
+`resume_from`. It does not select the latest checkpoint from the failed Attempt.
+To change `resume_from`, create a new Run with an explicit registered checkpoint
+reference. Reconcile the prior job before replacement training.
 
 ## Output recovery
 
@@ -108,7 +126,7 @@ A published archive can be downloaded without a recovery job.
 ```bash
 ml-exp collect --project PROJECT --run RUN --attempt attempt-001
 ml-exp collect --project PROJECT --run RUN --attempt attempt-001 --start
-ml-exp download --project PROJECT --run RUN --attempt attempt-001 --out results
+ml-exp download --state experiment.state.json --out results
 ```
 
 `GET/POST /api/runs/P/R/attempts/A/collection` separates training, collection and

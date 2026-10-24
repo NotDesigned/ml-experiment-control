@@ -321,12 +321,12 @@ def test_wrong_or_malformed_saved_state_never_calls_http(tmp_path, case):
 def test_cli_prepares_and_explicitly_executes_saved_action(tmp_path, monkeypatch, capsys, command):
     api, path = API(command), tmp_path / "plan.json"
     monkeypatch.setattr("ml_exp_client.cli.Client", lambda *args: api)
-    args = [command, "--project", "demo", "--run", "trial", "--attempt", "attempt-001", "--state", str(path)]
+    args = [command, "--project", "demo", "--run", "trial", "--attempt", "attempt-001", "--state", str(path), "--json"]
     if command == "retry": args += ["--max-gpu-hours", "2"]
     assert main(args) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["next_action"] == "EXECUTE_SAVED_PLAN"
-    assert main([command, "--state", str(path), "--execute"]) == 0
+    assert main([command, "--state", str(path), "--execute", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["action"]["execution"]["status"] == "EXECUTING"
 
 
@@ -352,7 +352,7 @@ def test_cli_execute_first_and_blocked_execution_report_error(tmp_path, monkeypa
     assert main(["cancel", "--state", str(path), "--execute"]) == 2
     assert "prepare and review" in capsys.readouterr().err
     prepare(api, path)
-    assert main(["cancel", "--state", str(path), "--execute"]) == 2
+    assert main(["cancel", "--state", str(path), "--execute", "--json"]) == 2
     assert json.loads(capsys.readouterr().out)["next_action"] == "INSPECT_ACTION"
     with pytest.raises(SystemExit):
         parser().parse_args(["retry", "--state", str(path), "--execute", "--reconcile"])
