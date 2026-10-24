@@ -61,10 +61,11 @@ def pending_jobs(value, repo, run_id, attempt, head, shards):
     return sorted(required - succeeded)
 
 
-def wait(repo, run_id, attempt, shards, *, read=api, clock=time.monotonic, sleep=time.sleep, timeout=540):
+def wait(repo, run_id, attempt, shards, *, phase='all', read=api, clock=time.monotonic, sleep=time.sleep, timeout=540):
     if (re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_.-]*/[A-Za-z0-9_-][A-Za-z0-9_.-]*', repo) is None
             or type(run_id) is not int or run_id <= 0 or type(attempt) is not int or attempt <= 0
-            or type(shards) is not int or not 1 <= shards <= 64 or not 0 < timeout <= 540):
+            or type(shards) is not int or not 1 <= shards <= 64 or not 0 < timeout <= 540
+            or phase not in {'daemon', 'all'}):
         raise ValueError('invalid repository, run, attempt, shard count or timeout')
     path = f'repos/{repo}/actions/runs/{run_id}/attempts/{attempt}'
     deadline, head, previous = clock() + timeout, None, None
@@ -73,24 +74,28 @@ def wait(repo, run_id, attempt, shards, *, read=api, clock=time.monotonic, sleep
             if head is None:
                 head = run_identity(read(path), repo, run_id, attempt)
             pending = pending_jobs(read(path + '/jobs?per_page=100'), repo, run_id, attempt, head, shards)
+            if phase == 'daemon':
+                pending = [name for name in pending if name.startswith('daemon (')]
         except (OSError, subprocess.SubprocessError) as error:
             print('GitHub checks unavailable; retrying: ' + type(error).__name__, flush=True)
         else:
             if clock() >= deadline:
                 break
             if not pending:
-                print(f'All {len(required_jobs(shards))} required jobs succeeded for run {run_id}, attempt {attempt}', flush=True)
+                count, label = (shards, 'daemon jobs') if phase == 'daemon' else (len(required_jobs(shards)), 'required jobs')
+                print(f'All {count} {label} succeeded for run {run_id}, attempt {attempt}', flush=True)
                 return
             if pending != previous:
                 print('Waiting for checks: ' + ', '.join(pending), flush=True)
                 previous = pending
-        sleep(min(2, max(0, deadline - clock())))
+        sleep(min(1, max(0, deadline - clock())))
     raise TimeoutError('required checks did not finish within the bounded wait')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--shard-count', type=int, required=True)
+    parser.add_argument('--phase', choices=('daemon', 'all'), default='all')
     args = parser.parse_args()
     wait(os.environ['GITHUB_REPOSITORY'], int(os.environ['GITHUB_RUN_ID']),
-         int(os.environ['GITHUB_RUN_ATTEMPT']), args.shard_count)
+         int(os.environ['GITHUB_RUN_ATTEMPT']), args.shard_count, phase=args.phase)

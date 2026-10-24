@@ -87,7 +87,7 @@ def test_wait_uses_attempt_endpoint_and_retries_only_unavailable_reads():
             raise result
         return result
     c.wait(REPO, RUN, ATTEMPT, 15, read=read, clock=lambda: now[0], sleep=lambda seconds: now.__setitem__(0, now[0] + seconds))
-    assert not values and now == [6]
+    assert not values and now == [3]
     root = f'repos/{REPO}/actions/runs/{RUN}/attempts/{ATTEMPT}'
     assert paths == [root, root, *(3 * [root + '/jobs?per_page=100'])]
 
@@ -119,6 +119,42 @@ def test_late_success_and_malformed_json_do_not_pass_or_retry():
         raise ValueError('invalid JSON')
     with pytest.raises(ValueError, match='invalid JSON'):
         c.wait(REPO, RUN, ATTEMPT, 15, read=malformed)
+
+
+def test_daemon_phase_can_prepare_coverage_while_remaining_checks_are_pending():
+    value = snapshot()
+    value['jobs'] = [job for job in value['jobs'] if job['name'] != 'core']
+    value['total_count'] -= 1
+    next(job for job in value['jobs'] if job['name'] == 'packages').update(status='queued', conclusion=None)
+    def read(path):
+        return value if path.endswith('per_page=100') else identity()
+    c.wait(REPO, RUN, ATTEMPT, 15, phase='daemon', read=read)
+    now = [0]
+    with pytest.raises(TimeoutError):
+        c.wait(REPO, RUN, ATTEMPT, 15, phase='all', read=read, timeout=2,
+               clock=lambda: now[0], sleep=lambda seconds: now.__setitem__(0, now[0] + seconds))
+
+
+@pytest.mark.parametrize('name', ['core', 'packages'])
+def test_daemon_phase_still_rejects_failure_in_any_required_check(name):
+    value = snapshot()
+    next(job for job in value['jobs'] if job['name'] == name)['conclusion'] = 'failure'
+    def read(path):
+        return value if path.endswith('per_page=100') else identity()
+    with pytest.raises(ValueError, match='did not succeed'):
+        c.wait(REPO, RUN, ATTEMPT, 15, phase='daemon', read=read)
+
+
+def test_daemon_phase_cannot_finish_with_a_missing_partition():
+    value = snapshot()
+    value['jobs'] = [job for job in value['jobs'] if job['name'] != 'daemon (14)']
+    value['total_count'] -= 1
+    now = [0]
+    def read(path):
+        return value if path.endswith('per_page=100') else identity()
+    with pytest.raises(TimeoutError):
+        c.wait(REPO, RUN, ATTEMPT, 15, phase='daemon', read=read, timeout=2,
+               clock=lambda: now[0], sleep=lambda seconds: now.__setitem__(0, now[0] + seconds))
 
 
 @pytest.mark.parametrize('args', [('bad/path/extra', RUN, ATTEMPT, 15), (REPO, 0, ATTEMPT, 15),

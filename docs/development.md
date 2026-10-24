@@ -124,12 +124,14 @@ timing hints used to balance them. Within each daemon partition, two pytest
 workers steal independent test cases from each other so a long file can use both
 workers. File membership and the complete test collection remain unchanged.
 The final `test` check prepares its coverage reader alongside those checks, then
-waits for the exact run and attempt's complete set of successful jobs. These
-twenty concurrent jobs fit the standard runner concurrency limit. Missing checks
-remain pending; failed, skipped, duplicate, foreign or unknown jobs cannot pass.
-API failures can only delay or fail the bounded wait. The check then validates
-complete same-tree partition manifests, combines coverage data, and
-enforces the original independent server/worker gates before recording evidence.
+waits for the exact run and attempt's fifteen successful daemon partitions. It
+downloads their data, validates complete same-tree partition manifests, combines
+coverage and enforces the original independent server/worker gates while other
+checks can finish. It then
+requires all nineteen checks to succeed before publishing tested-tree evidence.
+These twenty concurrent jobs fit the standard runner concurrency limit. Missing
+checks remain pending; failed, skipped, duplicate, foreign or unknown jobs cannot
+pass. API failures can only delay or fail the bounded wait.
 Use **Re-run all jobs** when retrying CI; the gate never borrows successful checks
 from an earlier attempt to complete a partial rerun.
 Only coverage data is consumed from shard artifacts. A missing or failed shard

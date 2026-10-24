@@ -381,8 +381,8 @@ jobs:
           PY
           uv venv .venv
           uv pip install --python .venv/bin/python --no-deps --require-hashes -r .ops/coverage-reader.txt
-      - name: Require every independent check from this exact run attempt
-        run: python3 tools/ci_wait.py --shard-count 15
+      - name: Require every daemon partition from this exact run attempt
+        run: python3 tools/ci_wait.py --shard-count 15 --phase daemon
         env:
           GH_TOKEN: ${{ github.token }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -393,6 +393,10 @@ jobs:
         run: >-
           uv run --no-sync python tools/coverage_gate.py --suite daemon
           --combine-dir .ops/coverage-shards --shard-count 15
+      - name: Require every independent check before publishing evidence
+        run: python3 tools/ci_wait.py --shard-count 15 --phase all
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Record tested Git tree only after every check and coverage gate passes
         run: python3 tools/ci_evidence.py record
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
