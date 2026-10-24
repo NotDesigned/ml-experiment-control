@@ -66,7 +66,7 @@ def test_parallel_daemon_report_still_enforces_branch_gate(tmp_path, monkeypatch
         return subprocess.CompletedProcess(argv,0)
     monkeypatch.setattr(gate.subprocess,'run',run)
     assert gate.main(['--suite','daemon','--workers','2'])==1
-    assert calls[0][-3:]==['-n','2','--dist=loadfile']
+    assert calls[0][-3:]==['-n','2','--dist=worksteal']
     assert '--cov=ml_exp_worker' in calls[0]
     # Server success cannot mask incomplete worker coverage, nor an omitted package.
     payload = json.loads(path.read_text())

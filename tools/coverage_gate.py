@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument("--workers", type=int, choices=(1, 2), default=1,
-                        help="independent pytest workers (loadfile); coverage is combined before gating")
+                        help="independent pytest workers (daemon worksteal, otherwise loadfile); coverage is combined before gating")
     parser.add_argument("--shard-index", type=int, help="zero-based daemon partition; gated after combining every shard")
     parser.add_argument("--shard-count", type=int)
     parser.add_argument("--combine-dir", type=Path, help="verify and combine daemon shard data before the original gates")
@@ -127,7 +127,8 @@ def main(argv: list[str] | None = None) -> int:
         ]
     pytest_args += ["--durations=20", "--junitxml=" + (args.suite + "-tests.xml")]
     if args.workers > 1:
-        pytest_args += ["-n", str(args.workers), "--dist=loadfile"]
+        pytest_args += ["-n", str(args.workers),
+                        "--dist=worksteal" if args.suite == "daemon" else "--dist=loadfile"]
     if args.combine_dir is not None:
         try:
             combine_daemon(args.combine_dir, args.shard_count)

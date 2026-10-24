@@ -120,8 +120,11 @@ local full run.
 
 Full checks run core, client, Rust, packaging and sixteen daemon partitions in
 parallel. Partitions discover every server/worker test file independently of the
-timing hints used to balance them. The final `test` check requires every job,
-validates complete same-tree partition manifests, combines coverage data, and
+timing hints used to balance them. Within each daemon partition, two pytest
+workers steal independent test cases from each other so a long file can use both
+workers. File membership and the complete test collection remain unchanged.
+The final `test` check requires every job, validates complete same-tree partition
+manifests, combines coverage data, and
 enforces the original independent server/worker gates before recording evidence.
 Only coverage data is consumed from shard artifacts. A missing or failed shard
 cannot produce reusable evidence.
