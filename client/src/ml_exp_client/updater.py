@@ -158,6 +158,7 @@ def update_client(version=None, check=False):
     _verify(content, asset["name"], target, _download(checksums["browser_download_url"], METADATA_LIMIT))
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(("PIP_", "UV_", "ML_EXPD_")) and key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}}
+    environment["PIP_CONFIG_FILE"] = os.devnull
     try:
         with TemporaryDirectory(prefix="ml-exp-client-update-") as directory:
             path = Path(directory) / asset["name"]

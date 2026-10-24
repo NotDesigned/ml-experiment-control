@@ -3,6 +3,7 @@ from copy import deepcopy
 from hashlib import sha256
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -83,6 +84,9 @@ def test_already_current_does_not_download_or_install_assets(setup):
 def test_verified_wheel_uses_isolated_same_interpreter_and_removes_temporary_files(setup, monkeypatch):
     monkeypatch.setenv("ML_EXPD_API_TOKEN", "private-not-for-child")
     monkeypatch.setenv("PIP_TARGET", "/wrong-target")
+    monkeypatch.setenv("PIP_PREFIX", "/wrong-prefix")
+    monkeypatch.setenv("PIP_USER", "true")
+    monkeypatch.setenv("PIP_CONFIG_FILE", "/wrong-config")
     monkeypatch.setenv("UV_PREFIX", "/wrong-prefix")
     monkeypatch.setenv("PYTHONPATH", "/wrong-modules")
     result = updater.update_client()
@@ -90,7 +94,8 @@ def test_verified_wheel_uses_isolated_same_interpreter_and_removes_temporary_fil
     assert command[:3] == [sys.executable, "-m", "pip"]
     assert all(flag in command for flag in ("--isolated", "--no-input", "--no-index", "--no-deps", "--disable-pip-version-check"))
     assert kwargs["capture_output"] and not kwargs["check"] and kwargs["timeout"] == 300
-    assert not any(key in kwargs["env"] for key in ("ML_EXPD_API_TOKEN", "PIP_TARGET", "UV_PREFIX", "PYTHONPATH"))
+    assert not any(key in kwargs["env"] for key in ("ML_EXPD_API_TOKEN", "PIP_TARGET", "PIP_PREFIX", "PIP_USER", "UV_PREFIX", "PYTHONPATH"))
+    assert {key: value for key, value in kwargs["env"].items() if key.startswith("PIP_")} == {"PIP_CONFIG_FILE": os.devnull}
     assert not path.parent.exists()
     assert result["updated"] and result["installed_version"] == "1.5.2"
     assert [limit for _, limit in setup["downloads"]] == [updater.METADATA_LIMIT, updater.WHEEL_LIMIT, updater.METADATA_LIMIT]
