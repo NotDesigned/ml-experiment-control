@@ -126,8 +126,11 @@ enforces the original independent server/worker gates before recording evidence.
 Only coverage data is consumed from shard artifacts. A missing or failed shard
 cannot produce reusable evidence.
 
-Cargo and uv caches reduce setup cost; cache misses still build and test the
-current source. Packaging builds all four distributions, checks standalone
+Cargo and uv caches reduce setup cost. Core and daemon checks can reuse a core
+wheel only for the same complete core source fingerprint, compiler, platform
+and Python ABI; wheel metadata, SHA and every packaged Python source are checked
+again before installation. Missing or mismatched cache entries build the current
+checkout. Packaging still builds all four distributions, checks standalone
 client/worker and base server installs, then actually installs both offline
 bundles. Durations and JUnit identify bottlenecks. Measure full workflow time,
 including setup, packaging and the final gate; main's exact-tree reuse is a

@@ -46,12 +46,24 @@ jobs:
           enable-cache: true
       - id: native
         name: Identify the runner build toolchain
-        run: rustc --version | awk '{print "toolchain=" $2}' >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        run: |
+          rustc --version | awk '{print "toolchain=" $2}' >> "$GITHUB_OUTPUT"
+          python3 -c 'import platform,sys,sysconfig; print("abi=" + sysconfig.get_platform() + "-" + "-".join(platform.libc_ver()) + "-" + sys.implementation.cache_tag)' >> "$GITHUB_OUTPUT"
+      - id: core_wheel
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .ops/core-wheel
+          key: core-wheel-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.abi }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('src/**', 'rust/src/**', 'rust/Cargo.*', 'rust/.cargo/**', '.cargo/**', 'rust-toolchain.toml', 'pyproject.toml', 'README.md', 'LICENSE', 'uv.lock', 'tools/ci_core_wheel.py', '.github/workflows/quality.yml') }}
+      - if: steps.core_wheel.outputs.cache-hit != 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .ci-cargo-target
           key: cargo-workspace-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('rust/Cargo.lock') }}
-      - run: uv sync --locked --all-packages --all-extras
+      - run: uv sync --locked --all-packages --all-extras --no-install-package ml-experiment-control
+      - name: Install only a source-verified core wheel, or build this checkout
+        env:
+          CI_RUST_VERSION: ${{ steps.native.outputs.toolchain }}
+        run: uv run --no-sync python tools/ci_core_wheel.py
       - run: uv run --no-sync mypy
       - run: uv run --no-sync python tools/coverage_gate.py
       - run: uv run --no-sync python tools/generate_cli_reference.py --check
@@ -114,12 +126,24 @@ jobs:
           enable-cache: true
       - id: native
         name: Identify the runner build toolchain
-        run: rustc --version | awk '{print "toolchain=" $2}' >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        run: |
+          rustc --version | awk '{print "toolchain=" $2}' >> "$GITHUB_OUTPUT"
+          python3 -c 'import platform,sys,sysconfig; print("abi=" + sysconfig.get_platform() + "-" + "-".join(platform.libc_ver()) + "-" + sys.implementation.cache_tag)' >> "$GITHUB_OUTPUT"
+      - id: core_wheel
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .ops/core-wheel
+          key: core-wheel-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.abi }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('src/**', 'rust/src/**', 'rust/Cargo.*', 'rust/.cargo/**', '.cargo/**', 'rust-toolchain.toml', 'pyproject.toml', 'README.md', 'LICENSE', 'uv.lock', 'tools/ci_core_wheel.py', '.github/workflows/quality.yml') }}
+      - if: steps.core_wheel.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .ci-cargo-target
           key: cargo-workspace-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('rust/Cargo.lock') }}
-      - run: uv sync --locked --all-packages --all-extras
+      - run: uv sync --locked --all-packages --all-extras --no-install-package ml-experiment-control
+      - name: Install only a source-verified core wheel, or build this checkout
+        env:
+          CI_RUST_VERSION: ${{ steps.native.outputs.toolchain }}
+        run: uv run --no-sync python tools/ci_core_wheel.py
       - name: Run every daemon test file in its exact partition
         run: >-
           uv run --no-sync --package ml-experiment-server python tools/coverage_gate.py
@@ -146,7 +170,9 @@ jobs:
           enable-cache: true
       - id: native
         name: Identify the runner build toolchain
-        run: rustc --version | awk '{print "toolchain=" $2}' >> "$GITHUB_OUTPUT"
+        run: |
+          rustc --version | awk '{print "toolchain=" $2}' >> "$GITHUB_OUTPUT"
+          python3 -c 'import platform,sys,sysconfig; print("abi=" + sysconfig.get_platform() + "-" + "-".join(platform.libc_ver()) + "-" + sys.implementation.cache_tag)' >> "$GITHUB_OUTPUT"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .ci-cargo-target
