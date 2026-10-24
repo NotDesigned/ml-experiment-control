@@ -13,7 +13,7 @@ import stat
 
 CONTEXT_FIELDS = frozenset({
     "step", "epoch", "timestamp", "dataset_id", "variant_id", "checkpoint_id",
-    "protocol_id", "numerator", "denominator", "status", "error",
+    "protocol_id", "numerator", "denominator", "status", "error", "summary",
 })
 
 
@@ -55,6 +55,8 @@ class MetricWriter:
                 raise ValueError("metric name and unit must be nonempty printable strings")
         if context.keys() - CONTEXT_FIELDS:
             raise ValueError("unsupported metric context field")
+        if "summary" in context and type(context["summary"]) is not bool:
+            raise ValueError("summary must be a boolean")
         if value is not None and type(value) not in {int, float}:
             raise TypeError("metric value must be a Python scalar or None")
         record = _json_numbers({"name": name, "value": value, "unit": unit,
@@ -75,3 +77,7 @@ class MetricWriter:
                 stream.write(line)
         finally:
             os.close(fd)
+
+    def summary(self, name: str, value, *, unit: str, **context) -> None:
+        """Declare a result explicitly; no best/latest checkpoint is inferred."""
+        self.log(name, value, unit=unit, **{**context, "summary": True})

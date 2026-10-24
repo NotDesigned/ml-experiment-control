@@ -10,6 +10,8 @@ import pytest
 
 from ml_exp_client import MetricWriter
 from ml_exp_client.cli import main
+from ml_exp_client.api import ClientError
+from ml_exp_client.status import read_attempt
 
 
 def test_append_is_immediately_readable_and_survives_restart(tmp_path, monkeypatch):
@@ -101,3 +103,47 @@ def test_generated_training_source_publishes_before_process_exit(tmp_path, capsy
         if child.poll() is None:
             child.kill()
             child.communicate()
+
+
+def test_summary_is_an_explicit_result_in_the_same_append_only_stream(tmp_path):
+    writer = MetricWriter(tmp_path)
+    writer.log("loss", 4, unit="nats/token", step=10)
+    writer.summary("loss", 3, unit="nats/token", step=5, checkpoint_id="selected")
+    records = [json.loads(line) for line in writer.path.read_text().splitlines()]
+    assert "summary" not in records[0]
+    assert records[1] == {"name": "loss", "value": 3, "unit": "nats/token", "step": 5,
+                          "checkpoint_id": "selected", "summary": True}
+    for invalid in (None, 1, "true"):
+        with pytest.raises(ValueError, match="boolean"):
+            writer.log("loss", 0, unit="nats/token", summary=invalid)
+    assert len(writer.path.read_text().splitlines()) == 2
+
+
+def test_named_metric_reads_negotiate_compact_format_and_preserve_names(monkeypatch, capsys):
+    from urllib.parse import parse_qs, urlsplit
+    calls = []
+    payload = {"project": "demo", "run_id": "trial", "attempt_id": "attempt-001", "records": []}
+    class Reader:
+        capabilities = ["metric-records.v1"]
+        def negotiate(self): return {"capabilities": self.capabilities}
+        def call(self, path):
+            calls.append(path)
+            return payload
+    reader = Reader()
+    assert read_attempt(reader, "metrics", "demo", "trial", "attempt-001", names=["loss,validation"],
+                        keys="train_loss, accuracy") is payload
+    assert parse_qs(urlsplit(calls[-1]).query) == {"max_points": ["2000"], "format": ["records"],
+        "name": ["loss,validation", "train_loss", "accuracy"]}
+    monkeypatch.setattr("ml_exp_client.cli.Client", lambda *args: reader)
+    assert main(["metrics", "--project", "demo", "--run", "trial", "--attempt", "attempt-001",
+                 "--name", "loss,validation", "--name", "accuracy"]) == 0
+    assert json.loads(capsys.readouterr().out) == payload
+    assert parse_qs(urlsplit(calls[-1]).query)["name"] == ["loss,validation", "accuracy"]
+    read_attempt(reader, "metrics", "demo", "trial", "attempt-001")
+    assert "name=" not in calls[-1] and "format=records" in calls[-1]
+    for invalid in ([""], ["bad\nname"], [True], ["x" * 129], ["loss"] * 257):
+        with pytest.raises(ClientError, match="name filters"):
+            read_attempt(reader, "metrics", "demo", "trial", "attempt-001", names=invalid)
+    reader.capabilities = []
+    with pytest.raises(ClientError, match="metric-records.v1"):
+        read_attempt(reader, "metrics", "demo", "trial", "attempt-001", names=["loss"])

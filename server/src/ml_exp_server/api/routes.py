@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from .sse import IndexEventResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -573,10 +573,12 @@ def run_validate(project_name: str, run_id: str, request: Request):
 
 @router.get("/runs/{project_name}/{run_id}/metrics")
 def run_metrics(project_name: str, run_id: str, request: Request,
-                keys: Optional[str] = None, max_points: int = 2000):
+                keys: Optional[str] = None, max_points: int = 2000,
+                format: Literal["legacy", "records"] = "legacy", name: Annotated[list[str] | None, Query()] = None):
     try:
         return request.app.state.application.run_metrics(
             project_name, run_id, keys=keys, max_points=max_points,
+            **({"format": format, "names": name} if format != "legacy" or name is not None else {}),
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc
@@ -618,7 +620,8 @@ def attempt_bundle(project_name: str, attempt_id: str, request: Request):
 def attempt_view(
     project_name: str, attempt_id: str, view: str, request: Request,
     stream: str = "both", lines: int = 80, keys: Optional[str] = None,
-    max_points: int = 2000,
+    max_points: int = 2000, format: Literal["legacy", "records"] = "legacy",
+    name: Annotated[list[str] | None, Query()] = None,
 ):
     """Expose the bounded Attempt read operations through one resource route."""
     application = request.app.state.application
@@ -636,6 +639,7 @@ def attempt_view(
         if view == "metrics":
             return application.attempt_metrics(
                 project_name, attempt_id, keys=keys, max_points=max_points,
+                **({"format": format, "names": name} if format != "legacy" or name is not None else {}),
             )
         if view == "eval":
             return application.attempt_eval(project_name, attempt_id)

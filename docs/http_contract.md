@@ -116,6 +116,15 @@ except ClientError as error:
 Attempt is supplied, the client first reads `GET /api/runs/P/R/attempts` and binds
 the request to its current Attempt. These reads do not submit work.
 
+With `metric-records.v1`, the client requests `format=records` and repeats `name`
+to filter metric names. The compact response contains normalized `records`, full
+history `validation`, `total_records`, `downsampled`, `missing_names`, frozen
+`protocol_id` and exact Run/Attempt identity. Validation runs before filtering or
+sampling. It omits the duplicate legacy points/keys representation and filesystem
+paths. Omitting `format` keeps the old response; `keys` remains a legacy field
+filter. Mixing `format=records` with `keys` is rejected. See [metrics](metrics.md)
+for explicit result summaries and scoped requirements.
+
 `ml-exp cancel` and `ml-exp retry` first POST
 `/api/attempts/P/R::A/cancel` or `/api/attempts/P/R::A/retry` to prepare an Action.
 The client saves the request before HTTP and saves the returned Action's identity,

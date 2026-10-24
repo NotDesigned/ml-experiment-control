@@ -174,7 +174,7 @@ def resolve_attempt(client, project, run, attempt=None):
 
 
 def read_attempt(client, view, project, run, attempt=None, *, stream="both", lines=80,
-                 keys=None, max_points=2000):
+                 keys=None, names=None, max_points=2000):
     """Read one exact Attempt; return metric dimensions without transformation."""
     project_path, run_path = segment(project), segment(run)
     if view == "logs":
@@ -185,12 +185,22 @@ def read_attempt(client, view, project, run, attempt=None, *, stream="both", lin
         if max_points <= 0:
             raise ClientError("max-points must be positive")
         query = {"max_points": max_points}
-        if keys is not None:
+        if "metric-records.v1" in getattr(client, "capabilities", []):
+            selected = [*(names or []), *([name.strip() for name in keys.split(",") if name.strip()] if keys else [])]
+            if len(selected) > 256 or any(not isinstance(name, str) or not name.strip() or len(name) > 128
+                                        or any(ord(c) < 32 for c in name) for name in selected):
+                raise ClientError("name filters must be valid metric names")
+            query.update(format="records")
+            if selected:
+                query["name"] = selected
+        elif names is not None:
+            raise ClientError("server lacks metric-records.v1; --keys retains the legacy field-filter behavior")
+        elif keys is not None:
             query["keys"] = keys
     else:
         raise ClientError("unknown Attempt read operation")
     attempt = resolve_attempt(client, project, run, attempt)
     identity = segment(run + "::" + attempt_id(attempt))
-    response = client.call(f"/api/attempts/{project_path}/{identity}/{view}?" + urlencode(query))
+    response = client.call(f"/api/attempts/{project_path}/{identity}/{view}?" + urlencode(query, doseq=True))
     return bound_response(response, {"project": project, "run_id": run, "attempt_id": attempt},
                           message="read response differs from the requested exact Run/Attempt")

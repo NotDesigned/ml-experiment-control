@@ -173,7 +173,7 @@ class RunQueries:
         }
 
     def attempt_metrics(self, project: str, identity: str, *, keys: str | None = None,
-                        max_points: int = 2000) -> dict[str, Any]:
+                        max_points: int = 2000, format: str = "legacy", names: list[str] | None = None) -> dict[str, Any]:
         _, _, row, attempt, _ = self._attempt_context(project, identity)
         records, source, source_attempt_id = train_metric_records(
             Path(row.run_dir), attempt_id=attempt.attempt_id, exact_attempt=True,
@@ -189,6 +189,7 @@ class RunQueries:
         payload = self._metric_payload(
             records, keys=keys, max_points=max_points, source=source,
             source_attempt_id=source_attempt_id, contract=metric_contract(Path(row.run_dir)), normalized=bool(live),
+            format=format, names=names,
         )
         return {"project": project, "run_id": row.run_id,
                 "attempt_id": attempt.attempt_id, **payload}
@@ -251,11 +252,19 @@ class RunQueries:
         return payload
 
     def run_metrics(self, project: str, run_id: str, *, keys: str | None = None,
-                    max_points: int = 2000) -> dict[str, Any]:
+                    max_points: int = 2000, format: str = "legacy", names: list[str] | None = None) -> dict[str, Any]:
         _, _, row = self.resolve_scope(project, OperationScopeType.RUN, run_id)
+        current = self.run_attempts(project, run_id)["current_attempt_id"]
+        if format == "records":
+            if current:
+                return self.attempt_metrics(project, run_id + "::" + current, keys=keys,
+                                            max_points=max_points, format=format, names=names)
+            # An authored placeholder has no durable directory or Attempt yet.
+            return {"project": project, "run_id": run_id, "attempt_id": None,
+                    **self._metric_payload([], keys=keys, max_points=max_points, source=None,
+                        source_attempt_id=None, format=format, names=names)}
         records, source, source_attempt_id = train_metric_records(Path(row.run_dir))
         from ..records.store import RecordStore
-        current = self.run_attempts(project, run_id)["current_attempt_id"]
         tracking = RecordStore(self.runtime.config.project_registry_root_path())
         live = tracking.metric_records(project, run_id, current) if current else []
         if live:
@@ -266,6 +275,7 @@ class RunQueries:
         return self._metric_payload(
             records, keys=keys, max_points=max_points, source=source,
             source_attempt_id=source_attempt_id, contract=metric_contract(Path(row.run_dir)), normalized=bool(live),
+            format=format, names=names,
         )
 
     def run_eval(self, project: str, run_id: str) -> dict[str, Any]:

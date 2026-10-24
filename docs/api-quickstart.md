@@ -175,7 +175,7 @@ ml-exp status --project my-study --run trial-001 --attempt attempt-001 --details
 ml-exp submission --id SUBMISSION_ID
 ml-exp watch --project my-study --run trial-001 --seconds 1800
 ml-exp logs --project my-study --run trial-001 --attempt attempt-001 --stream both --lines 80
-ml-exp metrics --project my-study --run trial-001 --attempt attempt-001 --keys loss --max-points 2000
+ml-exp metrics --project my-study --run trial-001 --attempt attempt-001 --name loss --max-points 2000
 ml-exp download --project my-study --run trial-001 \
   --attempt attempt-001 --out results/trial-001-copy
 ```

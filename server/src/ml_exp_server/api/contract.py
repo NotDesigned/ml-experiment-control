@@ -33,6 +33,7 @@ SERVER_CAPABILITIES = (
     "result-collection.v1",
     "training-result.v1",
     "experiment-records.v1",
+    "metric-records.v1",
     "input-delivery-progress.v1",
     "backend-capabilities.v1",
     "server-experiment-preparation.v1",

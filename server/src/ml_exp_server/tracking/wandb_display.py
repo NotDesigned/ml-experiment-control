@@ -41,15 +41,16 @@ class Projection:
             if len(self.series) >= 512:
                 raise ValueError("DISPLAY_CONTEXT_LIMIT")
             self.series[key] = {"context": {k: item.get(k) for k in (*FIELDS, "variant_id")},
-                                "latest": None, "positions": {}}
+                                "latest": None, "summary": None, "positions": {}}
         series = self.series[key]
         axis = "step" if number(item.get("step")) else "epoch" if number(item.get("epoch")) else None
         point = {**item, "axis": axis, "sequence": sequence}
-        if axis and number(item.get("value")) and item["status"] in {"VALID", "PARTIAL"}:
+        selection = "summary" if item.get("summary") is True else "latest"
+        if selection == "latest" and axis and number(item.get("value")) and item["status"] in {"VALID", "PARTIAL"}:
             positions = series["positions"].setdefault(axis, [])
             if item[axis] not in positions and len(positions) < 2:
                 positions.append(item[axis])
-        old = series["latest"]
+        old = series[selection]
         if old and axis == old["axis"] and axis:
             if item[axis] < old[axis]:
                 return
@@ -62,7 +63,7 @@ class Projection:
                 point.update(status="CONFLICTING", value=None, error="UNORDERED_CHECKPOINTS")
             elif any(old.get(k) != item.get(k) for k in ("value", "status", "numerator", "denominator")):
                 point.update(status="CONFLICTING", value=None, error="CONFLICTING_LATEST_OBSERVATIONS")
-        series["latest"] = point
+        series[selection] = point
 
     def document(self, names):
         variants = {}
@@ -74,7 +75,9 @@ class Projection:
             base = identity(series["context"])
             name = names[base]
             suffix = "/variants/" + fingerprint(key)
-            result[key] = {**series, "name": name, "multiple_variants": len(variants[base]) > 1,
+            result[key] = {**series, "latest": series["summary"] or series["latest"],
+                           "selection": "explicit_summary" if series["summary"] else "latest_observation",
+                           "name": name, "multiple_variants": len(variants[base]) > 1,
                            "curve": "curves/" + name, "shadow": "curves/" + name + suffix,
                            "result": "results/" + name + (suffix if len(variants[base]) > 1 else "")}
         return {"contract": "metric-display.v2", "through": self.cursor, "series": result}
@@ -86,7 +89,7 @@ def curve_record(event, display):
         return record
     for item in event["payload"]["observations"]:
         series = display["series"].get(identity(item, variant=True))
-        if series is None or not number(item.get("value")) or item["status"] not in {"VALID", "PARTIAL"}:
+        if series is None or item.get("summary") is True or not number(item.get("value")) or item["status"] not in {"VALID", "PARTIAL"}:
             continue
         axis = "step" if number(item.get("step")) else "epoch" if number(item.get("epoch")) else None
         if axis is None:
@@ -133,7 +136,8 @@ def summaries(handle, remote_summary, display, *, terminal, coverage):
     definitions = {s["result"]: {**s["context"], "checkpoint_id": s["latest"].get("checkpoint_id"),
                    "step": s["latest"].get("step"), "epoch": s["latest"].get("epoch"),
                    "numerator": s["latest"].get("numerator"), "denominator": s["latest"].get("denominator"),
-                   "status": s["latest"]["status"], "error": s["latest"].get("error")}
+                   "status": s["latest"]["status"], "error": s["latest"].get("error"),
+                   "selection": s["selection"]}
                    for s in display["series"].values()}
     # W&B flattens dict-valued summaries; JSON preserves literal metric keys.
     handle.summary["ml_expd/display_definitions_json"] = json.dumps(definitions, sort_keys=True, allow_nan=False)

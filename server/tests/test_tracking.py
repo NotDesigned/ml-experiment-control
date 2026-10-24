@@ -419,6 +419,19 @@ def test_client_writer_streams_live_through_api_and_builds_loss_curve(client, st
     writer.log("validation_loss", 1.9, unit="nats/token", step=2, checkpoint_id="final-sha",
                dataset_id="validation-v1", numerator=190, denominator=100)
     assert len(writer.path.read_text().splitlines()) == 3  # final export appends
+    writer.summary("validation_loss", 1.8, unit="nats/token", step=1, checkpoint_id="selected-sha",
+                   dataset_id="validation-v1", numerator=180, denominator=100)
+    worker.flush(final=True)
+    from ml_exp_server.records.ingest import import_metrics
+    assert import_metrics(client.app.state.runtime.config.project_registry_root_path(),
+                          "demo", "trial", "attempt-001", output, {})["records"] == 4
+    assert store.total(scope["id"]) == 4  # Live and final archive keep one copy.
+    final = client.get("/api/attempts/demo/trial::attempt-001/metrics?format=records&name=validation_loss").json()
+    assert final["total_records"] == 2 and final["records"][-1]["summary"] is True
+    assert final["records"][-1]["checkpoint_id"] == "selected-sha"
+    from ml_exp_server.tracking.wandb_display import summaries
+    summaries(handles[0], {}, store.display(scope["id"], 4), terminal=True, coverage="full")
+    assert handles[0].summary["results/validation_loss"] == 1.8
 
 
 def test_preparation_freezes_target_before_build_and_keeps_failure_evidence(client, service, monkeypatch):

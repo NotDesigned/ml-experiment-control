@@ -96,6 +96,10 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         raise ClientError("server lacks server-experiment-preparation.v1; upgrade for server-owned preparation")
     if "dockerfile-only.v1" not in health.get("capabilities", []):
         raise ClientError("server lacks dockerfile-only.v1; upgrade before using the experiment workflow")
+    if (any("required_when" in definition
+            for definition in config.get("metrics_schema", {}).get("definitions", {}).values())
+            and "metric-records.v1" not in health.get("capabilities", [])):
+        raise ClientError("server lacks metric-records.v1; upgrade before scoping metric requirements")
     if config.get("data_preparation") is not None and "data-preparation.v1" not in health.get("capabilities", []):
         raise ClientError("server lacks data-preparation.v1; upgrade before using a download script")
     if ("wandb" in config or "parameters" in config) and "wandb-sync.v1" not in health.get("capabilities", []):
