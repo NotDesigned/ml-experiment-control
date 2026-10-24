@@ -40,6 +40,12 @@ which overrides the saved URL. Environment authentication overrides saved
 authentication. Saved credentials remain bound to their saved URL: choosing a
 different server requires explicit credentials for that server, before any HTTP
 request. Saved experiment states retain their original server binding as well.
+The `server` in a state file is an identity hint, not an authority to route a
+token. When using environment authentication, first select the API URL with
+`--url`, `ML_EXPD_API_URL` or saved configuration; a state file alone cannot
+choose the credential destination. A state-provided URL without that local
+selection, or a conflict between the two URLs, is rejected before reading a
+token file or sending a request.
 
 `ml-exp update --check` checks the official GitHub release for a newer client;
 `ml-exp update` downloads and verifies the standalone client wheel against the

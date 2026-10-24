@@ -351,6 +351,10 @@ def main(argv=None):
             if saved_server:
                 if args.url and args.url.rstrip("/") != saved_server.rstrip("/"):
                     raise ClientError("saved state belongs to a different server; no request was sent")
+                if not args.url and (os.environ.get("ML_EXPD_API_TOKEN")
+                                     or os.environ.get("ML_EXPD_API_TOKEN_FILE")):
+                    raise ClientError("saved state cannot choose a server for API credentials; set --url, "
+                                      "ML_EXPD_API_URL or ml-exp config set --url URL; no request was sent")
                 args.url = saved_server
         args.url, token = resolve_connection(args.url, settings)
         client = Client(args.url or "", token)
