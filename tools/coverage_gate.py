@@ -6,10 +6,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+from ci_shards import partition, validated_data, write_manifest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,6 +64,28 @@ def split_daemon_report() -> None:
                         encoding="utf-8")
 
 
+def combine_daemon(directory: Path, count: int) -> None:
+    """Load coverage data only, after verifying all exact-tree partitions."""
+    import coverage
+    sources = validated_data(ROOT, directory, count)
+    work = ROOT / ".ops/combined-coverage"
+    work.mkdir(parents=True, exist_ok=True)
+    for previous in work.glob(".coverage.*"):
+        previous.unlink()
+    copied = []
+    for index, source in enumerate(sources):
+        destination = work / (".coverage." + str(index))
+        shutil.copyfile(source, destination)
+        copied.append(str(destination))
+    measurement = coverage.Coverage(data_file=str(ROOT / ".coverage.daemon-combined"),
+                                    branch=True, source=[str(ROOT / "server/src/ml_exp_server"),
+                                                         str(ROOT / "worker/src/ml_exp_worker")])
+    measurement.erase()
+    measurement.combine(copied, strict=True)
+    measurement.save()
+    measurement.json_report(outfile=str(COMBINED_REPORT))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--min-line", type=float, default=DEFAULT_MIN_LINE)
@@ -71,14 +96,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument("--workers", type=int, choices=(1, 2), default=1,
-                        help="independent pytest workers (loadfile); coverage is combined before gating")
+                        help="independent pytest workers (daemon worksteal, otherwise loadfile); coverage is combined before gating")
+    parser.add_argument("--shard-index", type=int, help="zero-based daemon partition; gated after combining every shard")
+    parser.add_argument("--shard-count", type=int)
+    parser.add_argument("--combine-dir", type=Path, help="verify and combine daemon shard data before the original gates")
     args = parser.parse_args(argv)
+    if args.shard_index is not None or args.combine_dir is not None or args.shard_count is not None:
+        if (args.suite != "daemon" or args.shard_count is None or not 1 <= args.shard_count <= 64
+                or (args.shard_index is None) == (args.combine_dir is None)
+                or args.shard_index is not None and not 0 <= args.shard_index < args.shard_count
+                or args.check_only):
+            parser.error("daemon sharding requires a valid count and exactly one index or combine directory")
+    selected = partition(ROOT, args.shard_count)[args.shard_index] if args.shard_index is not None else None
     if args.suite == "daemon":
         report = DAEMON_REPORT
         pytest_args = [
-            "server/tests", "worker/tests", "-q", "--cov=ml_exp_server", "--cov=ml_exp_worker", "--cov-branch",
-            "--cov-report=term-missing:skip-covered",
-            "--cov-report=json:server-worker-coverage.json",
+            *(selected or ["server/tests", "worker/tests"]), "-q", "--cov=ml_exp_server", "--cov=ml_exp_worker", "--cov-branch",
+            *(["--cov-report="] if selected is not None else [
+                "--cov-report=term-missing:skip-covered", "--cov-report=json:server-worker-coverage.json"]),
         ]
     elif args.suite == "client":
         report = CLIENT_REPORT
@@ -92,14 +127,28 @@ def main(argv: list[str] | None = None) -> int:
         ]
     pytest_args += ["--durations=20", "--junitxml=" + (args.suite + "-tests.xml")]
     if args.workers > 1:
-        pytest_args += ["-n", str(args.workers), "--dist=loadfile"]
-    if not args.check_only:
+        pytest_args += ["-n", str(args.workers),
+                        "--dist=worksteal" if args.suite == "daemon" else "--dist=loadfile"]
+    if args.combine_dir is not None:
+        try:
+            combine_daemon(args.combine_dir, args.shard_count)
+        except (OSError, KeyError, ValueError) as error:
+            print(f"cannot combine complete daemon coverage: {error}", file=sys.stderr)
+            return 2
+    elif not args.check_only:
         result = subprocess.run(
             [sys.executable, "-m", "pytest", *pytest_args],
             cwd=ROOT, check=False, env={**os.environ, "COVERAGE_FILE": str(ROOT / (".coverage." + args.suite))},
         )
         if result.returncode:
             return result.returncode
+        if selected is not None:
+            destination = ROOT / ".ops/shard/daemon-shard.json"
+            write_manifest(ROOT, args.shard_index, args.shard_count, selected, destination)
+            shutil.copyfile(ROOT / ".coverage.daemon", destination.with_name(".coverage.daemon"))
+            shutil.copyfile(ROOT / "daemon-tests.xml", destination.with_name("daemon-tests.xml"))
+            print("Daemon partition passed; independent server/worker gates run after all partitions combine")
+            return 0
     if args.suite == "daemon":
         try:
             split_daemon_report()

@@ -83,7 +83,7 @@ does not prove recent progress. These GETs do not refresh providers, create
 record scopes, retry training or change publication routes.
 
 The client combines these fields with indexed Run evidence and collection
-receipts for `ml-exp status`. Its presentation does not branch on backend type;
+receipts for `ml-exp run status`. Its presentation does not branch on backend type;
 unsupported diagnostics remain unavailable. See [recovery](recovery.md) for
 saved-state observation and the distinct meanings of retry and checkpoint resume.
 
@@ -138,7 +138,7 @@ except ClientError as error:
 
 ## Client observation and explicit training operations
 
-`ml-exp logs` and `ml-exp metrics` use
+`ml-exp run logs` and `ml-exp run metrics` use
 `GET /api/attempts/P/R::A/logs` and `GET /api/attempts/P/R::A/metrics`. When no
 Attempt is supplied, the client first reads `GET /api/runs/P/R/attempts` and binds
 the request to its current Attempt. These reads do not submit work.
@@ -152,7 +152,7 @@ paths. Omitting `format` keeps the old response; `keys` remains a legacy field
 filter. Mixing `format=records` with `keys` is rejected. See [metrics](metrics.md)
 for explicit result summaries and scoped requirements.
 
-`ml-exp cancel` and `ml-exp retry` first POST
+`ml-exp run cancel` and `ml-exp run retry` first POST
 `/api/attempts/P/R::A/cancel` or `/api/attempts/P/R::A/retry` to prepare an Action.
 The client saves the request before HTTP and saves the returned Action's identity,
 scope and review digests. A separate `--execute` invocation rechecks those values,

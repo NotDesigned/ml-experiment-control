@@ -66,7 +66,7 @@ def test_parallel_daemon_report_still_enforces_branch_gate(tmp_path, monkeypatch
         return subprocess.CompletedProcess(argv,0)
     monkeypatch.setattr(gate.subprocess,'run',run)
     assert gate.main(['--suite','daemon','--workers','2'])==1
-    assert calls[0][-3:]==['-n','2','--dist=loadfile']
+    assert calls[0][-3:]==['-n','2','--dist=worksteal']
     assert '--cov=ml_exp_worker' in calls[0]
     # Server success cannot mask incomplete worker coverage, nor an omitted package.
     payload = json.loads(path.read_text())
@@ -77,3 +77,151 @@ def test_parallel_daemon_report_still_enforces_branch_gate(tmp_path, monkeypatch
     del payload['files']['worker/src/ml_exp_worker/worker.py']
     path.write_text(json.dumps(payload))
     assert gate.main(['--suite','daemon','--check-only']) == 2
+
+
+def test_successful_shard_saves_evidence_but_never_gates_incomplete_coverage(tmp_path, monkeypatch):
+    import subprocess
+    import ci_shards
+    import coverage_gate as gate
+    monkeypatch.setattr(gate, 'ROOT', tmp_path)
+    monkeypatch.setattr(gate, 'partition', lambda root, count: [['server/tests/test_one.py']])
+    monkeypatch.setattr(ci_shards, 'checkout_tree', lambda root: 'a' * 40)
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        (tmp_path / '.coverage.daemon').write_bytes(b'coverage data')
+        (tmp_path / 'daemon-tests.xml').write_text('<testsuite/>')
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(gate.subprocess, 'run', run)
+    assert gate.main(['--suite', 'daemon', '--shard-index', '0', '--shard-count', '1']) == 0
+    assert 'server/tests/test_one.py' in calls[0] and 'worker/tests' not in calls[0]
+    assert '--cov-report=' in calls[0] and not any(arg.startswith('--cov-report=json:') for arg in calls[0])
+    manifest = json.loads((tmp_path / '.ops/shard/daemon-shard.json').read_text())
+    assert manifest['pytest_passed'] is True and manifest['files'] == ['server/tests/test_one.py']
+    assert (tmp_path / '.ops/shard/.coverage.daemon').read_bytes() == b'coverage data'
+    monkeypatch.setattr(gate.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 1))
+    assert gate.main(['--suite', 'daemon', '--shard-index', '0', '--shard-count', '1']) == 1
+
+
+def test_aggregate_requires_valid_data_and_still_enforces_independent_gates(tmp_path, monkeypatch):
+    import coverage_gate as gate
+    monkeypatch.setattr(gate, 'ROOT', tmp_path)
+    def incomplete(*args):
+        raise ValueError('missing shard')
+    monkeypatch.setattr(gate, 'combine_daemon', incomplete)
+    assert gate.main(['--suite', 'daemon', '--combine-dir', str(tmp_path), '--shard-count', '2']) == 2
+
+
+def test_sharding_cannot_skip_other_suite_gates():
+    import pytest
+    import coverage_gate as gate
+    for args in (['--shard-count', '2'], ['--suite', 'client', '--shard-index', '0', '--shard-count', '2'],
+                 ['--suite', 'daemon', '--shard-index', '2', '--shard-count', '2'],
+                 ['--suite', 'daemon', '--shard-index', '0', '--shard-count', '2', '--check-only']):
+        with pytest.raises(SystemExit):
+            gate.main(args)
+
+
+def test_real_coverage_data_combines_complementary_branches_and_rejects_missing_ones(tmp_path, monkeypatch):
+    import coverage
+    import coverage_gate as gate
+    roots = [tmp_path / 'server/src/ml_exp_server', tmp_path / 'worker/src/ml_exp_worker']
+    for root in roots:
+        root.mkdir(parents=True)
+        (root / '__init__.py').write_text('')
+        (root / 'example.py').write_text('def choose(flag):\n    if flag:\n        return 1\n    return 2\n')
+    sources = []
+    for index, flag in enumerate((True, False)):
+        source = tmp_path / ('.coverage.fixture-' + str(index))
+        measurement = coverage.Coverage(data_file=str(source), branch=True, source=list(map(str, roots)))
+        measurement.start()
+        for root in roots:
+            code = root / 'example.py'
+            namespace = {}
+            exec(compile(code.read_text(), str(code), 'exec'), namespace)
+            namespace['choose'](flag)
+        measurement.stop()
+        measurement.save()
+        sources.append(source)
+    monkeypatch.setattr(gate, 'ROOT', tmp_path)
+    monkeypatch.setattr(gate, 'COMBINED_REPORT', tmp_path / 'combined.json')
+    monkeypatch.setattr(gate, 'DAEMON_REPORT', tmp_path / 'server.json')
+    monkeypatch.setattr(gate, 'WORKER_REPORT', tmp_path / 'worker.json')
+    monkeypatch.setattr(gate, 'validated_data', lambda *args: sources)
+    arguments = ['--suite', 'daemon', '--combine-dir', str(tmp_path), '--shard-count', '2']
+    assert gate.main(arguments) == 0
+    # Each partial data file leaves a branch untested. Old combined data must not
+    # fill that hole on a subsequent aggregate attempt.
+    monkeypatch.setattr(gate, 'validated_data', lambda *args: sources[:1])
+    assert gate.main(arguments) == 1
+
+
+def test_parallel_package_build_waits_for_every_result_and_preserves_failures(tmp_path):
+    import os
+    import subprocess
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/quality.yml').read_text())
+    step = next(step for step in workflow['jobs']['packages']['steps']
+                if step.get('name', '').startswith('Build every source archive'))
+    binary = tmp_path / 'uv'
+    binary.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$BUILD_CALLS"\n'
+                      'case "$FAIL_PACKAGE:$*" in core:*ci_core_wheel.py*) exit 19;; esac\n'
+                      'test "$*" != "build --package $FAIL_PACKAGE"\n')
+    binary.chmod(0o755)
+    for failed in ('', 'core', 'ml-experiment-client', 'ml-experiment-worker', 'ml-experiment-server'):
+        calls = tmp_path / ('calls-' + failed)
+        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', step['run']],
+                                env={**os.environ, 'PATH': str(tmp_path) + os.pathsep + os.environ['PATH'],
+                                     'FAIL_PACKAGE': failed, 'BUILD_CALLS': str(calls)}, cwd=tmp_path, check=False)
+        assert (result.returncode == 0) is (not failed)
+        commands = calls.read_text().splitlines()
+        assert len(commands) == 4
+        assert {command for command in commands if command.startswith('build ')} == {
+            'build --package ml-experiment-client', 'build --package ml-experiment-worker',
+            'build --package ml-experiment-server'}
+
+
+def test_parallel_installation_lanes_wait_for_every_result_and_keep_early_failures(tmp_path):
+    import os
+    import subprocess
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/quality.yml').read_text())
+    step = next(step for step in workflow['jobs']['packages']['steps']
+                if step.get('name', '').startswith('Test independent wheel'))
+    for failed in ('', 'client', 'worker', 'installed', 'offline', 'offline-install', 'offline-permissions'):
+        case = tmp_path / ('case-' + (failed or 'pass'))
+        binary = case / 'bin'
+        binary.mkdir(parents=True)
+        body = ('#!/bin/sh\nprintf "%s\\n" "$*" >> "$LANE_CALLS"\n'
+                'case "$FAIL_LANE:$*" in client:venv\\ .client-wheel-smoke|worker:venv\\ .worker-wheel-smoke|installed:venv\\ .wheel-smoke|offline:*build_deployment_bundle.py*) exit 19;; esac\n')
+        for name in ('uv', 'python3', 'tar'):
+            executable = binary / name
+            executable.write_text(body)
+            executable.chmod(0o755)
+        executable_body = ('#!/bin/sh\nprintf "%s %s\\n" "$0" "$*" >> "$LANE_CALLS"\n'
+                           'case "$FAIL_LANE:$0" in offline-install:*/ml-expd-server/install.sh) exit 19;; esac\n')
+        for directory in ('.client-wheel-smoke', '.worker-wheel-smoke', '.wheel-smoke', '.offline-client', '.offline-server'):
+            for name in ('python', 'ml-expd', 'ml-exp', 'experiment-redact'):
+                executable = case / directory / 'bin' / name
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                executable.write_text(executable_body)
+                executable.chmod(0o755)
+        for component in ('client', 'server'):
+            installer = case / '.ops/bundles' / ('ml-expd-' + component) / 'install.sh'
+            installer.parent.mkdir(parents=True)
+            installer.write_text(executable_body)
+            installer.chmod(0o755)
+            (installer.parent.parent / (component + '-bundle.tar.gz')).write_bytes(b'fixture archive')
+        (case / '.offline-server').chmod(0o755)
+        if failed == 'offline-permissions':
+            (case / '.offline-server').chmod(0o700)
+        calls = case / 'calls'
+        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', step['run']], cwd=case,
+                                env={**os.environ, 'PATH': str(binary) + os.pathsep + os.environ['PATH'],
+                                     'FAIL_LANE': failed, 'LANE_CALLS': str(calls)}, capture_output=True, text=True)
+        assert (result.returncode == 0) is (not failed), (failed, result.stdout, result.stderr)
+        assert sum(line.startswith('Installation lane ') for line in result.stdout.splitlines()) == 4
+        assert len(list((case / '.ops/bundles/logs').glob('smoke-*.log'))) == 4
+        commands = calls.read_text().splitlines()
+        for prefix in ('venv .client-wheel-smoke', 'venv .worker-wheel-smoke', 'venv .wheel-smoke', 'run --no-project'):
+            assert any(command.startswith(prefix) for command in commands)

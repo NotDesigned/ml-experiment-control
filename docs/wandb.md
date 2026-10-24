@@ -16,8 +16,8 @@ the W&B key in a private file outside uploaded code/data:
 
 ```bash
 chmod 600 /private/path/wandb.key
-ml-exp wandb --key-file /private/path/wandb.key
-ml-exp wandb
+ml-exp tracking config --key-file /private/path/wandb.key
+ml-exp tracking config
 ```
 
 This sends the key to the server; it is not a training-process environment
@@ -54,7 +54,7 @@ In an experiment JSON or `POST /api/projects/P/runs` request:
 | Entity omitted | Use configured/resolved default entity |
 
 Training and preparation switches are independent, subject to the same server
-master switch and credentials. `ml-exp wandb --preparation` / `--no-preparation`
+master switch and credentials. `ml-exp tracking config --preparation` / `--no-preparation`
 changes the default for future preparations. The per-experiment option requires
 `wandb-preparation-sync.v1`.
 
@@ -129,8 +129,8 @@ and historical Runs are not automatically opted in.
 ## Inspect and recover publication
 
 ```bash
-ml-exp tracking --project my-study --run trial-001
-ml-exp tracking --project my-study --run trial-001 --retry
+ml-exp tracking status --project my-study --run trial-001
+ml-exp tracking status --project my-study --run trial-001 --retry
 ```
 
 The status API returns the frozen route, W&B URLs, confirmed/pending counts,

@@ -49,7 +49,7 @@ The server separately advertises `result-collection.v1` for recovering outputs
 from an exact original Attempt. It publishes Slurm shared-directory outputs or
 uses a bounded zero-GPU SenseCore CPU job to read NAS and resume the original
 archive transfer. This server operation does not require the generic adapter
-`outputs.offline_export` hook. Query or start it with `ml-exp collect`; see
+`outputs.offline_export` hook. Query or start it with `ml-exp run collect`; see
 [result recovery](recovery.md). It preserves the original scheduler outcome and
 does not rerun training or prepare input data.
 
@@ -156,7 +156,7 @@ POST to `/experiment-preparations/{id}/continue` can advance the original reques
 It retains all effect markers and never retries an uncertain effect. Client:
 
 ```bash
-ml-exp experiment experiment.json --state trial.state.json --resume --continue-preparation
+ml-exp run submit experiment.json --state trial.state.json --resume --continue-preparation
 ```
 
 Low-level source, Runtime, Run and submission APIs remain available. The new

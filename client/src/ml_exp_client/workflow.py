@@ -77,7 +77,7 @@ def retry_download_acknowledgement(client, project, run, attempt, state, state_p
     if previous.get("acknowledgement", {}).get("status") != "PENDING":
         return
     if directory is None:
-        raise ClientError("download acknowledgement is PENDING; resume with --download-to pointing to the original directory, or use ml-exp acknowledge")
+        raise ClientError("download acknowledgement is PENDING; resume with --download-to pointing to the original directory, or use ml-exp run acknowledge")
     local = json.loads((directory / "verification.json").read_text())
     identity = {"project": project, "run_id": run, "attempt_id": attempt}
     if any(local.get(key) != value for key, value in identity.items()) or any(
@@ -266,7 +266,7 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
             raise ClientError("scheduler request outcome is uncertain; inspect saved Submission before explicit execution")
         if submission["status"] == "PREPARED" and submission["ready"]:
             submission = plan.request("submission", endpoint + "/authorize",
-                data={"note": "explicit ml-exp experiment --execute"}, marker="scheduler_authorization_requested",
+                data={"note": "explicit ml-exp run submit --execute"}, marker="scheduler_authorization_requested",
                 validate=validate,
                 uncertain="scheduler authorization outcome is uncertain; inspect saved Submission before explicit execution")
         if submission["status"] == "AUTHORIZED":

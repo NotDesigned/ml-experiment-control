@@ -37,7 +37,7 @@ API token, W&B SDK/key or direct W&B connection. An installed client also export
 Query an exact Attempt, repeating `--name` to select more metrics:
 
 ```bash
-ml-exp metrics --project my-study --run trial-001 --attempt attempt-001 \
+ml-exp run metrics --project my-study --run trial-001 --attempt attempt-001 \
   --name train_loss --name validation_loss --max-points 2000
 ```
 

@@ -8,14 +8,53 @@ base URL, client wheel and a private API token.
 
 | Setting | Purpose |
 |---|---|
-| `ML_EXPD_API_URL` | HTTPS base URL including any reverse-proxy prefix, for example `https://api.example.org/ml-expd` |
-| `ML_EXPD_API_TOKEN_FILE` | Path to the private token file, outside uploaded source |
+| Saved `url` | Default HTTPS base URL including any reverse-proxy prefix |
+| Saved `token` or `token_file` | Private token or reference to a private token file, outside uploaded source |
 
 ```bash
-export ML_EXPD_API_URL='https://api.example.org/ml-expd'
-export ML_EXPD_API_TOKEN_FILE="$HOME/.config/ml-expd/client.token"
+ml-exp config set --url 'https://api.example.org/ml-expd'
+# Enter the token at the hidden prompt once.
 ml-exp check
+ml-exp run status --project my-project --run trial-001
 ```
+
+Defaults are saved in `~/.config/ml-expd/client.json`, or
+`$XDG_CONFIG_HOME/ml-expd/client.json` when set. On POSIX the file is private
+(0600) and new configuration directories are 0700. The token is stored as plain
+text in that private file; keep it outside Git and uploaded source. No API request
+is made by `config set`, `show` or `clear`.
+
+To retain an existing token file instead of storing another copy:
+
+```bash
+ml-exp config set --url 'https://api.example.org/ml-expd' --token-file /private/client.token
+ml-exp config show           # URL, file path and whether auth is configured; never the token
+ml-exp config set --prompt-token  # rotate the saved token using the hidden prompt
+ml-exp config clear          # remove defaults; referenced token files are retained
+```
+
+For noninteractive setup use `--token-stdin < /private/client.token`; there is
+no token command-line argument. `--config PATH` or `ML_EXPD_CLIENT_CONFIG`
+selects another private configuration. CLI `--url` overrides `ML_EXPD_API_URL`,
+which overrides the saved URL. Environment authentication overrides saved
+authentication. Saved credentials remain bound to their saved URL: choosing a
+different server requires explicit credentials for that server, before any HTTP
+request. Saved experiment states retain their original server binding as well.
+The `server` in a state file is an identity hint, not an authority to route a
+token. When using environment authentication, first select the API URL with
+`--url`, `ML_EXPD_API_URL` or saved configuration; a state file alone cannot
+choose the credential destination. A state-provided URL without that local
+selection, or a conflict between the two URLs, is rejected before reading a
+token file or sending a request.
+
+`ml-exp update --check` checks the official GitHub release for a newer client;
+`ml-exp update` downloads and verifies the standalone client wheel against the
+release SHA256SUMS, then updates the current Python environment without installing
+server packages or dependencies. `ml-exp update --version 1.5.1` chooses a stable
+release. It never uses the experiment API token, changes connection defaults, or
+automatically downgrades. An environment containing the server must be upgraded
+through the operator's deployment process; client self-update does not replace a
+server installation. A compatible `pip` or `uv` must already be available.
 
 `ml-exp check` verifies the basic API and reports optional deployment components.
 An API without a builder or result store is a valid minimal deployment. Before
@@ -35,8 +74,9 @@ credential or command family is needed.
 Provision the token file privately before running this command. On POSIX systems
 give its directory mode 0700 and file mode 0600. `ML_EXPD_API_TOKEN` is an alternative
 for process environments; setting both nonempty token sources is an error, so an
-old shell variable cannot silently shadow a new token file. `--url` overrides the
-URL environment variable. Remote HTTP, URL-embedded credentials and redirects
+old shell variable cannot silently shadow a new token file. Environment variables
+remain supported for CI and temporary overrides; they do not change the saved
+file. Remote HTTP, URL-embedded credentials and redirects
 are rejected. Local loopback HTTP is permitted for development.
 
 Project/Run IDs, source, Dockerfile, executor, resources, inputs, metrics and the

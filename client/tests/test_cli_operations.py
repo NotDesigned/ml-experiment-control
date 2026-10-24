@@ -118,12 +118,15 @@ def test_prepare_saves_reviewable_plan_and_requires_second_explicit_execute(tmp_
     assert len(api.calls) == 1 and api.calls[0][0].endswith("/" + operation)
     assert result["next_action"] == "EXECUTE_SAVED_PLAN"
     assert result["action"]["gates"] and result["action"]["preflight_summary"]
-    assert result["execute_argv"][-3:] == ["--state", str(path), "--execute"]
+    assert result["execute_argv"] == ["ml-exp", "--url", api.base, "run", operation, "--state", str(path), "--execute"]
+    parsed = parser().parse_args(result["execute_argv"][1:])
+    assert (parsed.command, parsed.state, parsed.execute) == (operation, path, True)
     saved = json.loads(path.read_text())
     assert not saved["execution_requested"] and saved["plan"] == result["action"]
     assert path.stat().st_mode & 0o777 == 0o600
     if operation == "retry":
         assert "no checkpoint is selected or changed" in result["retry_semantics"]
+        assert "ml-exp run advanced create --resume-from" in result["retry_semantics"]
         assert api.calls[0][1]["data"] == {"max_gpu_hours": 2, "reason": "operator reviewed failure"}
     api.calls.clear()
     observed = training_operation(api, operation, path)

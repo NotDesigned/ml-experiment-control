@@ -14,15 +14,16 @@ Use Python 3.10+; no local Docker, SSH or backend credentials are required.
 python3 -m venv .client-venv
 . .client-venv/bin/activate
 python -m pip install ./ml_experiment_client-*.whl
-export ML_EXPD_API_URL='https://api.example.org/ml-expd'
-export ML_EXPD_API_TOKEN_FILE="$HOME/.config/ml-expd/client.token"
+ml-exp config set --url 'https://api.example.org/ml-expd'
+# Enter your API token once at the hidden prompt.
 ml-exp check --schema openapi.json
 ml-exp check --json
 ml-exp check --training
 ```
 
-Provision the private token file first, outside source and data. Configure exactly
-one token source: `ML_EXPD_API_TOKEN_FILE` or `ML_EXPD_API_TOKEN`.
+Connection defaults are saved privately outside the project. To use an existing
+token file, pass `--token-file /private/client.token` to `config set`. Environment
+overrides remain supported; choose one of `ML_EXPD_API_TOKEN_FILE` or `ML_EXPD_API_TOKEN`.
 [Configuration](configuration.md) also covers private CAs. From a checkout,
 `python -m pip install ./client` installs only the client.
 
@@ -85,8 +86,8 @@ Prepare first, inspect the returned executor, dependencies, gates and budget,
 then authorize execution with the same saved state:
 
 ```bash
-ml-exp experiment experiment.json --state trial.state.json
-ml-exp experiment experiment.json --state trial.state.json --resume \
+ml-exp run submit experiment.json --state trial.state.json
+ml-exp run submit experiment.json --state trial.state.json --resume \
   --execute --seconds 1800 --download-to results/trial-001
 ```
 
@@ -106,21 +107,21 @@ You can explicitly set `"wandb": {"enabled": false}`; see [W&B](wandb.md).
 Use another terminal with the same connection settings:
 
 ```bash
-ml-exp status --state trial.state.json
-ml-exp status --state trial.state.json --watch --seconds 60
-ml-exp status --state trial.state.json --details --json
-ml-exp logs --state trial.state.json --stream both --lines 80
-ml-exp metrics --state trial.state.json --name loss --max-points 2000
+ml-exp run status --state trial.state.json
+ml-exp run status --state trial.state.json --watch --seconds 60
+ml-exp run status --state trial.state.json --details --json
+ml-exp run logs --state trial.state.json --stream both --lines 80
+ml-exp run metrics --state trial.state.json --name loss --max-points 2000
 ```
 
-`status` prints a short human-readable summary of stage, waiting reason, evidence
+`run status` prints a short human-readable summary of stage, waiting reason, evidence
 age, training and results. `--json` retains the structured interface;
 `--details --json` expands the full existing evidence. `--details` alone does not
 expand the text summary or refresh providers. Logs, metrics and other low-level
 commands retain their JSON output. Metrics include units and provenance.
 
 These reads use the original identities from state; neither local source nor
-repeated project/Run/Attempt arguments are needed. `status --state` includes the
+repeated project/Run/Attempt arguments are needed. `run status --state` includes the
 original preparation/submission, even before a Run exists. Logs, metrics and
 download require a bound Attempt. Without state, provide `--project`, `--run`
 and an explicit `--attempt` to observe that execution. Preparation may then be
@@ -134,20 +135,20 @@ and an explicit `--attempt` to observe that execution. Preparation may then be
 | Training `COMPLETED`, exit code 0 | Worker training completion evidence exists |
 | Collection `AVAILABLE`, `SHA256_VERIFIED`, `download_available=true` | Results can be downloaded |
 
-`status --watch --seconds N` observes the same Attempt for a bounded period,
+`run status --watch --seconds N` observes the same Attempt for a bounded period,
 stopping early when the scheduler and result publication have settled. It never
 submits or restarts a job. A last reported worker phase is dated evidence, not a
 heartbeat. Logs may be delayed or unavailable; missing evidence remains unknown.
-The older `watch` command waits only for scheduler completion. See
+`run advanced watch` waits only for scheduler completion. See
 [recovery](recovery.md) for diagnostics and collection.
 
 ## Download and acknowledge
 
-The executing `experiment` command above waits for the original Attempt's result
+The executing `run submit` command above waits for the original Attempt's result
 collection and downloads when ready. To download separately, choose a new path:
 
 ```bash
-ml-exp download --state trial.state.json --out results/trial-001-copy
+ml-exp run download --state trial.state.json --out results/trial-001-copy
 ```
 
 The client verifies archive and file hashes, writes `verification.json`, then
@@ -160,11 +161,11 @@ If download succeeded but ACK is pending, preserve the directory and retry only
 confirmation:
 
 ```bash
-ml-exp acknowledge --directory results/trial-001
+ml-exp run acknowledge --directory results/trial-001
 ```
 
 With `--download-to`, a timeout preserves the exact Attempt and destination.
-Repeat the original `experiment` command with `--resume --execute` to keep
+Repeat the original `run submit` command with `--resume --execute` to keep
 observing; ACK-only recovery also works with `--resume` without `--execute`.
 A failed or uncertain collection needs diagnosis, not another training Attempt.
 A `RELEASED` archive is no longer available through the same download route.
@@ -185,8 +186,8 @@ Slurm data is staged on shared storage accessible to offline compute nodes.
 SenseCore uses a CCR data image and a zero-GPU NAS-copy job. PAI can use approved
 OSS datasets and CPFS; query capabilities rather than assuming native OSS mounts.
 Data and recovery state are separate from exported `OUTPUT_DIR` results.
-For independent transfers use `asset-upload`; for source-only service testing,
-`source-import` requires neither Dockerfile nor builder.
+For independent transfers use `data upload`; for source-only service testing,
+`project create` imports source without requiring a Dockerfile or builder.
 
 ## Resume safely or reuse a Runtime
 
@@ -197,16 +198,17 @@ Runtime/data dependency before using explicit `--resume --continue-preparation`.
 This is separate from authorization to train. Changed code or experiment config
 needs a new Run ID and state file.
 
-For lower-level reuse, the sequence is `pack → create → prepare → execute`.
-`prepare` returns review gates and an exact confirmation; `execute --state …
+For lower-level reuse, use `env build`, followed by `run advanced create`,
+`run advanced prepare` and `run advanced execute`.
+The prepare step returns review gates and an exact confirmation; `run advanced execute --state …
 --confirm …` authorizes/submits that saved Submission. See command help and the
 [resource reference](source-api.md), rather than recreating a Runtime per Run.
 Cancel/retry use separately reviewed plans, for example:
 
 ```bash
-ml-exp retry --from-state trial.state.json --state retry.state.json --max-gpu-hours 0.2
+ml-exp run retry --from-state trial.state.json --state retry.state.json --max-gpu-hours 0.2
 # Review the source/target Attempt, gates and budget before authorizing.
-ml-exp retry --state retry.state.json --execute
+ml-exp run retry --state retry.state.json --execute
 ```
 
 Use `cancel --from-state trial.state.json --state cancel.state.json` to prepare

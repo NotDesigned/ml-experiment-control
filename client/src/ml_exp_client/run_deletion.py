@@ -67,7 +67,7 @@ def _result(saved, path):
              "run_id": saved["run_id"], "request": saved["request"], "action": action,
              "deleted": deleted, "next_action": next_action}
     if next_action == "EXECUTE_SAVED_PLAN":
-        value["execute_argv"] = ["ml-exp", "--url", saved["server"], "delete", "--state", str(path), "--execute"]
+        value["execute_argv"] = ["ml-exp", "--url", saved["server"], "run", "delete", "--state", str(path), "--execute"]
     return value
 
 

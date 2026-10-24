@@ -186,7 +186,7 @@ Keep connection files outside the source directory:
 ```bash
 mkdir source
 printf 'print("hello from my experiment")\n' > source/main.py
-ml-exp source-import --project demo --directory ./source
+ml-exp project create --project demo --directory ./source
 ```
 
 The response contains `source_id`, `tree_digest` and import metadata. Repeat the
@@ -195,7 +195,7 @@ Dockerfile, image build, Run, Attempt or GPU is required. The existing source
 limits and rejection of credential-looking filenames still apply; this is not a
 content scan for secrets. For training, configure a backend, builder and result
 store using the operator's [ordered setup checklist](operator-guide.md#enable-training-after-source-import),
-then use the ordinary one-config `ml-exp experiment` workflow.
+then use the ordinary one-config `ml-exp run submit` workflow.
 
 Stop the example server with Ctrl-C when done. Stop/delete owned temporary DSWs
 in your cloud console/control channel and verify they are no longer allocated.

@@ -95,9 +95,9 @@ def test_empty_and_invalid_numbers_preserve_unknowns_and_zero():
 
 
 def test_next_actions_are_explicit_shell_quoted_and_never_executed():
-    argv = ["ml-exp", "retry", "--state", "state with spaces.json", "--execute"]
+    argv = ["ml-exp", "run", "retry", "--state", "state with spaces.json", "--execute"]
     text = status_summary(status(next_actions=[{"kind": "EXECUTE_SAVED_PLAN", "reason": "Review the exact Attempt first",
-        "argv": argv, "requires_execution": True}, {"kind": "OBSERVE", "argv": ["ml-exp", "status"]}]))
+        "argv": argv, "requires_execution": True}, {"kind": "OBSERVE", "argv": ["ml-exp", "run", "status"]}]))
     assert shlex.join(argv) in text and "explicit execution required" in text and "Next: OBSERVE" in text
     assert shlex.split(text.splitlines()[-3].strip()) == argv
     assert "Next: OBSERVE" in status_summary(status(next_action="OBSERVE", next_actions=[None]))
@@ -124,7 +124,7 @@ def operation(**changes):
             "ready": True, "execution": {"status": "PREPARED"}, "gates": [{"name": "budget", "status": "PASS"}],
             "preflight_summary": {"requested_gpu_hours": 1}},
         "retry_semantics": "New Attempt in the same frozen Run; no checkpoint is selected or changed.",
-        "next_action": "EXECUTE_SAVED_PLAN", "execute_argv": ["ml-exp", "retry", "--state", "retry.json", "--execute"]}
+        "next_action": "EXECUTE_SAVED_PLAN", "execute_argv": ["ml-exp", "run", "retry", "--state", "retry.json", "--execute"]}
     value.update(changes)
     return value
 
@@ -135,7 +135,7 @@ def test_retry_review_shows_identity_budget_semantics_and_explicit_execution():
     text = operation_summary(value)
     assert "attempt-001 → attempt-002" in text and "GPU hours: requested 1; cap 2" in text
     assert "Gates: PASS" in text and "Ready: yes" in text and value["retry_semantics"] in text
-    assert "Next: EXECUTE_SAVED_PLAN" in text and "Execute after review: ml-exp retry" in text
+    assert "Next: EXECUTE_SAVED_PLAN" in text and "Execute after review: ml-exp run retry" in text
     assert value == original
 
 
@@ -227,7 +227,7 @@ def test_experiment_review_preserves_resources_budget_attempt_and_warning_status
     assert "Blocked: provider_logs" not in text and "Blocked: optional_metadata" not in text
     assert "Blocked: budget: FAIL" in text and "Blocked: storage: BLOCKED" in text and "okay" not in text
     assert "not been authorized by this command" in text
-    assert shlex.split(text.split("Inspect: ", 1)[1].splitlines()[0]) == ["ml-exp", "status", "--state", str(state)]
+    assert shlex.split(text.split("Inspect: ", 1)[1].splitlines()[0]) == ["ml-exp", "run", "status", "--state", str(state)]
     assert value == original
 
 
