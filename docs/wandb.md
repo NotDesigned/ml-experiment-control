@@ -5,6 +5,21 @@ need no W&B SDK/key or direct connection to W&B. Slurm workers use the existing
 private API relay. Scheduler execution, recovery, outputs and scientific decisions
 remain platform/experiment responsibilities.
 
+## Install only when needed
+
+W&B publication requires the server's optional `wandb` extra. Operators can use
+a full server bundle with `extras: ["wandb"]` in its manifest, or install the
+reviewed server wheel with `[wandb]`. The base server stores and queries metrics
+without the SDK. Neither client nor worker needs it.
+
+If the SDK is absent, `GET /api/tracking/wandb` reports
+`publisher: {"available": false, "error": "WANDB_SDK_NOT_INSTALLED"}`.
+Publication stays pending with that diagnostic; accepted records remain in the
+platform journal. Installing the extra restores the publisher dependency, not
+cloud authentication or connectivity. It does not rewrite frozen publication
+routes or authorize replay of confirmed history. See the
+[operator guide](operator-guide.md#install-a-reviewed-release).
+
 ## Configure once, choose a project per Run
 
 After configuring the usual API URL/token, install the current standalone client.
@@ -157,8 +172,12 @@ Backfill is a separate, immutable publication binding; it never rewrites old
 Run/Attempt definitions. Repeating it reuses the original target and IDs.
 It preserves saved evidence only and cannot reconstruct missed training history.
 
-A private SQLite outbox records complete accepted batches before acknowledging
-workers. The publisher uses stable IDs and checks W&B history before advancing
+A private SQLite record journal stores complete accepted batches before
+acknowledging workers, whether or not W&B is installed or enabled. Metric schemas
+and normalization live in `records/`, with one path for live worker batches and
+verified archive imports. The optional publisher tracks its cursors in that same
+historical database; it does not make a second copy of experiment history.
+The publisher uses stable IDs and checks W&B history before advancing
 its confirmed cursor. SDK enqueue is not confirmation. Explicit history steps commit immediately, so
 the last event can be confirmed without waiting for another event or Run closure.
 Presentation metadata has a separate remote acknowledgement (`display_version`). Network/credential errors

@@ -1,5 +1,7 @@
 """SenseCoreResultOperations; no training submission or replay."""
 from __future__ import annotations
+
+from ml_exp_worker import source_path
 import base64
 import gzip
 import json
@@ -200,7 +202,7 @@ class SenseCoreResultOperations:
                    "checkpoint": checkpoint, "expected_archive": self.expected_archive(identity),
                    "url": self.objects.config["public_transfer_base"].rstrip("/") + "/" + "/".join(identity),
                    "token": transfer["token"], "limit": self.objects.limit or 0, "seconds": 900}
-        sources = {name: (Path(__file__).parent.parent / "workers" / file).read_text() for name, file in
+        sources = {name: source_path(file).read_text() for name, file in
                    (("worker_http", "worker_http.py"), ("artifacts", "worker_artifacts.py"),
                     ("persistent_state", "persistent_state.py"), ("result_worker", "result_worker.py"))}
         # Use the existing Python image; no image build and no training entrypoint.

@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from ml_exp_server.workers import persistent_state as state
-from ml_exp_server.workers import managed_worker as worker
+from ml_exp_worker import persistent_state as state
+from ml_exp_worker import managed_worker as worker
 from ml_exp_server.results.artifact_store import ArtifactStore
 from ml_exp_server.results.checkpoint_registry import CheckpointRegistry, storage_scope
 from ml_exp_server.container_controller import Controller

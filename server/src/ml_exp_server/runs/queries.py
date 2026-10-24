@@ -7,7 +7,7 @@ from ..application_errors import ApplicationError
 from ..projects.campaign_lifecycle import campaign_snapshot
 from ..projects.code_identity import project_code_identity
 from ..ingest.runscan import evaluation_snapshot, metric_contract, parse_iso_ts, preferred_attempt_id, read_jsonl, train_metric_records
-from ..tracking.metric_contract import observations
+from ..records.contract import observations
 from ..outward import attempt_dto, run_dto, sanitized_outward
 from ..schemas import OperationScopeType
 from .failures import compact_evidence, evidence_digest

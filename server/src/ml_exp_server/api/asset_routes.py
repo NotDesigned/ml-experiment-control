@@ -14,7 +14,7 @@ from ..results.artifacts import ArtifactService
 from ..data.data_assets import AssetStore
 from ..data.locations import REMOTE
 from ..results.checkpoint_registry import CheckpointRegistry
-from ..workers.persistent_state import MANIFEST_LIMIT
+from ml_exp_worker.persistent_state import MANIFEST_LIMIT
 from ..application_errors import ApplicationError
 from .errors import application_http_error
 from .errors import invoke

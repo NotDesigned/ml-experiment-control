@@ -181,7 +181,7 @@ def test_cpu_receipt_entrypoint_blocks_sitecustomize_and_pythonpath_before_readi
     import subprocess
     import sys
     from ml_exp_server.backends.sensecore_preparation import script_receipt_worker_sha256
-    from ml_exp_server.workers.script_preparation import TOKEN_ENV
+    from ml_exp_worker.script_preparation import TOKEN_ENV
     service, run, *_ = script
     run.update(data_preparation_receipt_mode="callback_v1",
                data_preparation_receipt_worker_sha256=script_receipt_worker_sha256())

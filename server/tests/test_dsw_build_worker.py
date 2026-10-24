@@ -8,7 +8,7 @@ import shutil
 from types import SimpleNamespace
 import uuid
 import pytest
-from ml_exp_server.workers import dsw_build_worker as w
+from ml_exp_worker import dsw_build_worker as w
 
 TAG='registry.example/repository:bundle-'+'a'*64
 IMAGE='registry.example/repository@sha256:'+'b'*64

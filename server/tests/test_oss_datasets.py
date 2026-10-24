@@ -18,7 +18,7 @@ from ml_exp_server.data import oss_datasets as d,oss_uploads as u
 from ml_exp_server.data.data_assets import AssetStore
 from ml_exp_server.data.remote_data_uploads import freeze_target,ManagedDataUploads,public_target
 from ml_exp_server.data.locations import for_backend
-from ml_exp_server.workers.data_input import deliver
+from ml_exp_worker.data_input import deliver
 from tests.test_sensecore_data_workflow import client,stored,custom_runtime
 from tests.test_container_api import archive
 from tests.test_oss_archive import service_error

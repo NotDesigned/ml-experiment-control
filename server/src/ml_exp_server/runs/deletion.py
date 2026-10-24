@@ -26,7 +26,7 @@ from ..projects.source_imports import source_lock
 from ..runs.intent_protocol import OperationIntent
 from ..schemas import OperationScope, OperationScopeType
 from ..storage import DurableJsonState, utc_now
-from ..workers.delete_run import remove_tree
+from ml_exp_worker.delete_run import remove_tree
 
 _ACTION = re.compile(r"^action-[0-9a-f]{16}$")
 _ACTIVE = {"AUTHORIZED", "EXECUTING", "RECONCILE_REQUIRED"}

@@ -11,7 +11,7 @@ import pytest
 
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.backends import run_deletion as backend
-from ml_exp_server.workers import delete_run as worker
+from ml_exp_worker import delete_run as worker
 
 
 def instruction(tmp_path, **extra):

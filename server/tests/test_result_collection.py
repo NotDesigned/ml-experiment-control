@@ -244,7 +244,7 @@ def test_unfinished_archive_identity_cannot_be_silently_replaced(recovery, case)
     service, root, _, _, remote, _, _ = recovery
     path = output(root)
     raw = io.BytesIO()
-    from ml_exp_server.workers.worker_artifacts import archive_outputs
+    from ml_exp_worker.worker_artifacts import archive_outputs
     archive_outputs(path, raw, 0, ["**/*"])
     digest = hashlib.sha256(raw.getvalue()).hexdigest()
     folder = service.objects.root.parent / "multipart-uploads/upload.first"; folder.mkdir(parents=True)

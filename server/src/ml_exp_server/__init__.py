@@ -9,6 +9,11 @@ primitives remain in :mod:`experiment_control`.
 # installing FastAPI or OpenTelemetry.  Daemon entry points import
 # their runtime modules explicitly.
 
-__version__ = "1.2.1"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("ml-experiment-server")
+except PackageNotFoundError:
+    __version__ = "0+uninstalled"
 
 __all__: list[str] = []

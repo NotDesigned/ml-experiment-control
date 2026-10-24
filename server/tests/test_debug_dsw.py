@@ -3,7 +3,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 import pytest
 from experiment_control.backends.pai_api import PaiError
-from ml_exp_server.debug_dsw import DswDebug
+from ml_exp_server.debug.dsw import DswDebug
 from tests.test_debug_sessions import KEY
 
 

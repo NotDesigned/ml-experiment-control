@@ -8,6 +8,7 @@ from ..storage import atomic_json, utc_now
 from .tracking_contract import resolve, resolve_preparation
 from .wandb_display import Projection, identity, fingerprint, stem
 from ..records.store import RecordStore, encoded, digest
+from .wandb_dependency import sdk_status
 
 
 class TrackingStore(RecordStore):
@@ -23,7 +24,8 @@ class TrackingStore(RecordStore):
                 "entity": value.get("entity"),
                 "resolved_entity": value.get("resolved_entity"), "project": value.get("project"),
                 "credentials_configured": bool(value.get("api_key")), "error": value.get("error"),
-                "project_fallback": "ml-expd-project", "cloud": "https://api.wandb.ai"}
+                "project_fallback": "ml-expd-project", "cloud": "https://api.wandb.ai",
+                "publisher": sdk_status()}
 
     def configure(self, request, lookup):
         with (self.root / "settings.lock").open("a") as lock:
@@ -93,7 +95,7 @@ class TrackingStore(RecordStore):
             value["pending"] = value["total"] - value["confirmed"]
             value["url"] = f'https://wandb.ai/{route["entity"]}/{route["project"]}/runs/{value["wandb_id"]}'
             scopes.append(value)
-        return {"wandb": route, "scopes": scopes}
+        return {"wandb": route, "scopes": scopes, "publisher": sdk_status()}
 
 
     def display(self, scope, through):

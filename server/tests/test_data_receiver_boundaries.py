@@ -11,7 +11,7 @@ import pytest
 
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.data.multipart_upload import UploadStore
-from ml_exp_server.workers import data_receiver as worker
+from ml_exp_server.data import data_receiver as worker
 from ml_exp_server.storage import atomic_json
 from tests.test_artifact_store import archive
 

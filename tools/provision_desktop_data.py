@@ -7,6 +7,7 @@ import re
 import subprocess
 import tempfile
 
+from ml_exp_worker import source_path
 from ml_exp_server.data_image_recipe import DATA_WORKERS
 import ml_exp_server.desktop_upload
 
@@ -74,7 +75,7 @@ def main():
     source = Path(ml_exp_server.desktop_upload.__file__).parent
     run('create','--pull','never','--name',setup,'--label','com.ml-expd.owner=data-staging',
          '--mount','type=volume,src='+name+'-code,dst=/app',image,'python','-c',
-        "import shutil;shutil.rmtree('/app/ml_exp_server',ignore_errors=True);shutil.rmtree('/app/workers',ignore_errors=True)")
+        "import shutil;shutil.rmtree('/app/ml_exp_server',ignore_errors=True);shutil.rmtree('/app/workers',ignore_errors=True);shutil.rmtree('/app/ml_exp_worker',ignore_errors=True)")
     run('start','--attach',setup)
     try:
         with tempfile.TemporaryDirectory() as directory:
@@ -85,12 +86,13 @@ def main():
                 if destination.parent != package:
                     (destination.parent/'__init__.py').write_text('')
                 destination.write_bytes((source/file).read_bytes())
-            workers=root/'workers';workers.mkdir()
-            for file in DATA_WORKERS:
-                (workers/file).write_bytes((source/"workers"/file).read_bytes())
+            workers=root/'ml_exp_worker';workers.mkdir()
+            for file in ('__init__.py', *DATA_WORKERS):
+                (workers/file).write_bytes(source_path(file).read_bytes())
             (root/'upload-config.json').write_text(json.dumps({'max_asset_archive_bytes':None,'max_asset_bytes':None,
                 'max_asset_files':20000,'upload_part_bytes':config.get('data_upload_part_bytes',16*1024**2),'upload_max_parts':65536,
-                'upload_session_seconds':86400,'data_base_image':config['data_base_image']}))
+                'upload_session_seconds':86400,'data_base_image':config['data_base_image'],
+                'worker_directory':'/app/ml_exp_worker'}))
             run('cp',str(root)+'/.',setup+':/app')
     finally:
         run('rm',setup)

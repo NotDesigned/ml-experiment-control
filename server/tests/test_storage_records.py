@@ -1,6 +1,7 @@
 """Accepted metrics survive archive release and optional cloud publication."""
 import io
 import json
+import sys
 import pytest
 from fastapi.testclient import TestClient
 from ml_exp_server.api.app import create_app
@@ -9,8 +10,8 @@ from ml_exp_server.records.store import RecordStore
 from ml_exp_server.results.artifact_lifecycle import ArtifactLifecycle
 from ml_exp_server.runs.context import RunContext
 from ml_exp_server.schemas import ServerConfig
-from ml_exp_server.tracking.tracking_service import normalized_metric
-from ml_exp_server.workers import worker_launcher as launcher
+from ml_exp_server.records.ingest import normalized_metric
+from ml_exp_worker import worker_launcher as launcher
 from tests.test_artifact_store import storage, archive
 from tests.test_worker_launcher import document
 IDENTITY = ('demo', 'run-a', 'attempt-001')
@@ -165,6 +166,49 @@ def test_local_journal_can_be_explicitly_backfilled_after_archive_release(client
     assert store.metric_records('demo', 'trial--backfill', 'attempt-001')[0]['value'] == 2
     observe(client.app.state.runtime, store)
     assert len(store.metric_records('demo', 'trial--backfill', 'attempt-001')) == 1
+
+
+def test_missing_wandb_sdk_preserves_frozen_binding_and_live_metric_ingestion(client, stored, monkeypatch):
+    from ml_exp_server import wandb_exporter
+    from ml_exp_server.tracking.tracking_service import store_for
+    from tests.test_tracking import create_trial
+
+    client.put('/api/tracking/wandb', json={'api_key': 'private-test-key', 'entity': 'team'})
+    created, _, controller = create_trial(client)
+    store = store_for(client.app.state.runtime)
+    binding = store.binding('demo', 'trial')
+    assert binding['route']['enabled']
+    manifest = controller.store.manifest_path.read_bytes()
+    objects = __import__('ml_exp_server.results.artifact_store', fromlist=['ArtifactStore']).ArtifactStore(
+        stored[0], client.app.state.runtime.config.project_registry_root_path())
+    _, token, _ = objects.issue('demo', 'trial', 'attempt-001', controller.root, ['**/*'], record_stream=True)
+
+    monkeypatch.setitem(sys.modules, 'wandb', None)
+    settings = client.get('/api/tracking/wandb').json()
+    missing = {'available': False, 'error': 'WANDB_SDK_NOT_INSTALLED'}
+    assert settings['publisher'] == missing
+    assert 'private-test-key' not in json.dumps(settings)
+    data = {'records': [{'event_id': 'live', 'kind': 'metrics', 'data': {
+        'name': 'loss', 'value': 2, 'unit': 'nats/token', 'step': 1}}]}
+    endpoint = '/api/record-transfers/demo/trial/attempt-001'
+    headers = {'Authorization': 'Bearer ' + token}
+    assert client.post(endpoint, json=data, headers=headers).json() == {'accepted': 1, 'last_sequence': 1}
+    assert client.post(endpoint, json=data, headers=headers).json() == {'accepted': 1, 'last_sequence': 1}
+    assert client.get('/api/runs/demo/trial/metrics').json()['metrics']['records'][0]['value'] == 2
+
+    # The real exporter refuses before spawning a process; it never rewrites the
+    # accepted destination or advances a publication cursor without cloud proof.
+    publisher = client.app.state.tracking_publisher.publisher
+    wandb_exporter.export(store, store.pending()[0], publisher)
+    assert publisher.child is None
+    status = client.get('/api/runs/demo/trial/tracking').json()
+    assert status['publisher'] == missing
+    assert status['scopes'][0]['error'] == 'WANDB_SDK_NOT_INSTALLED'
+    assert status['scopes'][0]['confirmed'] == 0
+    assert status['wandb'] == created['wandb']
+    assert store.binding('demo', 'trial') == binding
+    assert controller.store.manifest_path.read_bytes() == manifest
+    assert len(store.metric_records('demo', 'trial', 'attempt-001')) == 1
 
 
 def test_storage_maintenance_failure_does_not_hide_scheduler_progress(storage, monkeypatch):

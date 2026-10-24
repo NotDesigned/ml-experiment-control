@@ -9,6 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from ml_exp_worker import source_path
+from ml_exp_server.data_image_recipe import DATA_WORKERS, data_worker_digest
+
 
 @pytest.mark.parametrize('separate', [False, True])
 def test_helper_image_does_not_change_payload_from(tmp_path, monkeypatch, separate):
@@ -31,12 +34,19 @@ def test_helper_image_does_not_change_payload_from(tmp_path, monkeypatch, separa
             tree = Path(operation[1])
             copied.update(json.loads((tree / 'upload-config.json').read_text()))
             assert (tree / 'ml_exp_server/data_image_recipe.py').is_file()
+            assert copied['worker_directory'] == '/app/ml_exp_worker'
+            for name in ('__init__.py', *DATA_WORKERS):
+                assert (tree / 'ml_exp_worker' / name).read_bytes() == source_path(name).read_bytes()
             # The provisioned helper must import with only the stdlib and its
             # copied files, independent of the developer's installed daemon.
-            imported = real_run([sys.executable, '-S', '-c', 'import ml_exp_server.desktop_upload'],
+            imported = real_run([sys.executable, '-S', '-c',
+                                'import ml_exp_server.desktop_upload; '
+                                'from ml_exp_server.data_image_recipe import data_worker_digest; '
+                                'print(data_worker_digest())'],
                                 cwd=tree, env={**os.environ, 'PYTHONPATH': str(tree)},
                                 capture_output=True, text=True, timeout=10)
             assert imported.returncode == 0, imported.stderr
+            assert imported.stdout.strip() == data_worker_digest()
         return SimpleNamespace(returncode=0, stdout='{"ok":true,"result":{}}' if operation[0] == 'exec' else '')
     monkeypatch.setattr(subprocess, 'run', run)
     monkeypatch.setattr(sys, 'argv', ['provision_desktop_data.py', '--builder-config', str(file)])
@@ -44,6 +54,7 @@ def test_helper_image_does_not_change_payload_from(tmp_path, monkeypatch, separa
     runpy.run_path(str(tool), run_name='__main__')
     creates = [x for x in commands if x[3] in {'create', 'run'}]
     assert len(creates) == 2 and all(helper in x for x in creates)
+    assert "shutil.rmtree('/app/ml_exp_worker',ignore_errors=True)" in creates[0][-1]
     assert copied['data_base_image'] == payload
 
 

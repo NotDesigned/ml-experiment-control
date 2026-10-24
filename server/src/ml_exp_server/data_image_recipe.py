@@ -1,6 +1,8 @@
 """Shared, fixed recipe for ACP-compatible data images."""
 from __future__ import annotations
 
+from ml_exp_worker import source_path
+
 import hashlib
 from pathlib import Path
 
@@ -9,7 +11,7 @@ DATA_WORKERS = ("data_copy_worker.py", "data_input.py", "worker_http.py")
 
 
 def data_worker_digest(directory: Path | None = None) -> str:
-    root = directory if directory is not None else Path(__file__).parent / "workers"
+    root = directory if directory is not None else source_path(DATA_WORKERS[0]).parent
     return hashlib.sha256(b"".join((root / name).read_bytes() for name in DATA_WORKERS)).hexdigest()
 
 

@@ -9,7 +9,7 @@ import pytest
 
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.backends.sensecore_preparation import PREFIX, SenseCoreScriptPreparation
-from ml_exp_server.workers.data_preparation import identity
+from ml_exp_worker.data_preparation import identity
 
 
 @pytest.fixture
@@ -78,7 +78,7 @@ def test_command_executes_frozen_helper_and_only_reports_verified_summary(script
     args = shlex.split(service.command(service.definition(run)))
     assert args[:4] == ["timeout", "--signal=TERM", "--kill-after=30s", "65s"]
     called = []
-    import ml_exp_server.workers.data_preparation as preparation
+    import ml_exp_worker.data_preparation as preparation
     monkeypatch.setitem(__import__("sys").modules, "data_preparation", SimpleNamespace(prepare=lambda d, p: called.append((d, p)) or (p, receipt)))
     monkeypatch.setitem(__import__("sys").modules, "data_input", SimpleNamespace(deliver=lambda *a: tmp_path))
     monkeypatch.setitem(__import__("sys").modules, "worker", SimpleNamespace(link_path=lambda *a: None))

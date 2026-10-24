@@ -21,7 +21,7 @@ from ml_exp_client.state import save
 from ml_exp_server.api.app import create_app
 from ml_exp_server.results.artifact_store import ArtifactStore
 from ml_exp_server.container_controller import Controller
-from ml_exp_server.workers.worker_artifacts import archive_outputs
+from ml_exp_worker.worker_artifacts import archive_outputs
 from ml_exp_server.builds.builder_client import bundle_id
 from ml_exp_server.dockerfile_build import managed_dockerfile, inspect_dockerfile
 from ml_exp_server.worker_contract import WORKER_CONTRACT, CAPABILITIES, worker_digest

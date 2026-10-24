@@ -15,10 +15,11 @@ from pydantic import ValidationError
 
 from ml_exp_server.tracking.tracking_contract import WandbOptions, WandbSettings, finite_parameters
 from ml_exp_server.tracking.tracking_store import TrackingStore, encoded
-from ml_exp_server.tracking.tracking_service import store_for, normalized_metric, observe, TrackingPublisher, backfill
+from ml_exp_server.tracking.tracking_service import store_for, observe, TrackingPublisher, backfill
+from ml_exp_server.records.ingest import normalized_metric
 from ml_exp_server import wandb_exporter as exporter
 from ml_exp_server.tracking.tracking_service import preparation_record
-from ml_exp_server.workers.worker_records import WorkerRecords, safe_numbers
+from ml_exp_worker.worker_records import WorkerRecords, safe_numbers
 from ml_exp_server.container_controller import Controller
 from ml_exp_server.schemas import RunIndexRow, AttemptSummary
 from ml_exp_server.results.artifact_store import ArtifactStore
@@ -345,7 +346,7 @@ def test_worker_metric_cursor_retries_without_loss_and_survives_restart(tmp_path
         def request(self, method, path, *, body, headers): calls.append(json.loads(body))
         def getresponse(self): return SimpleNamespace(status=status[0], read=lambda n: b"{}")
         def close(self): pass
-    monkeypatch.setattr("ml_exp_server.workers.worker_records.https_connection", lambda *a, **k: Connection())
+    monkeypatch.setattr("ml_exp_worker.worker_records.https_connection", lambda *a, **k: Connection())
     worker = WorkerRecords(root, "https://api.example/api/record-transfers/demo/trial/attempt-001", "private")
     worker.emit("lifecycle", {"phase": "TRAINING"})
     worker.flush(final=True)
@@ -390,7 +391,7 @@ def test_client_writer_streams_live_through_api_and_builds_loss_curve(client, st
             return SimpleNamespace(status=503 if len(responses) == 1 else self.response.status_code,
                                    read=lambda n: self.response.content)
         def close(self): pass
-    monkeypatch.setattr("ml_exp_server.workers.worker_records.https_connection", lambda *a, **k: Connection())
+    monkeypatch.setattr("ml_exp_worker.worker_records.https_connection", lambda *a, **k: Connection())
     writer.log("train_loss", 2.5, unit="nats/token", step=1, dataset_id="train-v1", variant_id="baseline")
     worker.flush(final=True)
     assert worker.state["offset"] == 0 and responses[0].status_code == 200
@@ -542,7 +543,7 @@ def test_worker_spool_failures_and_bounded_lines_cannot_stop_training(tmp_path, 
         def request(self, *a, **k): received.append(json.loads(k["body"]))
         def getresponse(self): return SimpleNamespace(status=200, read=lambda n: b"{}")
         def close(self): pass
-    monkeypatch.setattr("ml_exp_server.workers.worker_records.https_connection", lambda *a, **k: Connection())
+    monkeypatch.setattr("ml_exp_worker.worker_records.https_connection", lambda *a, **k: Connection())
     (root / "metrics.jsonl").write_text("x" * 65537 + "\n" + encoded([1, 2]) + "\n")
     worker.flush(final=True)
     assert any(r["data"].get("diagnostic") == "INVALID_METRIC_JSONL" for r in received[0]["records"])
@@ -596,9 +597,29 @@ def test_publisher_main_outputs_only_fixed_diagnostics(tmp_path, monkeypatch, ca
     assert called == [True]
 
 
+def test_optional_sdk_detection_is_lazy_and_missing_sdk_is_explicit(monkeypatch, capsys):
+    from ml_exp_server.tracking import wandb_dependency as dependency
+
+    monkeypatch.delitem(sys.modules, "wandb", raising=False)
+    monkeypatch.setattr(dependency.importlib.util, "find_spec", lambda name: object())
+    assert dependency.sdk_status() == {"available": True, "error": None}
+    assert "wandb" not in sys.modules
+    monkeypatch.setattr(dependency.importlib.util, "find_spec", lambda name: None)
+    assert dependency.sdk_status() == {"available": False, "error": dependency.SDK_MISSING}
+
+    monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace())
+    assert dependency.sdk_status()["available"]
+    monkeypatch.setitem(sys.modules, "wandb", None)
+    with pytest.raises(dependency.WandbUnavailable, match="^WANDB_SDK_NOT_INSTALLED$"):
+        exporter.default_entity("private-test-key")
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{}\n'))
+    exporter.main()
+    assert json.loads(capsys.readouterr().out) == {"error": dependency.SDK_MISSING}
+
+
 def test_worker_records_standalone_and_batch_size(tmp_path, monkeypatch):
-    from ml_exp_server.workers import worker_records
-    from ml_exp_server.workers import worker_http
+    from ml_exp_worker import worker_records
+    from ml_exp_worker import worker_http
     monkeypatch.setitem(sys.modules, "worker_http", worker_http)
     runpy.run_path(worker_records.__file__, run_name="standalone-import")
     root = tmp_path / "outputs"; root.mkdir()

@@ -1,7 +1,7 @@
 # Client and server boundaries
 
-The 1.0 refactor keeps one repository with independently installable client,
-server and core packages. Its goal is fewer concepts and one implementation per
+The repository has four independently installable packages: client, server,
+core and worker. Its goal is fewer concepts and one implementation per
 responsibility, while preserving frozen scientific and execution identities.
 See [architecture](architecture.md) for the current module map and call graphs,
 and [migration](migration-1.0.md) for changed public upload behavior.
@@ -13,6 +13,14 @@ and [migration](migration-1.0.md) for changed public upload behavior.
   explicit operations. The client requires neither server/core nor Docker/SSH.
 - The server separates HTTP/auth, daemon lifetime and domain services. Existing
   workspace ownership, recovery order and five bounded execution lanes remain.
+- The worker package contains the 13 standard-library execution programs. The
+  server depends on core and worker; client and worker have no runtime
+  dependencies. The Slurm upload receiver stays with server data stores.
+- Platform metric schemas, normalization and the journal belong to `records/`.
+  Exact-Attempt uploads have their own HTTP router. W&B is an optional server
+  extra that consumes accepted records; it is not required to save/query metrics.
+- Debug-machine models, lifecycle and CCI/DSW adapters live in `debug/`. The
+  private builder and frozen controller entries stay in the server package.
 - Action planning uses concrete source, Campaign, preview and resource gates.
   One first-submission builder binds source, Attempt and budget; the Submission
   service retains its reuse lock and idempotency policy.
@@ -41,8 +49,11 @@ rewritten. Worker and recipe changes affect new identities only.
 
 ## Verification
 
-Run the unchanged [development gates](development.md): client/core/server tests,
-independent coverage, mypy, Rust, CLI and installed-wheel checks. Meaningful cases
+Run the [development gates](development.md): client/core/server/worker tests,
+independent coverage, mypy, Rust, CLI and installed-wheel checks. The daemon suite
+measures server and worker in one run, with a separate 100% line/branch gate for
+each. Base-server HTTP/metrics work without the optional SDK; worker-wheel
+checks install with no dependencies. Meaningful cases
 include lost replies/ACKs, exact UID and storage-scope isolation, interrupted
 publication, bounded concurrent buffers, symlink-safe expiry, corrupt bytes,
 metric contexts and administrative deletion fences.

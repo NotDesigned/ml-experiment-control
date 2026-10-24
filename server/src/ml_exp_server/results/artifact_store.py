@@ -20,7 +20,7 @@ from ..storage import atomic_json, utc_now
 from ..deletion_state import RunFence
 from ..storage_capacity import StorageCapacity
 from ..archive_limits import byte_limit, exceeds, wire_limit
-from ..workers.worker_launcher import LAUNCH_PATH, encode, endpoint
+from ml_exp_worker.worker_launcher import LAUNCH_PATH, encode, endpoint
 
 ATTEMPT = re.compile(r'^attempt-[0-9]{3,}$')
 TRANSFER_PATH = re.compile(r'^/api/artifact-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/attempt-[0-9]{3,}$')

@@ -1,6 +1,8 @@
 """One managed launcher and receipt contract for every source build recipe."""
 from __future__ import annotations
 
+from ml_exp_worker import source_path
+
 import hashlib
 from pathlib import Path
 import shutil
@@ -14,8 +16,7 @@ WORKERS = (("managed_worker.py", "worker.py"), ("worker_artifacts.py", "artifact
 
 
 def worker_digest() -> str:
-    root = Path(__file__).parent / "workers"
-    return hashlib.sha256(b"".join((root / source).read_bytes() for source, _ in WORKERS)).hexdigest()
+    return hashlib.sha256(b"".join(source_path(source).read_bytes() for source, _ in WORKERS)).hexdigest()
 
 
 def recipe_digest() -> str:
@@ -27,7 +28,7 @@ def recipe_digest() -> str:
 def install_workers(directory: Path) -> None:
     for source, target in WORKERS:
         path = directory / target
-        shutil.copyfile((Path(__file__).parent / "workers" / source), path)
+        shutil.copyfile(source_path(source), path)
         # COPY preserves source permissions on both Docker builders. Set the
         # launcher mode in the sealed context instead of requiring BuildKit.
         path.chmod(0o555 if target == "launch.py" else 0o444)

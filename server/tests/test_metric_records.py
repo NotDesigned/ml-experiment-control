@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.container_controller import parse_metric
 from ml_exp_server.runs.context import RunContext
-from ml_exp_server.tracking.metric_contract import MetricSchema, metric_result, observations
+from ml_exp_server.records.contract import MetricSchema, metric_result, observations
 from ml_exp_server.tracking.wandb_display import curve_record, summaries
 from ml_exp_server.tracking.tracking_service import store_for
 from ml_exp_server.results.artifact_store import ArtifactStore

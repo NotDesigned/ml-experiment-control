@@ -21,7 +21,7 @@ from ml_exp_server.container_controller import Controller
 from ml_exp_server.dockerfile_build import inspect_dockerfile, managed_dockerfile
 from ml_exp_server.builds.builder_client import bundle_id
 from ml_exp_server.schemas import ServerConfig
-from ml_exp_server.workers.worker_artifacts import archive_outputs
+from ml_exp_worker.worker_artifacts import archive_outputs
 from ml_exp_server.worker_contract import CAPABILITIES, WORKER_CONTRACT, worker_digest
 from tests.test_api_quickstart import cli, http_server, token
 from tests.test_container_api import client

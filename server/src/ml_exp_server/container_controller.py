@@ -6,6 +6,8 @@ is executed by the selected backend inside the published runtime image.
 
 from __future__ import annotations
 
+from ml_exp_worker import source_path
+
 import argparse
 import json
 import math
@@ -28,8 +30,8 @@ from .schemas import ServerConfig
 from .projects.source_revisions import resolve_source_tree, _tree_digest
 from .storage import read_json
 from .worker_contract import managed_io
-from .workers.worker_launcher import CONTRACT as LAUNCHER_CONTRACT
-from .workers.worker_http import https_connection, relay_environment
+from ml_exp_worker.worker_launcher import CONTRACT as LAUNCHER_CONTRACT
+from ml_exp_worker.worker_http import https_connection, relay_environment
 from urllib.parse import urlsplit
 
 
@@ -294,7 +296,7 @@ class Controller:
         if not relay:
             return
         target = json.loads(Path(self.campaign["artifact_store"]).read_text())["public_transfer_base"]
-        code = (Path(__file__).parent / "workers" / "worker_http.py").read_text() + "\n" + (
+        code = source_path("worker_http.py").read_text() + "\n" + (
             "import json,sys\nvalue=json.load(sys.stdin)\n"
             "connection=https_connection(urlsplit(value['target']),timeout=10,environment=value['environment'])\n"
             "try: connection.connect()\nfinally: connection.close()\n")

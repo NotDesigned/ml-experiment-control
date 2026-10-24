@@ -10,8 +10,8 @@ import pytest
 
 from ml_exp_server.api.app import create_app
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server.debug_models import DebugRequest, public_key
-from ml_exp_server import debug_sessions as d
+from ml_exp_server.debug.models import DebugRequest, public_key
+from ml_exp_server.debug import service as d
 from ml_exp_server.schemas import ServerConfig
 ORIGINAL_ADAPTER=d.adapter
 
@@ -199,7 +199,7 @@ def test_rejected_create_is_terminal_but_post_create_get_failure_is_uncertain(se
 
 
 def test_factory_and_cci_stop_delete_states(service,monkeypatch):
-    from ml_exp_server import debug_dsw,debug_cci
+    from ml_exp_server.debug import dsw as debug_dsw, cci as debug_cci
     s,f=service
     monkeypatch.setattr(debug_dsw,'DswDebug',lambda p:('dsw',p));monkeypatch.setattr(debug_cci,'CciDebug',lambda p:('cci',p))
     assert ORIGINAL_ADAPTER({'provider':'pai-dsw'})[0]=='dsw'

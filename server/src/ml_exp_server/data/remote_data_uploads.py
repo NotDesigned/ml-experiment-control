@@ -15,6 +15,8 @@ import subprocess
 import threading
 from urllib.parse import urlencode
 
+from ml_exp_worker import source_path
+
 from ..application_errors import ApplicationError
 from ..archive_limits import exceeds
 from ..builds.builder_client import UnixConnection
@@ -130,17 +132,19 @@ def public_target(target):
 @lru_cache(maxsize=1)
 def receiver_source():
     root = Path(__file__).parent.parent
-    names = ("application_errors", "archive_limits", "storage", "storage_capacity", "data.multipart_upload",
-             "workers.worker_http", "workers.data_input", "workers.data_receiver")
+    names = ("application_errors", "archive_limits", "storage", "storage_capacity", "data.multipart_upload")
     sources = {"ml_exp_server." + name: (root / (name.replace(".", "/") + ".py")).read_text() for name in names}
+    sources.update({"ml_exp_worker." + name: source_path(name + ".py").read_text()
+                    for name in ("worker_http", "data_input")})
+    sources["ml_exp_server.data.data_receiver"] = (Path(__file__).with_name("data_receiver.py")).read_text()
     payload = base64.b64encode(gzip.compress(json.dumps(sources).encode(), mtime=0)).decode()
     return ("import base64,gzip,json,sys,types\n"
-            "for name in ('ml_exp_server','ml_exp_server.data','ml_exp_server.workers'):\n"
+            "for name in ('ml_exp_server','ml_exp_server.data','ml_exp_worker'):\n"
             " module=types.ModuleType(name);module.__path__=[];sys.modules[name]=module\n"
             "sources=json.loads(gzip.decompress(base64.b64decode(" + repr(payload) + ")))\n"
             "for name,source in sources.items():\n"
             " module=types.ModuleType(name);module.__package__=name.rsplit('.',1)[0];sys.modules[name]=module;exec(compile(source,name,'exec'),module.__dict__)\n"
-            "raise SystemExit(sys.modules['ml_exp_server.workers.data_receiver'].main())\n")
+            "raise SystemExit(sys.modules['ml_exp_server.data.data_receiver'].main())\n")
 
 
 class SlurmDataUploads:

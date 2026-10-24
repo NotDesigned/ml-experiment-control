@@ -38,7 +38,7 @@ from ..schemas import (
 )
 from ..runs.evidence_conflicts import classify_evidence_conflicts
 from . import legacy
-from ..tracking.metric_contract import metric_result, finite
+from ..records.contract import metric_result, finite
 
 # collection.json keys that are operational rather than scientific metrics.
 _COLLECTION_NON_METRIC_KEYS = {

@@ -55,10 +55,12 @@ def test_bundle_rejects_ambiguous_project_versions(tmp_path):
         build("client", tmp_path, tmp_path / "result.tar.gz")
 
 
-def test_server_bundle_contains_downloaded_dependency_closure(tmp_path, monkeypatch):
+@pytest.mark.parametrize('extras', [(), ('wandb',)])
+def test_server_bundle_contains_downloaded_dependency_closure(tmp_path, monkeypatch, extras):
     wheels = tmp_path / "wheels"
     core = wheel(wheels, "ml_experiment_control")
     server = wheel(wheels, "ml_experiment_server")
+    worker = wheel(wheels, "ml_experiment_worker")
     dependency = wheel(tmp_path / "dependencies", "PyYAML", "6.0.3")
     lock = tmp_path / "uv.lock"
     lock.write_text('[[package]]\nname = "pyyaml"\nversion = "6.0.3"\nwheels = [{hash = "sha256:'
@@ -67,33 +69,43 @@ def test_server_bundle_contains_downloaded_dependency_closure(tmp_path, monkeypa
     def download(argv, **kwargs):
         if argv[0] == "uv":
             assert "--frozen" in argv and "--no-emit-workspace" in argv and "--no-hashes" not in argv
+            assert ('--extra' in argv) == bool(extras)
+            if extras: assert argv[argv.index('--extra') + 1] == 'wandb'
             Path(argv[argv.index("--output-file") + 1]).write_text("PyYAML==6.0.3 --hash=sha256:test\n")
             return
         assert argv[:4] == [sys.executable, "-m", "pip", "wheel"]
         assert "--require-hashes" in argv and "--no-build-isolation" in argv and kwargs["check"]
         target = Path(argv[argv.index("--wheel-dir") + 1])
-        for item in [core, server, dependency]:shutil.copyfile(item, target / item.name)
+        for item in [core, server, worker, dependency]:shutil.copyfile(item, target / item.name)
     monkeypatch.setattr(subprocess, "run", download)
     output = tmp_path / "server.tar.gz"
-    result = build("server", wheels, output)
-    assert result["packages"] == 3
+    result = build("server", wheels, output, extras=extras)
+    assert result["packages"] == 4
     with tarfile.open(output) as archive:
         requirements = archive.extractfile("ml-expd-server/requirements.txt").read().decode()
-        assert len(requirements.splitlines()) == 3 and "pyyaml==6.0.3 --hash=sha256:" in requirements
+        assert len(requirements.splitlines()) == 4 and "pyyaml==6.0.3 --hash=sha256:" in requirements
+        assert 'ml-experiment-worker==1.0 --hash=sha256:' in requirements
+        assert json.load(archive.extractfile('ml-expd-server/manifest.json'))['extras'] == list(extras)
         assert archive.extractfile("ml-expd-server/minimal-api.yaml").read().startswith(b"# Basic API")
         installer = archive.extractfile("ml-expd-server/install.sh").read().decode()
         assert "--no-index" in installer and "--require-hashes" in installer
     with dependency.open("ab") as stream:stream.write(b"unreviewed changed upstream wheel")
     rejected = tmp_path / "rejected.tar.gz"
     with pytest.raises(ValueError, match="not in uv.lock"):
-        build("server", wheels, rejected)
+        build("server", wheels, rejected, extras=extras)
     assert not rejected.exists()
 
 
 def test_failed_dependency_download_leaves_no_published_archive(tmp_path, monkeypatch):
-    for name in ["ml_experiment_control", "ml_experiment_server"]:wheel(tmp_path, name)
+    for name in ["ml_experiment_control", "ml_experiment_worker", "ml_experiment_server"]:wheel(tmp_path, name)
     target = tmp_path / "result.tar.gz"
     def failed(argv, **kwargs):raise subprocess.CalledProcessError(1, argv)
     monkeypatch.setattr(subprocess, "run", failed)
     with pytest.raises(subprocess.CalledProcessError):build("server", tmp_path, target)
     assert not target.exists() and not list(tmp_path.glob("ml-expd-bundle-*"))
+
+
+def test_optional_integrations_are_explicit_and_server_only(tmp_path):
+    for component, extras in [('client', ('wandb',)), ('server', ('unknown',))]:
+        with pytest.raises(ValueError, match='only the server'):
+            build(component, tmp_path, tmp_path / 'invalid.tar.gz', extras=extras)

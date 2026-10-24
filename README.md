@@ -21,7 +21,10 @@ For a first basic deployment, follow the [two-machine example](docs/two-machine-
 precompiled packages, a private HTTPS API and a separate client, without a training backend.
 The [documentation index](docs/README.md) links the complete reference.
 Install the independent [client package](client/README.md) on client machines;
-the [server package](server/README.md) uses the reusable core, not the client.
+the [server package](server/README.md) uses the reusable core and the independent
+[worker package](worker/README.md). The client and workers have no runtime
+dependencies. W&B publication is an optional server extra; platform metrics work
+without it.
 
 ## Workflow
 

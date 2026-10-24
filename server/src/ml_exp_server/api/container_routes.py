@@ -24,7 +24,7 @@ from ..archive_limits import exceeds
 from ..container_execution import ContainerExecutionService, RunRequest, DockerfileRuntimeSpec
 from ..builds.builder_client import builder_request
 from ..projects.source_imports import SourceImportService
-from ..tracking.metric_contract import MetricSchema
+from ..records.contract import MetricSchema
 from .contract import ConfirmRequest
 from .errors import application_http_error, invoke
 
