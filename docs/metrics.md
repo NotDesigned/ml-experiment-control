@@ -115,8 +115,9 @@ The response has `project`, `run_id`, `attempt_id`, `source_attempt_id`,
 `protocol_id`, `records`, `validation`, `total_records`, `downsampled` and
 `missing_names`. Each record retains scientific context, validity and errors.
 No duplicate points/keys projection or server filesystem paths is included.
-`total_records` counts matching normalized records; `validation` checks the
-complete history before name filtering and downsampling. Download full JSONL for
+`total_records` counts matching normalized records; `validation.total_records`
+counts all normalized records. Validation checks the complete history before name
+filtering and downsampling. Download full JSONL for
 complete analysis. `summary:true` observations remain distinct from history at
 the same step.
 

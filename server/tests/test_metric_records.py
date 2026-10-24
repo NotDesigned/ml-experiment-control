@@ -34,6 +34,7 @@ def test_record_view_filters_names_after_normalization_without_losing_context_or
     assert [(r["step"], r["value"]) for r in response["records"]] == [(1, 4), (3, 3)]
     assert response["records"][-1]["variant_id"] == "b"
     assert response["validation"]["coverage"] == "complete_history"
+    assert response["validation"]["total_records"] == 5  # Legacy wide rows normalize before counting.
     assert response["validation"]["failed_records"] == 1 and response["validation"]["state"] == "FAILED"
     assert not {"metrics", "points", "keys", "evaluation", "source"} & response.keys()
     assert all("source" not in row and "sources" not in row for row in response["records"])

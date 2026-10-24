@@ -141,6 +141,7 @@ class RunContext:
             if names is not None and (not isinstance(names, list) or len(names) > 256 or any(not isinstance(name, str) or not name.strip()
                     or len(name) > 128 or any(ord(c) < 32 for c in name) for name in names)):
                 raise ApplicationError("name filters must be valid metric names", status_code=422, code="INVALID_METRIC_NAMES")
+            validation["total_records"] = len(complete["records"])
             validation["missing_metrics"] = sorted(set(complete["missing_metrics"]) | {
                 name for context in complete["contexts"] for name in context["missing_metrics"]})
             available = {item["name"] for item in complete["records"]}
