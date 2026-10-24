@@ -114,14 +114,14 @@ ml-exp run logs --state trial.state.json --stream both --lines 80
 ml-exp run metrics --state trial.state.json --name loss --max-points 2000
 ```
 
-`status` prints a short human-readable summary of stage, waiting reason, evidence
+`run status` prints a short human-readable summary of stage, waiting reason, evidence
 age, training and results. `--json` retains the structured interface;
 `--details --json` expands the full existing evidence. `--details` alone does not
 expand the text summary or refresh providers. Logs, metrics and other low-level
 commands retain their JSON output. Metrics include units and provenance.
 
 These reads use the original identities from state; neither local source nor
-repeated project/Run/Attempt arguments are needed. `status --state` includes the
+repeated project/Run/Attempt arguments are needed. `run status --state` includes the
 original preparation/submission, even before a Run exists. Logs, metrics and
 download require a bound Attempt. Without state, provide `--project`, `--run`
 and an explicit `--attempt` to observe that execution. Preparation may then be
@@ -135,11 +135,11 @@ and an explicit `--attempt` to observe that execution. Preparation may then be
 | Training `COMPLETED`, exit code 0 | Worker training completion evidence exists |
 | Collection `AVAILABLE`, `SHA256_VERIFIED`, `download_available=true` | Results can be downloaded |
 
-`status --watch --seconds N` observes the same Attempt for a bounded period,
+`run status --watch --seconds N` observes the same Attempt for a bounded period,
 stopping early when the scheduler and result publication have settled. It never
 submits or restarts a job. A last reported worker phase is dated evidence, not a
 heartbeat. Logs may be delayed or unavailable; missing evidence remains unknown.
-The older `watch` command waits only for scheduler completion. See
+`run advanced watch` waits only for scheduler completion. See
 [recovery](recovery.md) for diagnostics and collection.
 
 ## Download and acknowledge

@@ -42,7 +42,7 @@ uv run --no-sync python -m compileall -q tools examples
 uv build --all-packages
 ```
 
-Python 3.10 remains the package floor; CI uses one Python 3.12 job. Core, server
+Python 3.10 remains the package floor; CI uses Python 3.12. Core, server
 and worker independently require **100% line and branch coverage**. The daemon
 suite runs server/worker scenarios once, then checks each package separately.
 The client has its own measured baseline floor, 90.9% lines / 84.5% branches.
@@ -116,9 +116,23 @@ alone is insufficient because PR CI uses a synthetic merge result.
 Changed trees, direct pushes, missing/expired/fork evidence and API errors require
 a full run. Manual dispatch always runs full checks. Reuse links the original run
 and does not claim another execution. An unchanged green PR does not need a second
-local full run. File-level xdist scheduling reduces daemon cost without dropping
-scenarios; durations/JUnit identify future bottlenecks. Coverage thresholds and
-test selection must not be weakened to accelerate a run.
+local full run.
+
+Full checks run core, client, Rust, packaging and sixteen daemon partitions in
+parallel. Partitions discover every server/worker test file independently of the
+timing hints used to balance them. The final `test` check requires every job,
+validates complete same-tree partition manifests, combines coverage data, and
+enforces the original independent server/worker gates before recording evidence.
+Only coverage data is consumed from shard artifacts. A missing or failed shard
+cannot produce reusable evidence.
+
+Cargo and uv caches reduce setup cost; cache misses still build and test the
+current source. Packaging builds all four distributions, checks standalone
+client/worker and base server installs, then actually installs both offline
+bundles. Durations and JUnit identify bottlenecks. Measure full workflow time,
+including setup, packaging and the final gate; main's exact-tree reuse is a
+separate optimization. Coverage thresholds and test selection must not be
+weakened to accelerate a run.
 
 ## Ownership and durable changes
 

@@ -95,6 +95,7 @@ def test_successful_shard_saves_evidence_but_never_gates_incomplete_coverage(tmp
     monkeypatch.setattr(gate.subprocess, 'run', run)
     assert gate.main(['--suite', 'daemon', '--shard-index', '0', '--shard-count', '1']) == 0
     assert 'server/tests/test_one.py' in calls[0] and 'worker/tests' not in calls[0]
+    assert '--cov-report=' in calls[0] and not any(arg.startswith('--cov-report=json:') for arg in calls[0])
     manifest = json.loads((tmp_path / '.ops/shard/daemon-shard.json').read_text())
     assert manifest['pytest_passed'] is True and manifest['files'] == ['server/tests/test_one.py']
     assert (tmp_path / '.ops/shard/.coverage.daemon').read_bytes() == b'coverage data'

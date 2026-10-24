@@ -151,6 +151,10 @@ jobs:
         with:
           path: .ci-cargo-target
           key: cargo-packages-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('rust/Cargo.lock') }}
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/pip
+          key: pip-bundle-${{ runner.os }}-${{ runner.arch }}-py312-${{ hashFiles('uv.lock') }}
       # Build the real core wheel once, rather than first building an editable core.
       - run: uv sync --locked --all-packages --all-extras --no-install-workspace
       - run: uv build --all-packages
@@ -179,13 +183,15 @@ jobs:
           (cd .ops/bundles && sha256sum *.tar.gz > SHA256SUMS)
           tar -xzf .ops/bundles/server-bundle.tar.gz -C .ops/bundles
           tar -xzf .ops/bundles/client-bundle.tar.gz -C .ops/bundles
+          # Independent environments can install concurrently; both must pass.
+          (umask 077; .ops/bundles/ml-expd-client/install.sh "$PWD/.offline-client" && .offline-client/bin/python tools/client_wheel_smoke.py) &
+          client_install=$!
           (umask 077; .ops/bundles/ml-expd-server/install.sh "$PWD/.offline-server")
           test "$(stat -c '%a' .offline-server)" = 755
           test "$(stat -c '%a' .offline-server/bin/ml-expd)" = 755
           .offline-server/bin/experiment-redact --help
           .offline-server/bin/python -c 'import wandb, ml_exp_worker'
-          (umask 077; .ops/bundles/ml-expd-client/install.sh "$PWD/.offline-client")
-          .offline-client/bin/python tools/client_wheel_smoke.py
+          wait "$client_install"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: deployment-linux-x86_64-py312
@@ -215,15 +221,24 @@ jobs:
         with:
           python-version: "3.12"
           version: "0.11.28"
-          enable-cache: true
-      - run: uv sync --locked --only-group dev --no-install-workspace
+          enable-cache: false
+      - name: Install only the coverage reader, with its version and hashes from uv.lock
+        run: |
+          python3 - <<'PY'
+          import pathlib, tomllib
+          package, = [row for row in tomllib.loads(pathlib.Path('uv.lock').read_text())['package'] if row['name'] == 'coverage']
+          hashes = ' '.join('--hash=' + row['hash'] for row in package['wheels'])
+          assert hashes
+          pathlib.Path('.ops').mkdir(exist_ok=True)
+          pathlib.Path('.ops/coverage-reader.txt').write_text('coverage==' + package['version'] + ' ' + hashes + '\n')
+          PY
+          uv venv .venv
+          uv pip install --python .venv/bin/python --no-deps --require-hashes -r .ops/coverage-reader.txt
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: daemon-evidence-*
           path: .ops/coverage-shards
       - name: Aggregate complete shards and enforce original server and worker gates
-        env:
-          PYTHONPATH: server/src:worker/src
         run: >-
           uv run --no-sync python tools/coverage_gate.py --suite daemon
           --combine-dir .ops/coverage-shards --shard-count 16

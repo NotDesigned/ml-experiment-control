@@ -112,8 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         report = DAEMON_REPORT
         pytest_args = [
             *(selected or ["server/tests", "worker/tests"]), "-q", "--cov=ml_exp_server", "--cov=ml_exp_worker", "--cov-branch",
-            "--cov-report=term-missing:skip-covered",
-            "--cov-report=json:server-worker-coverage.json",
+            *(["--cov-report="] if selected is not None else [
+                "--cov-report=term-missing:skip-covered", "--cov-report=json:server-worker-coverage.json"]),
         ]
     elif args.suite == "client":
         report = CLIENT_REPORT

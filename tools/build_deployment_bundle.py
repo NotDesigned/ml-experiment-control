@@ -67,7 +67,7 @@ def build(component, wheels, output, *, extras=()):
             with inputs.open("a") as stream:
                 for path in selected:
                     stream.write(str(path) + " --hash=sha256:" + hashlib.sha256(path.read_bytes()).hexdigest() + "\n")
-            subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-cache-dir", "--require-hashes",
+            subprocess.run([sys.executable, "-m", "pip", "wheel", "--require-hashes",
                             "--no-build-isolation", "--wheel-dir", str(house), "-r", str(inputs)], check=True)
         else:
             shutil.copyfile(selected[0], house / selected[0].name)
@@ -124,7 +124,7 @@ case "$venv" in /*) ;; *) echo "Use an absolute venv path" >&2; exit 1;; esac
 (cd "$base" && sha256sum --check SHA256SUMS)
 python=${{PYTHON:-python3}}
 {python_check}"$python" -m venv "$venv"
-"$venv/bin/python" -m pip --isolated --disable-pip-version-check install --no-index --no-deps --find-links "$base/wheelhouse" --require-hashes -r "$base/requirements.txt"
+"$venv/bin/python" -m pip --isolated --disable-pip-version-check install --no-index --no-deps --no-compile --find-links "$base/wheelhouse" --require-hashes -r "$base/requirements.txt"
 "$venv/bin/python" -m pip --isolated --disable-pip-version-check check
 "$venv/bin/ml-exp{'d' if component == 'server' else ''}" --help >/dev/null
 echo "Installed {component} into $venv; no service was started."
