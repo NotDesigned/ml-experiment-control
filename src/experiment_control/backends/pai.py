@@ -151,6 +151,9 @@ class PaiBackend:
             raise ValueError("invalid PAI walltime")
         if not sum(int(n) for n in backend["time"].split(":")):
             raise ValueError("PAI walltime must be positive")
+        h, m, s = (int(n) for n in backend["time"].split(":"))
+        if h * 3600 + m * 60 + s > 86400:
+            raise ValueError("PAI DLC single-job walltime cannot exceed 24 hours")
         digest_pinned_image(backend["image"], run["image_id"])
         sources = backend.get("data_sources", [])
         if not isinstance(sources, list):

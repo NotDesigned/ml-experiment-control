@@ -116,8 +116,8 @@ def test_malformed_quota_shapes_fail_closed(api,case):
     assert a.AllocationStatus().get('pai',{'backend':B})['status']=='UNKNOWN'
 
 
-@pytest.mark.parametrize("policy,priority", [(None,None),("guaranteed",3),("allow_idle",5),("idle_only",9)])
-def test_http_source_runtime_freeze_and_status_need_no_cloud_cli(client,api,policy,priority):
+@pytest.mark.parametrize("policy,priority,max_time", [(None,None,None),("guaranteed",3,"02:00:00"),("allow_idle",5,"24:00:00"),("idle_only",9,None)])
+def test_http_source_runtime_freeze_and_status_need_no_cloud_cli(client,api,policy,priority,max_time):
     """Exercise the real HTTP/storage/controller path; provider and OCI are fakes."""
     import yaml
     from pathlib import Path
@@ -135,6 +135,7 @@ def test_http_source_runtime_freeze_and_status_need_no_cloud_cli(client,api,poli
     assert client.get('/api/executors/pai/status').json()['resources']['gpus']['unallocated']==62
     image=runtime(client)
     definition={'run_id':'pai-http','runtime_id':image['runtime_id'],'executor':'pai','resources':{}}
+    if max_time is not None:definition['resources']['max_time']=max_time
     if policy is not None:definition['resources']['allocation_policy']=policy
     if priority is not None:definition['resources']['priority']=priority
     response=client.post('/api/projects/demo/runs',json=definition)
@@ -148,6 +149,9 @@ def test_http_source_runtime_freeze_and_status_need_no_cloud_cli(client,api,poli
     frozen=controller.store.load_manifest()
     assert frozen['backend']['kind']=='pai-dlc' and frozen['backend']['quota_id']=='quota-test'
     assert frozen['image_id']==image['image'].split('@')[1]
+    expected=max_time or '24:00:00'
+    assert frozen['resources']['max_time']==frozen['backend']['time']==expected
+    assert controller.duration_seconds()==(7200 if expected=='02:00:00' else 86400)
     from experiment_control.backends.pai import ALLOCATION_POLICIES
     assert frozen['backend']['oversold_type']==ALLOCATION_POLICIES[policy or 'guaranteed']
     assert frozen['backend']['priority']==(priority if priority is not None else 5)
@@ -162,6 +166,7 @@ def test_http_source_runtime_freeze_and_status_need_no_cloud_cli(client,api,poli
     assert document['JobSpecs'][0]['OversoldType']==ALLOCATION_POLICIES[policy or 'guaranteed']
     assert document['JobSpecs'][0]['UseSpotInstance'] is False
     assert document['ResourceId']=='quota-test' and document['JobSpecs'][0]['PodCount']==1
+    assert document['JobMaxRunningTimeMinutes']==(120 if expected=='02:00:00' else 1440)
     assert 'access_key_secret' not in json.dumps(document) and 'ImageConfig' not in document['JobSpecs'][0]
 
 
@@ -212,10 +217,25 @@ def test_legacy_pai_resource_fields_remain_absent_on_read_recreation(client,monk
     profiles=yaml.safe_load(path.read_text());profiles['executors']['pai']={'backend':B,'storage_root':'/data/lab','capacity':{'gpus':8,'cpus':216,'memory_gb':1800}};path.write_text(yaml.safe_dump(profiles))
     image=runtime(client);definition={'run_id':'legacy-pai','runtime_id':image['runtime_id'],'executor':'pai'}
     scheduling=module.pai_scheduling
+    walltime=module.run_walltime
     # Freeze a legacy manifest first, then restore the upgraded writer.
     monkeypatch.setattr(module,'pai_scheduling',lambda resources,previous:{})
+    monkeypatch.setattr(module,'run_walltime',lambda resources,*args:resources.max_time)
     assert client.post('/api/projects/demo/runs',json=definition).status_code==200
     monkeypatch.setattr(module,'pai_scheduling',scheduling)
+    monkeypatch.setattr(module,'run_walltime',walltime)
     response=client.post('/api/projects/demo/runs',json=definition)
     assert response.status_code==200,response.text
     assert 'priority' not in response.json()['resources'] and 'allocation_policy' not in response.json()['resources']
+    assert response.json()['resources']['max_time']=='00:10:00'
+
+
+def test_dlc_platform_walltime_cap_and_explicit_overrides():
+    from ml_exp_server.container_execution import Resources,run_walltime
+    assert run_walltime(Resources(),'pai-dlc')=='24:00:00'
+    assert run_walltime(Resources(max_time='01:00:00'),'pai-dlc')=='01:00:00'
+    assert run_walltime(Resources(),'pai-dlc',{'resources':{'max_time':'08:00:00'}})=='08:00:00'
+    assert run_walltime(Resources(),'slurm')=='00:10:00'
+    assert run_walltime(Resources(max_time='72:00:00'),'sensecore')=='72:00:00'
+    with pytest.raises(ApplicationError) as error:run_walltime(Resources(max_time='24:00:01'),'pai-dlc')
+    assert error.value.code=='PAI_DURATION_LIMIT'

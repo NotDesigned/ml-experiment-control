@@ -61,6 +61,7 @@ def test_single_node_resource_limits(adapter,key,value):
 
 
 @pytest.mark.parametrize('change',[{'worker_nodes':2},{'time':'bad'},{'time':'00:00:00'}, {'data_sources':None},
+    {'time':'24:00:01'},{'time':'25:00:00'},
     {'data_sources':[{}]}, {'data_sources':[{'DataSourceId':'d','DataSourceVersion':'v1','MountAccess':'RW','MountPath':'/x/../y'}]},
     {'data_sources':[{'DataSourceId':'d','DataSourceVersion':'v1','MountAccess':'RW','MountPath':'/x','Secret':'no'}]}])
 def test_native_mounts_and_walltime_are_explicit(adapter,change):

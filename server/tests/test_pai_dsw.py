@@ -436,7 +436,7 @@ def test_all_external_stages_are_prepulled_once_before_dockerfile_execution(publ
     pub.build=checked
     assert pub.publish(TAG,context)==IMAGE
 
-@pytest.mark.parametrize('seconds',[900,1200])
+@pytest.mark.parametrize('seconds',[900,1200,14400])
 def test_configured_build_budget_reaches_worker_progress_and_cloud_guard(publisher,tmp_path,monkeypatch,seconds):
     old,context,api,calls=publisher
     old.builder.config['timeout_seconds']=seconds
@@ -453,10 +453,10 @@ def test_configured_build_budget_reaches_worker_progress_and_cloud_guard(publish
     try:assert pub.publish(TAG,context)==IMAGE
     finally:BUILD_PROGRESS.reset(token)
     assert ('BUILDING_ON_DSW',{'timeout_seconds':seconds}) in phases
-    assert any(c[0]=='CreateInstanceShutdownTimer' and c[2]['body']['RemainingTimeInMs']==(seconds+1200)*1000 for c in api.calls)
+    assert any(c[0]=='CreateInstanceShutdownTimer' and c[2]['body']['RemainingTimeInMs']==min(seconds+1200,14400)*1000 for c in api.calls)
 
 
-@pytest.mark.parametrize('seconds',[None,True,0,-1,1.5,'1200'])
+@pytest.mark.parametrize('seconds',[None,True,0,-1,1.5,'1200',14401])
 def test_invalid_build_budget_is_rejected_before_cloud_requests(publisher,seconds):
     pub,_,api,_=publisher;pub.builder.config['timeout_seconds']=seconds
     with pytest.raises(ValueError,match='positive integer'):p.DswPublisher(pub.builder)

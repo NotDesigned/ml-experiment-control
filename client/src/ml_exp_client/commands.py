@@ -221,7 +221,9 @@ def create_run(args, client, health):
     definition = {
         "runtime_id": saved["runtime_id"], "run_id": args.run, "executor": args.executor,
         "arguments": args.arguments, "resources": {"gpus": args.gpus, "cpus": args.cpus,
-        "memory_gb": args.memory_gb, "max_time": args.max_time}, "outputs": ["**/*"], "inputs": args.inputs}
+        "memory_gb": args.memory_gb}, "outputs": ["**/*"], "inputs": args.inputs}
+    if args.max_time is not None:
+        definition["resources"]["max_time"] = args.max_time
     for key in ("allocation_policy", "priority"):
         if getattr(args, key) is not None:
             if "pai-idle-resources.v1" not in health.get("capabilities", []):

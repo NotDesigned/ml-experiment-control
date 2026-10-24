@@ -373,6 +373,13 @@ def test_local_termination_boundaries(monkeypatch):
     monkeypatch.setattr(local_module.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
     LocalBackend._terminate({"pid": 123}, 0)
     assert killed == [(123, local_module.signal.SIGTERM), (123, local_module.signal.SIGKILL)]
+    states = iter([True, True, False, False])
+    monkeypatch.setattr(LocalBackend, "_alive", staticmethod(lambda _control: next(states)))
+    waits = []
+    monkeypatch.setattr(local_module.time, "sleep", lambda seconds: waits.append(seconds))
+    killed.clear()
+    LocalBackend._terminate({"pid": 123}, 1)
+    assert waits == [0.02] and killed == [(123, local_module.signal.SIGTERM)]
 
 
 def test_local_worker_records_command_start_failure(tmp_path):

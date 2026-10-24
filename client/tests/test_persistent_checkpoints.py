@@ -42,7 +42,10 @@ def test_cli_create_and_checkpoint_query(tmp_path,monkeypatch,enabled):
         "--checkpoint-state-interval","5","--resume-from",json.dumps(REFERENCE)])==(0 if enabled else 2)
     assert main(["--url","https://api.example","checkpoints","--project","demo","--run","first","--attempt","attempt-001"])==(0 if enabled else 2)
     if enabled:
+        assert 'max_time' not in calls[0][1]['data']['resources']
         assert calls[0][1]["data"]["checkpoint_persistence"]=={"interval_seconds":5}
         assert calls[0][1]["data"]["resume_from"]==REFERENCE
         assert calls[1][0].endswith("/attempts/attempt-001/checkpoints")
+        assert main(['--url','https://api.example','create','--runtime-state',str(runtime),'--run','explicit','--executor','gpu','--max-time','01:00:00'])==0
+        assert calls[-1][1]['data']['resources']['max_time']=='01:00:00'
     else:assert not calls
