@@ -1,69 +1,53 @@
-# Diagnose and recover without repeating training
+# Diagnose and recover
+
+Preserve project, Run, Attempt and any preparation, Runtime, Submission, upload
+or delivery ID. Keep timestamps/timezones and sanitized HTTP error bodies.
+Recovery observes original identities before making another request with effects.
+Never infer permission to resubmit from a timeout or an empty log.
 
 ## Identify the failed stage
-
-Save project, Run, Attempt, Runtime, Submission, upload and delivery IDs as
-applicable, plus timestamp/timezone and sanitized HTTP error body. Do not include
-tokens, launch commands or signed URLs. Query exact IDs, not an arbitrary latest.
-
-| Evidence | What it proves | Next check |
-|---|---|---|
-| Runtime READY | Verified image was published | Run/submission gates |
-| Submission VERIFIED | Exact backend job was observed | Scheduler/worker/training evidence |
-| Scheduler RUNNING | Scheduler lifecycle state | Data readiness, child process, fresh logs/step |
-| Checkpoint REGISTERED | Worker verified one complete persistent generation | Actual restore validation or export |
-| Artifact receipt / COMPLETE upload | Complete result archive published | Signed download and file hashes |
-| Archive 404 | No published archive receipt; files may already exist | Exact-Attempt files and collection status |
-
-For a compact read of these separate stages:
 
 ```bash
 ml-exp status --project PROJECT --run RUN --state experiment.state.json
 ml-exp status --project PROJECT --run RUN --attempt attempt-001 --details
+ml-exp logs --project PROJECT --run RUN --attempt attempt-001
+ml-exp metrics --project PROJECT --run RUN --attempt attempt-001
 ```
 
-Status never submits, collects, retries or refreshes a provider. `--state`
-observes the saved preparation/submission and pins its Attempt; `--details`
-expands existing evidence. A missing collection binding remains `NOT_OBSERVED`
-with its HTTP error, rather than making results appear available. Use logs and
-metrics for their existing exact-Attempt views.
+| Evidence | Meaning |
+| --- | --- |
+| Runtime READY | A verified image was published |
+| Submission VERIFIED | The exact backend job was observed |
+| Scheduler RUNNING | Scheduler state, not evidence that user training started |
+| Recent worker step/log | Training liveness evidence at that observation time |
+| Checkpoint REGISTERED | Worker verified a complete persistent generation, not an API archive |
+| Process exit 0 | Entry process succeeded; publication/scientific validity remain separate |
+| AVAILABLE + SHA256_VERIFIED | Result archive is ready for verified client download |
+| Download ACK accepted | Exact verified local receipt and retention choice were recorded |
 
-Polling time is not a process heartbeat. Submission preparation history is not
-current training progress. Preserve each evidence layer's Attempt binding,
-observation time and stale status. Queue reasons can be reported; reliable ETA
-may remain null. Unknown exit cause must not be called preemption or timeout.
+Status/metrics/log reads do not submit, collect, retry or refresh a provider.
+`--state` binds observation to saved dependencies and the original Attempt.
+Absent/stale evidence remains unknown. Poll timestamps are not training heartbeats;
+FAILED/SUSPENDED alone proves neither timeout nor preemption.
 
-For an Action that failed before scheduler submission, query
-`GET /api/actions/ACTION_ID/diagnostics` with the normal API Bearer and protocol
-header. It returns bounded, redacted staging stdout/stderr, controller exit code
-and timeout, and fixed image preparation stages. Old actions without phase
-evidence report `UNKNOWN`; a timeout exception's full command is suppressed.
+For pre-submission failures, read:
 
 ```text
-GET /api/actions/action-0123456789abcdef/diagnostics
-GET /api/actions/action-0123456789abcdef/diagnostics?refresh=true
+GET /api/actions/ACTION_ID/diagnostics
+GET /api/actions/ACTION_ID/diagnostics?refresh=true
 ```
 
-The optional refresh reads only the frozen managed Slurm image preparation receipt;
-it does not run the Action, convert an image or submit a scheduler job. Its
-`remote.event` is a separate observation, never a rewrite of the saved failure.
-`observed_after_action=true` means that stage was recorded after the Action ended.
-`image_ready_reported=true` represents `CACHE_VERIFY READY` (successful cache
-reuse) or `SIF_PUBLISH READY` (completed publication), possibly recorded later;
-the next new Action still verifies the actual cached SIF (`cache_reverified=false`
-in this query). External project controllers are not invoked. Missing, stale or
-unverifiable receipts remain unavailable instead of becoming guessed causes.
-When code is embedded in the Dockerfile image, the saved Action has no external
-source staging arguments. Refresh checks the frozen Run's source and READY
-Runtime provenance; it does not require an external source directory or add one.
+The bounded redacted response can include staging stdout/stderr, exit code,
+timeout and image phases. Slurm refresh reads the frozen preparation receipt;
+it never reruns conversion, the Action or a project controller. A late remote
+READY event is separate evidence and does not rewrite the Action's saved failure.
+A new Action still rechecks the actual SIF. Old/missing receipts remain UNKNOWN.
 
-Slurm prepares its SIF before scheduler submission. New preparations distinguish
-lock waiting, cache verification, OCI pull/conversion, SIF verification and
-publication. The remote process group has a 1080-second limit, shorter than the
-1200-second Action limit, and waits at most 300 seconds for the image lock.
-`backend.image_stage_timeout_seconds` may lower the remote limit to 30–1080
-seconds. Conversion scratch uses `backend.apptainer_tmp_dir` (or node-local
-`/tmp`); successful cache reuse still verifies the complete SIF SHA256.
+Slurm image preparation occurs before scheduler submission. It distinguishes lock
+wait, cache verification, OCI pull/conversion, SIF verification and publication.
+The remote limit is 1080 seconds (configurable down to 30), below the 1200-second
+Action limit; lock wait is at most 300 seconds. Cache reuse verifies the SIF hash.
+See [builds](builds.md) for independent builder/registry budgets.
 
 ## Uncertain build, submit or data delivery
 
@@ -73,287 +57,167 @@ ml-exp runtime --state runtime.state.json --reconcile
 ml-exp submission --id SUBMISSION_ID --reconcile
 ```
 
-Reconcile uses the frozen receipt/exact scheduler identity. It does not rebuild
-or resubmit. Follow returned next_action/safe_to_retry and inspect actual effects
-before explicitly preparing another operation. Old unbuilt recipes and stale
-unexecuted gates need fresh preparation. Completed READY images remain usable.
-Client `--resume` observes saved identities; it is not automatic GPU recovery.
+Reconcile checks the frozen image receipt, exact job or exact data-copy identity.
+It does not rebuild or resubmit. Follow `safe_to_retry`, `resolution` and
+`next_action`. A not-yet-published Runtime with an obsolete recipe may need fresh
+preparation after effects are reconciled; an existing READY image remains usable.
+`--resume` observes saved work, not automatic replacement training.
 
-HTTP 503 `EXECUTION_CAPACITY_UNAVAILABLE` means that execution lane admitted no new
-work for that request. Keep the same state and observe its original resource; do
-not replace a Run or replay an earlier uncertain scheduler request. GETs remain
-usable while a lane is full. The SDK exposes sanitized `ClientError.response_body`,
-the compatible `details` field, `status`, `error_code` and numeric `retry_after`.
-JSON error bodies over 16 KiB or malformed bodies are discarded. The CLI prints
-only bounded, sanitized ClientError fields as JSON on stderr. See
-[HTTP errors](http_contract.md#structured-errors-and-execution-capacity).
+A lane-capacity `503 EXECUTION_CAPACITY_UNAVAILABLE` admits no new effect for that
+request. It does not settle an earlier uncertain request. Keep the state and
+original ID. [Client errors](http_contract.md#structured-errors-and-execution-capacity)
+preserve bounded status/code/body/retry hints without credentials.
 
-Archive transfer is independently resumable. Confirm committed parts first;
-retry missing identical bytes and completion. Preserve incomplete sessions and
-their expiry/whole-archive hash when diagnosing a released worker.
+Multipart transport is separately idempotent: GET the same session, resend missing
+identical parts and complete the same archive identity. Never discard a complete
+upload merely because publication returned 507; resolve storage capacity first.
 
 ## Cancel or retry an exact Attempt
 
-Use a separate state file for each operation and review its returned Action before
-execution. Cancellation targets the chosen Attempt. Retry creates a new Attempt
-in the same frozen Run and requires a finite positive budget:
-
 ```bash
 ml-exp cancel --project PROJECT --run RUN --attempt attempt-001 --state cancel.state.json
-# Review the Action and next_action before authorizing cancellation.
+# Review the returned Action, then explicitly execute.
 ml-exp cancel --state cancel.state.json --execute
 
 ml-exp retry --project PROJECT --run RUN --attempt attempt-001 \
   --max-gpu-hours 0.2 --state retry.state.json
-# Review the new Attempt, gates and budget before authorizing execution.
 ml-exp retry --state retry.state.json --execute
 ```
 
-No first invocation may both prepare and execute. Repeating with only `--state`
-reads the original Action. `--execute` rechecks its identity, scope and sealed
-review digests; it cannot change the saved request or raise the saved budget.
-For an uncertain execution, use `ml-exp cancel --state cancel.state.json --reconcile`
-or the corresponding `retry` command. Reconciliation observes the original Action
-without repeating scheduler effects. Follow `next_action` and inspect diagnostics
-before preparing a new plan.
+Preparation and execution are separate invocations. Each operation keeps its own
+state file. Execution rechecks exact scope, digests, gates and the saved budget.
+The client writes dispatch markers before HTTP and never automatically replays
+an uncertain authorization or execution. Repeat with only `--state` to observe;
+use the corresponding `--reconcile` to reconcile the original Action.
 
-If the preparation reply was lost, state retains the intended operation and a
-recovery URL. Query that exact scope's Actions, then attach the matching original
-Action with `--state FILE --action-id ACTION_ID` for review. This attachment cannot
-also execute or reconcile. Lost authorization/execution replies are observed,
-never automatically replayed.
+A lost preparation reply leaves the original request and recovery URL. Find the
+Action with the exact saved intent, then attach it using `--action-id ACTION_ID`.
+Attachment is observation/review, not execution. Changed requests need a new
+reviewed operation only after the prior outcome is resolved.
 
-Retry does not discover or change checkpoints. To resume from a chosen registered
-checkpoint, freeze a new Run with an explicit `resume_from` reference. Reconcile
-the prior job before creating replacement training when its outcome is uncertain.
+Retry creates a new Attempt within the same frozen Run; it does not choose a
+checkpoint. To change `resume_from`, create a new Run with an explicit registered
+checkpoint reference. Reconcile the prior job before replacement training.
 
 ## Output recovery
 
-Training completion, checkpoint persistence and result publication are separate.
-A worker can finish training/register final state, then disappear during upload.
-This leaves NAS bytes and an incomplete upload but no downloadable archive.
-
-First check whether the exact Attempt already has a receipt. If so, download and
-verify it without any compute job. If not, an operator can use a bounded zero-GPU
-task on storage accessible to that backend to read the exact registered generation
-and declared outputs, verify hashes, reconstruct the archive and publish through
-the original scoped transfer. Identical archive identity can resume prior parts.
-Never overwrite a sealed receipt with another digest or rewrite FAILED history
-as SUCCEEDED merely because results were recovered.
-
-Use the original Attempt's collection endpoint; no new training Run or input-data
-delivery is required:
+Training exit, checkpoint persistence and archive publication are independent.
+Check the exact Attempt's receipt, file list and collection before using compute.
+A published archive can be downloaded without a recovery job.
 
 ```bash
 ml-exp collect --project PROJECT --run RUN --attempt attempt-001
 ml-exp collect --project PROJECT --run RUN --attempt attempt-001 --start
-# Repeat the query above to observe completion; then use ordinary download.
 ml-exp download --project PROJECT --run RUN --attempt attempt-001 --out results
 ```
 
-`GET/POST /api/runs/P/R/attempts/A/collection` exposes training, recovery and
-archive verification separately. POST accepts `{}`, `{"retry":true}` or
-`{"reconcile":true}`. Duplicate requests observe the same durable operation.
-An uncertain create requires reconciliation of its exact CPU job; it is never
-silently resubmitted. Retries retain the original Run/Attempt and stop after three
-recovery requests. Original scheduler FAILED history remains unchanged.
+`GET/POST /api/runs/P/R/attempts/A/collection` separates training, collection and
+verification. POST accepts `{}`, `{"retry":true}` or `{"reconcile":true}`. It keeps
+the original Attempt, frozen outputs and durable operation; recovery does not
+require a new training Run or input-data delivery. The service bounds requests
+to three recovery requests, and uncertain CPU creates require exact reconciliation.
+Recovering files never changes original FAILED scheduler history to SUCCEEDED.
 
-Slurm reads the frozen shared output directory through its configured SSH endpoint.
-SenseCore uses the configured debug pool with RESERVED quota, a verified
-2CPU/4GiB/0GPU spec and an existing pinned Python image. The copy worker is bounded
-to 900 seconds, with a 1500-second queue/observation deadline; it never runs the
-training entrypoint. Temporary result archives are built in the CPU container's
-local `/tmp`, so recovery does not require NAS write capacity. NAS training state
-and outputs are only read. Registered checkpoints and unfinished archive identities
-are checked before publishing. Recoveries run serially and do not retain another
-expanded output cache after publication. File listings use receipt metadata
-without restoring whole archives; normal signed downloads go to object storage.
-Artifact completion reserves space for validation and the published object in
-addition to already saved parts: object storage can share the API host's disk.
-Insufficient space still rejects completion and preserves the session.
+| Backend | Independent recovery support |
+| --- | --- |
+| Slurm | Verify terminal job; inventory/reserve capacity; copy the exact shared outputs through SSH |
+| SenseCore | Bounded RESERVED debug ACP, 2CPU/4GiB/0GPU, pinned existing Python image; read NAS without running training |
+| PAI DLC | Publish already available local outputs; remote CPU/offline recovery is unsupported |
 
-State observation does not download weights. Large Slurm copies first perform a
-read-only rsync size inventory and reserve their copy/build/validation/storage
-peak. Local result publication and multipart completion use the same admission
-budget, including concurrent unfinished uploads and the configured disk margin.
-`storage_capacity` in collection status explains a rejected recovery; retry only
-after resolving capacity. Newly copied files are evicted only after the complete
-published object and corresponding local file hashes verify. Backend files,
-receipts and unacknowledged archives remain available.
+SenseCore's result worker has a 900-second budget and a 1500-second queue/observation
+deadline. Temporary archives use its container `/tmp`; NAS outputs and state are
+read-only inputs. Missing backend files cannot be recovered by the platform.
+Registered generations, archive identity and file hashes are checked before
+publication. An existing sealed receipt cannot be replaced by another digest.
 
-Query `GET /api/runs/P/R/attempts/A/collection/diagnostics` with the normal API
-Bearer for the current result upload and CPU recovery evidence. The publication
-section distinguishes missing parts from a complete upload awaiting publication.
-A capacity rejection records HTTP 507, `UPLOAD_STORAGE`, required free bytes and
-observed free bytes. After freeing space, complete the **same** upload session;
-do not repeat training or start a CPU copy when all parts already exist.
+Result publication reserves its copy/build/validation/object-storage peak using
+the shared capacity policy. Insufficient capacity returns 507 and retains the
+original upload. Newly copied caches are evicted only after independent published
+object and local file verification. State/status queries never download weights.
 
-Add `?refresh=true` to query the exact saved SenseCore CPU job's workers, events
-and offline logs. These are bounded and redacted, and stdout/stderr are combined
-by the provider. Empty logs remain `PENDING` because indexing can be delayed.
-Unavailable process exit codes remain null; a successful log query is not a
-successful job. Refresh never submits or retries a job, and observations are
-cached only for the current CPU job identity.
+```text
+GET /api/runs/P/R/attempts/A/collection/diagnostics
+GET /api/runs/P/R/attempts/A/collection/diagnostics?refresh=true
+```
 
-Recovery failures emit `ML_EXPD_RESULT_RECOVERY_DIAGNOSTIC` with the failed phase,
-exception class, system `errno`/symbolic code when present, and a SHA256 path
-reference when the exception identifies a file. Raw exception text and paths are
-excluded. A NAS `ENOSPC` during temporary-file creation and an API-host upload
-capacity failure are separate problems; check the reported phase before retrying.
+Publication diagnostics distinguish missing parts from all-parts-present capacity
+rejection, including required/observed free bytes. Refresh queries the exact saved
+SenseCore CPU job's workers, events and offline logs; it never creates a job.
+Provider stdout/stderr can be combined and delayed. Empty accepted logs remain
+PENDING; unavailable exit codes stay null. Results cache only for that job identity.
+
+`ML_EXPD_RESULT_RECOVERY_DIAGNOSTIC` reports phase, safe exception class, errno and
+optional hashed path reference. It excludes raw paths/errors. NAS ENOSPC, worker
+`/tmp` capacity and API result-store capacity are different failures.
 
 ## Resume publication or a download acknowledgement
 
-`experiment --download-to` first observes training's terminal scheduler state, then
-polls `GET /api/runs/P/R/attempts/A/collection` for the saved original Attempt.
-It downloads only after `AVAILABLE`, `verification=SHA256_VERIFIED` and
-`download_available=true`. `NOT_COLLECTED`, `QUEUED`, `COLLECTING`, or incomplete
-publication keeps waiting; the client never POSTs collection or creates another
-Attempt during this wait. Automatic server collection may independently begin
-when successful training evidence is available.
+`experiment --download-to` waits for the original Attempt's collection to become
+AVAILABLE, SHA256_VERIFIED and downloadable after training is terminal. It never
+POSTs collection while waiting. A timeout saves the last snapshot and IDs; resume
+observes the same publication. FAILED/RECONCILE_REQUIRED needs explicit inspection.
+A released archive is not silently recreated.
 
-`FAILED` or `RECONCILE_REQUIRED` stops the client with an explicit diagnostic;
-inspect the exact collection and choose recovery separately. `RELEASED` stops
-with `ARTIFACT_RELEASED`/410 and cannot trigger re-export. Each wait stage has its
-own `--seconds` limit. A publication timeout saves the last collection snapshot,
-original identities, destination and KEEP choice. Use the same config and state
-with `--resume --execute` to continue observing the same job/publication; the saved
-destination can be reused without repeating `--download-to`. Servers without
-`result-collection.v1` use the older direct-download behavior.
+After successful download, an ACK error leaves usable local files and
+`acknowledgement.status=PENDING` in `verification.json` and saved workflow state.
+Resume with the original directory, or run `ml-exp acknowledge --directory results`.
+It verifies exact Attempt/archive/file proof and rehashes local bytes before
+retrying only ACK. It neither redownloads nor starts collection, and preserves
+the saved KEEP/release choice. Changed/corrupt proof prevents acknowledgement.
 
-If the state contains a completed download with `acknowledgement.status=PENDING`,
-`--resume` revalidates local `verification.json` against the exact saved Attempt
-and archive/file proof, then hashes the archive and every file before retrying
-only ACK. This works without `--execute` and never redownloads or starts collection.
-The local saved KEEP/release choice is preserved. Keep the directory and proof
-file; for older state without a saved destination, supply the original
-`--download-to` or use `ml-exp acknowledge --directory DIRECTORY` directly.
-Corrupt or changed local bytes/proof prevent ACK and retain the server copy.
-
-### Download confirmation and server storage
-
-On `artifact-retention.v1` servers, a successful `ml-exp download` verifies the
-whole archive and every output file, saves and syncs the local files and
-`verification.json`, then acknowledges the exact Run/Attempt and archive SHA256.
-The server schedules deletion of that archive **as soon as confirmation is accepted**.
-The background collector performs deletion on its next cycle; there is no 24-hour
-waiting period. Existing acknowledgements that allow release are also eligible
-without waiting for their old deadline. Physical disk space is reclaimed by the
-object store in the background and may become available later.
-After release, the collector also removes matching files from local delivery
-caches (`uploaded_outputs`, `recovered_outputs`, and the exact Attempt's
-`collected_run/.../outputs`). It checks each file's size and SHA256 against the
-receipt, including caches left by older releases. Extra files, changed bytes,
-symlinks, original worker outputs and persistent training state are retained.
-Local cache failures retry independently without deleting the object again.
-A download link, partial transfer or checksum failure never authorizes deletion.
-Repeated confirmations do not extend the deadline. Older clients send no
-confirmation, so their archives remain retained.
+## Download confirmation and server storage
 
 ```bash
-# Default: verified local copy, then authorize immediate server archive release.
+# Default: verify locally, then permit immediate archive release.
 ml-exp download --project PROJECT --run RUN --attempt attempt-001 --out results
-# Keep the server archive instead; also supported by experiment --download-to.
+# Retain the server archive instead.
 ml-exp download --project PROJECT --run RUN --attempt attempt-001 --out results --keep-server-copy
-# If confirmation failed, recheck existing files without downloading again.
 ml-exp acknowledge --directory results
-# Change retention explicitly while the archive is still retained.
-ml-exp acknowledge --directory results --keep-server-copy
+# Explicitly change retention while the archive still exists.
 ml-exp acknowledge --directory results --release-server-copy
 ```
 
-Confirmation errors leave usable local files and a PENDING acknowledgement in
-`verification.json`. The retry command preserves the original retention choice.
-Keep that verified local copy: releasing a server archive transfers responsibility
-for its bytes to the client, and a client receipt is not independent proof of a
-backup. NAS/shared-storage recovery checkpoints and training data are never deleted by
-this flow. Experiment identity, archive/file hashes, metrics and scientific
-receipts remain on the server. New uploads avoid a duplicate expanded cache;
-temporary multipart parts are removed only after publication succeeds.
+ACK requires normal API authentication and exact archive SHA/bytes plus every
+file's SHA/bytes. The endpoint is
+`POST /api/runs/P/R/attempts/A/artifacts/ack`; `release` defaults to true. A GET,
+partial transfer or checksum failure never creates this proof.
 
-REST: `POST /api/runs/P/R/attempts/A/artifacts/ack` takes `archive_sha256`,
-`archive_bytes`, a `files` map of `outputs/path` to `{sha256, bytes}`, and
-`release` (default true). It requires the normal API Bearer, not a worker token.
-The collector releases only confirmed, due, exactly bound objects; interrupted
-deletions retry the same object key without starting compute. Object-store
-garbage collection can delay physical disk reclamation. RELEASED collections
-retain their metadata and report `download_available=false`; download returns
-410 `ARTIFACT_RELEASED`, not a missing-upload 404. `collect` does not silently
-start a job or recreate an intentionally released archive. Re-exporting backend
-files is a separate operation, subject to those files still being present.
+Accepted release-enabled ACK is immediately eligible for maintenance, with no
+24-hour waiting delay. When a frozen durable OSS archive plan is required,
+release also waits for its VERIFIED copy. Physical object-store garbage collection
+may lag. Separate configured local-payload expiry can affect archives regardless
+of ACK; consult current storage policy rather than treating KEEP as a permanent
+backup guarantee. Old clients without ACK do not authorize ACK-based release.
 
-New workers persist and register `training-result.v1` before result upload.
-When a terminal Attempt has a successful process result but no archive, the
-collector requests one independent recovery. Failed recoveries require explicit
-retry/reconcile. Old workers have no such evidence and are not automatically
-enrolled; their training status is UNKNOWN until interpreted by the experiment's
-own protocol. These are process and transport statuses, not scientific success
-criteria. Existing collected files can also be downloaded without an archive,
-provided the complete file list includes SHA256 values and every download matches.
+Maintenance removes exactly bound published objects and matching verified local
+delivery caches; it retains metadata, metrics, receipts and persistent backend
+state. Changed files, extra files, symlinks and original worker outputs are not
+silently removed by cache cleanup. Released archives return
+`410 ARTIFACT_RELEASED`, not missing-upload 404. Local cleanup retries do not
+repeat object deletion. Dataset originals, backend checkpoint state and durable
+OSS archives have their own lifecycle; see [administrative deletion](resource-deletion.md).
 
-## Restore unfinished training
+## Restore unfinished training and remaining limits
 
-Choose a registered complete checkpoint from the exact source Attempt and create
-a new Run with `resume_from` ([checkpoint contract](persistent-checkpoints.md)).
-Code owns optimizer/RNG/data-cursor restoration; the worker verifies files before
-starting it. Reconcile the prior job first if its outcome is uncertain. Never
-create a replacement while the old job might still run.
+Choose a complete registered generation and create a new Run with explicit
+[resume_from](persistent-checkpoints.md). The worker rehashes files; experiment
+code restores optimizer, scheduler, RNG and data cursor. Registration alone does
+not prove a successful restore or make state downloadable.
 
-## Known limitations
+There is no automatic preemption recovery. ACP uses `backoff_limit: 0`; the
+collector never launches replacement training. Worker restore, inside-job data,
+training and result return share one worker duration. A hard kill can interrupt
+publication; offline recovery can only return bytes that were actually persisted.
+Detailed diagnostics require the corresponding frozen image capabilities.
 
-Remaining limits:
+Interrupted server preparations become RECONCILE_REQUIRED at startup. Observe
+the original Runtime/copy/script dependencies, then explicitly continue once
+verified READY. Continuation advances preparation, never GPU authorization.
+Changing the selected executor configuration blocks the old frozen selection.
 
-- SenseCore offline queries are bounded to 200 provider records and report
-  truncation. Accepted requests can still return no hits, which does not establish
-  an exit cause.
-- Worker preparation, restore, training and artifact return share one duration.
-  A hard kill can interrupt return; independent recovery handles saved outputs,
-  but cannot recover bytes never persisted.
-- Detailed managed phase/liveness/transfer evidence depends on image capability;
-  a server upgrade cannot retrofit it into a frozen historical image.
-
-Server 0.3.13 fixes the old delivery-worker-identity barrier by reusing sealed
-identical-data/NAS receipts ([data readiness](data.md)). Read `operation_status`
-when effective readiness comes from another delivery; the uncertain copy still
-needs separate inspection and is never automatically replayed. Builder registry
-authentication must be visible inside its service sandbox ([deployment](operator-guide.md)).
-
-## Automatic preemption recovery: design only
-
-Automatic recovery is not implemented/enabled. ACP requests use `backoff_limit: 0`;
-the collector never launches replacements. Manual retry allowance is not an
-automatic policy, and FAILED/SUSPENDED alone does not prove preemption.
-
-A future opt-in implementation needs one restart owner and a new Attempt with
-an immutable execution overlay: prior exact job/failure evidence, compatible
-registered checkpoint, chosen non-debug placement and remaining budget. It must
-reserve cumulative GPU time transactionally before create, retain reservations
-for uncertain submissions, enforce finite retry/deadline limits and reconcile
-the existing outbox after interruption. Cancellation disables pending recovery.
-Code/data/hash failures, user cancellation and output-return failures must not
-automatically restart training. No latest-checkpoint fallback or infinite retry.
-
-## Server-owned experiment preparation
-
-An interrupted `EXECUTING` preparation becomes `RECONCILE_REQUIRED` at daemon
-startup. Original Runtime/copy request markers and dependency IDs stay intact.
-Observe those exact dependencies; after READY verification, explicitly continue
-the preparation. This only advances preparation, never authorizes/replays GPU
-submission. Changed executor configuration blocks the frozen selection.
-
-## Failures before the worker starts
-
-New Runtime images advertise `launch-diagnostics.v1`. Their sealed-manifest
-launcher reports `FETCH_MANIFEST`, `CREATE_OUTPUT`, `START_WORKER` and child exit
-directly to the API using the exact Attempt capability. The training diagnostics
-response includes a bounded `bootstrap` timeline with server receipt times,
-allowlisted error codes, errno and exit code; it never includes commands, tokens,
-paths or raw exception text. Delivery is best effort with a short timeout, so
-absent entries do not prove a particular failure. No writable NAS is needed to
-send this evidence. Existing immutable images require a new build; an API upgrade
-does not add reporting to an old image.
-
-Exit 78 can be a launcher configuration or filesystem failure, or a child return
-code. The code alone does not identify the cause. For NAS errno 28, check the
-mounted directory's capacity and file-count quota; shared-volume free space and
-API archive deletion are not evidence that this directory is writable. Keep the
-training queue paused until a real write/checkpoint/resume probe succeeds.
+New `launch-diagnostics.v1` images report FETCH_MANIFEST, CREATE_OUTPUT,
+START_WORKER and child exit using exact-Attempt capability before writable NAS
+is required. Missing best-effort reports prove no particular cause. Exit 78 can
+be launcher setup, filesystem failure or a child result. For errno 28, check the
+actual mounted path, inode/file-count and quota; freeing API archives is not
+proof that NAS or CPFS writes work.

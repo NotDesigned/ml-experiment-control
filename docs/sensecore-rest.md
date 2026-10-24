@@ -42,6 +42,11 @@ it never authorizes a second create.
 
 ## Cluster choice
 
+Read-only `GET /api/backends/sensecore/clusters?executor_id=ID` exposes the
+configured workspace pools, reported remaining cards, SPOT allowance and debug
+labels. Snapshots are cached for 25 seconds; stale/unknown evidence is explicit.
+Reported allowance is not a promise of immediate allocation.
+
 New GPU Runs default to `pool_selection: highest_spot`. Selection fetches ACTIVE
 workspace bindings, excludes debug pools and requires the same zone, known VPC
 and compatible GPU specification. Optional `allowed_clusters` restricts scope.
@@ -91,11 +96,12 @@ launcher; a server upgrade cannot change an immutable old image.
 |---|---|
 | Worker duration | Run `resources.max_time`, default `00:10:00`; GNU TERM, then KILL after 30s |
 | Startup manifest | 30-second launcher fetch before worker timer |
-| Data script | `data_preparation.timeout_seconds`, default 1200; inside worker duration |
+| Data script | `data_preparation.timeout_seconds`, default 1200; separate CPU preparation when declared `before_job`, otherwise inside worker duration |
 | REST | Generic 30s; create 120s, configurable 10–600 via `EXPERIMENTCTL_SENSECORE_CREATE_TIMEOUT_SECONDS` |
 | Controller/build | Separate host operation budgets, not training duration; see [builds](builds.md) |
 
-Worker duration covers restore, data preparation, training and result return.
+Worker duration covers restore, inside-job data preparation, training and result
+return. Before-job debug CPU preparation has its own bounded operation budget.
 It excludes cloud queue/image pull/NAS setup. ACP create currently contains no
 matching cloud wall-time field; Slurm also applies the frozen duration to Slurm.
 Each Attempt gets its own worker timer, not a cumulative retry budget.
@@ -151,4 +157,6 @@ only the actual CCR blob redirect hostnames verified by the operator, without
 scheme, paths or wildcards; redirects use TLS and receive no registry credentials.
 Workspace, storage mount and dataset root are derived from the chosen executor.
 Verify the CPU spec is exactly 2 CPUs, 4 GiB and 0 GPUs in the selected debug pool.
-No new dataset upload requires the desktop SSH tunnel; environment builds still do.
+New dataset upload does not require a desktop SSH tunnel. Runtime builds use
+the separately configured builder, which can be local/SSH Docker or PAI DSW;
+see [builds](builds.md).

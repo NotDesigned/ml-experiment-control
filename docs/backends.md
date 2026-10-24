@@ -26,9 +26,11 @@ prove two mounts share a filesystem. Checkpoint matching additionally checks the
 registered project's storage scope. Runtime worker features are validated
 separately: old images do not gain new behavior from a server upgrade.
 
-PAI DLC is an additional opt-in single-node adapter; see [PAI configuration and
-limits](pai.md). It declares quota queries, versioned native Dataset mounts and
-worker transfers, but no platform-uploaded assets or CPU recovery.
+PAI DLC is an opt-in single-node adapter; see [PAI configuration and limits](pai.md).
+It supports quota queries, approved persistent Dataset mounts and worker
+transfers. Uploaded assets require configured personal OSS storage plus CPFS
+caching; CPU result recovery remains unavailable. Native OSS filesystem mounts
+are provider-blocked and stay disabled.
 
 The existing adapters declare:
 

@@ -64,6 +64,8 @@ mounted CPFS/NAS contents. They do remove ephemeral instance storage.
 Default duration is 30 minutes. The operator default maximum is two hours, with
 a maximum of two concurrently active sessions. Profiles are disabled until the
 operator configures them, and scheduler mutations must also be enabled.
+DSW always has a four-hour hard ceiling, even if the shared debug-session maximum
+is configured higher. A shorter operator lease still takes precedence.
 
 - DSW: a **native shutdown timer** is installed and read back. Its absolute
   deadline never advances on refresh. Server expiry cleanup also deletes the

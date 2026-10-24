@@ -6,6 +6,9 @@ The current protocol is 2. `GET /api/health` returns `server_version`,
 `api_protocol_version`, `min_client_protocol_version`, `capabilities`, enabled
 policy and `openapi_path` (`/api/v2/openapi.json`). Package versions alone do not
 prove a capability is available; frozen worker images have their own capabilities.
+Platform metrics are accepted and queried independently of W&B. Without the
+optional SDK, publication reports `WANDB_SDK_NOT_INSTALLED`; it does not rewrite
+the frozen Run route or discard accepted records.
 
 With `deployment-readiness.v1`, health also returns `supported_capabilities`
 (implemented protocols) and `deployment` (configuration state). `capabilities`

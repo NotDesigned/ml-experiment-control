@@ -1,6 +1,6 @@
 # Core library integration
 
-This path is for developers of their own host controller. A client using the
+This is an advanced integration path for developers of their own host controller. A client using the
 managed HTTP service needs only [the standalone client](api-quickstart.md),
 without a `ProjectAdapter` or cloud/SSH credentials.
 
@@ -17,7 +17,7 @@ Rust 1.85+; a suitable built wheel includes the executable. Follow
 [development setup](development.md) in a checkout, then run:
 
 ```bash
-uv run python examples/local_smoke.py
+uv run --no-sync python examples/local_smoke.py
 ```
 
 [`examples/local_smoke.py`](../examples/local_smoke.py) is a complete Linux
@@ -90,6 +90,8 @@ validate → preflight → identity/assets → stage/render
 
 Use host-only REST configuration for SenseCore, SSH config/agent for Slurm and
 private registry auth for publication. Never embed credentials in Run manifests.
+DLC integrations need the core `[pai]` extra and approved PAI scope/storage
+configuration. Optional dependencies do not authorize access to a backend.
 Supported tool overrides include `EXPERIMENTCTL_REDACTOR_BIN`,
 `EXPERIMENTCTL_SSH_BIN`, `EXPERIMENTCTL_RSYNC_BIN`,
 `EXPERIMENTCTL_SENSECORE_REST_CONFIG` and

@@ -1,47 +1,44 @@
 # Documentation
 
-These pages describe current code, not deployment history. Check `/api/health`
-and the installed OpenAPI schema for your server. Site credentials, inventories
-and acceptance reports belong in private operator configuration/evidence.
+Start with the guide for your role. These documents describe the repository's
+implemented behavior; `/api/health` and the installed `/api/v2/openapi.json`
+identify what a particular deployment provides. Credentials, site inventories
+and deployment evidence belong in private operator records.
 
-## Client: use an existing API
+## Use an existing service
 
-1. [Quickstart](api-quickstart.md): connect, build, submit and download.
-2. [Data](data.md): upload/resume, NAS delivery, download scripts and limits.
-3. [Checkpoints](persistent-checkpoints.md): persist complete state and restore it.
-4. [Metrics](metrics.md): units, completeness and scoring provenance.
-5. [W&B](wandb.md): optional per-Run routing and confirmed publication.
-6. [Recovery](recovery.md): diagnose a failed stage without duplicating work.
-7. [SSH debug sessions](debug-sessions.md): request a temporary CCI/DSW machine with your public key.
-8. [Administrative deletion](resource-deletion.md): review and delete a completed managed Run and its storage.
+1. [Client quickstart](api-quickstart.md): the complete install-to-results path.
+2. [Data](data.md): target-backed uploads, resume, download scripts and limits.
+3. [Persistent checkpoints](persistent-checkpoints.md): complete state and explicit restore.
+4. [Metrics](metrics.md): curves, comparison results, units and protocol identity.
+5. [W&B](wandb.md): optional server publication and per-Run destinations.
+6. [Recovery](recovery.md): failed stages, uncertain requests and output collection.
+7. [Debug sessions](debug-sessions.md): temporary CCI/DSW SSH machines.
+8. [Administrative deletion](resource-deletion.md): reviewed Run and storage removal.
 
-For existing installations, read the [1.0 migration notes](migration-1.0.md).
+The [client package README](../client/README.md) provides a command map and Python
+API. No research-question entity is required; Campaign is optional grouping.
+Scientific evaluation is an ordinary Run with declared inputs and metrics.
 
-## Operator: provide the service
+## Provide the service
 
-- [Configuration](configuration.md): client connection, credentials and independently enabled backends.
-- [Deployment](operator-guide.md): installation, configuration and verification.
-- [Two-machine quickstart](two-machine-quickstart.md): offline packages, basic API, HTTPS and independent client/source import.
-- [Slurm](slurm.md): SSH, scheduler settings, shared storage and offline compute nodes.
-- [Builds](builds.md): Dockerfile admission, desktop builder, cache and capacity.
-- [PAI](pai.md): DLC executor, native Dataset limits and an optional CPU DSW builder.
-- [SenseCore](sensecore-rest.md): REST, cluster selection, startup and timeouts.
-- [Action storage](action-storage.md): database, backup and offline migration.
+- [Operator guide](operator-guide.md): install, configure and verify a release.
+- [Configuration](configuration.md): client settings, credentials and independently enabled backends.
+- [Two-machine example](two-machine-quickstart.md): a basic HTTPS API and separate client without a training backend.
+- [Slurm](slurm.md): SSH scheduling, shared storage and offline compute nodes.
+- [PAI](pai.md): DLC training, CPFS/OSS and an optional DSW builder.
+- [SenseCore](sensecore-rest.md): REST, cluster choice and job diagnostics.
+- [Builds](builds.md): Dockerfile rules, publishers, cache and capacity.
+- [Action storage](action-storage.md): persistence, backup and offline migration.
 - [Project lifecycle](project_lifecycle.md): registration, pause and archive.
 
-## Developer and API integrator
+## Integrate or develop
 
-- [Simplification](simplification-plan.md): shared client/backend/storage services and remaining acceptance boundaries.
-- [Architecture](architecture.md): packages, execution locations and ownership.
-- [Client and server refactor](client-server-refactor.md): branch scope, preserved contracts and verification.
-- [Backend capabilities and preparation](backends.md): matching, server workflow and data diagnostics.
-- [API workflow](source-api.md): source, Runtime, Run, Submission and result routes.
-- [HTTP contract](http_contract.md): authentication, protocol, async execution and SSE.
-- [Development](development.md): checks, CI and documentation maintenance.
-- [Core integration](library-integration.md) and [public contract](downstream_contract.md).
+- [API resource reference](source-api.md): low-level resources, identities and diagnostic endpoints.
+- [HTTP contract](http_contract.md): auth, protocol 2, asynchronous operations and errors.
+- [Backend capabilities](backends.md): matching and server preparation contracts.
+- [Architecture](architecture.md): packages, module boundaries and execution locations.
+- [Development](development.md): tests, coverage, CI and offline bundles.
+- [Core integration](library-integration.md) and [downstream contract](downstream_contract.md).
+- [Compatibility and upgrades](architecture.md#compatibility-and-upgrades).
 - [Generated redactor CLI reference](cli_reference.md).
-
-Start with one experiment. Data preparation, checkpoint persistence and custom
-metrics are optional additions. No research-question entity is required;
-Campaign is optional user-facing grouping. Designs and one-off operator tools
-are explicitly distinguished from implemented public APIs in recovery.

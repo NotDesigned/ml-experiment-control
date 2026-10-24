@@ -1,63 +1,60 @@
 # ML-Expd
 
-ML-Expd runs reproducible experiments on SSH Slurm/Apptainer, SenseCore ACP and
-Alibaba PAI DLC. A remote client uploads code containing a Dockerfile, prepares
-data, builds an image, submits a Run and retrieves verified results through
-HTTP. Backend credentials stay on the server.
+Submit code, a Dockerfile and data to an existing HTTP API; run experiments on
+SSH Slurm/Apptainer, SenseCore ACP or Alibaba PAI DLC; retrieve verified results.
+Backend credentials and image builds stay on the server side.
 
-## Start here
+## Choose a starting point
 
-| You want to… | Read | You need |
-|---|---|---|
-| Use an existing API | [Client quickstart](docs/api-quickstart.md) | Python, client wheel, API URL and token |
-| Deploy or maintain the server | [Operator guide](docs/operator-guide.md) | Linux/Python; builder, storage and backend access for training |
-| Configure a client or add a backend | [Configuration](docs/configuration.md) | API URL/token, or access to one supported backend |
-| Understand the code | [Architecture](docs/architecture.md) | Repository checkout |
-| Embed the core library | [Library integration](docs/library-integration.md) | Core package and a project adapter |
-| Contribute | [Development](docs/development.md) | Python 3.12, uv and Rust |
+| Your task | Guide |
+|---|---|
+| Run an experiment through an existing service | [Client quickstart](docs/api-quickstart.md) |
+| Install and configure the service | [Operator guide](docs/operator-guide.md) |
+| Connect a client or enable a backend | [Configuration](docs/configuration.md) |
+| Deploy a basic API and a separate client | [Two-machine example](docs/two-machine-quickstart.md) |
+| Understand package and module boundaries | [Architecture](docs/architecture.md) |
+| Develop or test changes | [Development](docs/development.md) |
 
-For upgrades, read the [1.0 migration notes](docs/migration-1.0.md).
-For a first basic deployment, follow the [two-machine example](docs/two-machine-quickstart.md):
-precompiled packages, a private HTTPS API and a separate client, without a training backend.
-The [documentation index](docs/README.md) links the complete reference.
-Install the independent [client package](client/README.md) on client machines;
-the [server package](server/README.md) uses the reusable core and the independent
-[worker package](worker/README.md). The client and workers have no runtime
-dependencies. W&B publication is an optional server extra; platform metrics work
-without it.
+The [documentation index](docs/README.md) links feature and API references.
+Read [compatibility and upgrades](docs/architecture.md#compatibility-and-upgrades)
+before changing an existing installation.
 
-## Workflow
+## Workflow and responsibilities
 
 ```text
-code + Dockerfile ── build ── Runtime image
-data ── target-backed upload or backend download ── shared storage / NAS / CPFS
-                                       │
-Runtime + data + argv + resources ── Run ── submit ── Attempt
-                                                     │
-                            progress / metrics / checkpoint / output archive
+code + Dockerfile → immutable Runtime image
+local data / backend download → verified backend storage
+                           ↓
+Runtime + inputs + command + resources → Run → Submission → Attempt
+                                                        ↓
+                          progress, metrics, checkpoints, verified results
 ```
 
-Data uploads select an executor. The API buffers at most 1 GiB across transfers,
-then removes each part after durable destination acknowledgement. Slurm receives
-data directly on shared storage; SenseCore receives a CCR data image and copies
-it to NAS with a zero-GPU debug job. DLC can use approved OSS datasets and cache
-them on personal CPFS. Image builders are configured separately from training.
-Output archives still use object storage and are released after verified client
-ACK; this is separate from the transfer buffer.
+A Run freezes the experiment definition; each execution is a separate Attempt.
+Training and evaluation use the same mechanism. Experiment code defines metric
+meaning, checkpoint contents, recovery and model selection. The platform handles
+preparation, scheduling requests, evidence, transfer and result verification.
 
-New builds use Dockerfile only. The base-image catalogue supplies pinned `FROM`
-choices, not a second build mechanism. Source, image, data and Run definitions
-have immutable identities. Each execution has its own Attempt. Training and
-evaluation use the same Run mechanism; experiment code defines scientific
-metrics, scoring and checkpoint selection.
+Use `ml-exp check --json` to discover the installed versions, executors, base-image
+digests, capabilities and limits. HTTP protocol remains **2**. Advertised GPU
+specifications do not guarantee immediate allocation. Image publication,
+scheduler success, training completion and downloadable results are separate
+facts; see [recovery](docs/recovery.md).
 
-Runtime READY, Submission VERIFIED, scheduler SUCCEEDED, checkpoint REGISTERED
-and downloadable artifacts are different facts. An interrupted upload can leave
-a complete NAS checkpoint without a downloadable result. See [recovery](docs/recovery.md).
+## Packages and storage
 
-The current HTTP protocol is 2. Obtain installed versions, capabilities,
-executors, policy and limits with `ml-exp check --json`. Existing READY images keep their
-original workers. Executor specifications do not guarantee free GPUs. Automatic
-preemption recovery and a general CPU artifact-recovery API are not implemented.
+- [Client](client/README.md): standalone Python HTTP client, with no runtime dependencies.
+- [Server](server/README.md): API, experiment preparation and result collection, using the reusable [core](docs/library-integration.md).
+- [Worker](worker/README.md): standalone standard-library programs copied into job images and remote scripts.
 
-SSH 调试机支持参见 [CCI / DSW 调试会话](docs/debug-sessions.md)。训练仍使用 DLC、ACP 或 Slurm。
+W&B is an [optional server integration](docs/wandb.md). Platform metrics work
+without it. Temporary [CCI/DSW debug sessions](docs/debug-sessions.md) are separate
+from training; PAI training uses DLC.
+
+Source and data are separate uploads. Data targets shared Slurm storage,
+SenseCore NAS through CCR, or approved PAI OSS/CPFS storage. The API uses a bounded
+transfer buffer rather than keeping a second permanent dataset. Output archives
+are hash-verified on download and may be released after client acknowledgement;
+metrics and persistent checkpoint state have separate lifecycles. See
+[data](docs/data.md), [checkpoints](docs/persistent-checkpoints.md) and
+[administrative deletion](docs/resource-deletion.md).

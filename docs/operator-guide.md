@@ -9,7 +9,7 @@ mutations; copying them alone does not produce a runnable GPU service.
 | Component | Access it needs |
 |---|---|
 | Daemon | Dedicated UID, writable state and API token; selected backend/store credentials for training |
-| Private builder | Docker/Buildx, Skopeo, registry push auth, private socket |
+| Private builder | Private socket, registry push auth; local/SSH Docker/BuildKit or a separately configured PAI CPU DSW |
 | Slurm | Daemon-owned SSH identity, Slurm/Apptainer, shared storage, registry pull auth |
 | PAI DLC | OpenAPI credentials, workspace/quota, personal CPFS/role, registry pull auth |
 | SenseCore | REST AK/SK, workspace/pools/specs, CCR pull authorization, mounted NAS |
@@ -36,8 +36,10 @@ The daemon must not have unrestricted Docker access.
 
 ## Install a reviewed release
 
-Use precompiled core/worker/server wheels from the same reviewed release. Rust and uv
-are build tools, not service runtime requirements. The complete
+Use precompiled core/worker/server wheels from the same reviewed release. The
+core wheel includes the native `experiment-redact` executable; the worker is
+standard-library-only. Rust and uv are build tools, not service runtime
+requirements. The complete
 [two-machine example](two-machine-quickstart.md) covers installation, service
 account, token, HTTPS, client trust and a source import without a builder.
 
@@ -98,11 +100,9 @@ the API and import source. This template enables project/source writes and
 explicitly disables scheduler mutations and the background collector.
 
 For training, extend it with only your chosen backend, private builder and result
-store, or start with the full template below. The server does not automatically
-create storage buckets, IAM roles or builders from a credential file.
-
-Start from [source-api.yaml](../server/examples/source-api.yaml). Provision a
-daemon account and allow it to write the configured state/project roots. The
+store; [source-api.yaml](../server/examples/source-api.yaml) shows those settings
+together. The server does not create buckets, IAM roles or builders from a
+credential file. Provision a daemon account with access to state/project roots. The
 HTTP token must be regular, daemon-owned and mode 0600; create a cryptographically
 random token of at least 32 non-whitespace characters without printing it to
 shared output. Distribute it privately. There is no per-user/project RBAC API.

@@ -16,7 +16,10 @@ Legacy `execution.json`/`journal.jsonl` are not updated by current transitions.
 
 Use SQLite's backup API, or stop every writer and copy the complete database
 including WAL state. Copying only an active `.sqlite3` is insufficient. Retain
-immutable plans, config and a verified preceding program with the snapshot.
+immutable plans/config with the snapshot, plus the exact program version,
+digest and recovery instructions. Do not retain old virtual environments; after
+upgrade acceptance remove inactive candidates and disposable package copies.
+Database recovery backups and live state have their separate retention policy.
 Validate restoration on an isolated copy, never over production.
 
 Current SQLite installations need no conversion. Program rollback must preserve
@@ -28,7 +31,8 @@ closed. Do not delete the DB/marker to force initialization.
 
 This is an explicit operator tool, not a runtime fallback:
 
-1. Stop the daemon and other Action writers; back up the whole root and runtime.
+1. Stop all Action writers; back up the complete Action root and required
+   configuration, and record the program version/digest.
 2. Validate conversion on an isolated copy:
 
    ```bash

@@ -1,11 +1,14 @@
 # ML-Expd server
 
-`ml-experiment-server` provides `ml-expd`, using `ml-experiment-control` and
-`ml-experiment-worker`.
-The client is not a server runtime dependency. Training runs on the selected
-backend; this daemon owns definitions, checked submissions and observations.
-The base installation saves and serves metrics without W&B. Install the
-`wandb` extra only when publishing to W&B; see [configuration](../docs/wandb.md).
+`ml-experiment-server` provides the API/daemon `ml-expd`. Install matching core,
+worker and server wheels from one release, or use its offline server bundle.
+The core carries `experiment-redact`; the worker provides dependency-free
+execution scripts. The separate client is not a server runtime dependency.
+Training runs on the selected backend; the daemon owns immutable definitions,
+checked submissions, observations and result delivery.
+The base installation saves and serves metrics without W&B. Choose a full
+`ml-experiment-server[wandb]` installation only when publishing to W&B; see
+[configuration](../docs/wandb.md). Client and compute images need no W&B SDK.
 
 - [Operator guide](../docs/operator-guide.md): installation and verification.
 - [Architecture](../docs/architecture.md): API, builder, controller and workers.
