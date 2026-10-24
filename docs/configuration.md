@@ -70,8 +70,8 @@ exception, certificate names, private endpoints or request credentials.
 TLS errors have `retryable=false`: fix the trust, hostname or TLS configuration
 before retrying. Do not disable certificate/hostname verification or send private
 keys. `retryable=true` for other connection failures is a transport hint, not
-permission to replay a write. The client never automatically replays API writes;
-inspect saved identities and reconcile uncertain operations first.
+permission to replay a write. The HTTP transport does not automatically replay
+requests; inspect saved identities and reconcile uncertain operations first.
 
 The [two-machine guide](two-machine-quickstart.md#3-configure-https) shows a
 separate private CA, a matching server SAN and client trust configuration.
