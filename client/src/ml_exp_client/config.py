@@ -65,10 +65,16 @@ def read_config(path: Path):
         raise ClientError("metrics_schema supports at most 256 definitions")
     for name, definition in definitions.items():
         if (not isinstance(name, str) or not name.strip() or len(name) > 128 or any(ord(c) < 32 for c in name) or
-                not isinstance(definition, dict) or set(definition) - {"unit", "required", "description", "aggregation", "numerator_unit", "denominator_unit"} or
+                not isinstance(definition, dict) or set(definition) - {"unit", "required", "description", "aggregation", "numerator_unit", "denominator_unit", "required_when"} or
                 not isinstance(definition.get("unit"), str) or not definition["unit"].strip() or len(definition["unit"]) > 128 or any(ord(c) < 32 for c in definition["unit"]) or
                 "required" in definition and not isinstance(definition["required"], bool)):
             raise ClientError("each metric definition needs a valid name, explicit unit and optional boolean required")
+        context = definition.get("required_when")
+        if context is not None and (not isinstance(context, dict) or not context
+                or context.keys() - {"dataset_id", "variant_id", "checkpoint_id"}
+                or any(not isinstance(item, str) or not item.strip() or len(item) > 2000
+                       or any(ord(c) < 32 for c in item) for item in context.values())):
+            raise ClientError("required_when needs exact dataset_id, variant_id or checkpoint_id values")
     for key in ("project", "run_id"):
         if not isinstance(value.get(key), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value[key]):
             raise ClientError("experiment needs valid project, run_id and executor")

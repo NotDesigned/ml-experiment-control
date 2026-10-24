@@ -190,6 +190,33 @@ def test_metric_and_evaluation_errors_fail_before_source_upload(configuration, e
     assert api.calls == []
 
 
+@pytest.mark.parametrize("context", [{}, {"step": "1"}, {"dataset_id": ""}, {"variant_id": "bad\nvalue"},
+                                     {"dataset_id": "x" * 2001}, {"dataset_id": 1}, []])
+def test_requirement_context_is_checked_before_any_upload(configuration, context):
+    value = json.loads(configuration.read_text())
+    value["metrics_schema"] = {"definitions": {"loss": {"unit": "nats/token", "required_when": context}}}
+    configuration.write_text(json.dumps(value))
+    api = API()
+    with pytest.raises(ClientError, match="required_when"):
+        experiment(api, HEALTH, configuration, configuration.with_name("state.json"))
+    assert not api.calls
+
+
+def test_scoped_metric_requirement_is_frozen_and_requires_server_support(configuration):
+    value = json.loads(configuration.read_text())
+    value["metrics_schema"] = {"definitions": {"loss": {"unit": "nats/token", "required": True,
+        "required_when": {"dataset_id": "validation-v1"}}}}
+    configuration.write_text(json.dumps(value))
+    api = API()
+    path = configuration.with_name("state.json")
+    with pytest.raises(ClientError, match="metric-records.v1"):
+        experiment(api, HEALTH, configuration, path)
+    assert not api.calls
+    experiment(api, {"capabilities": [*HEALTH["capabilities"], "metric-records.v1"]}, configuration, path)
+    request = next(kwargs["data"]["run"] for endpoint, kwargs in api.calls if endpoint.endswith("/experiment-preparations"))
+    assert request["metrics_schema"] == value["metrics_schema"]
+
+
 def test_one_config_transports_project_schema_and_scoring_protocol(configuration):
     value = json.loads(configuration.read_text())
     value.update(metrics_schema={"definitions": {"validation_loss": {"unit": "nats/token", "required": True}}},

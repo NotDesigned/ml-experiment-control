@@ -99,8 +99,12 @@ The default charts separate two uses:
 - `curves/<name>` plots accepted training/validation values against their explicit
   scientific step (or an explicitly labelled epoch axis). At least two distinct
   positions are required to show a curve; a final-only value is not a history.
-- `results/<name>` compares the latest valid result after the Attempt ends.
-  This is the latest scientific step, not the minimum loss or a chosen best model.
+- `results/<name>` compares an explicitly declared `MetricWriter.summary()` result
+  after the Attempt ends. Summary records do not add training-curve points.
+  If no explicit summary exists for that series, the historical latest-observation
+  rule remains available for compatibility. Neither path selects the minimum loss
+  or a best checkpoint automatically. A failed/conflicting explicit result cannot
+  fall back to an unrelated valid history point.
   An active Attempt, missing/nonfinite result or conflicting latest observation
   has no final result scalar. A failed Attempt can retain a valid measured result;
   filter by `ml_expd/state` when comparing successful experiments.
@@ -116,6 +120,7 @@ Their assignment survives restarts; no scientific meanings are silently combined
 
 `ml_expd/display_definitions_json` maps result fields to their exact name, unit,
 protocol, dataset, variant, checkpoint, step/epoch, numerator/denominator and validity.
+It also records `selection: explicit_summary` or `latest_observation`.
 JSON preserves literal field names (W&B flattens dict-valued summaries).
 `ml_expd/display_coverage` distinguishes worker JSONL from incomplete legacy
 observations. Original payloads and event IDs remain in W&B history and the private

@@ -119,10 +119,41 @@ class RunContext:
     @staticmethod
     def _metric_payload(records: list[dict[str, Any]], *, keys: str | None,
                         max_points: int, source: Path | None,
-                        source_attempt_id: str | None, contract: dict | None = None, normalized: bool = False) -> dict[str, Any]:
+                        source_attempt_id: str | None, contract: dict | None = None, normalized: bool = False,
+                        format: str = "legacy", names: list[str] | None = None) -> dict[str, Any]:
         if max_points <= 0:
             raise ApplicationError("max_points must be positive", status_code=422,
                                    code="INVALID_MAX_POINTS")
+        if (format not in {"legacy", "records"} or names is not None and format != "records"
+                or format == "records" and keys is not None):
+            raise ApplicationError("choose records with name filters, or legacy with keys", status_code=422,
+                                   code="INVALID_METRIC_FORMAT")
+        contract = contract or {}
+        complete = metric_result(records, contract.get("metrics_schema"),
+                                 protocol_id=contract.get("protocol_id"), source=str(source) if source else None, normalized=normalized)
+        validation = {"coverage": "complete_history", "total_records": len(records),
+                      "failed_records": sum(item["status"] == "FAILED" for item in complete["records"]),
+                      "conflicting_records": sum(item["status"] == "CONFLICTING" for item in complete["records"]),
+                      "incomplete_contexts": sum(item["state"] == "PARTIAL" for item in complete["contexts"])}
+        validation["state"] = ("FAILED" if validation["failed_records"] or validation["conflicting_records"] else
+                               "PARTIAL" if validation["incomplete_contexts"] else complete["state"])
+        if format == "records":
+            if names is not None and (not isinstance(names, list) or len(names) > 256 or any(not isinstance(name, str) or not name.strip()
+                    or len(name) > 128 or any(ord(c) < 32 for c in name) for name in names)):
+                raise ApplicationError("name filters must be valid metric names", status_code=422, code="INVALID_METRIC_NAMES")
+            validation["total_records"] = len(complete["records"])
+            validation["missing_metrics"] = sorted(set(complete["missing_metrics"]) | {
+                name for context in complete["contexts"] for name in context["missing_metrics"]})
+            available = {item["name"] for item in complete["records"]}
+            selected = [item for item in complete["records"] if not names or item["name"] in names]
+            total = len(selected)
+            if total > max_points:
+                selected = ([selected[-1]] if max_points == 1 else
+                            [selected[(index * (total - 1)) // (max_points - 1)] for index in range(max_points)])
+            return {"records": [{k: v for k, v in item.items() if k not in {"source", "sources"}} for item in selected],
+                    "validation": validation, "total_records": total, "downsampled": total > len(selected),
+                    "missing_names": sorted(set(names or []) - available),
+                    "protocol_id": complete["protocol_id"], "source_attempt_id": source_attempt_id}
         wanted = [key.strip() for key in keys.split(",") if key.strip()] if keys else None
         total = len(records)
         available = sorted({
@@ -159,17 +190,8 @@ class RunContext:
                 ):
                     point[key] = value
             points.append(point)
-        contract = contract or {}
-        complete = metric_result(records, contract.get("metrics_schema"),
-                                 protocol_id=contract.get("protocol_id"), source=str(source) if source else None, normalized=normalized)
         result = metric_result(sampled, contract.get("metrics_schema"),
                                protocol_id=contract.get("protocol_id"), source=str(source) if source else None, normalized=normalized)
-        validation = {"coverage": "complete_history", "total_records": total,
-                      "failed_records": sum(item["status"] == "FAILED" for item in complete["records"]),
-                      "conflicting_records": sum(item["status"] == "CONFLICTING" for item in complete["records"]),
-                      "incomplete_contexts": sum(item["state"] == "PARTIAL" for item in complete["contexts"])}
-        validation["state"] = ("FAILED" if validation["failed_records"] or validation["conflicting_records"] else
-                               "PARTIAL" if validation["incomplete_contexts"] else complete["state"])
         return {
             "metrics": result, "evaluation": contract, "validation": validation,
             "points": points, "keys": wanted or numeric_available,

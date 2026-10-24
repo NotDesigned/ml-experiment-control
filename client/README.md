@@ -141,4 +141,9 @@ never overwrite the file with a final-only result. Keep recovery state in
 `STATE_DIR` and stream metrics directly to `OUTPUT_DIR`, even when final weights
 are exported later. A reporting rank should write your distributed aggregate.
 Use a new Dockerfile Runtime with `experiment-records.v1` for live delivery.
-See [metric meaning, aggregation and provenance](../docs/metrics.md).
+Use `metrics.summary(...)` after checkpoint selection to explicitly declare a
+comparison result; it appends `summary:true` in the same file without fabricating
+a training point. Read typed records with `ml-exp metrics --project P --run R
+--name validation_loss`; repeat `--name` for multiple metrics. This requires the
+server's `metric-records.v1` capability. See
+[metric meaning, aggregation and provenance](../docs/metrics.md).

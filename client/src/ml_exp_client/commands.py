@@ -67,7 +67,7 @@ def dispatch(args, client, health):
                             state_path=args.state, details=args.details)
     elif args.command in {"logs", "metrics"}:
         options = ({"stream": args.stream, "lines": args.lines} if args.command == "logs"
-                   else {"keys": args.keys, "max_points": args.max_points})
+                   else {"keys": args.keys, "names": getattr(args, "name", None), "max_points": args.max_points})
         result = read_attempt(client, args.command, args.project, args.run, args.attempt, **options)
     elif args.command in {"cancel", "retry"}:
         result = training_operation(client, args.command, args.state, project=args.project,

@@ -6,7 +6,7 @@ import json
 import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
 
 class MetricDefinition(BaseModel):
@@ -17,6 +17,24 @@ class MetricDefinition(BaseModel):
     aggregation: str = Field(default="scalar", min_length=1, max_length=128)
     numerator_unit: str | None = Field(default=None, min_length=1, max_length=128)
     denominator_unit: str | None = Field(default=None, min_length=1, max_length=128)
+    required_when: dict[str, str] | None = None
+
+    @field_validator("required_when")
+    @classmethod
+    def requirement_context(cls, value):
+        if value is not None and (not value or value.keys() - {"dataset_id", "variant_id", "checkpoint_id"}
+                or any(not item.strip() or len(item) > 2000 or any(ord(c) < 32 for c in item)
+                       for item in value.values())):
+            raise ValueError("required_when needs exact dataset_id, variant_id or checkpoint_id values")
+        return value
+
+    @model_serializer(mode="wrap")
+    def serialize_definition(self, handler):
+        value = handler(self)
+        # Omitted additions must not change existing schema/protocol hashes.
+        if "required_when" not in self.model_fields_set:
+            value.pop("required_when", None)
+        return value
 
     @field_validator("unit", "numerator_unit", "denominator_unit")
     @classmethod
@@ -103,6 +121,9 @@ def observations(record, schema, *, protocol_id=None, source=None):
         if bad_variant:
             state, error = "FAILED", "INVALID_VARIANT_ID"
             errors.append(error)
+        if "summary" in item and type(item["summary"]) is not bool:
+            state, error = "FAILED", "INVALID_SUMMARY_FLAG"
+            errors.append(error)
         if protocol_id is not None and context != protocol_id:
             state, error = "FAILED", "PROTOCOL_MISMATCH"
             errors.append(error)
@@ -122,7 +143,8 @@ def observations(record, schema, *, protocol_id=None, source=None):
                         "invalid_value": str(value)[:128] if value is not None and not valid_number else None,
                         "variant_id": variant if not bad_variant else None,
                         "protocol_id": context, "status": state, "error": str(error)[:2000] if error is not None else None,
-                        "source": source or record.get("_source_path"), "errors": errors, **sums})
+                        "source": source or record.get("_source_path"), "errors": errors, **sums,
+                        **({"summary": item["summary"] is True} if "summary" in item else {})})
     return results
 
 
@@ -132,7 +154,7 @@ def metric_result(records, schema=None, *, protocol_id=None, source=None, normal
     by_key = {}
     for record in records:
         for item in ([dict(record)] if normalized else observations(record, schema, protocol_id=protocol_id, source=source)):
-            key = tuple(item.get(k) for k in ("name", "unit", "protocol_id", "checkpoint_id", "dataset_id", "variant_id", "epoch", "step"))
+            key = tuple(item.get(k) for k in ("name", "unit", "protocol_id", "checkpoint_id", "dataset_id", "variant_id", "epoch", "step")) + (item.get("summary", False),)
             previous = by_key.get(key)
             item["sources"] = sorted(set([*(previous.get("sources", []) if previous else []),
                                           *([item["source"]] if item["source"] else [])]))
@@ -157,7 +179,10 @@ def metric_result(records, schema=None, *, protocol_id=None, source=None, normal
     groups = []
     for identity, members in contexts.items():
         published = {item["name"] for item in members if item["status"] == "VALID"}
-        missing = [name for name in required if name not in published]
+        context = dict(zip(identity_fields, identity))
+        missing = [name for name in required if name not in published
+                   and all(context.get(key) == value for key, value in
+                           (schema["definitions"][name].get("required_when") or {}).items())]
         failed = any(item["status"] in {"FAILED", "CONFLICTING"} for item in members)
         state = "FAILED" if failed else "PARTIAL" if missing or any(item["status"] != "VALID" for item in members) else "COMPLETE"
         groups.append({"identity": dict(zip(identity_fields, identity)), "state": state,
