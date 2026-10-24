@@ -50,6 +50,12 @@ def dispatch(args, client, health):
         result = debug_session(args, client, health)
     elif args.command == "check":
         result = check(args, client, health)
+    elif args.command == "source-import":
+        if "source-import.v1" not in health.get("capabilities", []):
+            raise ClientError("server does not advertise source import")
+        if health.get("source_imports") is False:
+            raise ClientError("source imports are disabled by the server")
+        result = import_source(client, args.project, args.directory)
     elif args.command == "collect":
         if "result-collection.v1" not in health.get("capabilities", []):
             raise ClientError("server lacks result-collection.v1")
@@ -195,15 +201,21 @@ def wandb(args, client, health):
     return result
 
 
+def import_source(client, project, directory):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", project):
+        raise ClientError("invalid project identity")
+    source = source_archive(directory)
+    query = urlencode({"project": project, "sha256": hashlib.sha256(source).hexdigest()})
+    return client.call("/api/source-imports/archive?" + query, raw=source)
+
+
 def pack(args, client, health):
     if args.state.exists():
         raise ClientError("state file exists; inspect it with runtime instead of replaying pack")
     if "dockerfile-build.v1" not in health.get("capabilities", []):
         raise ClientError("server does not advertise the Dockerfile build capability")
     validate_dockerfile(args.source, args.dockerfile)
-    source = source_archive(args.source)
-    query = urlencode({"project": args.project, "sha256": hashlib.sha256(source).hexdigest()})
-    imported = client.call("/api/source-imports/archive?" + query, raw=source)
+    imported = import_source(client, args.project, args.source)
     save(args.state, imported)
     endpoint = "/api/projects/" + segment(args.project) + "/runtimes"
     definition = {"source_id": imported["source_id"], "entrypoint": args.entrypoint}

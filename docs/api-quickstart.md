@@ -20,12 +20,25 @@ JSON. Set only one of `ML_EXPD_API_TOKEN_FILE` and `ML_EXPD_API_TOKEN`; simultan
 nonempty sources are rejected. These and the API URL are the only connection
 settings; see [configuration](configuration.md). From a checkout,
 `python -m pip install ./client` installs only the client.
-`check` returns capabilities, policy, executors, base digests and storage limits.
-Choose actual IDs/digests from those responses; executors are not free-GPU counts.
+`check` prints a short API/source/training summary. Use `ml-exp check --json` for
+capabilities, policy, executors, base digests and storage limits, including from
+scripts that previously parsed the default JSON output. Choose actual IDs/digests
+from that JSON; executors are not free-GPU counts.
 Before uploading an experiment, run `ml-exp check --training` to check required
 training configuration and builder connectivity. A basic API can pass `check`
 while reporting incomplete training configuration; the training check returns 2
 and names its missing components. It does not allocate a GPU or validate admission.
+
+For a basic service without a builder, import source independently:
+
+```bash
+ml-exp source-import --project my-study --directory ./source
+```
+
+This returns immutable source identity and metadata; it does not require a
+Dockerfile or start a build/job. A full deployment example is in the
+[two-machine quickstart](two-machine-quickstart.md). The ordinary `experiment`
+command below already imports source, so no separate upload is needed for it.
 
 ## First experiment
 
