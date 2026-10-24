@@ -896,6 +896,29 @@ stage_event SIF_PUBLISH READY
             lines = [line for line in queue.stdout.splitlines() if line.strip()]
             observation_source = "squeue"
         status = parse_accounting("\n".join(lines), job_id=job_id, run_id=run["run_id"], partition=backend["partition"])
+        if observation_source == "sacct" and status["state"] == "QUEUED":
+            # Accounting usually has a PENDING row before allocation, but this
+            # projection contains no Reason. Supplement it without replacing
+            # the known accounting state when queue evidence is unavailable.
+            queue_detail = {"source": "slurm-squeue", "availability": "NOT_OBSERVED"}
+            status.setdefault("detail", {})["queue"] = queue_detail
+            try:
+                pending = self._remote_query(
+                    backend["ssh_alias"],
+                    f"squeue -j {shlex.quote(job_id)} -h -o '%i|%j|%P|%T|%M|0:0|%R'",
+                    operation=f"Slurm pending reason query for job {job_id}",
+                )
+                rows = [line.split("|") for line in pending.stdout.splitlines() if line.strip()]
+                if (len(rows) == 1 and len(rows[0]) == 7 and rows[0][0] == job_id
+                        and rows[0][2] == backend["partition"]):
+                    observed = parse_accounting(pending.stdout, job_id=job_id,
+                                                run_id=run["run_id"], partition=backend["partition"])
+                    if observed["state"] == "QUEUED":
+                        status["reason"] = observed.get("reason")
+                        status["detail"].update(observed.get("detail", {}))
+                        queue_detail.update(availability="OBSERVED", reason=status["reason"])
+            except (RuntimeError, OSError, ValueError):
+                queue_detail["availability"] = "UNAVAILABLE"
         status["observed_at"] = self.s.utc_now()
         status["observation_source"] = observation_source
         raw = status["raw_state"]

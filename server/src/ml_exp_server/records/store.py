@@ -26,11 +26,14 @@ def digest(value):
 
 
 class RecordStore:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, read_only=False):
         self.root = root / "tracking"
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.db = self.root / "outbox.sqlite"
         self._display_cache = OrderedDict()
+        self.read_only = read_only
+        if read_only:
+            return
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self.connection() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -62,7 +65,8 @@ class RecordStore:
 
     @contextmanager
     def connection(self):
-        conn = sqlite3.connect(self.db, timeout=30)
+        target = self.db.resolve().as_uri() + "?mode=ro" if self.read_only else self.db
+        conn = sqlite3.connect(target, timeout=30, uri=self.read_only)
         conn.row_factory = sqlite3.Row
         try:
             with conn:
@@ -232,3 +236,36 @@ class RecordStore:
         with self.connection() as conn:
             row = conn.execute("SELECT payload FROM events WHERE scope=? AND json_extract(payload,'$.kind')='lifecycle' ORDER BY seq DESC LIMIT 1", (scope,)).fetchone()
         return json.loads(row[0])["data"] if row else {}
+
+    def latest_worker_lifecycle(self, scope):
+        """Read a reported stage, never a scheduler event or a new scope."""
+        with self.connection() as conn:
+            row = conn.execute("""
+                SELECT seq,event_id,payload FROM events
+                WHERE scope=? AND event_id GLOB 'worker.*'
+                  AND json_extract(payload,'$.kind')='lifecycle'
+                  AND json_extract(payload,'$.data.phase') IN (
+                    'PREPARING_DATA','DATA_FAILED','TRAINING','TRAINING_COMPLETED',
+                    'UPLOADING_RESULTS','RESULTS_UPLOADED','RESULTS_UPLOAD_FAILED')
+                ORDER BY seq DESC LIMIT 1
+            """, (scope,)).fetchone()
+        if row is None:
+            return None
+        data = json.loads(row["payload"])["data"]
+        return {"phase": data["phase"], "timestamp": data.get("timestamp"),
+                "event_id": row["event_id"], "sequence": row["seq"]}
+
+    def latest_metric_observation(self, scope):
+        """Read the last received observation, not the largest step or best value."""
+        with self.connection() as conn:
+            row = conn.execute("""
+                SELECT seq,event_id,json_extract(payload,'$.observations[#-1]') AS observation
+                FROM events WHERE scope=? AND json_extract(payload,'$.kind')='metrics'
+                  AND json_type(payload,'$.observations[#-1]')='object'
+                ORDER BY seq DESC LIMIT 1
+            """, (scope,)).fetchone()
+        if row is None:
+            return None
+        observation = json.loads(row["observation"])
+        return {"observation": {**observation, "timestamp": observation.get("timestamp")},
+                "event_id": row["event_id"], "sequence": row["seq"], "source": "record-journal"}

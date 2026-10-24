@@ -63,6 +63,30 @@ Prepare a fresh reviewed operation when instructed; do not reuse stale gates.
 Archive part retries are different: identical target/hash/size/part bytes are
 idempotent. Those transport rules do not authorize retrying Run or scheduler create.
 
+## Backend-independent progress
+
+`GET /api/submissions/{id}/progress` reports the exact Run/Attempt for Slurm,
+SenseCore ACP and PAI DLC through the same optional evidence fields:
+
+| Field | Meaning |
+| --- | --- |
+| `scheduler_state`, `queue` | Normalized allocation state and available native blocker, position, observation time and stale flag |
+| `worker_phase` | Last supported worker stage, original timestamp, age, event ID and sequence; a transition is not a heartbeat |
+| `last_metric` | Last received metric observation and journal provenance, retaining unit, protocol, variant and checkpoint context |
+| `input_delivery` | Bounded exact-Attempt data transfer evidence |
+| `result_collection` | Independent training result, publication and verification status |
+
+Missing fields on older servers and null evidence mean unknown. A scheduler
+terminal state is not overwritten by an earlier worker stage. The last received
+metric is not the largest step or best model, and an absent metric timestamp
+does not prove recent progress. These GETs do not refresh providers, create
+record scopes, retry training or change publication routes.
+
+The client combines these fields with indexed Run evidence and collection
+receipts for `ml-exp status`. Its presentation does not branch on backend type;
+unsupported diagnostics remain unavailable. See [recovery](recovery.md) for
+saved-state observation and the distinct meanings of retry and checkpoint resume.
+
 ## Structured errors and execution capacity
 
 Background execution has separate bounded action, preparation, build, data and

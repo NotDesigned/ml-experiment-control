@@ -22,12 +22,13 @@ from .state import SavedPlan, bound_response, save
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "PREEMPTED", "TIMEOUT"}
 
 
-def report(value):
+def report(value, *, json_output=False):
     progress = value.get("progress", value)
-    print(json.dumps({key: progress.get(key) for key in ("phase", "message", "seconds_since_progress", "diagnostic", "queue")}), file=sys.stderr)
+    from .presentation import progress_summary
+    print(json.dumps(progress) if json_output else progress_summary(progress), file=sys.stderr)
 
 
-def wait_resource(client, endpoint, seconds, *, pending=("EXECUTING",), validate=None, progress_validate=None):
+def wait_resource(client, endpoint, seconds, *, pending=("EXECUTING",), validate=None, progress_validate=None, json_output=False):
     deadline = time.monotonic() + seconds
     while True:
         value = client.call(endpoint)
@@ -36,13 +37,13 @@ def wait_resource(client, endpoint, seconds, *, pending=("EXECUTING",), validate
         if value["status"] not in pending:
             return value
         progress = client.call(endpoint + "/progress")
-        report(progress_validate(progress) if progress_validate is not None else progress)
+        report(progress_validate(progress) if progress_validate is not None else progress, json_output=json_output)
         if time.monotonic() >= deadline:
             raise ClientError("waiting timed out; execution continues; resume to inspect saved IDs, never resubmit")
         time.sleep(5)
 
 
-def wait_download(client, project, run, attempt, state, state_path, seconds):
+def wait_download(client, project, run, attempt, state, state_path, seconds, *, json_output=False):
     """Observe publication for the original Attempt; never request collection."""
     endpoint = f"/api/runs/{segment(project)}/{segment(run)}/attempts/{segment(attempt)}/collection"
     deadline = time.monotonic() + seconds
@@ -63,7 +64,7 @@ def wait_download(client, project, run, attempt, state, state_path, seconds):
                               error_code="RESULT_COLLECTION_" + status)
         if status not in ("NOT_COLLECTED", "QUEUED", "COLLECTING", "AVAILABLE"):
             raise ClientError("unknown collection status; inspect the saved exact Attempt before downloading")
-        report(value)
+        report(value, json_output=json_output)
         if time.monotonic() >= deadline:
             raise ClientError("result publication wait timed out; resume the saved state to observe the same Attempt; no collection was requested",
                               error_code="RESULT_WAIT_TIMEOUT")
@@ -88,7 +89,7 @@ def retry_download_acknowledgement(client, project, run, attempt, state, state_p
     save(state_path, state)
 
 
-def experiment(client, health, config_path, state_path, *, resume=False, execute=False, seconds=1800, out=None, continue_preparation=False, keep_server_copy=False):
+def experiment(client, health, config_path, state_path, *, resume=False, execute=False, seconds=1800, out=None, continue_preparation=False, keep_server_copy=False, json_output=False):
     config, source = read_config(config_path)
     if continue_preparation and not resume:
         raise ClientError("--continue-preparation requires --resume and inspection of saved dependencies")
@@ -245,7 +246,7 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
             current = validate_preparation(client.call(endpoint))
             if current["status"] == "RECONCILE_REQUIRED":
                 client.call(endpoint + "/continue", data={})
-        preparation = wait_resource(client, endpoint, seconds, validate=validate_preparation)
+        preparation = wait_resource(client, endpoint, seconds, validate=validate_preparation, json_output=json_output)
         plan.store("preparation", preparation)
         if preparation["status"] != "READY":
             raise ClientError("server preparation requires dependency inspection; saved Runtime/delivery IDs must be reconciled, never resubmitted")
@@ -272,7 +273,7 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
             plan.request("submission", endpoint + "/execute", data={"confirmation": submission["confirmation"]},
                 marker="scheduler_requested", validate=validate,
                 uncertain="scheduler request outcome is uncertain; inspect saved Submission before explicit execution")
-        submission = wait_resource(client, endpoint, seconds, validate=validate, progress_validate=validate_progress)
+        submission = wait_resource(client, endpoint, seconds, validate=validate, progress_validate=validate_progress, json_output=json_output)
     plan.store("submission", submission, validate=validate)
     if resume:
         retry_download_acknowledgement(client, config["project"], config["run_id"], submission["attempt_id"],
@@ -285,7 +286,7 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
     deadline = time.monotonic() + seconds
     while True:
         result = bound_response(client.call(endpoint), binding, message="training Run response differs from the experiment")
-        report(validate_progress(client.call("/api/submissions/" + segment(submission["submission_id"]) + "/progress")))
+        report(validate_progress(client.call("/api/submissions/" + segment(submission["submission_id"]) + "/progress")), json_output=json_output)
         if result["scheduler_state"] in TERMINAL:
             attempts = bound_response(client.call(endpoint + "/attempts"), binding,
                                       message="training Attempt listing differs from the experiment")
@@ -299,7 +300,7 @@ def experiment(client, health, config_path, state_path, *, resume=False, execute
         time.sleep(5)
     if download_out is not None and "download" not in state:
         if "result-collection.v1" in health.get("capabilities", []):
-            wait_download(client, config["project"], config["run_id"], submission["attempt_id"], state, state_path, seconds)
+            wait_download(client, config["project"], config["run_id"], submission["attempt_id"], state, state_path, seconds, json_output=json_output)
         state["download"] = download(client, config["project"], config["run_id"], submission["attempt_id"], download_out,
                                      keep_server_copy=state.get("download_keep_server_copy", keep_server_copy))
         save(state_path, state)

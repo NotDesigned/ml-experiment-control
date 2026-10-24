@@ -30,10 +30,36 @@ Use `ml-exp COMMAND --help` for flags. `check` is a short text summary;
 training configuration and builder connectivity without allocating a GPU; it is
 not a backend resource-admission guarantee.
 
+`status`, `cancel` and `retry` print short human-readable summaries by default;
+use `--json` for their structured results. `status --details --json` includes the
+full existing evidence. Other low-level commands keep their JSON output.
+
+Once an experiment has saved its identities, observing or downloading it does
+not require the original source directory or repeating project/Run/Attempt IDs:
+
+```bash
+ml-exp status --state trial.state.json
+ml-exp status --state trial.state.json --watch --seconds 60
+ml-exp logs --state trial.state.json --lines 80
+ml-exp metrics --state trial.state.json --name loss
+ml-exp download --state trial.state.json --out results/trial-001
+```
+
+Observation stays bound to the saved Attempt. `--watch --seconds` limits client
+observation only; it neither restarts training nor switches to a later retry.
+Before submission, `status --state` can inspect preparation without an Attempt;
+logs, metrics and download require a bound Attempt.
+
 Keep source, data, saved client state and downloaded results in separate
 directories. State files preserve original identities after a lost reply; do not
 replace them to retry an uncertain request. The [recovery guide](../docs/recovery.md)
 explains continuation, reconciliation, result collection and reviewed cancel/retry.
+For example, `ml-exp retry --from-state trial.state.json --state retry.state.json
+--max-gpu-hours 0.2` creates a separate plan for review; only a subsequent
+`ml-exp retry --state retry.state.json --execute` authorizes execution. Retry
+keeps the frozen Run's original checkpoint reference; it does not choose the
+latest checkpoint. An uncertain operation must be reconciled before another
+execution is considered.
 
 ## Training metrics
 

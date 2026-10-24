@@ -195,7 +195,7 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
             scheduler_state="SUCCEEDED", attempts=[AttemptSummary(attempt_id="attempt-001", state="SUCCEEDED")]))
         store = ArtifactStore(s3_file, config.project_registry_root_path())
         _, capability, limit = store.issue("quickstart", "slurm-gpu", "attempt-001", run_root, ["**/*"])
-        before_publication = cli(base, auth, "status", "--project", "quickstart", "--run", "slurm-gpu")
+        before_publication = cli(base, auth, "status", "--project", "quickstart", "--run", "slurm-gpu", "--json")
         assert before_publication["attempt_id"] == "attempt-001"
         assert before_publication["scheduler"]["state"] == "SUCCEEDED"
         assert before_publication["training"]["status"] == "UNKNOWN"
@@ -211,7 +211,7 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
             assert response.status == 200
         watched = cli(base, auth, "watch", "--project", "quickstart", "--run", "slurm-gpu", "--seconds", "1")
         assert watched["attempts"]["current_attempt_id"] == "attempt-001"
-        published = cli(base, auth, "status", "--project", "quickstart", "--run", "slurm-gpu", "--details")
+        published = cli(base, auth, "status", "--project", "quickstart", "--run", "slurm-gpu", "--details", "--json")
         assert published["publication"]["status"] == "AVAILABLE"
         assert published["publication"]["download_available"]
         assert published["verification"]["status"] == "SHA256_VERIFIED"

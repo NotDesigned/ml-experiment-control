@@ -106,17 +106,25 @@ You can explicitly set `"wandb": {"enabled": false}`; see [W&B](wandb.md).
 Use another terminal with the same connection settings:
 
 ```bash
-ml-exp status --project my-study --run trial-001 --state trial.state.json
-ml-exp status --project my-study --run trial-001 --attempt attempt-001 --details
-ml-exp logs --project my-study --run trial-001 --attempt attempt-001 --stream both --lines 80
-ml-exp metrics --project my-study --run trial-001 --attempt attempt-001 --name loss --max-points 2000
+ml-exp status --state trial.state.json
+ml-exp status --state trial.state.json --watch --seconds 60
+ml-exp status --state trial.state.json --details --json
+ml-exp logs --state trial.state.json --stream both --lines 80
+ml-exp metrics --state trial.state.json --name loss --max-points 2000
 ```
 
-Replace `attempt-001` with the returned ID. `status --state` includes the original
-preparation/submission, even before a Run exists. Without it, preparation can be
-`NOT_OBSERVED`. An explicit Attempt prevents accidentally reading a later retry.
-`--details` expands existing evidence; it neither refreshes providers nor starts
-collection. Metrics use normalized records, including units and provenance.
+`status` prints a short human-readable summary of stage, waiting reason, evidence
+age, training and results. `--json` retains the structured interface;
+`--details --json` expands the full existing evidence. `--details` alone does not
+expand the text summary or refresh providers. Logs, metrics and other low-level
+commands retain their JSON output. Metrics include units and provenance.
+
+These reads use the original identities from state; neither local source nor
+repeated project/Run/Attempt arguments are needed. `status --state` includes the
+original preparation/submission, even before a Run exists. Logs, metrics and
+download require a bound Attempt. Without state, provide `--project`, `--run`
+and an explicit `--attempt` to observe that execution. Preparation may then be
+`NOT_OBSERVED`.
 
 | Observation | What it establishes |
 |---|---|
@@ -126,10 +134,12 @@ collection. Metrics use normalized records, including units and provenance.
 | Training `COMPLETED`, exit code 0 | Worker training completion evidence exists |
 | Collection `AVAILABLE`, `SHA256_VERIFIED`, `download_available=true` | Results can be downloaded |
 
-`ml-exp watch --project my-study --run trial-001 --seconds 1800` waits for a
-scheduler terminal state; it does not wait for result publication. Logs may be
-delayed or unavailable. Missing evidence remains unknown rather than implying
-success. See [recovery](recovery.md) for diagnostics and collection.
+`status --watch --seconds N` observes the same Attempt for a bounded period,
+stopping early when the scheduler and result publication have settled. It never
+submits or restarts a job. A last reported worker phase is dated evidence, not a
+heartbeat. Logs may be delayed or unavailable; missing evidence remains unknown.
+The older `watch` command waits only for scheduler completion. See
+[recovery](recovery.md) for diagnostics and collection.
 
 ## Download and acknowledge
 
@@ -137,8 +147,7 @@ The executing `experiment` command above waits for the original Attempt's result
 collection and downloads when ready. To download separately, choose a new path:
 
 ```bash
-ml-exp download --project my-study --run trial-001 \
-  --attempt attempt-001 --out results/trial-001-copy
+ml-exp download --state trial.state.json --out results/trial-001-copy
 ```
 
 The client verifies archive and file hashes, writes `verification.json`, then
@@ -192,7 +201,18 @@ For lower-level reuse, the sequence is `pack → create → prepare → execute`
 `prepare` returns review gates and an exact confirmation; `execute --state …
 --confirm …` authorizes/submits that saved Submission. See command help and the
 [resource reference](source-api.md), rather than recreating a Runtime per Run.
-Cancel/retry use separately reviewed plans. Retry adds an Attempt to the frozen
-Run; it does not automatically choose a new checkpoint. See
+Cancel/retry use separately reviewed plans, for example:
+
+```bash
+ml-exp retry --from-state trial.state.json --state retry.state.json --max-gpu-hours 0.2
+# Review the source/target Attempt, gates and budget before authorizing.
+ml-exp retry --state retry.state.json --execute
+```
+
+Use `cancel --from-state trial.state.json --state cancel.state.json` to prepare
+cancellation, then `cancel --state cancel.state.json --execute` after review.
+`--json` returns the complete operation evidence. Retry adds an Attempt to the
+frozen Run, retaining its original `resume_from`; it does not choose the latest
+checkpoint. Unknown execution outcomes require reconciliation, not replay. See
 [safe operation recovery](recovery.md#cancel-or-retry-an-exact-attempt) and
 [administrative deletion](resource-deletion.md).
