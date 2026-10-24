@@ -154,8 +154,9 @@ or schedule. Use at least 256 MiB for the adapter during prewarm; inspect owned
 cgroup OOM evidence on failure. Monitor its bounded cache and backing drive;
 no automatic cache/registry deletion is implied.
 
-Keep build-command timeout separate from RPC wait and worker duration. The
-current installation uses a 900-second build command and 1200-second private
-RPC wait, but these are operator settings, not API guarantees. Check actual
-configuration. Remove obsolete owned cache blobs only while idle; retain pinned
+Keep build-command timeout separate from RPC wait and worker duration. Set the
+builder's `timeout_seconds` explicitly and inspect the actual configuration;
+the private build RPC permits up to 7200 seconds. For optional DSW and ACR build
+budgets, see [PAI configuration](pai.md). Remove obsolete owned cache blobs only
+while idle; retain pinned
 images, results and recovery evidence.

@@ -23,7 +23,7 @@ Keep one daemon writer per workspace. For the consolidated deployment:
   .recovery/previous/          one verified preceding program
 /etc/ml-expd/                 private config/credentials
 /var/lib/ml-expd/             Action DB, index, immutable Runs and metadata
-/var/lib/ml-expd-image-builder/  configured builder receipts/progress/leases
+/var/lib/ml-expd-builder/      configured builder receipts/progress/leases
 /srv/ml-expd/projects/        registered external projects, when used
 ```
 
