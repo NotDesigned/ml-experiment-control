@@ -16,8 +16,8 @@ def test_capacity_rejection_precedes_copy_and_archive_and_keeps_scientific_files
     service, root, _, _, objects, *_ = recovery
     local = None if remote else output(root)
     copy = Mock()
-    monkeypatch.setattr(service, "read_wyd_outputs", copy)
-    monkeypatch.setattr(service, "wyd_output_bytes", lambda *a: 1024 ** 3)
+    monkeypatch.setattr(service, "read_slurm_outputs", copy)
+    monkeypatch.setattr(service, "slurm_output_bytes", lambda *a: 1024 ** 3)
     monkeypatch.setattr("shutil.disk_usage", lambda _: SimpleNamespace(free=1024 ** 3))
     service.begin(*IDENTITY); service.finish(IDENTITY)
     state = service.read(*IDENTITY)
@@ -32,11 +32,11 @@ def test_capacity_rejection_precedes_copy_and_archive_and_keeps_scientific_files
 def test_remote_size_requires_valid_stats_and_handles_locale_separators(recovery, monkeypatch):
     from ml_exp_server.results.errors import RecoveryError
     service, _, _, _, _, definition, _ = recovery
-    monkeypatch.setattr("ml_exp_server.backends.wyd.run_process", lambda *a, **kw: SimpleNamespace(stdout="Total file size: 1,234,567 bytes\n"))
-    assert service.wyd_output_bytes(definition["backend"], definition, "attempt-001") == 1234567
-    monkeypatch.setattr("ml_exp_server.backends.wyd.run_process", lambda *a, **kw: SimpleNamespace(stdout="unknown"))
+    monkeypatch.setattr("ml_exp_server.backends.slurm.run_process", lambda *a, **kw: SimpleNamespace(stdout="Total file size: 1,234,567 bytes\n"))
+    assert service.slurm_output_bytes(definition["backend"], definition, "attempt-001") == 1234567
+    monkeypatch.setattr("ml_exp_server.backends.slurm.run_process", lambda *a, **kw: SimpleNamespace(stdout="unknown"))
     with pytest.raises(RecoveryError, match="cannot determine"):
-        service.wyd_output_bytes(definition["backend"], definition, "attempt-001")
+        service.slurm_output_bytes(definition["backend"], definition, "attempt-001")
 
 
 def test_archive_peak_ignores_hidden_undeclared_and_linked_files(recovery):
@@ -56,9 +56,9 @@ def test_transfer_failure_removes_only_its_owned_scratch(recovery, monkeypatch):
     def fail(command, **options):
         Path(command[-1], "partial").write_bytes(b"bytes")
         raise TimeoutError()
-    monkeypatch.setattr("ml_exp_server.backends.wyd.run_process", fail)
+    monkeypatch.setattr("ml_exp_server.backends.slurm.run_process", fail)
     with pytest.raises(TimeoutError):
-        service.read_wyd_outputs(definition["backend"], definition, "attempt-001", attempt / "recovered_outputs")
+        service.read_slurm_outputs(definition["backend"], definition, "attempt-001", attempt / "recovered_outputs")
     assert list(attempt.glob(".result-recovery-*")) == [unknown]
     assert (unknown / "unique").read_bytes() == b"keep"
 

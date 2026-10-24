@@ -71,6 +71,17 @@ def test_client_configuration_errors_are_local_and_do_not_print_tokens(monkeypat
     assert "set ML_EXPD_API_TOKEN" in capsys.readouterr().err
 
 
+def test_conflicting_token_sources_fail_before_reading_files_or_connecting(monkeypatch, capsys):
+    monkeypatch.setenv("ML_EXPD_API_URL", "https://api.example")
+    monkeypatch.setenv("ML_EXPD_API_TOKEN", "private-inline-token")
+    monkeypatch.setenv("ML_EXPD_API_TOKEN_FILE", "/nonexistent/private-token-file")
+    monkeypatch.setattr("ml_exp_client.cli.Client", lambda *a: pytest.fail("do not connect with ambiguous credentials"))
+    assert main(["check"]) == 2
+    error = capsys.readouterr().err
+    assert "set only one of ML_EXPD_API_TOKEN_FILE and ML_EXPD_API_TOKEN" in error
+    assert "private-inline-token" not in error and "/nonexistent" not in error
+
+
 def test_pack_uses_only_dockerfile_and_checks_it_before_upload(tmp_path, monkeypatch, capsys):
     calls = []
     class API:

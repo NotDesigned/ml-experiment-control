@@ -14,20 +14,21 @@ from experiment_control.backends.sensecore_rest import SenseCoreREST
 from ..application_errors import ApplicationError
 from .sensecore_preparation import SenseCoreScriptPreparation
 from .states import TERMINAL
-from .wyd import WydDataStager
+from .slurm import SlurmDataStager
+from ..data.locations import SLURM_STORAGE
 
 
-class WydOperations:
+class SlurmOperations:
     def prepare_asset(self, owner, project, preparation, value, selected, asset, observe):
-        stager = WydDataStager(owner.runtime)
-        marker = "wyd:" + asset
+        stager = SlurmDataStager(owner.runtime)
+        marker = "slurm:" + asset
         verified = stager.check(project, asset, selected["profile"])
         if verified["status"] != "READY":
             from ..data.locations import for_backend
-            if for_backend(stager.assets.read(project, asset), selected["profile"], project).get("remote_storage") == "wyd":
-                raise ApplicationError("WYD remote upload cache is unavailable; inspect the original upload", code="WYD_DATA_NOT_READY")
-            if marker in value["delivery_requested"]:
-                raise ApplicationError("saved WYD transfer is not verified; inspect shared storage, never replay", code="WYD_DATA_NOT_READY")
+            if for_backend(stager.assets.read(project, asset), selected["profile"], project).get("remote_storage") in SLURM_STORAGE:
+                raise ApplicationError("Slurm remote upload cache is unavailable; inspect the original upload", code="SLURM_DATA_NOT_READY")
+            if marker in value["delivery_requested"] or "wyd:" + asset in value["delivery_requested"]:
+                raise ApplicationError("saved Slurm transfer is not verified; inspect shared storage, never replay", code="SLURM_DATA_NOT_READY")
             value["delivery_requested"].append(marker)
             owner.update(project, preparation, delivery_requested=value["delivery_requested"])
             receipt = stager.publish(project, asset, selected["profile"])
@@ -45,7 +46,7 @@ class WydOperations:
         return reference
 
     def confirm_terminal(self, owner, backend, name):
-        owner.verify_wyd_terminal(backend, name)
+        owner.verify_slurm_terminal(backend, name)
 
     def collect(self, owner, identity, root, definition, transfer, operation, local):
         if local == root / "attempts" / identity[2] / "collected_run" / "attempts" / identity[2] / "outputs":
@@ -55,9 +56,9 @@ class WydOperations:
         if local is None:
             owner.update(identity, status="COLLECTING", phase="READING_SHARED_STORAGE")
             local = root / "attempts" / identity[2] / "recovered_outputs"
-            size = owner.wyd_output_bytes(definition["backend"], definition, identity[2])
+            size = owner.slurm_output_bytes(definition["backend"], definition, identity[2])
             with owner.capacity().reserve(4 * size + 128 * 1024 ** 2) as reservation:
-                owner.read_wyd_outputs(definition["backend"], definition, identity[2], local)
+                owner.read_slurm_outputs(definition["backend"], definition, identity[2], local)
                 owner.update(identity, status="COLLECTING", phase="VERIFYING_AND_PUBLISHING")
                 owner.publish_local(identity, local, transfer, reservation=reservation)
         else:
@@ -155,7 +156,7 @@ def publish_existing(owner, identity, local, transfer):
 
 def backend_operations(kind, adapters=None):
     """A small injectable mapping, not plugin discovery or a second registry DB."""
-    implementations = adapters if adapters is not None else {"slurm": WydOperations(), "sensecore": SenseCoreOperations(), "pai-dlc": PaiOperations()}
+    implementations = adapters if adapters is not None else {"slurm": SlurmOperations(), "sensecore": SenseCoreOperations(), "pai-dlc": PaiOperations()}
     try:
         return implementations[kind]
     except KeyError:

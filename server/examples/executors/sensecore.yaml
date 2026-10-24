@@ -1,0 +1,17 @@
+# REST credentials stay in the private SenseCore JSON, never in this file.
+executors:
+  sensecore-gpu:
+    title: SenseCore GPU
+    storage_root: /data/ml-expd
+    data_root: /data
+    gpus: 1
+    capacity: {gpus: 1, cpus: 8, memory_gb: 128}
+    backend:
+      kind: sensecore
+      workspace: REPLACE_WORKSPACE
+      aec2: REPLACE_COMPUTE_CLUSTER
+      pool_selection: highest_spot
+      allowed_clusters: [REPLACE_COMPUTE_CLUSTER]
+      worker_spec: REPLACE_ONE_GPU_SPEC
+      quota_type: spot
+      storage_mount: REPLACE_VOLUME:/data

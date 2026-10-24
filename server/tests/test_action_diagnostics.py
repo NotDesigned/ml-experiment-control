@@ -8,7 +8,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from experiment_control.backends.wyd import WydSlurmBackend
+from experiment_control.backends.slurm import SlurmBackend
 from ml_exp_server.api.app import create_app
 from ml_exp_server.actions.store import ActionStore
 from ml_exp_server.schemas import ServerConfig
@@ -60,7 +60,7 @@ def test_saved_diagnostics_redact_legacy_timeout_and_preserve_failed_history(cli
     action_id, _, _ = _managed_action(client)
     store = client.app.state.runtime.action_store
     before = store.snapshot(action_id)
-    monkeypatch.setattr(WydSlurmBackend, "stage_progress", lambda *_args: pytest.fail("default GET must not query the backend"))
+    monkeypatch.setattr(SlurmBackend, "stage_progress", lambda *_args: pytest.fail("default GET must not query the backend"))
     response = client.get(f"/api/actions/{action_id}/diagnostics")
     assert response.status_code == 200, response.text
     value = response.json()
@@ -80,7 +80,7 @@ def test_refresh_observes_ready_metadata_without_rewriting_failure(client, monke
     store = client.app.state.runtime.action_store
     before = store.snapshot(action_id)
     event = {"phase": "SIF_PUBLISH", "status": "READY", "timestamp": "2026-10-08T12:21:00Z" if after else "2026-10-08T12:19:00Z"}
-    monkeypatch.setattr(WydSlurmBackend, "stage_progress", lambda _self, _run: {**event, "argv": "private"})
+    monkeypatch.setattr(SlurmBackend, "stage_progress", lambda _self, _run: {**event, "argv": "private"})
     response = client.get(f"/api/actions/{action_id}/diagnostics?refresh=true")
     assert response.status_code == 200, response.text
     remote = response.json()["remote"]
@@ -99,7 +99,7 @@ def test_refresh_reports_in_progress_and_stale_or_missing_evidence(client, monke
         ({"phase": "SIF_PUBLISH", "status": "READY", "timestamp": "2026-10-08T11:59:59Z"}, "UNAVAILABLE"),
         (None, "UNAVAILABLE"),
     ):
-        monkeypatch.setattr(WydSlurmBackend, "stage_progress", lambda _self, _run: event)
+        monkeypatch.setattr(SlurmBackend, "stage_progress", lambda _self, _run: event)
         remote = client.get(f"/api/actions/{action_id}/diagnostics?refresh=true").json()["remote"]
         assert remote["status"] == status
         if status == "OBSERVED":
@@ -111,7 +111,7 @@ def test_refresh_reports_verified_cache_reuse_as_ready_without_hashing_on_get(cl
     store = client.app.state.runtime.action_store
     before = store.snapshot(action_id)
     event = {"phase": "CACHE_VERIFY", "status": "READY", "timestamp": "2026-10-08T12:21:00Z"}
-    monkeypatch.setattr(WydSlurmBackend, "stage_progress", lambda _self, _run: event)
+    monkeypatch.setattr(SlurmBackend, "stage_progress", lambda _self, _run: event)
     response = client.get(f"/api/actions/{action_id}/diagnostics?refresh=true")
     assert response.status_code == 200, response.text
     remote = response.json()["remote"]
@@ -130,7 +130,7 @@ def test_refresh_accepts_embedded_oci_source_provenance_without_source_flags(cli
     assert "--source-id" not in before["stage_command_preview"]
     assert "--attempt-id" in before["stage_command_preview"] and "--campaign-id" in before["stage_command_preview"]
     event = {"phase": "CACHE_VERIFY", "status": "READY", "timestamp": "2026-10-08T12:21:00Z"}
-    monkeypatch.setattr(WydSlurmBackend, "stage_progress", lambda _self, _run: event)
+    monkeypatch.setattr(SlurmBackend, "stage_progress", lambda _self, _run: event)
     response = client.get(f"/api/actions/{action_id}/diagnostics?refresh=true")
     assert response.status_code == 200, response.text
     remote = response.json()["remote"]
@@ -149,7 +149,7 @@ def test_embedded_oci_requires_valid_frozen_source_provenance(client, monkeypatc
     plan = json.loads(plan_path.read_text())
     plan["execution_campaign_sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     plan_path.write_text(json.dumps(plan))
-    monkeypatch.setattr(WydSlurmBackend, "stage_progress", lambda *_args: pytest.fail("invalid embedded source must not query the backend"))
+    monkeypatch.setattr(SlurmBackend, "stage_progress", lambda *_args: pytest.fail("invalid embedded source must not query the backend"))
     remote = client.get(f"/api/actions/{action_id}/diagnostics?refresh=true").json()["remote"]
     assert remote["status"] == "UNAVAILABLE" and remote["error_class"] == "ValueError"
 
@@ -161,7 +161,7 @@ def test_nonempty_expected_source_must_match_the_frozen_run(client, monkeypatch)
     plan = json.loads(plan_path.read_text())
     plan["expected_source_id"] = "source." + "f" * 64
     plan_path.write_text(json.dumps(plan))
-    monkeypatch.setattr(WydSlurmBackend, "stage_progress", lambda *_args: pytest.fail("mismatched source must not query the backend"))
+    monkeypatch.setattr(SlurmBackend, "stage_progress", lambda *_args: pytest.fail("mismatched source must not query the backend"))
     remote = client.get(f"/api/actions/{action_id}/diagnostics?refresh=true").json()["remote"]
     assert remote["status"] == "UNAVAILABLE" and remote["error_class"] == "ValueError"
 
@@ -195,13 +195,13 @@ def test_refresh_rejects_frozen_binding_tamper_before_remote_access(client, monk
         original.rename(target)
         original.symlink_to(target, target_is_directory=True)
     plan_path.write_text(json.dumps(plan))
-    monkeypatch.setattr(WydSlurmBackend, "stage_progress", lambda *_args: pytest.fail("tampered binding must not reach backend"))
+    monkeypatch.setattr(SlurmBackend, "stage_progress", lambda *_args: pytest.fail("tampered binding must not reach backend"))
     remote = client.get(f"/api/actions/{action_id}/diagnostics?refresh=true").json()["remote"]
     assert remote["status"] == "UNAVAILABLE" and remote["error_class"] == "ValueError"
 
 
 @pytest.mark.parametrize("unsupported", ["external", "base_missing", "controller_missing", "capability_missing", "entry_changed", "sensecore", "oci_missing"])
-def test_refresh_never_invokes_external_or_non_wyd_controller(client, monkeypatch, unsupported):
+def test_refresh_never_invokes_external_or_non_slurm_controller(client, monkeypatch, unsupported):
     action_id, path, campaign = _managed_action(client, executor="cloud" if unsupported == "sensecore" else "gpu")
     daemon = client.app.state.runtime
     project = daemon.project("demo")
@@ -217,7 +217,7 @@ def test_refresh_never_invokes_external_or_non_wyd_controller(client, monkeypatc
         plan = json.loads(plan_path.read_text())
         plan["execution_campaign_sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
         plan_path.write_text(json.dumps(plan))
-    monkeypatch.setattr(WydSlurmBackend, "stage_progress", lambda *_args: pytest.fail("unsupported controller must not query"))
+    monkeypatch.setattr(SlurmBackend, "stage_progress", lambda *_args: pytest.fail("unsupported controller must not query"))
     assert client.get(f"/api/actions/{action_id}/diagnostics?refresh=true").json()["remote"]["status"] == "UNSUPPORTED"
 
 

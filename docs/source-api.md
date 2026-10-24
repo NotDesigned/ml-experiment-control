@@ -59,7 +59,7 @@ saved session; explicit POST create/complete confirms any previously forwarded
 part whose ACK was lost. `POST /api/assets/archive` is removed. See the complete
 [multipart contract](data.md#multipart-http-contract).
 
-WYD completion proves a verified shared-storage cache. SenseCore completion
+Slurm completion proves a verified shared-storage cache. SenseCore completion
 publishes a data-image identity; its separate zero-GPU NAS delivery must become
 READY before Run submission. Metadata remains available through
 `GET /api/projects/P/assets/ASSET_ID`. New target-backed `/archive` and `/download`
@@ -72,7 +72,7 @@ routes. Old immutable assets retain their original read behavior.
 {
   "run_id": "trial-001",
   "runtime_id": "runtime.ACTUAL_HASH",
-  "executor": "wyd-l40s",
+  "executor": "slurm-gpu",
   "arguments": ["--epochs", "1"],
   "resources": {"gpus": 1, "cpus": 8, "memory_gb": 32, "max_time": "00:10:00"},
   "outputs": ["metrics.jsonl", "summary.json", "weights/**"]

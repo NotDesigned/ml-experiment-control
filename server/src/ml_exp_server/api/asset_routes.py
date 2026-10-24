@@ -12,6 +12,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 
 from ..results.artifacts import ArtifactService
 from ..data.data_assets import AssetStore
+from ..data.locations import REMOTE
 from ..results.checkpoint_registry import CheckpointRegistry
 from ..workers.persistent_state import MANIFEST_LIMIT
 from ..application_errors import ApplicationError
@@ -75,7 +76,7 @@ async def asset_archive(project: str, asset_id: str, request: Request):
 async def asset_download_link(project: str, asset_id: str, request: Request):
     service = store(request)
     asset = await invoke(service.read, project, asset_id)
-    if asset.get("remote_storage") in {"desktop-builder", "wyd", "sensecore-ccr"}:
+    if asset.get("remote_storage") in REMOTE - {"oss"}:
         # Report the asset's frozen storage contract even without an S3 endpoint.
         await invoke(service.download, project, asset_id)
     from ..data.oss_datasets import locator

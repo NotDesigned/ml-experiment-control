@@ -1,0 +1,23 @@
+# Replace capacity, quota, personal CPFS and role with approved values.
+# DSW debug/build configuration is optional and separate from this DLC executor.
+executors:
+  pai-gpu:
+    title: PAI DLC GPU
+    capacity: {gpus: 8, cpus: 64, memory_gb: 512}
+    storage_root: /mnt/workspace/ml-expd
+    data_root: /mnt/datasets
+    backend:
+      kind: pai-dlc
+      region: REPLACE_REGION
+      workspace_id: REPLACE_WORKSPACE
+      quota_id: REPLACE_QUOTA
+      gpu_type: REPLACE_GPU_TYPE
+      gpu_type_from_quota: true
+      time: '24:00:00'
+      filesystem_type: cpfs
+      storage_id: REPLACE_CPFS_FILESYSTEM_ID
+      cpfs_uri: bmcpfs://cpfs-REPLACE_TARGET.REPLACE_REGION.cpfs.aliyuncs.com/
+      workspace_user: REPLACE_USER
+      data_role_arn: acs:ram::REPLACE_ACCOUNT:role/pai-data-REPLACE_USER
+      # Add user_vpc: {VpcId: ..., VSwitchId: ..., SecurityGroupId: ...}
+      # only when required by this CPFS/quota. See docs/pai.md.

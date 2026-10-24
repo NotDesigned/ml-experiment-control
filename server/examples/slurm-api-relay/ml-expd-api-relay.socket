@@ -1,5 +1,5 @@
 [Unit]
-Description=ML-Expd API relay on WYD private network
+Description=ML-Expd API relay on Slurm private network
 
 [Socket]
 # Replace with the gateway's private address; never use a wildcard.

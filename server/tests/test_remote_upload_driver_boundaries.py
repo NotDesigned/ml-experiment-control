@@ -12,7 +12,7 @@ from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.data import remote_data_uploads as module
 from ml_exp_server.data.data_assets import AssetStore
 from ml_exp_server.storage import atomic_json
-from tests.test_remote_wyd_uploads import receiver
+from tests.test_remote_slurm_uploads import receiver
 
 
 def minimal(tmp_path):
@@ -25,7 +25,7 @@ def minimal(tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["ok", "rejected", "invalid-json", "oversize", "exit", "expired", "write"])
-def test_wyd_transport_returns_only_confirmed_bounded_receipts_and_always_closes(tmp_path, monkeypatch, mode):
+def test_slurm_transport_returns_only_confirmed_bounded_receipts_and_always_closes(tmp_path, monkeypatch, mode):
     assets, target, binding = minimal(tmp_path)
     processes = []
     class Input(io.BytesIO):
@@ -49,7 +49,7 @@ def test_wyd_transport_returns_only_confirmed_bounded_receipts_and_always_closes
         def cancel(self): pass
     monkeypatch.setattr(module.subprocess, "Popen", Process)
     monkeypatch.setattr(module.threading, "Timer", Timer)
-    driver = module.WydDataUploads(assets, target)
+    driver = module.SlurmDataUploads(assets, target)
     if mode == "ok": assert driver.read("upload." + "c" * 64, binding) == {"status": "UPLOADING"}
     else:
         with pytest.raises(ApplicationError) as failure: driver.read("upload." + "c" * 64, binding)
@@ -58,12 +58,12 @@ def test_wyd_transport_returns_only_confirmed_bounded_receipts_and_always_closes
     assert processes[0].stdin.closed and processes[0].stdout.closed
 
 
-def test_wyd_binding_origin_and_metadata_bounds_fail_before_transport(tmp_path, monkeypatch):
+def test_slurm_binding_origin_and_metadata_bounds_fail_before_transport(tmp_path, monkeypatch):
     assets, target, binding = minimal(tmp_path)
     monkeypatch.setattr(module.subprocess, "Popen", lambda *a, **k: pytest.fail("invalid input cannot call SSH"))
-    with pytest.raises(ValueError): module.WydDataUploads(assets, {**target, "profile": {"backend": {"ssh_alias": "../invalid"}}})
-    with pytest.raises(ValueError): module.WydDataUploads(assets, target).call("read", {})
-    with pytest.raises(ValueError): module.WydDataUploads(assets, target, files=["x" * (8 * 1024 ** 2)]).call("read", binding)
+    with pytest.raises(ValueError): module.SlurmDataUploads(assets, {**target, "profile": {"backend": {"ssh_alias": "../invalid"}}})
+    with pytest.raises(ValueError): module.SlurmDataUploads(assets, target).call("read", {})
+    with pytest.raises(ValueError): module.SlurmDataUploads(assets, target, files=["x" * (8 * 1024 ** 2)]).call("read", binding)
 
 
 @pytest.mark.parametrize("project,requested", [("../bad", {}), ("demo", None), ("demo", {"executor": "../bad"}), ("demo", {"executor": 1})])

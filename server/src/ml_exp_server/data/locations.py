@@ -4,7 +4,11 @@ from __future__ import annotations
 from ..application_errors import ApplicationError
 from ..results.checkpoint_registry import storage_scope
 
-REMOTE = frozenset({"desktop-builder", "wyd", "sensecore-ccr", "oss"})
+# Read historical labels without rewriting their frozen records. New Slurm
+# receivers publish only "slurm"; no old backend/module entry point is retained.
+SLURM_STORAGE = frozenset({"slurm", "wyd"})
+TARGET_STORAGE = SLURM_STORAGE | {"sensecore-ccr", "oss"}
+REMOTE = TARGET_STORAGE | {"desktop-builder"}
 
 
 def for_backend(asset, profile, project):
@@ -14,10 +18,10 @@ def for_backend(asset, profile, project):
         raise ApplicationError("data location metadata is invalid", code="INPUT_STORAGE_SCOPE_MISMATCH")
     location = locations.get(scope)
     if location is not None:
-        expected = {"slurm": "wyd", "sensecore": "sensecore-ccr", "pai-dlc": "oss"}.get(profile["backend"]["kind"])
-        if not isinstance(location, dict) or location.get("storage_scope") != scope or location.get("remote_storage") != expected:
+        expected = {"slurm": SLURM_STORAGE, "sensecore": {"sensecore-ccr"}, "pai-dlc": {"oss"}}.get(profile["backend"]["kind"], ())
+        if not isinstance(location, dict) or location.get("storage_scope") != scope or location.get("remote_storage") not in tuple(expected):
             raise ApplicationError("data copy belongs to another backend", code="INPUT_STORAGE_SCOPE_MISMATCH")
         return {**asset, **location}
-    if asset.get("remote_storage") in {"wyd", "sensecore-ccr", "oss"}:
+    if asset.get("remote_storage") in TARGET_STORAGE:
         raise ApplicationError("upload this asset to the selected executor's storage before submission", code="INPUT_STORAGE_SCOPE_MISMATCH")
     return asset

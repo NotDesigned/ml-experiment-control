@@ -32,19 +32,19 @@ worker transfers, but no platform-uploaded assets or CPU recovery.
 
 The existing adapters declare:
 
-| Detail | WYD Slurm | SenseCore ACP |
-|---|---|---|
-| Runtime | OCI → Apptainer SIF | OCI |
-| Allocation | Flexible, bounded by configured catalogue capacity | Exact GPU count of fixed worker spec |
-| Uploaded input | Multipart directly to shared datapool over SSH | Multipart to CCR data image, then zero-GPU debug ACP copy into NAS |
-| Script download | Before allocation on the connected gateway when relay is configured | Zero-GPU debug ACP before training when CPU preparation is configured |
-| Queue/exit/preemption reasons | Supported | Not declared as reliable structured fields |
-| Walltime | Scheduler and worker | Worker |
-| Server allocation status | Read-only Slurm partition snapshot | Unsupported |
-| Generic adapter offline-export hook | Not implemented | Not implemented |
+| Detail | Slurm | SenseCore ACP | PAI DLC |
+|---|---|---|---|
+| Runtime | OCI → Apptainer SIF | OCI | OCI |
+| Allocation | Flexible, bounded by configured capacity | Exact GPU count of fixed worker spec | Flexible within configured quota/capacity; single node, 1–8 GPUs |
+| Uploaded input | Parts over SSH to shared storage | CCR data image → zero-GPU debug ACP → NAS | Approved OSS asset → inside-job CPFS cache |
+| Script download | Gateway before allocation when relay is configured | Zero-GPU debug ACP before training when CPU preparation is configured | Inside allocated job |
+| Queue/exit/preemption reasons | Supported | Not declared as reliable structured fields | Queue blockers when available; exit/preemption not guaranteed |
+| Walltime | Scheduler and worker | Worker | Scheduler and worker; 24-hour cap |
+| Server resource status | Slurm partition allocation | Read-only workspace cluster list | Quota allocation snapshot |
+| Generic adapter offline-export hook | Not implemented | Not implemented | Not implemented |
 
 The server separately advertises `result-collection.v1` for recovering outputs
-from an exact original Attempt. It publishes WYD shared-directory outputs or
+from an exact original Attempt. It publishes Slurm shared-directory outputs or
 uses a bounded zero-GPU SenseCore CPU job to read NAS and resume the original
 archive transfer. This server operation does not require the generic adapter
 `outputs.offline_export` hook. Query or start it with `ml-exp collect`; see
@@ -56,7 +56,7 @@ not an admission guarantee. Queue ETA remains null without reliable backend data
 
 ### Slurm allocation status
 
-`GET /api/executors/{id}/status` reports a read-only partition snapshot for WYD.
+`GET /api/executors/{id}/status` reports a read-only partition snapshot for Slurm.
 `resources` contains `gpus`, `cpus`, and `memory_bytes`, each with `total`,
 `allocated`, and `unallocated`. Memory uses Slurm MiB converted to bytes.
 `nodes` includes each unique node's state and allocation; normal/debug partitions
@@ -108,7 +108,7 @@ Use either an explicit `executor`, or an `executor_selector`:
 
 ```json
 {
-  "executor_selector": {"backend": "slurm", "candidates": ["wyd-h100", "wyd-l40s"]},
+  "executor_selector": {"backend": "slurm", "candidates": ["slurm-large", "slurm-gpu"]},
   "requirements": {"persistent_checkpoints": true, "exit_code": true}
 }
 ```
@@ -127,7 +127,7 @@ uploads/builds and returns selected/compatible executors, rejection fields and
 {
   "runtime": {"source_id": "source.64_HEX", "dockerfile": "Dockerfile", "entrypoint": ["python3", "train.py"]},
   "run": {
-    "run_id": "trial-001", "executor": "wyd-l40s",
+    "run_id": "trial-001", "executor": "slurm-gpu",
     "resources": {"gpus": 1, "cpus": 8, "memory_gb": 32, "max_time": "00:10:00"}
   },
   "max_gpu_hours": 0.2
@@ -181,23 +181,23 @@ Historical images retain their old worker. A generic failure produces
 exception that was never recorded. Rebuild a Runtime for detailed diagnostics;
 do not resubmit historical GPU jobs automatically.
 
-### WYD shared-data staging
+### Slurm shared-data staging
 
 New target-backed uploads stream parts through the shared 1 GiB API disk buffer
-to a pinned WYD receiver over SSH. Each part is removed locally after matching
-durable ACK; the whole archive and expanded files live only on shared datapool.
+to a pinned Slurm receiver over SSH. Each part is removed locally after matching
+durable ACK; the whole archive and expanded files live only on shared storage.
 The backend validates archive/file hashes and atomically publishes the cache.
 A bounded read-only check permits reuse before GPU submission. GPU nodes need no
 external data access. New frozen inputs require the verified cache and fail closed
 if it disappears. Historical desktop-backed assets retain their original staging
 path, and old low-level Runs retain their frozen worker download behavior.
 
-### WYD compute nodes without Internet access
+### Slurm compute nodes without Internet access
 
-Configure `backend.api_relay` on WYD executors whose workers must use the L40S
+Configure `backend.api_relay` on Slurm executors whose workers must use a connected
 private-network gateway. The gateway uses systemd's existing
 `systemd-socket-proxyd` with one fixed API destination; example user units are in
-`server/examples/wyd-api-relay/`. Bind the socket to the gateway's private IP,
+`server/examples/slurm-api-relay/`. Bind the socket to the gateway's private IP,
 install both units in its `~/.config/systemd/user/`, and enable the socket:
 `systemctl --user enable --now ml-expd-api-relay.socket`. The user manager must
 remain running after SSH disconnect (linger).
@@ -207,7 +207,7 @@ compute_internet: false
 backend:
   # Existing Slurm settings remain here.
   api_relay:
-    endpoint: tcp://172.16.78.148:18443
+    endpoint: tcp://192.0.2.10:18443
     origin: https://api.example.org
 ```
 

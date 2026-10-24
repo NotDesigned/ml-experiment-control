@@ -100,11 +100,16 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
     s3_config = json.loads((ROOT / "server/examples/artifact-store.json").read_text())
     s3_file = tmp_path / "s3.json"
     s3_file.write_text(json.dumps(s3_config))
+    profiles_file = tmp_path / "executors.yaml"
+    profiles = {}
+    for name in ("slurm", "sensecore"):
+        profiles.update(yaml.safe_load((ROOT / "server/examples/executors" / (name + ".yaml")).read_text())["executors"])
+    profiles_file.write_text(yaml.safe_dump({"executors": profiles}))
     config = ServerConfig(index_db=str(tmp_path / "index.sqlite"), run_root=str(tmp_path / "runs"),
                           action_root=str(tmp_path / "actions"), project_registry_root=str(tmp_path / "projects"),
                           http_auth={"bearer_token_file": str(auth)}, collector_enabled=False,
                           action_runtime={"allow_source_imports": True, "allow_project_writes": True},
-                          container_execution={"profiles_file": str(ROOT / "server/examples/executors.yaml"),
+                          container_execution={"profiles_file": str(profiles_file),
                           "artifact_store_file": str(s3_file), "builder_socket": "injected-builder.sock"})
     calls = []
     def build(_socket, request):
@@ -148,27 +153,27 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
         assert cli(base, auth, "runtime", "--state", state)["runtime_id"] == runtime["runtime_id"]
         assert "state file exists" in cli(base, auth, "pack", "--project", "quickstart", "--source", source,
                                         "--dockerfile", "unused", "--state", state, success=False).stderr
-        for name in ("wyd-l40s", "sensecore-1gpu"):
+        for name in ("slurm-gpu", "sensecore-gpu"):
             frozen = cli(base, auth, "create", "--runtime-state", state, "--run", name, "--executor", name)
             assert frozen["state"] == "NOT_SUBMITTED" and frozen["image"] == runtime["image"]
         root = Path(app.state.runtime.project("quickstart").base_dir)
-        campaign = yaml.safe_load((root / "experiments/campaigns/run-wyd-l40s.yaml").read_text())
+        campaign = yaml.safe_load((root / "experiments/campaigns/run-slurm-gpu.yaml").read_text())
         campaign["local_root"] = str(config.project_run_root_path("quickstart"))
-        controller = Controller(campaign, "wyd-l40s", "attempt-001")
+        controller = Controller(campaign, "slurm-gpu", "attempt-001")
         controller.prepare("campaign." + "c" * 64)
         run_root = controller.root
         outputs = run_root / "attempts/attempt-001/outputs"
-        env = dict(os.environ, OUTPUT_DIR=str(outputs), PROJECT_NAME="quickstart", RUN_ID="wyd-l40s",
+        env = dict(os.environ, OUTPUT_DIR=str(outputs), PROJECT_NAME="quickstart", RUN_ID="slurm-gpu",
                    ATTEMPT_ID="attempt-001", SOURCE_ID=runtime["spec"]["source_id"])
         program = subprocess.run([sys.executable, str(source / "train.py"), "--steps", "4"],
                                  env=env, capture_output=True, text=True, check=True)
         assert json.loads(program.stdout)["steps"] == 4
         assert len((outputs / "metrics.jsonl").read_text().splitlines()) == 4
-        app.state.runtime.index.upsert_run(RunIndexRow(project="quickstart", run_id="wyd-l40s", run_dir=str(run_root),
+        app.state.runtime.index.upsert_run(RunIndexRow(project="quickstart", run_id="slurm-gpu", run_dir=str(run_root),
             scheduler_state="SUCCEEDED", attempts=[AttemptSummary(attempt_id="attempt-001", state="SUCCEEDED")]))
         store = ArtifactStore(s3_file, config.project_registry_root_path())
-        _, capability, limit = store.issue("quickstart", "wyd-l40s", "attempt-001", run_root, ["**/*"])
-        before_publication = cli(base, auth, "status", "--project", "quickstart", "--run", "wyd-l40s")
+        _, capability, limit = store.issue("quickstart", "slurm-gpu", "attempt-001", run_root, ["**/*"])
+        before_publication = cli(base, auth, "status", "--project", "quickstart", "--run", "slurm-gpu")
         assert before_publication["attempt_id"] == "attempt-001"
         assert before_publication["scheduler"]["state"] == "SUCCEEDED"
         assert before_publication["training"]["status"] == "UNKNOWN"
@@ -179,26 +184,26 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
         assert archive_outputs(outputs, archive, limit, ["**/*"]) == 2
         data = archive.getvalue()
         from urllib.request import Request, urlopen
-        with urlopen(Request(base + "/api/artifact-transfers/quickstart/wyd-l40s/attempt-001", data=data,
+        with urlopen(Request(base + "/api/artifact-transfers/quickstart/slurm-gpu/attempt-001", data=data,
                              method="PUT", headers={"Authorization": "Bearer " + capability})) as response:
             assert response.status == 200
-        watched = cli(base, auth, "watch", "--project", "quickstart", "--run", "wyd-l40s", "--seconds", "1")
+        watched = cli(base, auth, "watch", "--project", "quickstart", "--run", "slurm-gpu", "--seconds", "1")
         assert watched["attempts"]["current_attempt_id"] == "attempt-001"
-        published = cli(base, auth, "status", "--project", "quickstart", "--run", "wyd-l40s", "--details")
+        published = cli(base, auth, "status", "--project", "quickstart", "--run", "slurm-gpu", "--details")
         assert published["publication"]["status"] == "AVAILABLE"
         assert published["publication"]["download_available"]
         assert published["verification"]["status"] == "SHA256_VERIFIED"
         assert published["evidence"]["attempt"]["attempt"]["attempt_id"] == "attempt-001"
         destination = tmp_path / "download"
-        report = cli(base, auth, "download", "--project", "quickstart", "--run", "wyd-l40s", "--attempt", "attempt-001", "--out", destination)
+        report = cli(base, auth, "download", "--project", "quickstart", "--run", "slurm-gpu", "--attempt", "attempt-001", "--out", destination)
         assert report["archive_sha256"] == hashlib.sha256(data).hexdigest()
         assert (destination / "outputs/summary.json").read_bytes() == (outputs / "summary.json").read_bytes()
-        bad = cli(base, auth, "download", "--project", "quickstart", "--run", "wyd-l40s", "--attempt", "attempt-002",
+        bad = cli(base, auth, "download", "--project", "quickstart", "--run", "slurm-gpu", "--attempt", "attempt-002",
                   "--out", tmp_path / "wrong", success=False)
         assert "HTTP 404" in bad.stderr and not (tmp_path / "wrong").exists()
         key = next(iter(objects))
         objects[key] = b"corrupt stored archive"
-        bad = cli(base, auth, "download", "--project", "quickstart", "--run", "wyd-l40s", "--attempt", "attempt-001",
+        bad = cli(base, auth, "download", "--project", "quickstart", "--run", "slurm-gpu", "--attempt", "attempt-001",
                   "--out", tmp_path / "corrupt", success=False)
         assert "SHA256" in bad.stderr or "connection failed" in bad.stderr
 

@@ -20,8 +20,8 @@ from experiment_control.backends.sensecore import (
     scheduler_job_name as sensecore_scheduler_job_name,
     submission_resource_name,
 )
-from experiment_control.backends.wyd import (
-    WydSlurmBackend,
+from experiment_control.backends.slurm import (
+    SlurmBackend,
 )
 from experiment_control.project import AssetProbe, AssetRequirement
 from experiment_control.runner import CommandResult
@@ -44,12 +44,12 @@ def test_sensecore_availability_reports_safe_authentication_failure(tmp_path):
 
 
 def test_slurm_availability_checks_all_local_transport_tools(tmp_path):
-    ready = WydSlurmBackend(services(tmp_path, QueueRunner([
+    ready = SlurmBackend(services(tmp_path, QueueRunner([
         CommandResult(("ssh",), 0), CommandResult(("rsync",), 0),
     ]))).availability()
     assert ready.ready is True
 
-    missing = WydSlurmBackend(services(tmp_path, QueueRunner([
+    missing = SlurmBackend(services(tmp_path, QueueRunner([
         CommandResult(("ssh",), 127), CommandResult(("rsync",), 127),
     ]))).availability()
     assert missing.ready is False
@@ -167,7 +167,7 @@ def test_slurm_preflight_checks_tools_resources_and_storage(tmp_path):
         ),
         CommandResult(("runtime-storage",), 0),
     ])
-    report = WydSlurmBackend(services(tmp_path, fake)).preflight(
+    report = SlurmBackend(services(tmp_path, fake)).preflight(
         slurm_run(), scope="stage"
     )
     assert report.ready is True
@@ -181,7 +181,7 @@ def test_slurm_observe_preflight_only_requires_control_access(tmp_path):
         CommandResult(("ssh-version",), 0),
         CommandResult(("squeue",), 0, ""),
     ])
-    report = WydSlurmBackend(services(tmp_path, fake)).preflight(
+    report = SlurmBackend(services(tmp_path, fake)).preflight(
         slurm_run(), scope="observe"
     )
     assert report.ready is True
@@ -193,7 +193,7 @@ def test_slurm_preflight_fails_before_remote_access_when_ssh_is_missing(tmp_path
         CommandResult(("ssh-version",), 127),
         CommandResult(("rsync-version",), 0),
     ])
-    report = WydSlurmBackend(services(tmp_path, fake)).preflight(
+    report = SlurmBackend(services(tmp_path, fake)).preflight(
         slurm_run(), scope="submit"
     )
     assert report.ready is False
@@ -207,7 +207,7 @@ def test_slurm_status_uses_injected_backend_record(tmp_path):
             "1234|backend-run|accelerator|COMPLETED|00:01:00|0:0\n",
         )
     ])
-    status = WydSlurmBackend(services(tmp_path, fake)).status({}, slurm_run())
+    status = SlurmBackend(services(tmp_path, fake)).status({}, slurm_run())
     assert status["state"] == "SUCCEEDED"
     assert status["backend_job_id"] == "1234"
     assert status["observation_source"] == "sacct"
@@ -222,7 +222,7 @@ def test_slurm_status_queries_queue_reason_when_accounting_is_empty(tmp_path):
             "1234|backend-run|accelerator|PENDING|00:00|0:0|Priority\n",
         ),
     ])
-    status = WydSlurmBackend(services(tmp_path, fake)).status({}, slurm_run())
+    status = SlurmBackend(services(tmp_path, fake)).status({}, slurm_run())
     assert status["state"] == "QUEUED"
     assert status["reason"] == "Priority"
     assert status["detail"] == {"pending_reason": "Priority"}
@@ -255,7 +255,7 @@ def test_slurm_submit_claims_identity_and_stages_manifest_before_script(tmp_path
         CommandResult(("script-rsync",), 0),
         CommandResult(("sbatch",), 0, "4321\n"),
     ])
-    backend = WydSlurmBackend(services(tmp_path, fake))
+    backend = SlurmBackend(services(tmp_path, fake))
     job_id = backend.submit(
         {"campaign": "backend-test"}, run, manifest, dry_run=False,
         intent=submission_intent(backend, run),
@@ -280,7 +280,7 @@ def test_slurm_submit_claim_blocks_duplicate_scheduler_mutation(tmp_path):
         CommandResult(("claim",), 1, "", "already exists"),
     ])
     with pytest.raises(FileExistsError, match="submission claim"):
-        backend = WydSlurmBackend(services(tmp_path, fake))
+        backend = SlurmBackend(services(tmp_path, fake))
         backend.submit(
             {"campaign": "backend-test"}, run, manifest, dry_run=False,
             intent=submission_intent(backend, run),
@@ -300,7 +300,7 @@ def test_slurm_recovery_rejects_multiple_matching_jobs(tmp_path):
             f"1732|backend-run--attempt-001|ml-exp-{SUBMISSION_TOKEN}\n",
         ),
     ])
-    backend = WydSlurmBackend(services(tmp_path, fake))
+    backend = SlurmBackend(services(tmp_path, fake))
     with pytest.raises(RuntimeError, match="2 jobs match"):
         backend.recover_submission(
             slurm_run(), submission_intent(backend, slurm_run()), "attempt-001"
@@ -317,7 +317,7 @@ def test_slurm_identity_reports_remote_manifest_digest_match(tmp_path):
         CommandResult(("manifest",), 0, ""),
         CommandResult(("sha256sum",), 0, f"{digest}\n"),
     ])
-    report = WydSlurmBackend(services(tmp_path, fake)).identity(
+    report = SlurmBackend(services(tmp_path, fake)).identity(
         {"campaign": "backend-test"}, slurm_run(), "attempt-002"
     )
     assert report.available is False
@@ -337,7 +337,7 @@ def test_slurm_identity_handles_absent_remote_or_local_manifest(
         CommandResult(("sacct",), 0, ""),
         CommandResult(("manifest",), manifest_returncode),
     ])
-    report = WydSlurmBackend(services(tmp_path, fake)).identity(
+    report = SlurmBackend(services(tmp_path, fake)).identity(
         {"campaign": "backend-test"}, slurm_run(), "attempt-002"
     )
     assert report.available is expected_available
@@ -364,7 +364,7 @@ def test_slurm_identity_fails_closed_when_remote_evidence_is_unavailable(
     tmp_path, results,
 ):
     with pytest.raises(RuntimeError, match="evidence is unavailable"):
-        WydSlurmBackend(services(tmp_path, QueueRunner(results))).identity(
+        SlurmBackend(services(tmp_path, QueueRunner(results))).identity(
             {"campaign": "backend-test"}, slurm_run(), "attempt-001"
         )
 
@@ -374,12 +374,12 @@ def test_slurm_asset_probe_distinguishes_missing_from_transport_failure(tmp_path
         AssetRequirement("dataset", "dataset-id", "training"),
         "/shared/dataset",
     )
-    missing = WydSlurmBackend(services(
+    missing = SlurmBackend(services(
         tmp_path, QueueRunner([CommandResult(("test",), 1)])
     )).verify_assets(slurm_run(), [probe])
     assert missing["missing"][0]["identity"] == "dataset-id"
 
-    failed = WydSlurmBackend(services(
+    failed = SlurmBackend(services(
         tmp_path,
         QueueRunner([CommandResult(("test",), 255, stderr="ssh failed")]),
     ))
@@ -390,7 +390,7 @@ def test_slurm_asset_probe_distinguishes_missing_from_transport_failure(tmp_path
         AssetRequirement("checkpoint", "checkpoint-id", "resume"),
         "/shared/checkpoint",
     )
-    present = WydSlurmBackend(services(
+    present = SlurmBackend(services(
         tmp_path,
         QueueRunner([
             CommandResult(("dataset",), 0),
@@ -414,7 +414,7 @@ def test_slurm_validation_rejects_resource_request_drift(
     run["resources"] = resources
     run["backend"]["gres"] = gres
     with pytest.raises(ValueError, match=error):
-        WydSlurmBackend(services(tmp_path, QueueRunner([]))).validate(run)
+        SlurmBackend(services(tmp_path, QueueRunner([]))).validate(run)
 
 
 def test_slurm_logs_are_bounded_and_redacted(tmp_path):
@@ -430,7 +430,7 @@ def test_slurm_logs_are_bounded_and_redacted(tmp_path):
             f"{run_dir}/slurm-1234.err\ntoken=top-secret\nfailure\n",
         ),
     ])
-    logs = WydSlurmBackend(services(tmp_path, fake)).logs({}, run, tail=2)
+    logs = SlurmBackend(services(tmp_path, fake)).logs({}, run, tail=2)
     assert logs["stdout"] == ["two", "three"]
     assert logs["stderr"] == ["token=<redacted>", "failure"]
     assert "top-secret" not in json.dumps(logs)
@@ -440,7 +440,7 @@ def test_slurm_logs_are_bounded_and_redacted(tmp_path):
 def test_slurm_logs_reject_unbounded_tail_before_remote_access(tmp_path, tail):
     fake = QueueRunner([])
     with pytest.raises(ValueError, match="tail must be between"):
-        WydSlurmBackend(services(tmp_path, fake)).logs({}, slurm_run(), tail=tail)
+        SlurmBackend(services(tmp_path, fake)).logs({}, slurm_run(), tail=tail)
     assert fake.commands == []
 
 
@@ -458,7 +458,7 @@ def test_slurm_collection_includes_sanitized_process_evidence(tmp_path):
             "ModuleNotFoundError: No module named 'dependency'\n",
         ),
     ])
-    summary = WydSlurmBackend(services(tmp_path, fake)).collect({}, run)
+    summary = SlurmBackend(services(tmp_path, fake)).collect({}, run)
     evidence = summary["process_evidence"]
     collect_command = fake.commands[0]
     assert "--include=/summary.json" in collect_command
@@ -488,7 +488,7 @@ def test_slurm_collection_reports_latest_completed_checkpoint(tmp_path):
         CommandResult(("stdout",), 1),
         CommandResult(("stderr",), 1),
     ])
-    summary = WydSlurmBackend(services(tmp_path, fake)).collect({}, slurm_run())
+    summary = SlurmBackend(services(tmp_path, fake)).collect({}, slurm_run())
     assert summary["latest_completed_checkpoint"].endswith("/checkpoint_21")
     assert summary["latest_completed_checkpoint_step"] == 21
 
@@ -685,11 +685,11 @@ def test_sensecore_worker_query_is_sanitized_and_normalized(
 
 
 def test_packaged_oci_source_is_not_staged_or_masked_by_host_files(tmp_path):
-    from experiment_control.backends.wyd import render_job
+    from experiment_control.backends.slurm import render_job
     from experiment_control.project import SourceBundle
     run = slurm_run()
     run['backend']['oci_image'] = 'registry.example/runtime@sha256:'+'a'*64
-    backend = WydSlurmBackend(services(tmp_path, QueueRunner([])))
+    backend = SlurmBackend(services(tmp_path, QueueRunner([])))
     converted = []
     backend._stage_oci_image = lambda selected: converted.append(selected['backend']['oci_image'])
     source_id = run['backend']['source_dir'].rsplit('/',1)[-1]
@@ -715,7 +715,7 @@ def test_packaged_oci_source_is_not_staged_or_masked_by_host_files(tmp_path):
 
 def test_slurm_bootstrap_creates_apptainer_cache_and_sandbox_directories(tmp_path):
     import os
-    from experiment_control.backends.wyd import render_job
+    from experiment_control.backends.slurm import render_job
     run = slurm_run()
     root = tmp_path/'data'
     root.mkdir()

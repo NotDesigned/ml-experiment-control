@@ -1,7 +1,7 @@
 # ML-Expd
 
-ML-Expd runs reproducible experiments on WYD (Slurm/Apptainer) and SenseCore
-(REST/ACP). A remote client uploads code containing a Dockerfile, prepares
+ML-Expd runs reproducible experiments on SSH Slurm/Apptainer, SenseCore ACP and
+Alibaba PAI DLC. A remote client uploads code containing a Dockerfile, prepares
 data, builds an image, submits a Run and retrieves verified results through
 HTTP. Backend credentials stay on the server.
 
@@ -11,6 +11,7 @@ HTTP. Backend credentials stay on the server.
 |---|---|---|
 | Use an existing API | [Client quickstart](docs/api-quickstart.md) | Python, client wheel, API URL and token |
 | Deploy or maintain the server | [Operator guide](docs/operator-guide.md) | Linux, builder, storage and backend access |
+| Configure a client or add a backend | [Configuration](docs/configuration.md) | API URL/token, or access to one supported backend |
 | Understand the code | [Architecture](docs/architecture.md) | Repository checkout |
 | Embed the core library | [Library integration](docs/library-integration.md) | Core package and a project adapter |
 | Contribute | [Development](docs/development.md) | Python 3.12, uv and Rust |
@@ -24,7 +25,7 @@ the [server package](server/README.md) uses the reusable core, not the client.
 
 ```text
 code + Dockerfile ── build ── Runtime image
-data ── target-backed upload or backend download ── datapool / NAS
+data ── target-backed upload or backend download ── shared storage / NAS / CPFS
                                        │
 Runtime + data + argv + resources ── Run ── submit ── Attempt
                                                      │
@@ -32,9 +33,10 @@ Runtime + data + argv + resources ── Run ── submit ── Attempt
 ```
 
 Data uploads select an executor. The API buffers at most 1 GiB across transfers,
-then removes each part after durable destination acknowledgement. WYD receives
-data directly on shared datapool; SenseCore receives a CCR data image and copies
-it to NAS with a zero-GPU debug job. The desktop builds environment images only.
+then removes each part after durable destination acknowledgement. Slurm receives
+data directly on shared storage; SenseCore receives a CCR data image and copies
+it to NAS with a zero-GPU debug job. DLC can use approved OSS datasets and cache
+them on personal CPFS. Image builders are configured separately from training.
 Output archives still use object storage and are released after verified client
 ACK; this is separate from the transfer buffer.
 

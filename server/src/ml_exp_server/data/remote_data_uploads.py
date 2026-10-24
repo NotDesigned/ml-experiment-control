@@ -143,7 +143,7 @@ def receiver_source():
             "raise SystemExit(sys.modules['ml_exp_server.workers.data_receiver'].main())\n")
 
 
-class WydDataUploads:
+class SlurmDataUploads:
     remote = True
     part_size = staticmethod(UploadStore.part_size)
 
@@ -241,7 +241,7 @@ class ManagedDataUploads:
         self.transport_sha256, self.saved = transport_sha256, saved
         self.root = assets.root.parent / "remote-data-uploads"
         if target["backend"] == "slurm":
-            self.driver = WydDataUploads(assets, self.target, files, transport_sha256)
+            self.driver = SlurmDataUploads(assets, self.target, files, transport_sha256)
         elif target["backend"] == "sensecore":
             from .ccr_uploads import CCRDataUploads
             self.driver = CCRDataUploads(assets, self.target, files, transport_sha256)

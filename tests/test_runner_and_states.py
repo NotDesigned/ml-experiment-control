@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from experiment_control.backends.wyd import normalize_state
+from experiment_control.backends.slurm import normalize_state
 from experiment_control.runner import CommandResult, SubprocessRunner
 from experiment_control.states import FailureClass
 

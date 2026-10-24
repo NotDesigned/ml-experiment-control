@@ -481,7 +481,7 @@ class ContainerExecutionService:
             config = self.runtime.config.container_execution.artifact_store_file
             assets = AssetStore(Path(config), self.runtime.config.project_registry_root_path())
             for binding in request.inputs:
-                from .data.locations import for_backend
+                from .data.locations import SLURM_STORAGE, for_backend
                 asset = for_backend(assets.read(project, binding.asset_id), selected_profile, project)
                 validate_script_asset(request, capability, asset)
                 inputs.append({**binding.model_dump(), "sha256": asset["sha256"],
@@ -494,10 +494,10 @@ class ContainerExecutionService:
                         raise ApplicationError("CCR data delivery requires a newly built runtime with data-cache-required.v1", code="CONTAINER_EXECUTION_BLOCKED")
                     from .data.data_delivery import DataDeliveryService
                     inputs[-1].update(require_cached=True, data_delivery=DataDeliveryService(self.runtime).ready_for(project, binding.asset_id, request.executor))
-                elif asset.get("remote_storage") == "wyd":
-                    from .backends.wyd import WydDataStager
-                    if WydDataStager(self.runtime).check(project, binding.asset_id, selected_profile)["status"] != "READY":
-                        raise ApplicationError("WYD input cache is unavailable; inspect the original upload", code="INPUT_NOT_READY")
+                elif asset.get("remote_storage") in SLURM_STORAGE:
+                    from .backends.slurm import SlurmDataStager
+                    if SlurmDataStager(self.runtime).check(project, binding.asset_id, selected_profile)["status"] != "READY":
+                        raise ApplicationError("Slurm input cache is unavailable; inspect the original upload", code="INPUT_NOT_READY")
                     validate_worker(request, bundle, capability, cache_required=True)
                     inputs[-1]["require_cached"] = True
             if len(json.dumps(inputs).encode()) > 32768:

@@ -22,7 +22,7 @@ Persistence requires a Runtime with `persistent-checkpoints.v1`.
 | `RESUME_DIR` / `/inputs/resume` | Exact verified prior generation |
 
 `STATE_DIR` is a sibling of this Attempt's outputs within the configured shared
-mount. WYD uses shared datapool; SenseCore uses NAS. New Attempts do not overwrite
+mount. Slurm uses shared storage; SenseCore uses NAS. New Attempts do not overwrite
 the restore source. Old frozen paths/images are not migrated by profile changes.
 
 Write all recovery files below `STATE_DIR/checkpoints/UNIQUE_GENERATION/`.
@@ -71,7 +71,7 @@ Create a **new Run** with its exact reference:
 actual generation before training and exposes it through RESUME_DIR. Your code
 restores all scientific state. Missing/corrupt files block training without a
 latest/older fallback. References must belong to the same project/storage scope;
-GPU profiles may differ when storage is shared, but WYD/SenseCore are different
+GPU profiles may differ when storage is shared, but Slurm/SenseCore are different
 scopes. Cross-backend use requires explicit state export/data asset delivery.
 
 `resume_from` is frozen in the Run. Retrying the same Run does **not** automatically

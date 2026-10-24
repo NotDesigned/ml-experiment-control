@@ -30,7 +30,7 @@ IDENTITY = ("demo", "run-a", "attempt-001")
 @pytest.fixture
 def recovery(storage, tmp_path, monkeypatch):
     objects, root, token, config, remote = storage
-    backend = {"kind": "slurm", "ssh_alias": "wyd-l40s", "workspace": "ws", "aec2": "training",
+    backend = {"kind": "slurm", "ssh_alias": "slurm-gpu", "workspace": "ws", "aec2": "training",
                "storage_mount": "volume/user:/data", "image": "registry.example/base@sha256:" + "a" * 64}
     definition = {"project": "demo", "run_id": "run-a", "attempt_id": "attempt-001",
                   "backend": backend, "storage": {"run_dir": str(tmp_path / "backend")}}
@@ -54,7 +54,7 @@ def recovery(storage, tmp_path, monkeypatch):
     runtime.storage_service = StorageService(ArtifactStore(config, objects.root.parent))
     service = ResultCollectionService(runtime)
     monkeypatch.setattr(subprocess, "run", lambda command, **kw: SimpleNamespace(stdout="Total file size: 7 bytes\n" if "--stats" in command else "FAILED|\n"))
-    monkeypatch.setattr("ml_exp_server.backends.wyd.run_process", lambda *a, **kw: subprocess.run(*a, **kw))
+    monkeypatch.setattr("ml_exp_server.backends.slurm.run_process", lambda *a, **kw: subprocess.run(*a, **kw))
     return service, root, token, config, remote, definition, row
 
 

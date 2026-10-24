@@ -9,7 +9,7 @@ import pytest
 
 from backend_harness import QueueRunner, sensecore_run, services, slurm_run, submission_intent
 from experiment_control.backends.sensecore import SenseCoreBackend
-from experiment_control.backends.wyd import WydSlurmBackend
+from experiment_control.backends.slurm import SlurmBackend
 from experiment_control.runner import CommandResult
 
 
@@ -34,14 +34,14 @@ def test_slurm_rejects_mutable_or_conflicting_oci_image(tmp_path, image):
     run = slurm_run()
     run["backend"]["oci_image"] = image
     with pytest.raises(ValueError, match="frozen image digest"):
-        WydSlurmBackend(services(tmp_path, QueueRunner([]))).validate(run)
+        SlurmBackend(services(tmp_path, QueueRunner([]))).validate(run)
 
 
 def test_missing_canonical_manifest_prevents_dispatch_and_remote_claim(tmp_path):
     run = slurm_run()
     runner = QueueRunner([CommandResult(("live",), 0,
         "accelerator|up|3-00:00:00|gpu:accelerator:8\nuser|lab||normal|normal\n")])
-    backend = WydSlurmBackend(replace(services(tmp_path, runner),
+    backend = SlurmBackend(replace(services(tmp_path, runner),
                                      run_manifest_path=lambda *_: tmp_path / "missing.yaml"))
     manifest = {**run, "attempt_id": "attempt-001", "command": ["true"],
                 "execution": {"source_mount": "/workspace", "workdir": "/workspace"}}
@@ -75,10 +75,10 @@ def test_oci_conversion_reuses_verified_cache_and_repairs_tampering(tmp_path, mo
             return result
     runner = ShellRunner()
     if mode == "legacy-unbound":
-        backend = object.__new__(WydSlurmBackend)
+        backend = object.__new__(SlurmBackend)
         backend.remote_exec = lambda alias, command, **kwargs: runner.run(["ssh", alias, command], **kwargs)
     else:
-        backend = WydSlurmBackend(replace(services(tmp_path, runner),
+        backend = SlurmBackend(replace(services(tmp_path, runner),
             oci_pull_environment=lambda: {"APPTAINER_DOCKER_USERNAME": "test-user", "APPTAINER_DOCKER_PASSWORD": "test-pull-password"} if private else {}))
     sif = tmp_path / "images" / "image.sif"
     run = slurm_run()

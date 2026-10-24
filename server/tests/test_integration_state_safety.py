@@ -182,9 +182,9 @@ def test_submission_sync_facade_preserves_verification_result():
 def test_invalid_resource_policy_and_empty_outputs_are_explicit():
     with pytest.raises(ValueError, match="requires max_gpu_hours"):
         ActionRuntimeConfig(max_gpu_hours_per_action=None)
-    definition = RunRequest(run_id="run-a", executor="wyd", runtime_id="runtime." + "a" * 64, outputs=[])
+    definition = RunRequest(run_id="run-a", executor="slurm-gpu", runtime_id="runtime." + "a" * 64, outputs=[])
     assert definition.outputs == []
-    assert RunRequest(run_id="run-a", executor="wyd", runtime_id="runtime." + "a" * 64, outputs=["checkpoints/*.pt", "metrics.json"]).outputs == ["checkpoints/*.pt", "metrics.json"]
+    assert RunRequest(run_id="run-a", executor="slurm-gpu", runtime_id="runtime." + "a" * 64, outputs=["checkpoints/*.pt", "metrics.json"]).outputs == ["checkpoints/*.pt", "metrics.json"]
 
 
 def test_unknown_or_illegal_project_lifecycle_cannot_mutate_registry():

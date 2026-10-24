@@ -16,7 +16,10 @@ ml-exp check --schema openapi.json
 ```
 
 Provision that private token file first. Keep it outside source and experiment
-JSON. From a checkout, `python -m pip install ./client` installs only the client.
+JSON. Set only one of `ML_EXPD_API_TOKEN_FILE` and `ML_EXPD_API_TOKEN`; simultaneous
+nonempty sources are rejected. These and the API URL are the only connection
+settings; see [configuration](configuration.md). From a checkout,
+`python -m pip install ./client` installs only the client.
 `check` returns capabilities, policy, executors, base digests and storage limits.
 Choose actual IDs/digests from those responses; executors are not free-GPU counts.
 
@@ -56,7 +59,7 @@ Write `experiment.json`:
   "source": "./source",
   "dockerfile": "Dockerfile",
   "entrypoint": ["python3", "train.py"],
-  "executor": "wyd-l40s",
+  "executor": "slurm-gpu",
   "arguments": ["--steps", "20"],
   "metrics_schema": {"definitions": {"loss": {"unit": "dimensionless"}}},
   "resources": {"gpus": 1, "cpus": 8, "memory_gb": 32, "max_time": "00:10:00"},
@@ -104,10 +107,10 @@ Add data when needed:
 {"inputs": [{"directory": "./data", "mount_path": "/inputs/data"}]}
 ```
 
-The client uploads data to the selected executor: shared datapool on WYD,
+The client uploads data to the selected executor: shared storage on Slurm,
 or a CCR data image followed by a zero-GPU copy to SenseCore NAS. The desktop
 builds only the Runtime image. Standalone uploads require
-`ml-exp asset-upload --project my-study --executor wyd-l40s --directory ./data --state data.state.json`.
+`ml-exp asset-upload --project my-study --executor slurm-gpu --directory ./data --state data.state.json`.
 Target-backed datasets have metadata/references, not an API archive download.
 Use `asset_id` instead of `directory` to reuse an upload. A source download
 script can instead prepare persistent `DATA_DIR`. See [data](data.md).

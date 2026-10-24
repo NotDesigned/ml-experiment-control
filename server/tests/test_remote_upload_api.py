@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server.data.remote_data_uploads import WydDataUploads
+from ml_exp_server.data.remote_data_uploads import SlurmDataUploads
 from ml_exp_server.data.transfer_buffer import TransferBuffer
 from tests.test_sensecore_data_workflow import client, stored
 from tests.test_artifact_store import archive
@@ -78,7 +78,7 @@ def test_http_upload_resumes_frozen_executor_and_publishes_metadata_only(targete
     result = client.post(endpoint + "/complete")
     assert result.status_code == 200, result.text
     asset = result.json()
-    assert asset["remote_storage"] == "wyd" and asset["verification"] == "remote-sha256-fsync"
+    assert asset["remote_storage"] == "slurm" and asset["verification"] == "remote-sha256-fsync"
     assert client.get("/api/projects/demo/assets/" + asset["asset_id"]).json() == asset
     assert client.post(endpoint + "/complete").json() == asset
     assert not list((root / "transfer-buffer").glob("*.part"))
@@ -97,18 +97,18 @@ def test_unconfirmed_forwarding_retains_local_part_until_exact_remote_receipt(ta
     endpoint = "/api/projects/demo/asset-uploads/" + value["upload_id"]
     chunk = data[:value["part_bytes"]]
     digest = hashlib.sha256(chunk).hexdigest()
-    original = WydDataUploads.part
+    original = SlurmDataUploads.part
     def lost(*args, **kwargs):
         original(*args, **kwargs)
         raise ApplicationError("response lost", status_code=503, code="REMOTE_UPLOAD_UNCONFIRMED")
-    monkeypatch.setattr(WydDataUploads, "part", lost)
+    monkeypatch.setattr(SlurmDataUploads, "part", lost)
     assert client.put(endpoint + "/parts/0", params={"sha256": digest}, content=chunk).status_code == 503
     pending = list((root / "transfer-buffer").glob("*.part"))
     assert len(pending) == 1 and pending[0].read_bytes() == chunk
     # A bad retry body cannot overwrite the previously sealed original part.
     assert client.put(endpoint + "/parts/0", params={"sha256": digest}, content=b"wrong").status_code == 400
     assert pending[0].read_bytes() == chunk
-    monkeypatch.setattr(WydDataUploads, "part", original)
+    monkeypatch.setattr(SlurmDataUploads, "part", original)
     assert client.put(endpoint + "/parts/0", params={"sha256": digest}, content=chunk).status_code == 200
     assert not pending[0].exists()
 
@@ -135,7 +135,7 @@ def test_real_client_skips_committed_part_and_post_complete_confirms_its_retaine
     from ml_exp_client.api import ClientError
     from ml_exp_client.assets import upload_asset_parts
     client, root, _ = targeted
-    original = WydDataUploads.part
+    original = SlurmDataUploads.part
     calls, lost = [], False
     def forward(*args, **kwargs):
         nonlocal lost
@@ -145,7 +145,7 @@ def test_real_client_skips_committed_part_and_post_complete_confirms_its_retaine
             lost = True
             raise ApplicationError("response lost", status_code=503, code="REMOTE_UPLOAD_UNCONFIRMED")
         return receipt
-    monkeypatch.setattr(WydDataUploads, "part", forward)
+    monkeypatch.setattr(SlurmDataUploads, "part", forward)
     monkeypatch.setattr("ml_exp_client.assets.time.sleep", lambda _: None)
     requests = []
     class API:
@@ -170,19 +170,19 @@ def test_get_observes_pending_part_without_replaying_remote_write_then_post_clea
     data = archive({"x": b"x"})
     value = begin(client, data).json()
     endpoint = "/api/projects/demo/asset-uploads/" + value["upload_id"]
-    original = WydDataUploads.part
+    original = SlurmDataUploads.part
     def lost(*args, **kwargs):
         original(*args, **kwargs)
         raise ApplicationError("lost", status_code=503, code="REMOTE_UPLOAD_UNCONFIRMED")
-    monkeypatch.setattr(WydDataUploads, "part", lost)
+    monkeypatch.setattr(SlurmDataUploads, "part", lost)
     chunk = data[:1024]
     assert client.put(endpoint + "/parts/0", params={"sha256": hashlib.sha256(chunk).hexdigest()}, content=chunk).status_code == 503
     pending = list((root / "transfer-buffer").glob("*.part"))
     assert len(pending) == 1
-    monkeypatch.setattr(WydDataUploads, "part", lambda *a, **k: pytest.fail("GET cannot repeat a remote part"))
+    monkeypatch.setattr(SlurmDataUploads, "part", lambda *a, **k: pytest.fail("GET cannot repeat a remote part"))
     assert client.get(endpoint).json()["parts"]["0"]["bytes"] == 1024
     assert pending[0].read_bytes() == chunk
-    monkeypatch.setattr(WydDataUploads, "part", original)
+    monkeypatch.setattr(SlurmDataUploads, "part", original)
     for number in range(1, value["part_count"]):
         part = data[number * 1024:(number + 1) * 1024]
         assert client.put(endpoint + "/parts/" + str(number), params={"sha256": hashlib.sha256(part).hexdigest()}, content=part).status_code == 200
@@ -201,15 +201,15 @@ def test_repeated_create_confirms_pending_part_with_its_saved_full_target_bindin
     data = archive({"x": b"x"})
     value = begin(client, data).json()
     endpoint = "/api/projects/demo/asset-uploads/" + value["upload_id"]
-    original = WydDataUploads.part
+    original = SlurmDataUploads.part
     def lost(*args, **kwargs):
         original(*args, **kwargs)
         raise ApplicationError("lost", status_code=503, code="REMOTE_UPLOAD_UNCONFIRMED")
-    monkeypatch.setattr(WydDataUploads, "part", lost)
+    monkeypatch.setattr(SlurmDataUploads, "part", lost)
     chunk = data[:value["part_bytes"]]
     assert client.put(endpoint + "/parts/0", params={"sha256": hashlib.sha256(chunk).hexdigest()}, content=chunk).status_code == 503
     assert list((root / "transfer-buffer").glob("*.part"))
-    monkeypatch.setattr(WydDataUploads, "part", original)
+    monkeypatch.setattr(SlurmDataUploads, "part", original)
     resumed = begin(client, data)
     assert resumed.status_code == 200, resumed.text
     assert resumed.json()["upload_id"] == value["upload_id"] and resumed.json()["parts"]["0"]["bytes"] == len(chunk)

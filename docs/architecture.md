@@ -34,15 +34,18 @@ them separate from scientific data and apply their operator retention rules.
 flowchart LR
     Client[Client computer] --> API[API daemon]
     API --> Controller[Controller and backend library]
-    Controller --> WYD[WYD Slurm and Apptainer]
+    Controller --> Slurm[Slurm and Apptainer]
     Controller --> SC[SenseCore REST and ACP]
+    Controller --> DLC[PAI DLC training]
     API --> Builder[Private image builder]
-    Builder --> Desktop[Desktop Docker and BuildKit]
-    Desktop --> Registry[Container registry]
-    Registry --> WYD
+    Builder --> BuildHost[Local or SSH Docker / optional PAI DSW]
+    BuildHost --> Registry[Configured container registry]
+    Registry --> Slurm
     Registry --> SC
-    WYD --> Store[Artifact storage]
+    Registry --> DLC
+    Slurm --> Store[Artifact storage]
     SC --> Store
+    DLC --> Store
     Store --> Client
 ```
 
@@ -50,9 +53,11 @@ The daemon freezes metadata and controls schedulers; it does not run training
 code. A private builder owns Docker and publication. In SSH desktop mode, actual
 build contexts/layers live on the desktop. Training runs inside backend containers.
 Dataset transfers use the API's global 1 GiB disk buffer, with durable per-part
-ACK before local removal: WYD writes directly to shared datapool; SenseCore streams
+ACK before local removal: Slurm writes directly to shared storage; SenseCore streams
 an OCI data layer to CCR and copies it into NAS with a debug CPU job. The desktop
-is not on the new dataset path. Output archives still use object storage and a
+is not on the new dataset path. DLC datasets can use approved personal OSS and
+inside-job CPFS caching; native OSS filesystem mounts remain unavailable until
+provider authorization is fixed. Output archives still use object storage and a
 separate client-ACK lifecycle; total API/Garage disk usage is not capped at 1 GiB.
 
 ## Server code map
@@ -68,8 +73,8 @@ separate client-ACK lifecycle; total API/Garage disk usage is not capped at 1 Gi
 | Dispatch | `container_controller.py` → core `backends/` |
 | Observation | `collectord.py`, `ingest/`, `runs/terminal_snapshot.py`, `execution_progress.py`, `input_progress.py` |
 | Images | `image_builder.py`: builder daemon; `builds/builder_client.py`: private socket protocol and receipts; `dockerfile_build.py`, `builds/`: build context and execution |
-| Data | `data/`: target-bound assets, transfer buffer, WYD receiver/CCR upload and NAS delivery; `desktop_upload.py` serves historical desktop data |
-| Backend preparation/collection boundary | `backends/operations.py`; provider implementations in `wyd.py`, `sensecore_data.py`, `sensecore_preparation.py`, `sensecore_results.py`; shared CPU checks in `sensecore_cpu.py` |
+| Data | `data/`: target-bound assets, transfer buffer, Slurm receiver/CCR upload and NAS delivery; `desktop_upload.py` serves historical desktop data |
+| Backend preparation/collection boundary | `backends/operations.py`; provider implementations in `slurm.py`, `sensecore_data.py`, `sensecore_preparation.py`, `sensecore_results.py`; shared CPU checks in `sensecore_cpu.py` |
 | Results/state | `results/`: artifact storage, download lifecycle, checkpoint registry and independent collection |
 | Administrative Run deletion | `runs/deletion.py`, `deletion_state.py`, `results/admin_deletion.py`, `backends/run_deletion.py`, `workers/delete_run.py`: reviewed Run purge, permanent write fence and exact backend/object deletion |
 | Local storage policy | `storage_service.py`: existing upload/lifecycle services and shared `storage_capacity.py` admission |
@@ -94,7 +99,7 @@ separate durable intents, retry policies and receipts.
 stores. Upload promises, restore and publication reservations use the same local
 capacity policy and cross-process locks. Maintenance removes expired upload
 staging before processing acknowledged releases. Verified reproducible delivery
-caches remain distinct from retained objects and scientific records; NAS/datapool
+caches remain distinct from retained objects and scientific records; NAS/shared
 state is outside local storage cleanup. This facade adds no journal or database.
 
 `records/RecordStore` owns accepted platform observations, independently of
@@ -221,14 +226,14 @@ These files under `workers/` are injected into new images:
 - `data_copy_worker.py`: separate zero-GPU NAS dataset copy.
 - `result_worker.py`: recover exact-Attempt outputs without running training.
 
-`data_receiver.py` is a separate SSH-invoked WYD shared-storage receiver.
+`data_receiver.py` is a separate SSH-invoked Slurm shared-storage receiver.
 `script_preparation.py` is a server-frozen SenseCore CPU wrapper: it runs a download
 script, revalidates its sealed NAS receipt, and reports through a narrow HTTPS
 capability. It is not injected into historical training images.
 
 Worker fingerprints participate in image identity. Updating server source does
 not change workers in existing images. Backend implementations are core
-`backends/wyd.py`, `sensecore.py`, `sensecore_rest.py` and development `local.py`.
+`backends/slurm.py`, `sensecore.py`, `sensecore_rest.py` and development `local.py`.
 
 ## Identities and state
 
@@ -240,7 +245,7 @@ not change workers in existing images. Backend implementations are core
 | Preparation | One server-owned request and saved dependencies | Hash-bound intent and durable progress journal |
 | Run | Image, data, argv, resources and metric protocol | Immutable manifest |
 | Attempt | One execution | Intent, exact scheduler ID and observations |
-| Checkpoint | Complete backend-resident generation | NAS/datapool bytes and registered manifest |
+| Checkpoint | Complete backend-resident generation | NAS/shared-storage bytes and registered manifest |
 | Artifact | Published exact-Attempt output archive | Object, hashes and receipt |
 
 Actions/events use transactional SQLite. The read index and experiment-record
@@ -303,7 +308,7 @@ domain location, with no old-path forwarding modules. Shared process execution
 uses the core runner's explicit process-group mode where required. Worker/recipe
 changes affect future identities, never existing images or Run manifests.
 
-Programs live in `/root/ml-expd`; config in `/etc/ml-expd`; state in
+Programs live in `/opt/ml-expd`; config in `/etc/ml-expd`; state in
 `/var/lib/ml-expd` and configured project/builder roots. Backend storage and
 registry assets have separate lifetimes. `.ops/` is private operational evidence,
 not public functionality. See [deployment](operator-guide.md) and [recovery](recovery.md).

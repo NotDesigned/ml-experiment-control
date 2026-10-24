@@ -1,4 +1,4 @@
-"""Bounded SSH delivery into WYD shared storage before GPU admission."""
+"""Bounded SSH delivery into Slurm shared storage before GPU admission."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -51,7 +51,7 @@ print(json.dumps(result),flush=True)
 '''
 
 
-class WydDataStager:
+class SlurmDataStager:
     def __init__(self, runtime):
         self.runtime=runtime
         self.assets=AssetStore(Path(runtime.config.container_execution.artifact_store_file),runtime.config.project_registry_root_path())
@@ -68,7 +68,7 @@ class WydDataStager:
         code="import types,sys;module=types.ModuleType('worker_http');sys.modules['worker_http']=module\n"+"exec("+repr(transport)+",module.__dict__)\n"+"exec("+repr(source)+",globals())\n"+REMOTE
         body=json.dumps(metadata,sort_keys=True,separators=(',',':')).encode()
         if len(body)>8*1024*1024:
-            raise ApplicationError('WYD data manifest is too large',code='WYD_DATA_METADATA_TOO_LARGE')
+            raise ApplicationError('Slurm data manifest is too large',code='SLURM_DATA_METADATA_TOO_LARGE')
         command=['ssh','-o','BatchMode=yes','-o','ConnectTimeout=15',profile['backend']['ssh_alias'],shlex.join(['python3','-c',code])]
         process=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
         # Includes slow stdin writes, transport, unpacking and checksum reads.
@@ -90,7 +90,7 @@ class WydDataStager:
                 raise ValueError('backend data verification failed')
             process.result=result
         except (OSError,ValueError,subprocess.SubprocessError):
-            raise ApplicationError('WYD data preparation failed; inspect the saved preparation, no automatic replay',code='WYD_DATA_PREPARATION_FAILED') from None
+            raise ApplicationError('Slurm data preparation failed; inspect the saved preparation, no automatic replay',code='SLURM_DATA_PREPARATION_FAILED') from None
         finally:
             timer.cancel()
             if process.poll() is None: process.kill()
@@ -114,7 +114,7 @@ class WydDataStager:
         finally:
             body.close()
         if process.result['status']!='READY':
-            raise ApplicationError('WYD cache was not verified',code='WYD_DATA_NOT_READY')
+            raise ApplicationError('Slurm cache was not verified',code='SLURM_DATA_NOT_READY')
         return self.receipt(project,asset_id,profile)
 
     def receipt(self, project, asset_id, profile):
@@ -125,10 +125,10 @@ class WydDataStager:
                 'transport':'ssh_stream_shared_storage'}
 
 
-class WydResultOperations:
+class SlurmResultOperations:
     """Bounded observation and read-only result copying from shared storage."""
 
-    def verify_wyd_terminal(self, backend, job):
+    def verify_slurm_terminal(self, backend, job):
         if not re.fullmatch(r"[0-9]+(?:_[0-9]+)?", str(job)) or not IDENTITY.fullmatch(backend["ssh_alias"]):
             raise ValueError("invalid scheduler identity")
         result = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
@@ -138,7 +138,7 @@ class WydResultOperations:
         if not states or any(state not in TERMINAL for state in states):
             raise RecoveryError("ORIGINAL_JOB_NOT_TERMINAL", "provider Attempt is not confirmed terminal")
 
-    def read_wyd_outputs(self, backend, definition, attempt, local):
+    def read_slurm_outputs(self, backend, definition, attempt, local):
         remote = self.remote_outputs(definition, attempt)
         alias = backend["ssh_alias"]
         temporary = Path(tempfile.mkdtemp(prefix=".result-recovery-", dir=local.parent))
@@ -151,7 +151,7 @@ class WydResultOperations:
         finally:
             remove_staging(temporary)
 
-    def wyd_output_bytes(self, backend, definition, attempt):
+    def slurm_output_bytes(self, backend, definition, attempt):
         remote = self.remote_outputs(definition, attempt)
         result = run_process(["rsync", "-an", "--stats", "--out-format=", "--protect-args", "--safe-links", "--exclude=.*",
                               "-e", "ssh -o BatchMode=yes -o ConnectTimeout=15",

@@ -101,13 +101,13 @@ def test_runtime_recipe_without_dockerfile_and_duplicate_mounts_fail(client, mon
     binding={"asset_id":"asset."+"a"*64,"mount_path":"/inputs/data"}
     response=client.post("/api/projects/demo/runs",json={"run_id":"trial","runtime_id":bundle["runtime_id"],"executor":"cloud","inputs":[binding,binding]})
     assert response.status_code == 422
-    response=client.post("/api/projects/demo/runs",json={"run_id":"managed-wyd","runtime_id":bundle["runtime_id"],"executor":"gpu"})
+    response=client.post("/api/projects/demo/runs",json={"run_id":"managed-slurm","runtime_id":bundle["runtime_id"],"executor":"gpu"})
     assert response.status_code==200
     root=Path(client.app.state.runtime.project("demo").base_dir)
     import yaml
-    campaign=yaml.safe_load((root/"experiments/campaigns/run-managed-wyd.yaml").read_text())
+    campaign=yaml.safe_load((root/"experiments/campaigns/run-managed-slurm.yaml").read_text())
     campaign["local_root"]=str(client.app.state.runtime.config.project_run_root_path("demo"))
-    ctl=container_controller.Controller(campaign,"managed-wyd","attempt-001")
+    ctl=container_controller.Controller(campaign,"managed-slurm","attempt-001")
     ctl.prepare()
     assert ctl.store.load_manifest()["execution"]["managed_io"] is True
 

@@ -97,7 +97,7 @@ launcher; a server upgrade cannot change an immutable old image.
 
 Worker duration covers restore, data preparation, training and result return.
 It excludes cloud queue/image pull/NAS setup. ACP create currently contains no
-matching cloud wall-time field; WYD also applies the frozen duration to Slurm.
+matching cloud wall-time field; Slurm also applies the frozen duration to Slurm.
 Each Attempt gets its own worker timer, not a cumulative retry budget.
 
 Terminal jobs use offline logs; unavailable live logs can fall back to historical
@@ -112,3 +112,43 @@ ACP requests currently set `backoff_limit: 0`. There is no automatic restart;
 training restart remains unimplemented. Independent result collection can launch
 a bounded zero-GPU CPU job; it does not restart training. See
 [recovery](recovery.md) for collection and manual checkpoint restoration.
+
+## Dataset publication and CPU copy
+
+For SenseCore, add the registry and bounded `data_delivery` configuration below
+to the private artifact-store JSON:
+
+```json
+{
+  "upload_part_bytes": 16777216,
+  "data_registry": {
+    "repository": "REGISTRY_HOST/TEAM/ml-expd-data",
+    "base_image": "REGISTRY_HOST/TEAM/ml-expd-data@sha256:ACTUAL_64_HEX_DIGEST",
+    "registry_auth_file": "/etc/ml-expd/data-registry-auth.json",
+    "blob_hosts": ["ACTUAL_CCR_BLOB_HOST"]
+  },
+  "data_delivery": {
+    "aec2": "debug-CLUSTER_ID",
+    "worker_spec": "ACTUAL_CPU_SPEC.2c4g",
+    "gpus": 0, "cpus": 2, "memory_gb": 4,
+    "quota_type": "reserved",
+    "queue_timeout_seconds": 1800,
+    "copy_timeout_seconds": 1800
+  }
+}
+```
+
+Publish an ACP-compatible linux/amd64 Python/glibc/Bash base into this **same
+repository** first; `base_image` must be its immutable digest. The API reads base
+metadata and appends fixed dataset/worker layers through registry REST, without
+BuildKit. The daemon needs push/pull Docker auth in the private `registry_auth_file`;
+this file is distinct from the builder's auth unless deliberately provisioned for
+both. Give the service UID read access to this narrow credential, for example
+`root:ml-expd` mode 0640; retain the original root-only builder auth unchanged.
+Include only the required CCR host entry and do not copy unrelated registry logins.
+`blob_hosts` contains
+only the actual CCR blob redirect hostnames verified by the operator, without
+scheme, paths or wildcards; redirects use TLS and receive no registry credentials.
+Workspace, storage mount and dataset root are derived from the chosen executor.
+Verify the CPU spec is exactly 2 CPUs, 4 GiB and 0 GPUs in the selected debug pool.
+No new dataset upload requires the desktop SSH tunnel; environment builds still do.

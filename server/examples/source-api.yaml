@@ -18,6 +18,8 @@ action_runtime:
   stage_timeout_seconds: 1200
   gate_ttl_seconds: 1800
 container_execution:
+  # Copy one template from server/examples/executors/ here. Combine entries only
+  # when enabling multiple backends; see docs/configuration.md.
   profiles_file: /etc/ml-expd/executors.yaml
   builder_socket: /run/ml-expd-builder/builder.sock
   artifact_store_file: /etc/ml-expd/artifact-store.json

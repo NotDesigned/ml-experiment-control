@@ -1,7 +1,7 @@
 # Optional W&B publication
 
 ML-Expd publishes to W&B official Cloud from the API server. Training containers
-need no W&B SDK/key or direct connection to W&B. WYD workers use the existing
+need no W&B SDK/key or direct connection to W&B. Slurm workers use the existing
 private API relay. Scheduler execution, recovery, outputs and scientific decisions
 remain platform/experiment responsibilities.
 

@@ -22,20 +22,20 @@ this upgrade does not rewrite research configuration or replay pending jobs.
   exact-Attempt verified ACKs are unchanged.
 
 ```bash
-ml-exp asset-upload --project my-study --executor wyd-l40s \
+ml-exp asset-upload --project my-study --executor slurm-gpu \
   --directory ./data --state data.state.json
 # After interruption, use the same command and add --resume.
 ```
 
 A dataset copied to another storage namespace needs a matching upload/delivery
 there. The same content identity can record multiple backend locations; it does
-not imply that WYD datapool and SenseCore NAS share files.
+not imply that Slurm shared storage and SenseCore NAS share files.
 
 ## Operator changes
 
 1. Retain the reviewed program/config rollback point and consistent SQLite
    backups. Install staged core/server wheels; distribute the client separately.
-2. Verify WYD SSH access to the configured shared `storage_root` beneath
+2. Verify Slurm SSH access to the configured shared `storage_root` beneath
    datapool. New data parts go directly there, without desktop staging.
 3. Configure SenseCore `data_registry` with a same-repository immutable base,
    daemon-readable Docker auth and exact blob redirect host allowlist. Configure
