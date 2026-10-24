@@ -44,6 +44,32 @@ def observed_tags(job):
     return tags
 
 
+def queue_details(row):
+    """Keep bounded provider evidence, including the nested admission-rule JSON."""
+    result = {"source": "pai-quota-workload", "availability": "OBSERVED"}
+    for source, target in (("Code", "provider_code"), ("CodeType", "code_type"),
+                           ("Reason", "reason"), ("Status", "status"), ("GmtEnqueuedTime", "enqueued_at")):
+        value = row.get(source)
+        if isinstance(value, str):
+            result[target] = redact_line(value[:8192])[:2048]
+    for source, target in (("Position", "position"), ("Priority", "priority")):
+        value = row.get(source)
+        if type(value) is int and value >= 0:
+            result[target] = value
+    try:
+        blocker = json.loads(result.get("reason", ""))
+    except ValueError:
+        blocker = None
+    if isinstance(blocker, dict):
+        result.pop("reason", None)
+        result["blocker"] = {key: redact_line(blocker[key][:8192])[:2048]
+                             for key in ("CodeType", "Code", "Reason") if isinstance(blocker.get(key), str)}
+        for source, target in (("Code", "code"), ("CodeType", "code_type"), ("Reason", "reason")):
+            if result["blocker"].get(source):
+                result[target] = result["blocker"][source]
+    return result
+
+
 def personal_mounts(backend):
     """Operator-approved personal CPFS plus fixed read-only public directories."""
     if "cpfs_uri" not in backend:
@@ -249,12 +275,20 @@ class PaiBackend:
 
     def status(self, campaign, run):
         job = self.bound_job(campaign, run)
+        queue = None
+        if normalized(job.get("Status")) == "QUEUED":
+            try:
+                row = self.api.queue_workload(run["backend"], job["JobId"])
+                queue = queue_details(row) if row is not None else {"availability": "NOT_OBSERVED"}
+            except (PaiError, ValueError) as error:
+                queue = {"availability": "UNAVAILABLE", "query_error":
+                         error.code if isinstance(error, PaiError) else "PAI_QUEUE_RESPONSE_INVALID"}
         return {"run_id": run["run_id"], "backend": self.kind, "backend_job_id": job["JobId"],
                 "state": normalized(job.get("Status")), "raw_state": job.get("Status"),
-                "reason": redact_line(str(job.get("ReasonMessage") or job.get("ReasonCode") or ""))[:2048],
+                "reason": (queue or {}).get("reason") or redact_line(str(job.get("ReasonMessage") or job.get("ReasonCode") or ""))[:2048],
                 "exit_code": None, "failure_class": None,
                 "detail": {"provider_reason_code": job.get("ReasonCode"), "restart_times": job.get("RestartTimes"),
-                           "provider_phase": job.get("Status")}}
+                           "provider_phase": job.get("Status"), "queue": queue}}
 
     def bound_job(self, campaign, run):
         record = self.s.backend_record(campaign, run)

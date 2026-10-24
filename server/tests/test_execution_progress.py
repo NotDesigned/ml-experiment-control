@@ -139,6 +139,20 @@ def test_submission_progress_tracks_stage_and_keeps_exact_queue_evidence(tmp_pat
                 scheduler_state="QUEUED", evidence={"scheduler": {"state": "QUEUED", "attempt_id": attempt, "as_of": 1000, "detail": {"reason": reason}}}))
             result = api.get(endpoint + "/progress").json()
             assert result["queue"]["reason"] == reason
+        blocker={"CodeType":"ConfigRule","Code":"roleMaximumResource","Reason":"GPU: 8 limited by Role PAI.AlgoDeveloper."}
+        queue={"source":"pai-quota-workload","availability":"OBSERVED","code":"roleMaximumResource",
+               "code_type":"ConfigRule","provider_code":"CheckSelfQuotaFailed","blocker":blocker,
+               "reason":blocker["Reason"],"position":2,"priority":5,"enqueued_at":"2026-10-24T01:00:00Z","status":"Enqueued",
+               "unrelated_provider_field":"not exposed"}
+        for attempt in ("attempt-002","attempt-001"):
+            api.app.state.index.upsert_run(RunIndexRow(project="demo",run_id="run-a",run_dir=str(tmp_path),
+                evidence={"scheduler":{"state":"QUEUED","attempt_id":attempt,"as_of":1000,"detail":{"queue":queue}}}))
+            result=api.get(endpoint+"/progress").json()["queue"]
+            if attempt=="attempt-001":
+                assert result["blocker"]==blocker and result["reason"]==blocker["Reason"] and result["position"]==2
+                assert result["code"]=="roleMaximumResource" and result["as_of"]==1000
+                assert "unrelated_provider_field" not in result
+            else:assert "blocker" not in result and "position" not in result
         assert api.get("/api/submissions/action-unknown/progress").status_code == 404
 
 

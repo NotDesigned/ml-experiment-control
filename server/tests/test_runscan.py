@@ -43,6 +43,17 @@ def test_parse_iso_ts():
     assert parse_iso_ts("not a date") is None
 
 
+def test_scheduler_queue_diagnostics_survive_indexing_and_clear_on_next_observation(tmp_path):
+    (tmp_path/'manifest.yaml').write_text('project: demo\nrun_id: queued\n')
+    blocker={'CodeType':'ConfigRule','Code':'roleMaximumResource','Reason':'GPU limited to 8'}
+    queue={'code':'roleMaximumResource','blocker':blocker,'position':1}
+    for detail in ({'queue':queue},{'queue':None},None):
+        (tmp_path/'status.json').write_text(json.dumps({'attempt_id':'attempt-001','state':'QUEUED','detail':detail}))
+        row=scan_run_dir(tmp_path,'demo')
+        assert row.evidence.scheduler.attempt_id=='attempt-001'
+        assert row.evidence.scheduler.detail.get('queue')==(queue if detail=={'queue':queue} else None)
+
+
 def test_attempt_identity_cannot_escape_attempts_directory(tmp_path):
     run = tmp_path / "campaign" / "run-a"
     attempts = run / "attempts"

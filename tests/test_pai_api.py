@@ -110,6 +110,37 @@ def test_exact_job_workspace_quota_and_native_quota_envelopes(wire):
     with pytest.raises(ValueError):api.quota('quota-test')
 
 
+def test_exact_queue_lookup_preserves_blocking_rule_and_uses_narrow_read(wire):
+    calls,set_reply=wire;api=p.PaiAPI(CONFIG)
+    row={'WorkloadId':'dlc-test','WorkspaceId':253,'QuotaId':'quota-test','WorkloadType':'dlc',
+         'Reason':'{"Code":"roleMaximumResource","Reason":"GPU limited to 8"}'}
+    set_reply({'body':{'TotalCount':1,'Workloads':[row]}})
+    assert api.queue_workload(B,'dlc-test')==row
+    params,request,runtime,host=calls[-1]
+    assert params.method=='GET' and params.action=='ListQuotaWorkloads'
+    assert params.pathname=='/api/v1/quotas/quota-test/workloads'
+    assert request.query=={'WorkspaceIds':'253','WorkloadType':'dlc','WorkloadIds':'dlc-test','PageNumber':'1','PageSize':'2'}
+    assert runtime.read_timeout==10000 and host=='pai.us-southeast-1.aliyuncs.com'
+    set_reply({'body':{'TotalCount':0,'Workloads':[]}})
+    assert api.queue_workload(B,'dlc-test') is None
+
+
+@pytest.mark.parametrize('case',['rows','total','negative','multiple','incomplete','not_mapping','job','workspace','quota','type'])
+def test_queue_evidence_cannot_borrow_another_scope_or_accept_incomplete_results(wire,case):
+    _,set_reply=wire
+    row={'WorkloadId':'dlc-test','WorkspaceId':'253','QuotaId':'quota-test','WorkloadType':'dlc'}
+    body={'TotalCount':1,'Workloads':[row]}
+    if case=='rows':body['Workloads']=None
+    elif case=='total':body['TotalCount']=True
+    elif case=='negative':body['TotalCount']=-1
+    elif case=='multiple':body.update(TotalCount=2,Workloads=[row,row])
+    elif case=='incomplete':body['Workloads']=[]
+    elif case=='not_mapping':body['Workloads']=[None]
+    else:row[{'job':'WorkloadId','workspace':'WorkspaceId','quota':'QuotaId','type':'WorkloadType'}[case]]='other'
+    set_reply({'body':body})
+    with pytest.raises(ValueError):p.PaiAPI(CONFIG).queue_workload(B,'dlc-test')
+
+
 def test_job_lookup_is_paginated_exact_and_not_limited_to_last_seven_days(wire):
     calls,set_reply=wire;api=p.PaiAPI(CONFIG)
     row={'JobId':'dlc-test','WorkspaceId':'253','ResourceId':'quota-test'}

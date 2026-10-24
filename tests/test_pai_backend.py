@@ -222,3 +222,54 @@ def test_invalid_idle_policy_and_priority_never_submit(adapter,key,value):
     backend,run,_,calls,_=adapter;run['backend'][key]=value
     with pytest.raises(ValueError):backend.create_document({**run,'attempt_id':'attempt-001','command':['true']})
     assert not calls
+
+
+def test_queue_blocker_is_exposed_without_changing_scheduler_state_or_replaying(adapter):
+    backend,run,api,calls,data=adapter;lookups=[]
+    blocker={'CodeType':'ConfigRule','Code':'roleMaximumResource','Reason':
+             'Current Limit is CPU: 200 limited by Role PAI.AlgoDeveloper.Memory: 1600 limited by Role PAI.AlgoDeveloper.GPU: 8 limited by Role PAI.AlgoDeveloper.'}
+    row={'Code':'CheckSelfQuotaFailed','CodeType':'QuotaCheckFail','Reason':json.dumps(blocker),
+         'Position':2,'Priority':5,'Status':'Enqueued','GmtEnqueuedTime':'2026-10-24T01:00:00Z','Secret':'not exported'}
+    api.queue_workload=lambda scope,job:(lookups.append((scope,job)) or row)
+    data['job']['Status']='Queuing'
+    result=backend.status({},run);queue=result['detail']['queue']
+    assert result['state']=='QUEUED' and result['reason']==blocker['Reason']
+    assert queue['blocker']==blocker and queue['code']=='roleMaximumResource'
+    assert queue['code_type']=='ConfigRule' and queue['provider_code']=='CheckSelfQuotaFailed'
+    assert queue['position']==2 and queue['priority']==5 and queue['status']=='Enqueued'
+    assert lookups==[(run['backend'],'dlc-owned')] and not calls and 'Secret' not in queue
+    data['job']['Status']='Running'
+    result=backend.status({},run)
+    assert result['state']=='RUNNING' and result['detail']['queue'] is None and len(lookups)==1
+
+
+@pytest.mark.parametrize('failure',[None,PaiError('ListQuotaWorkloads',code='Forbidden',status=403),ValueError('private raw response')])
+def test_unavailable_queue_diagnostics_keep_the_known_job_state(adapter,failure):
+    backend,run,api,calls,data=adapter;data['job']['Status']='Queuing'
+    def lookup(*args):
+        if failure is not None:raise failure
+        return None
+    api.queue_workload=lookup
+    result=backend.status({},run);queue=result['detail']['queue']
+    assert result['state']=='QUEUED' and result['reason']=='waiting' and not calls
+    assert queue['availability']==('NOT_OBSERVED' if failure is None else 'UNAVAILABLE')
+    if failure is not None:
+        assert queue['query_error']==('Forbidden' if isinstance(failure,PaiError) else 'PAI_QUEUE_RESPONSE_INVALID')
+    assert 'private raw response' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('reason',['plain queue reason','[]','{"Code":null,"Reason":"","CodeType":123,"Password":"hidden"}'])
+def test_queue_diagnostics_allow_plain_or_malformed_rules_without_leaking_extra_fields(reason):
+    from experiment_control.backends.pai import queue_details
+    result=queue_details({'Reason':reason,'Position':True,'Priority':-1,'Code':None})
+    assert 'position' not in result and 'priority' not in result and 'provider_code' not in result
+    if 'blocker' in result:assert result['blocker']=={'Reason':''}
+    assert 'hidden' not in json.dumps(result)
+
+
+def test_queue_reason_redaction_and_size_bound():
+    from experiment_control.backends.pai import queue_details
+    result=queue_details({'Reason':json.dumps({'CodeType':'ConfigRule','Code':'blocked',
+        'Reason':'password=private-value https://host.test/x?X-Goog-Signature=private-signature'})})
+    assert 'private-value' not in json.dumps(result) and 'private-signature' not in json.dumps(result)
+    assert len(queue_details({'Reason':'x'*10000})['reason'])==2048
