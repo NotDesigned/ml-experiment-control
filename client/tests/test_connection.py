@@ -7,7 +7,7 @@ import stat
 import pytest
 
 from ml_exp_client import connection
-from ml_exp_client.api import ClientError
+from ml_exp_client.api import Client, ClientError
 
 
 URL = "https://api.example.org/ml-expd"
@@ -18,7 +18,7 @@ TOKEN = "test-private-token-not-for-a-real-service"
 def isolated_environment(monkeypatch):
     for key in ("ML_EXPD_CLIENT_CONFIG", "XDG_CONFIG_HOME", "ML_EXPD_API_TOKEN", "ML_EXPD_API_TOKEN_FILE"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(connection.Client, "open", lambda *args, **kwargs: pytest.fail("connection settings must not send HTTP"))
+    monkeypatch.setattr(Client, "open", lambda *args, **kwargs: pytest.fail("connection settings must not send HTTP"))
 
 
 def private(path, value):

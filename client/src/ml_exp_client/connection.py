@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import stat
 
-from .api import Client, ClientError
+from .api import ClientError, validate_base_url
 from .state import save
 
 
@@ -29,7 +29,7 @@ def normalize_url(value):
         if (not isinstance(value, str) or len(value) > MAX_TOKEN_BYTES
                 or any(char.isspace() or not char.isprintable() for char in value)):
             raise ValueError
-        return Client(value, "validation-only").base
+        return validate_base_url(value)
     except (ClientError, TypeError, ValueError):
         raise ClientError("invalid API URL; use HTTPS (HTTP is allowed on loopback only)") from None
 

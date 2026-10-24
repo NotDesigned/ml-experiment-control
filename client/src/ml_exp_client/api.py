@@ -124,20 +124,26 @@ def attempt_id(value):
     return value
 
 
+def validate_base_url(base: str) -> str:
+    """Share URL policy with local configuration without constructing a transport."""
+    url = urlsplit(base)
+    loopback = url.hostname == "localhost"
+    try:
+        loopback = loopback or ipaddress.ip_address(url.hostname or "").is_loopback
+    except ValueError:
+        pass
+    if (not url.hostname or url.username or url.password or url.query or url.fragment
+            or not (url.scheme == "https" or url.scheme == "http" and loopback)):
+        raise ClientError("API URL must use HTTPS (HTTP is allowed on loopback only)")
+    return base.rstrip("/")
+
+
 class Client:
     def __init__(self, base: str, token: str, *, timeout: float = 60, upload_timeout: float = 1200):
-        url = urlsplit(base)
-        loopback = url.hostname == "localhost"
-        try:
-            loopback = loopback or ipaddress.ip_address(url.hostname or "").is_loopback
-        except ValueError:
-            pass
-        if (not url.hostname or url.username or url.password or url.query or url.fragment
-                or not (url.scheme == "https" or url.scheme == "http" and loopback)):
-            raise ClientError("API URL must use HTTPS (HTTP is allowed on loopback only)")
+        base = validate_base_url(base)
         if not token or any(c.isspace() for c in token):
             raise ClientError("set ML_EXPD_API_TOKEN or ML_EXPD_API_TOKEN_FILE")
-        self.base, self.token, self.timeout = base.rstrip("/"), token, timeout
+        self.base, self.token, self.timeout = base, token, timeout
         self.upload_timeout = max(timeout, upload_timeout)
         self.opener = build_opener(NoRedirect())
 
