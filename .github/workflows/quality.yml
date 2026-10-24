@@ -145,9 +145,29 @@ jobs:
           CI_RUST_VERSION: ${{ steps.native.outputs.toolchain }}
         run: uv run --no-sync python tools/ci_core_wheel.py
       - name: Run every daemon test file in its exact partition
-        run: >-
-          uv run --no-sync --package ml-experiment-server python tools/coverage_gate.py
-          --suite daemon --workers 2 --shard-index ${{ matrix.shard }} --shard-count 16
+        run: |
+          test_tmp="$(mktemp -d "$RUNNER_TEMP/ml-expd-tests.XXXXXX")"
+          cleanup() {
+            test_status=$?
+            trap - EXIT
+            if mountpoint -q "$test_tmp"; then
+              df -B1 "$test_tmp" || test_status=1
+              sudo umount "$test_tmp" || test_status=1
+            fi
+            rmdir "$test_tmp" || test_status=1
+            exit "$test_status"
+          }
+          trap cleanup EXIT
+          # Dedicated exec-enabled storage also supports executable worker fixtures.
+          sudo mount -t tmpfs -o size=2G,mode=1777,nodev,nosuid,exec tmpfs "$test_tmp"
+          printf '#!/bin/sh\nexit 0\n' > "$test_tmp/exec-check"
+          chmod 700 "$test_tmp/exec-check"
+          "$test_tmp/exec-check"
+          rm "$test_tmp/exec-check"
+          export TMPDIR="$test_tmp"
+          export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --basetemp=$TMPDIR/pytest"
+          uv run --no-sync --package ml-experiment-server python tools/coverage_gate.py \
+            --suite daemon --workers 2 --shard-index ${{ matrix.shard }} --shard-count 16
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: daemon-evidence-${{ matrix.shard }}

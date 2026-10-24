@@ -126,6 +126,16 @@ enforces the original independent server/worker gates before recording evidence.
 Only coverage data is consumed from shard artifacts. A missing or failed shard
 cannot produce reusable evidence.
 
+Only the GitHub daemon test step uses a dedicated 2 GiB, executable tmpfs under
+`RUNNER_TEMP` for `TMPDIR` and pytest's temporary directories. This avoids noisy
+host-disk flush delays while retaining real fsync, SQLite, file locks, subprocesses
+and failure injection. The step checks executable access, logs used capacity and
+unmounts on success or failure; inability to mount, execute or clean up fails the
+job. The filesystem limit is not a test size exemption: larger fixtures must fit
+or the job fails. Core/client tests, package builds and installed/offline smoke
+tests continue using the normal runner filesystem. This verifies process-level
+storage behavior, not persistence after loss of host power.
+
 Cargo and uv caches reduce setup cost. Core and daemon checks can reuse a core
 wheel only for the same complete core source fingerprint, compiler, platform
 and Python ABI; wheel metadata, SHA and every packaged Python source are checked
