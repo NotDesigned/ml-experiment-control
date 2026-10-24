@@ -308,7 +308,7 @@ def cpu_download(client, stored, service, monkeypatch):
         prepared = service.read("demo", control.preparation_id)
         assert prepared["phase"] == "PREPARING_DATA_SCRIPT" and prepared["run"]["state"] == "NOT_SUBMITTED"
         files = [{"path": "tokens.bin", "bytes": 17, "sha256": "f" * 64}]
-        from ml_exp_server.workers.data_preparation import identity
+        from ml_exp_worker.data_preparation import identity
         sealed = {"schema_version": 1, "status": "READY", "definition": definition["definition"],
                   "preparation_id": definition["definition"]["preparation_id"], "files": files,
                   "content_sha256": identity(files), "dataset_id": "dataset." + identity(files), "bytes": 17}

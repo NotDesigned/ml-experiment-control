@@ -19,8 +19,7 @@ Keep one daemon writer per workspace. For the consolidated deployment:
 
 ```text
 /opt/ml-expd/                 checkout and installed .venv
-  .ops/                       private operations evidence
-  .recovery/previous/          one verified preceding program
+  .ops/                       small private reports, hashes and failure evidence
 /etc/ml-expd/                 private config/credentials
 /var/lib/ml-expd/             Action DB, index, immutable Runs and metadata
 /var/lib/ml-expd-builder/      configured builder receipts/progress/leases
@@ -30,14 +29,14 @@ Keep one daemon writer per workspace. For the consolidated deployment:
 Templates may choose a different project/builder root. Make daemon config,
 builder `source_root`/socket, service writable paths and actual ownership agree.
 Do not relocate backend datasets/checkpoints when rearranging program files.
-Code directories/modules are 0755/0644; entrypoints executable. Keep `.git`,
-`.ops`, `.recovery` mode 0700. Services use `ProtectHome=tmpfs` with a read-only
+Code directories/modules are 0755/0644; entrypoints executable. Keep `.git` and
+`.ops` mode 0700. Services use `ProtectHome=tmpfs` with a read-only
 bind of `/opt/ml-expd`, exposing code without opening other home directories.
 The daemon must not have unrestricted Docker access.
 
 ## Install a reviewed release
 
-Use precompiled core/server wheels from the same reviewed release. Rust and uv
+Use precompiled core/worker/server wheels from the same reviewed release. Rust and uv
 are build tools, not service runtime requirements. The complete
 [two-machine example](two-machine-quickstart.md) covers installation, service
 account, token, HTTPS, client trust and a source import without a builder.
@@ -55,14 +54,16 @@ The bundle installs exact, hash-checked runtime wheels with `--no-index`. It
 contains the minimal API template and two-machine guide. It refuses an existing
 virtual environment and does not create credentials or start a service.
 
-If only individual wheels are available, place exactly one core and one server
+If only individual wheels are available, place exactly one core, worker and server
 wheel from the chosen release in a clean directory, verify their published hashes,
 then install with a reachable HTTPS package index:
 
 ```bash
 python3 -m venv /opt/ml-expd/.venv
 /opt/ml-expd/.venv/bin/python -m pip install \
-  ./release-wheels/ml_experiment_control-*.whl ./release-wheels/ml_experiment_server-*.whl
+  ./release-wheels/ml_experiment_control-*.whl \
+  ./release-wheels/ml_experiment_worker-*.whl \
+  ./release-wheels/ml_experiment_server-*.whl
 /opt/ml-expd/.venv/bin/ml-expd --help
 ```
 
@@ -70,9 +71,20 @@ This second path downloads runtime dependencies; the project wheels alone are
 not an offline installation. Choose a trusted reachable `--index-url` when needed.
 Do not disable TLS verification. [Development](development.md#build-deployment-artifacts)
 describes source builds, dependency mirrors and creating offline bundles.
+These commands install the base server. For W&B publication, choose a full
+server bundle whose manifest lists `extras: ["wandb"]`, or install the same
+reviewed server wheel with its `[wandb]` extra. The worker and client themselves
+remain dependency-free. Existing release bundles already contain their own
+runtime dependencies; use each release's matching bundle without substituting
+new source packages.
 
 Use these creation commands for a new installation, not over an active runtime.
-Existing deployments need a staged, verified upgrade and program rollback plan.
+Existing deployments need a staged, verified upgrade. Keep an environment while
+it is active or still referenced; after acceptance, remove inactive previous and
+candidate environments and disposable wheel/bundle copies. Do not move or
+compress old environments into another directory. Retain small verification and
+failure reports; database recovery backups and live/scientific state have
+separate retention policies.
 Install the client separately on client machines. Ensure `experiment-redact`
 is on the controller/service PATH. Remove installers/dev caches after verification.
 
@@ -269,12 +281,16 @@ excerpts. `training=CONFIGURED` means this configuration check passed, not that
 cloud credentials, image publication, node connectivity or GPU admission passed.
 Readiness requests do not submit builds or jobs or rewrite existing experiments.
 
-## Maintenance and rollback
+## Maintenance and recovery
 
 Back up live SQLite with its backup API, or take a stopped-service copy including
-WAL. Keep an isolated restore check and one verified preceding program/config
-recovery point. Never restore an old DB over newer production state. Refuse
-program rollback if guard conditions or active/newer operations make it unsafe.
+WAL. Verify backups in isolation and record the matching program versions and
+configuration digests. Keep the sole active production environment after upgrade
+acceptance; check process and configuration references before deleting inactive
+environments. Database backups are outside that cleanup policy. Never restore
+an old DB over newer production state. Recovery must account for frozen worker
+contracts and state written by newer versions; an old release is not an
+automatic rollback target.
 See [Action storage](action-storage.md).
 
 Registry images, backend datasets/state and historical desktop archives require

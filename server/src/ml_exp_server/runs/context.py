@@ -8,7 +8,7 @@ from ..projects.authored_runs import authored_run_placeholder
 from ..application_errors import ApplicationError
 from ..outward import operational_decision
 from ..schemas import OperationScope, OperationScopeType, ResearchProject
-from ..tracking.metric_contract import metric_result, finite
+from ..records.contract import metric_result, finite
 
 class RunContext:
     """Context operations; state belongs to the application facade."""

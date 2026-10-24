@@ -23,7 +23,7 @@ import tomllib
 import zipfile
 
 
-PACKAGES = {"server": ("ml_experiment_control", "ml_experiment_server"),
+PACKAGES = {"server": ("ml_experiment_control", "ml_experiment_worker", "ml_experiment_server"),
             "client": ("ml_experiment_client",)}
 LOCKFILE = Path(__file__).resolve().parents[1] / "uv.lock"
 
@@ -41,7 +41,10 @@ def wheel_identity(path):
     return re.sub(r"[-_.]+", "-", name).lower(), version
 
 
-def build(component, wheels, output):
+def build(component, wheels, output, *, extras=()):
+    extras = sorted(set(extras))
+    if extras and (component != "server" or extras != ["wandb"]):
+        raise ValueError("only the server supports the wandb extra")
     if output.exists():
         raise ValueError("output already exists; choose a new bundle path")
     selected = []
@@ -59,6 +62,7 @@ def build(component, wheels, output):
             inputs = Path(temporary) / "inputs.txt"
             subprocess.run(["uv", "export", "--project", str(LOCKFILE.parent), "--frozen", "--no-dev",
                             "--no-emit-workspace", "--package", "ml-experiment-server",
+                            *[arg for extra in extras for arg in ("--extra", extra)],
                             "--output-file", str(inputs)], check=True, stdout=subprocess.DEVNULL)
             with inputs.open("a") as stream:
                 for path in selected:
@@ -100,6 +104,7 @@ def build(component, wheels, output):
                     "wheels": records}
         if component == "server":
             manifest["uv_lock_sha256"] = hashlib.sha256(LOCKFILE.read_bytes()).hexdigest()
+            manifest["extras"] = extras
         (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         repository = Path(__file__).resolve().parents[1]
         shutil.copyfile(repository / "docs/two-machine-quickstart.md", root / "two-machine-quickstart.md")
@@ -158,9 +163,11 @@ def main(argv=None):
     parser.add_argument("--component", choices=PACKAGES, required=True)
     parser.add_argument("--wheels", type=Path, required=True, help="clean directory of reviewed project wheels")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--extra", action="append", default=[], choices=["wandb"],
+                        help="optional server integration included in the locked dependency closure")
     args = parser.parse_args(argv)
     try:
-        print(json.dumps(build(args.component, args.wheels, args.output), indent=2))
+        print(json.dumps(build(args.component, args.wheels, args.output, extras=args.extra), indent=2))
         return 0
     except (OSError, ValueError, subprocess.CalledProcessError, zipfile.BadZipFile) as error:
         parser.exit(1, f"Bundle build failed: {error}\n")

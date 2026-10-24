@@ -1,6 +1,8 @@
 """Stream a fixed data image to CCR without Docker or a local dataset copy."""
 from __future__ import annotations
 
+from ml_exp_worker import source_path
+
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import fcntl
@@ -228,7 +230,7 @@ class CCRDataUploads:
         if config.get("architecture") != "amd64" or config.get("os") != "linux" or config.get("rootfs", {}).get("type") != "layers":
             raise ValueError("data base image is not linux/amd64")
         control = io.BytesIO()
-        workers = Path(__file__).parent.parent / "workers"
+        workers = source_path(DATA_WORKERS[0]).parent
         # The layer identity belongs to content, not an executor alias or an
         # upload session. Keep presentation metadata outside the pinned image.
         payload_asset = {key: asset[key] for key in ("project", "asset_id", "sha256", "archive_bytes", "files")}

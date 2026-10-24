@@ -14,8 +14,8 @@ from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.container_controller import Controller
 from ml_exp_server.container_execution import ContainerExecutionService
 from ml_exp_server.runs.executor_capabilities import declaration
-from ml_exp_server.workers import data_preparation as data
-from ml_exp_server.workers import managed_worker as worker
+from ml_exp_worker import data_preparation as data
+from ml_exp_worker import managed_worker as worker
 from tests.test_container_api import archive, client, import_source, runtime
 from tests.test_script_data_preparation import definition
 from tests.test_sensecore_data_workflow import stored

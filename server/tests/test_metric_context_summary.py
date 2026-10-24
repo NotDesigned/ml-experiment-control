@@ -4,7 +4,7 @@ import copy
 import pytest
 
 from ml_exp_server.runs.context import RunContext
-from ml_exp_server.tracking.metric_contract import metric_result
+from ml_exp_server.records.contract import metric_result
 
 
 SCHEMA = {"definitions": {

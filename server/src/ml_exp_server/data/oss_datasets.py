@@ -83,7 +83,7 @@ class ObjectBody(io.RawIOBase):
 
 def inspect_object(destination, location, sha256, size, assets,progress=None):
     import alibabacloud_oss_v2 as oss
-    from ..workers.data_input import relative_path
+    from ml_exp_worker.data_input import relative_path
     response=destination.get_object(oss.GetObjectRequest(bucket=location['bucket'],key=location['object_key']))
     files=[]; names=set();expanded=0
     with closing(ObjectBody(response.body)) as raw, io.BufferedReader(raw,buffer_size=1024**2) as buffered:

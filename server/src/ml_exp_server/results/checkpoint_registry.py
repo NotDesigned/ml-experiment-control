@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .artifact_store import ArtifactStore, ATTEMPT
 from ..application_errors import ApplicationError
-from ..workers.persistent_state import CHECKPOINT_ID, document, digest
+from ml_exp_worker.persistent_state import CHECKPOINT_ID, document, digest
 from ..projects.source_imports import IDENTITY
 from ..storage import atomic_json, utc_now
 from ..deletion_state import RunFence

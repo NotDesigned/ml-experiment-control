@@ -131,6 +131,17 @@ def test_health_source_version_fallback(monkeypatch):
     assert routes.health(req).server_version == "0.1.0+source"
 
 
+def test_package_import_without_installed_distribution(monkeypatch):
+    import importlib
+    import ml_exp_server
+    original = ml_exp_server.__version__
+    with monkeypatch.context() as context:
+        context.setattr('importlib.metadata.version',
+                        lambda _name: (_ for _ in ()).throw(PackageNotFoundError()))
+        assert importlib.reload(ml_exp_server).__version__ == '0+uninstalled'
+    assert importlib.reload(ml_exp_server).__version__ == original
+
+
 class Status:
     def __init__(self, target, state):
         self.target = target

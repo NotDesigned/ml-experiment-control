@@ -5,6 +5,8 @@ file/command channel, isolated from the operator's CLI profile and credentials.
 """
 from __future__ import annotations
 
+from ml_exp_worker import source_path
+
 import base64
 import hashlib
 import json
@@ -304,7 +306,7 @@ class DswPublisher:
                     self.secrets.extend([item['auth'], base64.b64decode(item['auth'], validate=True).decode().split(':', 1)[1]])
                 self.secrets = [value for value in self.secrets if value]
                 atomic_json(local / "config.json", {"auths": selected})
-                worker = Path(__file__).parent.parent / "workers/dsw_build_worker.py"
+                worker = source_path("dsw_build_worker.py")
                 files = [(archive, "context.tar"), (local / "request.json", "request.json"), (local / "config.json", "auth/config.json"),
                          (worker, "worker.py")]
                 for source, target in files:

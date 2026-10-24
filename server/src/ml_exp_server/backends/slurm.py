@@ -1,6 +1,8 @@
 """Bounded SSH delivery into Slurm shared storage before GPU admission."""
 from __future__ import annotations
 
+from ml_exp_worker import source_path
+
 from contextlib import contextmanager
 import json
 import os
@@ -63,8 +65,8 @@ class SlurmDataStager:
 
     @contextmanager
     def process(self, profile, metadata):
-        source=(Path(__file__).parent.parent / "workers" / "data_input.py").read_text()
-        transport=(Path(__file__).parent.parent / "workers" / "worker_http.py").read_text()
+        source=source_path("data_input.py").read_text()
+        transport=source_path("worker_http.py").read_text()
         code="import types,sys;module=types.ModuleType('worker_http');sys.modules['worker_http']=module\n"+"exec("+repr(transport)+",module.__dict__)\n"+"exec("+repr(source)+",globals())\n"+REMOTE
         body=json.dumps(metadata,sort_keys=True,separators=(',',':')).encode()
         if len(body)>8*1024*1024:

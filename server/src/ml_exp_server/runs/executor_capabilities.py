@@ -11,7 +11,7 @@ from experiment_control.backends.pai import ALLOCATION_POLICIES, personal_mounts
 
 from ..application_errors import ApplicationError
 from ..results.checkpoint_registry import storage_scope
-from ..workers.worker_http import CONTRACT as RELAY_CONTRACT, relay_environment
+from ml_exp_worker.worker_http import CONTRACT as RELAY_CONTRACT, relay_environment
 
 
 CONTRACT = "backend-capabilities.v1"

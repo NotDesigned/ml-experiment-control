@@ -1,6 +1,8 @@
 """Exact managed Run purge; no training submission or provider-history deletion."""
 from __future__ import annotations
 
+from ml_exp_worker import source_path
+
 import base64
 import gzip
 import hashlib
@@ -14,7 +16,7 @@ from experiment_control.backends.sensecore_rest import SenseCoreREST
 
 from ..application_errors import ApplicationError
 from experiment_control.runner import run_process
-from ..workers.delete_run import checked_target
+from ml_exp_worker.delete_run import checked_target
 from .sensecore_cpu import checked_job, describe_job, document, stop_job, validate_profile, verify_spec
 from .states import TERMINAL
 
@@ -176,7 +178,7 @@ class BackendRunDeletion:
         payload = self.payload(targets, state)
         if state.get("stage") == "DELETED" and state.get("receipt"):
             return {"status": "DELETED", "receipt": self.receipt(payload, state["receipt"])}
-        source = (Path(__file__).parent.parent / "workers" / "delete_run.py").read_text()
+        source = source_path("delete_run.py").read_text()
 
         def update(**fields):
             state.update(fields)

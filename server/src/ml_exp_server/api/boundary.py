@@ -13,7 +13,7 @@ from ..data.data_assets import WORKER_PATH
 from .upload_routes import WORKER_UPLOAD_PATH
 from ..data.data_delivery import COPY_TRANSFER
 from ..backends.sensecore_preparation import CALLBACK_PATH
-from .tracking_routes import RECORD_PATH
+from .record_routes import RECORD_PATH
 from .deletion_routes import DELETION_TRANSFER
 from .result_routes import RESULT_PATH
 from ..execution_queue import QueueUnavailable

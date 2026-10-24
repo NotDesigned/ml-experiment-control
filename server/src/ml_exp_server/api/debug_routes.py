@@ -1,7 +1,7 @@
 """Authenticated, bounded debug-machine lifecycle, separate from training."""
 from fastapi import APIRouter, Request
 
-from ..debug_models import DebugRequest
+from ..debug.models import DebugRequest
 from ..execution_queue import admitted_handoff
 from .errors import invoke
 

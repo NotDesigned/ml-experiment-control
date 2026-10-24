@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ml-experiment-worker"
+version = "1.0.0"
+description = "Standalone standard-library execution programs for ML-Expd"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/NotDesigned/ml-experiment-control"
+Issues = "https://github.com/NotDesigned/ml-experiment-control/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["ml_exp_worker"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+precision = 1

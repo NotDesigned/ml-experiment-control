@@ -246,7 +246,7 @@ class AssetStore:
     def validate_inventory(self, files):
         if not files or len(files) > self.file_limit or len({item["path"] for item in files}) != len(files):
             raise ValueError("remote asset file inventory differs")
-        from ..workers.managed_worker import relative_path
+        from ml_exp_worker.managed_worker import relative_path
         for item in files:
             relative_path(item["path"])
             if not SHA256.fullmatch(item["sha256"]) or type(item["bytes"]) is not int or item["bytes"] < 0:

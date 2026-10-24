@@ -2,7 +2,7 @@
 from copy import deepcopy
 import pytest
 from experiment_control.backends.sensecore_rest import RESTError
-from ml_exp_server.debug_cci import CciDebug, subset, startup
+from ml_exp_server.debug.cci import CciDebug, subset, startup
 from tests.test_debug_sessions import KEY
 
 

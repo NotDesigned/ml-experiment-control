@@ -7,19 +7,23 @@ Use Python 3.12 to match CI and Rust 1.85+ to build `experiment-redact`:
 ```bash
 git clone https://github.com/NotDesigned/ml-experiment-control.git
 cd ml-experiment-control
-uv sync --locked --all-packages
+uv sync --locked --all-packages --all-extras
 ```
 
 This creates a development `.venv`; do not sync development dependencies into
 a deployed service environment. Commit `pyproject.toml` and `uv.lock` together
 when dependencies change, and `rust/Cargo.lock` when Rust dependencies change.
+The workspace contains core, server, client and worker packages. The full
+development environment includes the optional W&B SDK. Use `uv run --no-sync`
+after this setup so a narrower package command does not remove optional
+dependencies from the shared environment.
 
 Run affected tests first. For documentation and the introductory HTTP workflow:
 
 ```bash
-uv run pytest tests/test_quality_tools.py -q
-uv run --package ml-experiment-server pytest server/tests/test_api_quickstart.py -q
-uv run python tools/generate_cli_reference.py --check
+uv run --no-sync pytest tests/test_quality_tools.py -q
+uv run --no-sync --package ml-experiment-server pytest server/tests/test_api_quickstart.py -q
+uv run --no-sync python tools/generate_cli_reference.py --check
 ```
 
 The quickstart suite uses real loopback HTTP with injected registry, scheduler
@@ -37,18 +41,20 @@ full gates locally:
 cargo fmt --manifest-path rust/Cargo.toml -- --check
 cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
 cargo test --locked --manifest-path rust/Cargo.toml
-uv run mypy
-uv run python tools/coverage_gate.py
-uv run --package ml-experiment-server python tools/coverage_gate.py --suite daemon --workers 2
-uv run --package ml-experiment-client python tools/coverage_gate.py --suite client --min-line 90.9 --min-branch 84.5
-uv run python tools/generate_cli_reference.py --check
-uv run python -m compileall -q tools examples
+uv run --no-sync mypy
+uv run --no-sync python tools/coverage_gate.py
+uv run --no-sync --package ml-experiment-server python tools/coverage_gate.py --suite daemon --workers 2
+uv run --no-sync --package ml-experiment-client python tools/coverage_gate.py --suite client --min-line 90.9 --min-branch 84.5
+uv run --no-sync python tools/generate_cli_reference.py --check
+uv run --no-sync python -m compileall -q tools examples
 uv build --all-packages
 ```
 
-CI also installs the client wheel without core/server dependencies and smoke
-tests the installed server/core wheels. Both core and server coverage gates
-require **100% line and 100% branch coverage independently**. Coverage is a
+CI also installs the client and worker wheels without dependencies, tests the
+base server's authenticated HTTP API and metrics without W&B, and installs a
+full server bundle with the optional SDK. The daemon suite runs server and
+worker flows together once, then gates their measured coverage separately.
+Core, server and worker each require **100% line and 100% branch coverage**. Coverage is a
 regression floor; it does not prove all lifecycle combinations or a live backend.
 The standalone client previously had no coverage gate. Its measured baseline is
 90.96% line / 84.57% branch; CI now independently requires 90.9% / 84.5%. This is
@@ -81,16 +87,23 @@ Build into a clean wheel directory so stale package versions cannot be selected:
 ```bash
 mkdir -p .ops/release-wheels .ops/bundles
 uv build --package ml-experiment-control --out-dir .ops/release-wheels
+uv build --package ml-experiment-worker --out-dir .ops/release-wheels
 uv build --package ml-experiment-server --out-dir .ops/release-wheels
 uv build --package ml-experiment-client --out-dir .ops/release-wheels
 uv run --no-project --python 3.12 --with pip --with setuptools --with wheel \
   python tools/build_deployment_bundle.py \
-  --component server --wheels .ops/release-wheels \
+  --component server --extra wandb --wheels .ops/release-wheels \
   --output .ops/bundles/server-bundle.tar.gz
 python3 tools/build_deployment_bundle.py --component client \
   --wheels .ops/release-wheels --output .ops/bundles/client-bundle.tar.gz
 (cd .ops/bundles && sha256sum *.tar.gz > SHA256SUMS)
 ```
+
+The server bundle includes matching core, worker and server wheels. The example
+selects the full `wandb` extra; omit `--extra wandb` for a base server without the
+SDK. The bundle manifest records the selected extras. Client bundles contain
+only the client wheel. Older published bundles already carry their dependency
+closure; do not combine them with newly split source-package requirements.
 
 Use the same target Python and Linux architecture for wheel construction and
 dependency download. The standard CI bundle is Python 3.12/Linux x86-64; check
@@ -144,7 +157,9 @@ validate different packaging and dependency boundaries than source imports.
 ## Ownership and durable changes
 
 Follow [architecture](architecture.md). The core must not import the server;
-the standalone client must not require either. FastAPI belongs in `server/api`.
+the standalone client and worker must not require either. Workers use only the
+standard library; server-only receivers and stores remain in the server.
+FastAPI belongs in `server/api`.
 Host scientific configuration/parsers belong in `ProjectAdapter`; managed API
 projects use the generic worker and metric schema.
 
@@ -176,8 +191,8 @@ Git retains their history. Label unimplemented designs and known defects.
 `cli_reference.md` is generated from the Rust parser:
 
 ```bash
-uv run python tools/generate_cli_reference.py
-uv run python tools/generate_cli_reference.py --check
+uv run --no-sync python tools/generate_cli_reference.py
+uv run --no-sync python tools/generate_cli_reference.py --check
 ```
 
 Do not hand-edit it. Changes to exported symbols or redactor invocation must

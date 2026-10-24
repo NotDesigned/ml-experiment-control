@@ -27,7 +27,7 @@ from ..runs.experiment_preparation import ExperimentPreparationService
 from ..tracking.tracking_service import TrackingPublisher
 from ..results.result_collection import ResultCollectionService
 from ..execution_queue import BoundedExecutor, job_lane
-from ..debug_sessions import DebugSessions
+from ..debug.service import DebugSessions
 
 
 def _debug_loop(app):

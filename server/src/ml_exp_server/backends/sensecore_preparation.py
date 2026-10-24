@@ -1,6 +1,8 @@
 """Prepare download-script data on a bounded CPU job before GPU scheduling."""
 from __future__ import annotations
 
+from ml_exp_worker import source_path
+
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -18,7 +20,7 @@ from experiment_control.backends.sensecore_rest import SenseCoreREST
 from ..application_errors import ApplicationError
 from ..projects.source_imports import IDENTITY
 from ..storage import DurableJsonState, utc_now
-from ..workers.data_preparation import identity
+from ml_exp_worker.data_preparation import identity
 from .sensecore_cpu import checked_job, describe_job, document, find_job, stop_job, validate_profile, verify_spec
 from .states import TERMINAL
 
@@ -29,7 +31,7 @@ CALLBACK_PATH = re.compile(r"^/api/data-script-transfers/[A-Za-z0-9][A-Za-z0-9_.
 
 
 def script_receipt_worker_sha256():
-    code = (Path(__file__).parent.parent / "workers" / "script_preparation.py").read_bytes()
+    code = source_path("script_preparation.py").read_bytes()
     launcher = b"\0".join(argument.encode() for argument in SCRIPT_RECEIPT_PYTHON)
     return hashlib.sha256(launcher + b"\0" + code).hexdigest()
 
@@ -118,7 +120,7 @@ class SenseCoreScriptPreparation:
         if definition["contract"] == "cpu-script-preparation.v2":
             if definition["receipt_worker_sha256"] != script_receipt_worker_sha256() or callback is None:
                 raise ValueError("frozen script receipt worker differs")
-            code = (Path(__file__).parent.parent / "workers" / "script_preparation.py").read_text()
+            code = source_path("script_preparation.py").read_text()
             return shlex.join([
                 "timeout", "--signal=TERM", "--kill-after=30s", str(definition["definition"]["timeout_seconds"] + 60) + "s",
                 "env", "ML_EXPD_SCRIPT_RECEIPT_TOKEN=" + callback["token"],

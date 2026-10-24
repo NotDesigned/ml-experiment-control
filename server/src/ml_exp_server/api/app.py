@@ -24,6 +24,7 @@ from .upload_routes import router as upload_router
 from .data_delivery_routes import router as data_delivery_router
 from .preparation_routes import router as preparation_router
 from .tracking_routes import router as tracking_router
+from .record_routes import router as record_router
 from .deletion_routes import router as deletion_router
 from .result_routes import router as result_router
 from .script_preparation_routes import router as script_preparation_router
@@ -90,6 +91,7 @@ def create_app(config: ServerConfig, *, poll: Optional[bool] = None,
     app.include_router(data_delivery_router)
     app.include_router(preparation_router)
     app.include_router(tracking_router)
+    app.include_router(record_router)
     app.include_router(deletion_router)
     app.include_router(result_router)
     app.include_router(script_preparation_router)

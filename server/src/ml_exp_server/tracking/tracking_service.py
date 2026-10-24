@@ -7,7 +7,7 @@ from pathlib import Path
 import threading
 
 from ..ingest.runscan import train_metric_records
-from .metric_contract import observations
+from ..records.ingest import normalized_metric
 from ..storage import utc_now
 from ..application_errors import ApplicationError
 from .tracking_store import TrackingStore, digest
@@ -53,12 +53,6 @@ def preparation_record(runtime, value):
     data = {key: value[key] for key in ("status", "phase", "updated_at", "runtime_id", "error_code") if key in value}
     data["state"] = data.pop("status")
     store.append(scope, [("preparation." + digest(data), {"kind": "lifecycle", "data": data})])
-
-
-def normalized_metric(record, config):
-    contract = config.get("ml_expd", {}).get("evaluation", {})
-    return {"kind": "metrics", "observations": observations(record, contract.get("metrics_schema", {}),
-                 protocol_id=contract.get("protocol_id"), source="exact-attempt-worker")}
 
 
 def observe(runtime, store):

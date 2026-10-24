@@ -12,6 +12,7 @@ members = [
     "ml-experiment-client",
     "ml-experiment-control",
     "ml-experiment-server",
+    "ml-experiment-worker",
 ]
 
 [[package]]
@@ -1339,6 +1340,7 @@ dependencies = [
     { name = "dockerfile-parse" },
     { name = "fastapi" },
     { name = "ml-experiment-control" },
+    { name = "ml-experiment-worker" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
@@ -1346,6 +1348,10 @@ dependencies = [
     { name = "pyyaml" },
     { name = "sse-starlette" },
     { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+wandb = [
     { name = "wandb" },
 ]
 
@@ -1367,6 +1373,7 @@ requires-dist = [
     { name = "dockerfile-parse", specifier = ">=2.0,<3" },
     { name = "fastapi", specifier = ">=0.110" },
     { name = "ml-experiment-control", editable = "." },
+    { name = "ml-experiment-worker", editable = "worker" },
     { name = "opentelemetry-api", specifier = ">=1.39,<2" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.39,<2" },
     { name = "opentelemetry-sdk", specifier = ">=1.39,<2" },
@@ -1374,8 +1381,9 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sse-starlette", specifier = ">=3.5,<4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
-    { name = "wandb", specifier = "==0.30.0" },
+    { name = "wandb", marker = "extra == 'wandb'", specifier = "==0.30.0" },
 ]
+provides-extras = ["wandb"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1385,6 +1393,11 @@ dev = [
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-cov", specifier = ">=6.0" },
 ]
+
+[[package]]
+name = "ml-experiment-worker"
+version = "1.0.0"
+source = { editable = "worker" }
 
 [[package]]
 name = "multidict"

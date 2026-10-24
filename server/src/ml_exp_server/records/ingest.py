@@ -1,9 +1,15 @@
-"""Import verified output JSONL before the archive becomes releasable."""
+"""Normalize exact-Attempt metrics and import verified output JSONL."""
 from __future__ import annotations
 
 import json
 from .store import RecordStore, digest
-from ..tracking.metric_contract import observations
+from .contract import observations
+
+
+def normalized_metric(record, config):
+    contract = config.get("ml_expd", {}).get("evaluation", {})
+    return {"kind": "metrics", "observations": observations(record, contract.get("metrics_schema", {}),
+                 protocol_id=contract.get("protocol_id"), source="exact-attempt-worker")}
 
 
 def import_metrics(registry_root, project, run, attempt, tree, manifest):
@@ -14,7 +20,6 @@ def import_metrics(registry_root, project, run, attempt, tree, manifest):
         store.bind(project, run, {"enabled": False, "reason": "HISTORICAL_RUN_NOT_BOUND"},
                    {"ml_expd": {"evaluation": definition.get("evaluation", {})}})
         binding = store.binding(project, run)
-    contract = binding["config"].get("ml_expd", {}).get("evaluation", {})
     scope = store.scope(project, run, attempt)
     count, rejected, batch = 0, 0, []
     for name in ("metrics.jsonl", "train_metrics.jsonl"):
@@ -41,9 +46,7 @@ def import_metrics(registry_root, project, run, attempt, tree, manifest):
                     event_id = "invalid." + digest([name, number, line.hex()])
                 else:
                     count += 1
-                    payload = {"kind": "metrics", "observations": observations(record,
-                               contract.get("metrics_schema", {}), protocol_id=contract.get("protocol_id"),
-                               source="exact-attempt-worker")}
+                    payload = normalized_metric(record, binding["config"])
                     event_id = "archive." + digest(payload)
                 batch.append((event_id, payload))
                 if len(batch) == 64:

@@ -12,8 +12,8 @@ import pytest
 
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.backends.sensecore_preparation import script_receipt_worker_sha256
-from ml_exp_server.workers import script_preparation, data_preparation
-from ml_exp_server.workers.data_preparation import identity
+from ml_exp_worker import script_preparation, data_preparation
+from ml_exp_worker.data_preparation import identity
 from tests.test_cpu_script_preparation import script
 
 
@@ -339,11 +339,11 @@ def test_inline_wrapper_entrypoint_success_and_sanitized_failure(tmp_path, monke
     monkeypatch.setenv(script_preparation.TOKEN_ENV, "private-token")
     monkeypatch.setenv(script_preparation.REQUEST_ENV, json.dumps(request))
     monkeypatch.setattr(sys, "argv", ["wrapper", json.dumps({"definition": download, "cache": str(tmp_path)})])
-    runpy.run_module("ml_exp_server.workers.script_preparation", run_name="__main__")
+    runpy.run_module("ml_exp_worker.script_preparation", run_name="__main__")
     assert links == [(tree, Path("/inputs/data"))]
     assert "ACCEPTED" in capsys.readouterr().out
     with pytest.raises(SystemExit) as error:
-        runpy.run_module("ml_exp_server.workers.script_preparation", run_name="__main__")
+        runpy.run_module("ml_exp_worker.script_preparation", run_name="__main__")
     assert error.value.code == 74
     output = capsys.readouterr().out
     assert "FAILED" in output and "private-token" not in output

@@ -13,10 +13,11 @@ import tempfile
 
 from .tracking.tracking_store import digest, encoded
 from .tracking import wandb_display
+from .tracking.wandb_dependency import SDK_MISSING, WandbUnavailable, load_sdk, sdk_status
 
 
 def default_entity(key):
-    import wandb
+    wandb = load_sdk()
     try:
         return wandb.Api(api_key=key, overrides={"base_url": "https://api.wandb.ai"}, timeout=10).default_entity
     finally:
@@ -145,6 +146,8 @@ class PublisherProcess:
             self.directory = None
 
     def call(self, job):
+        if not sdk_status()["available"]:
+            raise WandbUnavailable(SDK_MISSING)
         key_hash = digest(job["api_key"])
         if self.child is None or self.child.poll() is not None or self.key_hash != key_hash:
             self.close()
@@ -193,18 +196,23 @@ def export(store, scope, publisher):
         if version is not None and (version != wandb_display.VERSION or confirmed != through or outcome.get("error")):
             raise ValueError("invalid display confirmation")
         store.outcome(scope["id"], confirmed=confirmed, error=outcome.get("error"), display_version=version)
+    except WandbUnavailable:
+        publisher.close()
+        store.outcome(scope["id"], error=SDK_MISSING)
     except Exception:
         publisher.close()
         store.outcome(scope["id"], error="PUBLISHER_UNAVAILABLE")
 
 
 def main():
-    import wandb
     sessions = {}
     for line in sys.stdin:
         try:
+            wandb = load_sdk()
             with redirect_stdout(sys.stderr):
                 result = publish(json.loads(line), wandb, sessions)
+        except WandbUnavailable:
+            result = {"error": SDK_MISSING}
         except Exception:
             result = {"error": "WANDB_REQUEST_FAILED"}
         print(json.dumps(result), flush=True)

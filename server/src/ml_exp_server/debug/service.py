@@ -10,9 +10,9 @@ import shlex
 import time
 import uuid
 
-from .application_errors import ApplicationError
-from .debug_models import DebugProfile, DebugRequest, identity
-from .storage import DurableJsonState, exclusive_file_lock, read_json
+from ..application_errors import ApplicationError
+from .models import DebugProfile, DebugRequest, identity
+from ..storage import DurableJsonState, exclusive_file_lock, read_json
 
 
 TERMINAL = {"STOPPED", "DELETED", "REJECTED"}
@@ -20,9 +20,9 @@ TERMINAL = {"STOPPED", "DELETED", "REJECTED"}
 
 def adapter(profile):
     if profile["provider"] == "pai-dsw":
-        from .debug_dsw import DswDebug
+        from .dsw import DswDebug
         return DswDebug(profile)
-    from .debug_cci import CciDebug
+    from .cci import CciDebug
     return CciDebug(profile)
 
 

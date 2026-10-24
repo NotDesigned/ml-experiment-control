@@ -60,4 +60,4 @@ skip_covered = true
 precision = 1
 
 [tool.uv.workspace]
-members = ["server", "client"]
+members = ["server", "client", "worker"]

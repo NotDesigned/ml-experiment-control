@@ -5,7 +5,7 @@ import time
 
 from experiment_control.backends.pai_api import PaiAPI, PaiError, component
 
-from .pai_storage import PaiStorage
+from ..pai_storage import PaiStorage
 
 
 class DswDebug:

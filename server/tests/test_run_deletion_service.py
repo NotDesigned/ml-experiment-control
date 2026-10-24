@@ -23,7 +23,7 @@ from ml_exp_server.runs.deletion_guards import action_guard, request_run
 from ml_exp_server.runtime import ExperimentServerRuntime
 from ml_exp_server.schemas import OperationScope, OperationScopeType, RunIndexRow, ServerConfig
 from ml_exp_server.storage import atomic_json
-from ml_exp_server.workers.delete_run import remove_tree
+from ml_exp_worker.delete_run import remove_tree
 from tests.test_artifact_store import archive
 
 

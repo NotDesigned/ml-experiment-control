@@ -22,10 +22,10 @@ from ..deletion_state import RunFence
 from ..storage_capacity import CapacityError
 from .artifact_store import ATTEMPT, artifact_released
 from ..container_execution import ContainerExecutionService
-from ..workers.result_worker import sha
+from ml_exp_worker.result_worker import sha
 from ..projects.source_imports import IDENTITY
 from ..storage import DurableJsonState, utc_now, atomic_json
-from ..workers.worker_artifacts import archive_outputs
+from ml_exp_worker.worker_artifacts import archive_outputs
 from ..backends.sensecore_results import SenseCoreResultOperations
 from ..backends.slurm import SlurmResultOperations
 from ..backends.operations import backend_operations
@@ -434,7 +434,7 @@ class ResultCollectionService(SenseCoreResultOperations, SlurmResultOperations):
             return self._publish_local(identity, outputs, transfer, repair_sha256=repair_sha256, reservation=reservation)
 
     def _publish_local(self, identity, outputs, transfer, *, repair_sha256=None, reservation=None):
-        from ..workers.result_worker import checked_directory
+        from ml_exp_worker.result_worker import checked_directory
         checked_directory(outputs)
         claim = nullcontext(reservation) if reservation is not None else self.capacity().reserve(self.archive_peak(outputs, transfer["outputs"]))
         with claim as lease, tempfile.TemporaryFile(dir=self.objects.root) as stream:

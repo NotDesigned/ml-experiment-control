@@ -1,5 +1,6 @@
 """Every image recipe delivers the same frozen data and checkpoint contract."""
 from pathlib import Path
+from ml_exp_worker import source_path
 
 import pytest
 import yaml
@@ -23,7 +24,7 @@ def test_dockerfile_shares_worker_receipt_data_mounts_and_checkpoint_support(cli
     packaged = []
     def publish(tag, context):
         internal = context / "ml-expd-build-internal"
-        package = Path(__file__).parents[1] / "src/ml_exp_server/workers"
+        package = source_path("managed_worker.py").parent
         assert (internal / "worker.py").read_bytes() == (package / "managed_worker.py").read_bytes()
         assert (internal / "artifacts.py").read_bytes() == (package / "worker_artifacts.py").read_bytes()
         assert (internal / "launch.py").read_bytes() == (package / "worker_launcher.py").read_bytes()

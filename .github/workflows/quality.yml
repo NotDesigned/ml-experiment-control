@@ -44,21 +44,21 @@ jobs:
         uses: dtolnay/rust-toolchain@1.85.0
         with:
           components: clippy,rustfmt
-      - run: uv sync --locked --all-packages
+      - run: uv sync --locked --all-packages --all-extras
       - run: cargo fmt --manifest-path rust/Cargo.toml -- --check
       - run: cargo clippy --locked --manifest-path rust/Cargo.toml -- -D warnings
       - run: cargo test --locked --manifest-path rust/Cargo.toml
-      - run: uv run mypy
-      - run: uv run python tools/coverage_gate.py
-      - run: uv run python tools/generate_cli_reference.py --check
-      - run: uv run python -m compileall -q tools examples
-      - name: Test daemon with independent 100% line and branch gates
+      - run: uv run --no-sync mypy
+      - run: uv run --no-sync python tools/coverage_gate.py
+      - run: uv run --no-sync python tools/generate_cli_reference.py --check
+      - run: uv run --no-sync python -m compileall -q tools examples
+      - name: Test server and worker with independent 100% line and branch gates
         run: >-
-          uv run --package ml-experiment-server python tools/coverage_gate.py
+          uv run --no-sync --package ml-experiment-server python tools/coverage_gate.py
           --suite daemon --workers 2
       - name: Client coverage cannot regress below its measured baseline
         run: >-
-          uv run --package ml-experiment-client python tools/coverage_gate.py
+          uv run --no-sync --package ml-experiment-client python tools/coverage_gate.py
           --suite client --min-line 90.9 --min-branch 84.5
       - run: uv build --all-packages
       - name: Test standalone client wheel without server or core
@@ -66,16 +66,22 @@ jobs:
           uv venv .client-wheel-smoke
           uv pip install --python .client-wheel-smoke/bin/python --no-deps dist/ml_experiment_client-*.whl
           .client-wheel-smoke/bin/python tools/client_wheel_smoke.py
+      - name: Test standalone worker wheel without control-plane dependencies
+        run: |
+          uv venv .worker-wheel-smoke
+          uv pip install --python .worker-wheel-smoke/bin/python --no-deps dist/ml_experiment_worker-*.whl
+          .worker-wheel-smoke/bin/python tools/worker_wheel_smoke.py
       - name: Test installed wheels and entry points
         run: |
           uv venv .wheel-smoke
           uv pip install --python .wheel-smoke/bin/python dist/*.whl
           .wheel-smoke/bin/ml-expd --help
           .wheel-smoke/bin/ml-exp --help
+          .wheel-smoke/bin/python tools/server_wheel_smoke.py
       - name: Build and install offline deployment bundles
         run: |
           mkdir -p .ops/bundles
-          uv run --no-project --python 3.12 --with pip --with setuptools --with wheel python tools/build_deployment_bundle.py --component server --wheels dist --output .ops/bundles/server-bundle.tar.gz
+          uv run --no-project --python 3.12 --with pip --with setuptools --with wheel python tools/build_deployment_bundle.py --component server --extra wandb --wheels dist --output .ops/bundles/server-bundle.tar.gz
           python3 tools/build_deployment_bundle.py --component client --wheels dist --output .ops/bundles/client-bundle.tar.gz
           (cd .ops/bundles && sha256sum *.tar.gz > SHA256SUMS)
           tar -xzf .ops/bundles/server-bundle.tar.gz -C .ops/bundles
@@ -84,6 +90,7 @@ jobs:
           test "$(stat -c '%a' .offline-server)" = 755
           test "$(stat -c '%a' .offline-server/bin/ml-expd)" = 755
           .offline-server/bin/experiment-redact --help
+          .offline-server/bin/python -c 'import wandb, ml_exp_worker'
           (umask 077; .ops/bundles/ml-expd-client/install.sh "$PWD/.offline-client")
           .offline-client/bin/python tools/client_wheel_smoke.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
