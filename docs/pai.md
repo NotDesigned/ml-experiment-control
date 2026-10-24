@@ -513,18 +513,25 @@ configuration or Run request can select:
               "allocation_policy":"allow_idle","priority":5}}
 ```
 
-| allocation_policy | Native JobSpec.OversoldType | Behavior |
-| --- | --- | --- |
-| guaranteed (default) | ForbiddenQuotaOverSold | Use guaranteed quota only |
-| allow_idle | AcceptQuotaOverSold | Permit borrowing reclaimable idle resources |
-| idle_only | ForceQuotaOverSold | Use reclaimable idle resources only |
+| allocation_policy | Native Settings.EnableTideResource | Native Settings.OversoldType and JobSpec.OversoldType | Behavior |
+| --- | --- | --- | --- |
+| guaranteed (default) | false | ForbiddenQuotaOverSold | Use guaranteed quota only |
+| allow_idle | true | AcceptQuotaOverSold | Permit borrowing reclaimable idle resources |
+| idle_only | true | ForceQuotaOverSold | Use reclaimable idle resources only |
+
+The same option sets the job-level permission and policy as well as the role
+policy. A node-level `OversoldType` alone does not establish that idle resources
+are enabled. Validate the returned job settings and provider resource-policy
+classification; `UseOversoldResource` reports actual allocation, not permission.
 
 Priority is an integer from 1 to 9; a larger value has higher scheduling priority.
 The low-level client exposes `create --allocation-policy MODE --priority N`.
 `GET /api/executors` advertises these options and default priority 5 for DLC;
 clients require `pai-idle-resources.v1` before sending explicit options. Other
 backends reject them. Each Run freezes the selected policy and priority; old Runs
-retain their original native fields, including omitted fields.
+retain their original native fields, including omitted fields. Runs frozen before
+this job-level permission fix need a new Run to use the corrected policy; reading,
+retrying or resubmitting an old Run does not silently change its native settings.
 
 Borrowing is subject to provider admission and reclamation. It does not guarantee
 that all idle cards are available, increase the executor's 1–8 GPU limit, or enable

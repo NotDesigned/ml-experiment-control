@@ -99,6 +99,8 @@ def pai_scheduling(resources, previous_run):
     value = {}
     if previous_run is None or "oversold_type" in previous or resources.allocation_policy is not None:
         value["oversold_type"] = ALLOCATION_POLICIES[resources.allocation_policy or "guaranteed"]
+    if previous_run is None or "enable_tide_resource" in previous:
+        value["enable_tide_resource"] = value["oversold_type"] != ALLOCATION_POLICIES["guaranteed"]
     if previous_run is None or "priority" in previous or resources.priority is not None:
         value["priority"] = resources.priority if resources.priority is not None else 5
     return value
