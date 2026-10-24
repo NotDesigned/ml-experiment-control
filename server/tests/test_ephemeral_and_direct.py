@@ -90,17 +90,17 @@ def test_builder_tool_temporary_files_use_writable_state_not_readonly_host_tmp(t
 
 
 @pytest.mark.parametrize("failed", [False, True])
-def test_wyd_conversion_drops_temporary_oci_cache_and_preserves_sif(tmp_path, failed):
+def test_slurm_conversion_drops_temporary_oci_cache_and_preserves_sif(tmp_path, failed):
     import os
     import shlex
     import subprocess
-    from experiment_control.backends.wyd import WydSlurmBackend
+    from experiment_control.backends.slurm import SlurmBackend
     tools = tmp_path / "tools"; tools.mkdir()
     tool = tools / "apptainer"
     tool.write_text('#!/bin/sh\nprintf blob > "$APPTAINER_CACHEDIR/blob"\n' +
                     ('exit 1\n' if failed else 'printf verified-sif > "$3"\n'))
     tool.chmod(0o700)
-    backend = object.__new__(WydSlurmBackend)
+    backend = object.__new__(SlurmBackend)
     backend.remote_exec = lambda alias, cmd, **kwargs: subprocess.run(shlex.split(cmd),
         check=kwargs.get("check", True), capture_output=True, text=True,
         env={**os.environ, "PATH": str(tools) + ":" + os.environ["PATH"]})

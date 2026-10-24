@@ -185,14 +185,14 @@ def test_repair_service_guards(recovery, monkeypatch, case):
     with pytest.raises(ApplicationError): service.repair(*IDENTITY, '0'*64 if case == 'wrong-base' else receipt['sha256'])
 
 
-def test_wyd_recovery_does_not_trust_filtered_generic_mirror(recovery, monkeypatch):
+def test_slurm_recovery_does_not_trust_filtered_generic_mirror(recovery, monkeypatch):
     service, root, _, _, objects, *_ = recovery
     mirror = root/'attempts/attempt-001/collected_run/attempts/attempt-001/outputs'
     mirror.mkdir(parents=True); (mirror/'summary.json').write_text('{}')
     def complete_copy(backend, definition, attempt, local):
         local.mkdir(); (local/'weights.bin').write_bytes(b'complete')
     copy = Mock(side_effect=complete_copy)
-    monkeypatch.setattr(service, 'read_wyd_outputs', copy)
+    monkeypatch.setattr(service, 'read_slurm_outputs', copy)
     service.begin(*IDENTITY); service.finish(IDENTITY)
     assert service.read(*IDENTITY)['status'] == 'AVAILABLE' and copy.call_count == 1
     assert len(objects) == 1 and not (mirror/'weights.bin').exists()

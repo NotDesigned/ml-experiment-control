@@ -557,30 +557,30 @@ def test_cpu_script_controller_requires_ready_cache_and_launch_cannot_redownload
 
 
 @pytest.mark.parametrize("mode", ["publish", "cached", "uncertain"])
-def test_wyd_desktop_data_preparation_records_receipt_and_never_replays_uncertain_copy(remote_client, service, monkeypatch, mode):
-    from ml_exp_server.backends.wyd import WydDataStager
+def test_slurm_desktop_data_preparation_records_receipt_and_never_replays_uncertain_copy(remote_client, service, monkeypatch, mode):
+    from ml_exp_server.backends.slurm import SlurmDataStager
     from tests.test_artifact_store import archive
     from tests.test_desktop_data_upload import historical_asset
     body = archive({"tokens.bin": b"training tokens"})
     asset = historical_asset(remote_client, body)
     calls = []
-    real_receipt = WydDataStager.receipt
-    monkeypatch.setattr(WydDataStager, "check", lambda *a: {"status": "READY" if mode == "cached" else "NOT_FOUND"})
+    real_receipt = SlurmDataStager.receipt
+    monkeypatch.setattr(SlurmDataStager, "check", lambda *a: {"status": "READY" if mode == "cached" else "NOT_FOUND"})
     def publish(self, *args):
         calls.append("copy")
         if mode == "uncertain":
-            raise ApplicationError("inspect original copy", code="WYD_DATA_PREPARATION_FAILED")
+            raise ApplicationError("inspect original copy", code="SLURM_DATA_PREPARATION_FAILED")
         return real_receipt(self, *args)
-    monkeypatch.setattr(WydDataStager, "publish", publish)
-    request = spec(remote_client, run={"run_id": "wyd-data", "executor": "gpu",
+    monkeypatch.setattr(SlurmDataStager, "publish", publish)
+    request = spec(remote_client, run={"run_id": "slurm-data", "executor": "gpu",
                                      "inputs": [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]})
     _, pending = service.accept("demo", ExperimentPreparationRequest.model_validate(request))
     value = service.finish(pending)
     if mode == "uncertain":
-        assert value["error_code"] == "WYD_DATA_PREPARATION_FAILED"
+        assert value["error_code"] == "SLURM_DATA_PREPARATION_FAILED"
         _, continued = service.continue_preparation(*pending)
         again = service.finish(continued)
-        assert again["error_code"] == "WYD_DATA_NOT_READY" and calls == ["copy"]
+        assert again["error_code"] == "SLURM_DATA_NOT_READY" and calls == ["copy"]
     else:
         assert value["status"] == "READY", value
         assert value["data_receipts"][asset["asset_id"]]["transport"] == "ssh_stream_shared_storage"

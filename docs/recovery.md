@@ -44,7 +44,7 @@ GET /api/actions/action-0123456789abcdef/diagnostics
 GET /api/actions/action-0123456789abcdef/diagnostics?refresh=true
 ```
 
-The optional refresh reads only the frozen managed WYD image preparation receipt;
+The optional refresh reads only the frozen managed Slurm image preparation receipt;
 it does not run the Action, convert an image or submit a scheduler job. Its
 `remote.event` is a separate observation, never a rewrite of the saved failure.
 `observed_after_action=true` means that stage was recorded after the Action ended.
@@ -57,7 +57,7 @@ When code is embedded in the Dockerfile image, the saved Action has no external
 source staging arguments. Refresh checks the frozen Run's source and READY
 Runtime provenance; it does not require an external source directory or add one.
 
-WYD prepares its SIF before scheduler submission. New preparations distinguish
+Slurm prepares its SIF before scheduler submission. New preparations distinguish
 lock waiting, cache verification, OCI pull/conversion, SIF verification and
 publication. The remote process group has a 1080-second limit, shorter than the
 1200-second Action limit, and waits at most 300 seconds for the image lock.
@@ -158,7 +158,7 @@ An uncertain create requires reconciliation of its exact CPU job; it is never
 silently resubmitted. Retries retain the original Run/Attempt and stop after three
 recovery requests. Original scheduler FAILED history remains unchanged.
 
-WYD reads the frozen shared output directory through its configured SSH endpoint.
+Slurm reads the frozen shared output directory through its configured SSH endpoint.
 SenseCore uses the configured debug pool with RESERVED quota, a verified
 2CPU/4GiB/0GPU spec and an existing pinned Python image. The copy worker is bounded
 to 900 seconds, with a 1500-second queue/observation deadline; it never runs the
@@ -172,7 +172,7 @@ Artifact completion reserves space for validation and the published object in
 addition to already saved parts: object storage can share the API host's disk.
 Insufficient space still rejects completion and preserves the session.
 
-State observation does not download weights. Large WYD copies first perform a
+State observation does not download weights. Large Slurm copies first perform a
 read-only rsync size inventory and reserve their copy/build/validation/storage
 peak. Local result publication and multipart completion use the same admission
 budget, including concurrent unfinished uploads and the configured disk margin.
@@ -265,7 +265,7 @@ Confirmation errors leave usable local files and a PENDING acknowledgement in
 `verification.json`. The retry command preserves the original retention choice.
 Keep that verified local copy: releasing a server archive transfers responsibility
 for its bytes to the client, and a client receipt is not independent proof of a
-backup. NAS/datapool recovery checkpoints and training data are never deleted by
+backup. NAS/shared-storage recovery checkpoints and training data are never deleted by
 this flow. Experiment identity, archive/file hashes, metrics and scientific
 receipts remain on the server. New uploads avoid a duplicate expanded cache;
 temporary multipart parts are removed only after publication succeeds.

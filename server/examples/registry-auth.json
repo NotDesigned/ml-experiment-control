@@ -1,0 +1,7 @@
+{
+  "auths": {
+    "registry.example.org": {
+      "auth": "REPLACE_WITH_BASE64_USERNAME_COLON_PASSWORD"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+# Copy this file to container_execution.profiles_file and replace site values.
+# All paths below refer to the SSH host / shared cluster filesystem.
+executors:
+  slurm-gpu:
+    title: Slurm GPU
+    storage_root: /shared/ml-expd
+    data_root: /shared
+    backend:
+      kind: slurm
+      ssh_alias: hpc-login
+      partition: gpu
+      account: REPLACE_ACCOUNT
+      qos: REPLACE_QOS
+      gres: gpu:a100:1
+      mount_root: /shared
+      apptainer_unsquash: true

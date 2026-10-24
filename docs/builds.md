@@ -29,7 +29,7 @@ The final image needs Python 3.10+, `/bin/sh`, GNU `timeout`, permission to crea
 `/inputs` and `/outputs`, and access to the configured backend mount/workdir.
 Managed ENTRYPOINT/CMD replace client startup commands; configure scientific
 argv with Runtime `entrypoint` and Run `arguments`. Code is copied into the
-image, never overlaid by a second checkout on WYD. The CPU data-copy base
+image, never overlaid by a second checkout on Slurm. The CPU data-copy base
 additionally needs glibc/Bash; Alpine is unsuitable for that ACP payload.
 
 ## Publication and reuse
@@ -45,7 +45,7 @@ resources after success/failure. A lease records owner and Docker endpoint;
 failed cleanup blocks later publication. No global prune is performed.
 `registry_cache: true` uses one inline cache tag per project; cache misses permit
 cold construction. Cached layers do not guarantee GPU capacity or fast cold pulls.
-WYD converts OCI to a digest/checksum-bound SIF on shared storage, retaining the
+Slurm converts OCI to a digest/checksum-bound SIF on shared storage, retaining the
 SIF and removing the converter's private temporary OCI cache.
 
 ## Diagnose and resume a failed build
@@ -99,7 +99,7 @@ Configure the root-owned builder with `docker_host` set to
 `ephemeral_buildkit: true`, pinned `buildkit_image`, repository/auth and allowlist.
 **Remove local `build_storage_path` in remote mode.** Provision the pinned tool
 image on the desktop before probes, which use pull=never. New dataset uploads
-bypass Docker and the desktop: WYD receives parts over SSH, while SenseCore
+bypass Docker and the desktop: Slurm receives parts over SSH, while SenseCore
 receives a streamed CCR data image. The old desktop data helper is retained only
 for historical assets/sessions; do not provision it for new input uploads.
 
@@ -154,8 +154,9 @@ or schedule. Use at least 256 MiB for the adapter during prewarm; inspect owned
 cgroup OOM evidence on failure. Monitor its bounded cache and backing drive;
 no automatic cache/registry deletion is implied.
 
-Keep build-command timeout separate from RPC wait and worker duration. The
-current installation uses a 900-second build command and 1200-second private
-RPC wait, but these are operator settings, not API guarantees. Check actual
-configuration. Remove obsolete owned cache blobs only while idle; retain pinned
+Keep build-command timeout separate from RPC wait and worker duration. Set the
+builder's `timeout_seconds` explicitly and inspect the actual configuration;
+the private build RPC permits up to 7200 seconds. For optional DSW and ACR build
+budgets, see [PAI configuration](pai.md). Remove obsolete owned cache blobs only
+while idle; retain pinned
 images, results and recovery evidence.

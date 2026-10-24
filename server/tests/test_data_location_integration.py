@@ -29,22 +29,24 @@ def location(selected, kind):
     return scope, {"remote_storage": kind, "storage_scope": scope, "remote_locator": {"exact": kind}}
 
 
-def test_asset_selects_each_backend_copy_and_ignores_gpu_size():
-    wyd, cloud = profile(), profile("sensecore", "volume:/data")
-    wyd_scope, wyd_copy = location(wyd, "wyd")
+@pytest.mark.parametrize("storage_label", ["slurm", "wyd"])
+def test_asset_selects_each_backend_copy_and_ignores_gpu_size(storage_label):
+    slurm, cloud = profile(), profile("sensecore", "volume:/data")
+    slurm_scope, slurm_copy = location(slurm, storage_label)
     cloud_scope, cloud_copy = location(cloud, "sensecore-ccr")
-    original = {"asset_id": "asset." + "a" * 64, "remote_storage": "wyd",
-                "remote_locations": {wyd_scope: wyd_copy, cloud_scope: cloud_copy}}
-    assert for_backend(original, wyd, "demo")["remote_locator"] == {"exact": "wyd"}
+    original = {"asset_id": "asset." + "a" * 64, "remote_storage": storage_label,
+                "remote_locations": {slurm_scope: slurm_copy, cloud_scope: cloud_copy}}
+    before = deepcopy(original)
+    assert for_backend(original, slurm, "demo")["remote_locator"] == {"exact": storage_label}
     assert for_backend(original, cloud, "demo")["remote_locator"] == {"exact": "sensecore-ccr"}
-    larger = deepcopy(wyd); larger["capacity"] = {"gpus": 8}
-    assert for_backend(original, larger, "demo") == for_backend(original, wyd, "demo")
-    assert original["remote_storage"] == "wyd"
+    larger = deepcopy(slurm); larger["capacity"] = {"gpus": 8}
+    assert for_backend(original, larger, "demo") == for_backend(original, slurm, "demo")
+    assert original == before
     old = {"asset_id": original["asset_id"], "remote_storage": "desktop-builder"}
     assert for_backend(old, cloud, "demo") is old
 
 
-@pytest.mark.parametrize("change", ["absent", "scope", "backend", "other-project"])
+@pytest.mark.parametrize("change", ["absent", "scope", "backend", "malformed-backend", "other-project"])
 def test_asset_cannot_silently_cross_storage_namespaces(change):
     selected = profile()
     scope, copy = location(selected, "wyd")
@@ -53,6 +55,7 @@ def test_asset_cannot_silently_cross_storage_namespaces(change):
     if change == "absent": value["remote_locations"] = {}
     elif change == "scope": copy["storage_scope"] = "storage." + "0" * 64
     elif change == "backend": copy["remote_storage"] = "sensecore-ccr"
+    elif change == "malformed-backend": copy["remote_storage"] = ["slurm"]
     else: project = "other"
     with pytest.raises(ApplicationError) as error:
         for_backend(value, selected, project)
@@ -77,24 +80,25 @@ def publish(client, config, executor, kind):
     return AssetStore(config, client.app.state.runtime.config.project_registry_root_path()).publish_remote("demo", value)
 
 
-def test_wyd_remote_input_is_verified_before_run_and_never_pulls_archive(client, stored, monkeypatch):
+@pytest.mark.parametrize("storage_label", ["slurm", "wyd"])
+def test_slurm_remote_input_is_verified_before_run_and_never_pulls_archive(client, stored, monkeypatch, storage_label):
     bundle = runtime(client)
-    asset = publish(client, stored[0], "gpu", "wyd")
+    asset = publish(client, stored[0], "gpu", storage_label)
     checks = []
-    monkeypatch.setattr("ml_exp_server.backends.wyd.WydDataStager.check",
+    monkeypatch.setattr("ml_exp_server.backends.slurm.SlurmDataStager.check",
                         lambda self, *args: checks.append(args) or {"status": "READY"})
     monkeypatch.setattr(AssetStore, "archive", lambda *a: pytest.fail("do not pull a remote input onto API disk"))
-    request = {"run_id": "wyd-remote", "runtime_id": bundle["runtime_id"], "executor": "gpu",
+    request = {"run_id": "slurm-remote", "runtime_id": bundle["runtime_id"], "executor": "gpu",
                "inputs": [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]}
     response = client.post("/api/projects/demo/runs", json=request)
     assert response.status_code == 200, response.text
     root = Path(client.app.state.runtime.project("demo").base_dir)
-    frozen = yaml.safe_load((root / "experiments/campaigns/run-wyd-remote.yaml").read_text())["runs"][0]
+    frozen = yaml.safe_load((root / "experiments/campaigns/run-slurm-remote.yaml").read_text())["runs"][0]
     assert frozen["inputs"][0]["require_cached"] is True and len(checks) == 1
-    monkeypatch.setattr("ml_exp_server.backends.wyd.WydDataStager.check", lambda *a: {"status": "NOT_FOUND"})
-    failed = client.post("/api/projects/demo/runs", json=request | {"run_id": "wyd-not-ready"})
+    monkeypatch.setattr("ml_exp_server.backends.slurm.SlurmDataStager.check", lambda *a: {"status": "NOT_FOUND"})
+    failed = client.post("/api/projects/demo/runs", json=request | {"run_id": "slurm-not-ready"})
     assert failed.status_code == 409
-    assert not (root / "experiments/campaigns/run-wyd-not-ready.yaml").exists()
+    assert not (root / "experiments/campaigns/run-slurm-not-ready.yaml").exists()
 
 
 def test_uploaded_ccr_image_copies_to_nas_without_any_builder_call(client, stored, monkeypatch):

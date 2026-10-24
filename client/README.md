@@ -6,6 +6,8 @@ The server/core, local Docker, SSH and backend credentials are unnecessary.
 
 Follow the [quickstart](../docs/api-quickstart.md) for installation, API/token
 configuration and an experiment. The operator supplies connection information.
+Only the API URL and one token source are needed; see
+[connection configuration](../docs/configuration.md#client-connect-to-an-existing-service).
 
 ## Python use
 
@@ -44,16 +46,17 @@ See [development](../docs/development.md) for independent build/tests.
 New 1.0 servers require an executor for independent data upload:
 
 ```bash
-ml-exp asset-upload --project my-study --executor wyd-l40s \
+ml-exp asset-upload --project my-study --executor slurm-gpu \
   --directory ./data --state data.state.json
 # Repeat with --resume after an interrupted transfer, keeping the same directory.
 ```
 
 The one-config `experiment` command selects its executor before uploading local
-inputs. WYD stores data on shared datapool; SenseCore streams a data image to CCR
-and prepares NAS before GPU submission. No desktop dataset staging is involved.
-Keep the original dataset: target-backed asset archive/download routes are
-unavailable. See [data and limits](../docs/data.md) and [1.0 migration](../docs/migration-1.0.md).
+inputs. Slurm stores data on shared storage; SenseCore streams a data image to CCR
+and prepares NAS before GPU submission. DLC uses approved OSS datasets and CPFS.
+Slurm/SenseCore target-backed datasets have no client archive-download route;
+OSS datasets support signed, hash-verified downloads without deletion. Keep the
+original data. See [data and limits](../docs/data.md).
 
 ## Observe an experiment
 

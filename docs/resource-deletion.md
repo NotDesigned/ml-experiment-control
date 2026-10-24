@@ -29,7 +29,7 @@ referenced by another Run block deletion; resolve those gates and prepare a new
 plan with a new state file. The reviewed targets must still match when execution
 begins.
 
-WYD/Slurm deletion uses the frozen SSH storage origin. SenseCore cleanup uses
+Slurm deletion uses the frozen SSH storage origin. SenseCore cleanup uses
 the configured debug-cluster reserved 2CPU/4GiB/0GPU profile and requires enabled
 scheduler mutations for that bounded cleanup job. The accepted receipt and exact
 job UID are retained; an uncertain CPU create is never repeated automatically.
@@ -91,7 +91,7 @@ After a lost authorization or execution reply, observe or reconcile that same
 Action. Do not create another deletion plan to replay an uncertain request.
 The server journals each frozen target separately so reconciliation can continue
 the same deletion after interruption without broadening its scope.
-For WYD/SSH, an uncertain destructive command is not sent again automatically:
+For Slurm/SSH, an uncertain destructive command is not sent again automatically:
 reconciliation checks that exact target for absence. If its absence cannot be
 confirmed, the Action remains `RECONCILE_REQUIRED` for investigation.
 

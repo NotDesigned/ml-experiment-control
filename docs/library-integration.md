@@ -88,7 +88,7 @@ validate → preflight → identity/assets → stage/render
          → status/logs/collect/cancel
 ```
 
-Use host-only REST configuration for SenseCore, SSH config/agent for WYD and
+Use host-only REST configuration for SenseCore, SSH config/agent for Slurm and
 private registry auth for publication. Never embed credentials in Run manifests.
 Supported tool overrides include `EXPERIMENTCTL_REDACTOR_BIN`,
 `EXPERIMENTCTL_SSH_BIN`, `EXPERIMENTCTL_RSYNC_BIN`,

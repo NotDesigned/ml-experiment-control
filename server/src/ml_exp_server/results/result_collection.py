@@ -27,7 +27,7 @@ from ..projects.source_imports import IDENTITY
 from ..storage import DurableJsonState, utc_now, atomic_json
 from ..workers.worker_artifacts import archive_outputs
 from ..backends.sensecore_results import SenseCoreResultOperations
-from ..backends.wyd import WydResultOperations
+from ..backends.slurm import SlurmResultOperations
 from ..backends.operations import backend_operations
 
 from ..backends.states import TERMINAL
@@ -37,7 +37,7 @@ ACTIVE = {"QUEUED", "COLLECTING", "SUBMITTING", "WAITING"}
 
 
 
-class ResultCollectionService(SenseCoreResultOperations, WydResultOperations):
+class ResultCollectionService(SenseCoreResultOperations, SlurmResultOperations):
     def __init__(self, runtime, *, backends=None):
         self.runtime = runtime
         self.backends = backends

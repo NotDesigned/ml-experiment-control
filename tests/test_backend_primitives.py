@@ -1,7 +1,7 @@
 import pytest
 
 from experiment_control.backends.base import BackendRegistry
-from experiment_control.backends.wyd import (
+from experiment_control.backends.slurm import (
     checkpoint_probe_command,
     parse_accounting,
     scheduler_job_name,

@@ -8,11 +8,11 @@ def build_registry(services: BackendServices) -> BackendRegistry:
     """Construct installed backends without leaking them into controller core."""
     from .local import LocalBackend
     from .sensecore import SenseCoreBackend
-    from .wyd import WydSlurmBackend
+    from .slurm import SlurmBackend
     from .pai import PaiBackend
 
     return BackendRegistry(
-        LocalBackend(services), WydSlurmBackend(services), SenseCoreBackend(services), PaiBackend(services)
+        LocalBackend(services), SlurmBackend(services), SenseCoreBackend(services), PaiBackend(services)
     )
 
 

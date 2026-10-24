@@ -21,7 +21,7 @@ def packed(tmp_path):
 
 
 class Destination:
-    def __init__(self, sha, size, *, receipt="valid", executor="wyd"):
+    def __init__(self, sha, size, *, receipt="valid", executor="slurm-gpu"):
         self.sha, self.size, self.receipt, self.executor = sha, size, receipt, executor
         self.parts, self.calls = {}, []
         self.upload = "upload." + "a" * 64
@@ -69,15 +69,15 @@ def test_targeted_upload_confirms_and_resumes_only_missing_parts(tmp_path):
     stream, sha, size = packed(tmp_path)
     api = Destination(sha, size)
     state = tmp_path / "state.json"
-    result = upload_asset_parts(api, "demo", stream, sha, size, state, target={"executor": "wyd"})
+    result = upload_asset_parts(api, "demo", stream, sha, size, state, target={"executor": "slurm-gpu"})
     assert result["asset_id"] == "asset." + sha
-    assert api.request["target"] == {"executor": "wyd"}
+    assert api.request["target"] == {"executor": "slurm-gpu"}
     assert api.request["files"][0]["bytes"] == 3200
     assert len(api.request["transport_sha256"]) == 64
     sent = sum("/parts/" in path for path, _ in api.calls)
-    upload_asset_parts(api, "demo", stream, sha, size, state, target={"executor": "wyd"})
+    upload_asset_parts(api, "demo", stream, sha, size, state, target={"executor": "slurm-gpu"})
     assert sum("/parts/" in path for path, _ in api.calls) == sent
-    assert json.loads(state.read_text())["target"] == {"executor": "wyd"}
+    assert json.loads(state.read_text())["target"] == {"executor": "slurm-gpu"}
 
 
 @pytest.mark.parametrize("receipt", ["not-durable", "wrong-hash"])
@@ -85,7 +85,7 @@ def test_unconfirmed_part_never_completes(tmp_path, receipt):
     stream, sha, size = packed(tmp_path)
     api = Destination(sha, size, receipt=receipt)
     with pytest.raises(ClientError, match="not confirmed"):
-        upload_asset_parts(api, "demo", stream, sha, size, tmp_path / "state.json", target={"executor": "wyd"})
+        upload_asset_parts(api, "demo", stream, sha, size, tmp_path / "state.json", target={"executor": "slurm-gpu"})
     assert not any(path.endswith("/complete") for path, _ in api.calls)
 
 
@@ -93,7 +93,7 @@ def test_wrong_destination_rejected_before_sending_bytes(tmp_path):
     stream, sha, size = packed(tmp_path)
     api = Destination(sha, size, executor="other")
     with pytest.raises(ClientError, match="another executor"):
-        upload_asset_parts(api, "demo", stream, sha, size, tmp_path / "state.json", target={"executor": "wyd"})
+        upload_asset_parts(api, "demo", stream, sha, size, tmp_path / "state.json", target={"executor": "slurm-gpu"})
     assert not api.parts
 
 
@@ -103,7 +103,7 @@ def test_resume_cannot_change_destination(tmp_path):
     state.write_text(json.dumps({"target": {"executor": "other"}}))
     api = Destination(sha, size)
     with pytest.raises(ClientError, match="another executor"):
-        upload_asset_parts(api, "demo", stream, sha, size, state, target={"executor": "wyd"})
+        upload_asset_parts(api, "demo", stream, sha, size, state, target={"executor": "slurm-gpu"})
     assert not api.calls
 
 
@@ -111,14 +111,14 @@ def test_resume_uses_original_session_and_freezes_full_public_target(tmp_path, m
     stream, sha, size = packed(tmp_path)
     api = Destination(sha, size)
     state = tmp_path / 'state.json'
-    upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor': 'wyd'})
+    upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor': 'slurm-gpu'})
     saved = json.loads(state.read_text())
-    assert saved['target_binding'] == {'executor': 'wyd', 'backend': 'slurm',
+    assert saved['target_binding'] == {'executor': 'slurm-gpu', 'backend': 'slurm',
         'storage_scope': 'storage.' + '1'*64, 'profile_sha256': '2'*64}
     api.calls.clear()
     monkeypatch.setattr('ml_exp_client.assets.data_transport_identity',
         lambda *args: pytest.fail('GET resume must not construct a new upload manifest'))
-    upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor': 'wyd'})
+    upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor': 'slurm-gpu'})
     assert api.calls[0] == ('/api/projects/demo/asset-uploads/' + api.upload, {})
     assert not any(path.endswith('/asset-uploads') for path, _ in api.calls)
 
@@ -128,7 +128,7 @@ def test_resume_rejects_swapped_session_or_target_without_mutating_state_or_send
     stream, sha, size = packed(tmp_path)
     api = Destination(sha, size)
     state = tmp_path / 'state.json'
-    upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor': 'wyd'})
+    upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor': 'slurm-gpu'})
     before = state.read_bytes()
     original = api.call
     def substituted(path, **kwargs):
@@ -142,12 +142,12 @@ def test_resume_rejects_swapped_session_or_target_without_mutating_state_or_send
     api.call = substituted
     api.calls.clear()
     with pytest.raises(ClientError, match='receipt|frozen target'):
-        upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor': 'wyd'})
+        upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor': 'slurm-gpu'})
     assert len(api.calls) == 1 and state.read_bytes() == before
 
 
 @pytest.mark.parametrize('binding', [None, {}, {'target': None},
-    {'target': {'executor': 'wyd'}}, {'target': {'executor': 'wyd', 'backend': 'slurm',
+    {'target': {'executor': 'slurm-gpu'}}, {'target': {'executor': 'slurm-gpu', 'backend': 'slurm',
         'storage_scope': 'unscoped', 'profile_sha256': '2'*64}}])
 def test_malformed_public_target_is_rejected_before_any_part_upload(tmp_path, binding):
     stream, sha, size = packed(tmp_path)
@@ -159,7 +159,7 @@ def test_malformed_public_target_is_rejected_before_any_part_upload(tmp_path, bi
         return value
     api.call = malformed
     with pytest.raises(ClientError, match='executor storage'):
-        upload_asset_parts(api, 'demo', stream, sha, size, tmp_path/'state.json', target={'executor': 'wyd'})
+        upload_asset_parts(api, 'demo', stream, sha, size, tmp_path/'state.json', target={'executor': 'slurm-gpu'})
     assert not api.parts
 
 
@@ -168,8 +168,8 @@ def test_old_state_without_target_binding_learns_binding_via_exact_get(tmp_path)
     api = Destination(sha, size)
     state = tmp_path / 'state.json'
     state.write_text(json.dumps({'project':'demo','asset_id':'asset.'+sha,'archive_bytes':size,
-        'upload_id':api.upload,'target':{'executor':'wyd'},'status':'UPLOADING'}))
-    upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor':'wyd'})
+        'upload_id':api.upload,'target':{'executor':'slurm-gpu'},'status':'UPLOADING'}))
+    upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor':'slurm-gpu'})
     assert api.calls[0][0].endswith('/' + api.upload) and api.calls[0][1] == {}
     assert json.loads(state.read_text())['target_binding']['profile_sha256'] == '2'*64
 
@@ -178,10 +178,10 @@ def test_lost_local_state_posts_same_frozen_archive_identity_and_reuses_committe
     stream, sha, size = packed(tmp_path)
     api = Destination(sha, size)
     state = tmp_path / 'state.json'
-    upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor':'wyd'})
+    upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor':'slurm-gpu'})
     state.unlink()
     api.calls.clear()
-    upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor':'wyd'})
+    upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor':'slurm-gpu'})
     assert api.calls[0][0].endswith('/asset-uploads') and 'data' in api.calls[0][1]
     assert not any('/parts/' in path for path, _ in api.calls)
 
@@ -194,7 +194,7 @@ def test_completion_receipt_must_bind_the_exact_uploaded_asset(tmp_path, field, 
     api = Destination(sha, size)
     state = tmp_path / 'state.json'
     if completed_get:
-        upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor':'wyd'})
+        upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor':'slurm-gpu'})
     original = api.call
     def wrong_result(path, **kwargs):
         result = original(path, **kwargs)
@@ -206,4 +206,4 @@ def test_completion_receipt_must_bind_the_exact_uploaded_asset(tmp_path, field, 
         return result
     api.call = wrong_result
     with pytest.raises(ClientError, match='completed asset identity'):
-        upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor':'wyd'})
+        upload_asset_parts(api, 'demo', stream, sha, size, state, target={'executor':'slurm-gpu'})

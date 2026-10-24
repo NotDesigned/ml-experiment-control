@@ -2,7 +2,7 @@
 
 A debug session requests a temporary **SenseCore CCI** or **PAI DSW** machine.
 It is independent of a scientific Run/Attempt. Formal training still uses
-SenseCore ACP, PAI DLC, or WYD Slurm.
+SenseCore ACP, PAI DLC, or Slurm.
 
 ## Client workflow
 

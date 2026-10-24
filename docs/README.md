@@ -19,7 +19,9 @@ For existing installations, read the [1.0 migration notes](migration-1.0.md).
 
 ## Operator: provide the service
 
+- [Configuration](configuration.md): client connection, credentials and independently enabled backends.
 - [Deployment](operator-guide.md): installation, configuration and verification.
+- [Slurm](slurm.md): SSH, scheduler settings, shared storage and offline compute nodes.
 - [Builds](builds.md): Dockerfile admission, desktop builder, cache and capacity.
 - [PAI](pai.md): DLC executor, native Dataset limits and an optional CPU DSW builder.
 - [SenseCore](sensecore-rest.md): REST, cluster selection, startup and timeouts.

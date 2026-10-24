@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from ml_exp_server.backends.operations import backend_operations, WydOperations, SenseCoreOperations
+from ml_exp_server.backends.operations import backend_operations, SlurmOperations, SenseCoreOperations
 from ml_exp_server.backends.sensecore_cpu import (
     checked_job, describe_job, find_job, stop_job, validate_profile,
 )
@@ -70,11 +70,11 @@ def test_stop_rechecks_original_uid_before_name_based_provider_request():
 
 
 def test_server_boundary_is_static_and_rejects_uninstalled_kinds():
-    assert isinstance(backend_operations("slurm"), WydOperations)
+    assert isinstance(backend_operations("slurm"), SlurmOperations)
     assert isinstance(backend_operations("sensecore"), SenseCoreOperations)
     with pytest.raises(ValueError):
         backend_operations("missing")
-    gateway = WydOperations()
+    gateway = SlurmOperations()
     assert gateway.prepare_script(None, None, None, None, None) is None
     marker = {"operation_id": "gateway"}
     assert gateway.script_progress(None, None, marker) == marker

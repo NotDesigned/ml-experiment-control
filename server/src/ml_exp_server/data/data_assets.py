@@ -18,6 +18,7 @@ from ..projects.source_imports import IDENTITY, SHA256, unpack_source, seal_tree
 from ..storage import atomic_json, utc_now
 from ..deletion_state import RunFence
 from ..archive_limits import byte_limit, exceeds, wire_limit
+from .locations import REMOTE, SLURM_STORAGE, TARGET_STORAGE
 
 ASSET_ID = re.compile(r"^asset\.[0-9a-f]{64}$")
 WORKER_PATH = re.compile(r"^/api/(?:asset-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/attempt-[0-9]{3,}/asset\.[0-9a-f]{64}|(?:snapshot|checkpoint)-transfers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/attempt-[0-9]{3,})$")
@@ -122,7 +123,7 @@ class AssetStore:
         if locator(value) is not None:
             return OSSDatasets(self).ticket(value)
         self.require_available(value)
-        if value.get("remote_storage") in {"desktop-builder", "wyd", "sensecore-ccr"}:
+        if value.get("remote_storage") in REMOTE - {"oss"}:
             raise ApplicationError("remote assets use their frozen backend storage", status_code=404,
                                    code="DIRECT_DOWNLOAD_UNAVAILABLE")
         return self.objects.download('/'.join(['data-assets', project, asset_id + '.tar']),
@@ -184,7 +185,7 @@ class AssetStore:
         if value.get("remote_storage") == "desktop-builder":
             from .remote_data_uploads import remote_archive
             return value, remote_archive(self.objects.config["data_upload_socket"], project, asset_id, value["archive_bytes"])
-        if value.get("remote_storage") in {"wyd", "sensecore-ccr"}:
+        if value.get("remote_storage") in TARGET_STORAGE - {"oss"}:
             raise ApplicationError("this data archive is held on its frozen executor storage",
                                    status_code=404, code="DIRECT_DOWNLOAD_UNAVAILABLE")
         response = self.objects.client().get_object(Bucket=self.objects.config["bucket"],
@@ -199,7 +200,7 @@ class AssetStore:
                                    status_code=410, code='ASSET_EXPIRED')
 
     def publish_remote(self, project, value):
-        if (value.get("project") != project or value.get("remote_storage") not in {"desktop-builder", "wyd", "sensecore-ccr", "oss"}
+        if (value.get("project") != project or value.get("remote_storage") not in REMOTE
                 or value.get("asset_id") != "asset." + value.get("sha256", "")
                 or not SHA256.fullmatch(value.get("sha256", "")) or value.get("archive_bytes", 0) <= 0):
             raise ValueError("remote asset identity differs")
@@ -232,6 +233,9 @@ class AssetStore:
             location = {key: value[key] for key in ("remote_storage", "storage_scope", "remote_locator")}
             location.update({key: value[key] for key in ("verification", "executor") if key in value})
             existing = current["locations"].get(scope)
+            if existing and existing.get("remote_storage") in SLURM_STORAGE and location["remote_storage"] in SLURM_STORAGE:
+                # A renamed reader/receiver must not migrate an old locator.
+                location["remote_storage"] = existing["remote_storage"]
             if existing and {key: item for key, item in existing.items() if key != "executor"} != {
                     key: item for key, item in location.items() if key != "executor"}:
                 raise ValueError("remote asset storage scope is already bound")

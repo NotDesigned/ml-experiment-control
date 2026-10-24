@@ -163,7 +163,7 @@ Periodic full checkpoint-upload snapshots, pre-job CPU data preparation, offline
 result recovery and managed remote Run deletion remain **not implemented** for PAI. Unsupported requirements are refused. Successful managed workers can use
 the existing result/metric transfer protocol; missing worker uploads do not
 silently schedule a CPU recovery job. Do not equate this initial adapter with
-full WYD/SenseCore feature parity.
+full Slurm/SenseCore feature parity.
 
 ## DSW builder without enterprise ACR
 
@@ -285,7 +285,7 @@ The Docker auth file must contain exact-host credentials for the target and any
 private pinned bases. The builder sends only those entries to its owned DSW;
 unrelated registry credentials stay on the server. ACR's token and blob hosts
 are independent trust allowlists, not arbitrary redirect permissions.
-WYD accepts a Docker `auths` file as `registry_pull_file`, as well as the original
+Slurm accepts a Docker `auths` file as `registry_pull_file`, as well as the original
 single-registry format. PAI uses its own private exact-host `registry_auth_file`.
 Old image references and their credentials remain valid; changing the default
 repository does not rewrite frozen Runtime or Attempt identities.
@@ -329,7 +329,7 @@ late image after checking the platform, source label and manifest digest, withou
 starting another build. It never turns an absent image into permission to retry.
 Provider-side native builds have their own 30-minute limit.
 
-PAI and WYD consume the published private image using exact-host pull auth.
+PAI and Slurm consume the published private image using exact-host pull auth.
 For SenseCore, use on-demand digest-preserving delivery to its existing CCR:
 
 ```json
@@ -434,9 +434,9 @@ archival of **newly sealed** result archives:
 ```json
 {
   "oss_archive": {
-    "bucket": "ai-oss-h200-1020",
+    "bucket": "YOUR_APPROVED_ARCHIVE_BUCKET",
     "region": "us-southeast-1",
-    "user": "liangluocheng",
+    "user": "YOUR_RAM_USER",
     "credentials_file": "/etc/ml-expd/oss-archive-credentials.json"
   }
 }

@@ -1,4 +1,4 @@
-"""Fixed stdlib WYD receiver using the existing durable UploadStore engine."""
+"""Fixed stdlib Slurm receiver using the existing durable UploadStore engine."""
 from contextlib import contextmanager
 import hashlib
 import json
@@ -143,7 +143,7 @@ def publish(store, metadata, stream, size, digest):
         with directory_fd(cache) as parent:
             os.fsync(parent.fileno())
         value = {"project": project, **item, "status": "READY", "bytes": sum(item["bytes"] for item in files),
-                 "created_at": utc_now(), "remote_storage": "wyd", "storage_scope": target["storage_scope"],
+                 "created_at": utc_now(), "remote_storage": "slurm", "storage_scope": target["storage_scope"],
                  "executor": target["executor"], "verification": "remote-sha256-fsync",
                  "remote_locator": {"storage_scope": target["storage_scope"], "archive_path": str(archive),
                                     "data_path": str(tree)}}

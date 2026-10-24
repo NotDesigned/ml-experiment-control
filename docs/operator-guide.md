@@ -10,19 +10,20 @@ mutations; copying them alone does not produce a runnable GPU service.
 |---|---|
 | Daemon | Dedicated UID, writable state, backend auth, server S3 credentials |
 | Private builder | Docker/Buildx, Skopeo, registry push auth, private socket |
-| WYD | Daemon-owned SSH identity, Slurm/Apptainer, shared datapool, registry pull auth |
+| Slurm | Daemon-owned SSH identity, Slurm/Apptainer, shared storage, registry pull auth |
+| PAI DLC | OpenAPI credentials, workspace/quota, personal CPFS/role, registry pull auth |
 | SenseCore | REST AK/SK, workspace/pools/specs, CCR pull authorization, mounted NAS |
 | Object store/proxy | Private bucket, authenticated upload paths and HTTPS downloads |
 
 Keep one daemon writer per workspace. For the consolidated deployment:
 
 ```text
-/root/ml-expd/                 checkout and installed .venv
+/opt/ml-expd/                 checkout and installed .venv
   .ops/                       private operations evidence
   .recovery/previous/          one verified preceding program
 /etc/ml-expd/                 private config/credentials
 /var/lib/ml-expd/             Action DB, index, immutable Runs and metadata
-/var/lib/ml-expd-image-builder/  configured builder receipts/progress/leases
+/var/lib/ml-expd-builder/      configured builder receipts/progress/leases
 /srv/ml-expd/projects/        registered external projects, when used
 ```
 
@@ -31,21 +32,21 @@ builder `source_root`/socket, service writable paths and actual ownership agree.
 Do not relocate backend datasets/checkpoints when rearranging program files.
 Code directories/modules are 0755/0644; entrypoints executable. Keep `.git`,
 `.ops`, `.recovery` mode 0700. Services use `ProtectHome=tmpfs` with a read-only
-bind of `/root/ml-expd`, exposing code without opening other home directories.
+bind of `/opt/ml-expd`, exposing code without opening other home directories.
 The daemon must not have unrestricted Docker access.
 
 ## Install a reviewed commit
 
-Clone into `/root/ml-expd`, check out an exact reviewed commit, install uv and
+Clone into `/opt/ml-expd`, check out an exact reviewed commit, install uv and
 Rust 1.85+ for core wheel construction, then build/install core and server:
 
 ```bash
 uv build --package ml-experiment-control
 uv build --package ml-experiment-server
-uv venv /root/ml-expd/.venv
-uv pip install --python /root/ml-expd/.venv/bin/python \
+uv venv /opt/ml-expd/.venv
+uv pip install --python /opt/ml-expd/.venv/bin/python \
   dist/ml_experiment_control-*.whl dist/ml_experiment_server-*.whl
-/root/ml-expd/.venv/bin/ml-expd --help
+/opt/ml-expd/.venv/bin/ml-expd --help
 ```
 
 Use these creation commands for a new installation, not over an active runtime.
@@ -65,11 +66,11 @@ Configure these files; keep every actual secret outside Git:
 
 | Template/config | Required choices |
 |---|---|
-| [executors.yaml](../server/examples/executors.yaml) | Existing scheduler IDs, resource specs and shared mount roots |
+| [Backend executor templates](configuration.md#enable-only-the-backends-you-use) | Choose Slurm, SenseCore or DLC; combine only the entries you need |
 | [image-builder.json](../server/examples/image-builder.json) | Daemon peer UID/GID, matching source root/socket, publisher, repository and allowlist |
-| [registry-pull.json](../server/examples/registry-pull.json) | WYD pull-only credential, distinct from publisher auth |
+| [registry-pull.json](../server/examples/registry-pull.json) | Slurm pull-only credential, distinct from publisher auth |
 | [artifact-store.json](../server/examples/artifact-store.json) | S3 endpoint/bucket/auth, worker callback base, quotas and part policy |
-| Private SenseCore REST JSON | See [SenseCore setup](sensecore-rest.md) |
+| Private backend credentials | Configure only selected backends: [Slurm](slurm.md), [SenseCore](sensecore-rest.md), [PAI](pai.md) |
 
 Replace all example hosts/REPLACE values. Example artifact-store values are
 explicit quotas, not immutable platform limits: remove them or use null only
@@ -94,7 +95,7 @@ For a host that must not retain datasets/weights, set
 This is an explicit destructive retention policy, disabled when omitted. It is
 visible as `local_payload_retention` in `/api/storage-limits`.
 
-- New inputs continue directly to WYD datapool or CCR/NAS. Their backend copies
+- New inputs continue directly to Slurm shared storage or CCR/NAS. Their backend copies
   and persistent checkpoints are outside this policy.
 - Historical local dataset archives expire after the configured age. Their
   extracted local files are removed too; immutable asset manifests remain.
@@ -117,7 +118,7 @@ client. Download selected results before expiry. An expired uploaded legacy
 asset must be uploaded to executor storage again if no verified backend copy
 exists. Preparation first reuses and verifies an existing backend cache; local
 expiry must not block that reuse. This policy deliberately does not
-change NAS/datapool/CCR retention or require a GPU job to delete local bytes.
+change NAS/shared-storage/CCR retention or require a GPU job to delete local bytes.
 
 The approved base catalogue is an operator-owned YAML selected with
 `container_execution.environments_file`:
@@ -134,57 +135,23 @@ Catalogue metadata is operator-verified, not automatic package detection.
 Use [builds](builds.md) to configure local or SSH desktop Runtime construction.
 New input uploads always select backend storage; `data_upload_storage` and
 `data_upload_socket` are legacy-session settings, not a way to select new uploads.
-For SenseCore, add the registry and bounded `data_delivery` configuration below
-to the private artifact-store JSON:
-
-```json
-{
-  "upload_part_bytes": 16777216,
-  "data_registry": {
-    "repository": "REGISTRY_HOST/TEAM/ml-expd-data",
-    "base_image": "REGISTRY_HOST/TEAM/ml-expd-data@sha256:ACTUAL_64_HEX_DIGEST",
-    "registry_auth_file": "/etc/ml-expd/data-registry-auth.json",
-    "blob_hosts": ["ACTUAL_CCR_BLOB_HOST"]
-  },
-  "data_delivery": {
-    "aec2": "debug-CLUSTER_ID",
-    "worker_spec": "ACTUAL_CPU_SPEC.2c4g",
-    "gpus": 0, "cpus": 2, "memory_gb": 4,
-    "quota_type": "reserved",
-    "queue_timeout_seconds": 1800,
-    "copy_timeout_seconds": 1800
-  }
-}
-```
-
-Publish an ACP-compatible linux/amd64 Python/glibc/Bash base into this **same
-repository** first; `base_image` must be its immutable digest. The API reads base
-metadata and appends fixed dataset/worker layers through registry REST, without
-BuildKit. The daemon needs push/pull Docker auth in the private `registry_auth_file`;
-this file is distinct from the builder's auth unless deliberately provisioned for
-both. Give the service UID read access to this narrow credential, for example
-`root:ml-expd` mode 0640; retain the original root-only builder auth unchanged.
-Include only the required CCR host entry and do not copy unrelated registry logins.
-`blob_hosts` contains
-only the actual CCR blob redirect hostnames verified by the operator, without
-scheme, paths or wildcards; redirects use TLS and receive no registry credentials.
-Workspace, storage mount and dataset root are derived from the chosen executor.
-Verify the CPU spec is exactly 2 CPUs, 4 GiB and 0 GPUs in the selected debug pool.
-No new dataset upload requires the desktop SSH tunnel; environment builds still do.
+For optional provider-specific transfers, follow [SenseCore data publication](sensecore-rest.md#dataset-publication-and-cpu-copy)
+and [PAI storage](pai.md). They are configured independently from Slurm.
 
 ## Backend preconditions
 
-WYD requires SSH/known-hosts under the daemon account, Slurm, rsync, Apptainer,
-valid account/QOS/GRES and storage_root beneath the mounted shared `/datapool`.
-Verify access on target nodes; a node-local `/data` is not equivalent. Private
-images need conversion-host pull auth. Use `apptainer_unsquash` where FUSE is
-unavailable. Staging/conversion has a separate controller timeout.
+Follow [Slurm setup](slurm.md) for daemon-owned SSH, account/QOS/GRES, shared
+filesystem scope, Apptainer and optional API relay. The filesystem path is site
+configuration; it must be shared by staging and compute nodes.
 
 SenseCore requires REST access, compatible SPOT GPU specs, CCR pull auth and NAS
 permissions. Advertised fixed allocation must match actual specs. GPU jobs
 exclude debug pools; data-copy jobs use the configured debug CPU pool. NAS need
 not be accessible directly from the daemon when workers return over HTTPS.
 Backend Internet access is separate from registry/NAS access.
+
+PAI uses [DLC training](pai.md) with its own workspace/quota and approved personal
+CPFS/role. DSW debugging/building and OSS transfers are separate opt-ins.
 
 After provisioning, deliberately enable the required `action_runtime` source
 imports/project writes/scheduler mutations and finite GPU budget policy. Do not
@@ -203,7 +170,7 @@ Action's explicit authorization and execution; see [resource deletion](resource-
 Review/adapt the [daemon](../server/examples/ml-expd.service) and
 [builder](../server/examples/ml-expd-image-builder.service) units, daemon config,
 PATH, writable state paths and credential permissions before installing them.
-Daemon and builder use `/root/ml-expd/.venv`. Keep the private socket inaccessible
+Daemon and builder use `/opt/ml-expd/.venv`. Keep the private socket inaccessible
 to other users. Public HTTPS can proxy a loopback daemon; direct non-loopback
 binding requires native TLS and Bearer auth ([HTTP contract](http_contract.md)).
 
@@ -272,6 +239,6 @@ filesystem overhead; saturation returns 503 and retains unconfirmed parts. It is
 not a cap on source, result/recovery caches, journals or Garage objects. Review
 `transfer_buffer` and `local_storage` independently in `/api/storage-limits`.
 
-Treat API disk, desktop builder disk, WYD datapool and SenseCore NAS as distinct
+Treat API disk, desktop builder disk, Slurm shared storage and SenseCore NAS as distinct
 capacity domains. Check each domain's actual write/quota/inode state. In
 particular, freeing an API archive does not free NAS training-state generations.

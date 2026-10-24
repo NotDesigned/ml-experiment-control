@@ -1,4 +1,4 @@
-"""WYD Slurm/Apptainer side-effect adapter."""
+"""SSH Slurm/Apptainer side-effect adapter."""
 
 from __future__ import annotations
 
@@ -239,7 +239,7 @@ def parse_accounting(
     }
 
 
-class WydSlurmBackend:
+class SlurmBackend:
     kind = "slurm"
     capabilities = SLURM
     # Keep multiplexing within one controller process, but never share the

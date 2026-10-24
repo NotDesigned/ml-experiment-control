@@ -261,7 +261,7 @@ def upload_asset(args, client, health):
         catalogue = client.call("/api/executors")["executors"]
         matches = [item for item in catalogue if item["id"] == args.executor]
         if len(matches) != 1 or matches[0].get("kind") not in {"slurm", "sensecore", "pai-dlc"}:
-            raise ClientError("data upload requires a published WYD, SenseCore or DLC executor")
+            raise ClientError("data upload requires a published Slurm, SenseCore or DLC executor")
         kind = matches[0]["kind"]
         if kind == "pai-dlc" and "oss-datasets.v1" not in health.get("capabilities",[]):
             raise ClientError("server lacks oss-datasets.v1")

@@ -99,7 +99,7 @@ def test_transport_failure_does_not_replay_unknown_writes(monkeypatch, error, me
     assert opener.open.call_count == 1
 
 
-@pytest.mark.parametrize("raw", [b'not-json', b'x'*(32*1024*1024+1)])
+@pytest.mark.parametrize("raw", [b'not-json', b'x'*(32*1024*1024+1)], ids=["invalid-json", "oversized-body"])
 def test_successful_but_malformed_or_oversized_write_requires_reconciliation(monkeypatch, raw):
     opener=Mock();opener.open.return_value=response(raw)
     monkeypatch.setattr(m.urllib.request,"build_opener",lambda *a:opener)

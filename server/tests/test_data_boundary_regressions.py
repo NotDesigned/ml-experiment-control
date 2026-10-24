@@ -11,7 +11,7 @@ import pytest
 
 from ml_exp_server.api import upload_routes
 from ml_exp_server.application_errors import ApplicationError
-from ml_exp_server.backends.operations import WydOperations
+from ml_exp_server.backends.operations import SlurmOperations
 from ml_exp_server.container_execution import ContainerExecutionService
 from ml_exp_server.data.data_assets import AssetStore
 from ml_exp_server.data.data_delivery import DataDeliveryService
@@ -35,19 +35,20 @@ def test_malformed_location_list_is_rejected_without_falling_back_to_legacy():
     assert original == {"remote_storage": "desktop-builder", "remote_locations": []}
 
 
-def test_native_wyd_cache_failure_never_launches_a_second_transfer(monkeypatch):
+@pytest.mark.parametrize("storage_label", ["slurm", "wyd"])
+def test_native_slurm_cache_failure_never_launches_a_second_transfer(monkeypatch, storage_label):
     selected = profile()
-    scope, copy = location(selected, "wyd")
-    asset = {"remote_storage": "wyd", "remote_locations": {scope: copy}}
+    scope, copy = location(selected, storage_label)
+    asset = {"remote_storage": storage_label, "remote_locations": {scope: copy}}
     stager = SimpleNamespace(check=lambda *a: {"status": "NOT_FOUND"},
                              assets=SimpleNamespace(read=lambda *a: asset),
                              publish=lambda *a: pytest.fail("native data must not be retransferred"))
-    monkeypatch.setattr("ml_exp_server.backends.operations.WydDataStager", lambda *a: stager)
+    monkeypatch.setattr("ml_exp_server.backends.operations.SlurmDataStager", lambda *a: stager)
     owner = SimpleNamespace(runtime=None, update=lambda *a, **k: pytest.fail("no new effect marker"))
     with pytest.raises(ApplicationError) as error:
-        WydOperations().prepare_asset(owner, "demo", "prep", {"delivery_requested": []},
+        SlurmOperations().prepare_asset(owner, "demo", "prep", {"delivery_requested": []},
                                       {"profile": selected}, "asset." + "a" * 64, None)
-    assert error.value.code == "WYD_DATA_NOT_READY"
+    assert error.value.code == "SLURM_DATA_NOT_READY"
 
 
 def test_cpu_script_matching_rejects_adapter_without_before_job_input_support(client):
@@ -151,7 +152,7 @@ def test_remote_asset_missing_scope_and_expanded_quota_fail_before_publication(c
         assets.validate_inventory(asset["files"])
 
 
-@pytest.mark.parametrize("kind,executor", [("wyd", "gpu"), ("sensecore-ccr", "cloud")])
+@pytest.mark.parametrize("kind,executor", [("slurm", "gpu"), ("wyd", "gpu"), ("sensecore-ccr", "cloud")])
 def test_remote_download_error_is_typed_without_public_object_store(client, stored, kind, executor):
     assert "public_endpoint" not in json.loads(stored[0].read_text())
     asset = publish(client, stored[0], executor, kind)

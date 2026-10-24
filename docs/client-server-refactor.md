@@ -30,7 +30,7 @@ uncertain-effect no-replay rules and existing durable states are retained.
 
 New datasets select backend storage at upload creation. One shared 1 GiB disk
 buffer bounds in-flight parts; matching durable destination ACK permits local
-part removal. WYD uses shared datapool. SenseCore streams a CCR data image and
+part removal. Slurm uses shared storage. SenseCore streams a CCR data image and
 uses a debug CPU job to establish NAS READY. The desktop constructs Runtime
 images, and historical desktop datasets keep their original read/reuse path.
 Output archives still use object storage plus verified client ACK.

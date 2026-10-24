@@ -56,7 +56,7 @@ introducing per-provider deletion rules or a second metadata store.
 
 The API archive is released only after durable verified client acknowledgement
 with release enabled. Reproducible local caches may be removed after independent
-object verification. NAS/datapool training state and datasets require their own
+object verification. NAS/shared-storage training state and datasets require their own
 explicit retention policy. Downloading a URL does not fabricate an acknowledgement.
 
 Synthetic regression checks cover interrupted publication, concurrent capacity

@@ -1,0 +1,7 @@
+{
+  "region": "REPLACE_REGION",
+  "workspace_id": "REPLACE_WORKSPACE",
+  "access_key_id": "SET_PRIVATELY",
+  "access_key_secret": "SET_PRIVATELY",
+  "registry_auth_file": "/etc/ml-expd/registry-auth.json"
+}

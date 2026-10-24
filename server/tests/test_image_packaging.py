@@ -12,13 +12,13 @@ from ml_exp_server.image_builder import ImageBuilder
 from ml_exp_server.builds.builder_client import MANIFEST_TYPE
 from ml_exp_server.projects.source_revisions import _tree_digest
 from ml_exp_server.projects.source_imports import seal_tree
-from experiment_control.backends.wyd import WydSlurmBackend
+from experiment_control.backends.slurm import SlurmBackend
 
 
 
 
 def test_slurm_conversion_uses_digest_and_repairs_tampered_cache(tmp_path):
-    backend=object.__new__(WydSlurmBackend)
+    backend=object.__new__(SlurmBackend)
     binpath=tmp_path/'bin';binpath.mkdir()
     tool=binpath/'apptainer'
     tool.write_text('#!/bin/sh\nprintf image > "$3"\nprintf build >> "'+str(tmp_path/'calls')+'"\n')

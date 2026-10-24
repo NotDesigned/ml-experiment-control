@@ -15,7 +15,8 @@ from .commands import dispatch, initialize
 def parser():
     value = argparse.ArgumentParser(prog="ml-exp", description=__doc__)
     value.add_argument("--version", action="version", version="%(prog)s " + __version__)
-    value.add_argument("--url", default=os.environ.get("ML_EXPD_API_URL"))
+    value.add_argument("--url", default=os.environ.get("ML_EXPD_API_URL"),
+                       help="API base URL including proxy prefix; defaults to ML_EXPD_API_URL")
     commands = value.add_subparsers(dest="command", required=True)
     debug = commands.add_parser("debug", help="request and manage SSH debugging machines (CCI/DSW)")
     debug_actions = debug.add_subparsers(dest="debug_action", required=True)
@@ -95,7 +96,7 @@ def parser():
     upload.add_argument("--directory", type=Path, required=True)
     upload.add_argument("--state", type=Path, required=True)
     upload.add_argument("--resume", action="store_true", help="resume the exact saved data archive; completed parts are retained")
-    upload.add_argument("--executor", help="target executor: store data on WYD shared storage or prepare SenseCore NAS through CCR")
+    upload.add_argument("--executor", help="target executor: Slurm shared storage, SenseCore NAS through CCR, or DLC OSS")
     upload.add_argument("--wait-seconds", type=int, default=1800)
     assets = commands.add_parser("assets", help="list immutable project data assets")
     assets.add_argument("--project", required=True)
@@ -194,8 +195,11 @@ def main(argv=None):
             print(json.dumps(initialize(args), indent=2))
             return 0
         token = os.environ.get("ML_EXPD_API_TOKEN", "")
-        if not token and os.environ.get("ML_EXPD_API_TOKEN_FILE"):
-            token = Path(os.environ["ML_EXPD_API_TOKEN_FILE"]).read_text().strip()
+        token_file = os.environ.get("ML_EXPD_API_TOKEN_FILE")
+        if token and token_file:
+            raise ClientError("set only one of ML_EXPD_API_TOKEN_FILE and ML_EXPD_API_TOKEN")
+        if token_file:
+            token = Path(token_file).read_text().strip()
         client = Client(args.url or "", token)
         health = client.negotiate()
         result = dispatch(args, client, health)

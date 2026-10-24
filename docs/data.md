@@ -7,9 +7,9 @@ outputs. Do not include datasets or checkpoint archives in source uploads.
 ## Upload once, select backend storage
 
 ```bash
-ml-exp asset-upload --project my-study --executor wyd-l40s \
+ml-exp asset-upload --project my-study --executor slurm-gpu \
   --directory ./data --state data.state.json
-ml-exp asset-upload --project my-study --executor wyd-l40s \
+ml-exp asset-upload --project my-study --executor slurm-gpu \
   --directory ./data --state data.state.json --resume
 ml-exp assets --project my-study
 ```
@@ -36,11 +36,11 @@ It never stages the complete new dataset archive on the API host or desktop.
 
 | Backend | New uploaded data path |
 |---|---|
-| WYD | Client → API part buffer → SSH receiver on shared `/datapool`; archive and files are verified there before use |
+| Slurm | Client → API part buffer → SSH receiver on shared `mount_root`; archive and files are verified there before use |
 | SenseCore | Client → API part buffer → CCR data-image layer; zero-GPU debug ACP copies and verifies it on NAS before GPU submission |
 | DLC | Client → API part buffer → personal OSS archive; the job downloads and verifies a reusable CPFS cache before training |
 
-WYD uses the executor's `storage_root` beneath shared datapool. Compute nodes
+Slurm uses the executor's `storage_root` beneath shared storage. Compute nodes
 need no external data download. The immutable asset records whole-archive and
 regular-file hashes plus its storage scope. Reuse requires the same bytes and
 compatible backend storage; a missing or corrupt cache fails before training.
@@ -53,7 +53,7 @@ readiness. The CPU copy uses the configured debug cluster, 2CPU/4GiB/0GPU and
 RESERVED quota. GPU jobs exclude debug clusters. Training verifies the sealed
 NAS cache again; dataset files are excluded from final outputs.
 
-WYD and SenseCore target-backed assets expose metadata and backend references.
+Slurm and SenseCore target-backed assets expose metadata and backend references.
 Their API `/archive` and `/download` return typed HTTP 404
 `DIRECT_DOWNLOAD_UNAVAILABLE`. Keep the original data or use its backend storage
 reference. OSS dataset copies support verified client download as described below. Historical object-store and desktop assets retain
@@ -64,7 +64,7 @@ Operators can enable a finite local payload lifetime. When
 `/api/storage-limits.local_payload_retention.max_age_seconds` is set, historical
 local dataset content expires and its archive/download returns HTTP410
 `ASSET_EXPIRED`; its identity/manifest remains. New backend assets and their
-NAS/datapool/CCR contents are unaffected. Re-upload an expired legacy dataset
+NAS/shared-storage/CCR contents are unaffected. Re-upload an expired legacy dataset
 to an executor rather than assuming the API host is a permanent data store.
 
 Delivery routes:
@@ -133,7 +133,7 @@ remain visible; the platform does not relabel that job as successful.
 
 Historical Runs retain their frozen inside-job or stdout-receipt behavior.
 Reconciliation observes the original job; it never silently creates a replacement.
-WYD prepares scripts on its Internet-connected gateway before GPU submission.
+Slurm prepares scripts on its Internet-connected gateway before GPU submission.
 External source connectivity still needs validation on the chosen preparation
 node; a verified backend cache avoids repeating that download during training.
 The data-preparation receipt has 20,000-file/8-MiB bounds and requires a Runtime
@@ -199,20 +199,20 @@ checkpoint generations and registry images have separate retention
 and no automatic scientific-data deletion. Direct signed output downloads bypass
 API staging, but a same-host Garage still consumes this server's disk.
 
-## WYD without compute-node Internet
+## Slurm without compute-node Internet
 
-New uploads already reside on shared datapool before Run preparation. Dataset
+New uploads already reside on shared storage before Run preparation. Dataset
 verification uses the connected SSH gateway and backend disk, not a GPU worker's
 Internet access. The preparation helper has its own bounded validation timeout,
 separate from GPU walltime. Existing frozen low-level Runs retain their original
 HTTP worker path; an API upgrade does not rewrite their inputs.
 
-For relay-configured WYD executors, download scripts run on the connected gateway
+For relay-configured Slurm executors, download scripts run on the connected gateway
 in the same Runtime SIF before GPU allocation. Training verifies and reuses the
 shared `data-preparations` cache; it never reruns a missing preparation script on
 an offline node. API checkpoint registration, metrics and result upload can use
 the fixed TLS-preserving gateway relay. See
-[WYD offline compute nodes](backends.md#wyd-compute-nodes-without-internet-access).
+[Slurm offline compute nodes](backends.md#slurm-compute-nodes-without-internet-access).
 
 
 ## Personal OSS dataset originals and DLC caches
@@ -281,7 +281,7 @@ so download/verification time consumes its running-time budget and GPU allocatio
 There is no automatic pre-job DSW data-copy task. Corrupt/missing bytes fail before
 training. Dataset files are separate from OUTPUT_DIR and are not result uploads.
 Storage identity binds the approved CPFS/user/project; registration does not grant
-cross-backend or other-user filesystem access. WYD/SenseCore upload paths remain
+cross-backend or other-user filesystem access. Slurm/SenseCore upload paths remain
 unchanged.
 
 `GET /api/projects/PROJECT/assets/ASSET/download` returns a private five-minute OSS

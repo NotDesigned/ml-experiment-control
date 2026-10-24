@@ -87,7 +87,7 @@ class ActionExecution:
     """Execution operations; state belongs to the application facade."""
 
     def diagnostics(self, action_id: str, *, refresh: bool = False, runtime=None) -> dict[str, Any]:
-        """Read saved staging evidence; optionally observe a managed WYD receipt."""
+        """Read saved staging evidence; optionally observe a managed Slurm receipt."""
         snapshot = self.store.snapshot(action_id)
         execution = snapshot["execution"]
         result = execution.get("result") or {}
@@ -138,7 +138,7 @@ class ActionExecution:
                 or not project.controller.capabilities.get("container_execution")
                 or project.controller.experimentctl != "tools/experimentctl.py"
             ):
-                return {"status": "UNSUPPORTED", "reason": "Only the built-in managed WYD controller is queried"}
+                return {"status": "UNSUPPORTED", "reason": "Only the built-in managed Slurm controller is queried"}
             directory = self.store.directory(snapshot["action_id"])
             path = directory / "campaign.execution.yml"
             if (directory.is_symlink() or path.is_symlink()
@@ -164,7 +164,7 @@ class ActionExecution:
                     or expected_source_id not in (None, "") and expected_source_id != source_id):
                 raise ValueError("frozen campaign source binding differs")
             if run.get("backend", {}).get("kind") != "slurm" or not run["backend"].get("oci_image"):
-                return {"status": "UNSUPPORTED", "reason": "The Action does not prepare a managed WYD OCI image"}
+                return {"status": "UNSUPPORTED", "reason": "The Action does not prepare a managed Slurm OCI image"}
             # Embedded OCI code has no separate source staging arguments. Its
             # provenance still comes from the exact frozen Run and Runtime.
             extra = (["--source-root", str(root / "source-revisions" / "sources" / project_name / source_id / "tree"), "--source-id", source_id]

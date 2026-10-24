@@ -11,7 +11,7 @@ import subprocess
 import pytest
 
 from backend_harness import QueueRunner, services, slurm_run
-from experiment_control.backends.wyd import WydSlurmBackend, _safe_stage_failure_log
+from experiment_control.backends.slurm import SlurmBackend, _safe_stage_failure_log
 from experiment_control.runner import CommandResult
 
 
@@ -24,7 +24,7 @@ def stage_command(tmp_path, *, credentials=None):
     injected = services(tmp_path, fake)
     if credentials:
         injected = replace(injected, oci_pull_environment=lambda: credentials)
-    backend = WydSlurmBackend(injected)
+    backend = SlurmBackend(injected)
     backend._stage_oci_image(run)
     remote = shlex.split(fake.commands[-1][-1])
     if credentials:
@@ -127,7 +127,7 @@ def test_private_credentials_stay_in_stdin_and_default_scratch_and_budget(tmp_pa
 def test_stage_budget_rejects_unbounded_or_malformed_configuration(budget):
     run = slurm_run(); run["backend"]["image_stage_timeout_seconds"] = budget
     with pytest.raises(ValueError, match="30 to 1080"):
-        WydSlurmBackend.image_stage_timeout_seconds(run)
+        SlurmBackend.image_stage_timeout_seconds(run)
 
 
 @pytest.mark.parametrize("payload", [None, {}, {"phase": "unsafe"},
@@ -135,7 +135,7 @@ def test_stage_budget_rejects_unbounded_or_malformed_configuration(budget):
     {"phase": "CACHE_VERIFY", "status": "START", "timestamp": 0},
     {"phase": "CACHE_VERIFY", "status": "START", "timestamp": "invalid"}])
 def test_stage_progress_rejects_untrusted_fields(payload):
-    assert WydSlurmBackend._safe_stage_event(payload) is None
+    assert SlurmBackend._safe_stage_event(payload) is None
 
 
 @pytest.mark.parametrize("code", [None, True, -1, 256, "42", 42])
@@ -144,7 +144,7 @@ def test_stage_progress_preserves_only_whitelisted_diagnostics(tmp_path, code):
              "timestamp": "2026-10-08T12:00:00Z", "exit_code": code,
              "error_code": "STAGE_COMMAND_FAILED", "token": "private", "path": "/private"}
     fake = QueueRunner([CommandResult((), 0, json.dumps(event))])
-    result = WydSlurmBackend(services(tmp_path, fake)).stage_progress(slurm_run())
+    result = SlurmBackend(services(tmp_path, fake)).stage_progress(slurm_run())
     assert result["error_code"] == "STAGE_COMMAND_FAILED"
     assert ("exit_code" in result) == (code == 42)
     assert "token" not in result and "path" not in result
@@ -152,7 +152,7 @@ def test_stage_progress_preserves_only_whitelisted_diagnostics(tmp_path, code):
 
 @pytest.mark.parametrize("result", [CommandResult((), 1), CommandResult((), 0, "broken")])
 def test_unavailable_stage_progress_is_unknown(tmp_path, result):
-    backend = WydSlurmBackend(services(tmp_path, QueueRunner([result])))
+    backend = SlurmBackend(services(tmp_path, QueueRunner([result])))
     assert backend.stage_progress(slurm_run()) is None
 
 
@@ -160,7 +160,7 @@ def test_unavailable_stage_progress_is_unknown(tmp_path, result):
 def test_progress_transport_exceptions_are_unknown_without_leaking_arguments(tmp_path, error):
     def unavailable(*args, **kwargs):
         raise error
-    backend = WydSlurmBackend(replace(services(tmp_path, QueueRunner([])), run_command=unavailable))
+    backend = SlurmBackend(replace(services(tmp_path, QueueRunner([])), run_command=unavailable))
     assert backend.stage_progress(slurm_run()) is None
 
 
@@ -170,14 +170,14 @@ def test_remote_failure_does_not_forward_raw_registry_stderr(tmp_path, capsys):
     fake = QueueRunner([CommandResult((), 0), CommandResult((), 42, stderr=
         "password=private\nML_EXPD_STAGE_EVENT=bad\nML_EXPD_STAGE_EVENT=null\n"
         + "ML_EXPD_STAGE_EVENT=" + json.dumps(good))])
-    backend = WydSlurmBackend(services(tmp_path, fake))
+    backend = SlurmBackend(services(tmp_path, fake))
     run = slurm_run(); run["backend"]["oci_image"] = "registry@" + run["image_id"]
     with pytest.raises(RuntimeError, match="exit code 42"):
         backend._stage_oci_image(run)
     stderr = capsys.readouterr().err
     assert "private" not in stderr and "IMAGE_PULL_CONVERT" in stderr
     run["backend"]["apptainer_tmp_dir"] = "relative"
-    backend = WydSlurmBackend(services(tmp_path, QueueRunner([CommandResult((), 0)])))
+    backend = SlurmBackend(services(tmp_path, QueueRunner([CommandResult((), 0)])))
     with pytest.raises(ValueError, match="absolute"):
         backend._stage_oci_image(run)
 
@@ -192,7 +192,7 @@ def test_transport_or_hard_timeout_emits_actual_failure_code(tmp_path, capsys, e
     fake = QueueRunner([CommandResult((), 0), CommandResult((), code, stderr=stderr)])
     run = slurm_run(); run["backend"]["oci_image"] = "registry@" + run["image_id"]
     with pytest.raises(RuntimeError, match=f"exit code {code}"):
-        WydSlurmBackend(services(tmp_path, fake))._stage_oci_image(run)
+        SlurmBackend(services(tmp_path, fake))._stage_oci_image(run)
     last = json.loads(capsys.readouterr().err.strip().splitlines()[-1].split("=", 1)[1])
     assert last["exit_code"] == code and last["status"] == "FAILED"
     assert last["error_code"] == ("STAGE_TIMEOUT" if code == 124 else "STAGE_COMMAND_FAILED")
@@ -255,7 +255,7 @@ def test_private_failure_log_uses_current_pull_credentials(tmp_path, capsys):
     })
     run = slurm_run(); run["backend"]["oci_image"] = "registry@" + run["image_id"]
     with pytest.raises(RuntimeError, match="exit code 2"):
-        WydSlurmBackend(injected)._stage_oci_image(run)
+        SlurmBackend(injected)._stage_oci_image(run)
     stderr = capsys.readouterr().err
     assert secret not in stderr and "FATAL: registry refused <redacted>" in stderr
     assert secret not in " ".join(fake.commands[-1])
@@ -268,7 +268,7 @@ def test_oci_launcher_rejects_unreviewed_credentials_under_python_optimization(t
     injected = replace(services(tmp_path, fake), oci_pull_environment=lambda: {'APPTAINER_DOCKER_PASSWORD': 'fake-password'})
     run = slurm_run()
     run['backend']['oci_image'] = 'registry@' + run['image_id']
-    WydSlurmBackend(injected)._stage_oci_image(run)
+    SlurmBackend(injected)._stage_oci_image(run)
     launcher = shlex.split(fake.commands[-1][-1])[2]
     result = subprocess.run([sys.executable, '-O', '-c', launcher, 'must-not-execute'],
         input=json.dumps(credentials), text=True, capture_output=True, timeout=5)
