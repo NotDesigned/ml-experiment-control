@@ -44,6 +44,8 @@ def parser():
     workflow.add_argument("--keep-server-copy", action="store_true", help="retain server archives after verified download")
     check = commands.add_parser("check", help="GET health, policy, executors and optionally schema")
     check.add_argument("--schema", type=Path)
+    check.add_argument("--training", action="store_true",
+                       help="also require training configuration and a responding image builder; allocates no GPU")
     pack = commands.add_parser("pack", help="import source and package image; allocates no GPU")
     pack.add_argument("--project", required=True)
     pack.add_argument("--source", type=Path, required=True)
@@ -205,6 +207,8 @@ def main(argv=None):
         result = dispatch(args, client, health)
         print(json.dumps(result, indent=2))
         if args.command == "check" and "storage_limits_error" in result:
+            return 2
+        if args.command == "check" and args.training and result.get("readiness", {}).get("training") != "CONFIGURED":
             return 2
         if args.command == "execute" and result["status"] != "VERIFIED":
             return 2

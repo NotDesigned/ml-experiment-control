@@ -9,6 +9,12 @@ configuration and an experiment. The operator supplies connection information.
 Only the API URL and one token source are needed; see
 [connection configuration](../docs/configuration.md#client-connect-to-an-existing-service).
 
+Run `ml-exp check` for a basic API connection. Use `ml-exp check --training` to
+also require training configuration and a responding private image builder;
+it lists missing/disabled/unavailable components and exits 2 when incomplete.
+Neither command builds an image or allocates a GPU. Backend authentication and
+resource admission are still checked by the experiment's normal preflight.
+
 ## Python use
 
 ```python
