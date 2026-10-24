@@ -34,7 +34,10 @@ install -d -m 0755 /opt/ml-expd
 
 `install.sh` verifies bundled file hashes, refuses an existing destination, creates
 the virtual environment and installs locally with `--no-index --require-hashes`.
-It does not start services or configure cloud accounts. If your operator supplies
+It does not start services or configure cloud accounts.
+The installer sets public program permissions independently of the calling
+shell's private umask; tokens, keys and state are created separately below.
+If your operator supplies
 individual wheels instead, follow the wheel installation in the operator guide;
 their runtime dependencies require a reachable package index.
 

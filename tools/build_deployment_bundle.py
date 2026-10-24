@@ -110,6 +110,8 @@ def build(component, wheels, output):
                         if component == "server" else "")
         installer = f'''#!/bin/sh
 set -eu
+# The bundle contains public program files, never private configuration/state.
+umask 022
 base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 venv=${{1:?Usage: ./install.sh /absolute/path/to/new-venv}}
 case "$venv" in /*) ;; *) echo "Use an absolute venv path" >&2; exit 1;; esac

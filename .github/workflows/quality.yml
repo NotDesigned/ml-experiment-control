@@ -80,9 +80,11 @@ jobs:
           (cd .ops/bundles && sha256sum *.tar.gz > SHA256SUMS)
           tar -xzf .ops/bundles/server-bundle.tar.gz -C .ops/bundles
           tar -xzf .ops/bundles/client-bundle.tar.gz -C .ops/bundles
-          .ops/bundles/ml-expd-server/install.sh "$PWD/.offline-server"
+          (umask 077; .ops/bundles/ml-expd-server/install.sh "$PWD/.offline-server")
+          test "$(stat -c '%a' .offline-server)" = 755
+          test "$(stat -c '%a' .offline-server/bin/ml-expd)" = 755
           .offline-server/bin/experiment-redact --help
-          .ops/bundles/ml-expd-client/install.sh "$PWD/.offline-client"
+          (umask 077; .ops/bundles/ml-expd-client/install.sh "$PWD/.offline-client")
           .offline-client/bin/python tools/client_wheel_smoke.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
