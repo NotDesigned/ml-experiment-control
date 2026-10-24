@@ -139,6 +139,10 @@ class PaiBackend:
             raise ValueError("PAI first release supports exactly one worker node")
         if "oversold_type" in backend and backend["oversold_type"] not in ALLOCATION_POLICIES.values():
             raise ValueError("invalid PAI idle resource policy")
+        if "enable_tide_resource" in backend and (
+                type(backend["enable_tide_resource"]) is not bool or "oversold_type" not in backend
+                or backend["enable_tide_resource"] != (backend["oversold_type"] != ALLOCATION_POLICIES["guaranteed"])):
+            raise ValueError("PAI tide resource permission must agree with the idle resource policy")
         if "priority" in backend and (type(backend["priority"]) is not int or not 1 <= backend["priority"] <= 9):
             raise ValueError("PAI task priority must be an integer from 1 to 9")
         if type(backend.get("gpu_type_from_quota", False)) is not bool:
@@ -250,6 +254,9 @@ class PaiBackend:
                                                  "GPU": str(resources["gpus"]), "GPUType": backend["gpu_type"]}}]}
         if "oversold_type" in backend:
             document["JobSpecs"][0]["OversoldType"] = backend["oversold_type"]
+        if "enable_tide_resource" in backend:
+            document["Settings"].update(EnableTideResource=backend["enable_tide_resource"],
+                                        OversoldType=backend["oversold_type"])
         if "priority" in backend:
             document["Priority"] = backend["priority"]
         credentials = credential_config(backend)

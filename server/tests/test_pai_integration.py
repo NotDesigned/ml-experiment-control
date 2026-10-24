@@ -154,6 +154,7 @@ def test_http_source_runtime_freeze_and_status_need_no_cloud_cli(client,api,poli
     assert controller.duration_seconds()==(7200 if expected=='02:00:00' else 86400)
     from experiment_control.backends.pai import ALLOCATION_POLICIES
     assert frozen['backend']['oversold_type']==ALLOCATION_POLICIES[policy or 'guaranteed']
+    assert frozen['backend']['enable_tide_resource'] is (policy not in (None,'guaranteed'))
     assert frozen['backend']['priority']==(priority if priority is not None else 5)
     assert client.post('/api/projects/demo/runs',json=definition).status_code==200
     value,_=api
@@ -164,6 +165,8 @@ def test_http_source_runtime_freeze_and_status_need_no_cloud_cli(client,api,poli
     document=json.loads(controller.backend.render(controller.store.load_attempt('attempt-001')))
     assert document['Priority']==(priority if priority is not None else 5)
     assert document['JobSpecs'][0]['OversoldType']==ALLOCATION_POLICIES[policy or 'guaranteed']
+    assert document['Settings']['OversoldType']==ALLOCATION_POLICIES[policy or 'guaranteed']
+    assert document['Settings']['EnableTideResource'] is (policy not in (None,'guaranteed'))
     assert document['JobSpecs'][0]['UseSpotInstance'] is False
     assert document['ResourceId']=='quota-test' and document['JobSpecs'][0]['PodCount']==1
     assert document['JobMaxRunningTimeMinutes']==(120 if expected=='02:00:00' else 1440)
@@ -189,10 +192,12 @@ def test_resource_defaults_preserve_historical_intents_and_freeze_new_choices():
     from ml_exp_server.container_execution import Resources,pai_scheduling
     old={'gpus':1,'cpus':8,'memory_gb':32,'max_time':'00:10:00'}
     assert Resources().model_dump()==old
-    assert pai_scheduling(Resources(),None)=={'oversold_type':'ForbiddenQuotaOverSold','priority':5}
+    assert pai_scheduling(Resources(),None)=={'oversold_type':'ForbiddenQuotaOverSold','enable_tide_resource':False,'priority':5}
     assert pai_scheduling(Resources(),{'backend':{'kind':'pai-dlc'}})=={}
     frozen={'backend':{'oversold_type':'ForbiddenQuotaOverSold','priority':5}}
     assert pai_scheduling(Resources(),frozen)==frozen['backend']
+    current={'backend':{'oversold_type':'AcceptQuotaOverSold','enable_tide_resource':True,'priority':5}}
+    assert pai_scheduling(Resources(allocation_policy='allow_idle'),current)==current['backend']
     explicit=Resources(allocation_policy='idle_only',priority=9)
     assert pai_scheduling(explicit,{'backend':{}})=={'oversold_type':'ForceQuotaOverSold','priority':9}
     assert explicit.model_dump()['allocation_policy']=='idle_only'
@@ -208,7 +213,8 @@ def test_dlc_controls_are_rejected_for_other_backends_before_build(client):
         assert response.status_code==409 and 'resources.'+field in response.text
 
 
-def test_legacy_pai_resource_fields_remain_absent_on_read_recreation(client,monkeypatch):
+@pytest.mark.parametrize('old_policy',[None,'allow_idle','guaranteed'])
+def test_legacy_pai_resource_fields_remain_absent_on_read_recreation(client,monkeypatch,old_policy):
     import yaml
     from pathlib import Path
     from tests.test_container_api import runtime
@@ -216,17 +222,25 @@ def test_legacy_pai_resource_fields_remain_absent_on_read_recreation(client,monk
     path=Path(client.app.state.runtime.config.container_execution.profiles_file)
     profiles=yaml.safe_load(path.read_text());profiles['executors']['pai']={'backend':B,'storage_root':'/data/lab','capacity':{'gpus':8,'cpus':216,'memory_gb':1800}};path.write_text(yaml.safe_dump(profiles))
     image=runtime(client);definition={'run_id':'legacy-pai','runtime_id':image['runtime_id'],'executor':'pai'}
+    from experiment_control.backends.pai import ALLOCATION_POLICIES
+    old_scheduling={}
+    if old_policy:
+        definition['resources']={'allocation_policy':old_policy}
+        old_scheduling={'oversold_type':ALLOCATION_POLICIES[old_policy],'priority':5}
     scheduling=module.pai_scheduling
     walltime=module.run_walltime
     # Freeze a legacy manifest first, then restore the upgraded writer.
-    monkeypatch.setattr(module,'pai_scheduling',lambda resources,previous:{})
+    monkeypatch.setattr(module,'pai_scheduling',lambda resources,previous:old_scheduling)
     monkeypatch.setattr(module,'run_walltime',lambda resources,*args:resources.max_time)
     assert client.post('/api/projects/demo/runs',json=definition).status_code==200
     monkeypatch.setattr(module,'pai_scheduling',scheduling)
     monkeypatch.setattr(module,'run_walltime',walltime)
     response=client.post('/api/projects/demo/runs',json=definition)
     assert response.status_code==200,response.text
-    assert 'priority' not in response.json()['resources'] and 'allocation_policy' not in response.json()['resources']
+    if old_policy:
+        assert response.json()['resources']['allocation_policy']==old_policy
+    else:
+        assert 'priority' not in response.json()['resources'] and 'allocation_policy' not in response.json()['resources']
     assert response.json()['resources']['max_time']=='00:10:00'
 
 

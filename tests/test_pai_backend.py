@@ -212,17 +212,32 @@ def test_idle_selection_and_priority_are_native_and_not_paid_spot(adapter,mode):
     from experiment_control.backends.pai import ALLOCATION_POLICIES
     backend,run,_,_,_=adapter
     manifest={**run,'attempt_id':'attempt-001','command':['python3','train.py']}
-    manifest['backend'].update(oversold_type=ALLOCATION_POLICIES[mode],priority=5)
+    manifest['backend'].update(oversold_type=ALLOCATION_POLICIES[mode],enable_tide_resource=mode!='guaranteed',priority=5)
     value=backend.create_document(manifest)
     assert value['Priority']==5 and value['JobSpecs'][0]['OversoldType']==ALLOCATION_POLICIES[mode]
+    assert value['Settings']['OversoldType']==ALLOCATION_POLICIES[mode]
+    assert value['Settings']['EnableTideResource'] is (mode!='guaranteed')
     assert value['JobSpecs'][0]['UseSpotInstance'] is False
 
 
-@pytest.mark.parametrize('key,value',[('oversold_type','spot'),('oversold_type',None),('priority',True),('priority',0),('priority',10),('priority','5')])
+@pytest.mark.parametrize('key,value',[('oversold_type','spot'),('oversold_type',None),('enable_tide_resource',True),
+                                   ('enable_tide_resource',False),('enable_tide_resource','true'),
+                                   ('priority',True),('priority',0),('priority',10),('priority','5')])
 def test_invalid_idle_policy_and_priority_never_submit(adapter,key,value):
     backend,run,_,calls,_=adapter;run['backend'][key]=value
     with pytest.raises(ValueError):backend.create_document({**run,'attempt_id':'attempt-001','command':['true']})
     assert not calls
+
+
+def test_historical_idle_policy_keeps_its_native_fields(adapter):
+    backend,run,_,_,_=adapter
+    run['backend']['oversold_type']='AcceptQuotaOverSold'
+    document=backend.create_document({**run,'attempt_id':'attempt-001','command':['true']})
+    assert document['JobSpecs'][0]['OversoldType']=='AcceptQuotaOverSold'
+    assert 'OversoldType' not in document['Settings'] and 'EnableTideResource' not in document['Settings']
+    run['backend']['enable_tide_resource']=False
+    with pytest.raises(ValueError,match='permission must agree'):
+        backend.create_document({**run,'attempt_id':'attempt-001','command':['true']})
 
 
 def test_queue_blocker_is_exposed_without_changing_scheduler_state_or_replaying(adapter):
