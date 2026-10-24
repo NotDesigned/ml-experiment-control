@@ -370,7 +370,7 @@ def upload_asset(args, client, health):
         raise ClientError("state file exists; inspect the saved asset ID instead of replaying upload")
     targeted = "target-backed-data-upload.v1" in health.get("capabilities", [])
     if targeted and not args.executor:
-        raise ClientError("asset-upload requires --executor to select persistent backend storage")
+        raise ClientError("data upload requires --executor to select persistent backend storage")
     kind = None
     if args.executor:
         catalogue = client.call("/api/executors")["executors"]

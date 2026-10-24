@@ -139,6 +139,16 @@ including setup, packaging and the final gate; main's exact-tree reuse is a
 separate optimization. Coverage thresholds and test selection must not be
 weakened to accelerate a run.
 
+After main verifies exact-tree PR reuse, a separate cache-only job prepares the
+core cache in main's scope so later PR branches can restore it. This does not
+install the wheel, run tests again or create new full-suite evidence. A change
+to unrelated workspace dependency versions does not invalidate core source
+identity; dependencies are still resolved from the current lock and tested.
+
+Cold caches and actual core/compiler changes can require a native rebuild.
+Report their elapsed time separately from complete cache-hit runs; neither a
+cache lookup nor main's skipped test suite represents a full test execution.
+
 ## Ownership and durable changes
 
 Follow [architecture](architecture.md): client and worker depend on neither
