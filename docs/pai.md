@@ -69,6 +69,34 @@ region and workspace binding. Its 25-second cache uses the existing
 OBSERVED/STALE/UNKNOWN semantics. Arithmetic unallocated quota is neither GPU
 utilization nor an admission guarantee; pending queue count and ETA are unknown.
 
+Queued DLC jobs also query `ListQuotaWorkloads` for the exact job, workspace and
+quota. `GET /api/submissions/{id}/progress` returns the result under `queue`:
+
+```json
+{
+  "code": "roleMaximumResource",
+  "provider_code": "CheckSelfQuotaFailed",
+  "code_type": "ConfigRule",
+  "reason": "Current Limit is GPU: 8 limited by Role PAI.AlgoDeveloper.",
+  "blocker": {
+    "CodeType": "ConfigRule",
+    "Code": "roleMaximumResource",
+    "Reason": "Current Limit is GPU: 8 limited by Role PAI.AlgoDeveloper."
+  },
+  "position": 1,
+  "availability": "OBSERVED"
+}
+```
+
+The same evidence is available in the Run's `evidence.scheduler.detail.queue`.
+Provider strings are bounded and credential-redacted; fields outside this
+diagnostic schema are not exported. Missing queue records are `NOT_OBSERVED`;
+permission, transport or invalid-response failures are `UNAVAILABLE` with
+`query_error`. They never replace a known scheduler state with failure or grant
+permission to resubmit. Queue position is a sample, not an estimated start time.
+Role limits apply in addition to per-job executor limits and pool headroom;
+allowing idle resources does not bypass those role limits.
+
 ### Data and recovery limits
 
 The operator can configure the approved personal CPFS directory directly:

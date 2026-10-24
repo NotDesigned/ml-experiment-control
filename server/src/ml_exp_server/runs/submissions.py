@@ -162,10 +162,16 @@ class ExperimentSubmissionService:
         scheduler = row.evidence.scheduler if row is not None else None
         exact = scheduler is not None and scheduler.attempt_id == view["attempt_id"]
         state = scheduler.state if exact else observed.get("state")
+        details = scheduler.detail if exact else observed.get("detail")
+        queue = details.get("queue") if isinstance(details, dict) else None
+        queue = queue if isinstance(queue, dict) else {}
         reason = scheduler.detail.get("reason") or scheduler.detail.get("pending_reason") if exact else observed.get("reason")
+        reason = queue.get("reason") or reason
         result.update(submission_id=submission_id, run_id=view["run_id"], attempt_id=view["attempt_id"],
                       scheduler_state=state,
-                      queue={"reason": str(reason)[:512] if reason else None,
+                      queue={**{key: queue[key] for key in ("source", "availability", "code", "code_type", "provider_code",
+                                                          "blocker", "position", "priority", "enqueued_at", "status", "query_error") if key in queue},
+                             "reason": str(reason)[:2048] if reason else None,
                              "as_of": scheduler.as_of if exact else None,
                              "stale": scheduler.stale if exact else True,
                              "estimated_start_at": None,

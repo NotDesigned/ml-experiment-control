@@ -128,6 +128,26 @@ class PaiAPI:
             raise ValueError("PAI quota identity differs")
         return quota
 
+    def queue_workload(self, backend, job_id):
+        """Read admission diagnostics for one already-bound job, never another user/job."""
+        value = self.request("paistudio", "ListQuotaWorkloads",
+                             "/api/v1/quotas/" + component(backend["quota_id"]) + "/workloads",
+                             query={"WorkspaceIds": component(str(backend["workspace_id"])),
+                                    "WorkloadType": "dlc", "WorkloadIds": component(job_id),
+                                    "PageNumber": 1, "PageSize": 2}, timeout=10)
+        rows, total = value.get("Workloads"), value.get("TotalCount")
+        if (not isinstance(rows, list) or type(total) is not int or total not in (0, 1)
+                or len(rows) != total):
+            raise ValueError("invalid PAI exact-job queue response")
+        if not rows:
+            return None
+        row = rows[0]
+        if (not isinstance(row, dict) or row.get("WorkloadId") != job_id
+                or str(row.get("WorkspaceId")) != str(backend["workspace_id"])
+                or row.get("QuotaId") != backend["quota_id"] or row.get("WorkloadType") != "dlc"):
+            raise ValueError("PAI queue workload identity or scope differs")
+        return row
+
     def jobs(self, backend, *, tags=None, name=None):
         rows, seen = [], set()
         for page in range(1, 101):

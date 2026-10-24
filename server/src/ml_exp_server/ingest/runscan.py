@@ -682,6 +682,9 @@ def scan_run_dir(run_dir: Path, project: str, *, campaign: Optional[str] = None,
                                            "partition", "elapsed", "exit_code", "reason")
                     if status.get(k) is not None},
         )
+        provider_detail = status.get("detail")
+        if isinstance(provider_detail, dict) and isinstance(provider_detail.get("queue"), dict):
+            evidence.scheduler.detail["queue"] = provider_detail["queue"]
 
     # Worker layer: remote-side status mirrored into collected_run/, or the
     # newer collection.json worker_state field.
