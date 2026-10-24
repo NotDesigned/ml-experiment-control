@@ -19,6 +19,7 @@ VERSIONED_OPENAPI_PATH = "/api/v2/openapi.json"
 CLIENT_PROTOCOL_HEADER = "X-ML-Expd-Client-Protocol"
 
 SERVER_CAPABILITIES = (
+    "deployment-readiness.v1",
     "debug-sessions.v1",
     "target-backed-data-upload.v1",
     "fixed-transfer-buffer.v1",
@@ -82,6 +83,8 @@ class DaemonHealth(BaseModel):
     min_client_protocol_version: int = MIN_CLIENT_PROTOCOL_VERSION
     openapi_path: str = VERSIONED_OPENAPI_PATH
     capabilities: tuple[str, ...] = SERVER_CAPABILITIES
+    supported_capabilities: tuple[str, ...] = SERVER_CAPABILITIES
+    deployment: dict[str, Any] = Field(default_factory=dict)
     authentication: Literal["none", "bearer"]
     transport_security: Literal["http", "https"]
     projects: int = Field(ge=0)

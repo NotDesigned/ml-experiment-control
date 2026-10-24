@@ -56,6 +56,17 @@ is on the controller/service PATH. Remove installers/dev caches after verificati
 
 ## Configure
 
+For a basic API deployment, start with
+[minimal-api.yaml](../server/examples/minimal-api.yaml). Provision its private
+API token and writable directories, then start the daemon as described below.
+No backend credential, builder, Docker daemon or S3 service is needed to query
+the API and import source. This template enables project/source writes and
+explicitly disables scheduler mutations and the background collector.
+
+For training, extend it with only your chosen backend, private builder and result
+store, or start with the full template below. The server does not automatically
+create storage buckets, IAM roles or builders from a credential file.
+
 Start from [source-api.yaml](../server/examples/source-api.yaml). Provision a
 daemon account and allow it to write the configured state/project roots. The
 HTTP token must be regular, daemon-owned and mode 0600; create a cryptographically
@@ -185,6 +196,18 @@ Verify as the service UID and through the formal HTTPS endpoint:
 
 A CPU starter, successful submit or queue entry does not validate GPU training.
 Do not claim queue ETA/free cards without provider evidence.
+
+Use `ml-exp check` for the basic API and `ml-exp check --training` before new
+training. `/api/health` separates `supported_capabilities` (implemented protocols)
+from `capabilities` (omitting unconfigured storage/build protocols) and includes a `deployment`
+configuration summary. `/api/readiness` additionally probes the authorized
+private builder with a two-second timeout. A disconnected socket or disabled
+publisher is `UNAVAILABLE`; unset optional components are `NOT_CONFIGURED`, disabled
+permissions are `DISABLED`, unreadable/malformed configuration is `INVALID`.
+These checks return component/setting names, never credential contents or parser
+excerpts. `training=CONFIGURED` means this configuration check passed, not that
+cloud credentials, image publication, node connectivity or GPU admission passed.
+Readiness requests do not submit builds or jobs or rewrite existing experiments.
 
 ## Maintenance and rollback
 

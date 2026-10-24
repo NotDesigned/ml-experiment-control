@@ -64,6 +64,9 @@ class ImageBuilder:
                 self._recover_source_context()
 
     def request(self, request: dict) -> dict:
+        if request.get("operation") == "health":
+            return {"status": "ok", "dockerfile_builds": bool(self.config.get("allow_dockerfile_builds"))
+                    and self.config.get("publisher") in {"buildkit", "pai-dsw"}}
         if request.get('operation') == 'mirror':
             from .builds.image_mirror import mirror
             return mirror(self, request)

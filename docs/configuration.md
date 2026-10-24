@@ -17,6 +17,14 @@ export ML_EXPD_API_TOKEN_FILE="$HOME/.config/ml-expd/client.token"
 ml-exp check
 ```
 
+`ml-exp check` verifies the basic API and reports optional deployment components.
+An API without a builder or result store is a valid minimal deployment. Before
+using it for new training, run `ml-exp check --training`: it also requires the
+training configuration and a responding private image builder, and returns 2
+with the missing/disabled/unavailable component names when incomplete. This is
+a read-only check; it does not build an image or reserve a GPU. Backend credentials,
+storage access and resource admission still need the experiment's normal preflight.
+
 Provision the token file privately before running this command. On POSIX systems
 give its directory mode 0700 and file mode 0600. `ML_EXPD_API_TOKEN` is an alternative
 for process environments; setting both nonempty token sources is an error, so an
@@ -42,6 +50,11 @@ Start from [source-api.yaml](../server/examples/source-api.yaml). The operator
 configures an API token, writable metadata/state roots, result object storage and
 a private image-builder socket. [Deployment](operator-guide.md) describes service
 accounts, installation and permission gates.
+
+For API-only installation, use [minimal-api.yaml](../server/examples/minimal-api.yaml).
+It permits managed project creation and source import but keeps scheduler writes
+off. Add an executor, builder and object store independently when enabling training;
+these are not provisioned or inferred from cloud credentials.
 
 Training backend, image builder and storage are separate choices. A Slurm service
 can use a local/SSH builder without PAI credentials. A DLC service can consume an

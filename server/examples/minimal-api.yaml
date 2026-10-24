@@ -1,0 +1,19 @@
+# Basic API with managed projects/source imports; no training or cloud writes.
+# Provision the private token and writable directories first. See docs/operator-guide.md.
+schema_version: 1
+index_db: /var/lib/ml-expd/index.sqlite
+run_root: /var/lib/ml-expd/runs
+project_registry_root: /var/lib/ml-expd/projects
+action_root: /var/lib/ml-expd/actions
+project_import_roots: []
+http_auth:
+  bearer_token_file: /etc/ml-expd/http.token
+action_runtime:
+  allow_project_writes: true
+  allow_source_imports: true
+  allow_scheduler_mutations: false
+  max_gpu_hours_per_action: 1.0
+telemetry:
+  enabled: false
+collector_enabled: false
+projects: []

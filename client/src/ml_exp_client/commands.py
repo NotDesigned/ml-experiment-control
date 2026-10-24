@@ -112,13 +112,30 @@ def dispatch(args, client, health):
 def check(args, client, health):
     result = {"health": health, "policy": client.call("/api/actions/policy"),
               "executors": client.call("/api/executors")}
+    if "deployment-readiness.v1" in health.get("capabilities", []):
+        result["readiness"] = client.call("/api/readiness")
+    elif "deployment" in health:
+        result["readiness"] = health["deployment"]
+    if "readiness" in result:
+        readiness = result["readiness"]
+        if (not isinstance(readiness, dict) or readiness.get("api") != "READY"
+                or readiness.get("training") not in {"CONFIGURED", "INCOMPLETE"}):
+            raise ClientError("invalid deployment readiness response")
     if "environments.v1" in health.get("capabilities", []):
         result["environments"] = client.call("/api/environments")
     if "data-assets.v1" in health.get("capabilities", []):
         try:
             result["storage_limits"] = client.call("/api/storage-limits")
         except ClientError as error:
-            result["storage_limits_error"] = error_payload(error, getattr(client, "token", ""))
+            if error.status == 404 and error.details == "data asset storage is not configured":
+                # Older servers advertise all implemented routes, including
+                # optional unconfigured storage. Other 404/5xx remain failures.
+                result["storage_limits"] = {"status": "NOT_CONFIGURED"}
+            else:
+                result["storage_limits_error"] = error_payload(error, getattr(client, "token", ""))
+    if getattr(args, "training", False) and "readiness" not in result:
+        result["readiness"] = {"api": "READY", "training": "UNKNOWN",
+                               "issues": ["server_does_not_report_training_readiness"]}
     if args.schema:
         save(args.schema, client.call(health["openapi_path"]))
     return result

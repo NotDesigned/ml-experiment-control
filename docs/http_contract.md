@@ -7,6 +7,18 @@ The current protocol is 2. `GET /api/health` returns `server_version`,
 policy and `openapi_path` (`/api/v2/openapi.json`). Package versions alone do not
 prove a capability is available; frozen worker images have their own capabilities.
 
+With `deployment-readiness.v1`, health also returns `supported_capabilities`
+(implemented protocols) and `deployment` (configuration state). `capabilities`
+omits storage-dependent protocols when no valid result store is configured,
+`oss-datasets.v1` without its independent OSS configuration, and
+`dockerfile-build.v1` without a builder socket. Mutation permissions and executor
+capabilities remain separate checks; these lists do not grant authorization.
+Authenticated `GET /api/readiness` adds a bounded private-builder health probe,
+without cloud job/image creation. `api=READY` and `training=INCOMPLETE` is a valid
+minimal installation. `training=CONFIGURED` is configuration/builder evidence,
+not cloud credential, object access or GPU admission validation. Clients should
+use the normal experiment preflight before submitting a job.
+
 Every normal API request sends:
 
 ```text

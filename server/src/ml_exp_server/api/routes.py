@@ -11,7 +11,8 @@ from .sse import IndexEventResponse
 from pydantic import BaseModel, Field, model_validator
 
 from ..application_errors import ApplicationError
-from .contract import DaemonHealth, ProjectRegistrationResponse
+from .contract import DaemonHealth, ProjectRegistrationResponse, SERVER_CAPABILITIES
+from ..deployment import deployment_status, configured_capabilities
 from ..projects.campaign_lifecycle import campaign_snapshot
 from ..collectord import Collector
 from ..ingest.indexer import RunIndex, index_project
@@ -116,8 +117,11 @@ def health(request: Request) -> DaemonHealth:
         server_version = version("ml-experiment-server")
     except PackageNotFoundError:  # source-tree execution without installation
         server_version = "0.1.0+source"
+    deployment, available = deployment_status(request.app.state.config)
     return DaemonHealth(
         status="ok",
+        capabilities=configured_capabilities(SERVER_CAPABILITIES, available),
+        deployment=deployment,
         server_version=server_version,
         authentication=request.app.state.auth_mode,
         transport_security=request.url.scheme,
@@ -147,6 +151,12 @@ def health(request: Request) -> DaemonHealth:
         ),
         telemetry_enabled=request.app.state.runtime.telemetry.enabled,
     )
+
+
+@router.get("/readiness")
+def readiness(request: Request):
+    """Check configuration and the private builder without starting a cloud job."""
+    return deployment_status(request.app.state.config, probe=True)[0]
 
 
 

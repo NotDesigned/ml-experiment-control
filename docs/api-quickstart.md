@@ -22,6 +22,10 @@ settings; see [configuration](configuration.md). From a checkout,
 `python -m pip install ./client` installs only the client.
 `check` returns capabilities, policy, executors, base digests and storage limits.
 Choose actual IDs/digests from those responses; executors are not free-GPU counts.
+Before uploading an experiment, run `ml-exp check --training` to check required
+training configuration and builder connectivity. A basic API can pass `check`
+while reporting incomplete training configuration; the training check returns 2
+and names its missing components. It does not allocate a GPU or validate admission.
 
 ## First experiment
 
