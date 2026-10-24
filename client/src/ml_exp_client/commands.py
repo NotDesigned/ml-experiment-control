@@ -16,6 +16,7 @@ from .archives import data_archive, source_archive
 from .artifacts import acknowledge, download
 from .assets import deliver_data, upload_asset_parts, download_asset
 from .config import validate_dockerfile
+from .cli_layout import output_context
 from .operations import training_operation
 from .run_deletion import run_deletion
 from .state import save
@@ -43,10 +44,22 @@ def dispatch(args, client, health):
                                         state_path=args.state)
         args.project, args.run, args.attempt = (reference[key] for key in ("project", "run_id", "attempt_id"))
         if args.command != "status" and args.state is not None and args.attempt is None:
-            raise ClientError("saved state has no bound Attempt yet; use status --state to inspect preparation")
+            raise ClientError("saved state has no bound Attempt yet; use run status --state to inspect preparation")
         if args.command == "download" and args.attempt is None:
             raise ClientError("download requires an exact --attempt or a state file that binds one")
-    if args.command in {"asset-import-oss","asset-download"}:
+    if args.command == "run-list":
+        endpoint = "/api/terminal/snapshot"
+        if args.project is not None:
+            segment(args.project)
+            endpoint += "?" + urlencode({"project": args.project})
+        result = client.call(endpoint)
+    elif args.command == "env-list":
+        if "environments.v1" not in health.get("capabilities", []):
+            raise ClientError("server lacks environments.v1")
+        result = client.call("/api/environments")
+    elif args.command == "project-list":
+        result = client.call("/api/projects")
+    elif args.command in {"asset-import-oss","asset-download"}:
         if "oss-datasets.v1" not in health.get("capabilities",[]):
             raise ClientError("server lacks oss-datasets.v1")
         endpoint=f"/api/projects/{segment(args.project)}/assets"
@@ -144,6 +157,7 @@ def query_status(args, client, health):
                            state_path=args.state, details=args.details)
         project, run, attempt = (value[key] for key in ("project", "run_id", "attempt_id"))
         value["next_actions"] = status_actions(value, client.base, args.state)
+        value = output_context(value, getattr(args, "client_config", None))
         if args.state is not None:
             value["state_file"] = str(args.state)
         if not args.watch:
@@ -161,7 +175,7 @@ def query_status(args, client, health):
 
 def status_actions(value, server, state_path):
     """Suggest reads and reviewed plans, never automatic effects or retries."""
-    base = ["ml-exp", "--url", server]
+    base = ["ml-exp", "--url", server, "run"]
     identity = ["--project", value["project"], "--run", value["run_id"]]
     if value["attempt_id"] is not None:
         identity += ["--attempt", value["attempt_id"]]
@@ -283,7 +297,7 @@ def import_source(client, project, directory):
 
 def pack(args, client, health):
     if args.state.exists():
-        raise ClientError("state file exists; inspect it with runtime instead of replaying pack")
+        raise ClientError("state file exists; inspect it with env status instead of replaying env build")
     if "dockerfile-build.v1" not in health.get("capabilities", []):
         raise ClientError("server does not advertise the Dockerfile build capability")
     validate_dockerfile(args.source, args.dockerfile)
@@ -300,7 +314,7 @@ def pack(args, client, health):
     result = _wait(client, health, endpoint, pending=("PREPARED", "EXECUTING"))
     save(args.state, result)
     if result["status"] != "READY":
-        raise ClientError("packaging requires inspection; use runtime --state FILE --reconcile")
+        raise ClientError("packaging requires inspection; use env status --state FILE --reconcile")
     return result
 
 
@@ -430,6 +444,6 @@ def watch(args, client, health):
             result = {"run": result, "attempts": client.call(endpoint + "/attempts")}
             break
         if time.monotonic() >= deadline:
-            raise ClientError("watch timed out; Run continues on server; use watch again")
+            raise ClientError("watch timed out; Run continues on server; use run status --watch to observe it")
         time.sleep(5)
     return result

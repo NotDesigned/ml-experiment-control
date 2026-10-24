@@ -10,6 +10,7 @@
 /.mypy_cache/
 /.venv/
 /rust/target/
+/.ci-cargo-target/
 .coverage
 .coverage.*
 /core-tests.xml

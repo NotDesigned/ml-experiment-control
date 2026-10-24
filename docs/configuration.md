@@ -15,7 +15,7 @@ base URL, client wheel and a private API token.
 ml-exp config set --url 'https://api.example.org/ml-expd'
 # Enter the token at the hidden prompt once.
 ml-exp check
-ml-exp status --project my-project --run trial-001
+ml-exp run status --project my-project --run trial-001
 ```
 
 Defaults are saved in `~/.config/ml-expd/client.json`, or

@@ -80,7 +80,9 @@ def test_prepare_review_observe_execute_and_verified_reconcile(tmp_path):
     saved = json.loads(api.path.read_text())
     assert api.path.stat().st_mode & 0o777 == 0o600
     assert review["next_action"] == "EXECUTE_SAVED_PLAN" and not review["deleted"]
-    assert review["execute_argv"] == ["ml-exp", "--url", api.base, "delete", "--state", str(api.path), "--execute"]
+    assert review["execute_argv"] == ["ml-exp", "--url", api.base, "run", "delete", "--state", str(api.path), "--execute"]
+    parsed = parser().parse_args(review["execute_argv"][1:])
+    assert (parsed.command, parsed.state, parsed.execute) == ('delete', api.path, True)
     assert saved["request"]["idempotency_key"].startswith("deletion-")
     assert saved["plan"] == review["action"] == saved["action"]
     api.calls.clear()

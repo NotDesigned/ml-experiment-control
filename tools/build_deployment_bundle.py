@@ -149,7 +149,9 @@ echo "Installed {component} into $venv; no service was started."
             info.uid = info.gid = info.mtime = 0
             info.uname = info.gname = ""
             return info
-        with packed.open("wb") as stream, gzip.GzipFile(fileobj=stream, mode="wb", mtime=0, filename="") as compressed:
+        # Wheels are already compressed; a second deep compression pass adds
+        # CPU time with little size benefit. Keep reproducible gzip metadata.
+        with packed.open("wb") as stream, gzip.GzipFile(fileobj=stream, mode="wb", compresslevel=1, mtime=0, filename="") as compressed:
             with tarfile.open(fileobj=compressed, mode="w") as archive:
                 archive.add(root, arcname=root.name, filter=normalize)
         # Publish only the complete archive, and never replace an existing bundle.

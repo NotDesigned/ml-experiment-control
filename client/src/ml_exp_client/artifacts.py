@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import tarfile
 from urllib.parse import quote
 
@@ -57,7 +58,8 @@ def _acknowledge_report(client, out, report, *, keep_server_copy=False):
     except ClientError as error:
         # Local results remain usable. Retry only the acknowledgement, never
         # redownload or replay training because its response was lost.
-        report["acknowledgement"].update(http_status=error.status, retry_command="ml-exp acknowledge --directory " + str(out))
+        report["acknowledgement"].update(http_status=error.status, retry_command=shlex.join(
+            ["ml-exp", "run", "acknowledge", "--directory", str(out)]))
     save(out / "verification.json", report)
     return report
 

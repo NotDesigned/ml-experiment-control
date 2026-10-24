@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import shlex
 
 import pytest
 
@@ -51,9 +52,14 @@ def test_download_acknowledges_only_after_full_validation_and_durable_save(tmp_p
 
 @pytest.mark.parametrize('keep', [False,True])
 def test_lost_ack_preserves_results_and_can_retry_without_download(tmp_path,keep):
-    api=API();api.out=tmp_path/'out';api.fail_ack=True
+    api=API();api.out=tmp_path/"out dir; 'quoted' $literal";api.fail_ack=True
     report=download(api,'demo','run-a','attempt-001',api.out,keep_server_copy=keep)
     assert report['acknowledgement']['status']=='PENDING'
+    assert shlex.split(report['acknowledgement']['retry_command']) == ['ml-exp','run','acknowledge','--directory',str(api.out)]
+    # Old proof text remains readable; a retry uses verified identities and bytes,
+    # never executes either generation of the saved display command.
+    report['acknowledgement']['retry_command']='ml-exp acknowledge --directory legacy-output'
+    (api.out/'verification.json').write_text(json.dumps(report))
     api.fail_ack=False
     result=acknowledge(api,api.out)
     assert result['acknowledgement']['status']==('KEEP' if keep else 'SCHEDULED') and api.downloads==1

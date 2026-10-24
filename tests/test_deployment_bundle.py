@@ -30,6 +30,8 @@ def test_client_bundle_is_offline_and_corruption_prevents_install(tmp_path):
     output = tmp_path / "client.tar.gz"
     result = build("client", wheels, output)
     assert result["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
+    repeated = build("client", wheels, tmp_path / "repeated.tar.gz")
+    assert repeated["sha256"] == result["sha256"]
     with tarfile.open(output) as archive:
         archive.extractall(tmp_path / "extract", filter="data")
     root = tmp_path / "extract/ml-expd-client"

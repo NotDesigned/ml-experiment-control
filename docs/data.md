@@ -10,11 +10,11 @@ Create the project through source import or experiment preparation, then select
 an executor from `/api/executors`:
 
 ```bash
-ml-exp asset-upload --project study --executor slurm-gpu \
+ml-exp data upload --project study --executor slurm-gpu \
   --directory ./data --state data.state.json
-ml-exp asset-upload --project study --executor slurm-gpu \
+ml-exp data upload --project study --executor slurm-gpu \
   --directory ./data --state data.state.json --resume
-ml-exp assets --project study
+ml-exp data list --project study
 ```
 
 The client builds a deterministic tar.gz in a temporary file; it needs local
@@ -176,10 +176,10 @@ an API upgrade cannot change those manifests. See [Slurm configuration](slurm.md
 When `oss-datasets.v1` is enabled for the executor:
 
 ```bash
-ml-exp asset-upload --project study --executor pai-h200 --directory ./data --state data.state.json
-ml-exp asset-import-oss --project study --executor pai-h200 \
+ml-exp data upload --project study --executor pai-h200 --directory ./data --state data.state.json
+ml-exp data import-oss --project study --executor pai-h200 \
   --object-key users/USER/datasets/version-1.tar.gz --sha256 ARCHIVE_SHA256 --bytes ARCHIVE_BYTES
-ml-exp asset-download --project study --id asset.SHA256 --out ./downloaded-data
+ml-exp data download --project study --id asset.SHA256 --out ./downloaded-data
 ```
 
 Import uses `POST /api/projects/P/assets/import-oss` with `executor`, `object_key`,

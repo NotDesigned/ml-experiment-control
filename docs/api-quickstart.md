@@ -86,8 +86,8 @@ Prepare first, inspect the returned executor, dependencies, gates and budget,
 then authorize execution with the same saved state:
 
 ```bash
-ml-exp experiment experiment.json --state trial.state.json
-ml-exp experiment experiment.json --state trial.state.json --resume \
+ml-exp run submit experiment.json --state trial.state.json
+ml-exp run submit experiment.json --state trial.state.json --resume \
   --execute --seconds 1800 --download-to results/trial-001
 ```
 
@@ -107,11 +107,11 @@ You can explicitly set `"wandb": {"enabled": false}`; see [W&B](wandb.md).
 Use another terminal with the same connection settings:
 
 ```bash
-ml-exp status --state trial.state.json
-ml-exp status --state trial.state.json --watch --seconds 60
-ml-exp status --state trial.state.json --details --json
-ml-exp logs --state trial.state.json --stream both --lines 80
-ml-exp metrics --state trial.state.json --name loss --max-points 2000
+ml-exp run status --state trial.state.json
+ml-exp run status --state trial.state.json --watch --seconds 60
+ml-exp run status --state trial.state.json --details --json
+ml-exp run logs --state trial.state.json --stream both --lines 80
+ml-exp run metrics --state trial.state.json --name loss --max-points 2000
 ```
 
 `status` prints a short human-readable summary of stage, waiting reason, evidence
@@ -144,11 +144,11 @@ The older `watch` command waits only for scheduler completion. See
 
 ## Download and acknowledge
 
-The executing `experiment` command above waits for the original Attempt's result
+The executing `run submit` command above waits for the original Attempt's result
 collection and downloads when ready. To download separately, choose a new path:
 
 ```bash
-ml-exp download --state trial.state.json --out results/trial-001-copy
+ml-exp run download --state trial.state.json --out results/trial-001-copy
 ```
 
 The client verifies archive and file hashes, writes `verification.json`, then
@@ -161,11 +161,11 @@ If download succeeded but ACK is pending, preserve the directory and retry only
 confirmation:
 
 ```bash
-ml-exp acknowledge --directory results/trial-001
+ml-exp run acknowledge --directory results/trial-001
 ```
 
 With `--download-to`, a timeout preserves the exact Attempt and destination.
-Repeat the original `experiment` command with `--resume --execute` to keep
+Repeat the original `run submit` command with `--resume --execute` to keep
 observing; ACK-only recovery also works with `--resume` without `--execute`.
 A failed or uncertain collection needs diagnosis, not another training Attempt.
 A `RELEASED` archive is no longer available through the same download route.
@@ -186,8 +186,8 @@ Slurm data is staged on shared storage accessible to offline compute nodes.
 SenseCore uses a CCR data image and a zero-GPU NAS-copy job. PAI can use approved
 OSS datasets and CPFS; query capabilities rather than assuming native OSS mounts.
 Data and recovery state are separate from exported `OUTPUT_DIR` results.
-For independent transfers use `asset-upload`; for source-only service testing,
-`source-import` requires neither Dockerfile nor builder.
+For independent transfers use `data upload`; for source-only service testing,
+`project create` imports source without requiring a Dockerfile or builder.
 
 ## Resume safely or reuse a Runtime
 
@@ -198,16 +198,17 @@ Runtime/data dependency before using explicit `--resume --continue-preparation`.
 This is separate from authorization to train. Changed code or experiment config
 needs a new Run ID and state file.
 
-For lower-level reuse, the sequence is `pack → create → prepare → execute`.
-`prepare` returns review gates and an exact confirmation; `execute --state …
+For lower-level reuse, use `env build`, followed by `run advanced create`,
+`run advanced prepare` and `run advanced execute`.
+The prepare step returns review gates and an exact confirmation; `run advanced execute --state …
 --confirm …` authorizes/submits that saved Submission. See command help and the
 [resource reference](source-api.md), rather than recreating a Runtime per Run.
 Cancel/retry use separately reviewed plans, for example:
 
 ```bash
-ml-exp retry --from-state trial.state.json --state retry.state.json --max-gpu-hours 0.2
+ml-exp run retry --from-state trial.state.json --state retry.state.json --max-gpu-hours 0.2
 # Review the source/target Attempt, gates and budget before authorizing.
-ml-exp retry --state retry.state.json --execute
+ml-exp run retry --state retry.state.json --execute
 ```
 
 Use `cancel --from-state trial.state.json --state cancel.state.json` to prepare

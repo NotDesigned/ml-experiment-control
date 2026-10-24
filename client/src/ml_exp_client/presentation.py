@@ -257,7 +257,7 @@ def progress_summary(value: dict) -> str:
     return "\n".join(lines)
 
 
-def experiment_summary(value: dict, *, state_file, executed: bool) -> str:
+def experiment_summary(value: dict, *, state_file, executed: bool, client_config=None) -> str:
     """Summarize a workflow without exposing raw terminal text or hiding warnings."""
     submission = _mapping(value.get("submission"))
     preflight = _mapping(submission.get("preflight_summary"))
@@ -287,7 +287,8 @@ def experiment_summary(value: dict, *, state_file, executed: bool) -> str:
     if proof:
         lines.append("Results: " + _text(proof.get("verification", proof.get("status")),
                                         "downloaded; see verification.json"))
-    command = _command(["ml-exp", "status", "--state", state])
+    prefix = ["ml-exp"] + (["--config", str(client_config)] if client_config is not None else [])
+    command = _command([*prefix, "run", "status", "--state", state])
     lines.append("Inspect: " + (command or "Command unavailable; inspect JSON details."))
     if not executed:
         lines.append("Training has not been authorized by this command. Review the saved preparation before --execute.")
