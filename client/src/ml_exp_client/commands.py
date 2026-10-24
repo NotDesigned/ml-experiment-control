@@ -253,7 +253,7 @@ def _runtime_state(path):
     if (not isinstance(saved, dict) or not isinstance(saved.get("project"), str)
             or not isinstance(saved.get("runtime_id"), str)
             or not re.fullmatch(r"runtime\.[a-f0-9]{64}", saved["runtime_id"])):
-        raise ClientError("runtime state needs a project and exact runtime.<sha256> identity; use the saved pack state")
+        raise ClientError("runtime state needs a project and exact runtime.<sha256> identity; use the state saved by env build")
     segment(saved["project"])
     return saved
 

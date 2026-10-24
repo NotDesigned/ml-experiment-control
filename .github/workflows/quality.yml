@@ -48,7 +48,7 @@ jobs:
         name: Identify the runner build toolchain
         run: |
           rustc --version | awk '{print "toolchain=" $2}' >> "$GITHUB_OUTPUT"
-          python3 -c 'import platform,sys,sysconfig; print("abi=" + sysconfig.get_platform() + "-" + "-".join(platform.libc_ver()) + "-" + sys.implementation.cache_tag)' >> "$GITHUB_OUTPUT"
+          uv run --no-project --python 3.12 python -c 'import platform,sys,sysconfig; print("abi=" + sysconfig.get_platform() + "-" + "-".join(platform.libc_ver()) + "-" + sys.implementation.cache_tag)' >> "$GITHUB_OUTPUT"
       - id: core_wheel
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -128,7 +128,7 @@ jobs:
         name: Identify the runner build toolchain
         run: |
           rustc --version | awk '{print "toolchain=" $2}' >> "$GITHUB_OUTPUT"
-          python3 -c 'import platform,sys,sysconfig; print("abi=" + sysconfig.get_platform() + "-" + "-".join(platform.libc_ver()) + "-" + sys.implementation.cache_tag)' >> "$GITHUB_OUTPUT"
+          uv run --no-project --python 3.12 python -c 'import platform,sys,sysconfig; print("abi=" + sysconfig.get_platform() + "-" + "-".join(platform.libc_ver()) + "-" + sys.implementation.cache_tag)' >> "$GITHUB_OUTPUT"
       - id: core_wheel
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -172,18 +172,31 @@ jobs:
         name: Identify the runner build toolchain
         run: |
           rustc --version | awk '{print "toolchain=" $2}' >> "$GITHUB_OUTPUT"
-          python3 -c 'import platform,sys,sysconfig; print("abi=" + sysconfig.get_platform() + "-" + "-".join(platform.libc_ver()) + "-" + sys.implementation.cache_tag)' >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+          uv run --no-project --python 3.12 python -c 'import platform,sys,sysconfig; print("abi=" + sysconfig.get_platform() + "-" + "-".join(platform.libc_ver()) + "-" + sys.implementation.cache_tag)' >> "$GITHUB_OUTPUT"
+      - id: core_wheel
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .ops/core-wheel
+          key: core-wheel-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.abi }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('src/**', 'rust/src/**', 'rust/Cargo.*', 'rust/.cargo/**', '.cargo/**', 'rust-toolchain.toml', 'pyproject.toml', 'README.md', 'LICENSE', 'uv.lock', 'tools/ci_core_wheel.py', '.github/workflows/quality.yml') }}
+      - if: steps.core_wheel.outputs.cache-hit != 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .ci-cargo-target
           key: cargo-packages-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: cargo-workspace-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('rust/Cargo.lock') }}
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/pip
           key: pip-bundle-${{ runner.os }}-${{ runner.arch }}-py312-${{ hashFiles('uv.lock') }}
-      # Build the real core wheel once, rather than first building an editable core.
       - run: uv sync --locked --all-packages --all-extras --no-install-workspace
-      - run: uv build --all-packages
+      - name: Build every source archive and verify any reused core wheel against this checkout
+        env:
+          CI_RUST_VERSION: ${{ steps.native.outputs.toolchain }}
+        run: |
+          uv run --no-sync python tools/ci_core_wheel.py --cache-only --package-output dist
+          uv build --package ml-experiment-client
+          uv build --package ml-experiment-worker
+          uv build --package ml-experiment-server
       - name: Test standalone client wheel without server or core
         run: |
           uv venv .client-wheel-smoke
@@ -221,11 +234,44 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: deployment-linux-x86_64-py312
+          compression-level: 0
           path: |
             .ops/bundles/*.tar.gz
             .ops/bundles/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
+
+  main-core-cache:
+    needs: plan
+    if: github.event_name == 'push' && needs.plan.outputs.full == 'false'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+          version: "0.11.28"
+          enable-cache: true
+      - id: native
+        name: Identify the runner build toolchain
+        run: |
+          rustc --version | awk '{print "toolchain=" $2}' >> "$GITHUB_OUTPUT"
+          uv run --no-project --python 3.12 python -c 'import platform,sys,sysconfig; print("abi=" + sysconfig.get_platform() + "-" + "-".join(platform.libc_ver()) + "-" + sys.implementation.cache_tag)' >> "$GITHUB_OUTPUT"
+      - id: core_wheel
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .ops/core-wheel
+          key: core-wheel-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.abi }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('src/**', 'rust/src/**', 'rust/Cargo.*', 'rust/.cargo/**', '.cargo/**', 'rust-toolchain.toml', 'pyproject.toml', 'README.md', 'LICENSE', 'uv.lock', 'tools/ci_core_wheel.py', '.github/workflows/quality.yml') }}
+      - if: steps.core_wheel.outputs.cache-hit != 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .ci-cargo-target
+          key: cargo-workspace-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('rust/Cargo.lock') }}
+      - name: Verify or build main's core cache without installing or rerunning tests
+        env:
+          CI_RUST_VERSION: ${{ steps.native.outputs.toolchain }}
+        run: uv run --no-project --python 3.12 python tools/ci_core_wheel.py --cache-only
 
   # This stable check fails when any required job/partition fails or is skipped.
   # Only coverage DATA is downloaded; no artifact script, wheel or binary runs.

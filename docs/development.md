@@ -130,9 +130,11 @@ Cargo and uv caches reduce setup cost. Core and daemon checks can reuse a core
 wheel only for the same complete core source fingerprint, compiler, platform
 and Python ABI; wheel metadata, SHA and every packaged Python source are checked
 again before installation. Missing or mismatched cache entries build the current
-checkout. Packaging still builds all four distributions, checks standalone
-client/worker and base server installs, then actually installs both offline
-bundles. Durations and JUnit identify bottlenecks. Measure full workflow time,
+checkout. Packaging rebuilds all four source archives and verifies the core
+archive's Python, Rust and build files against the checkout before pairing it
+with a verified cached core wheel. The other three wheels are rebuilt normally.
+All four wheels, standalone client/worker, base server and both offline bundle
+installs are still tested. Durations and JUnit identify bottlenecks. Measure full workflow time,
 including setup, packaging and the final gate; main's exact-tree reuse is a
 separate optimization. Coverage thresholds and test selection must not be
 weakened to accelerate a run.

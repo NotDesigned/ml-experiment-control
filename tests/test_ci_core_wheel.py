@@ -1,10 +1,12 @@
 """A cached native wheel cannot replace different core sources or build inputs."""
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 import sys
 import sysconfig
+import tarfile
 import zipfile
 
 import pytest
@@ -87,3 +89,90 @@ def test_every_cached_python_module_must_match_the_current_checkout(source):
     (source / "src/experiment_control/backend.py").write_text("def state(): return 'RUNNING'\n")
     with pytest.raises(ValueError, match="sources or package metadata"):
         core.wheel_source(source, path)
+
+
+def test_seed_never_installs_and_normal_install_preserves_plain_source_path(source, monkeypatch):
+    package = source / 'verified.whl'
+    monkeypatch.setattr(core, 'ROOT', source)
+    monkeypatch.setattr(core, 'prepare', lambda: package)
+    site = source / 'site-packages'
+    site.mkdir()
+    monkeypatch.setattr(core.sysconfig, 'get_path', lambda name: str(site))
+    commands = []
+    monkeypatch.setattr(core.subprocess, 'run', lambda command, **kwargs: commands.append(command))
+    core.main(['--cache-only'])
+    assert not commands and not list(site.iterdir())
+    core.main([])
+    assert commands[0][:5] == ['uv', 'pip', 'install', '--offline', '--no-deps']
+    assert (site / '_ml_exp_core_checkout.pth').read_text() == str(source / 'src') + '\n'
+
+
+def sdist(root, output, *, change=None):
+    path = output / "ml_experiment_control-1.2.3.tar.gz"
+    files = ["pyproject.toml", "README.md", "rust/Cargo.toml", "rust/Cargo.lock",
+             "rust/src/main.rs", "src/experiment_control/__init__.py",
+             "src/experiment_control/backend.py"]
+    with tarfile.open(path, "w:gz") as archive:
+        for name in files:
+            if change == "missing" and name.endswith("backend.py"):
+                continue
+            data = (root / name).read_bytes()
+            if name == change:
+                data = b"changed source"
+            member = tarfile.TarInfo("ml_experiment_control-1.2.3/" + name)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+        if change == "extra":
+            member = tarfile.TarInfo("ml_experiment_control-1.2.3/src/extra.py")
+            archive.addfile(member, io.BytesIO())
+        if change == "symlink":
+            member = tarfile.TarInfo("ml_experiment_control-1.2.3/link")
+            member.type = tarfile.SYMTYPE
+            member.linkname = "/tmp/untrusted"
+            archive.addfile(member)
+    return path
+
+
+@pytest.mark.parametrize("change", [None, "missing", "src/experiment_control/backend.py",
+                                  "rust/src/main.rs", "rust/Cargo.lock", "pyproject.toml",
+                                  "README.md", "extra", "symlink"])
+def test_new_source_archive_must_preserve_all_current_core_and_rust_sources(source, change):
+    archive = sdist(source, source, change=change)
+    if change is None:
+        core.source_distribution(source, archive)
+    else:
+        with pytest.raises(ValueError, match="source archive"):
+            core.source_distribution(source, archive)
+
+
+def test_package_output_only_copies_verified_wheel_after_validating_current_sdist(source, monkeypatch):
+    package = wheel(source, source)
+    output = source / "dist"
+    calls = []
+    def build(command, **kwargs):
+        calls.append(command)
+        assert command == ["uv", "build", "--package", "ml-experiment-control", "--sdist",
+                           "--out-dir", str(output)]
+        sdist(source, output)
+    monkeypatch.setattr(core.subprocess, "run", build)
+    core.package_output(source, package, output)
+    assert (output / package.name).read_bytes() == package.read_bytes()
+    assert len(calls) == 1
+    (output / package.name).unlink()
+    monkeypatch.setattr(core.subprocess, "run", lambda *args, **kwargs: sdist(source, output, change="missing"))
+    with pytest.raises(ValueError, match="source archive"):
+        core.package_output(source, package, output)
+    assert not (output / package.name).exists()
+
+
+def test_packaging_requires_cache_only_and_never_installs(source, monkeypatch):
+    monkeypatch.setattr(core, "ROOT", source)
+    package = wheel(source, source)
+    monkeypatch.setattr(core, "prepare", lambda: package)
+    outputs = []
+    monkeypatch.setattr(core, "package_output", lambda *args: outputs.append(args))
+    monkeypatch.setattr(core.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not install"))
+    with pytest.raises(SystemExit):
+        core.main(["--package-output", str(source / "dist")])
+    core.main(["--cache-only", "--package-output", str(source / "dist")])
+    assert outputs == [(source, package, source / "dist")]
