@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from ml_exp_server.api import action_routes, routes, submission_routes
 from ml_exp_server.application import ApplicationError
-from ml_exp_server.schemas import ServerConfig, OperationScopeType
+from ml_exp_server.schemas import ActionRuntimeConfig, ServerConfig, OperationScopeType
 
 
 ERROR = ApplicationError("blocked", status_code=418, code="BLOCKED")
