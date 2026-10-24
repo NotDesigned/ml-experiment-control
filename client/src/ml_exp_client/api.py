@@ -5,6 +5,8 @@ import ipaddress
 import json
 import math
 import re
+import socket
+import ssl
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -85,6 +87,25 @@ def error_payload(error, token=""):
     }}
 
 
+def _connection_failure(error):
+    """Classify typed failures without disclosing exception text or endpoints."""
+    reason = error.reason if isinstance(error, URLError) else error
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        # OpenSSL X509_V_ERR_HOSTNAME_MISMATCH / IP_ADDRESS_MISMATCH.
+        if getattr(reason, "verify_code", None) in {62, 64}:
+            return ("TLS_HOSTNAME_MISMATCH", "certificate does not match the API hostname; use an address covered by the server certificate", False)
+        return ("TLS_CERTIFICATE_VERIFICATION_FAILED", "certificate verification failed; check certificate validity and the trusted CA (SSL_CERT_FILE)", False)
+    if isinstance(reason, ssl.SSLError):
+        return ("TLS_HANDSHAKE_FAILED", "TLS handshake failed; ask the operator to check the HTTPS endpoint and TLS/proxy configuration", False)
+    if isinstance(reason, ConnectionRefusedError):
+        return ("CONNECTION_REFUSED", "connection refused; check the API address, port, running service and firewall", True)
+    if isinstance(reason, socket.gaierror):
+        return ("DNS_LOOKUP_FAILED", "API hostname lookup failed; check the API address, DNS and network", True)
+    if isinstance(reason, TimeoutError):
+        return ("CONNECTION_TIMEOUT", "connection timed out; check the network, proxy and service availability", True)
+    return ("CONNECTION_FAILED", "connection failed; check the API address and network", True)
+
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         # Never forward a bearer token to another URL after a proxy redirect.
@@ -161,9 +182,12 @@ class Client:
                               status=exc.code, details=details, error_code=code,
                               retry_after=retry_after, body_truncated=truncated,
                               response_body=response_body) from None
-        except (URLError, TimeoutError, OSError):
+        except (URLError, TimeoutError, OSError) as exc:
             safe_path = _safe_error_text(path.partition("?")[0], self.token)
-            raise ClientError(f"{method} {safe_path}: connection failed; inspect saved IDs before retrying", retryable=True) from None
+            code, hint, retryable = _connection_failure(exc)
+            recovery = " For writes, inspect saved IDs before retrying." if method not in {"GET", "HEAD"} else ""
+            raise ClientError(f"{method} {safe_path}: {hint}. See docs/configuration.md#connection-errors.{recovery}",
+                              retryable=retryable, error_code=code) from None
 
     def call(self, path: str, **kwargs):
         with self.open(path, **kwargs) as response:

@@ -95,8 +95,11 @@ def test_default_summary_distinguishes_api_from_training(monkeypatch, capsys, co
     assert "API: READY\nSource import: AVAILABLE\nTraining: " in text
     if configured:
         assert "CONFIGURED" in text and "admission are not verified" in text
+        assert "Next:" not in text
     else:
         assert "INCOMPLETE" in text and "Image builder: NOT_CONFIGURED" in text and "Scheduler writes: DISABLED" in text
+        assert "Next: ask the service operator" in text
+        assert "operator-guide.md#enable-training-after-source-import" in text
     assert "--json" in text
 
 

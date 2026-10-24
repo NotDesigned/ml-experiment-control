@@ -27,6 +27,10 @@ storage access and resource admission still need the experiment's normal preflig
 Use `check --json` for the full machine-readable response; the default output is
 a short human-readable summary. The [two-machine example](two-machine-quickstart.md)
 includes private CA trust and source import without a builder.
+If training is incomplete, the operator follows
+[the ordered setup checklist](operator-guide.md#enable-training-after-source-import).
+The researcher then uses the normal experiment workflow; no additional client
+credential or command family is needed.
 
 Provision the token file privately before running this command. On POSIX systems
 give its directory mode 0700 and file mode 0600. `ML_EXPD_API_TOKEN` is an alternative
@@ -46,6 +50,31 @@ W&B is optional. Its API key is configured on the server; each experiment choose
 whether and where to publish. The current service uses a shared API bearer and
 instance-wide W&B credentials, without per-user/project RBAC. Distribute access
 accordingly; see [W&B](wandb.md) and [deletion permissions](resource-deletion.md).
+
+## Connection errors
+
+API connection failures include a stable `error_code` in the existing stderr
+JSON. The client classifies typed errors without printing the raw network/TLS
+exception, certificate names, private endpoints or request credentials.
+
+| Error code | Action |
+|---|---|
+| `TLS_CERTIFICATE_VERIFICATION_FAILED` | Check the server certificate's validity and chain. For an approved private CA, set `SSL_CERT_FILE` to the public CA certificate supplied by the operator. |
+| `TLS_HOSTNAME_MISMATCH` | Use an API hostname/IP present in the server certificate SAN, or have the operator issue the correct certificate. |
+| `TLS_HANDSHAKE_FAILED` | Ask the operator to check that this is the HTTPS endpoint and that the TLS/proxy configuration is compatible. |
+| `CONNECTION_REFUSED` | Check the API address/port, running service and firewall or approved network path. |
+| `DNS_LOOKUP_FAILED` | Check the hostname in `ML_EXPD_API_URL`, DNS and network access. |
+| `CONNECTION_TIMEOUT` | Check routing, VPN/proxy and service availability. A timeout does not prove a write was rejected. |
+| `CONNECTION_FAILED` | The cause could not be classified safely; check the address and network with the operator. |
+
+TLS errors have `retryable=false`: fix the trust, hostname or TLS configuration
+before retrying. Do not disable certificate/hostname verification or send private
+keys. `retryable=true` for other connection failures is a transport hint, not
+permission to replay a write. The client never automatically replays API writes;
+inspect saved identities and reconcile uncertain operations first.
+
+The [two-machine guide](two-machine-quickstart.md#3-configure-https) shows a
+separate private CA, a matching server SAN and client trust configuration.
 
 ## Server: common services
 

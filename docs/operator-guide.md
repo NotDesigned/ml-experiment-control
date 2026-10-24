@@ -171,6 +171,44 @@ New input uploads always select backend storage; `data_upload_storage` and
 For optional provider-specific transfers, follow [SenseCore data publication](sensecore-rest.md#dataset-publication-and-cpu-copy)
 and [PAI storage](pai.md). They are configured independently from Slurm.
 
+## Enable training after source import
+
+A successful source import completes code registration. The **service operator**
+prepares the remaining infrastructure in this order; researchers only need the
+API connection and experiment configuration on their own machine.
+
+1. **Choose one backend and its persistent storage.** Configure the selected
+   [executor](configuration.md#enable-only-the-backends-you-use), credentials,
+   shared data/checkpoint paths and pull authorization. Follow its
+   [Slurm](slurm.md), [SenseCore](sensecore-rest.md) or [DLC](pai.md) preflight as
+   the service UID. Confirm the compute nodes can access those paths; API access
+   alone does not prove this.
+2. **Configure results and worker callbacks.** Provision the
+   [artifact store](../server/examples/artifact-store.json), private credentials,
+   HTTPS callback base, capacity and retention. Confirm worker-to-API/store
+   connectivity and permissions. Keep persistent training state separate from
+   temporary API result storage.
+3. **Prepare the image builder and registry.** Follow [image builds](builds.md)
+   for the private builder socket, source root, registry allowlist and separate
+   publisher/pull credentials. Verify a bounded build reaches READY and the
+   selected backend can read its digest. Start with one supported builder;
+   additional cloud builders and fallback registries are optional.
+4. **Enable training deliberately.** Review finite GPU-hour budgets and the
+   required `action_runtime` gates, then enable scheduler mutations only after
+   the preceding checks. Verify the same daemon configuration and TLS parameters
+   with `ml-expd ... doctor`, and run `ml-exp check --training` from the client.
+   Its CONFIGURED result confirms configuration, not admission or GPU capacity.
+5. **Validate one bounded experiment.** The researcher uses the existing
+   [one-config experiment flow](api-quickstart.md#first-experiment), then checks
+   progress, a checkpoint restore and downloaded result hashes with the operator.
+   Expand to larger or batch workloads after that acceptance.
+
+When `check` reports INCOMPLETE, give its `--json` evidence to the operator.
+Client users do not need to install backend SDKs, copy cloud credentials into
+source, or enable server gates themselves. Configure only the components for
+the selected backend; [optional integrations](configuration.md#enable-only-the-backends-you-use)
+can be added separately.
+
 ## Backend preconditions
 
 Follow [Slurm setup](slurm.md) for daemon-owned SSH, account/QOS/GRES, shared
