@@ -8,14 +8,14 @@ Never infer permission to resubmit from a timeout or an empty log.
 ## Identify the failed stage
 
 ```bash
-ml-exp status --state experiment.state.json
-ml-exp status --state experiment.state.json --watch --seconds 60
-ml-exp status --state experiment.state.json --details --json
-ml-exp logs --state experiment.state.json
-ml-exp metrics --state experiment.state.json
+ml-exp run status --state experiment.state.json
+ml-exp run status --state experiment.state.json --watch --seconds 60
+ml-exp run status --state experiment.state.json --details --json
+ml-exp run logs --state experiment.state.json
+ml-exp run metrics --state experiment.state.json
 ```
 
-`status` defaults to a short human-readable summary; `--json` keeps its machine
+`run status` defaults to a short human-readable summary; `--json` keeps its machine
 interface. Use `--details --json` for all existing evidence; `--details` alone
 does not expand the text summary. Other low-level reads retain JSON output.
 Saved state supplies the server and exact identities without local source or
@@ -65,9 +65,9 @@ See [builds](builds.md) for independent builder/registry budgets.
 ## Uncertain build, submit or data delivery
 
 ```bash
-ml-exp runtime --state runtime.state.json --logs
-ml-exp runtime --state runtime.state.json --reconcile
-ml-exp submission --id SUBMISSION_ID --reconcile
+ml-exp env status --state runtime.state.json --logs
+ml-exp env status --state runtime.state.json --reconcile
+ml-exp run advanced submission --id SUBMISSION_ID --reconcile
 ```
 
 Reconcile checks the frozen image receipt, exact job or exact data-copy identity.
@@ -88,12 +88,12 @@ upload merely because publication returned 507; resolve storage capacity first.
 ## Cancel or retry an exact Attempt
 
 ```bash
-ml-exp cancel --from-state experiment.state.json --state cancel.state.json
+ml-exp run cancel --from-state experiment.state.json --state cancel.state.json
 # Review the returned Action, then explicitly execute.
-ml-exp cancel --state cancel.state.json --execute
+ml-exp run cancel --state cancel.state.json --execute
 
-ml-exp retry --from-state experiment.state.json --state retry.state.json --max-gpu-hours 0.2
-ml-exp retry --state retry.state.json --execute
+ml-exp run retry --from-state experiment.state.json --state retry.state.json --max-gpu-hours 0.2
+ml-exp run retry --state retry.state.json --execute
 ```
 
 Preparation and execution are separate invocations. Each operation keeps its own
@@ -124,9 +124,9 @@ Check the exact Attempt's receipt, file list and collection before using compute
 A published archive can be downloaded without a recovery job.
 
 ```bash
-ml-exp collect --project PROJECT --run RUN --attempt attempt-001
-ml-exp collect --project PROJECT --run RUN --attempt attempt-001 --start
-ml-exp download --state experiment.state.json --out results
+ml-exp run collect --project PROJECT --run RUN --attempt attempt-001
+ml-exp run collect --project PROJECT --run RUN --attempt attempt-001 --start
+ml-exp run download --state experiment.state.json --out results
 ```
 
 `GET/POST /api/runs/P/R/attempts/A/collection` separates training, collection and
@@ -178,7 +178,7 @@ A released archive is not silently recreated.
 
 After successful download, an ACK error leaves usable local files and
 `acknowledgement.status=PENDING` in `verification.json` and saved workflow state.
-Resume with the original directory, or run `ml-exp acknowledge --directory results`.
+Resume with the original directory, or run `ml-exp run acknowledge --directory results`.
 It verifies exact Attempt/archive/file proof and rehashes local bytes before
 retrying only ACK. It neither redownloads nor starts collection, and preserves
 the saved KEEP/release choice. Changed/corrupt proof prevents acknowledgement.
@@ -187,12 +187,12 @@ the saved KEEP/release choice. Changed/corrupt proof prevents acknowledgement.
 
 ```bash
 # Default: verify locally, then permit immediate archive release.
-ml-exp download --project PROJECT --run RUN --attempt attempt-001 --out results
+ml-exp run download --project PROJECT --run RUN --attempt attempt-001 --out results
 # Retain the server archive instead.
-ml-exp download --project PROJECT --run RUN --attempt attempt-001 --out results --keep-server-copy
-ml-exp acknowledge --directory results
+ml-exp run download --project PROJECT --run RUN --attempt attempt-001 --out results --keep-server-copy
+ml-exp run acknowledge --directory results
 # Explicitly change retention while the archive still exists.
-ml-exp acknowledge --directory results --release-server-copy
+ml-exp run acknowledge --directory results --release-server-copy
 ```
 
 ACK requires normal API authentication and exact archive SHA/bytes plus every

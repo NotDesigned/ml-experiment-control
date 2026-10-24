@@ -42,7 +42,7 @@ uv run --no-sync python -m compileall -q tools examples
 uv build --all-packages
 ```
 
-Python 3.10 remains the package floor; CI uses one Python 3.12 job. Core, server
+Python 3.10 remains the package floor; CI uses Python 3.12. Core, server
 and worker independently require **100% line and branch coverage**. The daemon
 suite runs server/worker scenarios once, then checks each package separately.
 The client has its own measured baseline floor, 90.9% lines / 84.5% branches.
@@ -116,9 +116,53 @@ alone is insufficient because PR CI uses a synthetic merge result.
 Changed trees, direct pushes, missing/expired/fork evidence and API errors require
 a full run. Manual dispatch always runs full checks. Reuse links the original run
 and does not claim another execution. An unchanged green PR does not need a second
-local full run. File-level xdist scheduling reduces daemon cost without dropping
-scenarios; durations/JUnit identify future bottlenecks. Coverage thresholds and
-test selection must not be weakened to accelerate a run.
+local full run.
+
+Full checks run core, client, Rust, packaging and sixteen daemon partitions in
+parallel. Partitions discover every server/worker test file independently of the
+timing hints used to balance them. The final `test` check requires every job,
+validates complete same-tree partition manifests, combines coverage data, and
+enforces the original independent server/worker gates before recording evidence.
+Only coverage data is consumed from shard artifacts. A missing or failed shard
+cannot produce reusable evidence.
+
+Only the GitHub daemon test step uses a dedicated 2 GiB, executable tmpfs under
+`RUNNER_TEMP` for `TMPDIR` and pytest's temporary directories. This avoids noisy
+host-disk flush delays while retaining real fsync, SQLite, file locks, subprocesses
+and failure injection. The step checks executable access, logs used capacity and
+unmounts on success or failure; inability to mount, execute or clean up fails the
+job. The filesystem limit is not a test size exemption: larger fixtures must fit
+or the job fails. Core/client tests, package builds and installed/offline smoke
+tests continue using the normal runner filesystem. This verifies process-level
+storage behavior, not persistence after loss of host power.
+
+Cargo and uv caches reduce setup cost. Core and daemon checks can reuse a core
+wheel only for the same complete core source fingerprint, compiler, platform
+and Python ABI; wheel metadata, SHA and every packaged Python source are checked
+again before installation. The compiler key includes its release, commit and
+build date. The probe reads only the manifest belonging to rustup's actually
+selected compiler; custom compilers and malformed or mismatched manifests use
+the real compiler's version output. Core also compares this identity with a real
+`rustc --version` before any cache restore. Probe rules are part of the cache
+fingerprint. Missing or mismatched cache entries build the current checkout.
+Packaging rebuilds all four source archives and verifies the core
+archive's Python, Rust and build files against the checkout before pairing it
+with a verified cached core wheel. The other three wheels are rebuilt normally.
+All four wheels, standalone client/worker, base server and both offline bundle
+installs are still tested. Durations and JUnit identify bottlenecks. Measure full workflow time,
+including setup, packaging and the final gate; main's exact-tree reuse is a
+separate optimization. Coverage thresholds and test selection must not be
+weakened to accelerate a run.
+
+After main verifies exact-tree PR reuse, a separate cache-only job prepares the
+core cache in main's scope so later PR branches can restore it. This does not
+install the wheel, run tests again or create new full-suite evidence. A change
+to unrelated workspace dependency versions does not invalidate core source
+identity; dependencies are still resolved from the current lock and tested.
+
+Cold caches and actual core/compiler changes can require a native rebuild.
+Report their elapsed time separately from complete cache-hit runs; neither a
+cache lookup nor main's skipped test suite represents a full test execution.
 
 ## Ownership and durable changes
 

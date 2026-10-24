@@ -50,7 +50,7 @@ def test_offline_init_creates_runnable_source_and_preserves_existing_directory(t
 
 def test_module_entry_point_needs_no_configuration_for_help_or_version(tmp_path):
     env = {key: value for key, value in os.environ.items() if not key.startswith("ML_EXPD_")}
-    for arguments, expected in ((["--version"], __version__), (["--help"], "download")):
+    for arguments, expected in ((["--version"], __version__), (["--help"], "run")):
         result = subprocess.run([sys.executable, "-m", "ml_exp_client", *arguments],
                                 cwd=tmp_path, env=env, capture_output=True, text=True)
         assert result.returncode == 0 and expected in result.stdout

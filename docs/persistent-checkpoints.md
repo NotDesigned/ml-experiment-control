@@ -53,7 +53,7 @@ independent server read of NAS. The platform exports acknowledged references
 and restore provenance in `checkpoints.json`.
 
 ```bash
-ml-exp checkpoints --project my-study --run training --attempt attempt-001
+ml-exp run checkpoints --project my-study --run training --attempt attempt-001
 ```
 
 Queries: `GET /api/runs/P/R/attempts/A/checkpoints` and `/checkpoints/CHECKPOINT_ID`.

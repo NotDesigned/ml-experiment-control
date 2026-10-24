@@ -1,6 +1,6 @@
 # Delete a managed Run
 
-`ml-exp delete` prepares permanent administrative deletion of one exact managed
+`ml-exp run delete` prepares permanent administrative deletion of one exact managed
 Run, including all its Attempts. It requires the server's
 `resource-deletion.v1` capability, the private API bearer credential and enabled
 `action_runtime.allow_resource_deletions` policy. That policy defaults to false;
@@ -13,16 +13,16 @@ remain queryable under their historical identity rules; this endpoint does not
 infer permission to delete their arbitrary storage locations.
 
 ```bash
-ml-exp delete --project my-study --run trial-001 \
+ml-exp run delete --project my-study --run trial-001 \
   --reason 'Remove this completed experiment and its retained storage' \
   --state trial-001.deletion.json
 
 # Inspect the returned targets, digest, gates and retained resources first.
-ml-exp delete --state trial-001.deletion.json --execute
+ml-exp run delete --state trial-001.deletion.json --execute
 
 # Observe the same Action after disconnecting or while it is still running.
-ml-exp delete --state trial-001.deletion.json
-ml-exp delete --state trial-001.deletion.json --reconcile
+ml-exp run delete --state trial-001.deletion.json
+ml-exp run delete --state trial-001.deletion.json --reconcile
 ```
 
 Preparation does not delete anything. The second explicit `--execute` invocation
@@ -85,8 +85,8 @@ printed by the client, find the Action with the saved request's exact
 `intent_id`, and attach it for review:
 
 ```bash
-ml-exp delete --state trial-001.deletion.json --action-id action-ACTUAL_16_HEX_ID
-ml-exp delete --state trial-001.deletion.json --execute
+ml-exp run delete --state trial-001.deletion.json --action-id action-ACTUAL_16_HEX_ID
+ml-exp run delete --state trial-001.deletion.json --execute
 ```
 
 Attachment checks the original request and exact Run; it does not execute. The

@@ -80,11 +80,11 @@ def _result(saved, path):
               "source_attempt_id": saved["source_attempt_id"], "request": saved["request"],
               "action": action, "next_action": next_action}
     if next_action == "EXECUTE_SAVED_PLAN":
-        result["execute_argv"] = ["ml-exp", "--url", saved["server"], saved["operation"],
+        result["execute_argv"] = ["ml-exp", "--url", saved["server"], "run", saved["operation"],
                                   "--state", str(path), "--execute"]
     if saved["operation"] == "retry":
         result["retry_semantics"] = ("New Attempt in the same frozen Run; no checkpoint is selected or changed. "
-                                     "Use create --resume-from to freeze a new Run with an explicit checkpoint reference.")
+                                     "Use ml-exp run advanced create --resume-from to freeze a new Run with an explicit checkpoint reference.")
     return result
 
 
