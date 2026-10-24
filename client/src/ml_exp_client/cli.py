@@ -219,6 +219,9 @@ def check_summary(result):
         lines.append("Storage limits: ERROR (use --json for diagnostics)")
     if readiness.get("training") == "CONFIGURED":
         lines.append("Configuration ready; backend access and resource admission are not verified.")
+    else:
+        lines.append("Next: ask the service operator to configure a backend and result store, then a builder, and enable training after verification.")
+        lines.append("Setup: https://github.com/NotDesigned/ml-experiment-control/blob/main/docs/operator-guide.md#enable-training-after-source-import")
     lines.append("Use --json for executors, base images, limits and full evidence.")
     return "\n".join(lines)
 

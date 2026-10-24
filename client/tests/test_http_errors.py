@@ -1,13 +1,15 @@
 """HTTP diagnostics remain structured, bounded and safe without replaying effects."""
 import io
 import json
+import socket
+import ssl
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from urllib.error import HTTPError, URLError
 
 import pytest
 
-from ml_exp_client.api import Client, ClientError, ERROR_BODY_BYTES
+from ml_exp_client.api import Client, ClientError, ERROR_BODY_BYTES, error_payload
 
 
 def rejected(monkeypatch, body, *, status=507, headers=None, token="private-bearer"):
@@ -133,6 +135,55 @@ def test_untrusted_error_code_and_network_error_do_not_echo_credentials(monkeypa
     assert caught.value.retryable and caught.value.status is None and caught.value.details is None
     assert caught.value.response_body is None
     assert "hidden" not in str(caught.value) and "private-bearer" not in str(caught.value)
+
+
+def certificate_failure(code):
+    error = ssl.SSLCertVerificationError(1, "private-bearer https://private.example?token=hidden")
+    if code is not None:
+        error.verify_code = code
+    return error
+
+
+@pytest.mark.parametrize("failure,code,retryable,hint", [
+    (certificate_failure(20), "TLS_CERTIFICATE_VERIFICATION_FAILED", False, "SSL_CERT_FILE"),
+    (certificate_failure(None), "TLS_CERTIFICATE_VERIFICATION_FAILED", False, "SSL_CERT_FILE"),
+    (certificate_failure(62), "TLS_HOSTNAME_MISMATCH", False, "covered by the server certificate"),
+    (certificate_failure(64), "TLS_HOSTNAME_MISMATCH", False, "covered by the server certificate"),
+    (ssl.SSLError("private-bearer"), "TLS_HANDSHAKE_FAILED", False, "TLS/proxy"),
+    (ConnectionRefusedError("private-bearer"), "CONNECTION_REFUSED", True, "port"),
+    (socket.gaierror("private-bearer"), "DNS_LOOKUP_FAILED", True, "DNS"),
+    (TimeoutError("private-bearer"), "CONNECTION_TIMEOUT", True, "network"),
+])
+@pytest.mark.parametrize("wrapped", [False, True], ids=["direct", "urllib"])
+def test_typed_connection_errors_are_actionable_safe_and_never_replayed(monkeypatch, failure, code, retryable, hint, wrapped):
+    client = Client("https://api.example", "private-bearer")
+    requests = []
+    def fail(request, **kwargs):
+        requests.append(request)
+        raise URLError(failure) if wrapped else failure
+    monkeypatch.setattr(client.opener, "open", fail)
+    with pytest.raises(ClientError) as caught:
+        client.call("/api/submissions/original/execute?token=hidden", data={"confirmation": "EXECUTE original"})
+    assert len(requests) == 1
+    error = caught.value
+    assert error.error_code == code and error.retryable is retryable
+    assert error.status is None and error.details is None and error.response_body is None
+    rendered = json.dumps(error_payload(error, client.token))
+    assert hint in rendered and "docs/configuration.md#connection-errors" in rendered
+    assert "inspect saved IDs" in rendered
+    for secret in ("private-bearer", "private.example", "token=hidden", "EXECUTE original"):
+        assert secret not in rendered
+
+
+def test_read_connection_error_does_not_suggest_saved_write_ids(monkeypatch):
+    client = Client("https://api.example", "private-bearer")
+    def fail(*args, **kwargs):
+        raise URLError(ConnectionRefusedError())
+    monkeypatch.setattr(client.opener, "open", fail)
+    with pytest.raises(ClientError) as caught:
+        client.negotiate()
+    assert caught.value.error_code == "CONNECTION_REFUSED"
+    assert "inspect saved IDs" not in str(caught.value)
 
 
 def test_cli_prints_safe_structured_http_diagnostics(monkeypatch, capsys):

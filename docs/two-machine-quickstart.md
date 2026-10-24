@@ -110,7 +110,9 @@ The CA private key stays with the operator and is not needed by the daemon/clien
 
 ```bash
 runuser -u ml-expd -- env PATH="/opt/ml-expd/.venv/bin:$PATH" \
-  /opt/ml-expd/.venv/bin/ml-expd --config /etc/ml-expd/ml-expd.yaml doctor
+  /opt/ml-expd/.venv/bin/ml-expd --config /etc/ml-expd/ml-expd.yaml \
+  --host 0.0.0.0 --port 8765 \
+  --ssl-certfile /etc/ml-expd/server.crt --ssl-keyfile /etc/ml-expd/server.key doctor
 runuser -u ml-expd -- env PATH="/opt/ml-expd/.venv/bin:$PATH" \
   /opt/ml-expd/.venv/bin/ml-expd --config /etc/ml-expd/ml-expd.yaml \
   --host 0.0.0.0 --port 8765 \
@@ -119,7 +121,10 @@ runuser -u ml-expd -- env PATH="/opt/ml-expd/.venv/bin:$PATH" \
 
 Keep the second command running. For a persistent Linux service, adapt the
 operator guide's systemd unit to the same paths, UID, PATH and TLS options.
-The basic `doctor` check does not test cloud access or reserve resources.
+Both commands use the same bind and TLS parameters. `doctor` checks the supplied
+configuration for this invocation; it does not inspect another running daemon,
+test cloud access or reserve resources. After starting the daemon, use the
+separate client's `ml-exp check` below to verify the live HTTPS connection.
 
 ## 5. Privately provide the client connection files
 
@@ -185,7 +190,8 @@ command to verify the same source tree retains its immutable identity. No
 Dockerfile, image build, Run, Attempt or GPU is required. The existing source
 limits and rejection of credential-looking filenames still apply; this is not a
 content scan for secrets. For training, configure a backend, builder and result
-store first, then use the ordinary one-config `ml-exp experiment` workflow.
+store using the operator's [ordered setup checklist](operator-guide.md#enable-training-after-source-import),
+then use the ordinary one-config `ml-exp experiment` workflow.
 
 Stop the example server with Ctrl-C when done. Stop/delete owned temporary DSWs
 in your cloud console/control channel and verify they are no longer allocated.
