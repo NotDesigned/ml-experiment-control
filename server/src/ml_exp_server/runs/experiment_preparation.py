@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..application_errors import ApplicationError
 from ..results.checkpoint_registry import CheckpointRegistry
-from ..container_execution import ContainerExecutionService, DockerfileRuntimeSpec, RunRequest
+from ..container_execution import ContainerExecutionService, DockerfileRuntimeSpec, RunRequest, run_walltime
 from ..data.data_assets import AssetStore
 from .executor_capabilities import ExecutionRequirements, ExecutorSelector, match, validate_worker, validate_script_asset
 from ..tracking.tracking_service import store_for, preparation_record
@@ -120,16 +120,18 @@ class ExperimentPreparationService:
         for key in ("wandb", "parameters"):
             if request_body["run"][key] is None:
                 request_body["run"].pop(key)
-        request_sha = hashlib.sha256(json.dumps(request_body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         preparation_id = "preparation-" + hashlib.sha256((project + "/" + request.run.run_id).encode()).hexdigest()[:32]
         with self.state(project, preparation_id) as (store, snapshot):
+            matching = snapshot.value["matching"] if snapshot.value else self.select(project, request.run, request.requirements, request.executor_selector)
+            previous = snapshot.value["request"]["run"] if snapshot.value else None
+            request_body["run"]["resources"]["max_time"] = run_walltime(request.run.resources, matching["profile"]["backend"]["kind"], previous)
+            request_sha = hashlib.sha256(json.dumps(request_body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             if snapshot.value:
                 if snapshot.value["request_sha256"] != request_sha:
                     raise ApplicationError("Run already has a different preparation request; use a new run_id", code="PREPARATION_INTENT_CONFLICT")
                 return self.public(snapshot.value), None
-            matching = self.select(project, request.run, request.requirements, request.executor_selector)
             objects = self.runtime.config.container_execution.artifact_store_file
-            h, m, s = (int(part) for part in request.run.resources.max_time.split(":"))
+            h, m, s = (int(part) for part in request_body["run"]["resources"]["max_time"].split(":"))
             if request.run.resources.gpus * (h * 3600 + m * 60 + s) / 3600 > request.max_gpu_hours:
                 raise ApplicationError("GPU-hour budget is smaller than requested GPU count times duration", code="GPU_BUDGET_EXCEEDED")
             cache_required = False

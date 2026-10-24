@@ -499,6 +499,36 @@ def test_preparation_request_hash_keeps_explicit_research_options_and_old_false_
     assert service.accept("demo", ExperimentPreparationRequest.model_validate(body)) == (value, None)
 
 
+@pytest.mark.parametrize('historical',[False,True])
+def test_dlc_preparation_freezes_effective_day_budget_and_preserves_old_intents(client,service,monkeypatch,historical):
+    from tests.test_pai_integration import B
+    from ml_exp_server.runs import experiment_preparation as module
+    path=Path(client.app.state.runtime.config.container_execution.profiles_file)
+    profiles=yaml.safe_load(path.read_text());profiles['executors']['pai']={'backend':B,'storage_root':'/data/lab','capacity':{'gpus':8,'cpus':216,'memory_gb':1800}};path.write_text(yaml.safe_dump(profiles))
+    body=spec(client,run={'run_id':'day-budget','executor':'pai'},max_gpu_hours=0.2)
+    original=module.run_walltime
+    if historical:monkeypatch.setattr(module,'run_walltime',lambda resources,*args:resources.max_time)
+    else:
+        with pytest.raises(ApplicationError) as error:service.accept('demo',ExperimentPreparationRequest.model_validate(body))
+        assert error.value.code=='GPU_BUDGET_EXCEEDED'
+        body['run']['resources']={'max_time':'24:00:01'}
+        with pytest.raises(ApplicationError) as error:service.accept('demo',ExperimentPreparationRequest.model_validate(body))
+        assert error.value.code=='PAI_DURATION_LIMIT'
+        body['run'].pop('resources');body['max_gpu_hours']=24
+    value,pending=service.accept('demo',ExperimentPreparationRequest.model_validate(body))
+    monkeypatch.setattr(module,'run_walltime',original)
+    expected='00:10:00' if historical else '24:00:00'
+    with service.state('demo',value['preparation_id']) as (_,snapshot):
+        assert snapshot.value['request']['run']['resources']['max_time']==expected
+    assert service.accept('demo',ExperimentPreparationRequest.model_validate(body))==(value,None)
+    result=service.finish(pending)
+    assert result['status']=='READY',result
+    assert result['run']['resources']['max_time']==expected
+    changed=deepcopy(body);changed['run']['resources']={'max_time':'00:10:00' if not historical else '24:00:00'}
+    with pytest.raises(ApplicationError) as error:service.accept('demo',ExperimentPreparationRequest.model_validate(changed))
+    assert error.value.code=='PREPARATION_INTENT_CONFLICT'
+
+
 def test_cpu_script_controller_requires_ready_cache_and_launch_cannot_redownload(cpu_download):
     from ml_exp_server.container_controller import Controller
     from ml_exp_server.results.artifact_store import ArtifactStore

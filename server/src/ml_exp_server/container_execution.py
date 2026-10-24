@@ -104,6 +104,20 @@ def pai_scheduling(resources, previous_run):
     return value
 
 
+def run_walltime(resources, backend_kind, previous_run=None):
+    """Resolve only new DLC omissions; existing identities keep their frozen limit."""
+    if backend_kind == "pai-dlc" and "max_time" not in resources.model_fields_set:
+        value = previous_run["resources"]["max_time"] if previous_run is not None else "24:00:00"
+    else:
+        value = resources.max_time
+    if backend_kind == "pai-dlc":
+        h, m, s = (int(part) for part in value.split(":"))
+        if h * 3600 + m * 60 + s > 86400:
+            raise ApplicationError("PAI DLC single-job runtime cannot exceed 24 hours; resume from a persistent checkpoint in a subsequent job",
+                                   status_code=422, code="PAI_DURATION_LIMIT")
+    return value
+
+
 class InputAsset(BaseModel):
     model_config = ConfigDict(extra="forbid")
     asset_id: str = Field(pattern=r"^asset\.[0-9a-f]{64}$")
@@ -442,6 +456,7 @@ class ContainerExecutionService:
         original = root / "experiments" / "campaigns" / ("run-" + request.run_id + ".yaml")
         with source_lock(self.root, project):
             frozen_run = yaml.safe_load(original.read_text())["runs"][0] if original.exists() else None
+        max_time = run_walltime(request.resources, selected_profile["backend"]["kind"], frozen_run)
         if frozen_run is not None and selected_profile["backend"]["kind"] == "sensecore" and "data_preparation_mode" not in frozen_run:
             # Historical inside-job scripts retain their original timeout contract.
             capability["data"]["download_script"] = "inside_job"
@@ -521,7 +536,7 @@ class ContainerExecutionService:
                     raise ApplicationError("/inputs/resume is reserved for the checkpoint reference", code="CONTAINER_EXECUTION_BLOCKED")
             if len(json.dumps([inputs, preparation, resume]).encode()) > 32768:
                 raise ApplicationError("checkpoint manifests exceed the scheduler command limit", code="CONTAINER_EXECUTION_BLOCKED")
-        backend["time"] = request.resources.max_time
+        backend["time"] = max_time
         run_dir = storage_root + "/runs/" + request.run_id
         if backend["kind"] == "slurm":
             gpu_type = backend["gres"].split(":")[1]
@@ -546,6 +561,7 @@ class ContainerExecutionService:
         if persistence is not None and "checkpoints.json" not in outputs:
             outputs.append("checkpoints.json")
         resources = request.resources.model_dump()
+        resources["max_time"] = backend["time"]
         if backend["kind"] == "pai-dlc":
             if "oversold_type" in backend:
                 resources["allocation_policy"] = request.resources.allocation_policy or "guaranteed"

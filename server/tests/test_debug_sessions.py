@@ -66,6 +66,13 @@ def service(tmp_path, monkeypatch):
 def req(**kwargs):return DebugRequest(session_id='test-one', profile='cpu', ssh_public_key=KEY, **kwargs)
 
 
+def test_dsw_four_hour_cap_cannot_be_extended_by_the_global_debug_limit(service):
+    s,f=service;s.config.debug_sessions.max_duration_seconds=28800
+    with pytest.raises(ApplicationError) as error:s.create(req(duration_seconds=14401))
+    assert error.value.code=='DEBUG_DURATION_LIMIT' and f.creates==0
+    assert s.create(req(duration_seconds=14400))['status']=='RUNNING'
+
+
 def test_complete_lifecycle_and_frozen_identity(service):
     s,f=service
     assert s.catalog()['profiles'][0]['cpus']==4

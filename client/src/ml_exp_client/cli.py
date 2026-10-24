@@ -57,7 +57,7 @@ def parser():
     create.add_argument("--gpus", type=int, default=1)
     create.add_argument("--cpus", type=int, default=8)
     create.add_argument("--memory-gb", type=int, default=32)
-    create.add_argument("--max-time", default="00:05:00")
+    create.add_argument("--max-time", help="HH:MM:SS; omitted uses the server's backend default (DLC: 24 hours)")
     create.add_argument("--allocation-policy", choices=["guaranteed", "allow_idle", "idle_only"], help="DLC resource policy; default guaranteed")
     create.add_argument("--priority", type=int, choices=range(1, 10), help="DLC task priority; default 5")
     create.add_argument("--inputs", type=json.loads, default=[], help='JSON array: [{"asset_id":"asset.…","mount_path":"/inputs/data"}]')

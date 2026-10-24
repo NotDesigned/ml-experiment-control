@@ -44,8 +44,8 @@ class DswPublisher:
     def __init__(self, builder):
         self.builder, self.config = builder, builder.config["pai_dsw"]
         self.timeout = builder.config.get("timeout_seconds", 600)
-        if type(self.timeout) is not int or self.timeout <= 0:
-            raise ValueError("DSW build timeout_seconds must be a positive integer")
+        if type(self.timeout) is not int or not 0 < self.timeout <= 14400:
+            raise ValueError("DSW build timeout_seconds must be a positive integer of at most 4 hours")
         self.api = PaiAPI.from_environment()
         self.instance = None
         self.identity = None
@@ -87,7 +87,7 @@ class DswPublisher:
 
     def shutdown_timer(self):
         """Cloud-side stop budget survives a lost CLI or API-host process."""
-        budget_ms = (self.timeout + 1200) * 1000
+        budget_ms = min(self.timeout + 1200, 14400) * 1000
         path = "/api/v2/instances/" + self.instance + "/shutdowntimer"
         self.api.request("pai-dsw", "CreateInstanceShutdownTimer", path,
                          method="POST", body={"RemainingTimeInMs": budget_ms})

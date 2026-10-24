@@ -132,7 +132,8 @@ class DebugSessions:
                 raise ApplicationError("unknown debug profile", status_code=404, code="DEBUG_PROFILE_NOT_FOUND")
             if not profiles[request.profile]["enabled"]:
                 raise ApplicationError("debug profile is disabled; inspect the profile catalog", status_code=403, code="DEBUG_PROFILE_DISABLED")
-            if request.duration_seconds > self.config.debug_sessions.max_duration_seconds:
+            limit = min(self.config.debug_sessions.max_duration_seconds, 14400) if profiles[request.profile]["provider"] == "pai-dsw" else self.config.debug_sessions.max_duration_seconds
+            if request.duration_seconds > limit:
                 raise ApplicationError("debug session duration exceeds server limit", status_code=422, code="DEBUG_DURATION_LIMIT")
             active = sum(self.load(p.stem)["status"] not in TERMINAL for p in self.root.glob("*.json"))
             if active >= self.config.debug_sessions.max_active:

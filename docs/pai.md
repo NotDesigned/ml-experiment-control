@@ -17,6 +17,26 @@ its exact Run/Attempt/scope/submission tags; it never triggers a replacement job
 Provider reason text is reported when available; exit code and queue ETA remain
 unknown without evidence.
 
+New DLC Runs default to `resources.max_time: "24:00:00"` when that field is
+omitted. Both direct Run creation and experiment preparation freeze the resolved
+duration; DLC receives `JobMaxRunningTimeMinutes: 1440` and the worker receives
+the same 86400-second limit. An explicitly supplied shorter duration takes precedence;
+requests above 24 hours are rejected before building/submitting. This is a
+single-job cap, not a total experiment budget. Longer training needs persistent
+checkpoints and a subsequent job with `resume_from`; this change does not enable
+automatic job restart or assume an unbounded cumulative GPU budget.
+Existing Runs, Attempts and preparations keep their previously frozen limits.
+Preparation GPU-hour budgets must cover GPU count times the effective duration
+(for example, 8 GPUs for the default day requires a budget of at least 192 GPU-hours).
+DSW's platform cap is 4 hours. Its debug sessions are additionally bounded by the
+operator's configured lease (currently possibly shorter); builder execution and
+cloud shutdown timers cannot exceed 4 hours. The configured 20-minute build
+budget remains unchanged. DSW debug/build sessions are separate from DLC training
+and are not automatically recreated after expiry.
+Other backends retain their existing API defaults. CLI client 1.3.1 stops filling
+in a five-minute duration; older CLI clients must pass `--max-time 24:00:00` or
+upgrade to use the server default.
+
 Keep host credentials in `/etc/ml-expd/pai.json` (or set
 `EXPERIMENTCTL_PAI_CONFIG`). Install the optional core `pai` dependencies when
 using the core alone; the server includes the official SDK. The config format is:
@@ -52,7 +72,7 @@ executors:
       quota_id: QUOTA_ID
       gpu_type: H200
       gpu_type_from_quota: true
-      time: '00:10:00'
+      time: '24:00:00'
 ```
 
 Replace capacity with verified per-node limits. The server sets image, job name
