@@ -154,3 +154,27 @@ def test_real_coverage_data_combines_complementary_branches_and_rejects_missing_
     # fill that hole on a subsequent aggregate attempt.
     monkeypatch.setattr(gate, 'validated_data', lambda *args: sources[:1])
     assert gate.main(arguments) == 1
+
+
+def test_parallel_package_build_waits_for_every_result_and_preserves_failures(tmp_path):
+    import os
+    import subprocess
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/quality.yml').read_text())
+    step = next(step for step in workflow['jobs']['packages']['steps']
+                if step.get('name', '').startswith('Build every source archive'))
+    binary = tmp_path / 'uv'
+    binary.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$BUILD_CALLS"\n'
+                      'test "$*" != "build --package $FAIL_PACKAGE"\n')
+    binary.chmod(0o755)
+    for failed in ('', 'ml-experiment-client', 'ml-experiment-worker', 'ml-experiment-server'):
+        calls = tmp_path / ('calls-' + failed)
+        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', step['run']],
+                                env={**os.environ, 'PATH': str(tmp_path) + os.pathsep + os.environ['PATH'],
+                                     'FAIL_PACKAGE': failed, 'BUILD_CALLS': str(calls)}, check=False)
+        assert (result.returncode == 0) is (not failed)
+        commands = calls.read_text().splitlines()
+        assert len(commands) == 4
+        assert {command for command in commands if command.startswith('build ')} == {
+            'build --package ml-experiment-client', 'build --package ml-experiment-worker',
+            'build --package ml-experiment-server'}

@@ -53,7 +53,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .ops/core-wheel
-          key: core-wheel-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.abi }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('src/**', 'rust/src/**', 'rust/Cargo.*', 'rust/.cargo/**', '.cargo/**', 'rust-toolchain.toml', 'pyproject.toml', 'README.md', 'LICENSE', 'uv.lock', 'tools/ci_core_wheel.py', '.github/workflows/quality.yml') }}
+          key: core-wheel-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.abi }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('src/**', 'rust/src/**', 'rust/Cargo.*', 'rust/.cargo/**', '.cargo/**', 'rust-toolchain.toml', 'pyproject.toml', 'README.md', 'LICENSE', 'tools/ci_core_wheel.py', '.github/workflows/quality.yml') }}
       - if: steps.core_wheel.outputs.cache-hit != 'true'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -133,7 +133,7 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .ops/core-wheel
-          key: core-wheel-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.abi }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('src/**', 'rust/src/**', 'rust/Cargo.*', 'rust/.cargo/**', '.cargo/**', 'rust-toolchain.toml', 'pyproject.toml', 'README.md', 'LICENSE', 'uv.lock', 'tools/ci_core_wheel.py', '.github/workflows/quality.yml') }}
+          key: core-wheel-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.abi }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('src/**', 'rust/src/**', 'rust/Cargo.*', 'rust/.cargo/**', '.cargo/**', 'rust-toolchain.toml', 'pyproject.toml', 'README.md', 'LICENSE', 'tools/ci_core_wheel.py', '.github/workflows/quality.yml') }}
       - if: steps.core_wheel.outputs.cache-hit != 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -177,7 +177,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .ops/core-wheel
-          key: core-wheel-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.abi }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('src/**', 'rust/src/**', 'rust/Cargo.*', 'rust/.cargo/**', '.cargo/**', 'rust-toolchain.toml', 'pyproject.toml', 'README.md', 'LICENSE', 'uv.lock', 'tools/ci_core_wheel.py', '.github/workflows/quality.yml') }}
+          key: core-wheel-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.abi }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('src/**', 'rust/src/**', 'rust/Cargo.*', 'rust/.cargo/**', '.cargo/**', 'rust-toolchain.toml', 'pyproject.toml', 'README.md', 'LICENSE', 'tools/ci_core_wheel.py', '.github/workflows/quality.yml') }}
       - if: steps.core_wheel.outputs.cache-hit != 'true'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -188,15 +188,22 @@ jobs:
         with:
           path: ~/.cache/pip
           key: pip-bundle-${{ runner.os }}-${{ runner.arch }}-py312-${{ hashFiles('uv.lock') }}
-      - run: uv sync --locked --all-packages --all-extras --no-install-workspace
       - name: Build every source archive and verify any reused core wheel against this checkout
         env:
           CI_RUST_VERSION: ${{ steps.native.outputs.toolchain }}
         run: |
-          uv run --no-sync python tools/ci_core_wheel.py --cache-only --package-output dist
-          uv build --package ml-experiment-client
-          uv build --package ml-experiment-worker
-          uv build --package ml-experiment-server
+          uv run --no-project --python 3.12 python tools/ci_core_wheel.py --cache-only --package-output dist
+          uv build --package ml-experiment-client &
+          client_build=$!
+          uv build --package ml-experiment-worker &
+          worker_build=$!
+          uv build --package ml-experiment-server &
+          server_build=$!
+          build_status=0
+          wait "$client_build" || build_status=1
+          wait "$worker_build" || build_status=1
+          wait "$server_build" || build_status=1
+          test "$build_status" = 0
       - name: Test standalone client wheel without server or core
         run: |
           uv venv .client-wheel-smoke
@@ -262,7 +269,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .ops/core-wheel
-          key: core-wheel-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.abi }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('src/**', 'rust/src/**', 'rust/Cargo.*', 'rust/.cargo/**', '.cargo/**', 'rust-toolchain.toml', 'pyproject.toml', 'README.md', 'LICENSE', 'uv.lock', 'tools/ci_core_wheel.py', '.github/workflows/quality.yml') }}
+          key: core-wheel-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.abi }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('src/**', 'rust/src/**', 'rust/Cargo.*', 'rust/.cargo/**', '.cargo/**', 'rust-toolchain.toml', 'pyproject.toml', 'README.md', 'LICENSE', 'tools/ci_core_wheel.py', '.github/workflows/quality.yml') }}
       - if: steps.core_wheel.outputs.cache-hit != 'true'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:

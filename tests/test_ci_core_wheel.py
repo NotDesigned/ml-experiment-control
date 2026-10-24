@@ -176,3 +176,13 @@ def test_packaging_requires_cache_only_and_never_installs(source, monkeypatch):
         core.main(["--package-output", str(source / "dist")])
     core.main(["--cache-only", "--package-output", str(source / "dist")])
     assert outputs == [(source, package, source / "dist")]
+
+
+def test_unrelated_workspace_dependency_lock_does_not_change_native_core_build_identity(source):
+    (source / "uv.lock").write_text("client and server version 1")
+    before = core.identity(source)
+    (source / "uv.lock").write_text("client and server version 2")
+    assert core.identity(source) == before
+    # The build system and native source remain mandatory, independent inputs.
+    (source / "pyproject.toml").write_text((source / "pyproject.toml").read_text() + "# build recipe changed\n")
+    assert core.identity(source) != before

@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def identity(root):
     paths = [root / name for name in ("pyproject.toml", "README.md", "LICENSE", "rust/Cargo.toml", "rust/Cargo.lock")]
-    paths += [root / name for name in ("uv.lock", ".github/workflows/quality.yml", ".cargo/config.toml",
+    paths += [root / name for name in (".github/workflows/quality.yml", ".cargo/config.toml",
                                       "rust/.cargo/config.toml", "rust-toolchain.toml") if (root / name).is_file()]
     paths += [path for folder in ("src", "rust/src") for path in (root / folder).rglob("*")
               if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"]
