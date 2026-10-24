@@ -118,14 +118,20 @@ a full run. Manual dispatch always runs full checks. Reuse links the original ru
 and does not claim another execution. An unchanged green PR does not need a second
 local full run.
 
-Full checks run core, client, Rust, packaging and sixteen daemon partitions in
+Full checks run core, client, Rust, packaging and fifteen daemon partitions in
 parallel. Partitions discover every server/worker test file independently of the
 timing hints used to balance them. Within each daemon partition, two pytest
 workers steal independent test cases from each other so a long file can use both
 workers. File membership and the complete test collection remain unchanged.
-The final `test` check requires every job, validates complete same-tree partition
-manifests, combines coverage data, and
+The final `test` check prepares its coverage reader alongside those checks, then
+waits for the exact run and attempt's complete set of successful jobs. These
+twenty concurrent jobs fit the standard runner concurrency limit. Missing checks
+remain pending; failed, skipped, duplicate, foreign or unknown jobs cannot pass.
+API failures can only delay or fail the bounded wait. The check then validates
+complete same-tree partition manifests, combines coverage data, and
 enforces the original independent server/worker gates before recording evidence.
+Use **Re-run all jobs** when retrying CI; the gate never borrows successful checks
+from an earlier attempt to complete a partial rerun.
 Only coverage data is consumed from shard artifacts. A missing or failed shard
 cannot produce reusable evidence.
 

@@ -115,7 +115,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -165,7 +165,7 @@ jobs:
           export TMPDIR="$test_tmp"
           export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --basetemp=$TMPDIR/pytest"
           uv run --no-sync --package ml-experiment-server python tools/coverage_gate.py \
-            --suite daemon --workers 2 --shard-index ${{ matrix.shard }} --shard-count 16
+            --suite daemon --workers 2 --shard-index ${{ matrix.shard }} --shard-count 15
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: daemon-evidence-${{ matrix.shard }}
@@ -355,18 +355,14 @@ jobs:
   # This stable check fails when any required job/partition fails or is skipped.
   # Only coverage DATA is downloaded; no artifact script, wheel or binary runs.
   test:
-    needs: [plan, core, client, rust, daemon, packages]
+    needs: plan
     if: always() && (github.event_name != 'push' || needs.plan.outputs.full == 'true')
     timeout-minutes: 10
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Require every independent check and daemon partition
-        run: |
-          test '${{ needs.core.result }}' = success
-          test '${{ needs.client.result }}' = success
-          test '${{ needs.rust.result }}' = success
-          test '${{ needs.daemon.result }}' = success
-          test '${{ needs.packages.result }}' = success
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -385,6 +381,10 @@ jobs:
           PY
           uv venv .venv
           uv pip install --python .venv/bin/python --no-deps --require-hashes -r .ops/coverage-reader.txt
+      - name: Require every independent check from this exact run attempt
+        run: python3 tools/ci_wait.py --shard-count 15
+        env:
+          GH_TOKEN: ${{ github.token }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: daemon-evidence-*
@@ -392,7 +392,7 @@ jobs:
       - name: Aggregate complete shards and enforce original server and worker gates
         run: >-
           uv run --no-sync python tools/coverage_gate.py --suite daemon
-          --combine-dir .ops/coverage-shards --shard-count 16
+          --combine-dir .ops/coverage-shards --shard-count 15
       - name: Record tested Git tree only after every check and coverage gate passes
         run: python3 tools/ci_evidence.py record
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
