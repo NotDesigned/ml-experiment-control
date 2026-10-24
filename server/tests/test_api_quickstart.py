@@ -62,7 +62,8 @@ def http_server(app):
 
 
 def cli(base, token_file, *arguments, success=True, fast_poll=False):
-    env = dict(os.environ, ML_EXPD_API_URL=base, ML_EXPD_API_TOKEN_FILE=str(token_file))
+    env = dict(os.environ, ML_EXPD_API_URL=base, ML_EXPD_API_TOKEN_FILE=str(token_file),
+               ML_EXPD_CLIENT_CONFIG=str(token_file.parent / "http-client-defaults-unused.json"))
     env.pop("ML_EXPD_API_TOKEN", None)
     command = [sys.executable, "-m", "ml_exp_client"]
     if fast_poll:

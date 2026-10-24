@@ -13,6 +13,8 @@ download and verify. Connection precedence and private CA settings are in
 
 | Goal | Commands |
 |---|---|
+| Save connection defaults locally | `config set --url URL`, `config show`, `config clear` |
+| Update this standalone client | `update --check`, `update` |
 | Check connectivity and configured choices | `check`, `check --json`, `check --training` |
 | Generate a training starter | `init` |
 | Prepare and run one experiment JSON | `experiment`, then resume its saved state |
@@ -29,6 +31,20 @@ Use `ml-exp COMMAND --help` for flags. `check` is a short text summary;
 `check --json` provides full machine-readable evidence. `check --training` checks
 training configuration and builder connectivity without allocating a GPU; it is
 not a backend resource-admission guarantee.
+
+Configure once, then omit the URL and token in daily commands:
+
+```bash
+ml-exp config set --url https://api.example.org/ml-expd
+# Hidden token prompt; defaults are saved privately outside the project.
+ml-exp check
+ml-exp status --project my-project --run trial-001
+ml-exp update --check
+```
+
+Use `--token-file /private/client.token` when an existing token file should remain
+the credential source. `config show` never prints the token. Environment overrides
+still work; saved credentials cannot silently follow a different server URL.
 
 `status`, `cancel` and `retry` print short human-readable summaries by default;
 use `--json` for their structured results. `status --details --json` includes the

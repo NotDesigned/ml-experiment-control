@@ -19,9 +19,16 @@ def main():
     with tempfile.TemporaryDirectory(prefix="ml-exp-client-wheel-") as directory:
         root = Path(directory)
         for argv in ([str(executable), "--help"], [str(executable), "--version"],
-                     [sys.executable, "-m", "ml_exp_client", "--help"]):
+                     [sys.executable, "-m", "ml_exp_client", "--help"], [str(executable), "update", "--help"]):
             result = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
             assert result.returncode == 0, result.stderr
+        env["ML_EXPD_CLIENT_CONFIG"] = str(root / "connection.json")
+        result = subprocess.run([str(executable), "config", "set", "--url", "https://api.example/ml-expd", "--token-stdin"],
+                                input="synthetic-wheel-token\n", cwd=root, env=env, capture_output=True, text=True, check=True)
+        assert json.loads(result.stdout)["token_configured"] and "synthetic-wheel-token" not in result.stdout
+        result = subprocess.run([str(executable), "config", "show"], cwd=root, env=env,
+                                capture_output=True, text=True, check=True)
+        assert json.loads(result.stdout)["url"] == "https://api.example/ml-expd" and "synthetic-wheel-token" not in result.stdout
         result = subprocess.run([str(executable), "init", "study"], cwd=root, env=env,
                                 capture_output=True, text=True, check=True)
         assert json.loads(result.stdout)["entrypoint"] == ["python", "train.py"]

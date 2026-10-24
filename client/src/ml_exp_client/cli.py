@@ -2,24 +2,43 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 from pathlib import Path
 import sys
+import warnings
 
 from . import __version__
 from .api import Client, ClientError, error_payload
 from .commands import dispatch, initialize
+from .connection import (MAX_TOKEN_BYTES, config_path, normalize_url, public_config, read_config,
+                         read_token_file, resolve_connection, validate_token, write_config)
 from .observation import observation_reference, observation_server
 from .presentation import status_summary, operation_summary, experiment_summary
+from .updater import update_client
 
 
 def parser():
     value = argparse.ArgumentParser(prog="ml-exp", description=__doc__)
     value.add_argument("--version", action="version", version="%(prog)s " + __version__)
-    value.add_argument("--url", default=os.environ.get("ML_EXPD_API_URL"),
-                       help="API base URL including proxy prefix; defaults to ML_EXPD_API_URL")
+    value.add_argument("--url", help="API base URL; overrides ML_EXPD_API_URL and saved configuration")
+    value.add_argument("--config", dest="client_config", type=Path,
+                       help="private client configuration; defaults to ML_EXPD_CLIENT_CONFIG or ~/.config/ml-expd/client.json")
     commands = value.add_subparsers(dest="command", required=True)
+    config = commands.add_parser("config", help="save default API URL and private authentication; no API connection")
+    config_actions = config.add_subparsers(dest="config_action", required=True)
+    config_actions.add_parser("show", help="show saved defaults without displaying the token")
+    config_actions.add_parser("clear", help="remove saved defaults; referenced token files are retained")
+    config_set = config_actions.add_parser("set", help="save defaults; prompt securely for a token when needed")
+    config_set.add_argument("--url", dest="config_url", help="API base URL including any reverse-proxy prefix")
+    credential = config_set.add_mutually_exclusive_group()
+    credential.add_argument("--token-file", type=Path, help="save a reference to an existing private token file")
+    credential.add_argument("--token-stdin", action="store_true", help="read and save the token from standard input")
+    credential.add_argument("--prompt-token", action="store_true", help="replace the saved token using a hidden prompt")
+    update = commands.add_parser("update", help="update the standalone client from a verified official release; no service API connection")
+    update.add_argument("--check", action="store_true", help="check the latest client version without installing")
+    update.add_argument("--version", dest="release_version", help="choose an official stable release, for example 1.5.1")
     debug = commands.add_parser("debug", help="request and manage SSH debugging machines (CCI/DSW)")
     debug_actions = debug.add_subparsers(dest="debug_action", required=True)
     debug_actions.add_parser("profiles", help="list administrator-approved machines and limits")
@@ -237,12 +256,60 @@ def check_summary(result):
     return "\n".join(lines)
 
 
+def configure(args):
+    """Update only local connection defaults; never authenticate or dispatch work."""
+    path = config_path(args.client_config)
+    if args.config_action == "clear":
+        path.unlink(missing_ok=True)
+        return {"config_file": str(path), "cleared": True}
+    previous = read_config(path)
+    if args.config_action == "show":
+        return public_config(path, previous)
+    url = args.config_url or args.url or previous.get("url")
+    if not url:
+        raise ClientError("set an API URL with ml-exp config set --url URL")
+    url = normalize_url(url)
+    if args.token_file is not None:
+        token_path = args.token_file.expanduser().resolve()
+        read_token_file(token_path)
+        auth = {"token_file": str(token_path)}
+    elif args.token_stdin:
+        supplied = sys.stdin.read(MAX_TOKEN_BYTES + 3)
+        if len(supplied) > MAX_TOKEN_BYTES + 2:
+            raise ClientError("token input is too large; configuration unchanged")
+        auth = {"token": validate_token(supplied.strip())}
+    elif (args.prompt_token or previous.get("url") != url
+          or not (previous.get("token") or previous.get("token_file"))):
+        if not sys.stdin.isatty():
+            raise ClientError("token input needs a terminal; use --token-file PATH or --token-stdin")
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", getpass.GetPassWarning)
+                token = getpass.getpass("API token (hidden): ")
+        except (EOFError, KeyboardInterrupt, getpass.GetPassWarning):
+            raise ClientError("secure token entry unavailable or cancelled; configuration unchanged") from None
+        auth = {"token": validate_token(token)}
+    else:
+        auth = {key: previous[key] for key in ("token", "token_file") if key in previous}
+    saved = {"url": url, **auth}
+    write_config(path, saved)
+    return {"saved": True, **public_config(path, saved)}
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
         if args.command == "init":
             print(json.dumps(initialize(args), indent=2))
             return 0
+        if args.command == "config":
+            print(json.dumps(configure(args), indent=2))
+            return 0
+        if args.command == "update":
+            print(json.dumps(update_client(args.release_version, check=args.check), indent=2))
+            return 0
+        settings = read_config(config_path(args.client_config))
+        args.url = args.url or os.environ.get("ML_EXPD_API_URL") or settings.get("url")
         # Validate a saved server before sending the token, including negotiate.
         reference_path = (getattr(args, "from_state", None)
                           or (getattr(args, "state", None) if args.command in
@@ -255,12 +322,7 @@ def main(argv=None):
                 if args.url and args.url.rstrip("/") != saved_server.rstrip("/"):
                     raise ClientError("saved state belongs to a different server; no request was sent")
                 args.url = saved_server
-        token = os.environ.get("ML_EXPD_API_TOKEN", "")
-        token_file = os.environ.get("ML_EXPD_API_TOKEN_FILE")
-        if token and token_file:
-            raise ClientError("set only one of ML_EXPD_API_TOKEN_FILE and ML_EXPD_API_TOKEN")
-        if token_file:
-            token = Path(token_file).read_text().strip()
+        args.url, token = resolve_connection(args.url, settings)
         client = Client(args.url or "", token)
         health = client.negotiate()
         result = dispatch(args, client, health)

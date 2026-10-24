@@ -14,15 +14,16 @@ Use Python 3.10+; no local Docker, SSH or backend credentials are required.
 python3 -m venv .client-venv
 . .client-venv/bin/activate
 python -m pip install ./ml_experiment_client-*.whl
-export ML_EXPD_API_URL='https://api.example.org/ml-expd'
-export ML_EXPD_API_TOKEN_FILE="$HOME/.config/ml-expd/client.token"
+ml-exp config set --url 'https://api.example.org/ml-expd'
+# Enter your API token once at the hidden prompt.
 ml-exp check --schema openapi.json
 ml-exp check --json
 ml-exp check --training
 ```
 
-Provision the private token file first, outside source and data. Configure exactly
-one token source: `ML_EXPD_API_TOKEN_FILE` or `ML_EXPD_API_TOKEN`.
+Connection defaults are saved privately outside the project. To use an existing
+token file, pass `--token-file /private/client.token` to `config set`. Environment
+overrides remain supported; choose one of `ML_EXPD_API_TOKEN_FILE` or `ML_EXPD_API_TOKEN`.
 [Configuration](configuration.md) also covers private CAs. From a checkout,
 `python -m pip install ./client` installs only the client.
 
