@@ -165,16 +165,63 @@ def test_parallel_package_build_waits_for_every_result_and_preserves_failures(tm
                 if step.get('name', '').startswith('Build every source archive'))
     binary = tmp_path / 'uv'
     binary.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$BUILD_CALLS"\n'
+                      'case "$FAIL_PACKAGE:$*" in core:*ci_core_wheel.py*) exit 19;; esac\n'
                       'test "$*" != "build --package $FAIL_PACKAGE"\n')
     binary.chmod(0o755)
-    for failed in ('', 'ml-experiment-client', 'ml-experiment-worker', 'ml-experiment-server'):
+    for failed in ('', 'core', 'ml-experiment-client', 'ml-experiment-worker', 'ml-experiment-server'):
         calls = tmp_path / ('calls-' + failed)
         result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', step['run']],
                                 env={**os.environ, 'PATH': str(tmp_path) + os.pathsep + os.environ['PATH'],
-                                     'FAIL_PACKAGE': failed, 'BUILD_CALLS': str(calls)}, check=False)
+                                     'FAIL_PACKAGE': failed, 'BUILD_CALLS': str(calls)}, cwd=tmp_path, check=False)
         assert (result.returncode == 0) is (not failed)
         commands = calls.read_text().splitlines()
         assert len(commands) == 4
         assert {command for command in commands if command.startswith('build ')} == {
             'build --package ml-experiment-client', 'build --package ml-experiment-worker',
             'build --package ml-experiment-server'}
+
+
+def test_parallel_installation_lanes_wait_for_every_result_and_keep_early_failures(tmp_path):
+    import os
+    import subprocess
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/quality.yml').read_text())
+    step = next(step for step in workflow['jobs']['packages']['steps']
+                if step.get('name', '').startswith('Test independent wheel'))
+    for failed in ('', 'client', 'worker', 'installed', 'offline', 'offline-install', 'offline-permissions'):
+        case = tmp_path / ('case-' + (failed or 'pass'))
+        binary = case / 'bin'
+        binary.mkdir(parents=True)
+        body = ('#!/bin/sh\nprintf "%s\\n" "$*" >> "$LANE_CALLS"\n'
+                'case "$FAIL_LANE:$*" in client:venv\\ .client-wheel-smoke|worker:venv\\ .worker-wheel-smoke|installed:venv\\ .wheel-smoke|offline:*build_deployment_bundle.py*) exit 19;; esac\n')
+        for name in ('uv', 'python3', 'tar'):
+            executable = binary / name
+            executable.write_text(body)
+            executable.chmod(0o755)
+        executable_body = ('#!/bin/sh\nprintf "%s %s\\n" "$0" "$*" >> "$LANE_CALLS"\n'
+                           'case "$FAIL_LANE:$0" in offline-install:*/ml-expd-server/install.sh) exit 19;; esac\n')
+        for directory in ('.client-wheel-smoke', '.worker-wheel-smoke', '.wheel-smoke', '.offline-client', '.offline-server'):
+            for name in ('python', 'ml-expd', 'ml-exp', 'experiment-redact'):
+                executable = case / directory / 'bin' / name
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                executable.write_text(executable_body)
+                executable.chmod(0o755)
+        for component in ('client', 'server'):
+            installer = case / '.ops/bundles' / ('ml-expd-' + component) / 'install.sh'
+            installer.parent.mkdir(parents=True)
+            installer.write_text(executable_body)
+            installer.chmod(0o755)
+            (installer.parent.parent / (component + '-bundle.tar.gz')).write_bytes(b'fixture archive')
+        (case / '.offline-server').chmod(0o755)
+        if failed == 'offline-permissions':
+            (case / '.offline-server').chmod(0o700)
+        calls = case / 'calls'
+        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', step['run']], cwd=case,
+                                env={**os.environ, 'PATH': str(binary) + os.pathsep + os.environ['PATH'],
+                                     'FAIL_LANE': failed, 'LANE_CALLS': str(calls)}, capture_output=True, text=True)
+        assert (result.returncode == 0) is (not failed), (failed, result.stdout, result.stderr)
+        assert sum(line.startswith('Installation lane ') for line in result.stdout.splitlines()) == 4
+        assert len(list((case / '.ops/bundles/logs').glob('smoke-*.log'))) == 4
+        commands = calls.read_text().splitlines()
+        for prefix in ('venv .client-wheel-smoke', 'venv .worker-wheel-smoke', 'venv .wheel-smoke', 'run --no-project'):
+            assert any(command.startswith(prefix) for command in commands)

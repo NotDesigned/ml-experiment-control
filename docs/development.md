@@ -148,8 +148,15 @@ fingerprint. Missing or mismatched cache entries build the current checkout.
 Packaging rebuilds all four source archives and verifies the core
 archive's Python, Rust and build files against the checkout before pairing it
 with a verified cached core wheel. The other three wheels are rebuilt normally.
-All four wheels, standalone client/worker, base server and both offline bundle
-installs are still tested. Durations and JUnit identify bottlenecks. Measure full workflow time,
+All four source builds run concurrently. Independent client, worker, base-server
+and offline-bundle installation lanes also run concurrently, with every exit
+status required and separate diagnostic logs retained even on failure. All four
+wheels and both real offline installs remain tested. Packaging caches only
+Cargo's registry sources by Cargo.lock and OS, never credentials or Cargo config;
+a cache hit builds the current core source archive with Cargo networking disabled.
+Main's cache preparation fetches and verifies the same locked registry so new PRs
+can restore it. Cache misses use the normal verified Cargo download path. Durations and JUnit identify bottlenecks.
+Measure full workflow time,
 including setup, packaging and the final gate; main's exact-tree reuse is a
 separate optimization. Coverage thresholds and test selection must not be
 weakened to accelerate a run.

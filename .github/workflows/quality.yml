@@ -201,6 +201,11 @@ jobs:
           path: .ci-cargo-target
           key: cargo-packages-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('rust/Cargo.lock') }}
           restore-keys: cargo-workspace-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('rust/Cargo.lock') }}
+      - id: cargo_registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock') }}
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/pip
@@ -208,60 +213,102 @@ jobs:
       - name: Build every source archive and verify any reused core wheel against this checkout
         env:
           CI_RUST_VERSION: ${{ steps.native.outputs.toolchain }}
+          CARGO_NET_OFFLINE: ${{ steps.cargo_registry.outputs.cache-hit == 'true' && 'true' || 'false' }}
         run: |
-          uv run --no-project --python 3.12 python tools/ci_core_wheel.py --cache-only --package-output dist
-          uv build --package ml-experiment-client &
+          mkdir -p .ops/bundles/logs
+          uv run --no-project --python 3.12 python tools/ci_core_wheel.py --cache-only --package-output dist > .ops/bundles/logs/build-core.log 2>&1 &
+          core_build=$!
+          uv build --package ml-experiment-client > .ops/bundles/logs/build-client.log 2>&1 &
           client_build=$!
-          uv build --package ml-experiment-worker &
+          uv build --package ml-experiment-worker > .ops/bundles/logs/build-worker.log 2>&1 &
           worker_build=$!
-          uv build --package ml-experiment-server &
+          uv build --package ml-experiment-server > .ops/bundles/logs/build-server.log 2>&1 &
           server_build=$!
           build_status=0
-          wait "$client_build" || build_status=1
-          wait "$worker_build" || build_status=1
-          wait "$server_build" || build_status=1
+          for build in "core:$core_build" "client:$client_build" "worker:$worker_build" "server:$server_build"; do
+            name="${build%%:*}"
+            if wait "${build#*:}"; then
+              printf 'Source build %s: PASS\n' "$name"
+            else
+              build_status=1
+              printf 'Source build %s: FAILED\n' "$name"
+              tail -n 80 ".ops/bundles/logs/build-$name.log"
+            fi
+          done
+          cat .ops/bundles/logs/build-core.log
           test "$build_status" = 0
-      - name: Test standalone client wheel without server or core
+      - name: Test independent wheel and offline installation lanes
         run: |
-          uv venv .client-wheel-smoke
-          uv pip install --python .client-wheel-smoke/bin/python --no-deps dist/ml_experiment_client-*.whl
-          .client-wheel-smoke/bin/python tools/client_wheel_smoke.py
-      - name: Test standalone worker wheel without control-plane dependencies
-        run: |
-          uv venv .worker-wheel-smoke
-          uv pip install --python .worker-wheel-smoke/bin/python --no-deps dist/ml_experiment_worker-*.whl
-          .worker-wheel-smoke/bin/python tools/worker_wheel_smoke.py
-      - name: Test installed wheels and entry points
-        run: |
-          uv venv .wheel-smoke
-          uv pip install --python .wheel-smoke/bin/python dist/*.whl
-          .wheel-smoke/bin/ml-expd --help
-          .wheel-smoke/bin/ml-exp --help
-          .wheel-smoke/bin/python tools/server_wheel_smoke.py
-      - name: Build and install offline deployment bundles
-        run: |
-          mkdir -p .ops/bundles
-          uv run --no-project --python 3.12 --with pip --with setuptools --with wheel python tools/build_deployment_bundle.py --component server --extra wandb --wheels dist --output .ops/bundles/server-bundle.tar.gz
-          python3 tools/build_deployment_bundle.py --component client --wheels dist --output .ops/bundles/client-bundle.tar.gz
-          (cd .ops/bundles && sha256sum *.tar.gz > SHA256SUMS)
-          tar -xzf .ops/bundles/server-bundle.tar.gz -C .ops/bundles
-          tar -xzf .ops/bundles/client-bundle.tar.gz -C .ops/bundles
-          # Independent environments can install concurrently; both must pass.
-          (umask 077; .ops/bundles/ml-expd-client/install.sh "$PWD/.offline-client" && .offline-client/bin/python tools/client_wheel_smoke.py) &
-          client_install=$!
-          (umask 077; .ops/bundles/ml-expd-server/install.sh "$PWD/.offline-server")
-          test "$(stat -c '%a' .offline-server)" = 755
-          test "$(stat -c '%a' .offline-server/bin/ml-expd)" = 755
-          .offline-server/bin/experiment-redact --help
-          .offline-server/bin/python -c 'import wandb, ml_exp_worker'
-          wait "$client_install"
+          mkdir -p .ops/bundles/logs
+          (
+            set -euo pipefail
+            uv venv .client-wheel-smoke
+            uv pip install --python .client-wheel-smoke/bin/python --no-deps dist/ml_experiment_client-*.whl
+            .client-wheel-smoke/bin/python tools/client_wheel_smoke.py
+          ) > .ops/bundles/logs/smoke-client.log 2>&1 &
+          client_smoke=$!
+          (
+            set -euo pipefail
+            uv venv .worker-wheel-smoke
+            uv pip install --python .worker-wheel-smoke/bin/python --no-deps dist/ml_experiment_worker-*.whl
+            .worker-wheel-smoke/bin/python tools/worker_wheel_smoke.py
+          ) > .ops/bundles/logs/smoke-worker.log 2>&1 &
+          worker_smoke=$!
+          (
+            set -euo pipefail
+            uv venv .wheel-smoke
+            uv pip install --python .wheel-smoke/bin/python dist/*.whl
+            .wheel-smoke/bin/ml-expd --help
+            .wheel-smoke/bin/ml-exp --help
+            .wheel-smoke/bin/python tools/server_wheel_smoke.py
+          ) > .ops/bundles/logs/smoke-installed.log 2>&1 &
+          installed_smoke=$!
+          (
+            set -euo pipefail
+            mkdir -p .ops/bundles
+            uv run --no-project --python 3.12 --with pip --with setuptools --with wheel python tools/build_deployment_bundle.py --component server --extra wandb --wheels dist --output .ops/bundles/server-bundle.tar.gz
+            python3 tools/build_deployment_bundle.py --component client --wheels dist --output .ops/bundles/client-bundle.tar.gz
+            (cd .ops/bundles && sha256sum *.tar.gz > SHA256SUMS)
+            tar -xzf .ops/bundles/server-bundle.tar.gz -C .ops/bundles
+            tar -xzf .ops/bundles/client-bundle.tar.gz -C .ops/bundles
+            (set -e; umask 077; .ops/bundles/ml-expd-client/install.sh "$PWD/.offline-client"; .offline-client/bin/python tools/client_wheel_smoke.py) &
+            client_install=$!
+            (
+              set -e; umask 077
+              .ops/bundles/ml-expd-server/install.sh "$PWD/.offline-server"
+              test "$(stat -c '%a' .offline-server)" = 755
+              test "$(stat -c '%a' .offline-server/bin/ml-expd)" = 755
+              .offline-server/bin/experiment-redact --help
+              .offline-server/bin/python -c 'import wandb, ml_exp_worker'
+            ) &
+            server_install=$!
+            install_status=0
+            wait "$client_install" || install_status=1
+            wait "$server_install" || install_status=1
+            test "$install_status" = 0
+          ) > .ops/bundles/logs/smoke-offline.log 2>&1 &
+          offline_smoke=$!
+          smoke_status=0
+          for smoke in "client:$client_smoke" "worker:$worker_smoke" "installed:$installed_smoke" "offline:$offline_smoke"; do
+            name="${smoke%%:*}"
+            if wait "${smoke#*:}"; then
+              printf 'Installation lane %s: PASS\n' "$name"
+            else
+              smoke_status=1
+              printf 'Installation lane %s: FAILED\n' "$name"
+              tail -n 80 ".ops/bundles/logs/smoke-$name.log"
+            fi
+          done
+          test "$smoke_status" = 0
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
         with:
           name: deployment-linux-x86_64-py312
           compression-level: 0
           path: |
             .ops/bundles/*.tar.gz
             .ops/bundles/SHA256SUMS
+            .ops/bundles/logs/
           if-no-files-found: error
           retention-days: 7
 
@@ -291,6 +338,15 @@ jobs:
         with:
           path: .ci-cargo-target
           key: cargo-workspace-${{ runner.os }}-${{ runner.arch }}-${{ steps.native.outputs.toolchain }}-${{ hashFiles('rust/Cargo.lock') }}
+      - id: cargo_registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock') }}
+      - name: Prepare only Cargo.lock-verified registry sources for later PRs
+        env:
+          CARGO_NET_OFFLINE: ${{ steps.cargo_registry.outputs.cache-hit == 'true' && 'true' || 'false' }}
+        run: cargo fetch --locked --manifest-path rust/Cargo.toml
       - name: Verify or build main's core cache without installing or rerunning tests
         env:
           CI_RUST_VERSION: ${{ steps.native.outputs.toolchain }}
