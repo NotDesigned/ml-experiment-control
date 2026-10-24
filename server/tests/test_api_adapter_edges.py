@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from ml_exp_server.api import action_routes, routes, submission_routes
 from ml_exp_server.application import ApplicationError
-from ml_exp_server.schemas import ActionRuntimeConfig, OperationScopeType
+from ml_exp_server.schemas import ServerConfig, OperationScopeType
 
 
 ERROR = ApplicationError("blocked", status_code=418, code="BLOCKED")
@@ -28,7 +28,7 @@ def request(*, application=None, submission_service=None, **state):
     values = {
         "application": application or Failing(),
         "submission_service": submission_service or Failing(),
-        "config": SimpleNamespace(action_runtime=ActionRuntimeConfig()),
+        "config": ServerConfig(),
     }
     values.update(state)
     return SimpleNamespace(
