@@ -139,8 +139,13 @@ storage behavior, not persistence after loss of host power.
 Cargo and uv caches reduce setup cost. Core and daemon checks can reuse a core
 wheel only for the same complete core source fingerprint, compiler, platform
 and Python ABI; wheel metadata, SHA and every packaged Python source are checked
-again before installation. Missing or mismatched cache entries build the current
-checkout. Packaging rebuilds all four source archives and verifies the core
+again before installation. The compiler key includes its release, commit and
+build date. The probe reads only the manifest belonging to rustup's actually
+selected compiler; custom compilers and malformed or mismatched manifests use
+the real compiler's version output. Core also compares this identity with a real
+`rustc --version` before any cache restore. Probe rules are part of the cache
+fingerprint. Missing or mismatched cache entries build the current checkout.
+Packaging rebuilds all four source archives and verifies the core
 archive's Python, Rust and build files against the checkout before pairing it
 with a verified cached core wheel. The other three wheels are rebuilt normally.
 All four wheels, standalone client/worker, base server and both offline bundle

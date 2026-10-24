@@ -186,3 +186,14 @@ def test_unrelated_workspace_dependency_lock_does_not_change_native_core_build_i
     # The build system and native source remain mandatory, independent inputs.
     (source / "pyproject.toml").write_text((source / "pyproject.toml").read_text() + "# build recipe changed\n")
     assert core.identity(source) != before
+
+
+def test_native_probe_rules_are_an_optional_but_strict_core_build_input(source):
+    before = core.identity(source)
+    probe = source / "tools/ci_native.py"
+    probe.parent.mkdir()
+    probe.write_text("selected compiler probe version 1")
+    added = core.identity(source)
+    assert before != added
+    probe.write_text("selected compiler probe version 2")
+    assert core.identity(source) != added
