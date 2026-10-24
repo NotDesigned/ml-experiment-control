@@ -89,6 +89,28 @@ def token(tmp_path):
     return path
 
 
+def test_minimal_api_accepts_source_import_cli_without_builder_or_dockerfile(tmp_path):
+    auth = token(tmp_path)
+    config = ServerConfig(index_db=str(tmp_path / "index.sqlite"), run_root=str(tmp_path / "runs"),
+                          action_root=str(tmp_path / "actions"), project_registry_root=str(tmp_path / "projects"),
+                          http_auth={"bearer_token_file": str(auth)}, collector_enabled=False,
+                          action_runtime={"allow_project_writes": True, "allow_source_imports": True})
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "train.py").write_text("print('source only')\n")
+    with http_server(create_app(config, poll=False)) as base:
+        health = cli(base, auth, "check", "--json")
+        assert health["readiness"]["training"] == "INCOMPLETE"
+        first = cli(base, auth, "source-import", "--project", "basic", "--directory", source)
+        second = cli(base, auth, "source-import", "--project", "basic", "--directory", source)
+        assert all(first[key] == second[key] for key in ("source_id", "project", "tree_digest"))
+        client = client_module.Client(base, auth.read_text().strip())
+        stored = client.call("/api/projects/basic/sources/" + first["source_id"])
+        assert stored["source_id"] == first["source_id"]
+        assert not health["policy"]["allow_scheduler_mutations"]
+        assert "dockerfile-build.v1" not in health["health"]["capabilities"]
+
+
 def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from experiment_control.backends.sensecore_rest import SenseCoreREST
@@ -139,7 +161,7 @@ def test_client_import_pack_two_profiles_execute_program_upload_download(tmp_pat
     app = create_app(config, poll=False)
     with http_server(app) as base:
         schema = tmp_path / "openapi.json"
-        check = cli(base, auth, "check", "--schema", schema)
+        check = cli(base, auth, "check", "--json", "--schema", schema)
         assert check["health"]["api_protocol_version"] == 2
         assert len(check["executors"]["executors"]) == 2
         assert "/api/source-imports/archive" in json.loads(schema.read_text())["paths"]

@@ -60,6 +60,60 @@ only an owned job, corrupt archives/checkpoints, interrupted journal writes,
 metric-context isolation and stale observations. Prefer simplifying code and
 testing these boundaries over tests that merely repeat implementation details.
 
+## Build deployment artifacts
+
+Ordinary operators install reviewed wheels or an offline bundle; they do not need
+Rust. Source builds require Rust 1.85+ and access to both Python build dependencies
+and Cargo dependencies. For Ubuntu 24.04, its approved repositories may provide
+versioned `rustc-1.85`/`cargo-1.85` packages even when unversioned Rust is too old.
+Check the installed versions and executable PATH before building. Never install
+unreviewed compilers or disable TLS checks to bypass an unreachable installer.
+
+uv does not automatically inherit pip's configured index. Set `UV_DEFAULT_INDEX`
+to your approved, reachable HTTPS index; a pip mirror working over HTTP does not
+prove its hostname has a valid HTTPS certificate. Cargo has separate registry
+access. For an isolated builder, provision verified Cargo dependencies from the
+lockfile through your normal dependency process. Do not require service operators
+to reconstruct a Cargo cache just to install the application.
+
+Build into a clean wheel directory so stale package versions cannot be selected:
+
+```bash
+mkdir -p .ops/release-wheels .ops/bundles
+uv build --package ml-experiment-control --out-dir .ops/release-wheels
+uv build --package ml-experiment-server --out-dir .ops/release-wheels
+uv build --package ml-experiment-client --out-dir .ops/release-wheels
+uv run --no-project --python 3.12 --with pip --with setuptools --with wheel \
+  python tools/build_deployment_bundle.py \
+  --component server --wheels .ops/release-wheels \
+  --output .ops/bundles/server-bundle.tar.gz
+python3 tools/build_deployment_bundle.py --component client \
+  --wheels .ops/release-wheels --output .ops/bundles/client-bundle.tar.gz
+(cd .ops/bundles && sha256sum *.tar.gz > SHA256SUMS)
+```
+
+Use the same target Python and Linux architecture for wheel construction and
+dependency download. The standard CI bundle is Python 3.12/Linux x86-64; check
+libc compatibility before offering it for another distribution. A different
+Python minor/architecture needs its own server bundle. Client bundles are stdlib
+only and work on Python 3.10+.
+
+The release tool exports hashed runtime requirements directly from frozen `uv.lock`
+and verifies download hashes before building. `PIP_INDEX_URL` can select an approved
+HTTPS index for this build step independently from uv's index. Packages with only
+a source distribution are built on this release host using its installed build
+tools; their locked source hash is recorded in the manifest. No build tools are
+needed on the deployment host. The tool then records each package
+version/hash, adds the minimal config/guide, and publishes a complete archive
+without overwriting an existing one. `install.sh` checks the files and installs
+with `--isolated --no-index --require-hashes`. It never starts a service or copies
+credentials. Publish the archives and external checksum file with the matching
+reviewed release; older releases may contain only individual wheels.
+
+CI builds and actually installs both bundles in new environments and uploads
+them as deployment artifacts. This validates package delivery independently of
+the normal installed-wheel and source tests; no cloud resources are created.
+
 ## CI result reuse and test cost
 
 After every full run passes, CI records the actual checked-out commit and Git

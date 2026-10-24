@@ -10,13 +10,15 @@ HTTP. Backend credentials stay on the server.
 | You want to… | Read | You need |
 |---|---|---|
 | Use an existing API | [Client quickstart](docs/api-quickstart.md) | Python, client wheel, API URL and token |
-| Deploy or maintain the server | [Operator guide](docs/operator-guide.md) | Linux, builder, storage and backend access |
+| Deploy or maintain the server | [Operator guide](docs/operator-guide.md) | Linux/Python; builder, storage and backend access for training |
 | Configure a client or add a backend | [Configuration](docs/configuration.md) | API URL/token, or access to one supported backend |
 | Understand the code | [Architecture](docs/architecture.md) | Repository checkout |
 | Embed the core library | [Library integration](docs/library-integration.md) | Core package and a project adapter |
 | Contribute | [Development](docs/development.md) | Python 3.12, uv and Rust |
 
 For upgrades, read the [1.0 migration notes](docs/migration-1.0.md).
+For a first basic deployment, follow the [two-machine example](docs/two-machine-quickstart.md):
+precompiled packages, a private HTTPS API and a separate client, without a training backend.
 The [documentation index](docs/README.md) links the complete reference.
 Install the independent [client package](client/README.md) on client machines;
 the [server package](server/README.md) uses the reusable core, not the client.
@@ -51,7 +53,7 @@ and downloadable artifacts are different facts. An interrupted upload can leave
 a complete NAS checkpoint without a downloadable result. See [recovery](docs/recovery.md).
 
 The current HTTP protocol is 2. Obtain installed versions, capabilities,
-executors, policy and limits with `ml-exp check`. Existing READY images keep their
+executors, policy and limits with `ml-exp check --json`. Existing READY images keep their
 original workers. Executor specifications do not guarantee free GPUs. Automatic
 preemption recovery and a general CPU artifact-recovery API are not implemented.
 

@@ -44,8 +44,12 @@ def parser():
     workflow.add_argument("--keep-server-copy", action="store_true", help="retain server archives after verified download")
     check = commands.add_parser("check", help="GET health, policy, executors and optionally schema")
     check.add_argument("--schema", type=Path)
+    check.add_argument("--json", action="store_true", help="print full machine-readable evidence instead of the short summary")
     check.add_argument("--training", action="store_true",
                        help="also require training configuration and a responding image builder; allocates no GPU")
+    source = commands.add_parser("source-import", help="upload immutable source without building an image or submitting a job")
+    source.add_argument("--project", required=True)
+    source.add_argument("--directory", type=Path, required=True)
     pack = commands.add_parser("pack", help="import source and package image; allocates no GPU")
     pack.add_argument("--project", required=True)
     pack.add_argument("--source", type=Path, required=True)
@@ -190,6 +194,35 @@ def parser():
     return value
 
 
+def check_summary(result):
+    """Present configuration evidence without implying backend admission."""
+    health, policy = result["health"], result["policy"]
+    readiness = result.get("readiness", {})
+    enabled = policy.get("allow_source_imports", health.get("source_imports"))
+    source = ("DISABLED" if enabled is False else "AVAILABLE"
+              if "source-import.v1" in health.get("capabilities", []) else "UNKNOWN")
+    lines = ["API: READY", "Source import: " + source,
+             "Training: " + readiness.get("training", "UNKNOWN")]
+    components = readiness.get("components", {})
+    components = components if isinstance(components, dict) else {}
+    labels = {"executors": "Executors", "image_builder": "Image builder",
+              "artifact_store": "Result store", "project_writes": "Project writes",
+              "source_imports": "Source imports", "scheduler_mutations": "Scheduler writes"}
+    for key in readiness.get("issues", []):
+        if key in labels:
+            component = components.get(key)
+            status = component.get("status") if isinstance(component, dict) else None
+            if not isinstance(status, str) or status not in {"NOT_CONFIGURED", "DISABLED", "UNAVAILABLE", "INVALID", "UNKNOWN"}:
+                status = "NOT_READY"
+            lines.append("  " + labels[key] + ": " + status)
+    if "storage_limits_error" in result:
+        lines.append("Storage limits: ERROR (use --json for diagnostics)")
+    if readiness.get("training") == "CONFIGURED":
+        lines.append("Configuration ready; backend access and resource admission are not verified.")
+    lines.append("Use --json for executors, base images, limits and full evidence.")
+    return "\n".join(lines)
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
@@ -205,7 +238,7 @@ def main(argv=None):
         client = Client(args.url or "", token)
         health = client.negotiate()
         result = dispatch(args, client, health)
-        print(json.dumps(result, indent=2))
+        print(check_summary(result) if args.command == "check" and not args.json else json.dumps(result, indent=2))
         if args.command == "check" and "storage_limits_error" in result:
             return 2
         if args.command == "check" and args.training and result.get("readiness", {}).get("training") != "CONFIGURED":

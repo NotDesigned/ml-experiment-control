@@ -24,6 +24,9 @@ training configuration and a responding private image builder, and returns 2
 with the missing/disabled/unavailable component names when incomplete. This is
 a read-only check; it does not build an image or reserve a GPU. Backend credentials,
 storage access and resource admission still need the experiment's normal preflight.
+Use `check --json` for the full machine-readable response; the default output is
+a short human-readable summary. The [two-machine example](two-machine-quickstart.md)
+includes private CA trust and source import without a builder.
 
 Provision the token file privately before running this command. On POSIX systems
 give its directory mode 0700 and file mode 0600. `ML_EXPD_API_TOKEN` is an alternative

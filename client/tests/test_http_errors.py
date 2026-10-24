@@ -201,7 +201,7 @@ def test_optional_storage_check_failure_preserves_successes_and_nonzero_status(t
     monkeypatch.setenv("ML_EXPD_API_TOKEN", "private-bearer")
     monkeypatch.setattr("ml_exp_client.cli.Client", PartialCheck)
     schema = tmp_path / "openapi.json"
-    assert main(["--url", "https://api.example", "check", "--schema", str(schema)]) == 2
+    assert main(["--url", "https://api.example", "check", "--json", "--schema", str(schema)]) == 2
     output = capsys.readouterr()
     report = json.loads(output.out)
     assert output.err == ""

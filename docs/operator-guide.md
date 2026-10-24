@@ -8,7 +8,7 @@ mutations; copying them alone does not produce a runnable GPU service.
 
 | Component | Access it needs |
 |---|---|
-| Daemon | Dedicated UID, writable state, backend auth, server S3 credentials |
+| Daemon | Dedicated UID, writable state and API token; selected backend/store credentials for training |
 | Private builder | Docker/Buildx, Skopeo, registry push auth, private socket |
 | Slurm | Daemon-owned SSH identity, Slurm/Apptainer, shared storage, registry pull auth |
 | PAI DLC | OpenAPI credentials, workspace/quota, personal CPFS/role, registry pull auth |
@@ -35,19 +35,41 @@ Code directories/modules are 0755/0644; entrypoints executable. Keep `.git`,
 bind of `/opt/ml-expd`, exposing code without opening other home directories.
 The daemon must not have unrestricted Docker access.
 
-## Install a reviewed commit
+## Install a reviewed release
 
-Clone into `/opt/ml-expd`, check out an exact reviewed commit, install uv and
-Rust 1.85+ for core wheel construction, then build/install core and server:
+Use precompiled core/server wheels from the same reviewed release. Rust and uv
+are build tools, not service runtime requirements. The complete
+[two-machine example](two-machine-quickstart.md) covers installation, service
+account, token, HTTPS, client trust and a source import without a builder.
+
+For an offline deployment, use the matching server bundle (Python minor version,
+Linux architecture and compatible libc), verify its archive SHA256 against the
+trusted release/administrator checksum, extract it and run:
 
 ```bash
-uv build --package ml-experiment-control
-uv build --package ml-experiment-server
-uv venv /opt/ml-expd/.venv
-uv pip install --python /opt/ml-expd/.venv/bin/python \
-  dist/ml_experiment_control-*.whl dist/ml_experiment_server-*.whl
+cd ml-expd-server
+./install.sh /opt/ml-expd/.venv
+```
+
+The bundle installs exact, hash-checked runtime wheels with `--no-index`. It
+contains the minimal API template and two-machine guide. It refuses an existing
+virtual environment and does not create credentials or start a service.
+
+If only individual wheels are available, place exactly one core and one server
+wheel from the chosen release in a clean directory, verify their published hashes,
+then install with a reachable HTTPS package index:
+
+```bash
+python3 -m venv /opt/ml-expd/.venv
+/opt/ml-expd/.venv/bin/python -m pip install \
+  ./release-wheels/ml_experiment_control-*.whl ./release-wheels/ml_experiment_server-*.whl
 /opt/ml-expd/.venv/bin/ml-expd --help
 ```
+
+This second path downloads runtime dependencies; the project wheels alone are
+not an offline installation. Choose a trusted reachable `--index-url` when needed.
+Do not disable TLS verification. [Development](development.md#build-deployment-artifacts)
+describes source builds, dependency mirrors and creating offline bundles.
 
 Use these creation commands for a new installation, not over an active runtime.
 Existing deployments need a staged, verified upgrade and program rollback plan.

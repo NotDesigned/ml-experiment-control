@@ -14,6 +14,20 @@ also require training configuration and a responding private image builder;
 it lists missing/disabled/unavailable components and exits 2 when incomplete.
 Neither command builds an image or allocates a GPU. Backend authentication and
 resource admission are still checked by the experiment's normal preflight.
+The default `check` output is a short text summary; use `check --json` for the
+full evidence in scripts, executor/base choices and limits. See the
+[two-machine deployment example](../docs/two-machine-quickstart.md) for a fresh
+basic API, private CA and independent client.
+
+Upload source without requiring a builder or Dockerfile:
+
+```bash
+ml-exp source-import --project my-study --directory ./source
+```
+
+This returns the immutable source ID/tree digest and import metadata. Existing
+archive limits and credential-path checks apply. It never builds an image or
+submits a job. `pack` and the one-config `experiment` still upload automatically.
 
 ## Python use
 
