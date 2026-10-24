@@ -1,339 +1,145 @@
-# Architecture
+# Architecture and boundaries
 
-## Packages and execution locations
+ML-Expd runs a frozen experiment on a configured backend, records its progress,
+and returns verified results. Experiment code defines the scientific computation,
+metrics, checkpoint contents and model selection. The platform does not interpret
+weights, choose hyperparameters or decide whether a scientific result is correct.
 
-| Package | Source | Responsibility |
-|---|---|---|
-| `ml-experiment-client` | `client/src/ml_exp_client/` | Dependency-free HTTP client and `ml-exp` CLI |
-| `ml-experiment-server` | `server/src/ml_exp_server/` | API, definitions, Actions, collection, builder and optional W&B publication |
-| `ml-experiment-control` | `src/experiment_control/` | Backend interface and durable controller primitives |
-| `ml-experiment-worker` | `worker/src/ml_exp_worker/` | Dependency-free compute programs copied into images or dispatched remotely |
+## Four packages
 
-The server depends on core and worker; neither imports the server. The client
-depends on none of these packages. The worker uses only the standard library.
-`rust/src/main.rs` supplies `experiment-redact`, packaged with the core. The
-server's optional `wandb` extra adds the SDK; canonical records and metrics do
-not depend on it.
+| Distribution | Source | Responsibility and dependencies |
+| --- | --- | --- |
+| `ml-experiment-client` | `client/src/ml_exp_client/` | HTTP SDK, `ml-exp`, packaging, saved operation state and verified downloads; no runtime dependencies |
+| `ml-experiment-worker` | `worker/src/ml_exp_worker/` | 13 standard-library execution programs copied into backend jobs; no server/core/cloud SDK dependencies |
+| `ml-experiment-control` | `src/experiment_control/` | Scheduler adapters, immutable manifests, submission identity and command runner; includes the Rust `experiment-redact` executable |
+| `ml-experiment-server` | `server/src/ml_exp_server/` | API, preparation, storage, observation, checked mutations and optional publication; depends on core and worker |
 
-The checkout groups independently installable packages and their tests:
+The root `pyproject.toml` defines the core package and uv workspace. Client,
+server and worker have separate package metadata. Client machines need only the
+client. Training images receive fixed worker scripts, not the server environment.
+The server's optional `[wandb]` extra publishes accepted records; metrics storage
+and queries work without it. See [development](development.md) for installation
+and independent coverage checks.
 
-```text
-client/       HTTP client source, CLI and client tests
-server/       Daemon source, server tests and operator configuration examples
-worker/       Standalone execution programs and package-boundary tests
-src/          Reusable experiment_control core
-tests/        Core tests
-rust/         experiment-redact source
-docs/         Current user, operator and developer documentation
-examples/     Core integration and data-image examples
-tools/        Development checks and desktop provisioning
-```
-
-The root `pyproject.toml` defines the core package and the uv workspace;
-`server/`, `client/` and `worker/` have their own package metadata. Generated environments,
-build outputs and test caches are not source. On a deployed checkout, private
-`.ops/` contains small operational reports and hashes. After upgrade acceptance,
-remove inactive previous/candidate environments and disposable installers rather
-than retaining another program environment. Database recovery backups, live
-state and scientific data have separate retention policies.
-
-```mermaid
-flowchart LR
-    Client[Client computer] --> API[API daemon]
-    API --> Controller[Controller and backend library]
-    Controller --> Slurm[Slurm and Apptainer]
-    Controller --> SC[SenseCore REST and ACP]
-    Controller --> DLC[PAI DLC training]
-    API --> Builder[Private image builder]
-    Builder --> BuildHost[Local or SSH Docker / optional PAI DSW]
-    BuildHost --> Registry[Configured container registry]
-    Registry --> Slurm
-    Registry --> SC
-    Registry --> DLC
-    Slurm --> Store[Artifact storage]
-    SC --> Store
-    DLC --> Store
-    Store --> Client
-```
-
-The daemon freezes metadata and controls schedulers; it does not run training
-code. A private builder owns Docker and publication. In SSH desktop mode, actual
-build contexts/layers live on the desktop. Training runs inside backend containers.
-Dataset transfers use the API's global 1 GiB disk buffer, with durable per-part
-ACK before local removal: Slurm writes directly to shared storage; SenseCore streams
-an OCI data layer to CCR and copies it into NAS with a debug CPU job. The desktop
-is not on the new dataset path. DLC datasets can use approved personal OSS and
-inside-job CPFS caching; native OSS filesystem mounts remain unavailable until
-provider authorization is fixed. Output archives still use object storage and a
-separate client-ACK lifecycle; total API/Garage disk usage is not capped at 1 GiB.
-
-## Server code map
-
-| Concern | Main modules under `server/src/ml_exp_server/` |
-|---|---|
-| HTTP and auth | `api/boundary.py`: bearer/protocol checks and queue admission; `api/auth.py` loads the token; `api/contract.py` defines models; `api/errors.py` and `api/transfers.py` own shared transport boundaries |
-| Composition and lifetime | `api/app.py`: routes and app construction; `api/lifecycle.py`: lease, recovery, collector, execution owners and shutdown; `runtime.py`: domain services |
-| Projects and source identities | `projects/`: concrete import, revision, registry and lifecycle services; HTTP calls these services directly |
-| Checked mutations | `application.py`, `actions/`, `runs/submissions.py`; one first-submission intent in `runs/first_submission.py`; controller planning in `actions/controller_planning.py`, subprocess execution in `controller_gateway.py` |
-| Run queries and diagnosis | `runs/queries.py`, `evidence.py`, `validation.py`, `failures.py` |
-| Capability matching/preparation | `runs/executor_capabilities.py`, `experiment_preparation.py` |
-| Dispatch | `container_controller.py` → core `backends/` |
-| Observation | `collectord.py`, `ingest/`, `runs/terminal_snapshot.py`, `execution_progress.py`, `input_progress.py` |
-| Images | `image_builder.py`: builder daemon; `builds/builder_client.py`: private socket protocol and receipts; `dockerfile_build.py`, `builds/`: build context and execution |
-| Data | `data/`: target-bound assets, transfer buffer, Slurm receiver/CCR upload and NAS delivery; `desktop_upload.py` serves historical desktop data |
-| Backend preparation/collection boundary | `backends/operations.py`; provider implementations in `slurm.py`, `sensecore_data.py`, `sensecore_preparation.py`, `sensecore_results.py`; shared CPU checks in `sensecore_cpu.py` |
-| Results/state | `results/`: artifact storage, download lifecycle, checkpoint registry and independent collection |
-| Administrative Run deletion | `runs/deletion.py`, `deletion_state.py`, `results/admin_deletion.py`, `backends/run_deletion.py`; remote deletion program in `ml_exp_worker/delete_run.py` |
-| Local storage policy | `storage_service.py`: existing upload/lifecycle services and shared `storage_capacity.py` admission |
-| Experiment records | `records/contract.py`: metric schema/validation; `records/ingest.py`: shared normalization for live and archive metrics; `records/store.py`: durable journal; `api/record_routes.py`: exact-Attempt worker upload |
-| Optional W&B | `tracking/`: destination contracts, publication cursors and display; `wandb_exporter.py` is the SDK process entry |
-| Debug machines | `debug/models.py`, `service.py`, `cci.py`, `dsw.py`: bounded sessions separate from training Runs |
-| Compute programs | Independent `worker/src/ml_exp_worker/` package; server copies its reviewed source files into contexts |
-
-The two `backends/` directories have different responsibilities: core backends
-implement scheduling, status, logs and cancellation; server backends prepare
-shared-storage inputs and collect exact-Attempt outputs. Shared storage helpers,
-schemas and process entry points remain at the server package root.
-
-The server's small, explicit backend mapping groups asset/script preparation,
-terminal verification and result collection. The core's existing `BackendRegistry`
-continues to own scheduling capabilities, stage, submit, status and cancel.
-Together they provide the backend boundary without another scheduling registry,
-plugin loader or operation state machine. SenseCore CPU jobs share profile and
-exact name/confirmed UID checks; data copy, scripts and collection retain their
-separate durable intents, retry policies and receipts.
-
-`StorageService` composes the existing object, multipart-upload and ACK lifecycle
-stores. Upload promises, restore and publication reservations use the same local
-capacity policy and cross-process locks. Maintenance removes expired upload
-staging before processing acknowledged releases. Verified reproducible delivery
-caches remain distinct from retained objects and scientific records; NAS/shared
-state is outside local storage cleanup. This facade adds no journal or database.
-
-`records/` owns metric validation and accepted platform observations;
-`RecordStore` owns their journal, independently of whether W&B is enabled.
-`tracking/TrackingStore` adds optional publication and
-display operations. They reuse the same historical `tracking/outbox.sqlite`
-database and event identities; they are not two copies of experiment history.
-Archive publication imports verified metrics before allowing artifact release;
-releasing an acknowledged archive does not delete its registered observations.
-Both live worker uploads and verified archive imports use `records/ingest.py`;
-W&B receives the resulting observations without another normalization path.
-An installation without the optional SDK reports `WANDB_SDK_NOT_INSTALLED` for
-publication while keeping API records and metrics available. This diagnostic
-does not rewrite a Run's frozen publication route.
-
-`ExperimentServerApplication` and `ActionService` compose Run and Action operations.
-The unused Project lifecycle forwarding mixin is removed: routes call the existing
-concrete Project/source services. HTTP endpoints and durable Project formats stay
-unchanged. Shared upload and error helpers no longer import route modules.
-
-`runs/first_submission.py` is the single first-submission intent builder. Both the
-scoped operation and idempotent Submission resource use its exact source binding,
-Attempt selection and budget checks. The Submission service still owns its existing
-reuse lock and idempotency policy; Action authorization and execution stay separate.
-
-Stateless operation classes group existing methods by responsibility and share
-the facade's one runtime/store; they do not own separate mutable state or add
-another workflow engine. `actions/planning.py` owns preparation locks, idempotency,
-digests and saving the plan. `controller_planning.py` separates source binding,
-Campaign freezing, dry-run checks, resources and cancellation checks. Execution
-and reconciliation remain in `execution.py` and `recovery.py`.
-
-The API has five bounded execution lanes: Action (4 threads/16 admitted jobs),
-experiment orchestration (2/4), builds (1/4), data delivery (1/4), and result
-collection (1/4). Capacity includes running, queued and reserved work. Authenticated
-mutations reserve capacity before recording execution; saturation returns HTTP 503
-with `Retry-After` and a stable code. It does not create an execution claim.
-
-A short cancellation-safe handoff owns durable begin and enqueue even after a
-client disconnects. Long provider work stays in the bounded executor. Shutdown
-rejects new reservations and retains the workspace lease until admitted handoffs
-and jobs finish. Automatic collection reserves capacity before consuming a retry.
-Experiment orchestration still waits synchronously for dependencies in its own
-lane; these lanes isolate pressure rather than implement a dependency scheduler.
-
-`ingest/legacy.py` contains read-only configuration guesses for historical
-identified project layouts. Managed container Runs use their own generic
-configuration and metric schema, without project-specific constants or inferred
-research roles. Freshness uses observation age; training throughput does not imply
-a fixed logging interval. Historical files are never rewritten by indexing.
-
-`runtime.py` initializes daemon services; the public **Runtime resource** denotes
-a code/environment image. `controller_gateway.py` is the project-controller
-subprocess boundary; `controller_output.py` supplies the shared bounded output
-parser and redaction policy. Managed projects use the generic container controller;
-library consumers can supply adapters. A single managed Run currently generates
-an internal Campaign file, without requiring clients to design a Campaign.
-
-## Client workflow and observation
-
-Modules under `client/src/ml_exp_client/` have these responsibilities:
-
-| Concern | Module |
-|---|---|
-| Arguments, output and exit codes | `cli.py` |
-| Concrete CLI operations | `commands.py` |
-| HTTPS, authentication, protocol and safe errors | `api.py` |
-| Configuration and Dockerfile admission | `config.py` |
-| Source/data archives | `archives.py` |
-| Multipart uploads and backend data delivery | `assets.py` |
-| Verified download and acknowledgement | `artifacts.py` |
-| Atomic state and single-request dispatch | `state.py` |
-| One experiment's preparation, submission and recovery | `workflow.py` |
-| Read-only status, logs and metrics | `status.py` |
-| Explicit cancel/retry plans | `operations.py` |
-| Reviewed whole-Run deletion | `run_deletion.py` |
-| Standalone training-side metric writer | `metrics.py` |
-
-The public package exports remain `Client`, `ClientError`, `source_archive`,
-`download`, `acknowledge` and `MetricWriter`; import them from `ml_exp_client`.
-The CLI and durable state formats remain stable. Internal helpers have one
-canonical module rather than old-path forwarding wrappers.
-
-`workflow.py` owns an experiment's saved preparation, Submission, execution and
-download references. `operations.py` and `run_deletion.py` own their reviewed
-plans. They use `state.py` only to save, observe, and record a
-durable marker before a single request; policy and reconciliation remain with
-their callers. An unknown response does not authorize a replacement request.
-
-`ml-exp status` composes existing read APIs in `status.py`; it adds no server
-endpoint or scheduler mutation. The default response separates preparation,
-scheduler, training, publication and verification. `--details` expands the
-original evidence. Observation is pinned to an exact Attempt; absent/stale
-evidence remains unknown instead of being interpreted as a completed stage.
-Training completion and downloadable results are independent facts.
-
-When a saved Submission has reserved an Attempt but source staging has not yet
-materialized it, status uses that exact Submission's preparation evidence.
-It does not read another Attempt's training or result state. Missing Attempt
-evidence after submission remains an error.
-
-```mermaid
-flowchart LR
-    CLI[cli: parse and print] --> Commands[commands: concrete operations]
-    Commands --> Workflow[workflow / operations / deletion]
-    Commands --> Status[status: read only]
-    Workflow --> State[state: persist before effects]
-    Workflow --> Transfer[assets / artifacts]
-    Workflow --> HTTP[api: HTTPS and protocol]
-    Transfer --> HTTP
-    Status --> HTTP
-    HTTP --> Boundary[server boundary: auth and admission]
-    Boundary --> Routes[HTTP routes]
-    Routes --> Services[application and domain services]
-    Services --> Journal[durable Actions / manifests / receipts]
-    Services --> Backend[core scheduling and server backend operations]
-```
-
-## Worker code executes on compute
-
-The independent `worker/src/ml_exp_worker/` package contains 13 execution
-programs. The server uses `ml_exp_worker.source_path(name)` when copying them
-into sealed image contexts or remote jobs. Their roles are:
-
-- `worker_launcher.py`: verify a digest-bound startup manifest.
-- `managed_worker.py`: inputs, restore, user child, registration and output return.
-- `data_input.py`: verified data cache; `data_preparation.py`: optional download script.
-- `persistent_state.py`: verify/register/restore complete generations.
-- `worker_artifacts.py`: declared-output archive and multipart transfer.
-- `worker_http.py`: bounded HTTP transfer and safe transport diagnostics.
-- `worker_records.py`: send appended experiment records with retry/dedup identities.
-- `data_copy_worker.py`: separate zero-GPU NAS dataset copy.
-- `result_worker.py`: recover exact-Attempt outputs without running training.
-- `script_preparation.py`: execute a download script in a SenseCore CPU job,
-  revalidate its sealed NAS receipt, and report through a narrow HTTPS capability.
-- `dsw_build_worker.py`: execute the owned remote image-build request.
-- `delete_run.py`: delete an explicitly reviewed, exact backend Run scope.
-
-The server's `data/data_receiver.py` is the separate SSH-invoked Slurm shared-storage
-receiver; its upload-store dependencies belong to the server, not the worker
-package. Auxiliary copy/build/deletion/script programs are dispatched for their
-specific jobs rather than all being injected into training images.
-
-Worker fingerprints participate in image identity. Updating server source does
-not change workers in existing images. The package split preserves the execution
-program bytes, container targets and their worker fingerprints; the package
-resource helper itself is not injected. Build recipe code has its own digest:
-moving its imports can give new builds a different bundle identity even when
-worker bytes are identical. Existing Runtime receipts keep their original bundle
-IDs and are never recomputed using the current recipe. Backend implementations are core
-`backends/slurm.py`, `sensecore.py`, `sensecore_rest.py` and development `local.py`.
-
-## Identities and state
-
-| Entity | Meaning | Durable evidence |
-|---|---|---|
-| Source | Immutable code snapshot | Frozen tree and metadata |
-| Runtime | Source/Dockerfile/worker and published image | Definition and build receipt |
-| Asset | Immutable input bytes | Archive/file hashes and locator |
-| Preparation | One server-owned request and saved dependencies | Hash-bound intent and durable progress journal |
-| Run | Image, data, argv, resources and metric protocol | Immutable manifest |
-| Attempt | One execution | Intent, exact scheduler ID and observations |
-| Checkpoint | Complete backend-resident generation | NAS/shared-storage bytes and registered manifest |
-| Artifact | Published exact-Attempt output archive | Object, hashes and receipt |
-
-Actions/events use transactional SQLite. The read index and experiment-record
-journal use separate SQLite databases. Runtime/delivery/checkpoint/upload
-metadata use files and durable journals/locks as needed. There is no global
-transaction across all stores.
-Reconciliation verifies exact effects; it does not replay an uncertain create.
-The collector never starts replacement training. For eligible new workers with
-confirmed successful process exit, it may request independent CPU result
-collection once; historical workers are not automatically enrolled.
-
-## Experiment flow
+## Execution flow
 
 ```mermaid
 flowchart TD
-    Upload[Upload source, Dockerfile and data] --> Prepare[Durable preparation request]
-    Prepare --> Image[Build or reuse immutable Runtime]
-    Image --> Data[Prepare and verify backend data cache]
-    Data --> Run[Freeze Run configuration and metric protocol]
-    Run --> Review[Submission checks and explicit budget authorization]
-    Review --> Submit[Submit one Attempt]
-    Submit --> Certain{Exact job confirmed?}
-    Certain -->|yes| Worker[Queue, launch, verify inputs and restore state]
-    Certain -->|uncertain| Reconcile[Inspect original intent; no replay]
-    Reconcile --> Worker
-    Worker --> Train[User training program]
-    Train --> Metrics[metrics.jsonl to canonical API record journal]
-    Metrics --> WandB[Optional W&B publication]
-    Train --> Checkpoint[Complete checkpoint on NAS or datapool]
-    Train --> Exit[Record process exit]
-    Exit --> Archive[Archive, upload and verify results]
-    Archive --> Available{Download available?}
-    Available -->|yes| Download[Client downloads and verifies hashes]
-    Available -->|no| Recovery[Independent result collection]
-    Recovery --> Archive
-    Download --> Ack[Exact-Attempt acknowledgment and retention policy]
+    Client[Client: code and experiment configuration] --> API[Authenticated API]
+    API --> Prepare[Preparation: freeze executor, build Runtime, verify data]
+    Prepare --> Review[Submission: review gates and explicit authorization]
+    Review --> Core[Core backend adapter]
+    Core --> Slurm[SSH Slurm and Apptainer]
+    Core --> ACP[SenseCore ACP]
+    Core --> DLC[PAI DLC]
+    Slurm --> Worker[Managed worker and user entrypoint]
+    ACP --> Worker
+    DLC --> Worker
+    Worker --> State[Persistent checkpoint on backend storage]
+    Worker --> Records[Canonical API metric and lifecycle journal]
+    Records --> Query[Client API queries]
+    Records --> WandB[Optional W&B publisher]
+    Worker --> Results[Declared outputs: archive and verify]
+    Results --> Download[Client downloads and verifies]
+    Download --> Ack[Explicit verified ACK and archive retention]
 ```
 
-Scheduling state, process exit, checkpoint persistence and artifact availability
-are separate evidence. A RUNNING job does not prove training has started, and a
-saved checkpoint does not prove a download archive exists. Metric schemas declare
-what the experiment must report; they never manufacture observations.
+The API freezes and orchestrates work; backend schedulers allocate resources.
+A private image builder executes Docker publication locally, through SSH Docker,
+or in an optional PAI CPU DSW. DSW also supports temporary debugging; **DLC is
+PAI's training backend**. SenseCore uses ACP for training and bounded data/result
+copy jobs; CCI is a separate temporary debug-machine feature.
 
-## Reading and extending the code
+A scheduler RUNNING state does not prove training has started. Process exit,
+checkpoint registration, archive publication, client verification and W&B remote
+confirmation remain separate evidence. Read-only status never starts a job or
+repairs an uncertain operation automatically.
 
-Read `client/workflow.py` → `api/app.py` → `runs/experiment_preparation.py` →
-`container_controller.py` → core `backends/` → `ml_exp_worker/managed_worker.py` →
-`results/result_collection.py`. HTTP routes handle transport; operation classes
-and durable stores handle business rules.
+## Module map and actual entries
 
-New scheduler adapters implement the core Backend contract and capability
-declaration. Storage delivery/recovery operations belong under server `backends/`.
-Selection branches still exist in preparation/result orchestration: adding a
-backend currently requires wiring them as well. Moving provider code does not
-claim a complete dynamic-plugin interface.
+| Concern | Canonical implementation |
+| --- | --- |
+| Client transport and workflows | `client/api.py`, `workflow.py`, `operations.py`, `artifacts.py`, `state.py`; `cli.py` parses and prints |
+| HTTP and daemon lifetime | `server/api/app.py`, `boundary.py`, `lifecycle.py`; `runtime.py` composes shared services |
+| Projects and immutable source | `server/projects/` |
+| Preparation and submission | `server/runs/experiment_preparation.py`, `first_submission.py`, `submissions.py`; `actions/` owns review, claims and reconciliation |
+| Managed dispatch | `server/container_controller.py` calls core `backends/`; `controller_gateway.py` isolates reviewed external project controllers |
+| Data and capacity | `server/data/`, including the server-only SSH `data_receiver.py`; `storage_capacity.py` provides shared admission |
+| Images | `server/image_builder.py`, `dockerfile_build.py`, `worker_contract.py`, `builds/` |
+| Results and retention | `server/results/`, `storage_service.py`, `local_retention.py` |
+| Observation | `server/collectord.py`, `ingest/`, `runs/queries.py` and progress/evidence modules |
+| Platform metrics | `server/records/contract.py`, `ingest.py`, `store.py`; `api/record_routes.py` accepts exact-Attempt uploads |
+| W&B | `server/tracking/` and isolated `wandb_exporter.py` consume the accepted journal |
+| Debug machines | `server/debug/`: models, lifecycle and CCI/DSW adapters |
+| Administrative deletion | `server/runs/deletion.py`, `results/admin_deletion.py`, `backends/run_deletion.py` |
 
-Public CLI/process entries remain at the package root because service units and
-frozen project controllers reference them. Internal modules have one canonical
-domain location, with no old-path forwarding modules. Shared process execution
-uses the core runner's explicit process-group mode where required. Worker/recipe
-changes affect future identities, never existing images or Run manifests.
+Paths in this table are relative to each package's `src/ml_exp_*` directory,
+except the explicitly named client files. Core implementations live under
+`src/experiment_control/`.
 
-Programs live in `/opt/ml-expd`; config in `/etc/ml-expd`; state in
-`/var/lib/ml-expd` and configured project/builder roots. Backend storage and
-registry assets have separate lifetimes. `.ops/` is private operational evidence,
-not public functionality. See [deployment](operator-guide.md) and [recovery](recovery.md).
+User and operator entries are `ml-exp`, `python -m ml_exp_client`, `ml-expd`, and
+`ml-expd --config CONFIG doctor`. Service/frozen-controller entries also include
+`python -m ml_exp_server.image_builder`, `container_controller` and
+`wandb_exporter`. These are specific process boundaries, not interchangeable
+public workflows. The generated [redactor CLI](cli_reference.md) is separate.
+
+Core `backends/` owns availability, preflight, staging, submit/status/logs/cancel.
+Server `backends/` owns shared-storage data preparation and result recovery.
+They are different responsibilities. A small explicit mapping wires installed
+providers; adding a backend requires its capability declaration, adapter and
+server storage operations. There is no dynamic plugin loader or second scheduler.
+
+## Identities and storage
+
+| Entity | Frozen meaning |
+| --- | --- |
+| Source | Immutable uploaded code tree |
+| Runtime | Source, Dockerfile/build recipe, worker identity and published image |
+| Asset | Archive/file hashes and explicit backend storage locations |
+| Preparation | Original request, frozen executor and dependency identities |
+| Run | Image, input data, command, resources and metric protocol |
+| Attempt | One execution with its submission intent and exact backend identity |
+| Action / Submission | Reviewed mutation, authorization, execution and recovery evidence |
+| Checkpoint | Complete generation, file hashes and backend storage scope |
+| Result receipt | Published archive and file hashes; download ACK is a separate record |
+
+Actions use transactional [SQLite storage](action-storage.md). File-backed
+resources use cross-process locks, revision checks and atomic transitions.
+The canonical records journal retains the historical `tracking/outbox.sqlite`
+location; optional W&B cursors do not create another copy of experiment history.
+
+Input transfers share a bounded 1 GiB part buffer, not a 1 GiB total-disk limit.
+Slurm assets reside on shared storage; SenseCore uses CCR delivery to NAS; DLC
+can retain originals in personal OSS and verified caches on CPFS. Source,
+outputs, database recovery backups and journals have separate lifetimes.
+See [data](data.md), [checkpoints](persistent-checkpoints.md) and
+[retention](recovery.md#download-confirmation-and-server-storage).
+
+## Compatibility and upgrades
+
+Existing Run/Attempt/source identities, routes, immutable image references,
+review digests, publication routes and saved client operation IDs remain frozen.
+Legacy project parsing and historical desktop/object-store assets retain their
+read paths. Generic Slurm replaces site-specific names for new configuration;
+old storage records remain readable. Historical compatibility is not permission
+to create another job or rewrite a manifest.
+
+The worker package split preserves all 13 program files byte for byte, their
+container destinations and the existing worker fingerprints. The resource helper
+is not injected. Build recipes have their own fingerprint: moving imports can
+change **new** bundle identities without changing the worker program bytes.
+READY Runtime receipts keep their published identity. A not-yet-published Runtime
+whose frozen recipe differs from the installed builder may require fresh Runtime
+preparation; inspect its diagnostics and reconcile effects first. Do not mutate
+that old record, reuse an old confirmation or replay an uncertain build.
+
+Capabilities are both server- and image-specific. Updating the API cannot add
+telemetry, launcher or checkpoint features to an immutable old image. New builds
+obtain current workers; old Attempts keep their original dispatch behavior.
+The HTTP protocol remains independently negotiated; see [HTTP contract](http_contract.md).
+
+Upgrade acceptance preserves live state and private configuration. After acceptance,
+remove inactive previous/candidate environments and disposable installation
+copies; keep version/digest/CI reports and needed database recovery backups.
+Never remove an environment still referenced by a process. An upgrade does not
+imply database restoration, automatic rollback, resource cleanup or a GPU run.

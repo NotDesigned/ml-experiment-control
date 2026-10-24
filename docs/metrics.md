@@ -1,62 +1,75 @@
-# Metrics: write once, query or publish
+# Metrics: curves, results and provenance
 
-Training code writes `OUTPUT_DIR/metrics.jsonl`. The managed worker sends complete
-lines to the platform journal; the API reads that journal and optional W&B
-publication uses the same observations. No W&B key, SDK or direct cloud connection
-is needed in the training container.
+Experiment code defines and computes metrics. ML-Expd stores arbitrary named
+measurements with units and context, validates their declared schema and exposes
+them through the API. Optional W&B publication uses the same accepted records.
+There is no required accuracy, perplexity or project-specific metric vocabulary.
 
-## Training history and explicit results
+## Record and query
 
-`ml-exp init source` includes the stdlib-only `ml_exp_metrics.py`:
+`ml-exp init source` includes the stdlib-only `ml_exp_metrics.py` helper. Use it
+inside your training/evaluation program:
 
 ```python
 from ml_exp_metrics import MetricWriter
 
-metrics = MetricWriter()  # OUTPUT_DIR, independently of checkpoint STATE_DIR
+metrics = MetricWriter()  # OUTPUT_DIR/metrics.jsonl; separate from STATE_DIR
 metrics.log("train_loss", loss.item(), unit="nats/token", step=step,
             dataset_id="training-v1")
-metrics.log("validation_loss", total_nll / tokens, unit="nats/token", step=step,
-            dataset_id="validation-v1", numerator=total_nll, denominator=tokens)
+metrics.log("validation_loss", total_nll / target_tokens, unit="nats/token",
+            step=step, dataset_id="validation-v1",
+            numerator=total_nll, denominator=target_tokens)
 
-# After the experiment has selected and evaluated a checkpoint:
+# Your code selects and evaluates the checkpoint to report:
 metrics.summary("validation_loss", selected_loss, unit="nats/token",
-                step=selected_step, checkpoint_id=selected_checkpoint,
-                dataset_id="validation-v1",
-                numerator=selected_total_nll, denominator=selected_tokens)
+                step=selected_step, dataset_id="validation-v1",
+                checkpoint_id=selected_checkpoint,
+                numerator=selected_nll, denominator=selected_target_tokens)
 ```
 
-`log()` appends a history observation. `summary()` writes the same record format
-with `summary:true`, explicitly selecting a result for comparison. It does not
-choose the best checkpoint. Keep summary and history in the same file; do not
-overwrite history during final export. An installed client also provides
+`log()` appends a history point. `summary()` appends an explicit comparison
+result with `summary:true`; it neither chooses a checkpoint nor adds a curve
+point. Both use one append-only JSONL file. Do not replace it during final export.
+Each call writes and flushes a complete line. The image needs no client package,
+API token, W&B SDK/key or direct W&B connection. An installed client also exports
 `from ml_exp_client import MetricWriter`.
 
-Each line is one JSON object:
+Query an exact Attempt, repeating `--name` to select more metrics:
+
+```bash
+ml-exp metrics --project my-study --run trial-001 --attempt attempt-001 \
+  --name train_loss --name validation_loss --max-points 2000
+```
+
+## Record format
+
+One line is one JSON object, for example:
 
 ```json
 {"name":"validation_loss","value":2.5,"unit":"nats/token","step":100,"dataset_id":"validation-v1","variant_id":"baseline","checkpoint_id":"step-0100","numerator":25000,"denominator":10000,"summary":true}
 ```
 
-| Fields | Meaning |
-| --- | --- |
-| `name`, `value`, `unit` | Arbitrary metric name, scalar measurement and explicit unit |
-| `step`, `epoch`, `timestamp` | Optional measurement position/time; multiple positions provide a curve |
-| `dataset_id`, `variant_id`, `checkpoint_id` | Optional scientific context; different variants remain separate |
-| `protocol_id` | Omit to inherit the frozen protocol; an explicit mismatch fails validation |
-| `numerator`, `denominator` | Optional aggregation counts, without unit conversion or recomputation |
-| `summary` | Optional boolean; true explicitly declares a result, independently of history |
-| `status`, `error` | Optional `VALID` (default), `PARTIAL`, `FAILED` or `MISSING`, and diagnostic |
+| Fields | Contract |
+|---|---|
+| `name`, `value`, `unit` | Metric name, Python `int`/`float` or null, explicit unit; booleans are not values |
+| `step`, `epoch`, `timestamp` | Optional measurement position/time |
+| `dataset_id`, `variant_id`, `checkpoint_id` | Optional context; separate variants never overwrite one another |
+| `protocol_id` | Inherits the frozen protocol if omitted; explicit mismatch fails |
+| `numerator`, `denominator` | Optional aggregation counts, retained with the measurement |
+| `summary` | Optional boolean declaring a comparison result |
+| `status`, `error` | Optional `VALID` (default), `PARTIAL`, `FAILED` or `MISSING`, plus a diagnostic |
 
-Names and units are nonempty printable strings of at most 128 characters.
-Nonfinite measurements remain failed evidence with a null value, never zero.
-Distributed code must emit its aggregate from a reporting rank; the platform does
-not combine losses from different ranks. Large task-level results belong in
-Parquet/JSONL artifacts, with this interface holding aggregate measurements.
+Names/units are nonempty printable strings, at most 128 characters. One encoded
+line is limited to 64 KiB. Convert tensors with `.item()` before writing.
+Missing values, NaN and infinity never become zero; nonfinite values remain
+failed evidence. Different units/protocols cannot silently overwrite one another.
+Metric checkpoint/data references are authored labels; checkpoint file/hash
+verification is a separate registration contract.
 
-## Declare units and requirements
+## Declare units and required contexts
 
-Use a Run's `metrics_schema`, or project defaults at
-`GET/PUT /api/projects/P/metrics-schema`:
+Set `metrics_schema` and `evaluation` in the experiment JSON. A project can also
+set future defaults through `GET/PUT /api/projects/P/metrics-schema`.
 
 ```json
 {
@@ -65,84 +78,93 @@ Use a Run's `metrics_schema`, or project defaults at
     "definitions": {
       "train_loss": {"unit": "nats/token"},
       "validation_loss": {
-        "unit": "nats/token", "required": true,
+        "unit": "nats/token",
+        "required": true,
         "required_when": {"dataset_id": "validation-v1"},
         "aggregation": "ratio_of_sums",
-        "numerator_unit": "nats", "denominator_unit": "target token"
+        "numerator_unit": "nats",
+        "denominator_unit": "target token"
       }
     }
   },
   "evaluation": {
-    "benchmark": "fineweb-validation-v1",
-    "tokenizer": "sha256:ACTUAL_HASH", "context_tokens": 1024,
-    "target_positions": "target tokens", "loss_mask": "target-only"
+    "benchmark": "validation-v1",
+    "tokenizer": "sha256:ACTUAL_HASH",
+    "context_tokens": 1024,
+    "target_positions": "target tokens",
+    "loss_mask": "target-only"
   }
 }
 ```
 
-Empty definitions impose no metric vocabulary. There are at most 256 definitions
-and 16 KiB of finite evaluation metadata. The frozen protocol hash binds schema,
-evaluation, source, image, argv/environment, inputs and any restore reference.
-Changing defaults affects future Runs only. Authored claims such as `D_FT=0` are
-metadata; the platform does not prove them scientifically.
+`required_when` matches exact `dataset_id`, `variant_id` and/or `checkpoint_id`
+values. Here validation loss is required only in observed validation contexts,
+not at every training step. Matching requirements must be satisfied together in
+the same protocol/checkpoint/dataset/variant/epoch/step context. A value from
+another context cannot fill a gap. Entirely unobserved contexts do not prove
+that evaluation ran. Without `required_when`, requirements apply to every
+observed context, preserving old schema behavior.
 
-`required_when` limits a requirement to exact matching `dataset_id`, `variant_id`
-and/or `checkpoint_id` values. In the example, ordinary training steps do not
-need validation loss. Matching evaluation contexts must still contain the required
-valid metrics together: another step/variant/checkpoint cannot fill a gap.
-An entirely unobserved target context is not evidence that evaluation ran.
-Omitting the selector preserves the original rule: required metrics apply to
-every observed context. Old schemas and protocol hashes are not rewritten.
+Empty definitions allow arbitrary names with explicit units. A nonempty schema
+marks undeclared names; at most 256 definitions are accepted. Evaluation metadata
+is finite JSON, at most 16 KiB. Its protocol hash binds schema, evaluation, source,
+image, command/environment, inputs and restore/preparation context. Defaults
+change future Runs only. Claims such as `D_FT=0` or a tokenizer hash are recorded
+metadata, not scientific verification by the platform.
 
-`ratio_of_sums` validates finite counts and a positive denominator. Training code
-computes the value; the platform does not check arithmetic equality or convert
-nats/token to bits/raw byte. Metric meaning, aggregation, selection and scientific
-success criteria belong to experiment code.
+## Aggregation belongs to experiment code
 
-## One client read format
+For mean token loss, retain summed NLL and the effective target-token count:
 
-```sh
-ml-exp metrics --project P --run R --attempt attempt-001 \
-  --name train_loss --name validation_loss --max-points 2000
+```text
+nats/token = total_nll_nats / effective_target_tokens
+bits/raw byte = total_nll_nats / (ln(2) × scored_raw_bytes)
 ```
 
-Current clients negotiate `metric-records.v1` and request
-`GET /api/attempts/P/R::attempt-001/metrics?format=records`. Repeat the `name` query
-parameter to filter by metric name, including names containing commas. The Run
-endpoint `/api/runs/P/R/metrics` supports the same format for the current Attempt.
+These denominators differ. Neither averaging batch means nor applying a fixed
+unit conversion necessarily produces the intended result. `ratio_of_sums`
+requires finite counts and a positive denominator; the platform does not recompute
+`value` or check arithmetic equality. Experiment code defines masks, weighting,
+invalid-draw handling, selection and success criteria. Distributed jobs should
+emit their aggregate from one reporting rank. Store large per-task results as
+Parquet/JSONL artifacts so they can be regrouped without rerunning the model.
 
-The response has `project`, `run_id`, `attempt_id`, `source_attempt_id`,
-`protocol_id`, `records`, `validation`, `total_records`, `downsampled` and
-`missing_names`. Each record retains scientific context, validity and errors.
-No duplicate points/keys projection or server filesystem paths is included.
-`total_records` counts matching normalized records; `validation.total_records`
-counts all normalized records. Validation checks the complete history before name
-filtering and downsampling. Download full JSONL for
-complete analysis. `summary:true` observations remain distinct from history at
-the same step.
+## Compact API and validation
 
-For old callers, omitting `format` retains the legacy response and `keys` field
-filter. Current clients use that path only when the server lacks the capability;
-`--name` requires the new capability rather than guessing legacy semantics.
+Current clients use `metric-records.v1`:
 
-## Validation and delivery
+```http
+GET /api/attempts/P/R::attempt-001/metrics?format=records&name=validation_loss&max_points=2000
+```
 
-Missing observations are `NOT_OBSERVED`; missing requirements or partial records
-are `PARTIAL`; invalid values, units, protocols or conflicting rewrites are
-`FAILED`. Identical observations deduplicate. References on a metric are labels;
-checkpoint file/hash verification is a separate registration process.
+Repeat `name` for multiple exact metric names; a comma is part of a name, not a
+separator. The Run-level `/api/runs/P/R/metrics` route supports the same query,
+resolving the current Attempt. Responses contain identity fields, `protocol_id`,
+`records`, `validation`, `total_records`, `downsampled`, `missing_names` and
+`source_attempt_id`. They omit legacy duplicate projections and server paths.
 
-The worker reads append-only complete lines roughly every five seconds, in
-batches of at most 64 records. A line is limited to 64 KiB. Network failures retain
-the cursor and event IDs for retry without stopping training. Stdout observations
-are a sampled legacy path; private files or a final-only copy do not provide live
-history. Old immutable worker images require rebuilding for live record delivery.
+`total_records` counts matching normalized records. `validation` checks complete
+history before name filtering/downsampling, including required metrics, failed
+records and conflicts. Use full exported JSONL for analysis of every point.
+`summary:true` is distinct from history even at the same step. Missing observations
+are `NOT_OBSERVED`; incomplete contexts are `PARTIAL`; invalid values, units,
+protocols or conflicting rewrites are `FAILED`. Identical observations deduplicate.
 
-Before publishing an uploaded result archive, the platform imports root
-`metrics.jsonl` and `train_metrics.jsonl`, deduplicates live observations and fills
-missing final points. Journal write failure prevents publication and preserves
-the upload for retry. Archive release does not delete metrics: the historical
-`projects/tracking/outbox.sqlite` contains the canonical journal as well as
-independent W&B confirmation cursors. Previously lost history cannot be invented.
+Legacy HTTP callers that omit `format` retain their existing response. The API's
+legacy `keys` parameter selects record fields; it is not a metric-name filter and
+cannot be combined with `format=records`. Prefer CLI `--name`; it requires the
+new capability instead of guessing legacy semantics.
 
-See [W&B publication](wandb.md) for curves, explicit results and remote confirmation.
+## Delivery and retention
+
+Workers read complete newline-terminated records roughly every five seconds,
+in batches of at most 64. Retry preserves event IDs and cursor without stopping
+training. A final uploaded root `metrics.jsonl` or `train_metrics.jsonl` can fill
+delivery gaps; journal-write failure prevents archive publication until retry.
+Stdout-only/old worker observations may be sampled and cannot reconstruct a full
+curve. Use a Runtime with `experiment-records.v1` for live delivery.
+
+Accepted metrics survive result archive ACK/release. The canonical journal and
+independent publication cursors remain in the historical `tracking/outbox.sqlite`;
+this is not a second copy of weights or datasets. See [W&B](wandb.md) for display,
+publication confirmation and the distinction between curves and final results.

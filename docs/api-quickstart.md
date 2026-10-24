@@ -1,10 +1,14 @@
-# Run an experiment from another computer
+# Run an experiment through the API
 
-## Connect
+This is the complete path for a researcher using an existing service. Operators
+should start with [deployment](operator-guide.md); custom API clients should use
+this workflow before the [resource reference](source-api.md).
 
-The operator supplies an HTTPS API base URL, private Bearer token, client wheel
-and enabled executors/base images. You need Python 3.10+; CI uses 3.12. Local
-Docker, SSH and cloud credentials are unnecessary.
+## Install and connect
+
+Ask the operator for an HTTPS API base URL (including any proxy prefix), a private
+Bearer token, a reviewed client wheel and an enabled executor/base-image choice.
+Use Python 3.10+; no local Docker, SSH or backend credentials are required.
 
 ```bash
 python3 -m venv .client-venv
@@ -13,61 +17,47 @@ python -m pip install ./ml_experiment_client-*.whl
 export ML_EXPD_API_URL='https://api.example.org/ml-expd'
 export ML_EXPD_API_TOKEN_FILE="$HOME/.config/ml-expd/client.token"
 ml-exp check --schema openapi.json
+ml-exp check --json
+ml-exp check --training
 ```
 
-Provision that private token file first. Keep it outside source and experiment
-JSON. Set only one of `ML_EXPD_API_TOKEN_FILE` and `ML_EXPD_API_TOKEN`; simultaneous
-nonempty sources are rejected. These and the API URL are the only connection
-settings; see [configuration](configuration.md). From a checkout,
+Provision the private token file first, outside source and data. Configure exactly
+one token source: `ML_EXPD_API_TOKEN_FILE` or `ML_EXPD_API_TOKEN`.
+[Configuration](configuration.md) also covers private CAs. From a checkout,
 `python -m pip install ./client` installs only the client.
-`check` prints a short API/source/training summary. Use `ml-exp check --json` for
-capabilities, policy, executors, base digests and storage limits, including from
-scripts that previously parsed the default JSON output. Choose actual IDs/digests
-from that JSON; executors are not free-GPU counts.
-Before uploading an experiment, run `ml-exp check --training` to check required
-training configuration and builder connectivity. A basic API can pass `check`
-while reporting incomplete training configuration; the training check returns 2
-and names its missing components. It does not allocate a GPU or validate admission.
 
-For a basic service without a builder, import source independently:
-
-```bash
-ml-exp source-import --project my-study --directory ./source
-```
-
-This returns immutable source identity and metadata; it does not require a
-Dockerfile or start a build/job. A full deployment example is in the
-[two-machine quickstart](two-machine-quickstart.md). The ordinary `experiment`
-command below already imports source, so no separate upload is needed for it.
+`check` prints a short summary; `--json` includes full capabilities, executors,
+base digests and limits. `--training` also checks training configuration and the
+builder, returning 2 when incomplete. It does not allocate a GPU or prove that
+resources are immediately available. Select actual executor IDs and immutable
+base-image digests from your service.
 
 ## First experiment
 
-Keep source, data, client state and results separate:
+Use a new working directory and keep each kind of file separate:
 
 ```text
 study/
-  source/Dockerfile
-  source/train.py
-  source/ml_exp_metrics.py
+  source/                 # Dockerfile, train.py, ml_exp_metrics.py
+  data/                   # optional dataset, separate upload
   experiment.json
-  trial.state.json       # created by client, outside source
-  results/               # downloads, outside source
+  trial.state.json        # created by client; preserve for resume
+  results/                # downloads; never include in source
 ```
 
-Generate a starter, replacing the placeholder with an approved digest:
+Generate a starter after replacing the base-image placeholder:
 
 ```bash
 ml-exp init source --base-image 'REGISTRY/BASE@sha256:ACTUAL_64_HEX_DIGEST'
 ```
 
-The starter uses stdlib Python and appends an explicit-unit metric after every
-smoke step, immediately visible in OUTPUT_DIR/metrics.jsonl. Keep its generated
-ml_exp_metrics.py helper when replacing train.py with your training code.
-It verifies the workflow, not CUDA availability
-or GPU throughput. Replace it with training code and dependency installation
-afterwards. See [Dockerfile rules](builds.md#dockerfile-contract).
+The starter writes `loss` curve points and `summary.json` using stdlib Python.
+It tests the platform path, not CUDA or training throughput. Keep its generated
+`ml_exp_metrics.py` helper when replacing `train.py`; add dependencies to the
+Dockerfile. The server adds the managed launcher and copies source to
+`/workspace`. See [Dockerfile rules](builds.md#dockerfile-contract).
 
-Write `experiment.json`:
+Create `experiment.json`, replacing `slurm-gpu` with a published executor:
 
 ```json
 {
@@ -76,21 +66,23 @@ Write `experiment.json`:
   "source": "./source",
   "dockerfile": "Dockerfile",
   "entrypoint": ["python3", "train.py"],
-  "executor": "slurm-gpu",
   "arguments": ["--steps", "20"],
-  "metrics_schema": {"definitions": {"loss": {"unit": "dimensionless"}}},
+  "executor": "slurm-gpu",
   "resources": {"gpus": 1, "cpus": 8, "memory_gb": 32, "max_time": "00:10:00"},
-  "max_gpu_hours": 0.2
+  "max_gpu_hours": 0.2,
+  "metrics_schema": {"definitions": {"loss": {"unit": "dimensionless"}}},
+  "outputs": ["metrics.jsonl", "summary.json"],
+  "required_outputs": ["summary.json"]
 }
 ```
 
-Replace the executor with one published by your server. SenseCore GPU count
-must match the fixed spec; actual CPU/memory may exceed requested minimums.
-Local paths are relative to the config file. Instead of `executor`, use
-`"executor_selector": {"backend": "slurm"}` or an ordered `candidates` list.
-Optional `requirements` can demand persistent checkpoints or reliable exit codes;
-matching rejects unsupported capabilities before upload/build. See [backend
-contracts and preparation](backends.md).
+Local paths are relative to the JSON file. A fixed SenseCore worker specification
+must support the requested GPU count; its CPU/memory allocation can exceed the
+requested minimum. Optional `executor_selector` and capability `requirements`
+are described in [backend preparation](backends.md).
+
+Prepare first, inspect the returned executor, dependencies, gates and budget,
+then authorize execution with the same saved state:
 
 ```bash
 ml-exp experiment experiment.json --state trial.state.json
@@ -98,158 +90,109 @@ ml-exp experiment experiment.json --state trial.state.json --resume \
   --execute --seconds 1800 --download-to results/trial-001
 ```
 
-The first command uploads source/data and submits one preparation request. The
-server matches the executor, builds/reuses the image, prepares data, freezes the
-Run and prepares gates. It does not submit GPU training. Adding SenseCore inputs
-can launch a bounded zero-GPU data-copy job during preparation. `--execute`
-authorizes scheduling within the budget. `--seconds` limits each client wait stage;
-`resources.max_time` controls worker/job duration. Disconnecting does not cancel.
+The first command uploads source/data and requests server preparation: build or
+reuse a Runtime, prepare data, freeze the Run and review its Submission. It does
+not submit GPU training. Preparation can run a bounded zero-GPU data-copy job.
+`--execute` authorizes and submits the reviewed experiment; `--seconds` limits each
+client wait stage, while `resources.max_time` bounds the backend job. Closing the
+client does not cancel a submitted job.
 
-With `--download-to`, scheduler completion is followed by observation of the
-original Attempt's collection. Download starts only when it is `AVAILABLE`,
-`verification=SHA256_VERIFIED` and `download_available=true`. This wait can include
-the server's automatic result collection; the client does not request collection
-or create another Attempt. `FAILED` or `RECONCILE_REQUIRED` requires inspection;
-`RELEASED` cannot be downloaded again. A publication timeout preserves the exact
-Attempt and destination in the state file. Repeat the same command with
-`--resume --execute` to continue observing it. Servers without
-`result-collection.v1` retain the older direct-download behavior.
+W&B training publication is requested by default but is effectively disabled
+without server credentials/configuration. Preparation publication defaults off.
+You can explicitly set `"wandb": {"enabled": false}`; see [W&B](wandb.md).
 
-## Add data and outputs
+## Observe the exact execution
 
-Code is packaged at `/workspace`. Write exports to `OUTPUT_DIR` (`/outputs`).
-Add data when needed:
-
-```json
-{"inputs": [{"directory": "./data", "mount_path": "/inputs/data"}]}
-```
-
-The client uploads data to the selected executor: shared storage on Slurm,
-or a CCR data image followed by a zero-GPU copy to SenseCore NAS. The desktop
-builds only the Runtime image. Standalone uploads require
-`ml-exp asset-upload --project my-study --executor slurm-gpu --directory ./data --state data.state.json`.
-Target-backed datasets have metadata/references, not an API archive download.
-Use `asset_id` instead of `directory` to reuse an upload. A source download
-script can instead prepare persistent `DATA_DIR`. See [data](data.md).
-Use `STATE_DIR` for complete recovery state ([checkpoints](persistent-checkpoints.md)),
-and explicit units for [metrics](metrics.md). These are optional additions.
-
-`outputs` selects files to export; it does not promise that every matching file
-exists. Use `required_outputs` for the files your experiment must publish, for
-example `{"required_outputs": ["summary.json", "weights/*.pt", "updates.jsonl"]}`.
-Each pattern must match at least one regular file. These patterns are frozen
-with the Run, included in the export selection, and checked before publication.
-The platform does not prescribe model filenames or scientific success criteria.
-
-For an original job's persisted provider evidence, query
-`GET /api/runs/{project}/{run}/attempts/{attempt}/diagnostics`; add `?refresh=true`
-to capture current provider events and logs. No compute is submitted. An
-`ExitedWithCode` event is accepted only for the exact job UID and identifies its
-worker/container. Empty delayed logs remain pending, and later log expiry does
-not erase previously captured evidence. Missing historical stderr cannot be
-reconstructed from an exit code.
-
-A byte-verified archive can still lack intended scientific outputs. If an
-unacknowledged archive was published from an incomplete mirror and the complete
-outputs are now collected, an operator can call
-`POST /api/runs/{project}/{run}/attempts/{attempt}/collection/repair` with
-`{"expected_sha256": "CURRENT_ARCHIVE_SHA256"}`. Repair only adds files, verifies
-every old file is unchanged, preserves the old receipt/object, and switches the
-download to the expanded archive. It rejects acknowledged/retained/released
-archives and active Attempts; it never launches training. This request may take
-time to package and validate; after a lost response, query collection before
-retrying the same digest.
-
-If preparation's response is lost, list
-`GET /api/experiments/{project}/{run}/submissions` and query the original
-`GET /api/submissions/{submission_id}`. A valid prepared review returns
-`AUTHORIZE`; an expired review returns `REPREPARE`. Reprepare the same Run to
-obtain current gates instead of executing expired approval. Never create a
-second Run or replay an uncertain scheduler submission.
-
-## Observe and retrieve
+Use another terminal with the same connection settings:
 
 ```bash
 ml-exp status --project my-study --run trial-001 --state trial.state.json
 ml-exp status --project my-study --run trial-001 --attempt attempt-001 --details
-ml-exp submission --id SUBMISSION_ID
-ml-exp watch --project my-study --run trial-001 --seconds 1800
 ml-exp logs --project my-study --run trial-001 --attempt attempt-001 --stream both --lines 80
 ml-exp metrics --project my-study --run trial-001 --attempt attempt-001 --name loss --max-points 2000
+```
+
+Replace `attempt-001` with the returned ID. `status --state` includes the original
+preparation/submission, even before a Run exists. Without it, preparation can be
+`NOT_OBSERVED`. An explicit Attempt prevents accidentally reading a later retry.
+`--details` expands existing evidence; it neither refreshes providers nor starts
+collection. Metrics use normalized records, including units and provenance.
+
+| Observation | What it establishes |
+|---|---|
+| Runtime `READY` | An image was published |
+| Submission `VERIFIED` | The exact scheduler job is visible |
+| Scheduler `RUNNING` | The job has started; training may still be preparing data |
+| Training `COMPLETED`, exit code 0 | Worker training completion evidence exists |
+| Collection `AVAILABLE`, `SHA256_VERIFIED`, `download_available=true` | Results can be downloaded |
+
+`ml-exp watch --project my-study --run trial-001 --seconds 1800` waits for a
+scheduler terminal state; it does not wait for result publication. Logs may be
+delayed or unavailable. Missing evidence remains unknown rather than implying
+success. See [recovery](recovery.md) for diagnostics and collection.
+
+## Download and acknowledge
+
+The executing `experiment` command above waits for the original Attempt's result
+collection and downloads when ready. To download separately, choose a new path:
+
+```bash
 ml-exp download --project my-study --run trial-001 \
   --attempt attempt-001 --out results/trial-001-copy
 ```
 
-`status` returns a compact summary of preparation, scheduler, training,
-publication and verification. `--state` observes the original saved preparation
-and submission, including while the Run has not yet been created. A saved
-submission pins its exact Attempt; otherwise omitting `--attempt` resolves the
-current Attempt once. Without experiment state, preparation can remain
-`NOT_OBSERVED`. `--details` adds existing API evidence; it neither refreshes
-provider logs nor starts result collection. Training stays `UNKNOWN` when there
-is no completion evidence, even if the scheduler reports `SUCCEEDED`. Publication
-is downloadable only when collection and hash verification are both complete.
-A failed collection is shown separately from successful training.
+The client verifies archive and file hashes, writes `verification.json`, then
+acknowledges the local copy. By default ACK authorizes server archive release
+without a waiting period, subject to configured archival policy. Use
+`--keep-server-copy` to retain that archive. ACK does not delete data assets,
+persistent checkpoints or the metric journal; keep your local results safe.
 
-Use the actual Attempt ID and a new destination directory. Download verifies the
-archive and recorded file hashes. Failed jobs can still have useful outputs.
-Runtime READY means image publication; Submission VERIFIED means exact scheduler
-job visibility; neither proves training or result publication succeeded.
-`watch` stops at a scheduler terminal state and does not wait for publication.
-`logs` and `metrics` are reads; omitting `--attempt` resolves the current Attempt
-once. Metrics retain their recorded units, protocols and variants.
-
-After disconnecting, use the same state with `--resume`. It observes saved
-identities without replaying uncertain build/scheduler requests. New state files
-also bind the server and Run; historical experiment state remains readable.
-Authorization and scheduling each save a durable request marker before dispatch.
-A lost reply is inspected through the original Submission instead of repeating
-the request. Changed code
-or config needs a new Run ID and state file. See [recovery](recovery.md) for
-`RECONCILE_REQUIRED`, empty results and stalled preparation.
-
-A completed download with a `PENDING` acknowledgement can be resumed with the
-same experiment state and `--resume`, even without `--execute`. The client verifies
-the saved local archive and files, then retries only ACK, preserving the saved
-KEEP/release choice. It does not download again. Keep the results directory and
-`verification.json`; `ml-exp acknowledge --directory results/trial-001` performs
-the same local verification and ACK retry directly.
-
-ACK releases only the downloaded archive. Experiment records and backend
-checkpoint state remain. To remove an entire completed managed Run, use the
-separately enabled, reviewed [administrative deletion](resource-deletion.md)
-workflow; it can also remove result objects without a download ACK.
-
-Cancellation and retry use separately saved plans. The first command prepares an
-exact-Attempt Action for review; only the second explicit invocation executes it:
+If download succeeded but ACK is pending, preserve the directory and retry only
+confirmation:
 
 ```bash
-ml-exp cancel --project my-study --run trial-001 --attempt attempt-001 --state cancel.state.json
-# Inspect the returned Action, scope, gates and next_action first.
-ml-exp cancel --state cancel.state.json --execute
-
-ml-exp retry --project my-study --run trial-001 --attempt attempt-001 \
-  --max-gpu-hours 0.2 --state retry.state.json
-# Inspect the new Attempt and budget first.
-ml-exp retry --state retry.state.json --execute
+ml-exp acknowledge --directory results/trial-001
 ```
 
-Repeating either command with only `--state` observes its original Action. Use
-`--reconcile` for an uncertain original Action. Retry creates a new Attempt in the
-same frozen Run and does not select a checkpoint. To change the frozen checkpoint,
-create a new Run with an explicit `resume_from` reference. See [safe operation
-recovery](recovery.md#cancel-or-retry-an-exact-attempt).
+With `--download-to`, a timeout preserves the exact Attempt and destination.
+Repeat the original `experiment` command with `--resume --execute` to keep
+observing; ACK-only recovery also works with `--resume` without `--execute`.
+A failed or uncertain collection needs diagnosis, not another training Attempt.
+A `RELEASED` archive is no longer available through the same download route.
 
-Lower-level commands are `pack → create → prepare → execute → watch → download`.
-Use `ml-exp COMMAND --help` and the [API reference](source-api.md) when reusing
-one Runtime across multiple Runs or integrating a custom client.
-The [HTTP contract](http_contract.md#structured-errors-and-execution-capacity)
-describes bounded execution queues and safe structured SDK errors.
+## Add data, checkpoints and scientific metrics
 
-## Interrupted preparation
+| Need | Experiment configuration / convention | Reference |
+|---|---|---|
+| Upload local training data | `"inputs": [{"directory":"./data","mount_path":"/inputs/data"}]` | [Data](data.md) |
+| Reuse an asset | Replace `directory` with its returned `asset_id` | [Data](data.md) |
+| Download on the backend | `data_preparation` script writes persistent `DATA_DIR` | [Data preparation](data.md) |
+| Keep complete recovery state | `checkpoint_persistence`; atomically publish a ready generation in `STATE_DIR` | [Checkpoints](persistent-checkpoints.md) |
+| Restore an exact checkpoint | New Run with `resume_from` referencing Run/Attempt/checkpoint | [Restore](persistent-checkpoints.md#register-and-restore) |
+| Emit curves and chosen results | `MetricWriter.log()` and `.summary()` to `OUTPUT_DIR/metrics.jsonl` | [Metrics](metrics.md) |
+| Require exported files | `required_outputs`; every pattern must match a regular file | [Result recovery](recovery.md) |
 
-Client state records `preparation_id`, dependency IDs and the submitted intent.
-`--resume` observes the same preparation. If it reports `RECONCILE_REQUIRED`, inspect
-its Runtime/data delivery first; an explicit `--resume --continue-preparation`
-advances independently READY dependencies without replaying uncertain effects.
-`--execute` remains separate authorization for GPU training.
+Slurm data is staged on shared storage accessible to offline compute nodes.
+SenseCore uses a CCR data image and a zero-GPU NAS-copy job. PAI can use approved
+OSS datasets and CPFS; query capabilities rather than assuming native OSS mounts.
+Data and recovery state are separate from exported `OUTPUT_DIR` results.
+For independent transfers use `asset-upload`; for source-only service testing,
+`source-import` requires neither Dockerfile nor builder.
+
+## Resume safely or reuse a Runtime
+
+Keep the original config, source and state unchanged when using `--resume`.
+Lost responses are observed through the saved identities; uncertain scheduler
+requests are not replayed. If preparation is `RECONCILE_REQUIRED`, inspect its
+Runtime/data dependency before using explicit `--resume --continue-preparation`.
+This is separate from authorization to train. Changed code or experiment config
+needs a new Run ID and state file.
+
+For lower-level reuse, the sequence is `pack → create → prepare → execute`.
+`prepare` returns review gates and an exact confirmation; `execute --state …
+--confirm …` authorizes/submits that saved Submission. See command help and the
+[resource reference](source-api.md), rather than recreating a Runtime per Run.
+Cancel/retry use separately reviewed plans. Retry adds an Attempt to the frozen
+Run; it does not automatically choose a new checkpoint. See
+[safe operation recovery](recovery.md#cancel-or-retry-an-exact-attempt) and
+[administrative deletion](resource-deletion.md).

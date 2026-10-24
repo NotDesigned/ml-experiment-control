@@ -5,6 +5,9 @@ Run, including all its Attempts. It requires the server's
 `resource-deletion.v1` capability, the private API bearer credential and enabled
 `action_runtime.allow_resource_deletions` policy. That policy defaults to false;
 a disabled policy returns a blocked plan with reviewable gates.
+**Only Slurm and SenseCore managed Runs are supported. PAI DLC Run deletion is
+not implemented** (`RUN_DELETION_BACKEND_UNSUPPORTED`); CPFS state and durable OSS
+objects require their separate approved management process.
 Only daemon-managed Runs are deletion targets. Older imported or indexed Runs
 remain queryable under their historical identity rules; this endpoint does not
 infer permission to delete their arbitrary storage locations.
@@ -45,7 +48,8 @@ releases the matching archive while retaining experiment records and persistent
 checkpoints.
 
 Client downloads remain on the client's computer. Shared source, images and data
-assets remain available. Uploaded checkpoint snapshot assets follow the separate
+assets remain available. Durable OSS archive copies are retained separately;
+Run deletion does not remove those backups. Uploaded checkpoint snapshot assets follow the separate
 shared-asset lifecycle and are retained in this release; deleting backend-resident
 persistent checkpoints does not delete those uploaded backups. W&B cloud records
 are retained. The display schema for each W&B destination also remains so future

@@ -10,7 +10,7 @@ with `_` and unexported implementation helpers are not compatibility promises.
 
 | Surface | Purpose |
 |---|---|
-| `Backend`, `BackendRegistry`, `build_registry`, `BackendServices` | Compose `local`, `slurm` and `sensecore` backends |
+| `Backend`, `BackendRegistry`, `build_registry`, `BackendServices` | Compose development `local`, SSH `slurm`, `sensecore` ACP and `pai-dlc` adapters |
 | `ProjectAdapter`, `ProjectRegistry`, asset/source types | Host-owned configuration, science and filesystem probes |
 | `RunSpec`, `AttemptManifest`, submission/status/log/record types | Typed JSON/YAML-compatible mappings |
 | `ExperimentStateStore`, lifecycle/state and manifest helpers | Immutable definitions, events and durable intents |
@@ -29,8 +29,8 @@ An observation-only check must not require staging/submission or create jobs.
 
 Call `begin_submission` with `backend.submission_request` before a non-dry-run
 `submit`. Pass its unchanged intent to recovery and submit. The persisted random
-128-bit token is bound to the Attempt: Slurm Comment, exact ACP resource name
-or local process claim. Recover first; reconcile an existing exact job without
+128-bit token is bound to the Attempt: Slurm Comment, exact ACP resource name,
+PAI job tags/owned identity, or local process claim. Recover first; reconcile an existing exact job without
 creating another. Missing, foreign or ambiguous evidence fails closed.
 
 Uncertain creates require status-only reconciliation. A legacy pending intent
@@ -55,7 +55,9 @@ never echo raw input.
 patterns; managed Runs declare `outputs`. Backend collection has no required
 project-specific scientific metric names. Scientific parsing and completeness
 rules belong to the host or [per-project/per-Run metrics schema](metrics.md).
-Optional server-side [W&B publication](wandb.md) is separate from core/scientific contracts.
+The independent worker package supplies managed job programs. Neither worker nor
+client depends on core; core never imports the server. Optional server-side
+[W&B publication](wandb.md) is separate from core/scientific contracts.
 
 ## Consumer upgrades
 

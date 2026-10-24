@@ -22,8 +22,9 @@ Persistence requires a Runtime with `persistent-checkpoints.v1`.
 | `RESUME_DIR` / `/inputs/resume` | Exact verified prior generation |
 
 `STATE_DIR` is a sibling of this Attempt's outputs within the configured shared
-mount. Slurm uses shared storage; SenseCore uses NAS. New Attempts do not overwrite
-the restore source. Old frozen paths/images are not migrated by profile changes.
+mount: Slurm uses shared storage, SenseCore uses NAS, and PAI DLC uses its
+approved personal CPFS/NAS workspace. New Attempts do not overwrite the restore
+source. Old frozen paths/images are not migrated by profile changes.
 
 Write all recovery files below `STATE_DIR/checkpoints/UNIQUE_GENERATION/`.
 Finish/flush the files, then atomically replace `STATE_DIR/checkpoint.ready.json`:
@@ -71,8 +72,9 @@ Create a **new Run** with its exact reference:
 actual generation before training and exposes it through RESUME_DIR. Your code
 restores all scientific state. Missing/corrupt files block training without a
 latest/older fallback. References must belong to the same project/storage scope;
-GPU profiles may differ when storage is shared, but Slurm/SenseCore are different
-scopes. Cross-backend use requires explicit state export/data asset delivery.
+GPU profiles may differ when storage is shared, but Slurm, SenseCore and DLC
+are different scopes. DLC scope also binds the approved user and storage
+endpoint. Cross-backend use requires explicit state export/data asset delivery.
 
 `resume_from` is frozen in the Run. Retrying the same Run does **not** automatically
 select a checkpoint produced by its failed Attempt. A changed restore reference
@@ -83,17 +85,24 @@ currently requires a new Run. Automatic recovery is [not implemented](recovery.m
 Backend state bypasses API archive byte limits but remains subject to backend
 disk/quota. Metadata is limited to 256 KiB/20,000 files; combined input/preparation/
 restore manifests must fit 32 KiB. Keep manifests small enough for this tighter bound.
-`checkpoint_upload` is a separate optional full-state backup path, governed by
-advertised archive/part/storage limits. With persistence it archives the STATE_DIR
-ready generation; without persistence it uses the historical output-ready format.
+`checkpoint_upload` is a separate optional full-state backup path on supported
+Slurm/SenseCore executors, governed by archive/part/storage limits. With persistence
+it archives the STATE_DIR ready generation; without persistence it uses the
+historical output-ready format. **DLC supports persistent metadata registration
+and restore, but rejects full `checkpoint_upload`.** Export selected weights as
+normal outputs instead; do not infer support from a worker capability alone.
 
 Registration failures retry while the worker remains alive. No acknowledged
 metadata means no registered API reference yet. Result-upload failure does not
 delete persistent state, but a REGISTERED checkpoint alone is not a downloadable
 archive. See [output recovery](recovery.md#output-recovery). Retain referenced
 generations deliberately; no automatic state garbage collection exists.
-An administrator can explicitly [delete an entire completed managed Run](resource-deletion.md),
-including its backend-resident checkpoint generations. Frozen restore consumers
-block deletion. Shared uploaded snapshot assets are retained separately.
+On supported Slurm/SenseCore backends an administrator can explicitly
+[delete a completed managed Run](resource-deletion.md), including its persistent
+generations. Frozen restore consumers block deletion. DLC remote Run deletion
+is unsupported; shared uploaded snapshot assets have a separate lifecycle.
 
-Checkpoint 和 snapshot 查询只读取登记的元数据并校验 Run/Attempt 与 checkpoint 身份，不下载或展开结果归档。归档不可用、已释放或对象存储不可达不影响这些查询；取回文件仍需要对应的文件或归档下载接口。
+Checkpoint/snapshot queries read registered metadata and validate its frozen
+Run/Attempt identity without downloading or expanding result archives. A released
+archive or unavailable object store does not prevent metadata queries. Retrieving
+actual files still requires a supported file/archive export or backend access.

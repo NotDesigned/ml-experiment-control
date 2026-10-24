@@ -18,6 +18,10 @@ artifacts supplied by your operator. Do not mix wheels from different releases.
 Verify the archive or wheel hashes against the trusted release checksum file.
 The offline bundle contains all runtime dependency wheels, exact versions and
 hashes; installation never contacts a package index or compiles Rust.
+For the split packages, a server bundle includes core (with its native
+`experiment-redact` binary), worker and server plus their runtime dependencies.
+The base bundle needs no W&B SDK; a full publication bundle lists `wandb` in
+its manifest extras. The client bundle contains only the dependency-free client.
 
 Use the server bundle matching your Python minor version, Linux architecture and
 compatible libc; check `manifest.json`. The standard build targets Linux x86-64

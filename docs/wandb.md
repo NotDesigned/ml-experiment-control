@@ -1,165 +1,158 @@
 # Optional W&B publication
 
-ML-Expd publishes to W&B official Cloud from the API server. Training containers
-need no W&B SDK/key or direct connection to W&B. Slurm workers use the existing
-private API relay. Scheduler execution, recovery, outputs and scientific decisions
-remain platform/experiment responsibilities.
+ML-Expd publishes accepted experiment records to W&B official Cloud from the
+server. The training container needs no W&B SDK/key or W&B network access;
+offline Slurm workers use the platform's configured relay. Metrics remain stored
+and queryable in ML-Expd without W&B.
 
-## Install only when needed
+## Enable the integration
 
-W&B publication requires the server's optional `wandb` extra. Operators can use
-a full server bundle with `extras: ["wandb"]` in its manifest, or install the
-reviewed server wheel with `[wandb]`. The base server stores and queries metrics
-without the SDK. Neither client nor worker needs it.
+The operator installs the server's optional `wandb` extra, or a reviewed full
+server bundle whose manifest includes `extras: ["wandb"]`. The client and worker
+packages do not need it. See [installation](operator-guide.md#install-a-reviewed-release).
 
-If the SDK is absent, `GET /api/tracking/wandb` reports
-`publisher: {"available": false, "error": "WANDB_SDK_NOT_INSTALLED"}`.
-Publication stays pending with that diagnostic; accepted records remain in the
-platform journal. Installing the extra restores the publisher dependency, not
-cloud authentication or connectivity. It does not rewrite frozen publication
-routes or authorize replay of confirmed history. See the
-[operator guide](operator-guide.md#install-a-reviewed-release).
+Configure the server's shared W&B defaults through the authorized client. Keep
+the W&B key in a private file outside uploaded code/data:
 
-## Configure once, choose a project per Run
-
-After configuring the usual API URL/token, install the current standalone client.
-Keep the W&B API key in a private file outside uploaded source/data. Configure it
-without putting its contents in shell arguments or chat:
-
-```sh
+```bash
 chmod 600 /private/path/wandb.key
 ml-exp wandb --key-file /private/path/wandb.key
 ml-exp wandb
 ```
 
-Entity is optional. The server queries the key's W&B default entity and exposes
-`resolved_entity`. To choose a team, add `--entity TEAM`; to set a default project,
-add `--project PROJECT`. Configuration responses never return the API key.
-`ml-exp wandb --disable` pauses publication; `--enable` resumes it.
-`--clear-credentials` deletes the stored key. Configuration updates retain omitted
-defaults/key; API `entity:null` requests default-entity resolution again, and
-`project:null` restores the ML-Expd project-name fallback.
-The settings API is `GET/PUT /api/tracking/wandb`; writes use the normal API
-bearer credential. Its `api_key` field is write-only.
+This sends the key to the server; it is not a training-process environment
+variable. Settings responses never return it. Entity is optional: the server
+resolves the key's default entity. Add `--entity TEAM` to select a team and
+`--project PROJECT` for a server default project. Omitted fields retain previous
+settings. `--disable` pauses publishing, `--enable` resumes it, and
+`--clear-credentials` removes the key. The API is `GET/PUT /api/tracking/wandb`.
+API `entity:null` repeats default resolution; `project:null` restores the
+ML-Expd project-name fallback.
 
-In an experiment JSON or `POST /api/projects/P/runs`:
+## Choose publication per experiment
+
+In an experiment JSON or `POST /api/projects/P/runs` request:
 
 ```json
 {
-  "wandb": {"enabled": true, "project": "fineweb-lr-search"},
+  "wandb": {
+    "enabled": true,
+    "preparation_enabled": false,
+    "project": "fineweb-lr-search"
+  },
   "parameters": {"lr": 0.001, "wd": 0.1, "seed": 42}
 }
 ```
 
-`parameters` is an optional finite JSON object (16 KiB) of experiment-authored
-research parameters. It records configuration; it does not change argv or choose
-scientific metrics. The low-level client also accepts `create --wandb JSON
---parameters JSON`.
+| Option/default | Meaning |
+|---|---|
+| Training `enabled:true`, including omitted `wandb` | Request publication; effective enablement still needs server settings/key/entity |
+| `enabled:false` | Disable training publication for this Run |
+| Preparation omitted | Inherit the server default, initially false |
+| `preparation_enabled:true` | Publish a separate preparation W&B run for build/data progress |
+| Project omitted | Use server default project, then ML-Expd project name |
+| Entity omitted | Use configured/resolved default entity |
 
-Omitting `wandb` requests publication by default. Project precedence is request
-project, server default project, then ML-Expd project name. Entity precedence is
-request entity, then configured/resolved default entity. A request entity override
-must be accessible with the stored credential; permission failures remain visible
-in publication status.
+Training and preparation switches are independent, subject to the same server
+master switch and credentials. `ml-exp wandb --preparation` / `--no-preparation`
+changes the default for future preparations. The per-experiment option requires
+`wandb-preparation-sync.v1`.
 
-`{"wandb":{"enabled":false}}` disables this Run. Missing credentials, unresolved
-default entity, or a disabled server yields effective `enabled:false` and a reason;
-it does not block training. The preparation/Run response contains the effective
-route. Preparation freezes it on acceptance. Duplicate requests reuse the same
-route; changing defaults affects future Runs. Retry Attempts inherit their Run's
-target. Changing a Run's destination or parameters requires a new Run identity.
-
-## What is published
-
-Each Attempt has a stable W&B run, grouped by ML-Expd project/Run. New
-preparations are not published by default. Training publication and preparation
-publication are separate options:
+Without credentials, a usable entity, or an enabled server, the effective route
+is disabled with a reason and training continues. With a configured route but no
+SDK, settings/tracking instead report:
 
 ```json
-{"wandb":{"enabled":true,"preparation_enabled":false,"project":"fineweb-lr-search"}}
+{"publisher":{"available":false,"error":"WANDB_SDK_NOT_INSTALLED"}}
 ```
 
-Set `preparation_enabled:true` to publish a separate preparation record for
-build/data progress, using the same selected destination. `enabled` controls the
-training Run; `preparation_enabled` independently controls preparation, subject to
-the server credential and master enable switch. Omitted preparation options inherit
-the server default (initially false). Use `ml-exp wandb --preparation` or
-`ml-exp wandb --no-preparation` to change the default for future preparations.
-Explicit per-experiment values take precedence. These options require the
-`wandb-preparation-sync.v1` capability. Accepted preparations freeze both routes;
-changing defaults does not rewrite them. Historical preparations retain their
-original publication behavior; existing W&B records are not deleted.
-Publication includes source/image/runtime/data identities, explicit parameters,
-frozen metric schema/protocol, restore lineage, observed scheduler/worker stages,
-exit information, metrics, checkpoint manifests and verified output receipts.
-Full recovery checkpoints stay on datapool/NAS; weights/data/raw logs are not
-copied to W&B by this integration. Private commands, SSH configuration, transfer
-credentials, signed URLs and object-store keys are excluded.
+Publication remains pending; platform records and frozen routes remain intact.
+Installing the extra restores the dependency, not cloud permission/connectivity.
+The preparation response freezes the effective routes. Later defaults affect new
+Runs only; retry Attempts inherit the Run's destination. A different destination
+or different research parameters requires a new Run. A requested entity override
+must be accessible to the server's stored credential.
 
-Enabling W&B chooses publication, not automatic metric extraction. The Run
-schema declares names/units; experiment code must actually emit their values.
-Use the [MetricWriter](metrics.md#record-and-query) included in the client starter
-to append and flush each observation directly in OUTPUT_DIR. Do not replace its
-history with a final-only file, or defer copying from STATE_DIR until exit.
+`parameters` is finite JSON up to 16 KiB. It records research configuration but
+does not change command arguments or define scientific success.
 
-For complete live metric history, rebuild a Dockerfile Runtime with
-`experiment-records.v1` and append newline-terminated objects to
-`OUTPUT_DIR/metrics.jsonl`. The worker reads bounded batches every five seconds
-and posts using its exact-Attempt write capability. Retry retains the same IDs and
-cursor. A partial final line is not consumed. A failed transfer does not stop the
-training process. Final uploaded JSONL can fill delivery gaps.
+## Curves and chosen results
 
-The default charts separate two uses:
+Enabling W&B does not extract loss automatically. Training/evaluation code must
+write [metric records](metrics.md#record-and-query) to `OUTPUT_DIR/metrics.jsonl`:
 
-- `curves/<name>` plots accepted training/validation values against their explicit
-  scientific step (or an explicitly labelled epoch axis). At least two distinct
-  positions are required to show a curve; a final-only value is not a history.
-- `results/<name>` compares an explicitly declared `MetricWriter.summary()` result
-  after the Attempt ends. Summary records do not add training-curve points.
-  If no explicit summary exists for that series, the historical latest-observation
-  rule remains available for compatibility. Neither path selects the minimum loss
-  or a best checkpoint automatically. A failed/conflicting explicit result cannot
-  fall back to an unrelated valid history point.
-  An active Attempt, missing/nonfinite result or conflicting latest observation
-  has no final result scalar. A failed Attempt can retain a valid measured result;
-  filter by `ml_expd/state` when comparing successful experiments.
+- `MetricWriter.log()` writes history points. Multiple measured steps/epochs form a curve.
+- `MetricWriter.summary()` declares the result selected by experiment code. It does not add a curve point or select the best checkpoint.
 
-Step, epoch, numerator and denominator remain provenance and hidden axes, rather
-than numeric results. Raw `metrics/*` observations remain in history but are
-hidden from automatic panels and removed from result summaries. Checkpoint changes
-retain individual provenance without splitting the same curve. A single variant
-within each Attempt uses the common result name across trials; multiple variants
-within an Attempt have distinct `/variants/<hash>` fields. Different names, units,
-protocols and datasets receive distinct, persisted destination-specific field names.
-Their assignment survives restarts; no scientific meanings are silently combined.
+Each Attempt has a stable W&B run grouped by ML-Expd project/Run. The default
+presentation is:
 
-`ml_expd/display_definitions_json` maps result fields to their exact name, unit,
-protocol, dataset, variant, checkpoint, step/epoch, numerator/denominator and validity.
-It also records `selection: explicit_summary` or `latest_observation`.
-JSON preserves literal field names (W&B flattens dict-valued summaries).
-`ml_expd/display_coverage` distinguishes worker JSONL from incomplete legacy
-observations. Original payloads and event IDs remain in W&B history and the private
-outbox. No unit conversion or best-model selection is done. Existing opted-in Runs
-receive presentation repairs without replaying already confirmed history; unbound
-Runs remain unchanged. Previously pinned workspace panels may need refreshing or
-selection of the new `curves/` and `results/` fields.
+| W&B field | Content |
+|---|---|
+| `curves/NAME` | History against the explicit scientific step |
+| `curves/NAME/by_epoch` | History against an explicit epoch |
+| `results/NAME` | Explicit comparison result after the Attempt terminates |
+| `ml_expd/state` and lifecycle metadata | Observed platform state and stages |
+| `ml_expd/display_definitions_json` | Exact units, protocol, dataset, variant, checkpoint, counts and result-selection source |
 
-Older immutable workers are unchanged. Their saved metrics can be published, but
-collector observations may be sampled: they are explicitly labelled incomplete.
-Stdout-only metrics use this compatibility observation path. Rebuild/use JSONL to
-obtain the new live stream. Existing Runs are never automatically opted in.
+At least two distinct valid positions are needed for an automatically visible
+curve. A final-only value is not history. W&B's internal `_step` is the platform
+event sequence; scientific charts use their explicit step/epoch axes.
 
-## Confirm, retry and backfill
+Explicit summaries take precedence. Without one, legacy latest-observation
+selection remains available; neither selects minimum loss or the best model.
+Invalid/conflicting explicit results do not fall back to unrelated history.
+Active Attempts do not expose a final result scalar. Failed Attempts can retain
+valid measurements, so filter `ml_expd/state` when comparing successful runs.
 
-```sh
-ml-exp tracking --project P --run R
-ml-exp tracking --project P --run R --retry
+Different units/protocols/datasets receive distinct persisted field names. Within
+one Attempt, multiple variants split into `/variants/HASH` fields. One variant
+per Attempt uses the common comparison name with its identity in provenance.
+Checkpoint changes retain per-point provenance without splitting the curve.
+Numerator/denominator and step/epoch are metadata/hidden axes, not result metrics.
+Raw records remain available in history; hidden helper fields are excluded from
+numeric result summaries.
+
+## What reaches W&B
+
+Publication contains source/image/data identities, explicit parameters, frozen
+schema/protocol, restore lineage, lifecycle/exit evidence, metric records,
+checkpoint manifests and verified output receipts. It does not upload complete
+weights, datasets, recovery state or raw logs. Private commands, SSH settings,
+transfer credentials, signed URLs and object keys are excluded. The SDK disables
+host/git/code telemetry so API-server hardware is not reported as training usage.
+
+Older immutable workers keep their behavior. Saved JSONL can fill gaps; sampled
+stdout observations remain labelled incomplete. Missing history is not invented
+and historical Runs are not automatically opted in.
+
+## Inspect and recover publication
+
+```bash
+ml-exp tracking --project my-study --run trial-001
+ml-exp tracking --project my-study --run trial-001 --retry
 ```
 
-`GET /api/runs/P/R/tracking` returns the frozen route, W&B URLs, confirmed/pending
-record counts, last attempt/confirmation times and a fixed diagnostic code.
-`POST …/tracking/retry` clears the retry delay/error; it does not submit a GPU job.
-To explicitly publish a historical/disabled Run's saved evidence:
+The status API returns the frozen route, W&B URLs, confirmed/pending counts,
+timestamps and a fixed diagnostic. Retry clears publication backoff; it does not
+submit training. SDK enqueue is not confirmation: the publisher advances only
+after observing matching remote event identities. History and derived display
+have separate confirmation states:
+
+| Diagnostic | Meaning |
+|---|---|
+| `WANDB_SDK_NOT_INSTALLED` | Operator must install the optional SDK |
+| `REMOTE_ACK_PENDING` | History is not remotely confirmed yet |
+| `REMOTE_DISPLAY_ACK_PENDING` | History arrived; derived display is not confirmed yet |
+| Identity/reconciliation error | Inspect remote history; do not blindly replay it |
+
+Worker acceptance, W&B confirmation and artifact upload are independent. Normal
+observation/publication polls are about ten seconds plus collection/network
+latency; error backoff reaches five minutes. W&B's green session indicator tracks
+the server publisher session and can lag during outages; it is not direct proof
+that GPU training is alive. Use platform state, logs and steps together.
+
+To opt a historical/disabled Run into publication of its saved evidence:
 
 ```http
 POST /api/runs/P/R/tracking/backfill
@@ -168,30 +161,8 @@ Content-Type: application/json
 {"project":"historical-study"}
 ```
 
-Backfill is a separate, immutable publication binding; it never rewrites old
-Run/Attempt definitions. Repeating it reuses the original target and IDs.
-It preserves saved evidence only and cannot reconstruct missed training history.
-
-A private SQLite record journal stores complete accepted batches before
-acknowledging workers, whether or not W&B is installed or enabled. Metric schemas
-and normalization live in `records/`, with one path for live worker batches and
-verified archive imports. The optional publisher tracks its cursors in that same
-historical database; it does not make a second copy of experiment history.
-The publisher uses stable IDs and checks W&B history before advancing
-its confirmed cursor. SDK enqueue is not confirmation. Explicit history steps commit immediately, so
-the last event can be confirmed without waiting for another event or Run closure.
-Presentation metadata has a separate remote acknowledgement (`display_version`). Network/credential errors
-retain pending records and back off (up to five minutes). If remote history has
-an identity conflict or a hole behind its latest step, reconciliation is required;
-no older record is silently discarded or blindly appended. `REMOTE_ACK_PENDING`
-means W&B has not yet confirmed the record; `REMOTE_DISPLAY_ACK_PENDING` means
-the derived presentation has not yet been confirmed. Both poll every ten seconds. Normal observation/publication polls
-are ten seconds, plus backend collector/API latency; this is not a latency SLA.
-W&B session status may lag during a publisher outage; ML-Expd state/phase and
-publication diagnostics remain authoritative.
-
-Operators must back up `project_registry_root/tracking/` with the service state.
-It contains the root-private settings/key and outbox. Do not restore an old outbox
-on top of active records. The publisher SDK runs in a separate bounded process
-with host/git/code telemetry disabled; it never reports the API server's GPU/CPU
-usage as a training measurement.
+Use normal API auth/protocol headers. Backfill creates a separate immutable
+publication binding, reuses it on repeats and does not alter Run/Attempt history.
+It cannot recreate observations that were never saved. Operators should back up
+`project_registry_root/tracking/` with service state: it contains private settings
+and the canonical journal. Do not restore an old journal over active records.

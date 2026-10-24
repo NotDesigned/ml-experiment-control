@@ -1,5 +1,7 @@
 # Project registration and lifecycle
 
+This is the operator registry for indexing and polling, not a prerequisite
+research workflow. Normal API users create managed projects through source import.
 The daemon's workspace-local registry selects projects to index and poll. Each
 record binds a stable identity to an absolute `research_project.yaml`, lifecycle,
 source, timestamps and operator reason. The filename is historical: a research

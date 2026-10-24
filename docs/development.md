@@ -1,41 +1,33 @@
 # Development
 
+This guide is for code contributors. Operators install reviewed wheels or
+[offline bundles](two-machine-quickstart.md); source builds and Rust are not
+required on an ordinary deployment host.
+
 ## Setup and focused checks
 
-Use Python 3.12 to match CI and Rust 1.85+ to build `experiment-redact`:
+Use Python 3.12 (CI's version) and Rust 1.85+:
 
 ```bash
 git clone https://github.com/NotDesigned/ml-experiment-control.git
 cd ml-experiment-control
 uv sync --locked --all-packages --all-extras
-```
-
-This creates a development `.venv`; do not sync development dependencies into
-a deployed service environment. Commit `pyproject.toml` and `uv.lock` together
-when dependencies change, and `rust/Cargo.lock` when Rust dependencies change.
-The workspace contains core, server, client and worker packages. The full
-development environment includes the optional W&B SDK. Use `uv run --no-sync`
-after this setup so a narrower package command does not remove optional
-dependencies from the shared environment.
-
-Run affected tests first. For documentation and the introductory HTTP workflow:
-
-```bash
 uv run --no-sync pytest tests/test_quality_tools.py -q
 uv run --no-sync --package ml-experiment-server pytest server/tests/test_api_quickstart.py -q
 uv run --no-sync python tools/generate_cli_reference.py --check
 ```
 
-The quickstart suite uses real loopback HTTP with injected registry, scheduler
-and object-store boundaries. It does not prove live GPU availability. Backend
-tests use injected runners/REST responses; they must not submit to a scheduler.
+The development environment includes client, server, core, worker and the
+optional W&B SDK. Use `--no-sync` afterward so narrower commands do not remove
+optional packages from the shared environment. Never sync development dependencies
+into the active production environment. Commit dependency metadata and `uv.lock`
+together; update `rust/Cargo.lock` when Rust dependencies change.
+
+Start with affected tests. Loopback HTTP tests use injected schedulers, registries
+and object stores; they must not create cloud jobs. Real backend/GPU acceptance
+is separately scoped work, not an implicit consequence of a test or docs change.
 
 ## Required validation
-
-PRs run the full workflow using Python 3.12. Python 3.10 remains the package
-compatibility floor, not another CI job. During editing, run affected tests; a
-green full PR run does not require another unchanged local full run. To run the
-full gates locally:
 
 ```bash
 cargo fmt --manifest-path rust/Cargo.toml -- --check
@@ -50,43 +42,40 @@ uv run --no-sync python -m compileall -q tools examples
 uv build --all-packages
 ```
 
-CI also installs the client and worker wheels without dependencies, tests the
-base server's authenticated HTTP API and metrics without W&B, and installs a
-full server bundle with the optional SDK. The daemon suite runs server and
-worker flows together once, then gates their measured coverage separately.
-Core, server and worker each require **100% line and 100% branch coverage**. Coverage is a
-regression floor; it does not prove all lifecycle combinations or a live backend.
-The standalone client previously had no coverage gate. Its measured baseline is
-90.96% line / 84.57% branch; CI now independently requires 90.9% / 84.5%. This is
-a separate baseline floor, not a claim of 100% client coverage.
+Python 3.10 remains the package floor; CI uses one Python 3.12 job. Core, server
+and worker independently require **100% line and branch coverage**. The daemon
+suite runs server/worker scenarios once, then checks each package separately.
+The client has its own measured baseline floor, 90.9% lines / 84.5% branches.
+Coverage is not proof of every lifecycle combination or live cloud behavior.
 
-Meaningful scenarios include lost create acknowledgments, exact identity
-reconciliation without replay, concurrent execution claims, cancellation of
-only an owned job, corrupt archives/checkpoints, interrupted journal writes,
-metric-context isolation and stale observations. Prefer simplifying code and
-testing these boundaries over tests that merely repeat implementation details.
+CI also installs the client and worker wheels without dependencies, starts the
+base server API without W&B, and installs the full server/client offline bundles.
+These checks verify actual package boundaries, entrypoints and dependency closure.
+Do not replace them with source imports or assertions about source text.
+
+Prioritize lost acknowledgements, exact-job reconciliation, concurrent claims,
+corrupt archives/checkpoints, journal failures, metric-context isolation and
+permanent deletion fences. Keep independent fixtures for lifecycle, concurrency
+and crash effects. Pure invalid-input cases can share an application while still
+checking each input and absence of effects.
 
 ## Build deployment artifacts
 
-Ordinary operators install reviewed wheels or an offline bundle; they do not need
-Rust. Source builds require Rust 1.85+ and access to both Python build dependencies
-and Cargo dependencies. For Ubuntu 24.04, its approved repositories may provide
-versioned `rustc-1.85`/`cargo-1.85` packages even when unversioned Rust is too old.
-Check the installed versions and executable PATH before building. Never install
-unreviewed compilers or disable TLS checks to bypass an unreachable installer.
+Source builds require reachable Python and Cargo dependencies. Configure approved
+HTTPS indexes/caches instead of disabling TLS. uv does not inherit pip's index;
+`UV_DEFAULT_INDEX`, `PIP_INDEX_URL` and Cargo registry access have separate scope.
+Build on the deployment target's Python minor, architecture and compatible libc.
+The normal server bundle target is Python 3.12/Linux x86-64; another target needs
+its own bundle. Client/worker wheels are standard-library Python packages.
 
-uv does not automatically inherit pip's configured index. Set `UV_DEFAULT_INDEX`
-to your approved, reachable HTTPS index; a pip mirror working over HTTP does not
-prove its hostname has a valid HTTPS certificate. Cargo has separate registry
-access. For an isolated builder, provision verified Cargo dependencies from the
-lockfile through your normal dependency process. Do not require service operators
-to reconstruct a Cargo cache just to install the application.
-
-Build into a clean wheel directory so stale package versions cannot be selected:
+Use a clean directory with exactly one reviewed wheel per selected distribution.
+For release, **reuse original published bytes for any unchanged package version**;
+never replace an existing version with a newly built wheel or source archive.
+For example, when only server/client advance and worker is newly introduced:
 
 ```bash
 mkdir -p .ops/release-wheels .ops/bundles
-uv build --package ml-experiment-control --out-dir .ops/release-wheels
+# Place the original, SHA-verified published core wheel in .ops/release-wheels.
 uv build --package ml-experiment-worker --out-dir .ops/release-wheels
 uv build --package ml-experiment-server --out-dir .ops/release-wheels
 uv build --package ml-experiment-client --out-dir .ops/release-wheels
@@ -99,94 +88,67 @@ python3 tools/build_deployment_bundle.py --component client \
 (cd .ops/bundles && sha256sum *.tar.gz > SHA256SUMS)
 ```
 
-The server bundle includes matching core, worker and server wheels. The example
-selects the full `wandb` extra; omit `--extra wandb` for a base server without the
-SDK. The bundle manifest records the selected extras. Client bundles contain
-only the client wheel. Older published bundles already carry their dependency
-closure; do not combine them with newly split source-package requirements.
+Omit `--extra wandb` for a base server. The server bundle includes core, worker,
+server and the exported locked dependency closure. The manifest records chosen
+extras, versions, wheel hashes and lock hash. The client bundle contains only its
+own wheel. Existing releases' offline bundles already include their own closure;
+do not mix old bundles with newly split package requirements.
 
-Use the same target Python and Linux architecture for wheel construction and
-dependency download. The standard CI bundle is Python 3.12/Linux x86-64; check
-libc compatibility before offering it for another distribution. A different
-Python minor/architecture needs its own server bundle. Client bundles are stdlib
-only and work on Python 3.10+.
+The builder checks downloaded hashes from frozen `uv.lock`; packages available
+only as sdist are built on the release host and record their locked source hash.
+The complete archive is published without replacing an existing output.
+`install.sh` verifies hashes, uses isolated/no-index/no-deps installation and
+runs `pip check`; it never starts a service or copies private credentials.
+Verify optional integrations as well as the base package after installation.
 
-The release tool exports hashed runtime requirements directly from frozen `uv.lock`
-and verifies download hashes before building. `PIP_INDEX_URL` can select an approved
-HTTPS index for this build step independently from uv's index. Packages with only
-a source distribution are built on this release host using its installed build
-tools; their locked source hash is recorded in the manifest. No build tools are
-needed on the deployment host. The tool then records each package
-version/hash, adds the minimal config/guide, and publishes a complete archive
-without overwriting an existing one. `install.sh` checks the files and installs
-with `--isolated --no-index --require-hashes`. It never starts a service or copies
-credentials. Publish the archives and external checksum file with the matching
-reviewed release; older releases may contain only individual wheels.
-
-CI builds and actually installs both bundles in new environments and uploads
-them as deployment artifacts. This validates package delivery independently of
-the normal installed-wheel and source tests; no cloud resources are created.
+Publish matching reviewed artifacts and an external checksum file. A four-package
+release can contain four wheels, four source archives, server/client bundles and
+checksums; an unchanged core artifact must retain its original bytes. Do not
+publish test environments or locally regenerated copies under an existing version.
 
 ## CI result reuse and test cost
 
-After every full run passes, CI records the actual checked-out commit and Git
-tree as a small seven-day Actions artifact. On a main push, a read-only job checks
-the merged PR, its successful run of the same workflow, repository, run attempt,
-artifact identity and GitHub's Git object. Only an exact match with the pushed
-code tree reuses that full run. Checking a branch-head SHA alone is insufficient:
-PR CI checks the synthetic merge result. The main job summary links the original
-run; a reused main run does not claim to have executed the suite again.
+A successful full PR run records the actual tested Git tree in a seven-day Actions
+artifact. The main push reuses it only after checking the merged PR, same workflow,
+repository, run attempt, artifact identity and exact Git tree. A branch-head SHA
+alone is insufficient because PR CI uses a synthetic merge result.
 
-Direct pushes, changed trees, failed runs, missing/expired artifacts, fork evidence
-or API errors require a fresh full run. `workflow_dispatch` always runs the full
-suite, even when matching evidence exists. Superseded runs of the same PR are
-cancelled; running main checks are not cancelled. Coverage is never inferred from
-changed-file filters, lowered thresholds or an empty test selection.
-
-The daemon suite uses two pytest-xdist workers with file-level scheduling. Every
-test still runs; pytest-cov combines worker coverage before the independent line
-and branch gates. Durations and JUnit results identify future slow scenarios.
-Invalid-input matrices that have no side effects can share one application within
-a test, retaining each case and checking that no state was published. Lifecycles,
-concurrency, crash recovery and cross-process effects keep independent fixtures.
-
-Avoid repeating generated-document checks or source compile checks already
-performed by test imports. Keep installed-wheel/standalone-client checks: they
-validate different packaging and dependency boundaries than source imports.
+Changed trees, direct pushes, missing/expired/fork evidence and API errors require
+a full run. Manual dispatch always runs full checks. Reuse links the original run
+and does not claim another execution. An unchanged green PR does not need a second
+local full run. File-level xdist scheduling reduces daemon cost without dropping
+scenarios; durations/JUnit identify future bottlenecks. Coverage thresholds and
+test selection must not be weakened to accelerate a run.
 
 ## Ownership and durable changes
 
-Follow [architecture](architecture.md). The core must not import the server;
-the standalone client and worker must not require either. Workers use only the
-standard library; server-only receivers and stores remain in the server.
-FastAPI belongs in `server/api`.
-Host scientific configuration/parsers belong in `ProjectAdapter`; managed API
-projects use the generic worker and metric schema.
+Follow [architecture](architecture.md): client and worker depend on neither
+server nor core; core never imports server. FastAPI belongs in `server/api`.
+Platform records and their schemas belong in `records/`; W&B is an optional
+consumer. Scientific parsing for an embedded host controller belongs to that host.
 
-Daemon startup must acquire the workspace lease before constructing writable
-stores or starting collectors. Actions use [SQLite transactions](action-storage.md).
-File-backed state uses `DurableJsonState` under its store's cross-process lock:
-revision check, atomic replace and repairable embedded journal transition.
-Reviewed multi-file edits bind old/new digests before effects and recover only
-that transaction. Do not invent another state/lock/journal protocol.
+Acquire the workspace lease before initializing writable stores or collectors.
+Actions use [SQLite transactions](action-storage.md); file-backed resources use
+existing cross-process locks, revision checks and atomic journal transitions.
+Do not introduce another state/lock protocol for the same operation.
 
-Submission changes must cover preparation, explicit authorization, exact-job
-verification and observation-only reconciliation. New worker behavior needs a
-new immutable Runtime identity; do not reinterpret old receipts or silently
-replay uncertain requests. A collector is not a retry scheduler.
-
-Live acceptance is separate, explicitly scoped work with project identity,
-finite duration/GPU budget, exact Attempt and downloaded file-hash evidence.
-Documentation checks never justify a new cloud or GPU job.
+Submission changes must preserve preparation, authorization, exact ownership and
+observation-only reconciliation. New worker/recipe behavior affects new identities,
+never frozen images or Run definitions. A collector is not a retry scheduler.
+After upgrade/test acceptance, inventory process references and delete inactive
+candidate/previous environments and disposable install copies. Keep small reports,
+version/hash/CI evidence and separately managed database recovery backups.
 
 ## Documentation and public contracts
 
-Maintain one primary page per concept and link from [the index](README.md).
-Keep introductory client instructions separate from private operator setup.
-Derive route/model examples from current OpenAPI and CLI parsers. Use placeholder
-credentials, IDs and image digests; never publish deployment secrets or logs.
-Remove obsolete instructions rather than keeping parallel historical guides;
-Git retains their history. Label unimplemented designs and known defects.
+Keep one primary page per concept and link from [the index](README.md). New users
+start with the client guide, operators with deployment, integrators with contracts.
+Use placeholders for identities, images and credentials. Private deployment
+inventories, failure evidence and account details do not belong in public docs.
+
+Document implemented behavior and current limitations. Git retains historical
+plans; remove superseded parallel guides. Keep compatibility rules explicit without
+pretending historical paths or scientific state can be rewritten during upgrade.
 
 `cli_reference.md` is generated from the Rust parser:
 
@@ -195,6 +157,7 @@ uv run --no-sync python tools/generate_cli_reference.py
 uv run --no-sync python tools/generate_cli_reference.py --check
 ```
 
-Do not hand-edit it. Changes to exported symbols or redactor invocation must
-update [the public contract](downstream_contract.md) and pass affected consumer
-integration tests before a consumer's immutable commit pin advances.
+Update the [core public contract](downstream_contract.md) when changing supported
+exports or invocation; verify consuming controllers before advancing immutable
+pins. Documentation-only changes never authorize cloud resources, data deletion
+or a production restart on their own.

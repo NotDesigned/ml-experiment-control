@@ -47,7 +47,8 @@ to the original server and experiment identities; it contains no API token.
 An expired client wait does not stop a remote task.
 
 W&B is optional. Its API key is configured on the server; each experiment chooses
-whether and where to publish. The current service uses a shared API bearer and
+whether and where to publish. The operator also installs the server's `wandb`
+extra; base-server metrics need no W&B SDK. The service uses a shared API bearer and
 instance-wide W&B credentials, without per-user/project RBAC. Distribute access
 accordingly; see [W&B](wandb.md) and [deletion permissions](resource-deletion.md).
 

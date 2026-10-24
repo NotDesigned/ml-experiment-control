@@ -1,8 +1,9 @@
-# Dockerfile builds and the desktop builder
+# Runtime image builds
 
-An optional [CPU DSW publisher](pai.md#dsw-builder-without-enterprise-acr) builds
-through PAI and pushes to an existing OCI registry, without enterprise ACR.
-It is opt-in; desktop configuration remains the default.
+The operator chooses a private Docker/BuildKit publisher, local or reached over
+SSH, or an optional PAI DSW publisher. Building and training are separate: any
+training backend can consume a compatible, authenticated published image. The
+client always supplies source plus a Dockerfile through the same API.
 
 ## Dockerfile contract
 
@@ -35,7 +36,7 @@ additionally needs glibc/Bash; Alpine is unsuitable for that ACP payload.
 ## Publication and reuse
 
 The private image builder checks the caller's Unix peer UID. The daemon itself
-has no Docker socket permission. BuildKit publishes training Runtime images;
+has no Docker socket permission. BuildKit or the DSW Docker engine publishes images;
 Skopeo verifies remote manifest/config digests against build metadata. Runs use
 the verified digest, not a mutable cache tag or local RepoDigests assertion.
 
@@ -109,6 +110,93 @@ the private bridge. This avoids WAN BuildKit filesystem-session transfer.
 Scoped leases remove only that source context. Historical desktop dataset assets
 remain separate and are not removed by build cleanup.
 A broken tunnel fails closed; reconcile uncertain publication before retrying.
+
+## PAI DSW and ACR fallback
+
+Use a fixed approved CPU quota and Docker-enabled image with Python 3.11+.
+Configure the private image builder, not a DLC training executor:
+
+```json
+{
+  "publisher": "pai-dsw",
+  "allow_dockerfile_builds": true,
+  "timeout_seconds": 1200,
+  "repository": "REGISTRY/NAMESPACE/RUNTIME",
+  "registry_auth_file": "/etc/ml-expd/build-docker/config.json",
+  "base_image_prefixes": ["REGISTRY/"],
+  "pai_dsw": {
+    "workspace_id": "WORKSPACE_ID",
+    "quota_id": "QUOTA_ID",
+    "image_id": "DOCKER_ENABLED_CPU_IMAGE_ID",
+    "pai_bin": "/usr/local/bin/pai"
+  }
+}
+```
+
+Merge this with the common peer UID/GID, source/state root and socket settings
+from [image-builder.json](../server/examples/image-builder.json). Omit desktop
+Docker endpoint/BuildKit options in DSW mode. PAI API credentials remain private;
+MCP upload/exec uses an isolated CLI profile. Signed REST creates, queries,
+stops and deletes only the owned instance. No public Docker port is exposed.
+
+Each build requests 4 CPU, 8 GiB and no GPU. Configure 20 minutes explicitly as
+above; an omitted DSW build timeout currently falls back to 10 minutes. Its
+cloud shutdown timer allows the build timeout plus 20 minutes, capped at four
+hours, and is read back before upload. Stop timers do not guarantee deletion
+after an API-host crash. Known owned instances are cleaned up; unknown creation
+or cleanup retains its lease and requires reconciliation.
+
+The context is capped at 300 MiB. Large MCP transfers use 512 KiB pieces and
+SHA256-checked reassembly. The build starts once in the background; short polls
+read bounded logs and an atomic receipt. Only selected registry credentials are
+sent. The DSW uses Docker's classic builder, so BuildKit-only RUN/COPY options
+are unsupported. Pinned base pulls have bounded download retries; Dockerfile
+execution and pushes are not blindly replayed. Docker cache is temporary.
+
+Optional CPFS workspace/role configuration follows [PAI personal storage](pai.md#approved-cpfs-personal-workspace).
+Keep native OSS mounts unset: they remain provider-blocked. With a configured VPC,
+`pai_dsw.default_route` selects shared `eth0` or approved private `eth1`; the actual
+instance must match before credentials are uploaded. The builder does not
+create a NAT, EIP, security group or quota.
+
+For an ACR Personal repository bound to a private build GitHub repository, add:
+
+```json
+{
+  "acr_fallback": {
+    "git_repository": "https://github.com/YOUR_ACCOUNT/YOUR_PRIVATE_BUILD_REPO",
+    "wait_seconds": 2700
+  }
+}
+```
+
+ACR must have the built-in rule `release-v$version` → `$version`, context `/`,
+file `Dockerfile`. The builder host needs authenticated `git`/`gh`. Configure
+exact registry authentication/blob host allowlists as required. ACR Personal
+cannot use third-party private-base credentials through this Git build path;
+choose a compatible pinned base.
+
+Fallback is allowed only after confirmed primary-instance absence and an
+authenticated registry absence check. It records one publication intent and
+pushes the exact `release-vbundle-BUNDLE_SHA256` tag. It never updates `main` or
+overwrites a tag. Git contexts reject empty directories, symlinks/special files,
+files above 95 MiB and total contexts above 300 MiB. Put data/weights elsewhere.
+
+`wait_seconds` accepts 0–2700 seconds: 45 minutes is publication observation,
+not another DSW build timeout. `WAITING_ACR_BUILD` observes the registry;
+`ACR_NATIVE_BUILD_PENDING` requires reconciliation after the wait. Detailed
+provider build logs remain in the ACR console. A late exact image can be
+accepted without another build. Expiry or an absent receipt alone grants no
+retry. A DSW retry additionally requires its owned cleanup lease, exact absence
+from native Get/List and registry 404, all rechecked under the bundle lock.
+
+For SenseCore consuming a different private registry, configure matching
+`sensecore_mirror` on the builder and
+`container_execution.sensecore_image_mirror` on the API. Their fields are
+`source_repository` and `target_repository`. Staging streams a digest-preserving
+copy to CCR and verifies it before scheduling; repeated requests reuse it.
+Image layers do not accumulate on the API disk. Old frozen image/delivery
+references remain unchanged.
 
 ## Capacity and progress
 
