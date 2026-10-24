@@ -173,6 +173,9 @@ def status_actions(value, server, state_path):
                         "requires_execution": False})
     elif value["publication"]["status"] == "RELEASED":
         actions.append({"kind": "USE_LOCAL_RESULTS", "reason": "Server copy was released; use the previously verified local results or durable archive"})
+    elif value["scheduler"]["state"] == "NOT_SUBMITTED":
+        actions.append({"kind": "OBSERVE_PREPARATION", "reason": "Scheduler submission is not observed; inspect the original preparation or reviewed operation plan",
+                        "argv": base + ["status", *reference], "requires_execution": False})
     elif value["attempt_id"] is not None:
         actions.append({"kind": "READ_LOGS", "reason": "Inspect the exact Attempt without restarting training",
                         "argv": base + ["logs", *reference], "requires_execution": False})

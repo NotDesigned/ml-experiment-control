@@ -181,3 +181,11 @@ def test_experiment_summary_does_not_dump_workflow_or_claim_training():
     args.execute = True
     result.update(result={'scheduler_state': 'SUCCEEDED'}, download={'status': 'VERIFIED'})
     assert 'Scheduler: SUCCEEDED' in experiment_summary(result, state_file=args.state, executed=args.execute)
+
+
+def test_future_retry_target_without_scheduler_job_does_not_suggest_nonexistent_logs():
+    value = compact('NOT_SUBMITTED')
+    value['attempt_id'] = 'attempt-002'
+    actions = status_actions(value, 'https://api.example', 'reviewed-retry.state')
+    assert [item['kind'] for item in actions] == ['OBSERVE_PREPARATION']
+    assert actions[0]['argv'][-3:] == ['status', '--state', 'reviewed-retry.state']
