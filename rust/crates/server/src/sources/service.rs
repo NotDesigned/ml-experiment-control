@@ -202,7 +202,7 @@ impl Service {
 fn store_error(error: super::Error) -> read_api::Error {
     // Refined typed mapping lives here, outside pure source identity reducers.
     match error {
-        super::Error::EffectUncertain => uncertain(),
+        super::Error::EffectUncertain(_) => uncertain(),
         _ => unavailable(),
     }
 }

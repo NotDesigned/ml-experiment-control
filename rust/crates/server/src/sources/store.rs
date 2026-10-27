@@ -35,8 +35,10 @@ pub enum Error {
     Limit,
     #[error("source storage identity or policy is invalid")]
     Identity,
-    #[error("source storage operation may have published an effect; inspect the exact receipt")]
-    EffectUncertain,
+    #[error(
+        "source storage operation may have published an effect: {0}; inspect the exact receipt"
+    )]
+    EffectUncertain(String),
     #[error("source storage is busy")]
     Busy,
 }
@@ -354,11 +356,14 @@ impl Store {
             let published_directory =
                 match stage.publish_directory(&project_sources, OsStr::new(&source_id)) {
                     Ok(directory) => directory,
-                    Err(_) => {
+                    Err(error) => {
                         // The atomic rename may already have happened when
                         // this API reports an error. Never delete the stage.
                         published = true;
-                        return Err(Error::EffectUncertain);
+                        return Err(Error::EffectUncertain(format!(
+                            "publish_directory:{:?}",
+                            error.kind()
+                        )));
                     }
                 };
             published = true;
@@ -379,7 +384,9 @@ impl Store {
         // as uncertain so an operator can inspect the exact archive receipt.
         match (result, cleanup_stage(&self.staging, &stage)) {
             (Ok(metadata), Ok(())) => Ok(metadata),
-            (Ok(_), Err(_)) | (Err(_), Err(_)) => Err(Error::EffectUncertain),
+            (Ok(_), Err(_)) | (Err(_), Err(_)) => {
+                Err(Error::EffectUncertain("staging_cleanup".into()))
+            }
             (Err(error), Ok(())) => Err(error),
         }
     }
