@@ -273,8 +273,7 @@ impl UploadRecord {
             .checked_add(self.part_bytes - 1)
             .ok_or(Error::Record)?
             / self.part_bytes;
-        if expected != self.part_count
-            || self.parts.keys().any(|number| *number >= self.part_count)
+        if expected != self.part_count || self.parts.keys().any(|number| *number >= self.part_count)
         {
             return Err(Error::Record);
         }
@@ -293,8 +292,12 @@ pub enum RestartReason {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CreateDecision {
-    Create { plan: UploadPlan },
-    Reuse { record: UploadRecord },
+    Create {
+        plan: UploadPlan,
+    },
+    Reuse {
+        record: UploadRecord,
+    },
     Restart {
         plan: UploadPlan,
         reason: RestartReason,
@@ -422,7 +425,7 @@ pub fn check_complete(
     parts: &BTreeMap<u64, PartRecord>,
     whole_sha256: &str,
 ) -> Result<()> {
-    if parts.len() != plan.part_count || !parts.keys().copied().eq(0..plan.part_count) {
+    if parts.len() as u64 != plan.part_count || !parts.keys().copied().eq(0..plan.part_count) {
         return Err(Error::MissingParts);
     }
     if whole_sha256 != plan.sha256 {
@@ -445,10 +448,16 @@ mod tests {
         json!({"kind":"asset", "project":"demo", "unicode":"模型"})
     }
     fn plan(size: u64) -> UploadPlan {
-        UploadPlan::new(binding(), "a".repeat(64), size, Some(100_000), Policy {
-            part_bytes: 1024,
-            ..Policy::default()
-        })
+        UploadPlan::new(
+            binding(),
+            "a".repeat(64),
+            size,
+            Some(100_000),
+            Policy {
+                part_bytes: 1024,
+                ..Policy::default()
+            },
+        )
         .unwrap()
     }
     fn part(digest: char, bytes: u64) -> PartRecord {
@@ -463,22 +472,65 @@ mod tests {
         let id = upload_id(&binding(), &"a".repeat(64), 12).unwrap();
         assert_eq!(id.len(), 71);
         assert!(id.starts_with("upload."));
+        assert_eq!(
+            id,
+            "upload.5cefcdc48912cfd1fd570fc51e7e8f18cd6ddb2f1121bba89cf7a0f44097819c"
+        );
         assert_eq!(id, identity(&binding(), &"a".repeat(64), 12).unwrap());
-        assert_ne!(id, upload_id(&json!({"kind":"asset", "project":"demo", "unicode":"模型"}), &"a".repeat(64), 13).unwrap());
+        assert_ne!(
+            id,
+            upload_id(
+                &json!({"kind":"asset", "project":"demo", "unicode":"模型"}),
+                &"a".repeat(64),
+                13
+            )
+            .unwrap()
+        );
     }
 
     #[test]
     fn policy_accepts_reference_bounds_and_rejects_outside() {
         assert!(Policy::default().validate().is_ok());
-        assert!(Policy { part_bytes: 1023, ..Policy::default() }.validate().is_err());
-        assert!(Policy { part_bytes: 64 * 1024 * 1024 + 1, ..Policy::default() }.validate().is_err());
-        assert!(Policy { session_seconds: 299, ..Policy::default() }.validate().is_err());
-        assert!(Policy { max_parts: 65_537, ..Policy::default() }.validate().is_err());
+        assert!(
+            Policy {
+                part_bytes: 1023,
+                ..Policy::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Policy {
+                part_bytes: 64 * 1024 * 1024 + 1,
+                ..Policy::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Policy {
+                session_seconds: 299,
+                ..Policy::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Policy {
+                max_parts: 65_537,
+                ..Policy::default()
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]
     fn part_arithmetic_uses_zero_based_final_short_part() {
-        let policy = Policy { part_bytes: 1024, ..Policy::default() };
+        let policy = Policy {
+            part_bytes: 1024,
+            ..Policy::default()
+        };
         assert_eq!(part_count(2048, policy).unwrap(), 2);
         assert_eq!(part_size(2050, policy, 0).unwrap(), 1024);
         assert_eq!(part_size(2050, policy, 1).unwrap(), 1024);
@@ -488,15 +540,37 @@ mod tests {
 
     #[test]
     fn plan_rejects_invalid_digest_limit_and_part_count() {
-        let p = Policy { part_bytes: 1024, max_parts: 2, ..Policy::default() };
-        assert_eq!(UploadPlan::new(binding(), "bad", 1, None, p), Err(Error::Limit));
-        assert_eq!(UploadPlan::new(binding(), "a".repeat(64), 1, Some(0), p), Err(Error::Limit));
-        assert_eq!(UploadPlan::new(binding(), "a".repeat(64), 2049, None, p), Err(Error::Limit));
+        let p = Policy {
+            part_bytes: 1024,
+            max_parts: 2,
+            ..Policy::default()
+        };
+        assert_eq!(
+            UploadPlan::new(binding(), "bad", 1, None, p),
+            Err(Error::Limit)
+        );
+        assert_eq!(
+            UploadPlan::new(binding(), "a".repeat(64), 1, Some(0), p),
+            Err(Error::Limit)
+        );
+        assert_eq!(
+            UploadPlan::new(binding(), "a".repeat(64), 2049, None, p),
+            Err(Error::Limit)
+        );
     }
 
     #[test]
     fn create_missing_session_returns_create() {
-        let decision = create_or_reuse(binding(), "a".repeat(64), 100, None, Policy::default(), None, false).unwrap();
+        let decision = create_or_reuse(
+            binding(),
+            "a".repeat(64),
+            100,
+            None,
+            Policy::default(),
+            None,
+            false,
+        )
+        .unwrap();
         assert!(matches!(decision, CreateDecision::Create { .. }));
     }
 
@@ -504,18 +578,93 @@ mod tests {
     fn create_reuses_active_and_completed_sessions() {
         let p = plan(100);
         let record = UploadRecord::from_plan(&p);
-        assert!(matches!(create_or_reuse(binding(), p.sha256.clone(), 100, None, Policy { part_bytes: 1024, ..Policy::default() }, Some(&record), false).unwrap(), CreateDecision::Reuse { .. }));
-        let completed = UploadRecord { status: UploadStatus::Completed, ..record };
-        assert!(matches!(create_or_reuse(binding(), p.sha256, 100, None, Policy { part_bytes: 1024, ..Policy::default() }, Some(&completed), true).unwrap(), CreateDecision::Reuse { .. }));
+        assert!(matches!(
+            create_or_reuse(
+                binding(),
+                p.sha256.clone(),
+                100,
+                None,
+                Policy {
+                    part_bytes: 1024,
+                    ..Policy::default()
+                },
+                Some(&record),
+                false
+            )
+            .unwrap(),
+            CreateDecision::Reuse { .. }
+        ));
+        let completed = UploadRecord {
+            status: UploadStatus::Completed,
+            ..record
+        };
+        assert!(matches!(
+            create_or_reuse(
+                binding(),
+                p.sha256,
+                100,
+                None,
+                Policy {
+                    part_bytes: 1024,
+                    ..Policy::default()
+                },
+                Some(&completed),
+                true
+            )
+            .unwrap(),
+            CreateDecision::Reuse { .. }
+        ));
     }
 
     #[test]
     fn create_restarts_expired_or_aborted_sessions() {
         let p = plan(100);
-        let expired = UploadRecord { status: UploadStatus::Uploading, ..UploadRecord::from_plan(&p) };
-        assert!(matches!(create_or_reuse(binding(), p.sha256.clone(), 100, None, Policy { part_bytes: 1024, ..Policy::default() }, Some(&expired), true).unwrap(), CreateDecision::Restart { reason: RestartReason::Expired, .. }));
-        let aborted = UploadRecord { status: UploadStatus::Aborted, ..expired };
-        assert!(matches!(create_or_reuse(binding(), p.sha256, 100, None, Policy { part_bytes: 1024, ..Policy::default() }, Some(&aborted), false).unwrap(), CreateDecision::Restart { reason: RestartReason::Aborted, .. }));
+        let expired = UploadRecord {
+            status: UploadStatus::Uploading,
+            ..UploadRecord::from_plan(&p)
+        };
+        assert!(matches!(
+            create_or_reuse(
+                binding(),
+                p.sha256.clone(),
+                100,
+                None,
+                Policy {
+                    part_bytes: 1024,
+                    ..Policy::default()
+                },
+                Some(&expired),
+                true
+            )
+            .unwrap(),
+            CreateDecision::Restart {
+                reason: RestartReason::Expired,
+                ..
+            }
+        ));
+        let aborted = UploadRecord {
+            status: UploadStatus::Aborted,
+            ..expired
+        };
+        assert!(matches!(
+            create_or_reuse(
+                binding(),
+                p.sha256,
+                100,
+                None,
+                Policy {
+                    part_bytes: 1024,
+                    ..Policy::default()
+                },
+                Some(&aborted),
+                false
+            )
+            .unwrap(),
+            CreateDecision::Restart {
+                reason: RestartReason::Aborted,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -530,7 +679,10 @@ mod tests {
         let aborted = abort(&active).unwrap();
         assert_eq!(aborted.status, UploadStatus::Aborted);
         assert!(aborted.parts.is_empty());
-        let completed = UploadRecord { status: UploadStatus::Completed, ..active };
+        let completed = UploadRecord {
+            status: UploadStatus::Completed,
+            ..active
+        };
         assert_eq!(abort(&completed), Err(Error::Completed));
     }
 
@@ -538,25 +690,67 @@ mod tests {
     fn create_rejects_same_upload_id_with_changed_binding_or_size() {
         let p = plan(100);
         let record = UploadRecord::from_plan(&p);
-        assert_eq!(create_or_reuse(json!({"project":"other"}), p.sha256.clone(), 100, None, Policy { part_bytes: 1024, ..Policy::default() }, Some(&record), false), Err(Error::RecordConflict));
-        assert_eq!(create_or_reuse(binding(), p.sha256, 101, None, Policy { part_bytes: 1024, ..Policy::default() }, Some(&record), false), Err(Error::RecordConflict));
+        assert_eq!(
+            create_or_reuse(
+                json!({"project":"other"}),
+                p.sha256.clone(),
+                100,
+                None,
+                Policy {
+                    part_bytes: 1024,
+                    ..Policy::default()
+                },
+                Some(&record),
+                false
+            ),
+            Err(Error::RecordConflict)
+        );
+        assert_eq!(
+            create_or_reuse(
+                binding(),
+                p.sha256,
+                101,
+                None,
+                Policy {
+                    part_bytes: 1024,
+                    ..Policy::default()
+                },
+                Some(&record),
+                false
+            ),
+            Err(Error::RecordConflict)
+        );
     }
 
     #[test]
     fn part_accepts_new_and_repeats_exact_part_idempotently() {
         let p = plan(2050);
         let one = check_part(&p, None, 0, "b".repeat(64), 1024).unwrap();
-        let PartDecision::Accept { part } = one else { panic!("expected new part") };
-        assert!(matches!(check_part(&p, Some(&part), 0, part.sha256.clone(), 1024).unwrap(), PartDecision::Duplicate { .. }));
+        let PartDecision::Accept { part } = one else {
+            panic!("expected new part")
+        };
+        assert!(matches!(
+            check_part(&p, Some(&part), 0, part.sha256.clone(), 1024).unwrap(),
+            PartDecision::Duplicate { .. }
+        ));
     }
 
     #[test]
     fn part_rejects_wrong_number_size_digest_and_conflict() {
         let p = plan(2050);
-        assert_eq!(check_part(&p, None, 3, "b".repeat(64), 1), Err(Error::PartNumber));
-        assert_eq!(check_part(&p, None, 0, "b".repeat(64), 1), Err(Error::PartSize));
+        assert_eq!(
+            check_part(&p, None, 3, "b".repeat(64), 1),
+            Err(Error::PartNumber)
+        );
+        assert_eq!(
+            check_part(&p, None, 0, "b".repeat(64), 1),
+            Err(Error::PartSize)
+        );
         assert_eq!(check_part(&p, None, 0, "bad", 1024), Err(Error::PartDigest));
-        assert_eq!(check_part(&p, Some(&part('b', 1024)), 0, "c".repeat(64), 1024), Err(Error::PartConflict));
+        assert_eq!(
+            check_part(&p, Some(&part('b', 1024)), 0, "c".repeat(64), 1024),
+            Err(Error::PartConflict)
+        );
     }
 
     #[test]
@@ -564,13 +758,22 @@ mod tests {
         let p = plan(2050);
         let mut parts = BTreeMap::new();
         parts.insert(0, part('b', 1024));
-        assert_eq!(check_complete(&p, &parts, &p.sha256), Err(Error::MissingParts));
+        assert_eq!(
+            check_complete(&p, &parts, &p.sha256),
+            Err(Error::MissingParts)
+        );
         parts.insert(1, part('c', 1024));
         parts.insert(2, part('d', 2));
-        assert_eq!(check_complete(&p, &parts, &"b".repeat(64)), Err(Error::WholeDigest));
+        assert_eq!(
+            check_complete(&p, &parts, &"b".repeat(64)),
+            Err(Error::WholeDigest)
+        );
         assert_eq!(check_complete(&p, &parts, &p.sha256), Ok(()));
         parts.remove(&1);
         parts.insert(3, part('c', 1024));
-        assert_eq!(check_complete(&p, &parts, &p.sha256), Err(Error::MissingParts));
+        assert_eq!(
+            check_complete(&p, &parts, &p.sha256),
+            Err(Error::MissingParts)
+        );
     }
 }
