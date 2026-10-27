@@ -340,7 +340,6 @@ impl Store {
             let metadata_file = stage.open_regular_read(OsStr::new(METADATA))?;
             stage.seal_regular(OsStr::new(METADATA), &metadata_file, false)?;
             seal_tree(&tree)?;
-            stage.source_mode(true)?;
             let source_id = metadata.source_id().to_owned();
             let project_sources = self.sources.child(OsStr::new(project), true)?;
             if project_sources.entry_exists(OsStr::new(&source_id))? {
@@ -367,6 +366,9 @@ impl Store {
                     }
                 };
             published = true;
+            if published_directory.source_mode(true).is_err() {
+                return Err(Error::EffectUncertain("source_root_seal".into()));
+            }
             let verified = self.verify_tree(project, &source_id, &published_directory)?;
             let imports_project = self.imports.child(OsStr::new(project), true)?;
             let receipt = json!({"schema_version":1,"project":project,"archive_sha256":expected_sha,"source_id":source_id,"tree_digest":verified.tree_digest()});
