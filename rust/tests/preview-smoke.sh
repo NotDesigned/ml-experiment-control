@@ -12,6 +12,10 @@ cleanup() {
     kill "$preview_pid" 2>/dev/null || true
     wait "$preview_pid" 2>/dev/null || true
   fi
+  # Source trees are deliberately sealed read-only. This is disposable test
+  # state, so make it removable before deleting the fixture as an unprivileged
+  # CI runner.
+  chmod -R u+rwX "$preview_root" 2>/dev/null || true
   rm -rf -- "$preview_root"
   exit "$result"
 }
