@@ -18,6 +18,8 @@ pub enum Error {
     Missing,
     #[error("frozen manifest bytes changed during observation or differ from the expected SHA256")]
     BytesChanged,
+    #[error("experiment snapshot exceeds its bounded metadata or Attempt limit")]
+    SnapshotLimit,
     #[error(transparent)]
     Document(#[from] DocumentError),
     #[error(transparent)]
@@ -266,6 +268,175 @@ impl Store {
             run,
             attempt,
             provenance,
+        })
+    }
+
+    /// Metadata for every bounded Attempt; only the explicitly selected current
+    /// Attempt contributes logs/JSONL. Directory sorting never selects current.
+    pub fn snapshot(&self, reference: &RunRef) -> Result<super::Snapshot> {
+        self.snapshot_selected(reference, None)
+    }
+
+    /// Read one exact Attempt only. Historical malformed siblings, Run mirrors
+    /// or a different current Attempt cannot supply its payload or identity.
+    pub fn snapshot_attempt(
+        &self,
+        reference: &RunRef,
+        attempt_id: &str,
+    ) -> Result<super::Snapshot> {
+        identity::validate_id(attempt_id).map_err(|_| Error::Binding)?;
+        self.snapshot_selected(reference, Some(attempt_id))
+    }
+
+    fn snapshot_selected(
+        &self,
+        reference: &RunRef,
+        exact: Option<&str>,
+    ) -> Result<super::Snapshot> {
+        use super::snapshot::{self, AttemptSnapshot, Snapshot};
+        let guard = self
+            .fence
+            .existing_observation_guard(&reference.project, &reference.run_id)?;
+        let anchor = self.project_anchor(&reference.project)?;
+        let project = anchor.project(&reference.project)?;
+        let directory = anchor.run_directory(reference)?;
+        let mut budget = snapshot::Budget::new();
+        let run = snapshot::manifest(&directory, RUN_SOURCES, &mut budget)?;
+        domain::validate_run(&run.metadata, &reference.project, &reference.run_id)?;
+        let current_status = snapshot::evidence(
+            &directory,
+            "status.json",
+            "status.json",
+            &reference.project,
+            &reference.run_id,
+            None,
+            &mut budget,
+        );
+        let current_collection = snapshot::evidence(
+            &directory,
+            "collection.json",
+            "collection.json",
+            &reference.project,
+            &reference.run_id,
+            None,
+            &mut budget,
+        );
+        let current_decision = snapshot::evidence(
+            &directory,
+            "decision.json",
+            "decision.json",
+            &reference.project,
+            &reference.run_id,
+            None,
+            &mut budget,
+        );
+        let attempts_directory = if directory.entry_exists(OsStr::new("attempts"))? {
+            Some(directory.child(OsStr::new("attempts"), false)?)
+        } else {
+            None
+        };
+        let names = match (&attempts_directory, exact) {
+            (Some(root), Some(exact)) => {
+                if !root.entry_exists(OsStr::new(exact))? {
+                    return Err(Error::Missing);
+                }
+                vec![exact.to_owned()]
+            }
+            (None, Some(_)) => return Err(Error::Missing),
+            (None, None) => Vec::new(),
+            (Some(root), None) => root
+                .entry_names_limited(snapshot::MAX_ATTEMPTS)?
+                .into_iter()
+                .filter_map(|name| {
+                    name.to_str()
+                        .filter(|name| identity::validate_id(name).is_ok())
+                        .map(str::to_owned)
+                })
+                .collect(),
+        };
+        if names.len() > snapshot::MAX_ATTEMPTS {
+            return Err(Error::SnapshotLimit);
+        }
+        let (current_attempt_id, current_selection_source, diagnostics) = snapshot::current(
+            &[&current_status, &current_collection, &current_decision],
+            &names,
+        );
+        let mut attempts = Vec::new();
+        let mut retained = Vec::new();
+        for attempt_id in names {
+            let root = attempts_directory.as_ref().ok_or(Error::Missing)?;
+            let attempt_directory = root.child(OsStr::new(&attempt_id), false)?;
+            attempt_directory.verify_private_parent()?;
+            let manifest = snapshot::manifest(&attempt_directory, ATTEMPT_SOURCES, &mut budget)?;
+            let provenance = domain::validate_attempt(
+                &run,
+                &manifest,
+                &reference.project,
+                &reference.run_id,
+                &attempt_id,
+            )?;
+            let prefix = format!("attempts/{attempt_id}");
+            let mut evidence = |name: &str| {
+                snapshot::evidence(
+                    &attempt_directory,
+                    name,
+                    &format!("{prefix}/{name}"),
+                    &reference.project,
+                    &reference.run_id,
+                    Some(&attempt_id),
+                    &mut budget,
+                )
+            };
+            let status = evidence("status.json");
+            let backend = evidence("backend.json");
+            let collection = evidence("collection.json");
+            let decision = evidence("decision.json");
+            let submission = evidence("submission.json");
+            let (stdout, stderr, metrics) =
+                if exact.is_some() || current_attempt_id.as_deref() == Some(&attempt_id) {
+                    snapshot::heavy(
+                        &attempt_directory,
+                        &reference.project,
+                        &reference.run_id,
+                        &attempt_id,
+                    )?
+                } else {
+                    snapshot::unloaded(&attempt_id)
+                };
+            retained.push(attempt_directory);
+            attempts.push(AttemptSnapshot {
+                attempt_id,
+                manifest,
+                provenance,
+                status,
+                backend,
+                collection,
+                decision,
+                submission,
+                stdout,
+                stderr,
+                metrics,
+            });
+        }
+        for (attempt, root) in attempts.iter().zip(&retained) {
+            same(&attempt.manifest, &read_first(root, ATTEMPT_SOURCES)?)?;
+            root.verify_private_parent()?;
+        }
+        if let Some(root) = attempts_directory {
+            root.verify_private_parent()?;
+        }
+        anchor.verify_snapshot(&project, &run, &directory, reference, &guard)?;
+        Ok(Snapshot {
+            project: reference.project.clone(),
+            run_id: reference.run_id.clone(),
+            run,
+            current_status,
+            current_collection,
+            current_decision,
+            current_attempt_id,
+            current_selection_source,
+            attempts,
+            diagnostics,
         })
     }
 }

@@ -211,6 +211,26 @@ impl Directory {
         Ok(names)
     }
 
+    /// Read at most `maximum` directory entries, failing before collecting an
+    /// unbounded name list. This neither creates nor skips invalid entries.
+    pub fn entry_names_limited(&self, maximum: usize) -> io::Result<Vec<OsString>> {
+        self.verify_attached()?;
+        let mut names = Vec::new();
+        for entry in rfs::Dir::read_from(&self.inner.file)? {
+            let entry = entry?;
+            let name = entry.file_name().to_bytes();
+            if !matches!(name, b"." | b"..") {
+                if names.len() >= maximum {
+                    return Err(invalid("directory entry limit exceeded"));
+                }
+                names.push(OsString::from_vec(name.to_vec()));
+            }
+        }
+        names.sort();
+        self.verify_attached()?;
+        Ok(names)
+    }
+
     /// A created directory is private from its first instant, and its parent
     /// directory entry is synced before returning its fixed child descriptor.
     pub fn child(&self, name: &OsStr, create: bool) -> io::Result<Self> {
@@ -247,6 +267,20 @@ impl Directory {
         };
         result.verify_attached()?;
         Ok(result)
+    }
+
+    /// Explicit fresh namespace allocation. Unlike `child(..., true)`, an
+    /// existing entry always fails, including an empty directory that appeared
+    /// concurrently. Intended for reviewed operator bootstrap, not observation.
+    pub fn create_new_child(&self, name: &OsStr) -> io::Result<Self> {
+        leaf(name)?;
+        self.verify_private_parent()?;
+        rfs::mkdirat(&self.inner.file, name, Mode::RWXU)?;
+        rfs::fsync(&self.inner.file)?;
+        let directory = self.child(name, false)?;
+        rfs::fsync(&directory.inner.file)?;
+        directory.verify_attached()?;
+        Ok(directory)
     }
 
     /// Any entry counts, including a directory, dangling symlink or FIFO. This
@@ -358,6 +392,23 @@ impl Directory {
         Ok(bytes)
     }
 
+    /// Open a regular metadata/log file through this directory capability.
+    /// Callers performing bounded tail reads must validate this exact entry
+    /// again after I/O and retain a fixed initial length. Never use an extra
+    /// SQLite database/sidecar descriptor to verify SQLite's own POSIX locks.
+    pub fn open_regular_read(&self, name: &OsStr) -> io::Result<File> {
+        leaf(name)?;
+        self.verify_attached()?;
+        let file = File::from(rfs::openat(
+            &self.inner.file,
+            name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )?);
+        self.validate_regular_entry(name, &file)?;
+        Ok(file)
+    }
+
     /// Publish immutable bytes with a same-directory unpredictable temporary,
     /// retained file identity, fsync, atomic RENAME_NOREPLACE and directory fsync.
     /// There is no check-then-replace fallback and no path traversal during I/O.
@@ -466,7 +517,60 @@ fn rename_new(_directory: &File, _from: &OsStr, _to: &OsStr) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, os::unix::fs::symlink};
+    use std::{
+        fs,
+        os::unix::fs::{PermissionsExt, symlink},
+    };
+
+    #[test]
+    fn bounded_names_and_read_handle_do_not_create_or_follow_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = Directory::open(temp.path(), false).unwrap();
+        directory
+            .publish_new(OsStr::new("a.log"), b"one\ntwo\n")
+            .unwrap();
+        directory
+            .publish_new(OsStr::new("b.log"), b"three\n")
+            .unwrap();
+        assert!(directory.entry_names_limited(1).is_err());
+        assert_eq!(directory.entry_names_limited(2).unwrap().len(), 2);
+        let mut file = directory.open_regular_read(OsStr::new("a.log")).unwrap();
+        let mut content = String::new();
+        file.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "one\ntwo\n");
+        assert!(directory.open_regular_read(OsStr::new("missing")).is_err());
+        assert!(!temp.path().join("missing").exists());
+        symlink("a.log", temp.path().join("alias")).unwrap();
+        assert!(directory.open_regular_read(OsStr::new("alias")).is_err());
+        fs::rename(temp.path().join("a.log"), temp.path().join("old.log")).unwrap();
+        directory
+            .publish_new(OsStr::new("a.log"), b"different")
+            .unwrap();
+        assert!(
+            directory
+                .validate_regular_entry(OsStr::new("a.log"), &file)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_new_child_never_accepts_an_existing_empty_namespace() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = Directory::open(temp.path(), false).unwrap();
+        let child = directory.create_new_child(OsStr::new("fresh")).unwrap();
+        assert!(child.entry_names().unwrap().is_empty());
+        let error = directory.create_new_child(OsStr::new("fresh")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(child.entry_names().unwrap().is_empty());
+        assert_eq!(
+            fs::metadata(temp.path().join("fresh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
 
     #[test]
     fn ownership_policy_accepts_only_service_or_root_and_private_single_links() {

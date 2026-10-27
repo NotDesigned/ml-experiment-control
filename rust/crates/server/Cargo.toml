@@ -12,6 +12,11 @@ path = "src/main.rs"
 [dependencies]
 ml-exp-core.workspace = true
 ml-exp-io.workspace = true
+experiment-redact.workspace = true
+time.workspace = true
+getrandom.workspace = true
+url = "2.5"
+percent-encoding = "2.3"
 serde_json = { workspace = true, features = ["raw_value"] }
 clap.workspace = true
 thiserror.workspace = true
@@ -21,12 +26,13 @@ fs2.workspace = true
 sha2.workspace = true
 libc.workspace = true
 axum = "0.8"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 subtle = "2"
 yaml-rust2 = "0.13"
 regex.workspace = true
 
 [dev-dependencies]
+ml-exp-client = { path = "../client" }
 ml-exp-worker = { path = "../worker" }
 tempfile.workspace = true
 tower = { version = "0.5", features = ["util"] }

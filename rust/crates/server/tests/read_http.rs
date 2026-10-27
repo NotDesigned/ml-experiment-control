@@ -1,0 +1,660 @@
+//! Real TCP acceptance of the isolated native read service and native client.
+//! All manifests, journals and credentials are synthetic private temp fixtures.
+use ml_exp_client::{Client, Error as ClientError, observation::Selection, read, status, watch};
+use ml_exp_core::records::{Event, normalized_metric};
+use ml_exp_server::{Auth, read_api::Api, read_config, records};
+use serde_json::{Value, json};
+use std::{
+    cell::Cell,
+    fs,
+    io::{Read, Write},
+    net::{SocketAddr, TcpListener, TcpStream},
+    os::unix::fs::{PermissionsExt, symlink},
+    path::{Path, PathBuf},
+    sync::Arc,
+    thread,
+    time::Duration,
+};
+
+const TOKEN: &str = "synthetic-native-http-token-0000000000000000000000";
+
+fn private_directory(path: &Path) {
+    fs::create_dir_all(path).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+}
+fn write_json(path: &Path, value: &Value) {
+    fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+struct Fixture {
+    _temp: tempfile::TempDir,
+    project: PathBuf,
+    registry: PathBuf,
+    token: PathBuf,
+    workspace: String,
+    manifest: Value,
+    journal_config: Value,
+}
+impl Fixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("demo");
+        private_directory(&project);
+        private_directory(&project.join("runs"));
+        private_directory(&project.join("runs/train"));
+        private_directory(&project.join("runs/train/attempts"));
+        write_json(
+            &project.join("research_project.yaml"),
+            &json!({"schema_version":1,"project":"demo","title":"Synthetic science"}),
+        );
+        let evaluation = json!({"protocol_id":"synthetic-protocol-v1"});
+        let manifest = json!({"schema_version":1,"identity_version":2,"project":"demo","run_id":"train",
+            "source_id":"source.fixture","image_id":"sha256:fixture","config_path":"config.json","seed":42,"campaign":"fixture",
+            "created_at":"2026-10-27T00:00:00Z","evaluation":evaluation,"parameters":{"lr":0.001},
+            "resources":{"gpus":1},"container":{"runtime_id":"runtime.fixture"},"backend":{"kind":"slurm"},"inputs":[]});
+        write_json(&project.join("runs/train/manifest.yaml"), &manifest);
+        for (attempt, state) in [("attempt-001", "SUCCEEDED"), ("attempt-002", "RUNNING")] {
+            let directory = project.join("runs/train/attempts").join(attempt);
+            private_directory(&directory);
+            let mut attempt_manifest = manifest.clone();
+            attempt_manifest["attempt_id"] = json!(attempt);
+            write_json(&directory.join("attempt.yaml"), &attempt_manifest);
+            write_json(
+                &directory.join("status.json"),
+                &json!({"project":"demo","run_id":"train","attempt_id":attempt,"state":state,
+                "updated_at":"2026-10-27T00:03:00Z"}),
+            );
+            write_json(
+                &directory.join("collection.json"),
+                &json!({"project":"demo","run_id":"train","attempt_id":attempt,
+                "status":"AVAILABLE","verification":"SHA256_VERIFIED","download_available":true,
+                "worker_state":"COMPLETED","process_state":if attempt=="attempt-001"{"COMPLETED"}else{"RUNNING"},
+                "failure_class":"RESOURCE_EXHAUSTED",
+                "observed_at":"2026-10-27T00:03:00Z","process_evidence":{"exit_code":if attempt=="attempt-001"{json!(0)}else{Value::Null}}}),
+            );
+            fs::write(
+                directory.join("stdout.log"),
+                format!("{attempt} exact output\n"),
+            )
+            .unwrap();
+            fs::write(directory.join("stderr.log"), b"synthetic diagnostic\n").unwrap();
+        }
+        let registry = temp.path().join("registry");
+        let workspace = read_config::initialize(&registry).unwrap();
+        let token = temp.path().join("token");
+        fs::write(&token, TOKEN).unwrap();
+        fs::set_permissions(&token, fs::Permissions::from_mode(0o600)).unwrap();
+        let journal_config = json!({"ml_expd":{"project":"demo","run_id":"train","source_id":manifest["source_id"],
+            "image_id":manifest["image_id"],"resources":manifest["resources"],"evaluation":evaluation,
+            "parameters":manifest["parameters"],"runtime_id":"runtime.fixture","backend":"slurm","inputs":[]}});
+        let fixture = Self {
+            _temp: temp,
+            project,
+            registry,
+            token,
+            workspace,
+            manifest,
+            journal_config,
+        };
+        fixture.current("attempt-001");
+        fixture
+    }
+    fn run(&self) -> PathBuf {
+        self.project.join("runs/train")
+    }
+    fn current(&self, attempt: &str) {
+        write_json(
+            &self.run().join("status.json"),
+            &json!({"project":"demo","run_id":"train","attempt_id":attempt,
+            "state":if attempt=="attempt-001"{"SUCCEEDED"}else{"RUNNING"},"updated_at":"2026-10-27T00:03:00Z"}),
+        );
+    }
+    fn settings(&self) -> read_config::Settings {
+        read_config::Settings::from_json(&serde_json::to_vec(&json!({"schema_version":1,"registry_root":self.registry,
+            "projects":[{"project":"demo","project_file":self.project.join("research_project.yaml"),"run_roots":[self.project.join("runs")],
+                "runs":[{"run_id":"train","root_index":0,"relative_components":["train"]}]}]})).unwrap()).unwrap()
+    }
+    fn journal(&self, seed: &str, config: &Value) {
+        let store = records::Store::open(&self.registry, seed).unwrap();
+        let guard = store.guard("demo", "train").unwrap();
+        store
+            .bind(&guard, &json!({"enabled":false}), config)
+            .unwrap();
+        for (attempt, value) in [("attempt-001", 2.5), ("attempt-002", 9.0)] {
+            let scope = store.scope(&guard, attempt).unwrap();
+            for (index, variant) in ["left", "right"].into_iter().enumerate() {
+                let metric = json!({"name":"validation/loss","unit":"nats/token","value":value+index as f64,"step":7,
+                    "variant_id":variant,"protocol_id":"synthetic-protocol-v1","dataset_id":"dataset.fixture","checkpoint_id":"checkpoint.fixture",
+                    "numerator":250,"denominator":100});
+                store
+                    .append(
+                        &guard,
+                        &scope,
+                        &[Event {
+                            event_id: format!("{attempt}-{variant}"),
+                            payload: normalized_metric(&metric, config).unwrap(),
+                        }],
+                    )
+                    .unwrap();
+            }
+        }
+    }
+    fn journal_matching(&self) {
+        self.journal(
+            self.workspace.strip_prefix("rust-preview-").unwrap(),
+            &self.journal_config,
+        );
+    }
+    fn server(&self) -> Server {
+        Server::start(
+            Auth::load(&self.token).unwrap(),
+            Api::open(self.settings()).unwrap(),
+        )
+    }
+}
+
+struct Server {
+    address: SocketAddr,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+impl Server {
+    fn start(auth: Auth, api: Api) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let thread = thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                    let router = axum::Router::new()
+                        .nest("/ml-expd", ml_exp_server::app(auth, Some(Arc::new(api))));
+                    let serving =
+                        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+                    let _ = stopped.await;
+                    serving.abort();
+                    let _ = serving.await;
+                });
+        });
+        Self {
+            address,
+            stop: Some(stop),
+            thread: Some(thread),
+        }
+    }
+    fn client(&self) -> Client {
+        Client::new(&format!("http://{}/ml-expd", self.address), TOKEN.into()).unwrap()
+    }
+    fn raw(&self, path: &str, headers: &str) -> (u16, Value) {
+        let mut connection = TcpStream::connect(self.address).unwrap();
+        connection
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        connection
+            .set_write_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        write!(
+            connection,
+            "GET /ml-expd{path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n{headers}\r\n",
+            self.address
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        connection
+            .take(8 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert!(bytes.len() <= 8 * 1024 * 1024);
+        let split = bytes.windows(4).position(|v| v == b"\r\n\r\n").unwrap();
+        let head = std::str::from_utf8(&bytes[..split]).unwrap();
+        let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+        let body = &bytes[split + 4..];
+        (
+            status,
+            if body.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(body).unwrap()
+            },
+        )
+    }
+}
+impl Drop for Server {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+fn selected(attempt: Option<&str>) -> Selection<'_> {
+    Selection {
+        project: Some("demo"),
+        run: Some("train"),
+        attempt,
+    }
+}
+fn headers() -> String {
+    format!("Authorization: Bearer {TOKEN}\r\nX-ML-Expd-Client-Protocol: 2\r\n")
+}
+fn http_failure(error: ClientError, status: u16) -> Box<ml_exp_core::diagnostic::HttpFailure> {
+    let ClientError::Http(error) = error else {
+        panic!("expected HTTP failure: {error}")
+    };
+    assert_eq!(error.status, status);
+    error
+}
+
+#[test]
+fn native_clients_pin_exact_attempt_and_keep_scientific_metric_dimensions() {
+    let fixture = Fixture::new();
+    fixture.journal_matching();
+    let server = fixture.server();
+    let client = server.client();
+    let health = client.negotiate().unwrap();
+    assert_eq!(health["workspace_id"], fixture.workspace);
+    assert_eq!(health["scheduler_mutations"], false);
+    assert!(
+        !health["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("result-collection.v1"))
+    );
+    assert_eq!(
+        client.get("/api/projects").unwrap()["projects"][0]["project"],
+        "demo"
+    );
+    let initial = status::observe(&client, &health, None, selected(None), true).unwrap();
+    assert_eq!(initial["attempt_id"], "attempt-001");
+    assert_eq!(initial["training"]["status"], "COMPLETED");
+    assert_eq!(
+        initial["model"]["metric_record"]["source"],
+        "canonical_record_journal"
+    );
+    assert_eq!(initial["model"]["last_metric"]["value"], 3.5);
+    assert_eq!(initial["publication"]["download_available"], false);
+    assert_eq!(
+        initial["publication"]["diagnostic"],
+        "ARTIFACT_PUBLICATION_NOT_MIGRATED"
+    );
+    assert_eq!(initial["publication"]["status"], "NOT_OBSERVED");
+    // A producer's coarse failure_class is not an assessed failure fact.
+    assert!(
+        initial["evidence"]["collection"]
+            .get("failure_class")
+            .is_none()
+    );
+    fixture.current("attempt-002");
+    let historical =
+        status::observe(&client, &health, None, selected(Some("attempt-001")), true).unwrap();
+    assert_eq!(historical["attempt_id"], "attempt-001");
+    assert_eq!(historical["scheduler"]["state"], "SUCCEEDED");
+    assert_eq!(historical["training"]["status"], "COMPLETED");
+    let compact_historical =
+        status::observe(&client, &health, None, selected(Some("attempt-001")), false).unwrap();
+    assert_eq!(compact_historical["scheduler"]["state"], "SUCCEEDED");
+    assert_eq!(compact_historical["training"]["status"], "COMPLETED");
+    assert!(compact_historical.get("evidence").is_none());
+    assert_eq!(
+        historical["evidence"]["run"]["current_attempt_id"],
+        "attempt-002"
+    );
+    let logs = read::observe(
+        &client,
+        &health,
+        None,
+        selected(Some("attempt-001")),
+        read::View::Logs {
+            stream: "stdout".into(),
+            lines: 80,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        logs["streams"]["stdout"]["lines"],
+        json!(["attempt-001 exact output"])
+    );
+    let metrics = read::observe(
+        &client,
+        &health,
+        None,
+        selected(Some("attempt-001")),
+        read::View::Metrics {
+            max_points: 100,
+            keys: None,
+            names: Some(vec!["validation/loss".into()]),
+        },
+    )
+    .unwrap();
+    let records = metrics["records"].as_array().unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(metrics["source_attempt_id"], "attempt-001");
+    for (record, (variant, value)) in records.iter().zip([("left", 2.5), ("right", 3.5)]) {
+        assert_eq!(record["unit"], "nats/token");
+        assert_eq!(record["variant_id"], variant);
+        assert_eq!(record["protocol_id"], "synthetic-protocol-v1");
+        assert_eq!(record["dataset_id"], "dataset.fixture");
+        assert_eq!(record["checkpoint_id"], "checkpoint.fixture");
+        assert_eq!(record["numerator"], 250);
+        assert_eq!(record["denominator"], 100);
+        assert_eq!(record["value"], json!(value));
+    }
+}
+
+#[test]
+fn watch_resolves_current_once_then_keeps_attempt_across_real_http_rounds() {
+    let fixture = Fixture::new();
+    let server = fixture.server();
+    let client = server.client();
+    let health = client.negotiate().unwrap();
+    let elapsed = Cell::new(Duration::ZERO);
+    let rounds = Cell::new(0);
+    let result = watch::observe_with(
+        Duration::from_secs(10),
+        selected(None),
+        |selection| {
+            if rounds.get() > 0 {
+                assert_eq!(selection.attempt, Some("attempt-001"));
+            }
+            rounds.set(rounds.get() + 1);
+            status::observe(&client, &health, None, selection, false)
+        },
+        || elapsed.get(),
+        |delay| elapsed.set(elapsed.get() + delay),
+        |value| {
+            assert_eq!(value["attempt_id"], "attempt-001");
+            fixture.current("attempt-002");
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(rounds.get(), 2);
+    assert_eq!(result["attempt_id"], "attempt-001");
+    assert_eq!(result["publication"]["status"], "NOT_OBSERVED");
+    assert_eq!(elapsed.get(), Duration::from_secs(10));
+    assert!(!fixture.registry.join("tracking").exists());
+}
+
+#[test]
+fn authentication_protocol_and_query_errors_never_echo_request_credentials() {
+    let fixture = Fixture::new();
+    let server = fixture.server();
+    assert_eq!(server.raw("/api/projects", "").0, 401);
+    assert_eq!(
+        server
+            .raw(
+                "/api/projects",
+                &format!("Authorization: Bearer {TOKEN}\r\n")
+            )
+            .0,
+        426
+    );
+    assert_eq!(
+        server
+            .raw("/api/health", &format!("Authorization: Bearer {TOKEN}\r\n"))
+            .0,
+        200
+    );
+    for added in [
+        format!("Authorization: Bearer {TOKEN}\r\n"),
+        "X-ML-Expd-Client-Protocol: 2\r\n".into(),
+    ] {
+        let response = server.raw("/api/projects", &(headers() + &added));
+        assert!(matches!(response.0, 401 | 426));
+        assert!(!response.1.to_string().contains(TOKEN));
+    }
+    for path in [
+        "/api/projects?unknown=yes",
+        "/api/attempts/demo/train::attempt-001/logs?lines=1&lines=2",
+        "/api/attempts/demo/train::attempt-001/metrics?max_points=0",
+        "/api/attempts/demo/train::attempt-001/metrics?name=%FF",
+        "/api/attempts/demo/train::attempt-001/metrics?name=%",
+        "/api/runs/demo/train?unused=1",
+    ] {
+        let response = server.raw(path, &headers());
+        assert_eq!(response.0, 422, "{path}: {}", response.1);
+        assert!(!response.1.to_string().contains(TOKEN));
+    }
+    let missing = http_failure(
+        server
+            .client()
+            .get("/api/attempts/demo/train::attempt-999/logs")
+            .unwrap_err(),
+        404,
+    );
+    assert!(!missing.retryable);
+    assert_eq!(missing.error_code, "EXPERIMENT_NOT_FOUND");
+    // A bare token in ordinary metadata is refused, not leaked or replaced.
+    write_json(
+        &fixture.project.join("research_project.yaml"),
+        &json!({"project":"demo","title":TOKEN}),
+    );
+    let response = server.raw("/api/projects", &headers());
+    assert_eq!(response.0, 409);
+    assert_eq!(response.1["code"], "OUTWARD_SECRET_DETECTED");
+    assert!(!response.1.to_string().contains(TOKEN));
+    assert_eq!(server.raw("/api/projects", &headers()), response); // no automatic mutation or repair
+    write_json(
+        &fixture.project.join("research_project.yaml"),
+        &json!({"project":"demo","title":"Synthetic science"}),
+    );
+    let journal = records::Store::open(
+        &fixture.registry,
+        fixture.workspace.strip_prefix("rust-preview-").unwrap(),
+    )
+    .unwrap();
+    let guard = journal.guard("demo", "train").unwrap();
+    journal
+        .bind(&guard, &json!({"enabled":false}), &fixture.journal_config)
+        .unwrap();
+    let scope = journal.scope(&guard, "attempt-001").unwrap();
+    journal
+        .append(
+            &guard,
+            &scope,
+            &[Event {
+                event_id: "synthetic-token-in-scientific-unit".into(),
+                payload: normalized_metric(
+                    &json!({"name":"custom/value","unit":TOKEN,"value":1.25}),
+                    &fixture.journal_config,
+                )
+                .unwrap(),
+            }],
+        )
+        .unwrap();
+    let error = http_failure(
+        server
+            .client()
+            .get("/api/attempts/demo/train::attempt-001/metrics?format=records")
+            .unwrap_err(),
+        409,
+    );
+    assert_eq!(error.error_code, "OUTWARD_SECRET_DETECTED");
+    assert!(!error.response_body.unwrap().to_string().contains(TOKEN));
+}
+
+#[test]
+fn missing_locks_corrupt_canonical_and_file_aliases_fail_without_repair() {
+    for variant in [
+        "missing-lock",
+        "corrupt-canonical",
+        "hardlink-canonical",
+        "symlink-canonical",
+    ] {
+        let fixture = Fixture::new();
+        let server = fixture.server();
+        let manifest = fixture.run().join("manifest.yaml");
+        let before = fs::read(&manifest).unwrap();
+        match variant {
+            "missing-lock" => fs::remove_file(fixture.registry.join(".run-deletion.lock")).unwrap(),
+            "corrupt-canonical" => {
+                write_json(
+                    &fixture.run().join("control_manifest.yaml"),
+                    &fixture.manifest,
+                );
+                fs::write(&manifest, b"broken: [").unwrap();
+            }
+            "hardlink-canonical" => {
+                fs::hard_link(&manifest, fixture.run().join("copied-manifest")).unwrap();
+            }
+            "symlink-canonical" => {
+                fs::rename(&manifest, fixture.run().join("original-manifest")).unwrap();
+                symlink("original-manifest", &manifest).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let client = server.client();
+        let error = http_failure(client.get("/api/runs/demo/train").unwrap_err(), 409);
+        assert_eq!(
+            error.error_code,
+            if variant == "missing-lock" {
+                "READ_WORKSPACE_UNAVAILABLE"
+            } else {
+                "EXPERIMENT_EVIDENCE_UNAVAILABLE"
+            }
+        );
+        if variant == "missing-lock" {
+            assert!(!fixture.registry.join(".run-deletion.lock").exists());
+        }
+        if variant == "corrupt-canonical" {
+            assert_eq!(fs::read(&manifest).unwrap(), b"broken: [");
+        }
+        if variant == "hardlink-canonical" {
+            assert_eq!(fs::read(&manifest).unwrap(), before);
+        }
+        if variant == "symlink-canonical" {
+            assert!(
+                fs::symlink_metadata(&manifest)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        }
+    }
+}
+
+#[test]
+fn copied_or_wrong_science_journals_never_supply_live_metrics() {
+    for variant in [
+        "wrong-workspace",
+        "wrong-source",
+        "wrong-protocol",
+        "wrong-runtime",
+        "wrong-backend",
+        "wrong-resources",
+        "wrong-parameters",
+        "wrong-inputs",
+        "corrupt-journal",
+    ] {
+        let fixture = Fixture::new();
+        let mut config = fixture.journal_config.clone();
+        let seed = if variant == "wrong-workspace" {
+            "00000000000000000000000000000000"
+        } else {
+            fixture.workspace.strip_prefix("rust-preview-").unwrap()
+        };
+        if variant == "wrong-source" {
+            config["ml_expd"]["source_id"] = json!("source.foreign");
+        }
+        if variant == "wrong-protocol" {
+            config["ml_expd"]["evaluation"]["protocol_id"] = json!("different-protocol");
+        }
+        if variant == "wrong-runtime" {
+            config["ml_expd"]["runtime_id"] = json!("runtime.foreign");
+        }
+        if variant == "wrong-backend" {
+            config["ml_expd"]["backend"] = json!("pai-dlc");
+        }
+        if variant == "wrong-resources" {
+            config["ml_expd"]["resources"]["gpus"] = json!(8);
+        }
+        if variant == "wrong-parameters" {
+            config["ml_expd"]["parameters"]["lr"] = json!(0.3);
+        }
+        if variant == "wrong-inputs" {
+            config["ml_expd"]["inputs"] = json!([{"asset_id":"asset.foreign"}]);
+        }
+        fixture.journal(seed, &config);
+        if variant == "corrupt-journal" {
+            fs::write(
+                fixture.registry.join("tracking/outbox.sqlite"),
+                b"not sqlite",
+            )
+            .unwrap();
+        }
+        let server = fixture.server();
+        let client = server.client();
+        let error = http_failure(
+            client
+                .get("/api/attempts/demo/train::attempt-001/metrics?format=records")
+                .unwrap_err(),
+            409,
+        );
+        assert_eq!(
+            error.error_code,
+            if variant == "corrupt-journal" {
+                "JOURNAL_UNAVAILABLE"
+            } else {
+                "JOURNAL_IDENTITY_MISMATCH"
+            }
+        );
+        assert!(!error.to_string().contains(TOKEN));
+        assert!(fixture.registry.join("tracking/outbox.sqlite").exists());
+    }
+}
+
+#[test]
+fn malformed_internal_journal_observations_never_become_complete_science() {
+    let valid = json!({"name":"validation/loss","unit":"nats/token","value":2.5,"status":"VALID","source":null,
+        "protocol_id":"synthetic-protocol-v1","variant_id":null});
+    for (field, value) in [
+        ("unit", json!("")),
+        ("value", Value::Null),
+        ("protocol_id", json!(17)),
+        ("variant_id", json!({"unexpected":"object"})),
+    ] {
+        let fixture = Fixture::new();
+        fixture.journal_matching();
+        let store = records::Store::open(
+            &fixture.registry,
+            fixture.workspace.strip_prefix("rust-preview-").unwrap(),
+        )
+        .unwrap();
+        let guard = store.guard("demo", "train").unwrap();
+        let scope = store.scope(&guard, "attempt-001").unwrap();
+        let mut malformed = valid.clone();
+        malformed[field] = value;
+        store
+            .append(
+                &guard,
+                &scope,
+                &[Event {
+                    event_id: "malformed-internal-record".into(),
+                    payload: json!({"kind":"metrics","observations":[malformed]}),
+                }],
+            )
+            .unwrap();
+        drop(guard);
+        let server = fixture.server();
+        let client = server.client();
+        for path in [
+            "/api/runs/demo/train",
+            "/api/attempts/demo/train::attempt-001/metrics?format=records",
+        ] {
+            let error = http_failure(client.get(path).unwrap_err(), 409);
+            assert_eq!(
+                error.error_code, "EXPERIMENT_EVIDENCE_UNAVAILABLE",
+                "{field}: {path}"
+            );
+            assert!(!error.to_string().contains(TOKEN));
+        }
+        assert!(fixture.registry.join("tracking/outbox.sqlite").exists());
+    }
+}

@@ -817,3 +817,43 @@ fn missing_fence_after_open_is_never_repaired_by_normal_reads_writes_or_deletion
         );
     }
 }
+
+#[test]
+fn bounded_metric_reads_are_complete_or_fail_without_truncating_science() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path(), SEED).unwrap();
+    let scope = bound(&store, "bounded", enabled(), json!({}));
+    let guard = store.guard("demo", "bounded").unwrap();
+    let payload = normalized_metric(
+        &json!({"name":"训练/loss","unit":"nats/token","value":2.5,"step":1}),
+        &json!({}),
+    )
+    .unwrap();
+    store
+        .append(&guard, &scope, &[event("metric.1", payload.clone())])
+        .unwrap();
+    let bytes = ml_exp_core::records::encoded(&payload).unwrap().len();
+    assert!(
+        store
+            .metric_records_bounded(&guard, "attempt-001", bytes - 1, 1)
+            .is_err()
+    );
+    assert!(
+        store
+            .metric_records_bounded(&guard, "attempt-001", bytes, 0)
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .metric_records_bounded(&guard, "attempt-001", bytes, 1)
+            .unwrap(),
+        store.metric_records(&guard, "attempt-001").unwrap()
+    );
+    assert!(
+        store
+            .metric_records_bounded(&guard, "attempt-002", 0, 0)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(store.workspace_id(&guard).unwrap(), SEED);
+}

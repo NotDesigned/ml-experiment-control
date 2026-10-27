@@ -24,8 +24,8 @@
       "server": {
         "modules": 160,
         "lines": 30572,
-        "partial_foundation": 20,
-        "not_started": 140
+        "partial_foundation": 23,
+        "not_started": 137
       },
       "core": {
         "modules": 25,
@@ -40,7 +40,7 @@
         "not_started": 11
       }
     },
-    "partial_foundation_modules": 41,
+    "partial_foundation_modules": 44,
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
@@ -64,7 +64,8 @@
     "pure_core": "No filesystem, network, environment, clock, random or process effects. Validators, reducers and planners accept explicit values and return immutable data or Result.",
     "io_boundary": "ml-exp-io owns shared file/process/transport primitives; application executors own effect lifecycles and feed explicit evidence back to reducers.",
     "provider_io_owner": "server",
-    "scientific_computation_owner": "user code, any supported image language"
+    "scientific_computation_owner": "user code, any supported image language",
+    "read_preview_boundary": "Fresh marker-bearing isolated registry; trusted explicit Project/Run locations; existing-only deletion guards; bounded authenticated local GETs without providers, repair, ArtifactStore download claims or mutations. Unique canonical Run discovery remains missing."
   },
   "modules": [
     {
@@ -361,7 +362,7 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/client/src/observation.rs",
-        "scope": "Pure saved-identity GET state machine and bounded HTTP executor; 61 baseline cases and real loopback binding tests. CLI status/log/metrics integration remains incomplete.",
+        "scope": "Pure saved-identity GET state machine and bounded HTTP executor, CLI status/logs/metrics integration and real isolated native-server reads. Saved Attempt remains pinned; mutation, submission and full original API compatibility are incomplete.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true
       }
@@ -853,8 +854,9 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/server/src/lib.rs",
-        "scope": "Isolated health/readiness/minimal-schema routes only; no production API composition.",
-        "compatibility_accepted": false
+        "scope": "Loopback-only health/readiness/OpenAPI and configured local experiment GET composition with native read_api/read_http; claims only metric-records and collection-read capabilities when configured. TLS, complete API/lifecycle composition and production deployment remain incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
       }
     },
     {
@@ -1227,8 +1229,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "http",
       "proposed_consolidation": "Thin HTTP parsing/authentication/serialization only; route calls its owning domain directly.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/server/src/read_http.rs",
+        "scope": "Authenticated protocol-2 GET subset for explicitly configured isolated Projects, Runs, exact Attempt show/logs/metrics and collection observations. Four blocking read slots and a 30-second HTTP wait deadline do not cancel kernel I/O. No mutation, provider refresh, artifact download, ACK, lifecycle registration or production acceptance.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/api/script_preparation_routes.py",
@@ -1764,8 +1772,9 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/server/src/main.rs",
-        "scope": "Loopback-only preview daemon arguments and shutdown only; production config/doctor not ported.",
-        "compatibility_accepted": false
+        "scope": "Loopback preview daemon, private read-config and explicit fresh --initialize-registry. Marker/existing deletion lock required for ordinary startup; no production registry bootstrap, repair, scanner, provider credentials or production doctor/config parity.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
       }
     },
     {
@@ -2420,7 +2429,7 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/server/src/experiments/mod.rs",
-        "scope": "Limited authoritative metadata read library from explicit trusted Project/Run locators, existing deletion guards, retained directory capabilities, raw-byte SHA checks and compared provenance fields. Bounded JSON/YAML subset with unknown fields retained; no whole-tree scanner, latest selection, full run_detail, provider evidence or HTTP composition.",
+        "scope": "Trusted explicit Project/Run locators, bounded authoritative manifest/evidence snapshots and exact Attempt tails with retained directory capabilities/existing deletion guards. Raw SHA and limited provenance comparisons only; no latest guessing or unique canonical-location scanner. Configured read-only HTTP composition now consumes this subset; full discovery/provider/collector behavior is incomplete.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true
       }
@@ -2750,8 +2759,8 @@
       "migration_status": "partial_foundation",
       "python_baseline_unchanged": true,
       "rust_foundation": {
-        "path": "rust/crates/server/src/records/mod.rs",
-        "scope": "Legacy tracking/outbox.sqlite schema, immutable route/config, event-ID/content dedup, Run guards and checked publication cursors. No HTTP composition or W&B network publisher.",
+        "path": "rust/crates/server/src/records/store.rs",
+        "scope": "Legacy tracking/outbox.sqlite schema, immutable route/config, event-ID/content dedup, Run guards and checked publication cursors. Configured read-only HTTP validates workspace and frozen Run binding before complete bounded journal reads (8 MiB/100000 observations), rejecting oversize instead of validating a suffix. No W&B network publisher or production acceptance.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true
       }
@@ -3124,8 +3133,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "observation",
       "proposed_consolidation": "One backend-neutral evidence reducer; provider snapshots and worker facts remain independent.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/failures.rs",
+        "scope": "Pure exact-Attempt/domain terminal failure applicability, bounded diagnostic compaction, explicit-time parsing and evidence digest. Producer labels and decisions are contextual only; no retry or provider action. Common ISO timestamp subset requires explicit offset for naive times; full legacy/date grammar parity is not accepted.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/runs/first_submission.py",
@@ -3206,8 +3221,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "observation",
       "proposed_consolidation": "One backend-neutral evidence reducer; provider snapshots and worker facts remain independent.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/server/src/read_model.rs",
+        "scope": "Pure bounded Run/Attempt status, logs, metric and collection observations over already-bound snapshots. Python differential projections and real TCP native-client reads cover the configured subset. Raw incomplete history stays PARTIAL; collection never claims ArtifactStore verification/downloadability. Full application/provider/query compatibility remains incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/runs/run_operations.py",

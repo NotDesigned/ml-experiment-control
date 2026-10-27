@@ -3,11 +3,15 @@
 //! No index, workspace bootstrap, mutation, provider or latest-Attempt lookup.
 #![forbid(unsafe_code)]
 mod domain;
+pub mod snapshot;
 mod store;
 
 pub use domain::{
     Document, DocumentError, Format, ManifestSource, Provenance, parse_mapping, validate_attempt,
     validate_project, validate_run,
+};
+pub use snapshot::{
+    AttemptSnapshot, Diagnostic, EvidenceDocument, EvidenceProblem, LogTail, MetricTail, Snapshot,
 };
 pub use store::{AttemptRecord, Error, ExpectedHashes, ProjectBinding, RunRef, Store};
 

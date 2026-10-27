@@ -116,6 +116,13 @@ impl Store {
         })
     }
 
+    pub fn workspace_id(&self, guard: &RecordGuard<'_>) -> Result<String> {
+        self.require_guard(guard)?;
+        let value = self.workspace()?;
+        self.require_guard(guard)?;
+        Ok(value)
+    }
+
     fn binding_raw(&self, project: &str, run: &str) -> Result<Option<Value>> {
         self.database.read_only(|connection| -> Result<_> {
             let row:Option<(String,String)>=connection.query_row("SELECT route,config FROM runs WHERE project=? AND run=?",params![project,run],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
@@ -438,6 +445,41 @@ impl Store {
         }
         self.require_guard(guard)?;
         Ok(items)
+    }
+
+    /// Read a complete history only if it fits explicit HTTP-boundary budgets.
+    /// Hitting a limit is an error, never a silently incomplete science result.
+    /// SQL checks each encoded row length before allocating its payload string.
+    pub fn metric_records_bounded(
+        &self,
+        guard: &RecordGuard<'_>,
+        attempt: &str,
+        maximum_bytes: usize,
+        maximum_records: usize,
+    ) -> Result<Vec<Value>> {
+        self.require_guard(guard)?;
+        let scope = Scope::new(&guard.project, &guard.run, attempt).encoded()?;
+        let result = self.database.read_only(|connection| -> Result<_> {
+            let mut statement = connection.prepare("SELECT length(CAST(payload AS BLOB)),payload FROM events WHERE scope=? AND json_extract(payload,'$.kind')='metrics' ORDER BY seq")?;
+            let mut rows = statement.query([scope])?;
+            let mut bytes = 0usize;
+            let mut items = Vec::new();
+            while let Some(row) = rows.next()? {
+                let size: i64 = row.get(0)?;
+                let size = usize::try_from(size).map_err(|_| Error::Invalid("metric history exceeds read budget"))?;
+                bytes = bytes.checked_add(size).filter(|size| *size <= maximum_bytes).ok_or(Error::Invalid("metric history exceeds read budget"))?;
+                let raw: String = row.get(1)?;
+                let value: Value = serde_json::from_str(&raw)?;
+                let observations = value["observations"].as_array().ok_or(Error::Invalid("metric observations array"))?;
+                if items.len().checked_add(observations.len()).is_none_or(|size| size > maximum_records) {
+                    return Err(Error::Invalid("metric history exceeds read budget"));
+                }
+                items.extend(observations.iter().cloned());
+            }
+            Ok(items)
+        })?;
+        self.require_guard(guard)?;
+        Ok(result)
     }
     pub fn latest_lifecycle(&self, guard: &RecordGuard<'_>, scope: &str) -> Result<Value> {
         self.require_scope(guard, scope)?;

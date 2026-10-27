@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod canonical;
 pub mod diagnostic;
+pub mod failures;
 pub mod identity;
 pub mod index;
 pub mod launch;

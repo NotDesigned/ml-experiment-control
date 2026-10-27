@@ -378,3 +378,370 @@ fn detached_namespaces_symlinks_and_nonregular_manifests_are_not_followed() {
     fs::set_permissions(&runs, fs::Permissions::from_mode(0o700)).unwrap();
     assert!(f.store.run(&f.reference, None).is_err());
 }
+
+fn evidence_file(root: &Path, file: &str, value: Value) {
+    fs::write(
+        run_path(root).join(file),
+        serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
+}
+fn extra_attempt(root: &Path, attempt: &str) {
+    let directory = run_path(root).join("attempts").join(attempt);
+    fs::create_dir(&directory).unwrap();
+    let mut manifest = parse_mapping(raw("native-attempt").as_bytes(), Format::Yaml).unwrap();
+    manifest.insert("attempt_id".into(), json!(attempt));
+    fs::write(
+        directory.join("attempt.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+}
+fn set_current(root: &Path, attempt: &str) {
+    evidence_file(
+        root,
+        "status.json",
+        json!({"project":"demo","run_id":"train","attempt_id":attempt,"state":"RUNNING","updated_at":"2026-10-27T03:04:05Z"}),
+    );
+}
+
+#[test]
+fn snapshots_read_exact_current_evidence_and_only_one_attempt_payload() {
+    let f = fixture();
+    let path = run_path(f.root.path());
+    extra_attempt(f.root.path(), "attempt-002");
+    set_current(f.root.path(), "attempt-001");
+    for file in [
+        "status.json",
+        "backend.json",
+        "collection.json",
+        "decision.json",
+        "submission.json",
+    ] {
+        evidence_file(
+            f.root.path(),
+            &format!("attempts/attempt-001/{file}"),
+            json!({"project":"demo","run_id":"train","attempt_id":"attempt-001","state":"RUNNING","backend_job_id":"12345"}),
+        );
+    }
+    fs::write(
+        path.join("attempts/attempt-001/stdout.log"),
+        "first\nsecond\n",
+    )
+    .unwrap();
+    fs::write(
+        path.join("attempts/attempt-001/train_metrics.jsonl"),
+        "{\"step\":1,\"loss\":2.5}\n",
+    )
+    .unwrap();
+    symlink(
+        "/never-open-historical-payload",
+        path.join("attempts/attempt-002/stdout.log"),
+    )
+    .unwrap();
+    let snapshot = f.store.snapshot(&f.reference).unwrap();
+    assert_eq!(snapshot.current_attempt_id.as_deref(), Some("attempt-001"));
+    assert_eq!(
+        snapshot.current_selection_source.as_deref(),
+        Some("status.json")
+    );
+    assert_eq!(snapshot.attempts.len(), 2);
+    let current = &snapshot.attempts[0];
+    assert_eq!(current.stdout.lines, ["first", "second"]);
+    assert_eq!(
+        current.stdout.source.as_deref(),
+        Some("attempts/attempt-001/stdout.log")
+    );
+    assert_eq!(current.metrics.records, [json!({"step":1,"loss":2.5})]);
+    assert_eq!(
+        current.metrics.source_attempt_id.as_deref(),
+        Some("attempt-001")
+    );
+    assert!(
+        matches!(&current.submission, EvidenceDocument::Present { metadata, .. } if metadata["backend_job_id"] == "12345")
+    );
+    assert!(snapshot.attempts[1].stdout.source.is_none());
+    assert!(
+        snapshot.attempts[1]
+            .stdout
+            .diagnostics
+            .iter()
+            .any(|d| d.code == EvidenceProblem::NotLoaded)
+    );
+    // Exact historic reads do not inherit current metrics or logs.
+    let historical = f
+        .store
+        .snapshot_attempt(&f.reference, "attempt-002")
+        .unwrap();
+    assert_eq!(historical.attempts.len(), 1);
+    assert_eq!(historical.attempts[0].attempt_id, "attempt-002");
+    assert!(historical.current_attempt_id.is_none());
+    assert!(historical.attempts[0].metrics.records.is_empty());
+    assert!(
+        historical.attempts[0]
+            .stdout
+            .diagnostics
+            .iter()
+            .any(|d| d.code == EvidenceProblem::Io)
+    );
+    assert!(matches!(
+        f.store.snapshot_attempt(&f.reference, "attempt-999"),
+        Err(Error::Missing)
+    ));
+}
+
+#[test]
+fn explicit_mirrors_select_current_but_corruption_or_foreign_binding_never_selects_an_older_one() {
+    let f = fixture();
+    let path = run_path(f.root.path());
+    extra_attempt(f.root.path(), "attempt-002");
+    let unbound = f.store.snapshot(&f.reference).unwrap();
+    assert!(unbound.current_attempt_id.is_none());
+    assert!(
+        unbound
+            .diagnostics
+            .iter()
+            .any(|d| d.code == EvidenceProblem::NoExplicitCurrent)
+    );
+    evidence_file(
+        f.root.path(),
+        "collection.json",
+        json!({"attempt_id":"attempt-002"}),
+    );
+    assert_eq!(
+        f.store
+            .snapshot(&f.reference)
+            .unwrap()
+            .current_attempt_id
+            .as_deref(),
+        Some("attempt-002")
+    );
+    fs::write(path.join("status.json"), "malformed").unwrap();
+    let bad = f.store.snapshot(&f.reference).unwrap();
+    assert!(bad.current_attempt_id.is_none());
+    assert!(matches!(
+        bad.current_status,
+        EvidenceDocument::Unavailable {
+            code: EvidenceProblem::InvalidJson,
+            ..
+        }
+    ));
+    set_current(f.root.path(), "attempt-999");
+    let bad = f.store.snapshot(&f.reference).unwrap();
+    assert!(bad.current_attempt_id.is_none());
+    assert!(
+        bad.diagnostics
+            .iter()
+            .any(|d| d.code == EvidenceProblem::CurrentAttemptUnavailable)
+    );
+    evidence_file(
+        f.root.path(),
+        "status.json",
+        json!({"project":"foreign","attempt_id":"attempt-001"}),
+    );
+    let bad = f.store.snapshot(&f.reference).unwrap();
+    assert!(bad.current_attempt_id.is_none());
+    assert!(matches!(
+        bad.current_status,
+        EvidenceDocument::Unavailable {
+            code: EvidenceProblem::IdentityConflict,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn tails_are_bounded_and_jsonl_partial_corrupt_and_foreign_rows_remain_diagnostic() {
+    let f = fixture();
+    let path = run_path(f.root.path()).join("attempts/attempt-001");
+    let mut log = vec![b'x'; 2 * 1024 * 1024];
+    log.extend_from_slice(b"\nlast line\n");
+    fs::write(path.join("stdout.log"), log).unwrap();
+    fs::write(path.join("stderr.log"), b"bad utf8 \xff\n").unwrap();
+    fs::write(path.join("train_metrics.jsonl"), b"{\"step\":1,\"loss\":2.5}\nnot json\n{\"attempt_id\":\"attempt-002\",\"step\":2,\"loss\":1.0}\n{\"step\":3,\"loss\":0.5}").unwrap();
+    let snapshot = f
+        .store
+        .snapshot_attempt(&f.reference, "attempt-001")
+        .unwrap();
+    let attempt = &snapshot.attempts[0];
+    assert_eq!(attempt.stdout.lines, ["last line"]);
+    assert!(attempt.stdout.truncated);
+    assert!(attempt.stdout.sampled_bytes <= 1024 * 1024);
+    assert!(attempt.stdout.offset_bytes > 0);
+    assert!(
+        attempt
+            .stderr
+            .diagnostics
+            .iter()
+            .any(|d| d.code == EvidenceProblem::InvalidUtf8)
+    );
+    assert_eq!(attempt.metrics.records, [json!({"step":1,"loss":2.5})]);
+    for code in [
+        EvidenceProblem::MalformedRecord,
+        EvidenceProblem::ForeignRecord,
+        EvidenceProblem::PartialFinalLine,
+    ] {
+        assert!(attempt.metrics.diagnostics.iter().any(|d| d.code == code));
+    }
+    assert!(attempt.stdout.modified_at_unix.is_some());
+    assert!(!attempt.manifest.metadata.contains_key("sampled_at"));
+}
+
+#[test]
+fn log_tails_preserve_python_text_separators_without_changing_jsonl_framing() {
+    let f = fixture();
+    let path = run_path(f.root.path()).join("attempts/attempt-001");
+    fs::write(
+        path.join("stdout.log"),
+        "a\r旧\u{85}新\u{2028}尾\r\nb\x0bc\x0cd\x1ce\x1df\x1eg\u{2029}",
+    )
+    .unwrap();
+    let mut large = vec![b'x'; 2 * 1024 * 1024];
+    large.extend_from_slice("\u{2028}retained\r\n".as_bytes());
+    fs::write(path.join("stderr.log"), large).unwrap();
+    fs::write(path.join("metrics.jsonl"), "{\"value\":1}\r{\"value\":2}\n").unwrap();
+    let snapshot = f
+        .store
+        .snapshot_attempt(&f.reference, "attempt-001")
+        .unwrap();
+    let attempt = &snapshot.attempts[0];
+    assert_eq!(
+        attempt.stdout.lines,
+        ["a", "旧", "新", "尾", "b", "c", "d", "e", "f", "g"]
+    );
+    assert_eq!(attempt.stdout.available_lines, 10);
+    assert_eq!(attempt.stderr.lines, ["retained"]);
+    assert!(attempt.stderr.truncated);
+    assert!(attempt.stderr.sampled_bytes <= 1024 * 1024);
+    assert!(attempt.metrics.records.is_empty());
+    assert!(
+        attempt
+            .metrics
+            .diagnostics
+            .iter()
+            .any(|d| d.code == EvidenceProblem::MalformedRecord)
+    );
+    fs::write(path.join("stdout.log"), "\r\n\n").unwrap();
+    let snapshot = f
+        .store
+        .snapshot_attempt(&f.reference, "attempt-001")
+        .unwrap();
+    assert_eq!(snapshot.attempts[0].stdout.lines, ["", ""]);
+}
+
+#[test]
+fn exact_snapshots_do_not_read_or_hide_bad_sibling_manifests_and_evidence_errors_are_not_missing() {
+    let f = fixture();
+    let path = run_path(f.root.path());
+    extra_attempt(f.root.path(), "attempt-002");
+    fs::write(path.join("attempts/attempt-002/attempt.yaml"), "broken: [").unwrap();
+    evidence_file(
+        f.root.path(),
+        "attempts/attempt-001/backend.json",
+        json!({"attempt_id":"attempt-999"}),
+    );
+    fs::write(
+        path.join("attempts/attempt-001/status.json"),
+        "invalid json",
+    )
+    .unwrap();
+    let exact = f
+        .store
+        .snapshot_attempt(&f.reference, "attempt-001")
+        .unwrap();
+    assert!(matches!(
+        exact.attempts[0].backend,
+        EvidenceDocument::Unavailable {
+            code: EvidenceProblem::IdentityConflict,
+            ..
+        }
+    ));
+    assert!(matches!(
+        exact.attempts[0].status,
+        EvidenceDocument::Unavailable {
+            code: EvidenceProblem::InvalidJson,
+            ..
+        }
+    ));
+    assert!(matches!(
+        exact.attempts[0].decision,
+        EvidenceDocument::Missing
+    ));
+    assert!(f.store.snapshot(&f.reference).is_err());
+    // The actual payload source is always an approved fixed name. A producer
+    // path cannot redirect the reader into a dataset, credential or checkpoint.
+    evidence_file(
+        f.root.path(),
+        "attempts/attempt-001/collection.json",
+        json!({"metrics_path":"/must-not-read","stdout_path":"../../forbidden"}),
+    );
+    assert!(
+        f.store
+            .snapshot_attempt(&f.reference, "attempt-001")
+            .unwrap()
+            .attempts[0]
+            .metrics
+            .source
+            .is_none()
+    );
+}
+
+#[test]
+fn snapshot_manifest_budget_and_deleted_fence_fail_without_repair() {
+    let f = fixture();
+    let mut manifest = parse_mapping(raw("native-attempt").as_bytes(), Format::Yaml).unwrap();
+    manifest.insert(
+        "large_metadata".into(),
+        Value::String("x".repeat(4 * 1024 * 1024 - 4096)),
+    );
+    for number in 2..=10 {
+        let attempt = format!("attempt-{number:03}");
+        extra_attempt(f.root.path(), &attempt);
+        manifest.insert("attempt_id".into(), json!(attempt));
+        fs::write(
+            run_path(f.root.path())
+                .join("attempts")
+                .join(&attempt)
+                .join("attempt.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+    assert!(matches!(
+        f.store.snapshot(&f.reference),
+        Err(Error::SnapshotLimit)
+    ));
+    assert!(
+        f.store
+            .snapshot_attempt(&f.reference, "attempt-001")
+            .is_ok()
+    );
+    f.fence
+        .mark("demo", "train", &Map::new(), "synthetic")
+        .unwrap();
+    assert!(matches!(
+        f.store.snapshot_attempt(&f.reference, "attempt-001"),
+        Err(Error::Fence(crate::deletion::Error::Deleted))
+    ));
+}
+
+#[test]
+fn metrics_tail_record_limit_does_not_count_the_terminal_empty_split() {
+    let f = fixture();
+    let path = run_path(f.root.path()).join("attempts/attempt-001/train_metrics.jsonl");
+    fs::write(&path, b"{\"step\":1,\"loss\":2.5}\n".repeat(10_000)).unwrap();
+    let exact = f
+        .store
+        .snapshot_attempt(&f.reference, "attempt-001")
+        .unwrap();
+    assert_eq!(exact.attempts[0].metrics.records.len(), 10_000);
+    assert!(!exact.attempts[0].metrics.truncated);
+    assert!(exact.attempts[0].metrics.diagnostics.is_empty());
+    fs::write(&path, b"{\"step\":1,\"loss\":2.5}\n".repeat(10_001)).unwrap();
+    let over = f
+        .store
+        .snapshot_attempt(&f.reference, "attempt-001")
+        .unwrap();
+    assert_eq!(over.attempts[0].metrics.records.len(), 10_000);
+    assert!(over.attempts[0].metrics.truncated);
+}

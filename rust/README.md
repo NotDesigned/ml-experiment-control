@@ -12,21 +12,21 @@ platform programs. User training code may still be Python.
 
 | Crate | Preview executable | Current scope |
 | --- | --- | --- |
-| `ml-exp-core` | Library | Pure frozen identities, metrics/journal/tracking decisions, reducers, observations and Slurm/helper protocols |
+| `ml-exp-core` | Library | Pure frozen identities, metrics/journal/tracking decisions, reducers, observations, failure assessment and Slurm/helper protocols |
 | `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O and single-frame pipe transport |
 | `ml-exp-client` | `ml-exp-rs` | Private settings, bounded JSON GET and exact-identity status/logs/metrics, bounded watch and pure human summaries |
-| `ml-exp-server` | `ml-expd-rs` | Loopback HTTP preview; isolated SQLite/Run fences and authoritative metadata library; explicit Slurm SSH call |
+| `ml-exp-server` | `ml-expd-rs` | Configured local read-only experiment HTTP API, isolated SQLite/Run fences and explicit Slurm SSH call |
 | `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision and scoped Slurm metadata helper |
 
-There is no real experiment API, managed-worker protocol, artifact/data transfer
-or W&B transport in the preview. Metrics and the
+The experiment API is a read-only subset for explicitly configured isolated
+files. There is no registration/submission API, managed-worker protocol,
+artifact/data transfer or W&B transport. Metrics and the
 isolated canonical journal have native validation, aggregation, persistence and
 publication-cursor logic; there is no accepted cloud publisher. Slurm planners
 return data. The separate native helper can invoke `sbatch` only after explicit
 isolated configuration/bootstrap; it is not wired to Actions or the HTTP server.
-The stores and fences are not yet exposed through the preview API. The client
-can make exact read-only observations against a compatible protocol-2 API; this
-does not make the preview server a complete experiment API.
+The client can query configured local Run/Attempt status, logs and metrics using
+protocol 2. This does not make the preview server a complete experiment API.
 A successful `check` does not mean training is configured.
 
 ## Build and check
@@ -102,11 +102,78 @@ the final observation on stdout. Its budget ends waiting; it cannot stop/retry a
 job or start a new HTTP read after the budget. An in-flight read keeps its own
 timeout. Both scheduler completion and result publication must settle before
 early completion.
-The isolated preview server still returns 501 for these experiment endpoints.
+Without `--read-config`, experiment endpoints return 501. With it, only configured
+identities are available; no provider is queried or refreshed.
 
 The preview transport explicitly disables redirects, automatic retries and
 environment-derived proxies. Proxy support must later be passed as explicit
 transport configuration; it is not inherited silently from the shell.
+
+## Enable synthetic experiment reads
+
+Stop the daemon above first and keep its temporary directory. Create only
+synthetic metadata beneath it; do not copy production state or credentials.
+The registry path below must not already exist:
+
+```bash
+umask 077
+mkdir -p "$preview_dir/demo/runs/trial/attempts/attempt-001"
+printf '{"project":"demo","title":"Synthetic preview"}\n' > "$preview_dir/demo/research_project.yaml"
+printf '{"project":"demo","run_id":"trial"}\n' > "$preview_dir/demo/runs/trial/manifest.json"
+printf '{"project":"demo","run_id":"trial","attempt_id":"attempt-001"}\n' > "$preview_dir/demo/runs/trial/attempts/attempt-001/attempt.json"
+printf '{"attempt_id":"attempt-001","state":"RUNNING"}\n' > "$preview_dir/demo/runs/trial/status.json"
+printf '{"state":"RUNNING"}\n' > "$preview_dir/demo/runs/trial/attempts/attempt-001/status.json"
+printf 'synthetic output\n' > "$preview_dir/demo/runs/trial/attempts/attempt-001/stdout.log"
+printf '{"step":0,"name":"training_loss","value":1.25,"unit":"nats/token"}\n' > "$preview_dir/demo/runs/trial/attempts/attempt-001/train_metrics.jsonl"
+cat > "$preview_dir/reads.json" <<EOF
+{
+  "schema_version": 1,
+  "registry_root": "$preview_dir/registry",
+  "projects": [{
+    "project": "demo",
+    "project_file": "$preview_dir/demo/research_project.yaml",
+    "run_roots": ["$preview_dir/demo/runs"],
+    "runs": [{"run_id": "trial", "root_index": 0, "relative_components": ["trial"]}]
+  }]
+}
+EOF
+cargo run --manifest-path rust/Cargo.toml -p ml-exp-server --bin ml-expd-rs --locked -- \
+  --initialize-registry "$preview_dir/registry"
+cargo run --manifest-path rust/Cargo.toml -p ml-exp-server --bin ml-expd-rs --locked -- \
+  --bind 127.0.0.1:18765 --token-file "$preview_dir/token" --read-config "$preview_dir/reads.json"
+```
+
+In the client shell, reuse the explicit preview configuration:
+
+```bash
+ml-exp-rs --config "$preview_dir/client.json" get /api/projects
+ml-exp-rs --config "$preview_dir/client.json" run status --project demo --run trial --attempt attempt-001
+ml-exp-rs --config "$preview_dir/client.json" run logs --project demo --run trial --attempt attempt-001
+ml-exp-rs --config "$preview_dir/client.json" run metrics --project demo --run trial --attempt attempt-001 --name training_loss
+ml-exp-rs --config "$preview_dir/client.json" get /api/runs/demo/trial/attempts/attempt-001/collection
+```
+
+Use the same `cargo run ... --` prefix as above if preview binaries are not on
+PATH. Initialization refuses every existing target, including an empty directory;
+normal startup requires the preview marker and existing deletion lock. The private
+read config selects allowed files and exact Run locations. HTTP requests cannot
+select paths, and reads never bootstrap missing locks or repair metadata.
+
+These files describe observations, not an actual running training job. A missing
+timestamp stays unknown. Current must be explicitly bound by a Run status,
+collection or decision mirror; directory sorting never chooses it. Historical
+Attempt reads do not borrow the current Attempt's logs or metrics. The configured
+location is trusted: a scanner proving unique canonical Run locations is still
+missing. JSON is strict; YAML supports a bounded conservative subset described
+in the architecture document.
+
+Logs and raw metrics retain bounded tails with truncation/error diagnostics;
+partial raw history cannot claim complete validation. Complete canonical journal
+reads fail closed beyond 8 MiB or 100,000 observations, before filtering. Collection
+returns process observations but cannot verify ArtifactStore publication or
+downloads; download, collection execution and ACK are not implemented. There are
+four read slots and a 30-second HTTP wait deadline. A timed-out blocking filesystem
+read may continue holding its slot; the timeout is not kernel-I/O cancellation.
 
 Stop the test daemon with Ctrl-C. Remove only the temporary directory you created,
 after checking that the process is stopped. Never point cleanup at an existing

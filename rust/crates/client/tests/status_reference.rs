@@ -207,3 +207,61 @@ fn duplicate_exact_attempts_are_refused_instead_of_choosing_the_first() {
         ))
     ));
 }
+
+#[test]
+fn native_missing_scheduler_evidence_never_borrows_process_completion() {
+    use serde_json::json;
+    for (layer_attempt, freshness) in [("attempt-001", "UNKNOWN"), ("attempt-002", "OBSERVED")] {
+        let mut step = status::begin(
+            "https://example.test",
+            &json!({"capabilities":["result-collection-read.v1"]}),
+            None,
+            Selection {
+                project: Some("p"),
+                run: Some("r"),
+                attempt: Some("attempt-001"),
+            },
+            false,
+        )
+        .unwrap();
+        let mut reads = Vec::new();
+        loop {
+            step = match step {
+                Step::Read(read) => {
+                    reads.push(read.path().to_owned());
+                    let body = match read.path() {
+                        "/api/runs/p/r" => {
+                            json!({"project":"p","run_id":"r","evidence":{"scheduler":{
+                            "attempt_id":layer_attempt,"state":null,"freshness":freshness,"evidence_availability":{"availability":"MISSING"}}}})
+                        }
+                        "/api/runs/p/r/attempts" => {
+                            json!({"project":"p","run_id":"r","current_attempt_id":"attempt-001",
+                            "attempts":[{"identity":"r::attempt-001","attempt_id":"attempt-001","state":"SUCCEEDED"}]})
+                        }
+                        "/api/runs/p/r/attempts/attempt-001/collection" => {
+                            json!({"project":"p","run_id":"r","attempt_id":"attempt-001",
+                            "training":{"status":"COMPLETED","exit_code":0},"status":"NOT_OBSERVED","verification":"PENDING","download_available":false})
+                        }
+                        "/api/attempts/p/r%3A%3Aattempt-001/show" => {
+                            json!({"run_id":"r","attempt":{"attempt_id":"attempt-001"},
+                            "scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},
+                            "evidence":{"scheduler":{"attempt_id":"attempt-001","state":null,"freshness":"UNKNOWN"}}})
+                        }
+                        other => panic!("unexpected request {other}"),
+                    };
+                    read.accept(Ok(body)).unwrap()
+                }
+                Step::Complete(value) => {
+                    assert_eq!(value["scheduler"]["state"], "UNKNOWN");
+                    assert_eq!(value["training"]["status"], "COMPLETED");
+                    assert_eq!(value["publication"]["download_available"], false);
+                    assert_eq!(
+                        reads.len(),
+                        if layer_attempt == "attempt-001" { 3 } else { 4 }
+                    );
+                    break;
+                }
+            };
+        }
+    }
+}

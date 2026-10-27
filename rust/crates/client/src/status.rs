@@ -141,7 +141,8 @@ fn identity_step(
                 collection: json!({}),
                 collection_error: None,
                 progress_enabled: capability(&health, "execution-progress.v1"),
-                collection_enabled: capability(&health, "result-collection.v1"),
+                collection_enabled: capability(&health, "result-collection.v1")
+                    || capability(&health, "result-collection-read.v1"),
                 details,
                 saved,
             }
@@ -507,19 +508,23 @@ impl Flow {
                 .insert("attempts".into(), self.listing.clone());
             self.evidence
                 .insert("collection".into(), self.collection.clone());
-            if self.materialized {
-                let identity = format!(
-                    "{}::{}",
-                    self.reference.run_id,
-                    self.attempt.as_deref().unwrap_or("")
-                );
-                let path = format!(
-                    "/api/attempts/{}/{}/show",
-                    observation::segment(&self.reference.project)?,
-                    observation::segment(&identity)?
-                );
-                return self.request(Phase::Expanded, path);
-            }
+        }
+        let scheduler = &self.run["evidence"]["scheduler"];
+        let native_exact_read = (scheduler.get("freshness").is_some()
+            || scheduler.get("evidence_availability").is_some())
+            && scheduler["attempt_id"] != json!(self.attempt);
+        if self.materialized && (self.details || native_exact_read) {
+            let identity = format!(
+                "{}::{}",
+                self.reference.run_id,
+                self.attempt.as_deref().unwrap_or("")
+            );
+            let path = format!(
+                "/api/attempts/{}/{}/show",
+                observation::segment(&self.reference.project)?,
+                observation::segment(&identity)?
+            );
+            return self.request(Phase::Expanded, path);
         }
         Ok(Step::Complete(self.finish()))
     }
@@ -527,12 +532,20 @@ impl Flow {
         if !self.materialized {
             return json!({});
         }
-        let layer = mapping(&self.run["evidence"][name]);
-        if layer["attempt_id"] == json!(self.attempt) {
-            layer
-        } else {
-            json!({})
+        // The Run view carries current journal evidence. A historical native
+        // observation needs the separately scoped exact-Attempt GET instead.
+        let exact = self
+            .evidence
+            .get("attempt")
+            .and_then(|value| value.get("evidence"))
+            .unwrap_or(&Value::Null);
+        for evidence in [&self.run["evidence"], exact] {
+            let layer = mapping(&evidence[name]);
+            if layer["attempt_id"] == json!(self.attempt) {
+                return layer;
+            }
         }
+        json!({})
     }
     fn finish(self) -> Value {
         let scheduler = self.layer("scheduler");
@@ -540,6 +553,22 @@ impl Flow {
         let worker = self.layer("worker");
         let model = self.layer("model");
         let scheduler_detail = mapping(&scheduler["detail"]);
+        // Native projections explicitly distinguish unavailable scheduler
+        // evidence from a process/Attempt state. Legacy servers omit these
+        // fields and retain their established listing fallback.
+        let native_scheduler = &self.run["evidence"]["scheduler"];
+        let scheduler_unknown = json!(if self.materialized {
+            "UNKNOWN"
+        } else {
+            "NOT_SUBMITTED"
+        });
+        let scheduler_fallback = if native_scheduler.get("freshness").is_some()
+            || native_scheduler.get("evidence_availability").is_some()
+        {
+            scheduler_unknown
+        } else {
+            otherwise(&self.selected["state"], scheduler_unknown)
+        };
         let queue = otherwise(
             &mapping(&self.progress["queue"]),
             mapping(&scheduler_detail["queue"]),
@@ -547,7 +576,7 @@ impl Flow {
         let training = mapping(&self.collection["training"]);
         let mut model_view = json!({"state":model["state"],"step":mapping(&model["detail"])["step"],"last_metric":otherwise(&model["detail"],Value::Null),
             "observed_at":model["as_of"],"stale":get_or(&model,"stale",json!(true)),
-            "metric_record":if truth(&model["detail"]){json!({"source":"indexed-model","sequence":null,"event_id":null})}else{Value::Null}});
+            "metric_record":if truth(&model["detail"]){json!({"source":if model.get("freshness").is_some(){otherwise(&model["source"],json!("indexed-model"))}else{json!("indexed-model")},"sequence":null,"event_id":null})}else{Value::Null}});
         let metric = mapping(&self.progress["last_metric"]);
         let observation = mapping(&metric["observation"]);
         if model["state"].is_null() && truth(&observation) {
@@ -575,7 +604,7 @@ impl Flow {
                 .collect(),
         );
         let mut value = json!({"project":self.reference.project,"run_id":self.reference.run_id,"attempt_id":self.attempt,"preparation":self.preparation,
-            "scheduler":{"state":otherwise(&scheduler["state"],otherwise(&self.selected["state"],json!(if self.materialized{"UNKNOWN"}else{"NOT_SUBMITTED"}))),
+            "scheduler":{"state":otherwise(&scheduler["state"],scheduler_fallback),
                 "backend":scheduler_detail["backend"],"job_id":scheduler_detail["backend_job_id"],"native_state":scheduler_detail["raw_state"],
                 "observed_at":scheduler["as_of"],"stale":get_or(&scheduler,"stale",json!(true)),"reason":otherwise(&queue["reason"],otherwise(&scheduler_detail["reason"],scheduler_detail["pending_reason"].clone()))},
             "training":{"status":get_or(&training,"status",json!("UNKNOWN")),"exit_code":training["exit_code"],"process_state":process["state"],"observed_at":process["as_of"],"stale":get_or(&process,"stale",json!(true))},

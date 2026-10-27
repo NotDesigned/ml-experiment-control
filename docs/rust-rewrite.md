@@ -22,10 +22,10 @@ rewrite of users' training code.
 
 | Component | Implemented foundation | Still missing |
 | --- | --- | --- |
-| Core | Frozen identities, generic metrics/journal decisions, tracking routes/display plans, Action/index reducers, Slurm/helper protocols and observation projections | Remaining frozen contracts and complete cross-domain integration |
+| Core | Frozen identities, generic metrics/journal decisions, tracking routes/display plans, Action/index reducers, Slurm/helper protocols, observation projections and exact-Attempt failure assessment | Remaining frozen contracts and complete cross-domain integration |
 | Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O and deadline-bound single-frame pipe transport | Remaining transport primitives and durable domain protocols |
 | Client | URL-bound settings, bounded/sanitized JSON GET, pure saved-identity/status resolution and preview `check/get/config/run` commands and human summaries | Submit/upload/download/ACK, updates and full command coverage |
-| Server | Loopback HTTP preview; isolated SQLite stores/Run fences; authoritative metadata reader; explicit one-call Slurm SSH transport | Experiment API composition, projects, scanners/collectors, provider executors, TLS, mutation APIs and tracking transport |
+| Server | Authenticated loopback reads of explicitly configured Project/Run/Attempt files and isolated metric journals; SQLite stores/Run fences; explicit one-call Slurm SSH transport | Registration/scanners/collectors, complete experiment APIs, provider executors, ArtifactStore receipts/downloads, TLS, mutations and tracking transport |
 | Worker | Local process supervision and scoped Slurm prepare/submit/inspect helper | Sealed managed launch, data, checkpoint, journal, artifact, build, copy and deletion protocols |
 
 Metrics now include schema/definition validation, typed and wide observations,
@@ -58,8 +58,10 @@ human summaries and logs/metrics commands are now connected to this path. Only
 an observation without saved state may resolve the current Attempt once; saved
 state without a bound Attempt never falls back to the current one. The watch loop pins the first observed Attempt and uses explicit elapsed time in
 its pure reducer. Its shell cannot start another read after the observation
-window; an in-flight HTTP read retains its own finite timeout. Mutation commands
-remain pending.
+window; an in-flight HTTP read retains its own finite timeout. Historical native
+status reads fetch exact Attempt evidence rather than borrowing the current
+scheduler layer or interpreting a process state as scheduler evidence. Mutation
+commands remain pending.
 
 HTTP error bodies are capped at 16 KiB and sanitized before retention. The
 existing native redactor is now a shared pure library with the original CLI
@@ -111,7 +113,10 @@ experiment records or research files.
 The disposable Run index preserves its legacy schema and unknown row metadata.
 Pure change detection ignores only `scanned_at`, collector errors stay isolated
 per verb, and evidence merging requires an exact Project/Run/Attempt. It is not
-the complete outward `run_detail` or daemon-built failure assessment. Launch
+the authoritative source for the outward read model. Pure failure assessment
+requires exact Attempt binding, actual start/observation times and failed terminal
+domain evidence; a producer classification or decision alone remains diagnostic.
+It cannot authorize a retry or turn publication failure into training failure. Launch
 validation similarly verifies the sealed manifest without fetching or executing it.
 
 Authoritative metadata now has a separate read-only library. Trusted configuration
@@ -123,7 +128,7 @@ Project/Run/Attempt identities are read from the files and checked before return
 with existing deletion guards and retained directory capabilities. Missing locks,
 corrupt canonical files and changed byte hashes are errors; there is no implicit
 repair or fallback to an old copy after a canonical-file error. It neither scans
-the research tree nor chooses a latest Attempt. The raw SHA256 identifies file
+the research tree nor chooses current by directory order. The raw SHA256 identifies file
 bytes; the limited compared provenance fields do not establish a complete frozen
 scientific identity or authorize execution.
 
@@ -133,9 +138,54 @@ and Python `safe_dump` output. Aliases, anchors, tags, duplicate/non-string keys
 multiple documents, raw NEL/line/paragraph separators and ambiguous YAML 1.1
 plain scalars are refused; explicit quoted escapes remain data. JSON uses its
 own strict decoder. This is not complete PyYAML compatibility; unsupported legacy
-syntax must be resolved before HTTP composition, not silently reinterpreted. The
-library is not yet attached to the preview API. Metadata can contain user
-environment values and must pass outward redaction before future HTTP exposure.
+syntax is refused rather than silently reinterpreted. Outward metadata passes
+redaction; known authentication-secret echoes make the response fail closed.
+Scientific metric names, units and values retain their meaning.
+
+The preview can now expose configured local reads over authenticated protocol-2
+HTTP: project listing, Run/current summary, Attempt listing, exact Attempt show,
+logs, metrics and collection observations. `--initialize-registry` creates only
+a fresh isolated namespace with a Rust-preview marker and deletion fence;
+existing targets are refused. `--read-config` requires that marker and existing
+locks. Requests supply identities, never filesystem locations. Normal startup and
+GET requests do not create, repair, collect, refresh providers or migrate state.
+Configuration remains a trusted operator declaration: a unique canonical Run
+scanner is still missing, so pointing at a copied manifest is not proof of its
+canonical location.
+
+A snapshot budgets 32 MiB for Run/Attempt/evidence samples across at most 256
+Attempts, plus a Project manifest and bounded frozen-file revalidation. Each
+individual manifest is capped at 4 MiB.
+Only the explicitly bound current Attempt, or the requested exact Attempt, loads
+up to 1 MiB and 10,000 lines per stdout/stderr/metric source. Sources are fixed
+relative names under that Attempt; file paths in metadata cannot redirect reads.
+Logs preserve Python text line separators; JSONL retains LF record framing.
+Missing evidence, unreadable/malformed evidence and unloaded historical tails are
+distinct. No explicit valid current mirror means current is unknown.
+
+The read model separates scheduler, training, publication and verification.
+It explicitly treats `PREEMPTED` as terminal, matching the core Run state model;
+this corrects the old RunIndexRow flag rather than promising field-for-field
+compatibility with that disposable row.
+Collection is an observation of process evidence, **not** a migrated ArtifactStore:
+it never asserts verified publication or download availability from collection
+JSON alone. There is no artifact download, collection action or receipt ACK API.
+Metric validation precedes filtering/downsampling. Truncated or damaged raw
+history reports `PARTIAL` coverage; a canonical journal exceeding 8 MiB or
+100,000 observations is refused instead of validating only a convenient suffix.
+Journal reads also check workspace identity and frozen Run configuration binding.
+A claimed normalized observation is checked again for canonical shape and valid
+metric semantics before display. Malformed internal `VALID` records are refused;
+legitimate failure/undeclared/conflict diagnostics remain unchanged. This is an
+explicit stricter read boundary than the legacy trusted-normalized shortcut.
+Responses are bounded to 8 MiB. Four blocking reads may run concurrently, and
+HTTP waiting ends after 30 seconds; this does not cancel blocking kernel/file I/O,
+whose concurrency permit stays held until it finishes.
+
+Temporary-file, actual Python differential, real TCP native-client tests and a
+three-binary smoke test without Python cover this configured read path. They do
+not establish production storage layout,
+provider freshness, download safety or full experiment-platform acceptance.
 
 Several native policies deliberately reject unsafe legacy inputs: foreign or
 duplicate Slurm identities, backwards terminal-state observations, malformed lock
