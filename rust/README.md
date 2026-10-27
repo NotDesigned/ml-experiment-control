@@ -29,10 +29,18 @@ receipt and retry decision are validated by a native contract before use.
 | `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision, sealed local managed launch and scoped Slurm metadata helper |
 
 The experiment API observes explicitly approved isolated files. Project metadata
-registration/lifecycle is a separate opt-in mode; there is no submission API,
-cloud managed-worker transport, general artifact/data transfer or W&B transport. Source archive publication is now a bounded native subchain: the client packs regular files into deterministic tar/gzip, the server verifies the transport SHA, rejects links/protected paths, seals the tree, computes the length-framed tree identity and records an immutable archive receipt. Lost upload responses are reconciled by archive SHA; a missing receipt does not authorize replay. Git import and automatic Project creation remain unported. Metrics and the
+registration/lifecycle is a separate opt-in mode; there is no submission effect
+API, cloud managed-worker transport, general artifact/data transfer or W&B
+transport. Source archive publication is now a bounded native subchain: the
+client packs regular files into deterministic tar/gzip, the server verifies the
+transport SHA, rejects links/protected paths, seals the tree, computes the
+length-framed tree identity and records an immutable archive receipt. Lost
+upload responses are reconciled by archive SHA; a missing receipt does not
+authorize replay. Git import and automatic Project creation remain unported.
+Metrics and the
 isolated canonical journal have native validation, aggregation, persistence and
-publication-cursor logic; there is no accepted cloud publisher. Slurm planners
+publication-cursor logic; there is no accepted cloud publisher or submission
+effect API. Slurm planners
 return data. The separate native helper can invoke `sbatch` only after explicit
 isolated configuration/bootstrap; it is not wired to Actions or the HTTP server.
 The client can query configured local Run/Attempt status, logs and metrics using
@@ -59,6 +67,13 @@ generation. The server registry persists immutable receipts and detects an
 existing generation bound to a different manifest. HTTPS registration, worker
 polling, provider storage and automatic restore orchestration remain outer
 adapters.
+
+The submission boundary is also native: `ml-exp-core::submission` owns frozen
+identity checks, bounded redacted request digests, idempotent Create/Reuse/
+Conflict/LegacyUnsafe decisions, exact provider reconciliation and the cancel
+outbox reducer. Random tokens, durable file publication and Slurm/PAI/SenseCore
+calls remain in the imperative shells. An unavailable provider query stays
+UNKNOWN and cannot be silently retried.
 
 ## Build and check
 

@@ -64,6 +64,18 @@ The older completed-marker protocol used by legacy Slurm discovery remains a
 separate compatibility path; it is not treated as a
 `checkpoint.<sha256>` persistent-generation identity.
 
+Submission intent and cancel-outbox decisions now have the same native boundary.
+The Rust core validates the exact Project/Run/Attempt/backend identity, freezes a
+bounded redacted request, derives a stable request digest and returns one of
+Create, Reuse, Conflict or LegacyUnsafe. Provider adapters must report an exact
+absence, an exact matching job, or an unavailable/ambiguous query; only the first
+two can advance an intent, and only exact absence is retry-safe. Cancellation
+publishes REQUESTED before the one permitted provider mutation, then requires an
+exact terminal observation before marking it VERIFIED. Python still owns the
+atomic JSON files, clocks, random token generation and provider calls. This keeps
+the difficult replay boundary in a deterministic library without pretending the
+Rust preview is a deployable scheduler.
+
 Metrics now include schema/definition validation, typed and wide observations,
 explicit units, required/conditional metrics, context-sensitive conflicts and
 `ratio_of_sums`. Variant, protocol, checkpoint, dataset, step and epoch remain
