@@ -14,8 +14,8 @@ platform programs. User training code may still be Python.
 | --- | --- | --- |
 | `ml-exp-core` | Library | Pure frozen identities, metrics/journal/tracking decisions, reducers, observations and Slurm/helper protocols |
 | `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O and single-frame pipe transport |
-| `ml-exp-client` | `ml-exp-rs` | Private settings, bounded JSON GET and pure exact-identity/status libraries |
-| `ml-exp-server` | `ml-expd-rs` | Loopback HTTP preview; isolated SQLite stores/Run fences; explicit Slurm SSH call |
+| `ml-exp-client` | `ml-exp-rs` | Private settings, bounded JSON GET and exact-identity status/logs/metrics, bounded watch and pure human summaries |
+| `ml-exp-server` | `ml-expd-rs` | Loopback HTTP preview; isolated SQLite/Run fences and authoritative metadata library; explicit Slurm SSH call |
 | `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision and scoped Slurm metadata helper |
 
 There is no real experiment API, managed-worker protocol, artifact/data transfer
@@ -24,8 +24,9 @@ isolated canonical journal have native validation, aggregation, persistence and
 publication-cursor logic; there is no accepted cloud publisher. Slurm planners
 return data. The separate native helper can invoke `sbatch` only after explicit
 isolated configuration/bootstrap; it is not wired to Actions or the HTTP server.
-The stores, fences and status/observation libraries are not yet exposed through
-the preview API/CLI command tree.
+The stores and fences are not yet exposed through the preview API. The client
+can make exact read-only observations against a compatible protocol-2 API; this
+does not make the preview server a complete experiment API.
 A successful `check` does not mean training is configured.
 
 ## Build and check
@@ -77,6 +78,31 @@ replace the production client's settings. The explicit example path also keeps
 synthetic credentials out of normal configuration. The server reports training
 `INCOMPLETE`; unsupported API paths return an explicit not-implemented response.
 It refuses a non-loopback bind. No job is created.
+
+The client now groups observation commands under `run`:
+
+```bash
+ml-exp-rs --config /private/preview/client.json run status --state /private/experiment-state.json
+ml-exp-rs --config /private/preview/client.json run status --project demo --run trial --attempt attempt-001 --json
+ml-exp-rs --config /private/preview/client.json run status --state /private/experiment-state.json --watch --seconds 60
+ml-exp-rs --config /private/preview/client.json run logs --state /private/experiment-state.json --stream stderr --lines 80
+ml-exp-rs --config /private/preview/client.json run metrics --state /private/experiment-state.json --name validation_loss
+```
+
+These are GET-only. Saved state is bounded to 8 MiB and must be a private regular
+file owned by the current user, since it can contain signed capabilities. A
+conflicting saved server/identity fails before authentication. Supply a trusted
+URL independently through configuration, `--url` or `ML_EXPD_API_URL`; saved state
+cannot choose a destination for an environment token. Without saved state, an
+omitted Attempt is resolved once. With saved state, logs/metrics require the
+original bound Attempt. There is no automatic retry, cancellation or download ACK.
+The default status is a human summary; `--json` preserves the full evidence.
+`--watch` pins one Attempt, writes intermediate observations to stderr and leaves
+the final observation on stdout. Its budget ends waiting; it cannot stop/retry a
+job or start a new HTTP read after the budget. An in-flight read keeps its own
+timeout. Both scheduler completion and result publication must settle before
+early completion.
+The isolated preview server still returns 501 for these experiment endpoints.
 
 The preview transport explicitly disables redirects, automatic retries and
 environment-derived proxies. Proxy support must later be passed as explicit

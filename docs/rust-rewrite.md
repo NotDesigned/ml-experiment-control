@@ -24,8 +24,8 @@ rewrite of users' training code.
 | --- | --- | --- |
 | Core | Frozen identities, generic metrics/journal decisions, tracking routes/display plans, Action/index reducers, Slurm/helper protocols and observation projections | Remaining frozen contracts and complete cross-domain integration |
 | Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O and deadline-bound single-frame pipe transport | Remaining transport primitives and durable domain protocols |
-| Client | URL-bound settings, bounded/sanitized JSON GET, pure saved-identity/status resolution and preview `check/get/config` commands | Submit/upload/download/ACK, full saved-state commands, updates and full command coverage |
-| Server | Loopback HTTP preview; isolated SQLite stores/Run fences; explicit one-call Slurm SSH transport | Experiment API composition, projects, scanners/collectors, provider executors, TLS, mutation APIs and tracking transport |
+| Client | URL-bound settings, bounded/sanitized JSON GET, pure saved-identity/status resolution and preview `check/get/config/run` commands and human summaries | Submit/upload/download/ACK, updates and full command coverage |
+| Server | Loopback HTTP preview; isolated SQLite stores/Run fences; authoritative metadata reader; explicit one-call Slurm SSH transport | Experiment API composition, projects, scanners/collectors, provider executors, TLS, mutation APIs and tracking transport |
 | Worker | Local process supervision and scoped Slurm prepare/submit/inspect helper | Sealed managed launch, data, checkpoint, journal, artifact, build, copy and deletion protocols |
 
 Metrics now include schema/definition validation, typed and wide observations,
@@ -44,15 +44,22 @@ Saved-state observation is also a value-in/value-out state machine: each step
 returns an exact GET request or a completed identity, and consumes an explicit
 response to advance. The small HTTP shell executes those GETs. It checks the
 original server, Project, Run, nested Submission and Attempt; it never chooses a
-new Attempt or retries a mutation. This library path is not yet a public status
-command in the preview CLI.
+new Attempt or retries a mutation. The preview CLI exposes `run status/logs/metrics` with either explicit identities
+or the original private `--state` file. It validates the saved destination and
+locally known identities before loading a token file or sending a handshake. A
+saved state cannot choose a new destination for ambient API credentials.
 
 The status library follows the same consumed-continuation pattern. Its output
 keeps preparation, scheduler, training, publication and verification independent.
 It preserves exact queue reasons and metric provenance, keeps missing timestamps
 unknown, and handles unavailable collection/progress reads without inventing
 success. These GET plans have synthetic differential and real loopback HTTP tests;
-the full human CLI, logs/metrics commands and watch loop are still pending.
+human summaries and logs/metrics commands are now connected to this path. Only
+an observation without saved state may resolve the current Attempt once; saved
+state without a bound Attempt never falls back to the current one. The watch loop pins the first observed Attempt and uses explicit elapsed time in
+its pure reducer. Its shell cannot start another read after the observation
+window; an in-flight HTTP read retains its own finite timeout. Mutation commands
+remain pending.
 
 HTTP error bodies are capped at 16 KiB and sanitized before retention. The
 existing native redactor is now a shared pure library with the original CLI
@@ -106,6 +113,29 @@ Pure change detection ignores only `scanned_at`, collector errors stay isolated
 per verb, and evidence merging requires an exact Project/Run/Attempt. It is not
 the complete outward `run_detail` or daemon-built failure assessment. Launch
 validation similarly verifies the sealed manifest without fetching or executing it.
+
+Authoritative metadata now has a separate read-only library. Trusted configuration
+pins each Project file and allowed Run roots. A trusted operator/resolver selects
+the Run locator; clients and disposable indexes cannot select arbitrary locations.
+Matching IDs or file SHA cannot prove uniqueness when a copied manifest exists;
+the future scanner must resolve the approved layout and reject duplicates first.
+Project/Run/Attempt identities are read from the files and checked before return,
+with existing deletion guards and retained directory capabilities. Missing locks,
+corrupt canonical files and changed byte hashes are errors; there is no implicit
+repair or fallback to an old copy after a canonical-file error. It neither scans
+the research tree nor chooses a latest Attempt. The raw SHA256 identifies file
+bytes; the limited compared provenance fields do not establish a complete frozen
+scientific identity or authorize execution.
+
+YAML syntax uses a mature parser with explicit byte, node and depth bounds. The
+accepted subset preserves JSON-compatible metadata from the tested legacy files
+and Python `safe_dump` output. Aliases, anchors, tags, duplicate/non-string keys,
+multiple documents, raw NEL/line/paragraph separators and ambiguous YAML 1.1
+plain scalars are refused; explicit quoted escapes remain data. JSON uses its
+own strict decoder. This is not complete PyYAML compatibility; unsupported legacy
+syntax must be resolved before HTTP composition, not silently reinterpreted. The
+library is not yet attached to the preview API. Metadata can contain user
+environment values and must pass outward redaction before future HTTP exposure.
 
 Several native policies deliberately reject unsafe legacy inputs: foreign or
 duplicate Slurm identities, backwards terminal-state observations, malformed lock

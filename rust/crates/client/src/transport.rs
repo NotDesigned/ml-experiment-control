@@ -16,6 +16,12 @@ pub struct Client {
 }
 
 impl Client {
+    pub fn negotiate(&self) -> Result<serde_json::Value, Error> {
+        let health = self.get("/api/health")?;
+        crate::session::validate_health(&health)?;
+        Ok(health)
+    }
+
     pub fn base_url(&self) -> &str {
         &self.base
     }

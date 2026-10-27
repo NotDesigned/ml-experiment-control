@@ -4,8 +4,12 @@
 pub mod config;
 pub mod credentials;
 pub mod observation;
+pub mod presentation;
+pub mod read;
+pub mod session;
 pub mod status;
 pub mod transport;
+pub mod watch;
 
 pub use config::{ConnectionPlan, Settings, TokenSource, normalize_url};
 pub use transport::Client;
@@ -28,6 +32,8 @@ pub enum Error {
     Http(Box<ml_exp_core::diagnostic::HttpFailure>),
     #[error("API response is too large or is not JSON")]
     Response,
+    #[error("daemon did not provide a supported protocol-2 handshake")]
+    Protocol,
     #[error("{0}")]
     Observation(&'static str),
 }

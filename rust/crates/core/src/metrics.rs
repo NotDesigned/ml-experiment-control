@@ -9,6 +9,11 @@ mod schema;
 pub use crate::canonical::protocol_identity;
 pub use observation::python_string;
 
+/// Python-reference Unicode printability, shared by pure human presentation.
+pub fn python_is_printable(value: char) -> bool {
+    python_printability::is_printable(value)
+}
+
 pub(crate) use observation::python_repr;
 pub use observation::{MetricValue, ObservationInput, finite, observations, observations_typed};
 pub use result::{metric_result, metric_result_typed, numeric_compare, numeric_equal};

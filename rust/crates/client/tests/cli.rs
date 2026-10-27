@@ -116,7 +116,7 @@ fn environment_url_and_token_candidates_drive_the_real_read_only_request() {
         );
         socket
             .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+                b"HTTP/1.1 200 OK\r\nContent-Length: 68\r\nConnection: close\r\n\r\n{\"ok\":true,\"min_client_protocol_version\":2,\"api_protocol_version\":2}",
             )
             .unwrap();
     });
@@ -129,7 +129,10 @@ fn environment_url_and_token_candidates_drive_the_real_read_only_request() {
             .output()
             .unwrap(),
     );
-    assert_eq!(displayed, serde_json::json!({"ok":true}));
+    assert_eq!(
+        displayed,
+        serde_json::json!({"ok":true,"min_client_protocol_version":2,"api_protocol_version":2})
+    );
     server.join().unwrap();
 
     let conflict = command(temp.path())
@@ -173,7 +176,7 @@ fn environment_token_file_does_not_use_an_ambient_system_proxy() {
         );
         socket
             .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+                b"HTTP/1.1 200 OK\r\nContent-Length: 68\r\nConnection: close\r\n\r\n{\"ok\":true,\"min_client_protocol_version\":2,\"api_protocol_version\":2}",
             )
             .unwrap();
     });
@@ -188,7 +191,10 @@ fn environment_token_file_does_not_use_an_ambient_system_proxy() {
             .output()
             .unwrap(),
     );
-    assert_eq!(displayed, serde_json::json!({"ok":true}));
+    assert_eq!(
+        displayed,
+        serde_json::json!({"ok":true,"min_client_protocol_version":2,"api_protocol_version":2})
+    );
     server.join().unwrap();
 }
 
@@ -232,4 +238,238 @@ fn environment_token_file_and_xdg_config_paths_remain_supported() {
         String::from_utf8(ambiguous.stderr).unwrap().trim(),
         "invalid API token"
     );
+}
+
+#[test]
+fn state_preflight_rejects_misdirected_credentials_before_the_handshake() {
+    use serde_json::json;
+    let temp = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let state = temp.path().join("saved.json");
+    let saved = json!({"server":base,"project":"p","run_id":"r","config_sha256":"frozen"});
+    write_atomic(&state, &serde_json::to_vec(&saved).unwrap(), true).unwrap();
+    for (url, project) in [
+        (None, None),
+        (Some("https://foreign.invalid"), None),
+        (Some(base.as_str()), Some("foreign")),
+    ] {
+        let mut cmd = command(temp.path());
+        cmd.env("ML_EXPD_API_TOKEN", "private-preflight-test-secret");
+        if let Some(url) = url {
+            cmd.args(["--url", url]);
+        }
+        cmd.args(["run", "status", "--state"]).arg(&state);
+        if let Some(project) = project {
+            cmd.args(["--project", project]);
+        }
+        let output = cmd.output().unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(!stderr.contains("private-preflight-test-secret"));
+        assert!(!stderr.contains("frozen"));
+        assert!(matches!(listener.accept(), Err(e) if e.kind()==std::io::ErrorKind::WouldBlock));
+    }
+    let invalid = temp.path().join("invalid.json");
+    write_atomic(
+        &invalid,
+        b"{\"server\":\"https://foreign.invalid\",\"contract\":\"training-operation.v1\"}",
+        true,
+    )
+    .unwrap();
+    let output = command(temp.path())
+        .args(["--url", &base, "run", "status", "--state"])
+        .arg(invalid)
+        .env("ML_EXPD_API_TOKEN", "private-preflight-test-secret")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(matches!(listener.accept(), Err(e) if e.kind()==std::io::ErrorKind::WouldBlock));
+}
+
+#[test]
+fn real_status_cli_preserves_json_evidence_and_has_a_human_summary() {
+    use serde_json::{Value, json};
+    use std::net::TcpListener;
+    let fixtures: Value =
+        serde_json::from_str(include_str!("../../../compatibility/client-status.json")).unwrap();
+    let fixture = fixtures["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "current-exact-journal-fallback")
+        .unwrap();
+    for (human, watch) in [(false, false), (true, false), (false, true)] {
+        let temp = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
+        let mut responses = vec![("/api/health".to_string(), {
+            let mut health = fixture["health"].clone();
+            health["api_protocol_version"] = json!(2);
+            health["min_client_protocol_version"] = json!(2);
+            health
+        })];
+        responses.extend(fixture["requests"].as_array().unwrap().iter().map(|p| {
+            let path = p.as_str().unwrap();
+            (path.to_owned(), fixture["responses"][path].clone())
+        }));
+        let server = serve_responses(listener, responses, "cli-status-test-secret");
+        let mut cmd = command(temp.path());
+        cmd.env("ML_EXPD_API_TOKEN", "cli-status-test-secret")
+            .args([
+                "--url",
+                &base,
+                "run",
+                "status",
+                "--project",
+                "p",
+                "--run",
+                "r",
+            ]);
+        if !human {
+            cmd.arg("--json");
+        }
+        if watch {
+            cmd.args(["--watch", "--seconds", "0"]);
+        }
+        let output = cmd.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("cli-status-test-secret"));
+        if human {
+            let summary = String::from_utf8(output.stdout).unwrap();
+            assert!(summary.contains("RUNNING"));
+            assert!(!summary.starts_with('{'));
+        } else {
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value, fixture["expected"]);
+        }
+        server.join().unwrap();
+    }
+}
+
+#[test]
+fn real_logs_and_metrics_commands_follow_the_original_saved_attempt() {
+    use serde_json::{Value, json};
+    use std::net::TcpListener;
+    let fixtures: Value =
+        serde_json::from_str(include_str!("../../../compatibility/client-read.json")).unwrap();
+    for (name, view) in [
+        ("saved-exact-attempt", "logs"),
+        ("saved-action-retry", "metrics"),
+    ] {
+        let fixture = fixtures["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
+        let state = temp.path().join("saved.json");
+        let mut saved = fixture["saved"].clone();
+        saved["server"] = json!(&base);
+        write_atomic(&state, &serde_json::to_vec(&saved).unwrap(), true).unwrap();
+        let mut health = fixture["health"].clone();
+        health["api_protocol_version"] = json!(2);
+        health["min_client_protocol_version"] = json!(2);
+        let mut responses = vec![("/api/health".to_string(), health)];
+        responses.extend(fixture["requests"].as_array().unwrap().iter().map(|p| {
+            let path = p.as_str().unwrap();
+            (path.to_owned(), fixture["responses"][path].clone())
+        }));
+        let server = serve_responses(listener, responses, "cli-read-test-secret");
+        let result = json_output(
+            command(temp.path())
+                .env("ML_EXPD_API_TOKEN", "cli-read-test-secret")
+                .args(["--url", &base, "run", view, "--state"])
+                .arg(&state)
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(result, fixture["expected"]);
+        server.join().unwrap();
+    }
+}
+
+fn serve_responses(
+    listener: std::net::TcpListener,
+    responses: Vec<(String, serde_json::Value)>,
+    token: &'static str,
+) -> std::thread::JoinHandle<()> {
+    use std::time::Instant;
+    std::thread::spawn(move || {
+        for (path, body) in responses {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let (mut socket, _) = loop {
+                match listener.accept() {
+                    Ok(value) => break value,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(e) => panic!("missing CLI request {path}: {e}"),
+                }
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                bytes.push(byte[0]);
+                assert!(bytes.len() < 8192);
+            }
+            let request = String::from_utf8(bytes).unwrap();
+            assert!(
+                request.starts_with(&format!("GET /ml-expd{path} HTTP/1.1")),
+                "{request}"
+            );
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains(&format!("authorization: bearer {token}\r\n"))
+            );
+            let body = serde_json::to_vec(&body).unwrap();
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            socket.write_all(&body).unwrap();
+        }
+    })
+}
+
+#[test]
+fn invalid_watch_duration_is_rejected_before_connection_or_configuration_io() {
+    let temp = tempfile::tempdir().unwrap();
+    for seconds in ["NaN", "inf", "-1", "1e300"] {
+        let output = command(temp.path())
+            .args(["run", "status", "--watch"])
+            .arg(format!("--seconds={seconds}"))
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap().trim(),
+            "status --seconds must be finite and nonnegative"
+        );
+    }
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
 }
