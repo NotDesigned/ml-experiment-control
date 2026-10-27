@@ -169,6 +169,12 @@ impl RunFence {
     pub fn exclusive(&self, blocking: bool) -> Result<Guard<'_>> {
         self.lock(true, blocking, true)
     }
+    /// Acquire the existing regular lock exclusively without initializing or
+    /// repairing the root, lock or metadata. Explicit `Guard::mark` may publish
+    /// a tombstone afterwards; lock absence itself remains an error.
+    pub fn exclusive_existing(&self, blocking: bool) -> Result<Guard<'_>> {
+        self.lock(true, blocking, false)
+    }
     pub fn guard(&self, project: &str, run: &str) -> Result<Guard<'_>> {
         self.leaf(project, run)?;
         self.observation_guard(project, run)
@@ -523,6 +529,30 @@ mod tests {
                 .unwrap(),
             before
         );
+    }
+
+    #[test]
+    fn existing_exclusive_never_repairs_missing_locks_and_obeys_shared_ownership() {
+        let temp = tempfile::tempdir().unwrap();
+        let absent = temp.path().join("missing-root");
+        assert!(RunFence::new(&absent).exclusive_existing(false).is_err());
+        assert!(!absent.exists());
+        let fence = RunFence::new(temp.path());
+        assert!(fence.exclusive_existing(false).is_err());
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+        fs::write(temp.path().join(LOCK), b"unchanged").unwrap();
+        let shared = fence.shared_existing().unwrap();
+        assert!(matches!(fence.exclusive_existing(false), Err(Error::Busy)));
+        drop(shared);
+        let exclusive = fence.exclusive_existing(true).unwrap();
+        exclusive.validate().unwrap();
+        assert!(!temp.path().join("deleted-runs").exists());
+        assert_eq!(fs::read(temp.path().join(LOCK)).unwrap(), b"unchanged");
+        drop(exclusive);
+        fs::remove_file(temp.path().join(LOCK)).unwrap();
+        assert!(fence.exclusive_existing(false).is_err());
+        assert!(!temp.path().join(LOCK).exists());
+        assert!(!temp.path().join("deleted-runs").exists());
     }
 
     #[test]

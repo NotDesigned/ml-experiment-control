@@ -1,11 +1,9 @@
 use crate::deletion::{self, RunFence};
+use crate::storage::SqliteDatabase;
 use ml_exp_core::index::{self, Key};
-use ml_exp_io::create_private_dir;
-use rusqlite::{
-    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
-};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, fs::OpenOptions, path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf};
 
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
@@ -20,8 +18,13 @@ pub enum Error {
     Row(#[from] index::Error),
     #[error(transparent)]
     Fence(#[from] deletion::Error),
-    #[error("Run index file must be a regular file")]
-    InvalidFile,
+    #[error(transparent)]
+    Storage(#[from] crate::storage::Error),
+}
+impl Error {
+    pub fn effects_may_have_applied(&self) -> bool {
+        matches!(self, Self::Storage(error) if error.effects_may_have_applied())
+    }
 }
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS runs (
@@ -49,92 +52,39 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY,value TEXT);
 
 #[derive(Clone, Debug)]
 pub struct RunIndex {
-    path: PathBuf,
+    database: SqliteDatabase,
     fence: RunFence,
 }
 impl RunIndex {
     pub fn open(path: impl Into<PathBuf>, fence: RunFence) -> Result<Self> {
         let index = Self {
-            path: path.into(),
+            database: SqliteDatabase::new(path.into()).with_wal(),
             fence,
         };
-        if let Some(parent) = index
-            .path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-        {
-            create_private_dir(parent)?;
-        }
         let guard = index.fence.shared()?;
-        let mut connection = index.connection(true)?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        guard.validate()?;
-        transaction.execute_batch(SCHEMA)?;
-        let missing = {
-            let mut statement = transaction.prepare("PRAGMA table_info(collector_status)")?;
-            let columns = statement
-                .query_map([], |row| row.get::<_, String>(1))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            !columns.iter().any(|name| name == "verb_results")
-        };
-        if missing {
-            transaction.execute_batch(
-                "ALTER TABLE collector_status ADD COLUMN verb_results TEXT NOT NULL DEFAULT '{}';",
-            )?;
-        }
-        guard.validate()?;
-        transaction.commit()?;
-        guard.validate()?;
+        index.database.initialize(|| guard.validate().map_err(Error::Fence), |transaction| {
+            transaction.execute_batch(SCHEMA)?;
+            let missing = {
+                let mut statement = transaction.prepare("PRAGMA table_info(collector_status)")?;
+                let columns = statement.query_map([], |row| row.get::<_, String>(1))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                !columns.iter().any(|name| name == "verb_results")
+            };
+            if missing { transaction.execute_batch("ALTER TABLE collector_status ADD COLUMN verb_results TEXT NOT NULL DEFAULT '{}';")?; }
+            Ok::<_, Error>(())
+        })?;
         drop(guard);
         Ok(index)
     }
     pub fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-    fn connection(&self, create: bool) -> Result<Connection> {
-        let mut options = OpenOptions::new();
-        options
-            .read(true)
-            .write(true)
-            .create(create)
-            .truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-        }
-        let descriptor = options.open(&self.path)?;
-        if !descriptor.metadata()?.is_file() {
-            return Err(Error::InvalidFile);
-        }
-        let mut flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-        if create {
-            flags |= OpenFlags::SQLITE_OPEN_CREATE;
-        }
-        let connection = Connection::open_with_flags(&self.path, flags)?;
-        connection.busy_timeout(Duration::from_secs(30))?;
-        connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?;
-        Ok(connection)
+        self.database.path()
     }
     fn transaction<T>(
         &self,
         validate: impl Fn() -> Result<()>,
         operation: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let mut connection = self.connection(false)?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        // BEGIN IMMEDIATE may wait behind another process. Its earlier fence
-        // check is no longer sufficient if an ancestor or lock was replaced.
-        validate()?;
-        let result = operation(&transaction)?;
-        validate()?;
-        transaction.commit()?;
-        validate()?;
-        Ok(result)
+        self.database.transaction(validate, operation)
     }
     /// Caller publishes any update event only after this returns true. A scan
     /// timestamp can advance without creating an update notification.
@@ -158,56 +108,60 @@ impl RunIndex {
             guard.validate()?;
             return Ok(None);
         }
-        let connection = self.connection(false)?;
-        let raw = connection
-            .query_row(
-                "SELECT row_json FROM runs WHERE project=? AND run_id=?",
-                params![project, run_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        let Some(raw) = raw else {
-            guard.require_observed_live(project, run_id)?;
-            return Ok(None);
-        };
-        let value: Value = serde_json::from_str(&raw)?;
-        index::validate_row(
-            &value,
-            Some(&Key {
-                project: project.into(),
-                run_id: run_id.into(),
-            }),
-        )?;
+        let value = self.database.read(|connection| {
+            let raw = connection
+                .query_row(
+                    "SELECT row_json FROM runs WHERE project=? AND run_id=?",
+                    params![project, run_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let value = raw
+                .map(|raw| serde_json::from_str::<Value>(&raw))
+                .transpose()?;
+            if let Some(value) = &value {
+                index::validate_row(
+                    value,
+                    Some(&Key {
+                        project: project.into(),
+                        run_id: run_id.into(),
+                    }),
+                )?;
+            }
+            Ok::<_, Error>(value)
+        })?;
         guard.require_observed_live(project, run_id)?;
-        Ok(Some(value))
+        Ok(value)
     }
     pub fn list_runs(&self, project: Option<&str>, campaign: Option<&str>) -> Result<Vec<Value>> {
         let guard = self.fence.shared_existing()?;
-        let connection = self.connection(false)?;
-        let query = if project.is_some() {
-            "SELECT project,run_id,row_json FROM runs WHERE project=? ORDER BY run_id"
-        } else {
-            "SELECT project,run_id,row_json FROM runs ORDER BY run_id"
-        };
-        let mut statement = connection.prepare(query)?;
-        let mut rows = if let Some(project) = project {
-            statement.query([project])?
-        } else {
-            statement.query([])?
-        };
-        let mut result = Vec::new();
-        while let Some(row) = rows.next()? {
-            let project: String = row.get(0)?;
-            let run_id: String = row.get(1)?;
-            if guard.is_deleted(&project, &run_id)? {
-                continue;
+        let result = self.database.read(|connection| {
+            let query = if project.is_some() {
+                "SELECT project,run_id,row_json FROM runs WHERE project=? ORDER BY run_id"
+            } else {
+                "SELECT project,run_id,row_json FROM runs ORDER BY run_id"
+            };
+            let mut statement = connection.prepare(query)?;
+            let mut rows = if let Some(project) = project {
+                statement.query([project])?
+            } else {
+                statement.query([])?
+            };
+            let mut result = Vec::new();
+            while let Some(row) = rows.next()? {
+                let project: String = row.get(0)?;
+                let run_id: String = row.get(1)?;
+                if guard.is_deleted(&project, &run_id)? {
+                    continue;
+                }
+                let value: Value = serde_json::from_str(&row.get::<_, String>(2)?)?;
+                index::validate_row(&value, Some(&Key { project, run_id }))?;
+                if campaign.is_none_or(|campaign| index::matches_campaign(&value, campaign)) {
+                    result.push(value);
+                }
             }
-            let value: Value = serde_json::from_str(&row.get::<_, String>(2)?)?;
-            index::validate_row(&value, Some(&Key { project, run_id }))?;
-            if campaign.is_none_or(|campaign| index::matches_campaign(&value, campaign)) {
-                result.push(value);
-            }
-        }
+            Ok::<_, Error>(result)
+        })?;
         guard.validate()?;
         Ok(result)
     }
@@ -239,7 +193,7 @@ impl RunIndex {
     }
     pub fn collector_statuses(&self, project: Option<&str>) -> Result<Vec<Value>> {
         let guard = self.fence.shared_existing()?;
-        let connection = self.connection(false)?;
+        let result = self.database.read(|connection| {
         let query = if project.is_some() {
             "SELECT project,run_id,last_poll_at,last_verb,last_error,verb_results FROM collector_status WHERE project=?"
         } else {
@@ -269,6 +223,8 @@ impl RunIndex {
             }
             result.push(json!({"project":project,"run_id":run_id,"last_poll_at":row.get::<_,Option<f64>>(2)?,"last_verb":row.get::<_,Option<String>>(3)?,"last_error":row.get::<_,Option<String>>(4)?,"verb_results":results}));
         }
+        Ok::<_, Error>(result)
+        })?;
         guard.validate()?;
         Ok(result)
     }
@@ -278,12 +234,15 @@ impl RunIndex {
     }
     pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
         let guard = self.fence.shared_existing()?;
-        let value: Option<Option<String>> = self
-            .connection(false)?
-            .query_row("SELECT value FROM meta WHERE key=?", [key], |row| {
-                row.get(0)
-            })
-            .optional()?;
+        let value: Option<Option<String>> = self.database.read(|connection| {
+            Ok::<_, Error>(
+                connection
+                    .query_row("SELECT value FROM meta WHERE key=?", [key], |row| {
+                        row.get(0)
+                    })
+                    .optional()?,
+            )
+        })?;
         guard.validate()?;
         Ok(value.flatten())
     }

@@ -9,6 +9,10 @@ pub enum MetricValue {
     /// Standard JSON cannot represent NaN/infinity. Typed producers use this
     /// variant so normalization can preserve the exact nonfinite diagnosis.
     Float(f64),
+    /// A list/dict containing a nonfinite Python number cannot be represented
+    /// as standard JSON. Keep its literal failure evidence without pretending
+    /// it is a valid string, scalar, unit or identity.
+    InvalidRepr(String),
 }
 
 #[derive(Clone, Debug)]
@@ -38,6 +42,17 @@ impl ObservationInput {
         self
     }
 
+    pub fn with_invalid_repr(mut self, name: impl Into<String>, representation: String) -> Self {
+        let name = name.into();
+        if let Some((_, field)) = self.fields.iter_mut().find(|(key, _)| key == &name) {
+            *field = MetricValue::InvalidRepr(representation);
+        } else {
+            self.fields
+                .push((name, MetricValue::InvalidRepr(representation)));
+        }
+        self
+    }
+
     fn get(&self, key: &str) -> Option<&MetricValue> {
         self.fields
             .iter()
@@ -53,6 +68,7 @@ impl MetricValue {
             Self::Float(number) => Number::from_f64(*number)
                 .map(Value::Number)
                 .unwrap_or(Value::Null),
+            Self::InvalidRepr(_) => Value::Null,
         }
     }
     fn string(&self) -> Option<&str> {
@@ -68,6 +84,7 @@ impl MetricValue {
         match self {
             Self::Json(value) => finite(value),
             Self::Float(value) => value.is_finite(),
+            Self::InvalidRepr(_) => false,
         }
     }
     fn is_null(&self) -> bool {
@@ -84,6 +101,7 @@ impl MetricValue {
             }
             .to_owned(),
             Self::Float(value) => crate::canonical::python_float(*value).unwrap(),
+            Self::InvalidRepr(value) => value.clone(),
         }
     }
 }
@@ -133,7 +151,7 @@ fn repr_string(value: &str) -> String {
     result
 }
 
-fn python_repr(value: &Value) -> String {
+pub(crate) fn python_repr(value: &Value) -> String {
     match value {
         Value::Null => "None".to_owned(),
         Value::Bool(true) => "True".to_owned(),
@@ -208,6 +226,16 @@ pub fn observations_typed(
     protocol_id: Option<&str>,
     source: Option<&str>,
 ) -> Result<Vec<Value>, MetricError> {
+    if source.filter(|source| !source.is_empty()).is_none()
+        && record.get("_source_path").is_some_and(|value| {
+            matches!(value,
+            MetricValue::InvalidRepr(_) | MetricValue::Float(_) if !value.finite())
+        })
+    {
+        // A nonfinite source cannot be emitted as JSON provenance. Fail closed
+        // rather than silently replacing its identity with null.
+        return Err(MetricError::Record);
+    }
     let schema = schema.as_object().ok_or(MetricError::Schema)?;
     let empty = Map::new();
     let definitions = match schema.get("definitions") {
@@ -298,6 +326,7 @@ pub fn observations_typed(
             .and_then(|item| item.get("error"))
             .map(|value| match value {
                 MetricValue::Float(number) if !number.is_finite() => json!(value.python_string()),
+                MetricValue::InvalidRepr(value) => json!(value),
                 value => value.json(),
             })
             .unwrap_or(Value::Null);

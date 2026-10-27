@@ -14,7 +14,7 @@ use std::{
     fmt::Write as FmtWrite,
     fs::File,
     io::{self, Read, Write},
-    os::unix::ffi::OsStrExt,
+    os::unix::ffi::{OsStrExt, OsStringExt},
     path::{Component, Path},
     sync::Arc,
 };
@@ -22,6 +22,33 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct Directory {
     inner: Arc<Inner>,
+}
+
+/// A pathname observation, never a claim about an independently opened handle.
+/// SQLite owners use stat rather than extra database FDs: closing any such FD
+/// can release POSIX locks belonging to another SQLite connection in-process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegularIdentity {
+    pub device: u64,
+    pub inode: u64,
+    pub links: u64,
+    pub mode: u32,
+    pub owner: u32,
+}
+
+pub fn effective_uid() -> u32 {
+    rustix::process::geteuid().as_raw()
+}
+
+/// Root is the trusted administrator; arbitrary other file owners are not.
+pub fn trusted_storage_owner(owner: u32, effective: u32) -> bool {
+    owner == 0 || owner == effective
+}
+
+impl RegularIdentity {
+    pub fn is_private_for(self, effective: u32) -> bool {
+        self.links == 1 && self.mode & 0o022 == 0 && trusted_storage_owner(self.owner, effective)
+    }
 }
 #[derive(Debug)]
 struct Inner {
@@ -63,6 +90,15 @@ fn directory_flags() -> OFlags {
 }
 
 impl Directory {
+    /// Original spelling assembled from retained components, for provenance or
+    /// a library that only accepts pathnames. This is NOT a dirfd I/O primitive.
+    pub fn path(&self) -> std::path::PathBuf {
+        self.inner.parent.as_ref().map_or_else(
+            || std::path::PathBuf::from("/"),
+            |parent| parent.path().join(&self.inner.name),
+        )
+    }
+
     /// Walk an explicit absolute path one component at a time, never following
     /// any symlink. The retained ancestry detects replacement of an old root.
     pub fn open(path: &Path, create: bool) -> io::Result<Self> {
@@ -118,6 +154,61 @@ impl Directory {
             }
         }
         Ok(())
+    }
+
+    /// The leaf containing a SQLite database must not be writable by another
+    /// group/user. This complements attachment checks; it cannot restrain root
+    /// or another process acting as the same account.
+    pub fn verify_private_parent(&self) -> io::Result<()> {
+        self.verify_attached()?;
+        let stat = rfs::fstat(&self.inner.file)?;
+        if stat.st_mode & 0o022 != 0 || !trusted_storage_owner(stat.st_uid, effective_uid()) {
+            return Err(invalid(
+                "storage directory is writable by another group or user",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Inspect a leaf through the directory FD without opening/closing it.
+    /// Absence is distinct from a symlink, FIFO, device or directory.
+    #[allow(clippy::unnecessary_cast)] // Stat field widths differ across Unix.
+    pub fn regular_identity(&self, name: &OsStr) -> io::Result<Option<RegularIdentity>> {
+        leaf(name)?;
+        self.verify_attached()?;
+        let identity = match rfs::statat(&self.inner.file, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) if FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile => {
+                Some(RegularIdentity {
+                    device: stat.st_dev as u64,
+                    inode: stat.st_ino as u64,
+                    links: stat.st_nlink as u64,
+                    mode: stat.st_mode as u32,
+                    owner: stat.st_uid,
+                })
+            }
+            Ok(_) => return Err(invalid("regular storage entry required")),
+            Err(rustix::io::Errno::NOENT) => None,
+            Err(error) => return Err(error.into()),
+        };
+        self.verify_attached()?;
+        Ok(identity)
+    }
+
+    /// Enumerate names from a fresh directory stream tied to this descriptor.
+    /// Callers still validate/open each required child using directory methods.
+    pub fn entry_names(&self) -> io::Result<Vec<OsString>> {
+        self.verify_attached()?;
+        let mut names = Vec::new();
+        for entry in rfs::Dir::read_from(&self.inner.file)? {
+            let entry = entry?;
+            let name = entry.file_name().to_bytes();
+            if !matches!(name, b"." | b"..") {
+                names.push(OsString::from_vec(name.to_vec()));
+            }
+        }
+        names.sort();
+        self.verify_attached()?;
+        Ok(names)
     }
 
     /// A created directory is private from its first instant, and its parent
@@ -178,8 +269,11 @@ impl Directory {
         let entry = rfs::statat(&self.inner.file, name, AtFlags::SYMLINK_NOFOLLOW)?;
         if FileType::from_raw_mode(entry.st_mode) != FileType::RegularFile
             || !same_file(file, &entry)?
+            || entry.st_nlink != 1
+            || entry.st_mode & 0o022 != 0
+            || !trusted_storage_owner(entry.st_uid, effective_uid())
         {
-            return Err(invalid("regular entry was replaced"));
+            return Err(invalid("regular entry binding or ownership became unsafe"));
         }
         Ok(())
     }
@@ -188,7 +282,13 @@ impl Directory {
     /// binding after acquiring its advisory lock and before guarded effects.
     pub fn open_lock(&self, name: &OsStr) -> io::Result<File> {
         leaf(name)?;
-        self.verify_attached()?;
+        self.verify_private_parent()?;
+        if self
+            .regular_identity(name)?
+            .is_some_and(|identity| !identity.is_private_for(effective_uid()))
+        {
+            return Err(invalid("private metadata lock required"));
+        }
         let file = File::from(rfs::openat(
             &self.inner.file,
             name,
@@ -196,6 +296,12 @@ impl Directory {
             Mode::RUSR | Mode::WUSR,
         )?);
         self.validate_regular_entry(name, &file)?;
+        if !self
+            .regular_identity(name)?
+            .is_some_and(|identity| identity.is_private_for(effective_uid()))
+        {
+            return Err(invalid("private metadata lock required"));
+        }
         rfs::fsync(&self.inner.file)?;
         Ok(file)
     }
@@ -204,7 +310,13 @@ impl Directory {
     /// directory, temporary or journal. Missing or invalid entries are errors.
     pub fn open_existing_lock(&self, name: &OsStr) -> io::Result<File> {
         leaf(name)?;
-        self.verify_attached()?;
+        self.verify_private_parent()?;
+        if self
+            .regular_identity(name)?
+            .is_some_and(|identity| !identity.is_private_for(effective_uid()))
+        {
+            return Err(invalid("private metadata lock required"));
+        }
         let file = File::from(rfs::openat(
             &self.inner.file,
             name,
@@ -212,6 +324,12 @@ impl Directory {
             Mode::empty(),
         )?);
         self.validate_regular_entry(name, &file)?;
+        if !self
+            .regular_identity(name)?
+            .is_some_and(|identity| identity.is_private_for(effective_uid()))
+        {
+            return Err(invalid("private metadata lock required"));
+        }
         Ok(file)
     }
 
@@ -254,6 +372,31 @@ impl Directory {
             rename_new(&self.inner.file, &temporary, name)?;
             rfs::fsync(&self.inner.file)?;
             self.verify_attached()?;
+            Ok(())
+        })();
+        if result.is_err() && self.validate_regular_entry(&temporary, &file).is_ok() {
+            let _ = rfs::unlinkat(&self.inner.file, &temporary, AtFlags::empty());
+            let _ = rfs::fsync(&self.inner.file);
+        }
+        result
+    }
+
+    /// Replace mutable metadata through this directory FD. Never follows an
+    /// existing leaf; unsupported leaf types fail instead of being repaired.
+    /// The caller holds its metadata lock and treats a post-publication error
+    /// as an uncertain effect, rather than assuming the replacement rolled back.
+    pub fn replace_regular(&self, name: &OsStr, bytes: &[u8]) -> io::Result<()> {
+        leaf(name)?;
+        self.regular_identity(name)?;
+        let (temporary, mut file) = self.temporary()?;
+        let result = (|| {
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            self.validate_regular_entry(&temporary, &file)?;
+            self.regular_identity(name)?;
+            rfs::renameat(&self.inner.file, &temporary, &self.inner.file, name)?;
+            rfs::fsync(&self.inner.file)?;
+            self.validate_regular_entry(name, &file)?;
             Ok(())
         })();
         if result.is_err() && self.validate_regular_entry(&temporary, &file).is_ok() {
@@ -324,6 +467,99 @@ fn rename_new(_directory: &File, _from: &OsStr, _to: &OsStr) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::symlink};
+
+    #[test]
+    fn ownership_policy_accepts_only_service_or_root_and_private_single_links() {
+        assert!(trusted_storage_owner(0, 995));
+        assert!(trusted_storage_owner(995, 995));
+        assert!(!trusted_storage_owner(1000, 995));
+        let identity = RegularIdentity {
+            device: 1,
+            inode: 2,
+            links: 1,
+            mode: 0o100640,
+            owner: 995,
+        };
+        assert!(identity.is_private_for(995));
+        assert!(
+            !RegularIdentity {
+                owner: 1000,
+                ..identity
+            }
+            .is_private_for(995)
+        );
+        assert!(
+            !RegularIdentity {
+                links: 2,
+                ..identity
+            }
+            .is_private_for(995)
+        );
+        assert!(
+            !RegularIdentity {
+                mode: 0o100660,
+                ..identity
+            }
+            .is_private_for(995)
+        );
+    }
+
+    #[test]
+    fn stat_enumeration_and_mutable_metadata_use_the_retained_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("storage");
+        let directory = Directory::open(&path, true).unwrap();
+        directory
+            .publish_new(OsStr::new("record.json"), b"old")
+            .unwrap();
+        let identity = directory
+            .regular_identity(OsStr::new("record.json"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(identity.links, 1);
+        assert_eq!(identity.mode & 0o777, 0o600);
+        let names = vec![OsString::from("record.json")];
+        assert_eq!(directory.entry_names().unwrap(), names);
+        assert_eq!(directory.entry_names().unwrap(), names);
+        directory
+            .replace_regular(OsStr::new("record.json"), b"new")
+            .unwrap();
+        assert_eq!(
+            directory
+                .read_regular(OsStr::new("record.json"), 10)
+                .unwrap(),
+            b"new"
+        );
+        assert_ne!(
+            directory
+                .regular_identity(OsStr::new("record.json"))
+                .unwrap()
+                .unwrap()
+                .inode,
+            identity.inode
+        );
+        symlink("record.json", path.join("link")).unwrap();
+        assert!(directory.regular_identity(OsStr::new("link")).is_err());
+        assert!(
+            directory
+                .replace_regular(OsStr::new("link"), b"bad")
+                .is_err()
+        );
+        fs::rename(&path, temp.path().join("detached")).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(
+            directory
+                .replace_regular(OsStr::new("record.json"), b"bad")
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
+        assert!(directory.entry_names().is_err());
+        assert!(
+            directory
+                .regular_identity(OsStr::new("record.json"))
+                .is_err()
+        );
+    }
 
     #[test]
     fn capabilities_publish_once_and_never_follow_intermediate_or_leaf_links() {

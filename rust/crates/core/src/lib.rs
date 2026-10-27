@@ -10,6 +10,7 @@ pub mod manifest;
 pub mod metrics;
 pub mod observation;
 pub mod operations;
+pub mod records;
 pub mod slurm;
 pub mod state;
 

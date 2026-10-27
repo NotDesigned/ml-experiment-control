@@ -12,18 +12,19 @@ platform programs. User training code may still be Python.
 
 | Crate | Preview executable | Current scope |
 | --- | --- | --- |
-| `ml-exp-core` | Library | Pure frozen JSON/Run/launch identities, metrics, Action/index reducers, observation views and Slurm plans/parsers |
-| `ml-exp-io` | Library | Shared explicit file/hash/atomic-write effects and Unix directory capabilities |
-| `ml-exp-client` | `ml-exp-rs` | Private saved settings and bounded read-only JSON API calls |
-| `ml-exp-server` | `ml-expd-rs` | Loopback-only HTTP preview; isolated Action/RunIndex SQLite stores and permanent Run fences |
+| `ml-exp-core` | Library | Pure frozen identities, metrics and journal/import decisions, Action/index reducers, observation views and Slurm plans/parsers |
+| `ml-exp-io` | Library | Explicit file/hash effects, Unix directory capabilities and bounded process I/O |
+| `ml-exp-client` | `ml-exp-rs` | Private saved settings, bounded JSON GET and pure exact-identity observation library |
+| `ml-exp-server` | `ml-expd-rs` | Loopback-only HTTP preview; isolated Action/RunIndex/record SQLite stores and permanent Run fences |
 | `ml-exp-worker` | `ml-exp-worker-rs` | Unix local subprocess supervision in a fresh output directory |
 
 There is no executing provider adapter, real experiment API, managed-worker
-protocol, artifact/data transfer or W&B implementation in the preview. Metrics
-have native schema, observation and aggregation logic, but record ingress and
-durable publication are still missing. Slurm planners return data, never execute
-SSH or submit a job. The Action store, RunIndex and fences are not yet exposed through
-the preview HTTP server. A successful `check` does not mean training is configured.
+protocol, artifact/data transfer or W&B transport in the preview. Metrics and the
+isolated canonical journal have native validation, aggregation, persistence and
+publication-cursor logic; there is no accepted cloud publisher. Slurm planners
+return data, never execute SSH or submit a job. The stores, fences and saved-state
+observation library are not yet exposed through the preview API/CLI command tree.
+A successful `check` does not mean training is configured.
 
 ## Build and check
 
@@ -100,7 +101,23 @@ its own local execution evidence; reusing its output directory is refused.
 The current supervisor supports Unix process groups. It handles TERM/INT,
 timeouts and background descendants in that group; it is not a container or
 cgroup sandbox, and cannot recover after the worker is killed with SIGKILL or
-the host fails.
+the host fails. Each captured stream retains at most 8 MiB. Exceeding that bound
+produces an explicit `OUTPUT_LIMIT_EXCEEDED` receipt error, while the supervisor
+continues draining output without extending its captured prefix. Before publishing
+a log hash, the worker checks its length and contents against the bytes retained
+from the pipe. This is not a filesystem quota or a sandbox: the user process can
+write other files, and same-account hostile mutation is outside its protection.
+The common process boundary
+also bounds stdin and pipe draining; blocking kernel/filesystem I/O can still
+delay cleanup, so the deadline is not a hard real-time guarantee. Stopping a local
+SSH process would not prove that a remote command stopped.
+
+The common SQLite boundary uses bundled SQLite 3.51.3 or newer for its WAL-reset
+fix. Metadata JSON/locks use real directory-relative descriptors; SQLite itself
+still opens a pathname. Private ownership, no-follow checks and identity checks
+detect ordinary replacement, but do not provide protection from hostile
+same-UID/root namespace changes. See the architecture document for that explicit
+storage boundary and uncertain-effect handling.
 
 ## Contribution boundary
 

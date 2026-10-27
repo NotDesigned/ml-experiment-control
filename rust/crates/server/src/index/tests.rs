@@ -365,7 +365,10 @@ fn blocked_mutations_reject_replaced_fence_and_leave_sqlite_unchanged() {
                 .unwrap();
             connection.execute_batch("ROLLBACK;").unwrap();
             assert!(
-                matches!(task.join().unwrap(), Err(Error::Fence(_))),
+                matches!(
+                    task.join().unwrap(),
+                    Err(Error::Storage(crate::storage::Error::EffectUncertain))
+                ),
                 "{operation}, replace_parent={replace_parent}"
             );
             let stored: String = connection
@@ -426,6 +429,38 @@ fn missing_fence_is_not_recreated_by_queries_or_mutations() {
         Err(Error::Fence(_))
     ));
     assert!(!lock.exists());
+}
+
+#[test]
+fn stale_index_never_adopts_a_replaced_database_parent() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("index-data/index.sqlite");
+    let registry = root.path().join("registry");
+    let index = RunIndex::open(&path, RunFence::new(&registry)).unwrap();
+    index.upsert_run(&row("p", "r")).unwrap();
+    fs::rename(path.parent().unwrap(), root.path().join("detached")).unwrap();
+    let fresh = RunIndex::open(&path, RunFence::new(&registry)).unwrap();
+    let mut foreign = row("p", "r");
+    foreign["scheduler_state"] = json!("FROZEN_FOREIGN");
+    fresh.upsert_run(&foreign).unwrap();
+    assert!(index.get_run("p", "r").is_err());
+    assert!(index.list_runs(None, None).is_err());
+    assert!(index.collector_statuses(None).is_err());
+    assert!(index.upsert_run(&row("p", "r")).is_err());
+    assert!(
+        index
+            .record_poll("p", "r", "status", None, 2.0, None)
+            .is_err()
+    );
+    assert!(index.set_meta("scan", "bad").is_err());
+    assert!(index.get_meta("scan").is_err());
+    assert!(index.delete_run("p", "r").is_err());
+    assert!(
+        index
+            .prune_project_runs("p", &BTreeSet::new(), true)
+            .is_err()
+    );
+    assert_eq!(fresh.get_run("p", "r").unwrap(), Some(foreign));
 }
 
 #[test]

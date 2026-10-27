@@ -22,17 +22,30 @@ rewrite of users' training code.
 
 | Component | Implemented foundation | Still missing |
 | --- | --- | --- |
-| Core | Python-compatible frozen JSON/digests, Run and launch manifests, generic metric schema/aggregation, Action/index reducers, Slurm command plans/parsers and observation projections | Remaining frozen contracts and complete cross-domain integration |
-| Shared I/O | Private file reads, atomic writes, SHA256 streaming and Unix directory capabilities | Remaining transport primitives and durable domain protocols |
-| Client | Private URL-bound connection settings, bounded JSON GET, preview `check/get/config` commands | Submit/upload/download/ACK, saved-state workflows, updates and full command coverage |
-| Server | Loopback-only HTTP boundary; isolated legacy-compatible Action/RunIndex SQLite stores and permanent Run deletion fences | Experiment API composition, canonical journal, projects, scanners/collectors, provider executors, TLS and mutation APIs |
+| Core | Python-compatible frozen JSON/digests, Run and launch manifests, generic metrics, canonical record/import decisions, Action/index reducers, Slurm command plans/parsers and observation projections | Remaining frozen contracts and complete cross-domain integration |
+| Shared I/O | Private file/hash effects, Unix directory capabilities and bounded child stdin/stdout/stderr supervision | Remaining transport primitives and durable domain protocols |
+| Client | Private URL-bound settings, bounded JSON GET, pure saved-identity resolution and preview `check/get/config` commands | Submit/upload/download/ACK, full saved-state commands, updates and full command coverage |
+| Server | Loopback-only HTTP boundary; isolated legacy-compatible Action/RunIndex/record SQLite stores and permanent Run deletion fences | Experiment API composition, projects, scanners/collectors, provider executors, TLS, mutation APIs and tracking transport |
 | Worker | Fresh-directory local subprocess execution, timeout/process-group supervision and result hashes | Sealed managed launch, data, checkpoint, journal, artifact, build, copy and deletion protocols |
 
 Metrics now include schema/definition validation, typed and wide observations,
 explicit units, required/conditional metrics, context-sensitive conflicts and
 `ratio_of_sums`. Variant, protocol, checkpoint, dataset, step and epoch remain
 separate. Non-finite observations retain diagnostics. These pure functions do
-not yet replace the record ingress, journal, displayed metrics or W&B publisher.
+not yet replace the production ingress or W&B publisher. The isolated native
+journal accepts normalized records independently of tracking, retains immutable
+routes and event order, and deduplicates content without losing event-ID bindings.
+Its JSONL importer consumes bounded byte chunks and returns events plus new state;
+only the shell persists those events. Raw record JSON refuses unpaired UTF-16
+surrogates rather than silently replacing them. The separate frozen-identity
+encoder supports their historical escaped representation.
+
+Saved-state observation is also a value-in/value-out state machine: each step
+returns an exact GET request or a completed identity, and consumes an explicit
+response to advance. The small HTTP shell executes those GETs. It checks the
+original server, Project, Run, nested Submission and Attempt; it never chooses a
+new Attempt or retries a mutation. This library path is not yet a public status
+command in the preview CLI.
 
 Compatibility fixtures preserve the baseline source hashes and synthetic inputs.
 Frozen JSON tests compare exact bytes and SHA256, including Python float formatting,
@@ -49,10 +62,29 @@ Unix deletion storage retains directory descriptors rather than checking a path
 and later reopening it. Intermediate symlinks, renamed/replaced parents and
 non-regular lock targets are refused; new directory entries and immutable
 tombstones are synced. Queries and index mutations share the deletion lock.
-That directory-capability guarantee currently covers deletion storage. Action
-plan/command paths and SQLite's path-based opens still need a common anchored
-storage integration before exposing mutation APIs; final-component no-follow
-checks alone are not protection against every concurrent parent replacement.
+Action plan/command JSON and lock paths now use the same directory capabilities.
+Ordinary operations require existing locks; they do not recreate a missing lock
+or a deletion fence. Guard checks bracket blocking SQLite transactions and commit.
+
+SQLite has a deliberately narrower guarantee. Its native VFS takes a pathname,
+not the retained directory descriptor. The common boundary pins parent/file
+identities, refuses symlinks, writable aliases and unsafe ownership, and checks
+before and after work. It requires a service-private namespace owned by the
+service account or trusted root; it cannot defeat arbitrary same-UID/root ABA
+renames. Checks use directory-relative stat, without opening extra database or
+WAL descriptors that could disrupt SQLite's POSIX locks. Newly created databases
+are private; legacy journal modes are preserved. An error after a possible effect
+reports uncertainty and requires reconciliation, not a claim that no write occurred.
+The bundled SQLite is at least 3.51.3, which includes the upstream
+[WAL-reset corruption fix](https://www.sqlite.org/wal.html#walresetbug).
+
+Every ordinary journal read and mutation requires an explicit same-store Run
+guard. Frozen configuration proves companion Run relationships; a name suffix
+alone does not. Publication progress accepts a checked prefix of sequence/event
+identities from a trusted publisher, not a free-form acknowledged integer. No
+publisher network transport exists yet, and this internal evidence must never be
+accepted directly from a worker or client. Confirming publication does not delete
+experiment records or research files.
 
 The disposable Run index preserves its legacy schema and unknown row metadata.
 Pure change detection ignores only `scanned_at`, collector errors stay isolated

@@ -6,13 +6,16 @@ use ml_exp_core::{
         self, Claim, Dispatch, Evidence, FrozenFiles, Policy, Reconcile, Scope, Transition,
     },
 };
-use ml_exp_io::{create_private_dir, write_atomic};
+use ml_exp_io::directory::{Directory, effective_uid};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File, OpenOptions},
-    io::Read,
-    path::{Path, PathBuf},
+    cell::RefCell,
+    collections::BTreeMap,
+    ffi::OsStr,
+    fs::File,
+    path::PathBuf,
+    sync::{Arc, Mutex},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -41,10 +44,28 @@ pub struct ClaimContext<'a> {
     pub pid: u32,
 }
 
-struct Lock(File);
+struct Lock {
+    file: File,
+    anchor: Arc<File>,
+    directory: Directory,
+    observed: RefCell<BTreeMap<PathBuf, Directory>>,
+}
+impl Lock {
+    fn validate(&self) -> Result<()> {
+        self.directory.verify_private_parent()?;
+        self.directory
+            .validate_regular_entry(OsStr::new(".actions.lock"), &self.anchor)?;
+        self.directory
+            .validate_regular_entry(OsStr::new(".actions.lock"), &self.file)?;
+        for directory in self.observed.borrow().values() {
+            directory.verify_private_parent()?;
+        }
+        Ok(())
+    }
+}
 impl Drop for Lock {
     fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.0);
+        let _ = FileExt::unlock(&self.file);
     }
 }
 
@@ -53,86 +74,153 @@ impl Drop for Lock {
 #[derive(Clone, Debug)]
 pub struct Store {
     root: PathBuf,
+    directory: Directory,
+    lock_anchor: Arc<File>,
+    directories: Arc<Mutex<BTreeMap<String, Directory>>>,
     database: Database,
 }
 impl Store {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        create_private_dir(&root)?;
-        if fs::symlink_metadata(&root)?.file_type().is_symlink() {
-            return Err(Error::Invalid("Action root must not be a symlink"));
-        }
+        let directory = Directory::open(&root, true)?;
+        directory.verify_private_parent()?;
+        // Only a completely fresh dedicated root may bootstrap its lock.
+        // Existing plans/SQLite/marker without it require explicit offline
+        // recovery; ordinary reopen/read must not create a second lock domain.
+        let lock_name = OsStr::new(".actions.lock");
+        let file = match directory.open_existing_lock(lock_name) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let entries = directory.entry_names()?;
+                if entries.is_empty() {
+                    directory.open_lock(lock_name)?
+                } else if entries.iter().any(|name| name == lock_name) {
+                    directory.open_existing_lock(lock_name)?
+                } else {
+                    return Err(Error::Invalid(
+                        "existing Action storage is missing its lock; offline recovery required",
+                    ));
+                }
+            }
+            Err(error) => return Err(error.into()),
+        };
+        file.lock_exclusive()?;
+        directory.validate_regular_entry(lock_name, &file)?;
+        FileExt::unlock(&file)?;
         Ok(Self {
-            database: Database::new(&root),
+            database: Database::in_directory(directory.clone())?,
             root,
+            directory,
+            lock_anchor: Arc::new(file),
+            directories: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
     pub fn database(&self) -> &Database {
         &self.database
     }
+    /// Display/test provenance only; repository I/O uses retained directories.
     pub fn directory(&self, action_id: &str) -> Result<PathBuf> {
         operations::validate_action_id(action_id)?;
-        let path = self.root.join(action_id);
-        if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
-            return Err(Error::Invalid("Action directory must not be a symlink"));
-        }
-        Ok(path)
+        self.directory.verify_attached()?;
+        Ok(self.root.join(action_id))
+    }
+    fn action_directory(&self, action_id: &str, create: bool, lock: &Lock) -> Result<Directory> {
+        operations::validate_action_id(action_id)?;
+        let directory = self
+            .fixed_directory(action_id, || {
+                self.directory.child(OsStr::new(action_id), create)
+            })
+            .map_err(|error| {
+                if !create && error.kind() == std::io::ErrorKind::NotFound {
+                    Error::NotFound
+                } else {
+                    error.into()
+                }
+            })?;
+        lock.observed
+            .borrow_mut()
+            .insert(directory.path(), directory.clone());
+        Ok(directory)
+    }
+    fn fixed_directory(
+        &self,
+        key: &str,
+        open: impl FnOnce() -> std::io::Result<Directory>,
+    ) -> std::io::Result<Directory> {
+        let mut directories = self
+            .directories
+            .lock()
+            .map_err(|_| std::io::Error::other("Action directory anchor lock poisoned"))?;
+        let directory = match directories.get(key) {
+            Some(directory) => directory.clone(),
+            None => {
+                let directory = open()?;
+                directories.insert(key.into(), directory.clone());
+                directory
+            }
+        };
+        directory.verify_private_parent()?;
+        Ok(directory)
+    }
+    fn subdirectory(
+        &self,
+        action_id: &str,
+        name: &str,
+        create: bool,
+        lock: &Lock,
+    ) -> Result<Directory> {
+        let action = self.action_directory(action_id, false, lock)?;
+        let directory = self.fixed_directory(&format!("{action_id}/{name}"), || {
+            action.child(OsStr::new(name), create)
+        })?;
+        lock.observed
+            .borrow_mut()
+            .insert(directory.path(), directory.clone());
+        Ok(directory)
     }
     fn lock(&self) -> Result<Lock> {
-        let path = self.root.join(".actions.lock");
-        if fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file()) {
-            return Err(Error::Invalid("Action lock must be a regular file"));
-        }
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-        }
-        let file = options.open(path)?;
-        if !file.metadata()?.is_file() {
-            return Err(Error::Invalid("Action lock must be a regular file"));
-        }
+        self.directory
+            .validate_regular_entry(OsStr::new(".actions.lock"), &self.lock_anchor)?;
+        let file = self
+            .directory
+            .open_existing_lock(OsStr::new(".actions.lock"))?;
         file.lock_exclusive()?;
-        Ok(Lock(file))
-    }
-    fn read_json(path: &Path) -> Result<Option<Value>> {
-        let metadata = match fs::symlink_metadata(path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
+        let lock = Lock {
+            file,
+            anchor: self.lock_anchor.clone(),
+            directory: self.directory.clone(),
+            observed: RefCell::new(BTreeMap::new()),
         };
-        if !metadata.is_file() || metadata.len() > 64 * 1024 * 1024 {
-            return Err(Error::Invalid("bounded regular JSON file required"));
+        lock.validate()?;
+        Ok(lock)
+    }
+    fn locked<T>(&self, operation: impl FnOnce(&Lock) -> Result<T>) -> Result<T> {
+        let lock = self.lock()?;
+        let result = operation(&lock);
+        if lock.validate().is_err() {
+            return Err(crate::storage::Error::EffectUncertain.into());
         }
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        result
+    }
+    fn read_json(directory: &Directory, name: &OsStr) -> Result<Option<Value>> {
+        match directory.regular_identity(name)? {
+            None => return Ok(None),
+            Some(identity) if identity.is_private_for(effective_uid()) => {}
+            Some(_) => return Err(Error::Invalid("single-link JSON file required")),
         }
-        let file = options.open(path)?;
-        if !file.metadata()?.is_file() {
-            return Err(Error::Invalid("JSON file must be regular"));
-        }
-        let mut bytes = Vec::new();
-        file.take(64 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-        if bytes.len() > 64 * 1024 * 1024 {
-            return Err(Error::Invalid("JSON file too large"));
-        }
-        let value: Value = serde_json::from_slice(&bytes)?;
+        let value: Value =
+            serde_json::from_slice(&directory.read_regular(name, 64 * 1024 * 1024)?)?;
         if !value.is_object() {
             return Err(Error::Invalid("JSON object required"));
         }
         Ok(Some(value))
     }
-    fn plan(&self, action_id: &str) -> Result<Value> {
-        let plan = Self::read_json(&self.directory(action_id)?.join("plan.json"))?
-            .ok_or(Error::NotFound)?;
+    fn plan(&self, action_id: &str, lock: &Lock) -> Result<Value> {
+        let plan = Self::read_json(
+            &self.action_directory(action_id, false, lock)?,
+            OsStr::new("plan.json"),
+        )?
+        .ok_or(Error::NotFound)?;
         if plan.get("action_id").and_then(Value::as_str) != Some(action_id) {
             return Err(Error::Invalid("plan Action identity differs"));
         }
@@ -144,46 +232,59 @@ impl Store {
         plan: &Value,
         now: &str,
         transition_id: &str,
+        lock: &Lock,
     ) -> Result<Value> {
-        let execution = self.database.read(action_id)?;
+        let execution = self.database.read(&|| lock.validate(), action_id)?;
         if execution.as_object().is_some_and(|v| !v.is_empty()) {
             return Ok(execution);
         }
-        self.database.commit(action_id,&operations::initial_execution(plan),&json!({"timestamp":now,"event":"action_prepared","payload":{"ready":plan.get("ready"),"operation":plan.get("operation")}}),None,transition_id)
+        self.database.commit(&||lock.validate(),action_id,&operations::initial_execution(plan),&json!({"timestamp":now,"event":"action_prepared","payload":{"ready":plan.get("ready"),"operation":plan.get("operation")}}),None,transition_id)
     }
-    fn snapshot_unlocked(&self, action_id: &str, now: &str, transition_id: &str) -> Result<Value> {
-        let plan = self.plan(action_id)?;
-        let execution = self.execution(action_id, &plan, now, transition_id)?;
-        let journal = self.database.journal(action_id, 100)?;
+    fn snapshot_unlocked(
+        &self,
+        action_id: &str,
+        now: &str,
+        transition_id: &str,
+        lock: &Lock,
+    ) -> Result<Value> {
+        let plan = self.plan(action_id, lock)?;
+        let execution = self.execution(action_id, &plan, now, transition_id, lock)?;
+        let journal = self.database.journal(&|| lock.validate(), action_id, 100)?;
         let mut snapshot = plan.as_object().cloned().ok_or(Error::Invalid("plan"))?;
         snapshot.insert("execution".into(), execution);
         snapshot.insert("journal".into(), json!(journal));
         Ok(Value::Object(snapshot))
     }
     pub fn snapshot(&self, action_id: &str, now: &str, transition_id: &str) -> Result<Value> {
-        let _lock = self.lock()?;
-        self.snapshot_unlocked(action_id, now, transition_id)
+        self.locked(|lock| self.snapshot_unlocked(action_id, now, transition_id, lock))
     }
     pub fn save_plan(&self, plan: &Value, now: &str, transition_id: &str) -> Result<Value> {
-        let _lock = self.lock()?;
-        let action_id = plan
-            .get("action_id")
-            .and_then(Value::as_str)
-            .ok_or(Error::Invalid("action_id"))?;
-        let directory = self.directory(action_id)?;
-        create_private_dir(&directory)?;
-        let path = directory.join("plan.json");
-        if let Some(existing) = Self::read_json(&path)? {
-            if existing.get("request_digest") != plan.get("request_digest") {
-                return Err(Error::IdempotencyConflict);
+        self.locked(|lock| {
+            let action_id = plan
+                .get("action_id")
+                .and_then(Value::as_str)
+                .ok_or(Error::Invalid("action_id"))?;
+            let directory = self.action_directory(action_id, true, lock)?;
+            if let Some(existing) = Self::read_json(&directory, OsStr::new("plan.json"))? {
+                if existing.get("request_digest") != plan.get("request_digest") {
+                    return Err(Error::IdempotencyConflict);
+                }
+            } else {
+                directory
+                    .publish_new(OsStr::new("plan.json"), &serde_json::to_vec_pretty(plan)?)?;
             }
-        } else {
-            write_atomic(&path, &serde_json::to_vec_pretty(plan)?, true)?;
-        }
-        self.snapshot_unlocked(action_id, now, transition_id)
+            self.snapshot_unlocked(action_id, now, transition_id, lock)
+        })
     }
-    fn apply(&self, action_id: &str, transition: &Transition, transition_id: &str) -> Result<()> {
+    fn apply(
+        &self,
+        action_id: &str,
+        transition: &Transition,
+        transition_id: &str,
+        lock: &Lock,
+    ) -> Result<()> {
         self.database.commit(
+            &|| lock.validate(),
             action_id,
             &transition.execution,
             &transition.event,
@@ -200,18 +301,19 @@ impl Store {
         now: &str,
         transition_id: &str,
     ) -> Result<Value> {
-        let _lock = self.lock()?;
-        // A crash may have published plan.json before its initial database
-        // row. Bootstrap and authorization are distinct audit transitions.
-        let bootstrap = format!(
-            "{:x}",
-            Sha256::digest(format!("bootstrap:{action_id}:{transition_id}"))
-        );
-        let snapshot = self.snapshot_unlocked(action_id, now, &bootstrap[..32])?;
-        let transition =
-            operations::authorize(&snapshot, &snapshot["execution"], actor, note, now)?;
-        self.apply(action_id, &transition, transition_id)?;
-        self.snapshot_unlocked(action_id, now, transition_id)
+        self.locked(|lock| {
+            // A crash may have published plan.json before its initial database
+            // row. Bootstrap and authorization are distinct audit transitions.
+            let bootstrap = format!(
+                "{:x}",
+                Sha256::digest(format!("bootstrap:{action_id}:{transition_id}"))
+            );
+            let snapshot = self.snapshot_unlocked(action_id, now, &bootstrap[..32], lock)?;
+            let transition =
+                operations::authorize(&snapshot, &snapshot["execution"], actor, note, now)?;
+            self.apply(action_id, &transition, transition_id, lock)?;
+            self.snapshot_unlocked(action_id, now, transition_id, lock)
+        })
     }
     /// Persist intent before returning dispatch information. The caller must
     /// enqueue at most once; existing EXECUTING/unknown effects never replay.
@@ -228,8 +330,8 @@ impl Store {
             transition_id,
             pid,
         } = context;
-        let _lock = self.lock()?;
-        let snapshot = self.snapshot_unlocked(action_id, now, transition_id)?;
+        self.locked(|lock| {
+        let snapshot = self.snapshot_unlocked(action_id, now, transition_id,lock)?;
         match operations::claim(
             &snapshot,
             &snapshot["execution"],
@@ -246,22 +348,19 @@ impl Store {
                 transition,
                 dispatch,
             } => {
-                self.apply(action_id, &transition, transition_id)?;
+                self.apply(action_id, &transition, transition_id,lock)?;
                 // Auxiliary evidence only: failure here cannot undo or replay
                 // the authoritative SQLite execution claim and audit event.
                 let claim =
                     json!({"claimed_at":now,"pid":pid,"intent_digest":snapshot["intent_digest"]});
-                let _ = write_atomic(
-                    &self.directory(action_id)?.join("execution.claim"),
-                    &serde_json::to_vec_pretty(&claim)?,
-                    false,
-                );
+                let _ = self.action_directory(action_id,false,lock)?.replace_regular(OsStr::new("execution.claim"), &serde_json::to_vec_pretty(&claim)?);
                 Ok(Claimed {
-                    snapshot: self.snapshot_unlocked(action_id, now, transition_id)?,
+                    snapshot: self.snapshot_unlocked(action_id, now, transition_id,lock)?,
                     dispatch: Some(dispatch),
                 })
             }
         }
+        })
     }
     /// Commit an executor's already planned result with revision CAS. This does
     /// not dispatch or make an uncertain submission safe for automatic retry.
@@ -272,9 +371,10 @@ impl Store {
         transition_id: &str,
         now: &str,
     ) -> Result<Value> {
-        let _lock = self.lock()?;
-        self.apply(action_id, transition, transition_id)?;
-        self.snapshot_unlocked(action_id, now, transition_id)
+        self.locked(|lock| {
+            self.apply(action_id, transition, transition_id, lock)?;
+            self.snapshot_unlocked(action_id, now, transition_id, lock)
+        })
     }
     pub fn reconcile(
         &self,
@@ -284,45 +384,49 @@ impl Store {
         now: &str,
         transition_id: &str,
     ) -> Result<(Value, Option<Dispatch>)> {
-        let _lock = self.lock()?;
-        let snapshot = self.snapshot_unlocked(action_id, now, transition_id)?;
-        match operations::reconcile(&snapshot, &snapshot["execution"], policy, evidence, now)? {
-            Reconcile::Unchanged => Ok((snapshot, None)),
-            Reconcile::Commit(transition) => {
-                self.apply(action_id, &transition, transition_id)?;
-                Ok((self.snapshot_unlocked(action_id, now, transition_id)?, None))
+        self.locked(|lock| {
+            let snapshot = self.snapshot_unlocked(action_id, now, transition_id, lock)?;
+            match operations::reconcile(&snapshot, &snapshot["execution"], policy, evidence, now)? {
+                Reconcile::Unchanged => Ok((snapshot, None)),
+                Reconcile::Commit(transition) => {
+                    self.apply(action_id, &transition, transition_id, lock)?;
+                    Ok((
+                        self.snapshot_unlocked(action_id, now, transition_id, lock)?,
+                        None,
+                    ))
+                }
+                Reconcile::RecoverTransaction(dispatch) => Ok((snapshot, Some(dispatch))),
             }
-            Reconcile::RecoverTransaction(dispatch) => Ok((snapshot, Some(dispatch))),
-        }
+        })
     }
     fn list_unlocked(
         &self,
         scope: Option<&Scope>,
         now: &str,
         transition_id: &str,
+        lock: &Lock,
     ) -> Result<Vec<Value>> {
         let mut ids = Vec::new();
-        for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() {
-                continue;
-            }
-            let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+        for name in self.directory.entry_names()? {
+            let Some(id) = name.to_str() else {
                 continue;
             };
-            if !id.starts_with("action-") {
+            if operations::validate_action_id(id).is_err() {
                 continue;
             }
-            if operations::validate_action_id(&id).is_err() {
-                continue;
+            match self.action_directory(id, false, lock) {
+                Ok(_) => ids.push(id.to_owned()),
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotADirectory => {
+                    continue;
+                }
+                Err(error) => return Err(error),
             }
-            ids.push(id);
         }
         ids.sort();
         let expected = scope.map(serde_json::to_value).transpose()?;
         let mut items = Vec::new();
         for id in ids {
-            let plan = match self.plan(&id) {
+            let plan = match self.plan(&id, lock) {
                 Ok(plan) => plan,
                 Err(Error::NotFound) => continue,
                 Err(error) => return Err(error),
@@ -333,7 +437,7 @@ impl Store {
             {
                 continue;
             }
-            items.push(self.snapshot_unlocked(&id, now, transition_id)?);
+            items.push(self.snapshot_unlocked(&id, now, transition_id, lock)?);
         }
         Ok(items)
     }
@@ -343,24 +447,24 @@ impl Store {
         now: &str,
         transition_id: &str,
     ) -> Result<Vec<Value>> {
-        let _lock = self.lock()?;
-        self.list_unlocked(scope, now, transition_id)
+        self.locked(|lock| self.list_unlocked(scope, now, transition_id, lock))
     }
     /// Startup must run before the daemon serves or resumes any queue worker.
     /// Merely records abandoned claims; it never issues provider submit calls.
     pub fn recover_interrupted(&self, now: &str, transition_id: &str) -> Result<Vec<Value>> {
-        let _lock = self.lock()?;
-        let mut recovered = Vec::new();
-        for snapshot in self.list_unlocked(None, now, transition_id)? {
-            if let Some(transition) = operations::interrupted(&snapshot["execution"], now)? {
-                let id = snapshot["action_id"]
-                    .as_str()
-                    .ok_or(Error::Invalid("action_id"))?;
-                self.apply(id, &transition, transition_id)?;
-                recovered.push(self.snapshot_unlocked(id, now, transition_id)?);
+        self.locked(|lock| {
+            let mut recovered = Vec::new();
+            for snapshot in self.list_unlocked(None, now, transition_id, lock)? {
+                if let Some(transition) = operations::interrupted(&snapshot["execution"], now)? {
+                    let id = snapshot["action_id"]
+                        .as_str()
+                        .ok_or(Error::Invalid("action_id"))?;
+                    self.apply(id, &transition, transition_id, lock)?;
+                    recovered.push(self.snapshot_unlocked(id, now, transition_id, lock)?);
+                }
             }
-        }
-        Ok(recovered)
+            Ok(recovered)
+        })
     }
     pub fn append_journal(
         &self,
@@ -370,12 +474,14 @@ impl Store {
         event_id: &str,
         now: &str,
     ) -> Result<()> {
-        let _lock = self.lock()?;
-        self.database.append_event(
-            action_id,
-            &json!({"timestamp":now,"event":event,"payload":payload}),
-            event_id,
-        )
+        self.locked(|lock| {
+            self.database.append_event(
+                &|| lock.validate(),
+                action_id,
+                &json!({"timestamp":now,"event":event,"payload":payload}),
+                event_id,
+            )
+        })
     }
     /// Sensitive notes and confirmation commands stay outside immutable plans.
     pub fn write_command(
@@ -389,51 +495,65 @@ impl Store {
         if !payload.is_object() {
             return Err(Error::Invalid("command payload"));
         }
-        let _lock = self.lock()?;
-        let directory = self.directory(action_id)?.join("commands");
-        create_private_dir(&directory)?;
-        let path = directory.join(format!("{}.json", phase.name()));
-        let record = if let Some(existing) = Self::read_json(&path)? {
-            if existing.get("payload") != Some(payload) {
-                return Err(Error::CommandConflict);
-            }
-            existing
-        } else {
-            let record = json!({"action_id":action_id,"phase":phase.name(),"payload":payload,"created_at":now,"journal_event_id":event_id});
-            write_atomic(&path, &serde_json::to_vec_pretty(&record)?, true)?;
-            record
-        };
-        let event_id = match record
-            .get("journal_event_id")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-        {
-            Some(id) => id.to_owned(),
-            None => format!(
-                "{:x}",
-                Sha256::digest(
-                    python_json_bytes(&record)
-                        .map_err(|_| Error::Invalid("legacy command encoding"))?
-                )
-            ),
-        };
-        self.database.append_event(action_id,&json!({"timestamp":now,"event":format!("{}_command_recorded",phase.name()),"payload":{}}),&event_id)?;
-        Ok(record)
+        self.locked(|lock| {
+            let directory = self.subdirectory(action_id, "commands", true, lock)?;
+            let name = format!("{}.json", phase.name());
+            let record = if let Some(existing) = Self::read_json(&directory, OsStr::new(&name))? {
+                // Free-form command replay follows the old Python dictionary
+                // equality. Frozen intent/digest identities remain byte-bound.
+                if !existing.get("payload").is_some_and(|previous| {
+                    ml_exp_core::observation::python_equal(previous, payload)
+                }) {
+                    return Err(Error::CommandConflict);
+                }
+                existing
+            } else {
+                let record = json!({
+                    "action_id": action_id,
+                    "phase": phase.name(),
+                    "payload": payload,
+                    "created_at": now,
+                    "journal_event_id": event_id,
+                });
+                directory.publish_new(OsStr::new(&name), &serde_json::to_vec_pretty(&record)?)?;
+                record
+            };
+            let event_id = match record
+                .get("journal_event_id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                Some(id) => id.to_owned(),
+                None => format!(
+                    "{:x}",
+                    Sha256::digest(
+                        python_json_bytes(&record)
+                            .map_err(|_| Error::Invalid("legacy command encoding"))?
+                    )
+                ),
+            };
+            let event = json!({
+                "timestamp": now,
+                "event": format!("{}_command_recorded", phase.name()),
+                "payload": {},
+            });
+            self.database
+                .append_event(&|| lock.validate(), action_id, &event, &event_id)?;
+            Ok(record)
+        })
     }
     pub fn read_command(&self, action_id: &str, phase: CommandPhase) -> Result<Value> {
-        let _lock = self.lock()?;
-        let record = Self::read_json(
-            &self
-                .directory(action_id)?
-                .join("commands")
-                .join(format!("{}.json", phase.name())),
-        )?
-        .ok_or(Error::NotFound)?;
-        Ok(record
-            .get("payload")
-            .filter(|v| v.is_object())
-            .cloned()
-            .unwrap_or_else(|| json!({})))
+        self.locked(|lock| {
+            let directory = self.subdirectory(action_id, "commands", false, lock)?;
+            let record =
+                Self::read_json(&directory, OsStr::new(&format!("{}.json", phase.name())))?
+                    .ok_or(Error::NotFound)?;
+            Ok(record
+                .get("payload")
+                .filter(|v| v.is_object())
+                .cloned()
+                .unwrap_or_else(|| json!({})))
+        })
     }
     pub fn write_activity_error(
         &self,
@@ -446,30 +566,35 @@ impl Store {
         if !matches!(phase, "prepare" | "authorize" | "execute" | "reconcile") {
             return Err(Error::Invalid("activity phase"));
         }
-        let _lock = self.lock()?;
-        let directory = self.directory(action_id)?.join("activity_errors");
-        create_private_dir(&directory)?;
+        self.locked(|lock| {
+        let directory = self.subdirectory(action_id,"activity_errors",true,lock)?;
         let message: String = message.chars().take(1000).collect();
-        write_atomic(
-            &directory.join(format!("{phase}.json")),
+        directory.replace_regular(
+            OsStr::new(&format!("{phase}.json")),
             &serde_json::to_vec_pretty(
                 &json!({"action_id":action_id,"phase":phase,"message":message,"category":category,"created_at":now}),
             )?,
-            false,
         )?;
         Ok(())
+        })
     }
     pub fn activity_error(&self, action_id: &str, phase: &str) -> Result<Value> {
         if !matches!(phase, "prepare" | "authorize" | "execute" | "reconcile") {
             return Err(Error::Invalid("activity phase"));
         }
-        let _lock = self.lock()?;
-        Ok(Self::read_json(
-            &self
-                .directory(action_id)?
-                .join("activity_errors")
-                .join(format!("{phase}.json")),
-        )?
-        .unwrap_or_else(|| json!({})))
+        self.locked(|lock| {
+            let directory = match self.subdirectory(action_id, "activity_errors", false, lock) {
+                Ok(directory) => directory,
+                Err(Error::NotFound) => return Ok(json!({})),
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(json!({}));
+                }
+                Err(error) => return Err(error),
+            };
+            Ok(
+                Self::read_json(&directory, OsStr::new(&format!("{phase}.json")))?
+                    .unwrap_or_else(|| json!({})),
+            )
+        })
     }
 }

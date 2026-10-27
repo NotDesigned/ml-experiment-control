@@ -1,13 +1,12 @@
+use crate::storage::SqliteDatabase;
 use ml_exp_core::operations;
-use ml_exp_io::write_atomic;
-use rusqlite::{
-    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
-};
+use ml_exp_io::directory::{Directory, effective_uid};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::{
-    fs::OpenOptions,
+    ffi::OsStr,
     path::{Path, PathBuf},
-    time::Duration,
+    sync::{Arc, OnceLock},
 };
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -15,6 +14,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("Action storage I/O failed")]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Storage(#[from] crate::storage::Error),
     #[error("Action database transaction failed")]
     Sqlite(#[from] rusqlite::Error),
     #[error("Action JSON record is invalid")]
@@ -37,6 +38,15 @@ pub enum Error {
     CommandConflict,
     #[error("invalid Action storage record: {0}")]
     Invalid(&'static str),
+}
+
+impl Error {
+    /// A failed persistence response may follow a durable execution claim.
+    /// Even false is never positive proof that a scheduler submit was absent;
+    /// only the core's exact reconciliation evidence can authorize a retry.
+    pub fn effects_may_have_applied(&self) -> bool {
+        matches!(self, Self::Storage(error) if error.effects_may_have_applied())
+    }
 }
 
 // Byte/schema-compatible with actions/database.py user_version=1. Plans remain
@@ -62,87 +72,82 @@ PRAGMA user_version=1;
 
 #[derive(Clone, Debug)]
 pub struct Database {
-    root: PathBuf,
+    directory: Directory,
+    sqlite: SqliteDatabase,
+    initialized: Arc<OnceLock<()>>,
 }
 impl Database {
-    pub fn new(root: &Path) -> Self {
-        Self { root: root.into() }
+    pub fn open(root: &Path) -> Result<Self> {
+        Self::in_directory(Directory::open(root, true)?)
+    }
+    pub(crate) fn in_directory(directory: Directory) -> Result<Self> {
+        directory.verify_private_parent()?;
+        let sqlite =
+            SqliteDatabase::in_directory(directory.clone(), OsStr::new("actions.sqlite3"))?
+                .with_wal();
+        Ok(Self {
+            directory,
+            sqlite,
+            initialized: Arc::new(OnceLock::new()),
+        })
+    }
+    fn root_directory(&self) -> Result<&Directory> {
+        self.directory.verify_private_parent()?;
+        Ok(&self.directory)
     }
     pub fn path(&self) -> PathBuf {
-        self.root.join("actions.sqlite3")
+        self.sqlite.path().to_owned()
     }
-
     fn marker_exists(&self) -> Result<bool> {
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        let directory = self.root_directory()?;
+        match directory.regular_identity(OsStr::new(".sqlite-authoritative"))? {
+            None => return Ok(false),
+            Some(identity) if identity.is_private_for(effective_uid()) => {}
+            Some(_) => return Err(Error::Invalid("single-link authoritative marker required")),
         }
-        match options.open(self.root.join(".sqlite-authoritative")) {
-            Ok(file) if file.metadata()?.is_file() => Ok(true),
-            Ok(_) => Err(Error::Invalid(
-                "authoritative marker must be a regular file",
-            )),
+        match directory.read_regular(OsStr::new(".sqlite-authoritative"), 4096) {
+            Ok(_) => Ok(true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error.into()),
         }
     }
-
-    fn connection(&self) -> Result<Connection> {
-        let path = self.path();
-        let marker = self.root.join(".sqlite-authoritative");
-        let marker_exists = self.marker_exists()?;
-        if marker_exists && !path.is_file() {
+    fn initialize(&self, validate: &dyn Fn() -> Result<()>) -> Result<()> {
+        validate()?;
+        let directory = self.root_directory()?;
+        let marker = self.marker_exists()?;
+        if marker
+            && directory
+                .regular_identity(OsStr::new("actions.sqlite3"))?
+                .is_none()
+        {
             return Err(Error::MissingAuthoritative);
         }
-        if std::fs::symlink_metadata(&path)
-            .is_ok_and(|m| m.file_type().is_symlink() || !m.is_file())
-            || std::fs::symlink_metadata(&marker).is_ok_and(|m| !m.is_file())
-        {
-            return Err(Error::Invalid("database or marker must be a regular file"));
+        if self.initialized.get().is_some() {
+            if !marker {
+                return Err(Error::Invalid("authoritative marker disappeared"));
+            }
+            return Ok(());
         }
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-        }
-        // Validate the opened descriptor, not only an earlier lstat. Keeping
-        // it open also prevents the checked inode being immediately reused.
-        let descriptor = options.open(&path)?;
-        if !descriptor.metadata()?.is_file() {
-            return Err(Error::Invalid("Action database must be a regular file"));
-        }
-        let mut connection = Connection::open_with_flags(
-            &path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        self.sqlite.initialize(
+            || {
+                validate()?;
+                directory.verify_attached().map_err(Error::Io)
+            },
+            |transaction| {
+                let version: i64 =
+                    transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+                if version == 0 && !marker {
+                    transaction.execute_batch(SCHEMA)?;
+                } else if version != 1 {
+                    return Err(Error::UnsupportedSchema);
+                }
+                Ok::<_, Error>(())
+            },
         )?;
-        connection.busy_timeout(Duration::from_secs(30))?;
-        connection.execute_batch(
-            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
-        )?;
-        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version == 0 && !marker_exists {
-            let transaction =
-                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            transaction.execute_batch(SCHEMA)?;
-            transaction.commit()?;
-        } else if version != 1 {
-            return Err(Error::UnsupportedSchema);
-        }
         if !self.marker_exists()? {
-            match write_atomic(
-                &marker,
+            match directory.publish_new(
+                OsStr::new(".sqlite-authoritative"),
                 b"actions.sqlite3 is authoritative; see docs/action-storage.md\n",
-                true,
             ) {
                 Ok(()) => {}
                 Err(error)
@@ -151,15 +156,35 @@ impl Database {
                 Err(error) => return Err(error.into()),
             }
         }
-        Ok(connection)
+        directory.verify_attached()?;
+        let _ = self.initialized.set(());
+        Ok(())
     }
-
-    fn transaction<T>(&self, operation: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
-        let mut connection = self.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let result = operation(&transaction)?;
-        transaction.commit()?;
-        Ok(result)
+    fn transaction<T>(
+        &self,
+        validate: &dyn Fn() -> Result<()>,
+        operation: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.initialize(validate)?;
+        let directory = self.root_directory()?;
+        self.sqlite.transaction(
+            || {
+                validate()?;
+                directory.verify_attached()?;
+                if !self.marker_exists()? {
+                    return Err(Error::Invalid("authoritative marker disappeared"));
+                }
+                Ok(())
+            },
+            |transaction| {
+                let version: i64 =
+                    transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+                if version != 1 {
+                    return Err(Error::UnsupportedSchema);
+                }
+                operation(transaction)
+            },
+        )
     }
 
     fn read_transaction(&self, connection: &Transaction<'_>, action_id: &str) -> Result<Value> {
@@ -171,12 +196,18 @@ impl Database {
             )
             .optional()?;
         let Some((revision, payload)) = row else {
-            let directory = self.root.join(action_id);
-            if ["execution.json", "journal.jsonl"]
-                .iter()
-                .any(|name| directory.join(name).exists())
-            {
-                return Err(Error::LegacyMigration);
+            let root = self.root_directory()?;
+            let directory = match root.child(OsStr::new(action_id), false) {
+                Ok(directory) => Some(directory),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
+            if let Some(directory) = directory {
+                if directory.entry_exists(OsStr::new("execution.json"))?
+                    || directory.entry_exists(OsStr::new("journal.jsonl"))?
+                {
+                    return Err(Error::LegacyMigration);
+                }
             }
             return Ok(json!({}));
         };
@@ -187,13 +218,16 @@ impl Database {
         Ok(value)
     }
 
-    pub fn read(&self, action_id: &str) -> Result<Value> {
+    pub fn read(&self, validate: &dyn Fn() -> Result<()>, action_id: &str) -> Result<Value> {
         operations::validate_action_id(action_id)?;
-        self.transaction(|connection| self.read_transaction(connection, action_id))
+        self.transaction(validate, |connection| {
+            self.read_transaction(connection, action_id)
+        })
     }
 
     pub fn commit(
         &self,
+        validate: &dyn Fn() -> Result<()>,
         action_id: &str,
         proposed: &Value,
         event: &Value,
@@ -201,7 +235,7 @@ impl Database {
         transition_id: &str,
     ) -> Result<Value> {
         operations::validate_action_id(action_id)?;
-        self.transaction(|connection| {
+        self.transaction(validate, |connection| {
             let current = self.read_transaction(connection,action_id)?;
             let (execution,event) = operations::commit_transition(&current,proposed,event,expected_status,transition_id)?;
             let revision = operations::revision(&execution)?;
@@ -211,12 +245,18 @@ impl Database {
         })
     }
 
-    pub fn append_event(&self, action_id: &str, event: &Value, event_id: &str) -> Result<()> {
+    pub fn append_event(
+        &self,
+        validate: &dyn Fn() -> Result<()>,
+        action_id: &str,
+        event: &Value,
+        event_id: &str,
+    ) -> Result<()> {
         operations::validate_action_id(action_id)?;
         if event_id.is_empty() || event_id.len() > 4096 || event_id.chars().any(char::is_control) {
             return Err(Error::Invalid("event_id"));
         }
-        self.transaction(|connection| {
+        self.transaction(validate, |connection| {
             let current = self.read_transaction(connection, action_id)?;
             let mut record = event
                 .as_object()
@@ -243,12 +283,17 @@ impl Database {
         })
     }
 
-    pub fn journal(&self, action_id: &str, limit: usize) -> Result<Vec<Value>> {
+    pub fn journal(
+        &self,
+        validate: &dyn Fn() -> Result<()>,
+        action_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Value>> {
         operations::validate_action_id(action_id)?;
         let limit: i64 = limit
             .try_into()
             .map_err(|_| Error::Invalid("journal limit"))?;
-        self.transaction(|connection| {
+        self.transaction(validate, |connection| {
             self.read_transaction(connection, action_id)?;
             let mut statement = connection.prepare(
                 "SELECT payload FROM events WHERE action_id=? ORDER BY seq DESC LIMIT ?",

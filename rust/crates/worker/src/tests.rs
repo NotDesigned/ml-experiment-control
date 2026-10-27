@@ -30,6 +30,10 @@ fn captures_failure_and_does_not_overwrite_prior_outputs() {
         fs::read_to_string(output.join("stdout.log")).unwrap(),
         "hello"
     );
+    assert_eq!(
+        result.stdout_sha256.as_deref(),
+        Some("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+    );
     let original = fs::read(output.join("execution.json")).unwrap();
     assert!(execute(root.path(), &output, &argv, Duration::from_secs(5)).is_err());
     assert_eq!(fs::read(output.join("execution.json")).unwrap(), original);
@@ -179,4 +183,93 @@ fn pre_cancelled_execution_creates_receipt_without_starting_command() {
     assert!(result.exit_code.is_none());
     assert!(!root.path().join("unexpected").exists());
     assert!(output.join("execution.json").is_file());
+}
+
+#[test]
+fn log_floods_are_bounded_and_existing_receipt_reports_incomplete_capture() {
+    let root = tempfile::tempdir().unwrap();
+    let output = root.path().join("outputs");
+    let result = execute(
+        root.path(),
+        &output,
+        &shell("head -c 9437184 /dev/zero; head -c 9437184 /dev/zero >&2"),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    assert_eq!(result.exit_code, Some(0));
+    assert!(!result.succeeded());
+    let failure = result.error.unwrap();
+    assert_eq!(
+        (failure.stage, failure.code),
+        ("LOG_CAPTURE", "OUTPUT_LIMIT_EXCEEDED")
+    );
+    for name in ["stdout.log", "stderr.log"] {
+        assert_eq!(
+            fs::metadata(output.join(name)).unwrap().len(),
+            8 * 1024 * 1024
+        );
+    }
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("execution.json")).unwrap()).unwrap();
+    assert_eq!(receipt["contract"], "rust-local-execution-preview.v1");
+    assert_eq!(receipt["error"]["code"], "OUTPUT_LIMIT_EXCEEDED");
+    assert_eq!(receipt.as_object().unwrap().len(), 8);
+}
+
+#[test]
+fn direct_writes_and_truncation_cannot_supply_unbounded_or_incomplete_log_hashes() {
+    let root = tempfile::tempdir().unwrap();
+    for (name, script, size) in [
+        (
+            "oversized-stdout",
+            "head -c 9437184 /dev/zero > \"$OUTPUT_DIR/stdout.log\"",
+            9437184,
+        ),
+        (
+            "changed-stdout",
+            "printf changed > \"$OUTPUT_DIR/stdout.log\"",
+            7,
+        ),
+        (
+            "oversized-stderr",
+            "head -c 9437184 /dev/zero > \"$OUTPUT_DIR/stderr.log\"",
+            9437184,
+        ),
+        (
+            "truncated",
+            "printf captured; while ! test -s \"$OUTPUT_DIR/stdout.log\"; do sleep 0.002; done; : > \"$OUTPUT_DIR/stdout.log\"",
+            0,
+        ),
+        (
+            "same-length-overwrite",
+            "printf hello; while ! test -s \"$OUTPUT_DIR/stdout.log\"; do sleep 0.002; done; printf xxxxx > \"$OUTPUT_DIR/stdout.log\"",
+            5,
+        ),
+    ] {
+        let output = root.path().join(name);
+        let started = Instant::now();
+        let result = execute(root.path(), &output, &shell(script), Duration::from_secs(2)).unwrap();
+        assert_eq!(result.exit_code, Some(0));
+        assert!(!result.succeeded());
+        let error = result.error.as_ref().unwrap();
+        assert_eq!(
+            (error.stage, error.code),
+            ("LOG_CAPTURE", "LOG_IDENTITY_OR_CONTENT_CHANGED")
+        );
+        let log = if name == "oversized-stderr" {
+            "stderr.log"
+        } else {
+            "stdout.log"
+        };
+        assert_eq!(fs::metadata(output.join(log)).unwrap().len(), size);
+        if log == "stdout.log" {
+            assert!(result.stdout_sha256.is_none());
+        } else {
+            assert!(result.stderr_sha256.is_none());
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("execution.json")).unwrap()).unwrap();
+        assert_eq!(receipt["error"]["code"], "LOG_IDENTITY_OR_CONTENT_CHANGED");
+    }
 }

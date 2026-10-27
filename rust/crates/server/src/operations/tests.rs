@@ -106,7 +106,10 @@ fn competing_claims_dispatch_exactly_once_and_restart_only_reconciles() {
     }
     let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
     assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
-    assert_eq!(store.database().journal(id, 100).unwrap().len(), 3);
+    assert_eq!(
+        store.database().journal(&|| Ok(()), id, 100).unwrap().len(),
+        3
+    );
     let reopened = Store::open(root.path()).unwrap();
     let recovered = reopened.recover_interrupted(NOW, &uid(6)).unwrap();
     assert_eq!(recovered.len(), 1);
@@ -142,6 +145,7 @@ fn sqlite_cas_and_failed_audit_insert_leave_state_and_events_atomic() {
     let id = "action-0123456789abcdef";
     let first = db
         .commit(
+            &|| Ok(()),
             id,
             &json!({"revision":0,"status":"PREPARED"}),
             &json!({"event":"prepared"}),
@@ -155,6 +159,7 @@ fn sqlite_cas_and_failed_audit_insert_leave_state_and_events_atomic() {
     // rollback must leave neither a newer revision nor a partial audit event.
     assert!(matches!(
         db.commit(
+            &|| Ok(()),
             id,
             &authorized,
             &json!({"event":"authorized"}),
@@ -163,8 +168,8 @@ fn sqlite_cas_and_failed_audit_insert_leave_state_and_events_atomic() {
         ),
         Err(Error::Sqlite(_))
     ));
-    assert_eq!(db.read(id).unwrap(), first);
-    assert_eq!(db.journal(id, 100).unwrap().len(), 1);
+    assert_eq!(db.read(&|| Ok(()), id).unwrap(), first);
+    assert_eq!(db.journal(&|| Ok(()), id, 100).unwrap().len(), 1);
     let barrier = Arc::new(Barrier::new(2));
     let mut threads = Vec::new();
     for index in 0..2 {
@@ -174,6 +179,7 @@ fn sqlite_cas_and_failed_audit_insert_leave_state_and_events_atomic() {
         threads.push(std::thread::spawn(move || {
             barrier.wait();
             db.commit(
+                &|| Ok(()),
                 id,
                 &authorized,
                 &json!({"event":"authorized"}),
@@ -184,8 +190,222 @@ fn sqlite_cas_and_failed_audit_insert_leave_state_and_events_atomic() {
     }
     let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
     assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
-    assert_eq!(db.read(id).unwrap()["revision"], 2);
-    assert_eq!(db.journal(id, 100).unwrap().len(), 2);
+    assert_eq!(db.read(&|| Ok(()), id).unwrap()["revision"], 2);
+    assert_eq!(db.journal(&|| Ok(()), id, 100).unwrap().len(), 2);
+}
+
+#[test]
+fn blocked_action_authorization_or_claim_cannot_outlive_its_lock_or_directories() {
+    use fs2::FileExt;
+    use std::{
+        fs::OpenOptions,
+        time::{Duration, Instant},
+    };
+    for phase in ["authorize", "claim"] {
+        for replacement in ["lock", "root", "action"] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("actions");
+            let store = Store::open(&root).unwrap();
+            let plan = golden()["plan"].clone();
+            let id = plan["action_id"].as_str().unwrap().to_owned();
+            store.save_plan(&plan, NOW, &uid(1)).unwrap();
+            if phase == "claim" {
+                store
+                    .authorize(&id, "actor:test", "approved", NOW, &uid(2))
+                    .unwrap();
+            }
+            let connection = rusqlite::Connection::open(store.database().path()).unwrap();
+            let before: String = connection
+                .query_row(
+                    "SELECT payload FROM executions WHERE action_id=?",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            connection.execute_batch("BEGIN IMMEDIATE;").unwrap();
+            let worker = store.clone();
+            let action = id.clone();
+            let confirmation = format!("EXECUTE {id}");
+            let task = std::thread::spawn(move || {
+                if phase == "authorize" {
+                    worker
+                        .authorize(&action, "actor:test", "approved", NOW, &uid(3))
+                        .map(|_| ())
+                } else {
+                    worker
+                        .claim(
+                            &action,
+                            &confirmation,
+                            &policy(),
+                            &Default::default(),
+                            ClaimContext {
+                                now: NOW,
+                                transition_id: &uid(3),
+                                pid: 123,
+                            },
+                        )
+                        .map(|_| ())
+                }
+            });
+            let start = Instant::now();
+            loop {
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(root.join(".actions.lock"))
+                    .unwrap();
+                match file.try_lock_exclusive() {
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Ok(()) => drop(file),
+                    Err(error) => panic!("unexpected lock error: {error}"),
+                }
+                assert!(start.elapsed() < Duration::from_secs(5));
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            match replacement {
+                "lock" => {
+                    fs::rename(root.join(".actions.lock"), root.join("old-lock")).unwrap();
+                    fs::write(root.join(".actions.lock"), b"").unwrap();
+                }
+                "root" => {
+                    fs::rename(&root, temp.path().join("detached")).unwrap();
+                    fs::create_dir(&root).unwrap();
+                }
+                "action" => {
+                    fs::rename(root.join(&id), root.join("detached-action")).unwrap();
+                    fs::create_dir(root.join(&id)).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            connection.execute_batch("ROLLBACK;").unwrap();
+            assert!(
+                task.join().unwrap().is_err(),
+                "{phase}/{replacement} returned success"
+            );
+            let after: String = connection
+                .query_row(
+                    "SELECT payload FROM executions WHERE action_id=?",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                before, after,
+                "{phase}/{replacement} changed durable execution"
+            );
+            if replacement == "root" {
+                assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn fixed_command_and_activity_directories_never_adopt_a_replacement() {
+    for name in ["commands", "activity_errors"] {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path()).unwrap();
+        let plan = golden()["plan"].clone();
+        let id = plan["action_id"].as_str().unwrap();
+        store.save_plan(&plan, NOW, &uid(1)).unwrap();
+        if name == "commands" {
+            store
+                .write_command(
+                    id,
+                    CommandPhase::Authorize,
+                    &json!({"note":"original"}),
+                    &uid(2),
+                    NOW,
+                )
+                .unwrap();
+        } else {
+            store
+                .write_activity_error(id, "prepare", "original", "test", NOW)
+                .unwrap();
+        }
+        let path = store.directory(id).unwrap().join(name);
+        fs::rename(&path, temp.path().join("detached")).unwrap();
+        fs::create_dir(&path).unwrap();
+        if name == "commands" {
+            fs::write(
+                path.join("authorize.json"),
+                "{\"payload\":{\"note\":\"replacement\"}}",
+            )
+            .unwrap();
+            assert!(store.read_command(id, CommandPhase::Authorize).is_err());
+        } else {
+            fs::write(path.join("prepare.json"), "{\"message\":\"replacement\"}").unwrap();
+            assert!(store.activity_error(id, "prepare").is_err());
+        }
+    }
+}
+
+#[test]
+fn missing_action_lock_is_never_recreated_after_bootstrap_or_on_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    let plan = golden()["plan"].clone();
+    let id = plan["action_id"].as_str().unwrap();
+    store.save_plan(&plan, NOW, &uid(1)).unwrap();
+    store
+        .authorize(id, "actor:test", "approved", NOW, &uid(2))
+        .unwrap();
+    let lock = root.path().join(".actions.lock");
+    fs::remove_file(&lock).unwrap();
+    assert!(store.snapshot(id, NOW, &uid(3)).is_err());
+    assert!(store.save_plan(&plan, NOW, &uid(3)).is_err());
+    assert!(
+        store
+            .claim(
+                id,
+                &format!("EXECUTE {id}"),
+                &policy(),
+                &Default::default(),
+                ClaimContext {
+                    now: NOW,
+                    transition_id: &uid(3),
+                    pid: 123
+                }
+            )
+            .is_err()
+    );
+    assert!(Store::open(root.path()).is_err());
+    assert!(!lock.exists());
+}
+
+#[test]
+fn a_store_lifetime_pins_the_original_metadata_lock_inode() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    let plan = golden()["plan"].clone();
+    let id = plan["action_id"].as_str().unwrap();
+    store.save_plan(&plan, NOW, &uid(1)).unwrap();
+    fs::rename(
+        root.path().join(".actions.lock"),
+        root.path().join("old-lock"),
+    )
+    .unwrap();
+    fs::write(root.path().join(".actions.lock"), b"").unwrap();
+    assert!(store.snapshot(id, NOW, &uid(2)).is_err());
+    assert!(store.save_plan(&plan, NOW, &uid(2)).is_err());
+    assert!(
+        store
+            .authorize(id, "actor:test", "approved", NOW, &uid(2))
+            .is_err()
+    );
+    let payload: String = rusqlite::Connection::open(store.database().path())
+        .unwrap()
+        .query_row(
+            "SELECT payload FROM executions WHERE action_id=?",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&payload).unwrap()["status"],
+        "PREPARED"
+    );
 }
 
 #[test]
@@ -221,7 +441,10 @@ fn journal_deduplicates_and_commands_never_modify_immutable_plan() {
         ),
         Err(Error::CommandConflict)
     ));
-    assert_eq!(store.database().journal(id, 100).unwrap().len(), 2);
+    assert_eq!(
+        store.database().journal(&|| Ok(()), id, 100).unwrap().len(),
+        2
+    );
     assert_eq!(
         fs::read(store.directory(id).unwrap().join("plan.json")).unwrap(),
         original
@@ -249,7 +472,7 @@ fn journal_deduplicates_and_commands_never_modify_immutable_plan() {
             NOW,
         )
         .unwrap();
-    let journal = store.database().journal(id, 1).unwrap();
+    let journal = store.database().journal(&|| Ok(()), id, 1).unwrap();
     assert_eq!(journal.len(), 1);
     assert_eq!(journal[0]["payload"]["phase"], "STAGING");
     store
@@ -266,14 +489,72 @@ fn journal_deduplicates_and_commands_never_modify_immutable_plan() {
 }
 
 #[test]
+fn command_replays_follow_python_numeric_equality_without_rewriting_frozen_bytes() {
+    for (original, equivalent) in [
+        (json!({"value":1}), json!({"value":1.0})),
+        (
+            json!({"value":true,"nested":[false,{"x":1}]}),
+            json!({"nested":[0.0,{"x":true}],"value":1.0}),
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let plan = golden()["plan"].clone();
+        let id = plan["action_id"].as_str().unwrap();
+        store.save_plan(&plan, NOW, &uid(1)).unwrap();
+        let plan_path = store.directory(id).unwrap().join("plan.json");
+        let frozen_plan = fs::read(&plan_path).unwrap();
+        let first = store
+            .write_command(id, CommandPhase::Authorize, &original, "first-command", NOW)
+            .unwrap();
+        let command_path = store.directory(id).unwrap().join("commands/authorize.json");
+        let frozen_command = fs::read(&command_path).unwrap();
+        assert_eq!(
+            store
+                .write_command(
+                    id,
+                    CommandPhase::Authorize,
+                    &equivalent,
+                    "ignored-replay-id",
+                    "2026-10-27T00:01:00Z"
+                )
+                .unwrap(),
+            first,
+        );
+        assert_eq!(
+            store.read_command(id, CommandPhase::Authorize).unwrap(),
+            original
+        );
+        let mut different = equivalent;
+        different["value"] = json!(2);
+        assert!(matches!(
+            store.write_command(
+                id,
+                CommandPhase::Authorize,
+                &different,
+                "different-command",
+                NOW
+            ),
+            Err(Error::CommandConflict),
+        ));
+        assert_eq!(
+            store.database().journal(&|| Ok(()), id, 100).unwrap().len(),
+            2
+        );
+        assert_eq!(fs::read(&command_path).unwrap(), frozen_command);
+        assert_eq!(fs::read(&plan_path).unwrap(), frozen_plan);
+    }
+}
+
+#[test]
 fn marker_missing_database_legacy_state_and_schema_drift_fail_closed() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
     let id = "action-0123456789abcdef";
-    store.database().read(id).unwrap();
+    store.database().read(&|| Ok(()), id).unwrap();
     fs::remove_file(store.database().path()).unwrap();
     assert!(matches!(
-        store.database().read(id),
+        store.database().read(&|| Ok(()), id),
         Err(Error::MissingAuthoritative)
     ));
     assert!(!store.database().path().exists());
@@ -286,7 +567,7 @@ fn marker_missing_database_legacy_state_and_schema_drift_fail_closed() {
     )
     .unwrap();
     assert!(matches!(
-        store.database().read(id),
+        store.database().read(&|| Ok(()), id),
         Err(Error::LegacyMigration)
     ));
     let dbpath = store.database().path();
@@ -294,7 +575,7 @@ fn marker_missing_database_legacy_state_and_schema_drift_fail_closed() {
     connection.execute_batch("PRAGMA user_version=9;").unwrap();
     drop(connection);
     assert!(matches!(
-        store.database().read(id),
+        store.database().read(&|| Ok(()), id),
         Err(Error::UnsupportedSchema)
     ));
 }
@@ -304,7 +585,7 @@ fn revision_mismatch_and_corrupted_json_are_never_repaired_silently() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
     let id = "action-0123456789abcdef";
-    store.database().read(id).unwrap();
+    store.database().read(&|| Ok(()), id).unwrap();
     let connection = rusqlite::Connection::open(store.database().path()).unwrap();
     connection
         .execute(
@@ -314,7 +595,7 @@ fn revision_mismatch_and_corrupted_json_are_never_repaired_silently() {
         .unwrap();
     drop(connection);
     assert!(matches!(
-        store.database().read(id),
+        store.database().read(&|| Ok(()), id),
         Err(Error::InvalidRevision)
     ));
 }
@@ -324,6 +605,14 @@ fn reads_python_sqlite_rows_without_rewriting_plans_or_existing_payload_bytes() 
     let root = tempfile::tempdir().unwrap();
     let golden = golden();
     let id = golden["plan"]["action_id"].as_str().unwrap();
+    // The old Python service created its metadata flock before publishing
+    // plans/SQLite. Reconstruct that empty non-payload leaf with the fixture.
+    drop(
+        ml_exp_io::directory::Directory::open(root.path(), false)
+            .unwrap()
+            .open_lock(std::ffi::OsStr::new(".actions.lock"))
+            .unwrap(),
+    );
     fs::create_dir(root.path().join(id)).unwrap();
     let plan_bytes = serde_json::to_vec_pretty(&golden["plan"]).unwrap();
     fs::write(root.path().join(id).join("plan.json"), &plan_bytes).unwrap();
@@ -491,7 +780,12 @@ fn database_marker_and_json_symlinks_or_fifos_are_rejected_without_blocking() {
                 symlink(&target, &path).unwrap();
             }
             let start = Instant::now();
-            assert!(store.database().read("action-0123456789abcdef").is_err());
+            assert!(
+                store
+                    .database()
+                    .read(&|| Ok(()), "action-0123456789abcdef")
+                    .is_err()
+            );
             assert!(start.elapsed() < Duration::from_secs(2));
         }
     }

@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod credentials;
+pub mod observation;
 pub mod transport;
 
 pub use config::{ConnectionPlan, Settings, TokenSource, normalize_url};
@@ -26,4 +27,6 @@ pub enum Error {
     Http(u16),
     #[error("API response is too large or is not JSON")]
     Response,
+    #[error("{0}")]
+    Observation(&'static str),
 }

@@ -2,6 +2,8 @@
 //! Durable writes and bounded private reads never silently replace an immutable record.
 #[cfg(unix)]
 pub mod directory;
+#[cfg(unix)]
+pub mod process;
 
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};

@@ -1,15 +1,13 @@
 use crate::Execution;
+use ml_exp_io::process;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     fs::{self, File, Metadata, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
-    os::unix::{
-        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
-        process::{CommandExt, ExitStatusExt},
-    },
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
-    process::{Child, Command, ExitStatus, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::AtomicBool,
     time::{Duration, Instant},
 };
 
@@ -41,15 +39,21 @@ impl Log {
         Ok(())
     }
 
-    fn hash(&mut self) -> io::Result<String> {
+    fn hash(&mut self, captured_bytes: u64, captured_sha256: &str) -> io::Result<String> {
         let expected = self.file.metadata()?;
         self.verify_path(&expected)?;
+        // User code can open this path independently of the stdout/stderr pipe.
+        // Its filesystem writes are not a process-capture quota. Fail closed if
+        // the log no longer has the exact bounded size recorded by our pump.
+        if captured_bytes > LOG_LIMIT as u64 || expected.len() != captured_bytes {
+            return Err(io::Error::other("log differs from bounded capture length"));
+        }
         self.file.seek(SeekFrom::Start(0))?;
-        let mut remaining = expected.len();
+        let mut remaining = captured_bytes;
         let mut digest = Sha256::new();
         let mut buffer = [0; 64 * 1024];
-        // Bound the read to the retained FD's original size, even if a process
-        // outside this process group is still writing. A changed file is failed.
+        // Bound the read to the supervisor's capture count, never a length that
+        // user code supplied by changing the file. Later changes are also failed.
         while remaining > 0 {
             let count = remaining.min(buffer.len() as u64) as usize;
             let n = self.file.read(&mut buffer[..count])?;
@@ -69,112 +73,18 @@ impl Log {
         {
             return Err(io::Error::other("log changed while being hashed"));
         }
-        Ok(format!("{:x}", digest.finalize()))
+        let actual = format!("{:x}", digest.finalize());
+        if actual != captured_sha256 {
+            return Err(io::Error::other("log differs from captured pipe bytes"));
+        }
+        Ok(actual)
     }
 }
 
-/// Own the unreaped group leader until all process-group signals are finished.
-/// Child::try_wait would reap it and permit PID/PGID reuse before final cleanup.
-struct Group {
-    child: Child,
-    reaped: bool,
-}
-
-impl Group {
-    fn signal(&self, signal: i32) -> io::Result<()> {
-        if self.reaped {
-            return Err(io::Error::from_raw_os_error(libc::ECHILD));
-        }
-        let pid = i32::try_from(self.child.id())
-            .map_err(|_| io::Error::other("child PID exceeds native range"))?;
-        // SAFETY: process_group(0) made the child's PID its process-group ID.
-        // We do not reap this leader until after the last signal, so this ID
-        // cannot be reused by an unrelated process group during supervision.
-        if unsafe { libc::kill(-pid, signal) } == 0 {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::ESRCH) {
-            Ok(())
-        } else {
-            Err(error)
-        }
-    }
-
-    fn exited(&mut self) -> io::Result<bool> {
-        // SAFETY: an all-zero siginfo_t is valid writable C storage. waitid
-        // fills it when this exact child exits; WNOWAIT deliberately keeps the
-        // child unreaped. No Rust references alias this storage during the call.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        let result = unsafe {
-            libc::waitid(
-                libc::P_PID,
-                self.child.id() as libc::id_t,
-                &mut info,
-                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-            )
-        };
-        if result == -1 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ECHILD) {
-                // An embedding process must not reap children owned here. If it
-                // does, PID ownership is lost: never signal a possibly reused ID.
-                self.reaped = true;
-            }
-            if error.kind() == io::ErrorKind::Interrupted {
-                return Ok(false);
-            }
-            return Err(error);
-        }
-        // SAFETY: waitid succeeded and the si_pid field is defined for its
-        // child-status result, including zero for no available child exit.
-        Ok(unsafe { info.si_pid() } != 0)
-    }
-
-    fn finish(&mut self) -> io::Result<ExitStatus> {
-        self.signal(libc::SIGTERM)?;
-        let grace = Instant::now();
-        while !self.exited()? && grace.elapsed() < Duration::from_secs(2) {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        // A completed leader may have left descendants behind. Kill the entire
-        // group before reaping the leader, also when its own exit was successful.
-        self.signal(libc::SIGKILL)?;
-        match self.child.wait() {
-            Ok(status) => {
-                self.reaped = true;
-                Ok(status)
-            }
-            Err(error) => {
-                if error.raw_os_error() == Some(libc::ECHILD) {
-                    self.reaped = true;
-                }
-                Err(error)
-            }
-        }
-    }
-}
-
-impl Drop for Group {
-    fn drop(&mut self) {
-        if !self.reaped {
-            let _ = self.signal(libc::SIGKILL);
-            let _ = self.child.wait();
-        }
-    }
-}
-
-fn error_code(error: &io::Error) -> &'static str {
-    if error.raw_os_error() == Some(libc::ECHILD) {
-        return "CHILD_OWNERSHIP_LOST";
-    }
-    match error.kind() {
-        io::ErrorKind::NotFound => "NOT_FOUND",
-        io::ErrorKind::PermissionDenied => "PERMISSION_DENIED",
-        io::ErrorKind::InvalidInput => "INVALID_INPUT",
-        _ => "IO_ERROR",
-    }
-}
+// This bounds pipe capture and hashing, not user code's filesystem allocation.
+// A failed output limit is reported through the existing receipt error field;
+// a truncated or independently changed log cannot be a complete success.
+const LOG_LIMIT: usize = 8 * 1024 * 1024;
 
 pub(super) fn execute(
     workdir: &Path,
@@ -183,75 +93,64 @@ pub(super) fn execute(
     timeout: Duration,
     cancelled: &AtomicBool,
 ) -> io::Result<Execution> {
-    // Atomic private creation, not create-then-chmod. Existing output is refused.
     fs::DirBuilder::new().mode(0o700).create(output)?;
     let mut stdout = Log::create(output.join("stdout.log"))?;
     let mut stderr = Log::create(output.join("stderr.log"))?;
+    let environment = BTreeMap::from([(
+        "OUTPUT_DIR".into(),
+        output.canonicalize()?.display().to_string(),
+    )]);
+    let outcome = process::execute(process::Request {
+        argv,
+        cwd: workdir,
+        environment: process::Environment::Inherit(&environment),
+        stdin: process::Input::Null,
+        stdout: process::Capture::File {
+            file: &mut stdout.file,
+            limit: LOG_LIMIT,
+        },
+        stderr: process::Capture::File {
+            file: &mut stderr.file,
+            limit: LOG_LIMIT,
+        },
+        deadline: Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| io::Error::other("invalid native execution deadline"))?,
+        termination_grace: Duration::from_secs(2),
+        drain_grace: Duration::from_millis(250),
+        cancelled,
+    })?;
     let mut result = Execution {
         contract: "rust-local-execution-preview.v1",
-        exit_code: None,
-        termination_signal: None,
-        timed_out: false,
-        cancelled: cancelled.load(Ordering::Relaxed),
-        error: None,
+        exit_code: outcome.exit_code,
+        termination_signal: outcome.termination_signal,
+        timed_out: outcome.timed_out,
+        cancelled: outcome.cancelled,
+        error: outcome.failure.map(|failure| crate::Failure {
+            stage: failure.stage,
+            code: failure.code,
+        }),
         stdout_sha256: None,
         stderr_sha256: None,
     };
-    if !result.cancelled {
-        let mut command = Command::new(&argv[0]);
-        command
-            .args(&argv[1..])
-            .current_dir(workdir)
-            .env("OUTPUT_DIR", output.canonicalize()?)
-            .stdin(Stdio::null())
-            .stdout(stdout.file.try_clone()?)
-            .stderr(stderr.file.try_clone()?)
-            .process_group(0);
-        match command.spawn() {
-            Err(error) => result.fail("SPAWN", error_code(&error)),
-            Ok(child) => {
-                let mut group = Group {
-                    child,
-                    reaped: false,
-                };
-                let start = Instant::now();
-                loop {
-                    match group.exited() {
-                        Ok(true) => break,
-                        Err(error) => {
-                            result.fail("WAIT", error_code(&error));
-                            break;
-                        }
-                        Ok(false) => {}
-                    }
-                    if cancelled.load(Ordering::Relaxed) {
-                        result.cancelled = true;
-                        break;
-                    }
-                    if start.elapsed() >= timeout {
-                        result.timed_out = true;
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                match group.finish() {
-                    Ok(status) => {
-                        result.exit_code = status.code();
-                        result.termination_signal = status.signal();
-                    }
-                    Err(error) => result.fail("CLEANUP", error_code(&error)),
-                }
-                // Emergency cleanup precedes inspection/publication even if an
-                // earlier wait or cleanup operation returned an error.
-                drop(group);
-            }
-        }
+    if outcome.stdout.truncated || outcome.stderr.truncated {
+        result.fail("LOG_CAPTURE", "OUTPUT_LIMIT_EXCEEDED");
     }
-    for (log, field) in [
-        (&mut stdout, &mut result.stdout_sha256),
-        (&mut stderr, &mut result.stderr_sha256),
+    for (log, field, captured_bytes, captured_sha256) in [
+        (
+            &mut stdout,
+            &mut result.stdout_sha256,
+            outcome.stdout.retained_bytes,
+            outcome.stdout.prefix_sha256.as_str(),
+        ),
+        (
+            &mut stderr,
+            &mut result.stderr_sha256,
+            outcome.stderr.retained_bytes,
+            outcome.stderr.prefix_sha256.as_str(),
+        ),
     ] {
-        match log.hash() {
+        match log.hash(captured_bytes, captured_sha256) {
             Ok(hash) => *field = Some(hash),
             Err(_) => {
                 if result.error.is_none() {
@@ -264,31 +163,4 @@ pub(super) fn execute(
         }
     }
     Ok(result)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn externally_reaped_leader_disables_further_group_signals() {
-        let child = Command::new("sh")
-            .args(["-c", "exit 0"])
-            .process_group(0)
-            .spawn()
-            .unwrap();
-        let mut group = Group {
-            child,
-            reaped: false,
-        };
-        // Deliberately simulate an embedder stealing this library's wait status.
-        group.child.wait().unwrap();
-        let error = group.exited().unwrap_err();
-        assert_eq!(error_code(&error), "CHILD_OWNERSHIP_LOST");
-        assert!(group.reaped);
-        assert_eq!(
-            group.signal(libc::SIGKILL).unwrap_err().raw_os_error(),
-            Some(libc::ECHILD)
-        );
-    }
 }

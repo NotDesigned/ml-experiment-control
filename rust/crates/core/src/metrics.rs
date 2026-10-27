@@ -9,6 +9,7 @@ mod schema;
 pub use crate::canonical::protocol_identity;
 pub(crate) use observation::python_string;
 
+pub(crate) use observation::python_repr;
 pub use observation::{MetricValue, ObservationInput, finite, observations, observations_typed};
 pub use result::{metric_result, metric_result_typed, numeric_compare, numeric_equal};
 pub use schema::{MetricDefinition, MetricSchema, RequiredWhen};

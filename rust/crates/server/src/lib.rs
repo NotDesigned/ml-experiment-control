@@ -2,6 +2,8 @@
 pub mod deletion;
 pub mod index;
 pub mod operations;
+pub mod records;
+pub mod storage;
 use axum::{
     Json, Router,
     extract::{Request, State},

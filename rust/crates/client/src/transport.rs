@@ -16,6 +16,9 @@ pub struct Client {
 }
 
 impl Client {
+    pub fn base_url(&self) -> &str {
+        &self.base
+    }
     pub fn new(base: &str, token: String) -> Result<Self, Error> {
         let base = normalize_url(base)?;
         validate_token(&token)?;
