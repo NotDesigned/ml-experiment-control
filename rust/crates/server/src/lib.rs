@@ -10,6 +10,7 @@ pub mod read_config;
 mod read_http;
 pub mod read_model;
 pub mod records;
+pub mod sources;
 pub mod storage;
 use axum::{
     Json, Router,
@@ -98,6 +99,7 @@ fn health_document(
     workspace_id: &str,
     reads: bool,
     lifecycle: bool,
+    sources: Option<&sources::Service>,
 ) -> serde_json::Value {
     let mut capabilities = vec!["bearer-auth.v1", "deployment-readiness.v1"];
     if reads {
@@ -105,6 +107,9 @@ fn health_document(
     }
     if lifecycle {
         capabilities.push("project-lifecycle.v1");
+    }
+    if sources.is_some() {
+        capabilities.push("source-archive.v1");
     }
     json!({
         "status":"ok", "server_version":env!("CARGO_PKG_VERSION"),
@@ -114,7 +119,8 @@ fn health_document(
         "authentication":"bearer", "transport_security":"http", "projects":projects,
         "workspace_id":workspace_id, "local_reads_configured":reads, "collector_enabled":false,
         "collector_requested":false, "collector_error":null, "storage_maintenance_error":null,
-        "project_write_recovery_errors":[], "project_writes":false, "source_imports":false,
+        "project_write_recovery_errors":[], "project_writes":false, "source_imports":sources.is_some(),
+        "source_archive_limits":sources.map(sources::Service::limits),
         "scheduler_mutations":false, "local_evidence_rebuild":false, "telemetry_enabled":false,
         "deployment":{"api":"READY", "training":"INCOMPLETE", "migration":"IN_PROGRESS"}
     })
@@ -122,7 +128,14 @@ fn health_document(
 
 async fn health(State(state): State<Arc<AppState>>) -> Response {
     if state.reads.is_none() {
-        return Json(health_document(0, "rust-isolated-preview", false, false)).into_response();
+        return Json(health_document(
+            0,
+            "rust-isolated-preview",
+            false,
+            false,
+            None,
+        ))
+        .into_response();
     }
     read_http::execute(state, read_http::Access::Read, |api, _| {
         Ok(health_document(
@@ -130,6 +143,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
             api.workspace_id(),
             true,
             api.lifecycle().is_some(),
+            api.sources().as_deref(),
         ))
     })
     .await
@@ -273,6 +287,7 @@ pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
         .route("/api/v2/openapi.json", get(schema))
         .merge(read_http::routes())
         .merge(projects::http::routes())
+        .merge(sources::http::routes())
         .fallback(unavailable)
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
@@ -408,7 +423,7 @@ mod schema_tests {
             schema["components"]["parameters"]["protocol"]["schema"]["const"],
             2
         );
-        let health = super::health_document(1, "isolated", true, false);
+        let health = super::health_document(1, "isolated", true, false, None);
         assert!(
             health["capabilities"]
                 .as_array()
@@ -430,7 +445,7 @@ mod schema_tests {
                 .iter()
                 .any(|v| v == "project-lifecycle.v1")
         );
-        let lifecycle = super::health_document(1, "isolated", true, true);
+        let lifecycle = super::health_document(1, "isolated", true, true, None);
         assert!(
             lifecycle["capabilities"]
                 .as_array()

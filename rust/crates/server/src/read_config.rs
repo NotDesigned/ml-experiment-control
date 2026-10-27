@@ -25,6 +25,8 @@ pub struct Settings {
     pub schema_version: u32,
     pub registry_root: PathBuf,
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub source_policy: Option<ml_exp_core::sources::Policy>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -76,6 +78,13 @@ impl Settings {
         Ok(settings)
     }
     pub fn validate(&self) -> Result<(), Error> {
+        if self
+            .source_policy
+            .as_ref()
+            .is_some_and(|policy| policy.validate().is_err())
+        {
+            return Err(Error);
+        }
         if self.schema_version != 1 || !absolute(&self.registry_root) || self.projects.len() > 256 {
             return Err(Error);
         }

@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use ml_exp_client::{
-    Client, config, credentials, observation, presentation, projects, read, session, status, watch,
+    Client, config, credentials, observation, presentation, projects, read, session, sources,
+    status, watch,
 };
 use std::path::PathBuf;
 
@@ -37,11 +38,60 @@ enum Command {
         #[command(subcommand)]
         command: Project,
     },
+    /// Pack and publish immutable source, or inspect an exact source identity.
+    Source {
+        #[command(subcommand)]
+        command: Source,
+    },
     /// Save URL-bound private credentials, or show redacted settings.
     Config {
         #[command(subcommand)]
         command: Config,
     },
+}
+#[derive(Subcommand)]
+enum Source {
+    /// Pack local code without running it, then upload once to an approved Project.
+    Import {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        directory: PathBuf,
+    },
+    /// Read and verify one immutable source metadata record.
+    Show {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        source: String,
+    },
+    /// Reconcile a possibly lost publication response using its archive SHA.
+    Lookup {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        sha256: String,
+    },
+}
+impl Source {
+    fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let project = match self {
+            Self::Import { project, .. }
+            | Self::Show { project, .. }
+            | Self::Lookup { project, .. } => project,
+        };
+        ml_exp_core::identity::validate_id(project)?;
+        match self {
+            Self::Show { source, .. } => {
+                ml_exp_core::sources::validate_source_id(source)?;
+            }
+            Self::Lookup { sha256, .. } => {
+                ml_exp_core::sources::validate_archive_digest(sha256)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 #[derive(clap::Args)]
 struct ProjectTarget {
@@ -203,6 +253,9 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         Command::Project { command } => Some(command.plan()?),
         _ => None,
     };
+    if let Command::Source { command } = &args.command {
+        command.validate()?;
+    }
     let watch_duration = match &args.command {
         Command::Run {
             command:
@@ -276,6 +329,20 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         project_plan.as_ref().expect("validated project plan"),
                         &health,
                     )?)
+                }
+                Command::Source { command } => {
+                    let health = client.negotiate()?;
+                    Output::Json(match command {
+                        Source::Import { project, directory } => {
+                            sources::import_directory(&client, &project, &directory, &health)?
+                        }
+                        Source::Show { project, source } => {
+                            sources::read(&client, &project, &source, &health)?
+                        }
+                        Source::Lookup { project, sha256 } => {
+                            sources::lookup_archive(&client, &project, &sha256, &health)?
+                        }
+                    })
                 }
                 Command::Run { command } => {
                     let health = client.negotiate()?;

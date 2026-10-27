@@ -49,6 +49,9 @@ printf 'native exact log\n' > "$preview_root/project/runs/train/attempts/attempt
 cat > "$preview_root/project/runs/train/attempts/attempt-001/metrics.jsonl" <<'JSON'
 {"name":"loss","value":2.5,"unit":"nats/token","step":1,"protocol_id":"fixture-protocol"}
 JSON
+mkdir -p "$preview_root/source"
+printf 'print("synthetic source")\n' > "$preview_root/source/train.py"
+printf '{"seed":42}\n' > "$preview_root/source/config.json"
 cat > "$preview_root/reads.json" <<JSON
 {"schema_version":1,"registry_root":"$preview_root/registry","projects":[{"project":"demo","project_file":"$preview_root/project/project.json","run_roots":["$preview_root/project/runs"]}]}
 JSON
@@ -89,6 +92,33 @@ grep -q 'native exact log' "$preview_root/logs.txt"
 grep -q '2.5' "$preview_root/metrics.json"
 grep -q 'nats/token' "$preview_root/metrics.json"
 [[ ! -e "$preview_root/registry/tracking" ]]
+
+# Source archives are a separate explicit namespace and never execute source code.
+kill "$preview_pid"
+wait "$preview_pid"
+preview_pid=
+"$preview_bins/ml-expd-rs" --read-config "$preview_root/reads.json" --initialize-source-archives
+: > "$preview_root/server.log"
+"$preview_bins/ml-expd-rs" --bind 127.0.0.1:0 --token-file "$preview_root/token" --read-config "$preview_root/reads.json" --source-archives > "$preview_root/server.log" 2>&1 &
+preview_pid=$!
+for _ in {1..100}; do
+  if [[ -s "$preview_root/server.log" ]]; then break; fi
+  kill -0 "$preview_pid"
+  sleep .05
+done
+IFS= read -r preview_address < "$preview_root/server.log"
+[[ "$preview_address" == 127.0.0.1:* ]]
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" --url "http://$preview_address" config set --token-file "$preview_root/token" > "$preview_root/config.json"
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" check > "$preview_root/source-health.json"
+grep -q 'source-archive.v1' "$preview_root/source-health.json"
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" source import --project demo --directory "$preview_root/source" > "$preview_root/source-import.json"
+source_id="$(jq -r '.source_id' "$preview_root/source-import.json")"
+archive_sha="$(jq -r '.observation.sha256' "$preview_root/source-import.json")"
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" source show --project demo --source "$source_id" > "$preview_root/source-show.json"
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" source lookup --project demo --sha256 "$archive_sha" > "$preview_root/source-lookup.json"
+grep -q '"source_id"' "$preview_root/source-show.json"
+grep -q '"source_id"' "$preview_root/source-lookup.json"
+grep -q 'synthetic source' "$preview_root/source/train.py"
 
 # Metadata writes are an explicit separate mode; approved files are read only.
 sha256sum "$preview_root/project/project.json" "$preview_root/project/runs/train/manifest.yaml" > "$preview_root/research.before"

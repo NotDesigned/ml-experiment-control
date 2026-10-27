@@ -82,6 +82,30 @@ impl Client {
         self.decode(response)
     }
 
+    /// Consume one finite source archive; only a validated typed plan can pick
+    /// the endpoint. The caller retains the local SHA for explicit lookup.
+    pub(crate) fn upload_source(
+        &self,
+        plan: &crate::sources::ArchivePlan,
+        file: std::fs::File,
+    ) -> Result<serde_json::Value, Error> {
+        let endpoint = api_url(&self.base, plan.path())?;
+        let response = self
+            .http
+            .post(endpoint)
+            .bearer_auth(&self.token)
+            .header(
+                ml_exp_core::CLIENT_PROTOCOL_HEADER,
+                ml_exp_core::API_PROTOCOL_VERSION.to_string(),
+            )
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .timeout(Duration::from_secs(600))
+            .body(reqwest::blocking::Body::sized(file, plan.bytes()))
+            .send()
+            .map_err(|_| Error::Transport)?;
+        self.decode(response)
+    }
+
     fn decode(&self, response: reqwest::blocking::Response) -> Result<serde_json::Value, Error> {
         if !response.status().is_success() {
             let status = response.status().as_u16();

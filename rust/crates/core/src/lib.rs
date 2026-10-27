@@ -1,6 +1,7 @@
 //! Native shared contracts. No scheduler I/O, configuration loading or Python runtime.
 #![forbid(unsafe_code)]
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]
+pub mod artifacts;
 pub mod auth;
 pub mod canonical;
 pub mod diagnostic;
@@ -16,6 +17,7 @@ pub mod operations;
 pub mod projects;
 pub mod records;
 pub mod slurm;
+pub mod sources;
 pub mod state;
 pub mod tracking;
 

@@ -30,9 +30,12 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal
 subtle = "2"
 yaml-rust2 = "0.13"
 regex.workspace = true
+tar.workspace = true
+flate2.workspace = true
+http-body-util = "0.1"
+tempfile.workspace = true
 
 [dev-dependencies]
 ml-exp-client = { path = "../client" }
 ml-exp-worker = { path = "../worker" }
-tempfile.workspace = true
 tower = { version = "0.5", features = ["util"] }

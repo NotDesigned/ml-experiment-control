@@ -8,6 +8,7 @@ pub mod presentation;
 pub mod projects;
 pub mod read;
 pub mod session;
+pub mod sources;
 pub mod status;
 pub mod transport;
 pub mod watch;
@@ -39,6 +40,10 @@ pub enum Error {
         "project change outcome is not confirmed; query project list before retrying; no automatic replay was attempted: {0}"
     )]
     ProjectOutcomeUnknown(Box<Error>),
+    #[error(
+        "source publication outcome is not confirmed; use source lookup --project <project> --sha256 <archive-sha256> before retrying; no automatic replay was attempted: {0}"
+    )]
+    SourceOutcomeUnknown(Box<Error>),
     #[error("{0}")]
     Observation(&'static str),
 }

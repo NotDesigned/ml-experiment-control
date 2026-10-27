@@ -14,7 +14,10 @@ use std::{
     fmt::Write as FmtWrite,
     fs::File,
     io::{self, Read, Write},
-    os::unix::ffi::{OsStrExt, OsStringExt},
+    os::unix::{
+        ffi::{OsStrExt, OsStringExt},
+        fs::PermissionsExt,
+    },
     path::{Component, Path},
     sync::Arc,
 };
@@ -34,6 +37,14 @@ pub struct RegularIdentity {
     pub links: u64,
     pub mode: u32,
     pub owner: u32,
+}
+
+/// Advisory capacity of the filesystem containing this retained directory.
+/// Other processes can consume it; a successful check is never a reservation.
+#[derive(Clone, Copy, Debug)]
+pub struct Capacity {
+    pub available_bytes: u64,
+    pub available_inodes: u64,
 }
 
 pub fn effective_uid() -> u32 {
@@ -283,6 +294,144 @@ impl Directory {
         Ok(directory)
     }
 
+    /// Stream only into a newly allocated private regular file. This does not
+    /// publish immutable content; the caller owns the containing staging tree,
+    /// bounds writes, fsyncs and seals before any directory publication.
+    pub fn create_new_regular(&self, name: &OsStr) -> io::Result<File> {
+        leaf(name)?;
+        self.verify_private_parent()?;
+        let file = File::from(rfs::openat(
+            &self.inner.file,
+            name,
+            OFlags::RDWR
+                | OFlags::CREATE
+                | OFlags::EXCL
+                | OFlags::CLOEXEC
+                | OFlags::NOFOLLOW
+                | OFlags::NONBLOCK,
+            Mode::RUSR | Mode::WUSR,
+        )?);
+        self.validate_regular_entry(name, &file)?;
+        rfs::fsync(&self.inner.file)?;
+        Ok(file)
+    }
+
+    /// Seal a retained regular file without following its name. Only the two
+    /// source-file modes are supported; aliases and replaced bindings fail.
+    pub fn seal_regular(&self, name: &OsStr, file: &File, executable: bool) -> io::Result<()> {
+        self.verify_private_parent()?;
+        self.validate_regular_entry(name, file)?;
+        file.sync_all()?;
+        file.set_permissions(std::fs::Permissions::from_mode(if executable {
+            0o500
+        } else {
+            0o400
+        }))?;
+        file.sync_all()?;
+        self.validate_regular_entry(name, file)?;
+        self.verify_private_parent()
+    }
+
+    /// Change only this fixed directory's owner mode. Unsealing is for an
+    /// operation's own unpublished staging tree, never an existing source.
+    pub fn source_mode(&self, sealed: bool) -> io::Result<()> {
+        self.verify_private_parent()?;
+        self.inner
+            .file
+            .set_permissions(std::fs::Permissions::from_mode(if sealed {
+                0o500
+            } else {
+                0o700
+            }))?;
+        self.inner.file.sync_all()?;
+        self.verify_private_parent()
+    }
+
+    pub fn mode(&self) -> io::Result<u32> {
+        self.verify_attached()?;
+        let mode = self.inner.file.metadata()?.permissions().mode();
+        self.verify_attached()?;
+        Ok(mode)
+    }
+
+    /// Atomically publish this retained child under another retained parent.
+    /// Existing destinations are never replaced. Any error after rename can
+    /// mean publication happened; callers must not delete either destination.
+    pub fn publish_directory(&self, target: &Directory, name: &OsStr) -> io::Result<Directory> {
+        leaf(name)?;
+        self.verify_private_parent()?;
+        let parent = self
+            .inner
+            .parent
+            .as_ref()
+            .ok_or_else(|| invalid("cannot publish filesystem root"))?;
+        parent.verify_private_parent()?;
+        target.verify_private_parent()?;
+        rename_between_new(
+            &parent.inner.file,
+            &self.inner.name,
+            &target.inner.file,
+            name,
+        )?;
+        rfs::fsync(&parent.inner.file)?;
+        rfs::fsync(&target.inner.file)?;
+        let published = target.child(name, false)?;
+        let old = rfs::fstat(&self.inner.file)?;
+        if !same_file(&published.inner.file, &old)? {
+            return Err(invalid("published directory binding changed"));
+        }
+        published.verify_private_parent()?;
+        Ok(published)
+    }
+
+    /// Remove a known regular leaf only inside an operation-owned unpublished
+    /// staging tree, under the caller's domain lock. No symlink is followed.
+    /// This cannot prevent an administrator/same-UID adversary replacing a leaf
+    /// between checks; it is not an arbitrary-tree deletion primitive.
+    pub fn remove_staged_regular(&self, name: &OsStr, file: &File) -> io::Result<()> {
+        self.verify_private_parent()?;
+        self.validate_regular_entry(name, file)?;
+        rfs::unlinkat(&self.inner.file, name, AtFlags::empty())?;
+        rfs::fsync(&self.inner.file)?;
+        self.verify_private_parent()
+    }
+
+    /// Remove one retained empty child of this exact parent. The caller owns
+    /// the unpublished staging namespace; populated/published trees are refused.
+    pub fn remove_staged_empty_child(&self, child: &Directory) -> io::Result<()> {
+        self.verify_private_parent()?;
+        child.verify_private_parent()?;
+        let parent = child
+            .inner
+            .parent
+            .as_ref()
+            .ok_or_else(|| invalid("child parent is unavailable"))?;
+        if !same_file(&parent.inner.file, &rfs::fstat(&self.inner.file)?)? {
+            return Err(invalid("staging parent binding differs"));
+        }
+        if !child.entry_names_limited(1)?.is_empty() {
+            return Err(invalid("staging directory is not empty"));
+        }
+        rfs::unlinkat(&self.inner.file, &child.inner.name, AtFlags::REMOVEDIR)?;
+        rfs::fsync(&self.inner.file)?;
+        self.verify_private_parent()
+    }
+
+    pub fn capacity(&self) -> io::Result<Capacity> {
+        self.verify_attached()?;
+        let stat = rfs::fstatvfs(&self.inner.file)?;
+        let available_bytes = stat
+            .f_bavail
+            .checked_mul(stat.f_frsize)
+            .ok_or_else(|| invalid("filesystem capacity overflow"))?;
+        let result = Capacity {
+            available_bytes,
+            available_inodes: stat.f_favail,
+        };
+        self.verify_attached()?;
+        Ok(result)
+    }
+
     /// Any entry counts, including a directory, dangling symlink or FIFO. This
     /// is deliberately different from opening/validating a regular payload.
     pub fn entry_exists(&self, name: &OsStr) -> io::Result<bool> {
@@ -308,6 +457,17 @@ impl Directory {
             || !trusted_storage_owner(entry.st_uid, effective_uid())
         {
             return Err(invalid("regular entry binding or ownership became unsafe"));
+        }
+        Ok(())
+    }
+
+    /// Validate a regular file that is intended to be immutable metadata.
+    /// The owner-write bit is rejected as well as group/other writes; callers
+    /// should publish with `seal_regular` and re-check this binding on reads.
+    pub fn validate_immutable_regular_entry(&self, name: &OsStr, file: &File) -> io::Result<()> {
+        self.validate_regular_entry(name, file)?;
+        if file.metadata()?.permissions().mode() & 0o222 != 0 {
+            return Err(invalid("immutable metadata is writable"));
         }
         Ok(())
     }
@@ -541,8 +701,7 @@ impl Directory {
     target_os = "ios"
 ))]
 fn rename_new(directory: &File, from: &OsStr, to: &OsStr) -> io::Result<()> {
-    rfs::renameat_with(directory, from, directory, to, rfs::RenameFlags::NOREPLACE)
-        .map_err(Into::into)
+    rename_between_new(directory, from, directory, to)
 }
 #[cfg(not(any(
     target_os = "linux",
@@ -554,6 +713,45 @@ fn rename_new(_directory: &File, _from: &OsStr, _to: &OsStr) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "atomic no-replace publication is unavailable on this platform",
+    ))
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios"
+))]
+fn rename_between_new(
+    from_directory: &File,
+    from: &OsStr,
+    to_directory: &File,
+    to: &OsStr,
+) -> io::Result<()> {
+    rfs::renameat_with(
+        from_directory,
+        from,
+        to_directory,
+        to,
+        rfs::RenameFlags::NOREPLACE,
+    )
+    .map_err(Into::into)
+}
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios"
+)))]
+fn rename_between_new(
+    _from_directory: &File,
+    _from: &OsStr,
+    _to_directory: &File,
+    _to: &OsStr,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic no-replace directory publication is unavailable",
     ))
 }
 

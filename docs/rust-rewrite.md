@@ -18,15 +18,38 @@ Python, PyTorch, shell or any other code allowed by its image. The target is no
 Python runtime dependency for platform binaries and their own helpers, not a
 rewrite of users' training code.
 
+## Complexity-first migration policy
+
+The rewrite separates semantic risk from provider plumbing. Rust comes first for
+identities, provenance, durable state, CAS/reconciliation, bounded streaming,
+filesystem confinement, checkpoint/archive integrity and metric context. These
+decisions can silently corrupt experiments or replay a submission when they are
+wrong, so they are pure functions with explicit effect receipts.
+
+Simple orchestration may remain Python during this phase: Dockerfile/image-build
+wrappers, provider SDK calls, thin HTTP adapters, compatibility aliases and
+presentation code. An image builder may stay Python while native Rust validates
+its immutable digest, build receipt and retry decision. This avoids translating
+forwarding code merely to make the language uniform.
+
 ## What exists now
 
 | Component | Implemented foundation | Still missing |
 | --- | --- | --- |
-| Core | Frozen identities, Project schema/lifecycle and durable transitions, generic metrics/journal decisions, tracking plans, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
+| Core | Frozen identities, Project schema/lifecycle and durable transitions, metric/journal decisions, source/archive identity and retention decisions, tracking plans, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
 | Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O and deadline-bound single-frame pipe transport | Remaining transport primitives and durable domain protocols |
-| Client | URL-bound settings, bounded reads/watch, pure saved identity/status, human summaries and tracking-only `project` commands | Submit/upload/download/ACK, updates and full command coverage |
-| Server | Authenticated approved-file discovery/reads, optional durable Project lifecycle and isolated journals; SQLite stores/Run fences; explicit Slurm SSH transport | Collectors, complete experiment APIs, provider executors, ArtifactStore receipts/downloads, TLS and tracking transport |
+| Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands and deterministic source archive upload/lookup | General asset/data transfers, artifact downloads/ACK, updates and full command coverage |
+| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts and isolated journals; SQLite stores/Run fences; Slurm transport | Artifact/checkpoint result store, submission/provider executors, collectors, TLS and tracking transport |
 | Worker | Local process supervision, sealed local launch and scoped Slurm prepare/submit/inspect helper | Remote managed-launch transport, data/checkpoint/journal/artifact/build/copy/deletion protocols |
+
+The native source path is deliberately Project-scoped: a shared tree digest does
+not make one Project's metadata authoritative for another. Upload bodies are
+bounded and streamed through a temporary file; the durable source store removes
+the archive scratch file before publishing only the sealed tree and immutable
+metadata. The native artifact core keeps the Python compatibility shape: receipt
+file paths are internal names, while proof maps use `outputs/<path>`, and release
+timestamps are explicit RFC3339 values. The object-store and provider shells are
+still Python until their effect receipts have an equivalent native contract.
 
 Metrics now include schema/definition validation, typed and wide observations,
 explicit units, required/conditional metrics, context-sensitive conflicts and
@@ -144,6 +167,17 @@ own strict decoder. This is not complete PyYAML compatibility; unsupported legac
 syntax is refused rather than silently reinterpreted. Outward metadata passes
 redaction; known authentication-secret echoes make the response fail closed.
 Scientific metric names, units and values retain their meaning.
+
+Source archive publication is the first native transfer subchain. The client
+packs an approved local directory into bounded deterministic tar/gzip bytes and
+sends one request with a fixed archive SHA and length. The server receives only
+after an approved Project check, decodes with explicit archive/expanded/file
+limits, rejects links, devices, protected paths and duplicate entries, seals the
+tree, computes the same length-framed tree digest and publishes immutable
+`source.json` plus an archive-SHA receipt. A lost POST response is reconciled
+through a read-only receipt lookup; the client never automatically replays the
+upload. Git import, automatic Project creation and patch proposals remain
+Python/unported for now.
 
 The preview can now expose configured local reads over authenticated protocol-2
 HTTP: project listing, Run/current summary, Attempt listing, exact Attempt show,

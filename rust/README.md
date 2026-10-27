@@ -10,17 +10,27 @@ and [per-module inventory](compatibility/inventory.json) before porting a domain
 Do not translate Python files one by one or add a Rust launcher for Python
 platform programs. User training code may still be Python.
 
+## Migration order
+
+This branch uses a complexity-first boundary. Rust owns correctness-critical
+identities, durable CAS and journals, bounded archives, checkpoint provenance,
+receipts, filesystem confinement and uncertain-effect reconciliation. Simple
+orchestration may remain Python initially: Dockerfile and image-build wrappers,
+provider SDK adapters, thin HTTP routes, compatibility aliases and presentation
+code. A Python image builder is acceptable when its immutable image digest,
+receipt and retry decision are validated by a native contract before use.
+
 | Crate | Preview executable | Current scope |
 | --- | --- | --- |
-| `ml-exp-core` | Library | Pure frozen identities, Project/schema/lifecycle and durable transitions, metrics/journal/tracking decisions, observations, failure assessment and Slurm/helper protocols |
+| `ml-exp-core` | Library | Pure frozen identities, Project/schema/lifecycle and durable transitions, metric/journal decisions, source/archive receipt and retention decisions, observations, failure assessment and Slurm/helper protocols |
 | `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O and single-frame pipe transport |
-| `ml-exp-client` | `ml-exp-rs` | Private settings, bounded exact-identity reads/watch, human summaries and explicit tracking-only Project operations |
-| `ml-exp-server` | `ml-expd-rs` | Approved local experiment discovery/reads, optional durable Project lifecycle, isolated SQLite/Run fences and explicit Slurm SSH call |
+| `ml-exp-client` | `ml-exp-rs` | Private settings, bounded exact-identity reads/watch, Project operations and deterministic source archive upload/lookup |
+| `ml-exp-server` | `ml-expd-rs` | Approved discovery/reads, Project lifecycle, immutable source archive storage/receipts, isolated SQLite/Run fences and Slurm transport |
 | `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision, sealed local managed launch and scoped Slurm metadata helper |
 
 The experiment API observes explicitly approved isolated files. Project metadata
 registration/lifecycle is a separate opt-in mode; there is no submission API,
-cloud managed-worker transport, artifact/data transfer or W&B transport. Metrics and the
+cloud managed-worker transport, general artifact/data transfer or W&B transport. Source archive publication is now a bounded native subchain: the client packs regular files into deterministic tar/gzip, the server verifies the transport SHA, rejects links/protected paths, seals the tree, computes the length-framed tree identity and records an immutable archive receipt. Lost upload responses are reconciled by archive SHA; a missing receipt does not authorize replay. Git import and automatic Project creation remain unported. Metrics and the
 isolated canonical journal have native validation, aggregation, persistence and
 publication-cursor logic; there is no accepted cloud publisher. Slurm planners
 return data. The separate native helper can invoke `sbatch` only after explicit
@@ -28,6 +38,16 @@ isolated configuration/bootstrap; it is not wired to Actions or the HTTP server.
 The client can query configured local Run/Attempt status, logs and metrics using
 protocol 2. This does not make the preview server a complete experiment API.
 A successful `check` does not mean training is configured.
+
+Source archives are stored under a Project-scoped source namespace even when two
+Projects have the same tree digest. The transport handler streams the bounded
+request body into a temporary file instead of retaining the whole archive in
+memory; the durable store removes its archive scratch copy before publishing the
+sealed tree and read-only metadata. Artifact contracts are also native at the
+pure-core boundary: receipt paths are internal paths, while download proofs use
+the compatibility key `outputs/<path>`, and retention timestamps must be valid
+RFC3339 values. Object storage, direct downloads, ACKs and provider collection
+remain Python shell work until their I/O protocol is ported.
 
 ## Build and check
 

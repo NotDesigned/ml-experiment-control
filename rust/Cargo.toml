@@ -35,6 +35,8 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 fs2 = "0.4"
 rustix = { version = "1.1", features = ["fs", "process", "event"] }
 getrandom = "0.3"
+tar = "0.4.45"
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 
 [profile.dev]
 debug = 0

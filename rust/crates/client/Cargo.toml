@@ -19,6 +19,9 @@ thiserror.workspace = true
 time.workspace = true
 reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "rustls-tls"] }
 url = "2.5"
+tar.workspace = true
+flate2.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true

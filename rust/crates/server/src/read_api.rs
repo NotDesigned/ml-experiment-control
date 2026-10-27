@@ -157,7 +157,7 @@ pub struct Query {
 
 /// Strict query decoding preserves valid Unicode without lossy replacement.
 /// All invalid values return static errors rather than echoing request content.
-fn parameters(raw: Option<&str>) -> Result<Vec<(String, String)>, Error> {
+pub(crate) fn parameters(raw: Option<&str>) -> Result<Vec<(String, String)>, Error> {
     let raw = raw.unwrap_or("");
     if raw.len() > 64 * 1024 {
         return Err(error(
@@ -267,6 +267,7 @@ pub struct Api {
     discovery_projects: BTreeSet<String>,
     project_files: BTreeMap<String, PathBuf>,
     lifecycle: Option<Arc<crate::projects::Service>>,
+    sources: Option<Arc<crate::sources::Service>>,
 }
 impl Api {
     pub fn open(settings: read_config::Settings) -> Result<Self, read_config::Error> {
@@ -307,6 +308,7 @@ impl Api {
             discovery_projects,
             project_files,
             lifecycle: None,
+            sources: None,
         })
     }
     pub fn with_lifecycle(
@@ -325,6 +327,24 @@ impl Api {
     }
     pub fn lifecycle(&self) -> Option<Arc<crate::projects::Service>> {
         self.lifecycle.clone()
+    }
+    pub fn with_sources(
+        mut self,
+        service: Arc<crate::sources::Service>,
+    ) -> Result<Self, read_config::Error> {
+        if !service.matches_configuration(
+            &self.registry_root,
+            &self.project_files,
+            &self.workspace_id,
+            self.lifecycle.as_ref(),
+        ) {
+            return Err(read_config::Error);
+        }
+        self.sources = Some(service);
+        Ok(self)
+    }
+    pub fn sources(&self) -> Option<Arc<crate::sources::Service>> {
+        self.sources.clone()
     }
     pub fn active_project_count(&self) -> Result<usize, Error> {
         self.validate_registry()?;

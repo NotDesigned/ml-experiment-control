@@ -63,6 +63,14 @@ pub(crate) async fn execute(
 ) -> Response {
     execute_with_timeout(state, access, Duration::from_secs(30), read).await
 }
+pub(crate) async fn execute_timeout(
+    state: Arc<AppState>,
+    access: Access,
+    timeout: Duration,
+    read: impl FnOnce(&read_api::Api, f64) -> Result<Value, read_api::Error> + Send + 'static,
+) -> Response {
+    execute_with_timeout(state, access, timeout, read).await
+}
 async fn execute_with_timeout(
     state: Arc<AppState>,
     access: Access,
