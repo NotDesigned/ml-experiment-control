@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use ml_exp_client::{
-    Client, config, credentials, observation, presentation, read, session, status, watch,
+    Client, config, credentials, observation, presentation, projects, read, session, status, watch,
 };
 use std::path::PathBuf;
 
@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[command(
     name = "ml-exp-rs",
     version,
-    about = "Rust rewrite preview: private settings and exact read-only observations"
+    about = "Rust rewrite preview: private settings, exact observations and project lifecycle"
 )]
 struct Args {
     #[arg(long, global = true, env = "ML_EXPD_API_URL")]
@@ -32,12 +32,92 @@ enum Command {
         #[command(subcommand)]
         command: Run,
     },
+    /// Register and manage daemon tracking; research files and jobs are unchanged.
+    Project {
+        #[command(subcommand)]
+        command: Project,
+    },
     /// Save URL-bound private credentials, or show redacted settings.
     Config {
         #[command(subcommand)]
         command: Config,
     },
 }
+#[derive(clap::Args)]
+struct ProjectTarget {
+    project: String,
+    #[arg(long, default_value = "")]
+    reason: String,
+    /// Compare-and-swap against a revision returned by project list.
+    #[arg(long)]
+    expected_revision: Option<u64>,
+}
+#[derive(Subcommand)]
+enum Project {
+    /// List registered projects and lifecycle audit events.
+    List,
+    /// Register an approved manifest already on the daemon host; uploads no file.
+    Register {
+        /// Absolute daemon-host path, not a path on this client.
+        manifest_path: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
+    /// Pause daemon tracking without stopping training jobs.
+    Pause(ProjectTarget),
+    /// Resume a paused project.
+    Resume(ProjectTarget),
+    /// Archive daemon tracking; requires a nonempty --reason.
+    Archive(ProjectTarget),
+    /// Restore an archived project to paused.
+    Restore(ProjectTarget),
+    /// Remove one registration; research files and jobs are unchanged.
+    Unregister(ProjectTarget),
+    /// Remove all registrations; research files and jobs are unchanged.
+    UnregisterAll {
+        #[arg(long, default_value = "")]
+        reason: String,
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
+}
+impl Project {
+    fn plan(&self) -> Result<projects::Plan, ml_exp_client::Error> {
+        let (target, action) = match self {
+            Self::List => return projects::plan(projects::Command::List),
+            Self::Register {
+                manifest_path,
+                expected_revision,
+            } => {
+                return projects::plan(projects::Command::Register {
+                    manifest_path,
+                    expected_revision: *expected_revision,
+                });
+            }
+            Self::UnregisterAll {
+                reason,
+                expected_revision,
+            } => {
+                return projects::plan(projects::Command::UnregisterAll {
+                    reason,
+                    expected_revision: *expected_revision,
+                });
+            }
+            Self::Pause(t) => (t, projects::Action::Pause),
+            Self::Resume(t) => (t, projects::Action::Resume),
+            Self::Archive(t) => (t, projects::Action::Archive),
+            Self::Restore(t) => (t, projects::Action::Restore),
+            Self::Unregister(t) => (t, projects::Action::Unregister),
+        };
+        projects::plan(projects::Command::Change {
+            project: &target.project,
+            action,
+            reason: &target.reason,
+            expected_revision: target.expected_revision,
+        })
+    }
+}
+
 #[derive(Subcommand)]
 enum Config {
     Set {
@@ -118,6 +198,11 @@ enum Output {
     Text(String),
 }
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    // Business parameter validation precedes config or credential file loading.
+    let project_plan = match &args.command {
+        Command::Project { command } => Some(command.plan()?),
+        _ => None,
+    };
     let watch_duration = match &args.command {
         Command::Run {
             command:
@@ -184,6 +269,14 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             match command {
                 Command::Check => Output::Json(client.negotiate()?),
                 Command::Get { path } => Output::Json(client.get(&path)?),
+                Command::Project { .. } => {
+                    let health = client.negotiate()?;
+                    Output::Json(projects::execute(
+                        &client,
+                        project_plan.as_ref().expect("validated project plan"),
+                        &health,
+                    )?)
+                }
                 Command::Run { command } => {
                     let health = client.negotiate()?;
                     match command {

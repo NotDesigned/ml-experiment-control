@@ -406,6 +406,62 @@ fn set_current(root: &Path, attempt: &str) {
 }
 
 #[test]
+fn metadata_snapshots_keep_current_identity_but_never_open_current_payload_tails() {
+    let f = fixture();
+    set_current(f.root.path(), "attempt-001");
+    let path = run_path(f.root.path()).join("attempts/attempt-001");
+    symlink("/never-open-status-list-payload", path.join("stdout.log")).unwrap();
+    symlink(
+        "/never-open-status-list-payload",
+        path.join("train_metrics.jsonl"),
+    )
+    .unwrap();
+    let snapshot = f.store.snapshot_metadata(&f.reference).unwrap();
+    assert_eq!(snapshot.current_attempt_id.as_deref(), Some("attempt-001"));
+    let attempt = &snapshot.attempts[0];
+    assert_eq!(attempt.attempt_id, "attempt-001");
+    assert!(attempt.stdout.source.is_none());
+    assert!(attempt.stderr.source.is_none());
+    assert!(attempt.metrics.source.is_none());
+    assert!(
+        attempt
+            .stdout
+            .diagnostics
+            .iter()
+            .any(|d| d.code == EvidenceProblem::NotLoaded)
+    );
+    assert!(
+        attempt
+            .stderr
+            .diagnostics
+            .iter()
+            .any(|d| d.code == EvidenceProblem::NotLoaded)
+    );
+    assert!(
+        attempt
+            .metrics
+            .diagnostics
+            .iter()
+            .any(|d| d.code == EvidenceProblem::NotLoaded)
+    );
+    let full = f.store.snapshot(&f.reference).unwrap();
+    assert!(
+        full.attempts[0]
+            .stdout
+            .diagnostics
+            .iter()
+            .any(|d| d.code == EvidenceProblem::Io)
+    );
+    assert!(
+        full.attempts[0]
+            .metrics
+            .diagnostics
+            .iter()
+            .any(|d| d.code == EvidenceProblem::Io)
+    );
+}
+
+#[test]
 fn snapshots_read_exact_current_evidence_and_only_one_attempt_payload() {
     let f = fixture();
     let path = run_path(f.root.path());

@@ -8,8 +8,13 @@ use crate::{
 };
 use ml_exp_core::identity::{validate_attempt, validate_id, validate_observation_id};
 use ml_exp_io::directory::Directory;
-use serde_json::{Value, json};
-use std::{collections::BTreeMap, ffi::OsStr, path::PathBuf};
+use serde_json::Value;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsStr,
+    path::PathBuf,
+    sync::Arc,
+};
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("{code}")]
@@ -23,6 +28,68 @@ fn error(status: u16, code: &'static str, detail: &'static str) -> Error {
         status,
         code,
         detail,
+    }
+}
+impl From<crate::projects::Error> for Error {
+    fn from(value: crate::projects::Error) -> Self {
+        use crate::projects::Error as E;
+        match value {
+            E::Busy => error(
+                503,
+                "PROJECT_REGISTRY_BUSY",
+                "project registry is busy; no operation was dispatched",
+            ),
+            E::EffectUncertain => error(
+                500,
+                "PROJECT_OPERATION_UNCERTAIN",
+                "project state may have changed; query the lifecycle ledger before retry",
+            ),
+            E::Binding => error(
+                409,
+                "PROJECT_SOURCE_BINDING_MISMATCH",
+                "registered Project identity differs from approved source configuration",
+            ),
+            E::UnsupportedDefinition => error(
+                422,
+                "PROJECT_DEFINITION_UNSUPPORTED",
+                "native registration requires empty campaigns; Campaign loading is unavailable",
+            ),
+            E::Transition(ml_exp_core::projects::Error::UnknownProject) => {
+                error(404, "UNKNOWN_PROJECT", "registered Project is unavailable")
+            }
+            _ => error(
+                409,
+                "PROJECT_LIFECYCLE_BLOCKED",
+                "project lifecycle or its durable evidence cannot be validated",
+            ),
+        }
+    }
+}
+impl From<experiments::DiscoveryError> for Error {
+    fn from(value: experiments::DiscoveryError) -> Self {
+        use experiments::DiscoveryError as E;
+        match value {
+            E::Budget => error(
+                413,
+                "EXPERIMENT_DISCOVERY_LIMIT",
+                "canonical Run discovery exceeds its traversal or metadata budget",
+            ),
+            E::UnknownProject => error(
+                404,
+                "EXPERIMENT_NOT_FOUND",
+                "the Project is not configured for discovery",
+            ),
+            E::DuplicateRun | E::OverlappingRoots => error(
+                409,
+                "EXPERIMENT_DISCOVERY_AMBIGUOUS",
+                "approved roots do not establish unique canonical Runs",
+            ),
+            _ => error(
+                409,
+                "EXPERIMENT_DISCOVERY_UNAVAILABLE",
+                "canonical Run discovery encountered changed, unsafe or unavailable evidence",
+            ),
+        }
     }
 }
 impl From<experiments::Error> for Error {
@@ -197,6 +264,9 @@ pub struct Api {
     workspace_id: String,
     runs: BTreeMap<(String, String), RunRef>,
     projects: Vec<String>,
+    discovery_projects: BTreeSet<String>,
+    project_files: BTreeMap<String, PathBuf>,
+    lifecycle: Option<Arc<crate::projects::Service>>,
 }
 impl Api {
     pub fn open(settings: read_config::Settings) -> Result<Self, read_config::Error> {
@@ -215,6 +285,17 @@ impl Api {
             .iter()
             .map(|p| p.project.clone())
             .collect();
+        let discovery_projects = settings
+            .projects
+            .iter()
+            .filter(|project| project.discovery_enabled())
+            .map(|project| project.project.clone())
+            .collect();
+        let project_files = settings
+            .projects
+            .iter()
+            .map(|project| (project.project.clone(), project.project_file.clone()))
+            .collect();
         Ok(Self {
             store,
             registry_root: settings.registry_root,
@@ -223,7 +304,47 @@ impl Api {
             workspace_id,
             runs,
             projects,
+            discovery_projects,
+            project_files,
+            lifecycle: None,
         })
+    }
+    pub fn with_lifecycle(
+        mut self,
+        service: Arc<crate::projects::Service>,
+    ) -> Result<Self, read_config::Error> {
+        if !service.matches_configuration(
+            &self.registry_root,
+            &self.project_files,
+            &self.workspace_id,
+        ) {
+            return Err(read_config::Error);
+        }
+        self.lifecycle = Some(service);
+        Ok(self)
+    }
+    pub fn lifecycle(&self) -> Option<Arc<crate::projects::Service>> {
+        self.lifecycle.clone()
+    }
+    pub fn active_project_count(&self) -> Result<usize, Error> {
+        self.validate_registry()?;
+        match &self.lifecycle {
+            Some(service) => Ok(service.active_projects()?.len()),
+            None => Ok(self.projects.len()),
+        }
+    }
+    fn ensure_active(&self, project: &str) -> Result<(), Error> {
+        if let Some(service) = &self.lifecycle {
+            let active = service.active_projects()?;
+            if !active.contains(project) {
+                return Err(error(
+                    404,
+                    "PROJECT_INACTIVE",
+                    "Project is not actively tracked in this workspace",
+                ));
+            }
+        }
+        Ok(())
     }
     pub fn workspace_id(&self) -> &str {
         &self.workspace_id
@@ -255,28 +376,92 @@ impl Api {
         }
         Ok(())
     }
-    pub fn projects(&self) -> Result<Value, Error> {
+    pub fn projects(&self, now_unix: f64) -> Result<Value, Error> {
         self.validate_registry()?;
+        let visible = match &self.lifecycle {
+            Some(service) => Some(service.active_projects()?),
+            None => None,
+        };
         let mut values = Vec::new();
+        let mut value_bytes = 2;
         for project in &self.projects {
+            if visible
+                .as_ref()
+                .is_some_and(|visible| !visible.contains(project))
+            {
+                continue;
+            }
             let document = self.store.project(project, None)?;
             let title = document
                 .metadata
                 .get("title")
                 .and_then(Value::as_str)
                 .unwrap_or(project);
-            if title.chars().count() > 2000 {
-                return Err(error(
-                    409,
-                    "PROJECT_METADATA_INVALID",
-                    "project title exceeds the read metadata limit",
-                ));
+            let discovery = if self.discovery_projects.contains(project) {
+                Some(
+                    self.store
+                        .discover(project, &experiments::DiscoveryLimits::default())?,
+                )
+            } else {
+                None
+            };
+            let references: Vec<_> = match &discovery {
+                Some(found) => found.runs.iter().map(|run| &run.reference).collect(),
+                None => self
+                    .runs
+                    .values()
+                    .filter(|run| &run.project == project)
+                    .collect(),
+            };
+            let mut rows = Vec::new();
+            let mut row_bytes = 2;
+            for reference in references {
+                let snapshot = self.store.snapshot_metadata(reference)?;
+                if discovery.as_ref().is_some_and(|found| {
+                    found
+                        .runs
+                        .iter()
+                        .find(|run| run.reference.run_id == reference.run_id)
+                        .is_none_or(|run| run.raw_sha256 != snapshot.run.raw_sha256)
+                }) {
+                    return Err(error(
+                        409,
+                        "EXPERIMENT_DISCOVERY_CHANGED",
+                        "Run bindings changed during project aggregation",
+                    ));
+                }
+                let row = read_model::run_summary(&snapshot, now_unix)?;
+                row_bytes = read_model::array_size(row_bytes, &row)?;
+                rows.push(row);
             }
-            let count = self.runs.keys().filter(|(name, _)| name == project).count();
-            values.push(json!({"project":project,"title":title,"runs":count}));
+            let value = read_model::project_summary(project, title, &rows)?;
+            value_bytes = read_model::array_size(value_bytes, &value)?;
+            values.push(value);
+            self.store.project(project, Some(&document.raw_sha256))?;
+            if let Some(before) = discovery {
+                let after = self
+                    .store
+                    .discover(project, &experiments::DiscoveryLimits::default())?;
+                if !before.same_bindings(&after) {
+                    return Err(error(
+                        409,
+                        "EXPERIMENT_DISCOVERY_CHANGED",
+                        "canonical Run bindings changed during project aggregation",
+                    ));
+                }
+            }
         }
         self.validate_registry()?;
-        Ok(experiment_redact::redact_json(json!({"projects":values})))
+        if let Some(service) = &self.lifecycle {
+            if Some(service.active_projects()?) != visible {
+                return Err(error(
+                    409,
+                    "PROJECT_LIFECYCLE_CHANGED",
+                    "active Project tracking changed during observation",
+                ));
+            }
+        }
+        Ok(Value::Array(values))
     }
     fn live_metrics(
         &self,
@@ -393,16 +578,9 @@ impl Api {
             ));
         }
         self.validate_registry()?;
-        let reference = self
-            .runs
-            .get(&(query.project.clone(), query.run.clone()))
-            .ok_or_else(|| {
-                error(
-                    404,
-                    "EXPERIMENT_NOT_FOUND",
-                    "the Run is not configured in this preview",
-                )
-            })?;
+        self.ensure_active(&query.project)?;
+        // Acquire the existing deletion guard before looking for physical
+        // manifests, so a removed-but-tombstoned Run cannot appear unsubmitted.
         let guard = self
             .fence
             .existing_observation_guard(&query.project, &query.run)
@@ -413,6 +591,28 @@ impl Api {
                     "Run is unavailable or deleted",
                 )
             })?;
+        let discovery = if self.discovery_projects.contains(&query.project) {
+            Some(
+                self.store
+                    .discover(&query.project, &experiments::DiscoveryLimits::default())?,
+            )
+        } else {
+            None
+        };
+        let located = discovery
+            .as_ref()
+            .and_then(|d| d.runs.iter().find(|r| r.reference.run_id == query.run));
+        let reference = match &discovery {
+            Some(_) => located.map(|r| &r.reference),
+            None => self.runs.get(&(query.project.clone(), query.run.clone())),
+        }
+        .ok_or_else(|| {
+            error(
+                404,
+                "EXPERIMENT_NOT_FOUND",
+                "the exact Run is unavailable in approved storage",
+            )
+        })?;
         let snapshot: Snapshot = match &query.view {
             View::Run | View::Attempts => self.store.snapshot(reference)?,
             View::Show { attempt }
@@ -420,6 +620,13 @@ impl Api {
             | View::Metrics { attempt, .. }
             | View::Collection { attempt } => self.store.snapshot_attempt(reference, attempt)?,
         };
+        if located.is_some_and(|run| run.raw_sha256 != snapshot.run.raw_sha256) {
+            return Err(error(
+                409,
+                "EXPERIMENT_DISCOVERY_CHANGED",
+                "Run manifest changed between discovery and observation",
+            ));
+        }
         let value = match query.view {
             View::Run => {
                 let attempt = snapshot.current_attempt_id.as_deref();
@@ -464,6 +671,19 @@ impl Api {
                     "Run was deleted or changed during observation",
                 )
             })?;
+        if let Some(before) = discovery {
+            let after = self
+                .store
+                .discover(&query.project, &experiments::DiscoveryLimits::default())?;
+            if !before.same_bindings(&after) {
+                return Err(error(
+                    409,
+                    "EXPERIMENT_DISCOVERY_CHANGED",
+                    "canonical Run bindings changed during observation",
+                ));
+            }
+        }
+        self.ensure_active(&query.project)?;
         self.validate_registry()?;
         Ok(value)
     }
@@ -567,6 +787,7 @@ pub fn journal_binding_matches(snapshot: &Snapshot, binding: Option<&Value>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     #[test]
     fn query_decoding_preserves_unicode_and_rejects_ambiguous_or_lossy_inputs() {
         let q = metric_query(Some(

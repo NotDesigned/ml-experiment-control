@@ -33,7 +33,7 @@ if "$preview_bins/ml-expd-rs" --initialize-registry "$preview_root/registry" > "
 fi
 mkdir -p "$preview_root/project/runs/train/attempts/attempt-001"
 cat > "$preview_root/project/project.json" <<'JSON'
-{"schema_version":1,"project":"demo","title":"Native smoke fixture"}
+{"schema_version":1,"project":"demo","title":"Native smoke fixture","run_roots":["runs"]}
 JSON
 cat > "$preview_root/project/runs/train/manifest.yaml" <<'JSON'
 {"schema_version":1,"identity_version":2,"project":"demo","run_id":"train","source_id":"source.fixture","image_id":"sha256:fixture","config_path":"config.json","seed":42,"campaign":"fixture","evaluation":{"protocol_id":"fixture-protocol"},"parameters":{},"resources":{"gpus":0},"container":{"runtime_id":"runtime.fixture"},"backend":{"kind":"slurm"},"inputs":[]}
@@ -50,7 +50,7 @@ cat > "$preview_root/project/runs/train/attempts/attempt-001/metrics.jsonl" <<'J
 {"name":"loss","value":2.5,"unit":"nats/token","step":1,"protocol_id":"fixture-protocol"}
 JSON
 cat > "$preview_root/reads.json" <<JSON
-{"schema_version":1,"registry_root":"$preview_root/registry","projects":[{"project":"demo","project_file":"$preview_root/project/project.json","run_roots":["$preview_root/project/runs"],"runs":[{"run_id":"train","root_index":0,"relative_components":["train"]}]}]}
+{"schema_version":1,"registry_root":"$preview_root/registry","projects":[{"project":"demo","project_file":"$preview_root/project/project.json","run_roots":["$preview_root/project/runs"]}]}
 JSON
 
 # port 0 is assigned by the OS, avoiding collisions with another checkout.
@@ -90,6 +90,49 @@ grep -q '2.5' "$preview_root/metrics.json"
 grep -q 'nats/token' "$preview_root/metrics.json"
 [[ ! -e "$preview_root/registry/tracking" ]]
 
+# Metadata writes are an explicit separate mode; approved files are read only.
+sha256sum "$preview_root/project/project.json" "$preview_root/project/runs/train/manifest.yaml" > "$preview_root/research.before"
+if "$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project list > "$preview_root/disabled.log" 2>&1; then
+  echo 'unconfigured project lifecycle unexpectedly available' >&2; exit 1
+fi
+kill "$preview_pid"
+wait "$preview_pid"
+preview_pid=
+"$preview_bins/ml-expd-rs" --read-config "$preview_root/reads.json" --initialize-project-lifecycle
+start_lifecycle() {
+  # Truncate synchronously: background redirection may run after the first poll.
+  : > "$preview_root/server.log"
+  "$preview_bins/ml-expd-rs" --bind 127.0.0.1:0 --token-file "$preview_root/token" --read-config "$preview_root/reads.json" --project-lifecycle > "$preview_root/server.log" 2>&1 &
+  preview_pid=$!
+  for _ in {1..100}; do
+    if [[ -s "$preview_root/server.log" ]]; then break; fi
+    kill -0 "$preview_pid"
+    sleep .05
+  done
+  IFS= read -r preview_address < "$preview_root/server.log"
+  [[ "$preview_address" == 127.0.0.1:* ]]
+  "$preview_bins/ml-exp-rs" --config "$preview_root/client.json" --url "http://$preview_address" config set --token-file "$preview_root/token" > "$preview_root/config.json"
+}
+start_lifecycle
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project pause demo --expected-revision 1 > "$preview_root/paused.json"
+grep -q '"state": "PAUSED"' "$preview_root/paused.json"
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project resume demo --expected-revision 2 > "$preview_root/resumed.json"
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project archive demo --reason completed --expected-revision 3 > "$preview_root/archived.json"
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project restore demo --expected-revision 4 > "$preview_root/restored.json"
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project unregister demo --expected-revision 5 > "$preview_root/unregistered.json"
+kill "$preview_pid"
+wait "$preview_pid"
+preview_pid=
+start_lifecycle
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project list > "$preview_root/empty-ledger.json"
+grep -q '"projects": \[\]' "$preview_root/empty-ledger.json"
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" get /api/projects > "$preview_root/empty-projects.json"
+[[ "$(cat "$preview_root/empty-projects.json")" == '[]' ]]
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project register "$preview_root/project/project.json" --expected-revision 6 > "$preview_root/registered.json"
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" run status --project demo --run train --json > "$preview_root/registered-status.json"
+sha256sum "$preview_root/project/project.json" "$preview_root/project/runs/train/manifest.yaml" > "$preview_root/research.after"
+cmp "$preview_root/research.before" "$preview_root/research.after"
+
 # A payload command can use any language; the platform here is three Rust binaries.
 "$preview_bins/ml-exp-worker-rs" --workdir "$preview_root" --output "$preview_root/success" --timeout-seconds 5 -- sh -c 'printf result > "$OUTPUT_DIR/result.txt"; printf native-worker' > "$preview_root/worker.json"
 [[ "$(cat "$preview_root/success/result.txt")" == result ]]
@@ -103,4 +146,4 @@ if "$preview_bins/ml-exp-worker-rs" --workdir "$preview_root" --output "$preview
 fi
 grep -q '"timed_out":true' "$preview_root/timeout.json"
 
-echo 'PASS: native server/client exact reads, isolated registry, private config, no unsupported mutation or Python subprocess, worker success/failure/timeout'
+echo 'PASS: native discovery/reads, explicit project lifecycle and restart, unchanged research files, no unsupported mutation or Python subprocess, worker success/failure/timeout'

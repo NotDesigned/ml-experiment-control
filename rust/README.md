@@ -12,15 +12,15 @@ platform programs. User training code may still be Python.
 
 | Crate | Preview executable | Current scope |
 | --- | --- | --- |
-| `ml-exp-core` | Library | Pure frozen identities, metrics/journal/tracking decisions, reducers, observations, failure assessment and Slurm/helper protocols |
+| `ml-exp-core` | Library | Pure frozen identities, Project/schema/lifecycle and durable transitions, metrics/journal/tracking decisions, observations, failure assessment and Slurm/helper protocols |
 | `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O and single-frame pipe transport |
-| `ml-exp-client` | `ml-exp-rs` | Private settings, bounded JSON GET and exact-identity status/logs/metrics, bounded watch and pure human summaries |
-| `ml-exp-server` | `ml-expd-rs` | Configured local read-only experiment HTTP API, isolated SQLite/Run fences and explicit Slurm SSH call |
-| `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision and scoped Slurm metadata helper |
+| `ml-exp-client` | `ml-exp-rs` | Private settings, bounded exact-identity reads/watch, human summaries and explicit tracking-only Project operations |
+| `ml-exp-server` | `ml-expd-rs` | Approved local experiment discovery/reads, optional durable Project lifecycle, isolated SQLite/Run fences and explicit Slurm SSH call |
+| `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision, sealed local managed launch and scoped Slurm metadata helper |
 
-The experiment API is a read-only subset for explicitly configured isolated
-files. There is no registration/submission API, managed-worker protocol,
-artifact/data transfer or W&B transport. Metrics and the
+The experiment API observes explicitly approved isolated files. Project metadata
+registration/lifecycle is a separate opt-in mode; there is no submission API,
+cloud managed-worker transport, artifact/data transfer or W&B transport. Metrics and the
 isolated canonical journal have native validation, aggregation, persistence and
 publication-cursor logic; there is no accepted cloud publisher. Slurm planners
 return data. The separate native helper can invoke `sbatch` only after explicit
@@ -118,7 +118,7 @@ The registry path below must not already exist:
 ```bash
 umask 077
 mkdir -p "$preview_dir/demo/runs/trial/attempts/attempt-001"
-printf '{"project":"demo","title":"Synthetic preview"}\n' > "$preview_dir/demo/research_project.yaml"
+printf '{"project":"demo","title":"Synthetic preview","run_roots":["runs"]}\n' > "$preview_dir/demo/research_project.yaml"
 printf '{"project":"demo","run_id":"trial"}\n' > "$preview_dir/demo/runs/trial/manifest.json"
 printf '{"project":"demo","run_id":"trial","attempt_id":"attempt-001"}\n' > "$preview_dir/demo/runs/trial/attempts/attempt-001/attempt.json"
 printf '{"attempt_id":"attempt-001","state":"RUNNING"}\n' > "$preview_dir/demo/runs/trial/status.json"
@@ -132,8 +132,7 @@ cat > "$preview_dir/reads.json" <<EOF
   "projects": [{
     "project": "demo",
     "project_file": "$preview_dir/demo/research_project.yaml",
-    "run_roots": ["$preview_dir/demo/runs"],
-    "runs": [{"run_id": "trial", "root_index": 0, "relative_components": ["trial"]}]
+    "run_roots": ["$preview_dir/demo/runs"]
   }]
 }
 EOF
@@ -156,15 +155,19 @@ ml-exp-rs --config "$preview_dir/client.json" get /api/runs/demo/trial/attempts/
 Use the same `cargo run ... --` prefix as above if preview binaries are not on
 PATH. Initialization refuses every existing target, including an empty directory;
 normal startup requires the preview marker and existing deletion lock. The private
-read config selects allowed files and exact Run locations. HTTP requests cannot
-select paths, and reads never bootstrap missing locks or repair metadata.
+read config selects approved Project files and Run roots. The default scanner
+finds canonical manifests within those roots; requests cannot supply Run paths.
+Reads never bootstrap missing locks or repair metadata.
 
 These files describe observations, not an actual running training job. A missing
 timestamp stays unknown. Current must be explicitly bound by a Run status,
 collection or decision mirror; directory sorting never chooses it. Historical
 Attempt reads do not borrow the current Attempt's logs or metrics. The configured
-location is trusted: a scanner proving unique canonical Run locations is still
-missing. JSON is strict; YAML supports a bounded conservative subset described
+roots remain an operator trust boundary. Discovery rejects duplicate Run IDs
+even with identical manifest hashes, unsafe aliases and overlapping roots. It
+stops at a Run manifest rather than walking into payload directories. Legacy
+explicit `runs` locators remain available; combining them with
+`discover_runs:true` is refused. JSON is strict; YAML supports a bounded subset described
 in the architecture document.
 
 Logs and raw metrics retain bounded tails with truncation/error diagnostics;
@@ -174,10 +177,74 @@ returns process observations but cannot verify ArtifactStore publication or
 downloads; download, collection execution and ACK are not implemented. There are
 four read slots and a 30-second HTTP wait deadline. A timed-out blocking filesystem
 read may continue holding its slot; the timeout is not kernel-I/O cancellation.
+Project listings use metadata-only snapshots, without opening metric/log tails
+or weights, and return the established array of Project summaries.
+
+## Optional Project lifecycle
+
+Stop the preview daemon, then initialize its lifecycle ledger once:
+
+```bash
+ml-expd-rs --read-config "$preview_dir/reads.json" --initialize-project-lifecycle
+ml-expd-rs --token-file "$preview_dir/token" --read-config "$preview_dir/reads.json" --project-lifecycle
+```
+
+In the client shell:
+
+```bash
+ml-exp-rs --config "$preview_dir/client.json" project list
+ml-exp-rs --config "$preview_dir/client.json" project pause demo --reason "inspection"
+ml-exp-rs --config "$preview_dir/client.json" project resume demo
+ml-exp-rs --config "$preview_dir/client.json" project archive demo --reason "completed"
+ml-exp-rs --config "$preview_dir/client.json" project restore demo
+ml-exp-rs --config "$preview_dir/client.json" project unregister demo
+ml-exp-rs --config "$preview_dir/client.json" project register "$preview_dir/demo/research_project.yaml"
+```
+
+Registration accepts only an exact daemon path already approved in `reads.json`.
+It validates the Project schema, not arbitrary client-local source files. Lifecycle
+registration currently requires an empty `campaigns` list; Campaign loading is not
+yet implemented. `restore` leaves an
+archived Project paused; `resume` requires a valid approved Project file. Every
+mutation optionally accepts `--expected-revision N` from `project list` for CAS.
+`unregister-all` removes all tracking records. None of these commands stops jobs,
+deletes artifacts or edits research files. Restart does not reimport removed records.
+
+The head and audit journal keep recoverable legacy-format durability envelopes.
+Ordinary reads never repair a partial journal. An explicit valid metadata operation
+can finish a missing audit tail; invalid plans and stale revisions do not repair it.
+Corrupt complete records are refused. After a lost response or possible write,
+inspect `project list` before deciding what to do; the client never replays POST.
 
 Stop the test daemon with Ctrl-C. Remove only the temporary directory you created,
 after checking that the process is stopped. Never point cleanup at an existing
 workspace or a directory returned by a production API.
+
+## Sealed local worker
+
+`managed-launch` is an operator-only entry for a manifest already staged by
+trusted code using `ml_exp_core::launch::encode`. Its private JSON config contains
+`manifest_path`, exact HTTPS `endpoint` (identity and SHA256), fresh `attempt_root`,
+existing `workdir`, `maximum_timeout_seconds` and optional `base_environment`.
+The sealed OUTPUT_DIR must equal `<attempt_root>/outputs`; no command override
+is accepted on the command line.
+
+```bash
+ml-exp-worker-rs managed-launch --config /private/managed.json --initialize
+ml-exp-worker-rs managed-launch --config /private/managed.json
+ml-exp-worker-rs managed-launch --config /private/managed.json --inspect
+```
+
+Initialization refuses an existing generation. The durable start marker is synced
+before process execution. A finished invocation returns its checked original
+receipt without running again. STARTED without a valid receipt stays uncertain;
+do not delete the ledger to retry. Ambient environment is cleared, and unsupported
+managed transfer/checkpoint/publication capabilities fail before execution.
+No endpoint is fetched in this preview; HTTPS supplies the frozen binding only.
+The native worker tests provide complete synthetic sealed configurations and run
+real child processes, including interrupted launch and output-directory replacement.
+Training success does not imply published artifacts: publication is
+`NOT_IMPLEMENTED`, and downloads remain unavailable.
 
 ## Try a local process
 

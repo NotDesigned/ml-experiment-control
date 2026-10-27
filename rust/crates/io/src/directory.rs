@@ -343,6 +343,16 @@ impl Directory {
     /// Open a pre-existing lock for shared observation, without creating a leaf,
     /// directory, temporary or journal. Missing or invalid entries are errors.
     pub fn open_existing_lock(&self, name: &OsStr) -> io::Result<File> {
+        self.existing_lock(name, OFlags::RDONLY)
+    }
+
+    /// An existing mutable lock/ledger. Never creates or replaces the inode;
+    /// callers serialize, revalidate and fsync their finite state writes.
+    pub fn open_existing_lock_rw(&self, name: &OsStr) -> io::Result<File> {
+        self.existing_lock(name, OFlags::RDWR)
+    }
+
+    fn existing_lock(&self, name: &OsStr, access: OFlags) -> io::Result<File> {
         leaf(name)?;
         self.verify_private_parent()?;
         if self
@@ -354,7 +364,7 @@ impl Directory {
         let file = File::from(rfs::openat(
             &self.inner.file,
             name,
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            access | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::empty(),
         )?);
         self.validate_regular_entry(name, &file)?;
@@ -365,6 +375,39 @@ impl Directory {
             return Err(invalid("private metadata lock required"));
         }
         Ok(file)
+    }
+
+    /// Append bounded metadata to an existing private file. The caller must
+    /// hold its domain lock; this is not a compare-and-set operation. An error
+    /// after write starts can mean a partial/durable effect and needs recovery.
+    pub fn append_regular(&self, name: &OsStr, bytes: &[u8], maximum: u64) -> io::Result<()> {
+        leaf(name)?;
+        self.verify_private_parent()?;
+        if !self
+            .regular_identity(name)?
+            .is_some_and(|id| id.is_private_for(effective_uid()))
+        {
+            return Err(invalid("private existing append file required"));
+        }
+        let mut file = File::from(rfs::openat(
+            &self.inner.file,
+            name,
+            OFlags::WRONLY | OFlags::APPEND | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )?);
+        self.validate_regular_entry(name, &file)?;
+        if file
+            .metadata()?
+            .len()
+            .checked_add(bytes.len() as u64)
+            .is_none_or(|size| size > maximum)
+        {
+            return Err(invalid("append file exceeds its budget"));
+        }
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        self.validate_regular_entry(name, &file)?;
+        self.verify_private_parent()
     }
 
     pub fn read_regular(&self, name: &OsStr, maximum: u64) -> io::Result<Vec<u8>> {
@@ -797,5 +840,51 @@ mod tests {
         );
         assert!(directory.open_existing_lock(OsStr::new("fifo")).is_err());
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn mutable_existing_lock_and_append_preserve_inode_and_bound_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = Directory::open(temp.path(), false).unwrap();
+        let name = OsStr::new("ledger");
+        assert!(directory.open_existing_lock_rw(name).is_err());
+        assert!(directory.append_regular(name, b"x", 10).is_err());
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+        directory.publish_new(name, b"old").unwrap();
+        let before = directory.regular_identity(name).unwrap();
+        let mut lock = directory.open_existing_lock_rw(name).unwrap();
+        lock.write_all(b"new").unwrap();
+        lock.sync_all().unwrap();
+        directory.append_regular(name, b"\n", 4).unwrap();
+        assert_eq!(fs::read(temp.path().join(name)).unwrap(), b"new\n");
+        assert_eq!(directory.regular_identity(name).unwrap(), before);
+        assert!(directory.append_regular(name, b"x", 4).is_err());
+        assert_eq!(fs::read(temp.path().join(name)).unwrap(), b"new\n");
+        symlink("ledger", temp.path().join("symbolic")).unwrap();
+        for alias in ["symbolic", "missing"] {
+            assert!(directory.open_existing_lock_rw(OsStr::new(alias)).is_err());
+            assert!(
+                directory
+                    .append_regular(OsStr::new(alias), b"x", 10)
+                    .is_err()
+            );
+        }
+        fs::hard_link(temp.path().join(name), temp.path().join("hard")).unwrap();
+        assert!(directory.open_existing_lock_rw(name).is_err());
+        assert!(directory.append_regular(name, b"x", 10).is_err());
+        assert_eq!(fs::read(temp.path().join(name)).unwrap(), b"new\n");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(temp.path().join("fifo"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(directory.open_existing_lock_rw(OsStr::new("fifo")).is_err());
+        assert!(
+            directory
+                .append_regular(OsStr::new("fifo"), b"x", 10)
+                .is_err()
+        );
     }
 }

@@ -1,4 +1,5 @@
-//! The HTTP boundary: authenticated, bounded, read-only and without redirects.
+//! The HTTP boundary: authenticated, bounded, no redirects or automatic replay.
+//! Mutations are available only through the typed project lifecycle planner.
 
 use std::io::Read;
 use std::time::Duration;
@@ -51,6 +52,37 @@ impl Client {
             )
             .send()
             .map_err(|_| Error::Transport)?;
+        self.decode(response)
+    }
+
+    pub(crate) fn send_project(
+        &self,
+        plan: &crate::projects::Plan,
+    ) -> Result<serde_json::Value, Error> {
+        let endpoint = api_url(&self.base, plan.path())?;
+        let request = if let Some(body) = plan.body() {
+            if body.len() > crate::projects::MAX_REQUEST_BYTES {
+                return Err(Error::Response);
+            }
+            self.http
+                .post(endpoint)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.to_vec())
+        } else {
+            self.http.get(endpoint)
+        };
+        let response = request
+            .bearer_auth(&self.token)
+            .header(
+                ml_exp_core::CLIENT_PROTOCOL_HEADER,
+                ml_exp_core::API_PROTOCOL_VERSION.to_string(),
+            )
+            .send()
+            .map_err(|_| Error::Transport)?;
+        self.decode(response)
+    }
+
+    fn decode(&self, response: reqwest::blocking::Response) -> Result<serde_json::Value, Error> {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let code = response

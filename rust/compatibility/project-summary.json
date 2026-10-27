@@ -1,0 +1,288 @@
+{
+  "baseline_commit": "e725faec689fb8395e692e27d00a8896fa7fe5a5",
+  "source": "server/src/ml_exp_server/api/routes.py",
+  "source_sha256": "23d1e1c278647a2556f9210e989bee8aa6c139e8e8d2bb37fa9ba1817cbcf97b",
+  "scope": "Actual list_projects/_attention with synthetic rows and empty collector statuses; native collector not migrated.",
+  "cases": [
+    {
+      "rows": [],
+      "expected": {
+        "project": "demo",
+        "title": "Synthetic 科学",
+        "run_counts": {},
+        "attention_count": 0
+      }
+    },
+    {
+      "rows": [],
+      "expected": {
+        "project": "demo",
+        "title": "Synthetic 科学",
+        "run_counts": {},
+        "attention_count": 0
+      }
+    },
+    {
+      "rows": [
+        {
+          "project": "demo",
+          "run_id": "run-0",
+          "scheduler_state": null,
+          "evidence_stale": false
+        }
+      ],
+      "expected": {
+        "project": "demo",
+        "title": "Synthetic 科学",
+        "run_counts": {
+          "UNKNOWN": 1
+        },
+        "attention_count": 0
+      }
+    },
+    {
+      "rows": [
+        {
+          "project": "demo",
+          "run_id": "run-0",
+          "scheduler_state": null,
+          "evidence_stale": true
+        }
+      ],
+      "expected": {
+        "project": "demo",
+        "title": "Synthetic 科学",
+        "run_counts": {
+          "UNKNOWN": 1
+        },
+        "attention_count": 1
+      }
+    },
+    {
+      "rows": [
+        {
+          "project": "demo",
+          "run_id": "run-0",
+          "scheduler_state": "",
+          "evidence_stale": false
+        }
+      ],
+      "expected": {
+        "project": "demo",
+        "title": "Synthetic 科学",
+        "run_counts": {
+          "UNKNOWN": 1
+        },
+        "attention_count": 0
+      }
+    },
+    {
+      "rows": [
+        {
+          "project": "demo",
+          "run_id": "run-0",
+          "scheduler_state": "",
+          "evidence_stale": true
+        }
+      ],
+      "expected": {
+        "project": "demo",
+        "title": "Synthetic 科学",
+        "run_counts": {
+          "UNKNOWN": 1
+        },
+        "attention_count": 1
+      }
+    },
+    {
+      "rows": [
+        {
+          "project": "demo",
+          "run_id": "run-0",
+          "scheduler_state": "RUNNING",
+          "evidence_stale": false
+        },
+        {
+          "project": "demo",
+          "run_id": "run-1",
+          "scheduler_state": "FAILED",
+          "evidence_stale": false
+        },
+        {
+          "project": "demo",
+          "run_id": "run-2",
+          "scheduler_state": "PREEMPTED",
+          "evidence_stale": false
+        }
+      ],
+      "expected": {
+        "project": "demo",
+        "title": "Synthetic 科学",
+        "run_counts": {
+          "RUNNING": 1,
+          "FAILED": 1,
+          "PREEMPTED": 1
+        },
+        "attention_count": 2
+      }
+    },
+    {
+      "rows": [
+        {
+          "project": "demo",
+          "run_id": "run-0",
+          "scheduler_state": "RUNNING",
+          "evidence_stale": true
+        },
+        {
+          "project": "demo",
+          "run_id": "run-1",
+          "scheduler_state": "FAILED",
+          "evidence_stale": true
+        },
+        {
+          "project": "demo",
+          "run_id": "run-2",
+          "scheduler_state": "PREEMPTED",
+          "evidence_stale": true
+        }
+      ],
+      "expected": {
+        "project": "demo",
+        "title": "Synthetic 科学",
+        "run_counts": {
+          "RUNNING": 1,
+          "FAILED": 1,
+          "PREEMPTED": 1
+        },
+        "attention_count": 5
+      }
+    },
+    {
+      "rows": [
+        {
+          "project": "demo",
+          "run_id": "run-0",
+          "scheduler_state": "failed",
+          "evidence_stale": false
+        },
+        {
+          "project": "demo",
+          "run_id": "run-1",
+          "scheduler_state": "SUCCEEDED",
+          "evidence_stale": false
+        },
+        {
+          "project": "demo",
+          "run_id": "run-2",
+          "scheduler_state": "UNKNOWN",
+          "evidence_stale": false
+        }
+      ],
+      "expected": {
+        "project": "demo",
+        "title": "Synthetic 科学",
+        "run_counts": {
+          "failed": 1,
+          "SUCCEEDED": 1,
+          "UNKNOWN": 1
+        },
+        "attention_count": 1
+      }
+    },
+    {
+      "rows": [
+        {
+          "project": "demo",
+          "run_id": "run-0",
+          "scheduler_state": "failed",
+          "evidence_stale": true
+        },
+        {
+          "project": "demo",
+          "run_id": "run-1",
+          "scheduler_state": "SUCCEEDED",
+          "evidence_stale": true
+        },
+        {
+          "project": "demo",
+          "run_id": "run-2",
+          "scheduler_state": "UNKNOWN",
+          "evidence_stale": true
+        }
+      ],
+      "expected": {
+        "project": "demo",
+        "title": "Synthetic 科学",
+        "run_counts": {
+          "failed": 1,
+          "SUCCEEDED": 1,
+          "UNKNOWN": 1
+        },
+        "attention_count": 4
+      }
+    },
+    {
+      "rows": [
+        {
+          "project": "demo",
+          "run_id": "run-0",
+          "scheduler_state": "QUEUED",
+          "evidence_stale": false
+        },
+        {
+          "project": "demo",
+          "run_id": "run-1",
+          "scheduler_state": "QUEUED",
+          "evidence_stale": false
+        },
+        {
+          "project": "demo",
+          "run_id": "run-2",
+          "scheduler_state": "RUNNING",
+          "evidence_stale": false
+        }
+      ],
+      "expected": {
+        "project": "demo",
+        "title": "Synthetic 科学",
+        "run_counts": {
+          "QUEUED": 2,
+          "RUNNING": 1
+        },
+        "attention_count": 0
+      }
+    },
+    {
+      "rows": [
+        {
+          "project": "demo",
+          "run_id": "run-0",
+          "scheduler_state": "QUEUED",
+          "evidence_stale": true
+        },
+        {
+          "project": "demo",
+          "run_id": "run-1",
+          "scheduler_state": "QUEUED",
+          "evidence_stale": true
+        },
+        {
+          "project": "demo",
+          "run_id": "run-2",
+          "scheduler_state": "RUNNING",
+          "evidence_stale": true
+        }
+      ],
+      "expected": {
+        "project": "demo",
+        "title": "Synthetic 科学",
+        "run_counts": {
+          "QUEUED": 2,
+          "RUNNING": 1
+        },
+        "attention_count": 3
+      }
+    }
+  ]
+}

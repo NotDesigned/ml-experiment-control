@@ -11,14 +11,20 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:18765")]
     bind: SocketAddr,
     #[arg(long)]
-    #[arg(required_unless_present = "initialize_registry")]
+    #[arg(required_unless_present_any = ["initialize_registry", "initialize_project_lifecycle"])]
     token_file: Option<PathBuf>,
-    /// Private read-only configuration for an isolated Rust preview registry.
+    /// Private approved source configuration for an isolated Rust preview.
     #[arg(long, conflicts_with = "initialize_registry")]
     read_config: Option<PathBuf>,
     /// Explicitly initialize a fresh registry; existing targets are refused.
     #[arg(long, conflicts_with_all = ["token_file", "read_config"])]
     initialize_registry: Option<PathBuf>,
+    /// Explicitly create the lifecycle ledger from approved Projects once.
+    #[arg(long, requires = "read_config", conflicts_with_all = ["initialize_registry", "token_file", "project_lifecycle"])]
+    initialize_project_lifecycle: bool,
+    /// Enable tracking-only metadata changes using an existing lifecycle ledger.
+    #[arg(long, requires = "read_config", conflicts_with = "initialize_registry")]
+    project_lifecycle: bool,
 }
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -27,6 +33,18 @@ async fn main() -> std::process::ExitCode {
         return match ml_exp_server::read_config::initialize(path) {
             Ok(workspace) => {
                 println!("{workspace}");
+                std::process::ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
+    if args.initialize_project_lifecycle {
+        return match initialize_lifecycle(args.read_config.as_deref().expect("required config")) {
+            Ok(()) => {
+                println!("project lifecycle initialized; research files and jobs unchanged");
                 std::process::ExitCode::SUCCESS
             }
             Err(error) => {
@@ -51,9 +69,7 @@ async fn main() -> std::process::ExitCode {
         }
     };
     let reads = match args.read_config.as_deref() {
-        Some(path) => match ml_exp_server::read_config::load(path)
-            .and_then(ml_exp_server::read_api::Api::open)
-        {
+        Some(path) => match open_api(path, args.project_lifecycle) {
             Ok(reads) => Some(std::sync::Arc::new(reads)),
             Err(error) => {
                 eprintln!("{error}");
@@ -93,4 +109,30 @@ async fn main() -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     }
     std::process::ExitCode::SUCCESS
+}
+
+fn initialize_lifecycle(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let settings = ml_exp_server::read_config::load(path)?;
+    let (now, identity) = ml_exp_server::projects::transition_context()?;
+    ml_exp_server::projects::Service::initialize(&settings, &now, &identity)?;
+    Ok(())
+}
+
+fn open_api(
+    path: &std::path::Path,
+    lifecycle: bool,
+) -> Result<ml_exp_server::read_api::Api, Box<dyn std::error::Error>> {
+    let settings = ml_exp_server::read_config::load(path)?;
+    let service = if lifecycle {
+        Some(std::sync::Arc::new(ml_exp_server::projects::Service::open(
+            &settings,
+        )?))
+    } else {
+        None
+    };
+    let api = ml_exp_server::read_api::Api::open(settings)?;
+    Ok(match service {
+        Some(service) => api.with_lifecycle(service)?,
+        None => api,
+    })
 }

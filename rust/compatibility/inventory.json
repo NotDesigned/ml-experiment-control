@@ -24,8 +24,8 @@
       "server": {
         "modules": 160,
         "lines": 30572,
-        "partial_foundation": 23,
-        "not_started": 137
+        "partial_foundation": 27,
+        "not_started": 133
       },
       "core": {
         "modules": 25,
@@ -40,7 +40,7 @@
         "not_started": 11
       }
     },
-    "partial_foundation_modules": 44,
+    "partial_foundation_modules": 48,
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
@@ -65,7 +65,8 @@
     "io_boundary": "ml-exp-io owns shared file/process/transport primitives; application executors own effect lifecycles and feed explicit evidence back to reducers.",
     "provider_io_owner": "server",
     "scientific_computation_owner": "user code, any supported image language",
-    "read_preview_boundary": "Fresh marker-bearing isolated registry; trusted explicit Project/Run locations; existing-only deletion guards; bounded authenticated local GETs without providers, repair, ArtifactStore download claims or mutations. Unique canonical Run discovery remains missing."
+    "read_preview_boundary": "Fresh marker-bearing isolated registry; trusted approved Project/Run roots, bounded canonical-layout discovery with ambiguity/alias/budget rejection, existing-only deletion guards and authenticated local reads. Optional Project lifecycle mutates tracking metadata only via approved manifests and durable CAS; no providers, automatic repair on reads, ArtifactStore download claims or production bootstrap.",
+    "execution_preview_boundary": "Native sealed managed-launch requires private operator config and pre-staged local code/environment. Existing-only exact Attempt ledger records STARTED before spawn; unknown outcomes are not replayed. Local process/training receipts do not establish dataset, checkpoint, object publication or provider acceptance."
   },
   "modules": [
     {
@@ -125,9 +126,12 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/client/src/transport.rs",
-        "scope": "Bounded native JSON GET and explicit protocol-2 handshake with URL-bound auth, no redirect/retry, 16KiB sanitized structured diagnostics using shared native redactor. Mutation/object transport, full connection-error classification and nonstandard-body parity remain missing.",
+        "scope": "Bounded JSON GET, authenticated protocol-2 handshake and private typed project-lifecycle POST only; URL-bound auth, no redirects or automatic replay, shared bounded sanitized errors. Lost/malformed lifecycle replies are uncertain. General submission/object transport and full nonstandard-body parity remain incomplete.",
         "compatibility_accepted": false,
-        "isolated_domain_tests": true
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/client/src/projects.rs"
+        ]
       }
     },
     {
@@ -204,9 +208,12 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/client/src/main.rs",
-        "scope": "Native preview private config/check/get and grouped run status/logs/metrics. Saved server and locally known exact identities are checked before credential-file reads/handshake; no production config replacement or automatic effects. Full command tree and distribution remain incomplete.",
+        "scope": "Private config/check/get, exact grouped run status/logs/metrics and pinned watch, plus typed project list/register/pause/resume/archive/restore/unregister commands with pure preflight before credentials. Full submission/source/environment/data/checkpoint/download/update command tree and native distribution remain incomplete.",
         "compatibility_accepted": false,
-        "isolated_domain_tests": true
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/client/src/projects.rs"
+        ]
       }
     },
     {
@@ -257,9 +264,12 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/client/src/main.rs",
-        "scope": "Grouped native run status/logs/metrics preview commands and bounded pinned watch, exact saved-state preflight and supported protocol handshake. Submission, upload/download/ACK, mutation plans and other commands remain missing.",
+        "scope": "Exact saved-state read/watch operations and typed project lifecycle request plans with optional revision CAS, capability checks and no mutation replay. Registration references an approved daemon-host manifest path; no local source upload or job submission is implemented by these commands.",
         "compatibility_accepted": false,
-        "isolated_domain_tests": true
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/client/src/projects.rs"
+        ]
       }
     },
     {
@@ -854,9 +864,12 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/server/src/lib.rs",
-        "scope": "Loopback-only health/readiness/OpenAPI and configured local experiment GET composition with native read_api/read_http; claims only metric-records and collection-read capabilities when configured. TLS, complete API/lifecycle composition and production deployment remain incomplete.",
+        "scope": "Loopback health/readiness/OpenAPI, configured bounded native experiment reads/discovery, and separately enabled isolated Project lifecycle composition. Capabilities reflect the selected preview services; no provider refresh/submission, ArtifactStore download/ACK, TLS termination or production acceptance.",
         "compatibility_accepted": false,
-        "isolated_domain_tests": true
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/server/src/projects/http.rs"
+        ]
       }
     },
     {
@@ -1233,9 +1246,12 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/server/src/read_http.rs",
-        "scope": "Authenticated protocol-2 GET subset for explicitly configured isolated Projects, Runs, exact Attempt show/logs/metrics and collection observations. Four blocking read slots and a 30-second HTTP wait deadline do not cancel kernel I/O. No mutation, provider refresh, artifact download, ACK, lifecycle registration or production acceptance.",
+        "scope": "Authenticated protocol-2 native Project/Run/exact-Attempt reads and bounded canonical discovery, plus optional narrow project-lifecycle routes for approved existing manifests. Lifecycle changes affect daemon tracking only; import/materialization, provider mutations, artifact download/ACK and full route parity remain incomplete.",
         "compatibility_accepted": false,
-        "isolated_domain_tests": true
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/server/src/projects/http.rs"
+        ]
       }
     },
     {
@@ -1772,9 +1788,13 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/server/src/main.rs",
-        "scope": "Loopback preview daemon, private read-config and explicit fresh --initialize-registry. Marker/existing deletion lock required for ordinary startup; no production registry bootstrap, repair, scanner, provider credentials or production doctor/config parity.",
+        "scope": "Loopback preview daemon with private explicit settings, fresh marker-bearing --initialize-registry, optional explicit --initialize-project-lifecycle, existing-only guards for normal startup, and bounded native discovery. No production bootstrap or provider credential/config/doctor/deployment parity.",
         "compatibility_accepted": false,
-        "isolated_domain_tests": true
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/server/src/read_config.rs",
+          "rust/crates/server/src/projects/service.rs"
+        ]
       }
     },
     {
@@ -2429,9 +2449,12 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/server/src/experiments/mod.rs",
-        "scope": "Trusted explicit Project/Run locators, bounded authoritative manifest/evidence snapshots and exact Attempt tails with retained directory capabilities/existing deletion guards. Raw SHA and limited provenance comparisons only; no latest guessing or unique canonical-location scanner. Configured read-only HTTP composition now consumes this subset; full discovery/provider/collector behavior is incomplete.",
+        "scope": "Bounded authoritative Project/Run/exact-Attempt snapshots plus approved canonical-layout discovery with duplicate/overlap/alias/budget failures, retained Directory/fence capabilities, raw SHA and evidence provenance. No latest guessing, index rebuild, automatic collector/provider refresh or global unapproved-root search.",
         "compatibility_accepted": false,
-        "isolated_domain_tests": true
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/server/src/experiments/scanner.rs"
+        ]
       }
     },
     {
@@ -2578,8 +2601,18 @@
       "target_crate": "ml-exp-server",
       "target_domain": "projects",
       "proposed_consolidation": "One project/source lifecycle; keep optional campaign grouping and isolate historical project-controller imports.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/projects/definition.rs",
+        "scope": "Pure ResearchProject/controller/campaign-reference/metric-schema validation and explicit path planning, plus isolated trusted settings and bounded strict JSON/YAML Project reads. Referenced Campaign loading, full ServerConfig/provider configuration and legacy path expansion remain unsupported.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/server/src/read_config.rs",
+          "rust/crates/server/src/experiments/domain.rs"
+        ]
+      }
     },
     {
       "path": "server/src/ml_exp_server/projects/project_imports.py",
@@ -2625,8 +2658,18 @@
       "target_crate": "ml-exp-server",
       "target_domain": "projects",
       "proposed_consolidation": "One project/source lifecycle; keep optional campaign grouping and isolate historical project-controller imports.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/projects.rs",
+        "scope": "Pure lifecycle reducers and bounded private native JSON-head/journal Store with existing locks, same-lock approved path binding, revision CAS, recoverable final-transition/tail rules and explicit-only repair. Historical empty Python head adoption and composed valid lifecycle/durability fixtures have isolated filesystem coverage; legacy arbitrary path resolvers/import migration remain incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/core/src/durable.rs",
+          "rust/crates/server/src/projects/store.rs"
+        ]
+      }
     },
     {
       "path": "server/src/ml_exp_server/projects/project_service.py",
@@ -2640,8 +2683,17 @@
       "target_crate": "ml-exp-server",
       "target_domain": "projects",
       "proposed_consolidation": "One project/source lifecycle; keep optional campaign grouping and isolate historical project-controller imports.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/server/src/projects/service.rs",
+        "scope": "Approved daemon-manifest registration and tracking pause/resume/archive/restore/unregister, workspace/source binding, fresh definition checks and post-effect uncertainty. Config does not resurrect removed registrations; active set is limited to approved names. Native initial indexing, collector activation and source/project import are explicitly not implemented.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/server/src/projects/http.rs"
+        ]
+      }
     },
     {
       "path": "server/src/ml_exp_server/projects/source_imports.py",
@@ -3354,8 +3406,17 @@
       "target_crate": "ml-exp-core",
       "target_domain": "contracts",
       "proposed_consolidation": "Pure shared values and validation in core; private runtime configuration remains server-owned.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/projects.rs",
+        "scope": "Pure Project lifecycle records and ResearchProject/controller/campaign-reference schema subset with 497 actual Python lifecycle/schema/path reference cases; native read model types exist separately. This is not all Pydantic schemas, complete provider/private configuration, Campaign-file resolution or Project import support.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/core/src/projects/definition.rs"
+        ]
+      }
     },
     {
       "path": "server/src/ml_exp_server/source_paths.py",
@@ -3399,9 +3460,14 @@
       "migration_status": "partial_foundation",
       "python_baseline_unchanged": true,
       "rust_foundation": {
-        "path": "rust/crates/io/src/lib.rs",
-        "scope": "Atomic write/private-read/hash primitives only; snapshots, locks and durable transition protocol not ported.",
-        "compatibility_accepted": false
+        "path": "rust/crates/core/src/durable.rs",
+        "scope": "Pure legacy JSON-head/contiguous-journal/CAS decisions with eight actual Python durability fixtures; anchored private atomic file/lock/append primitives and native Project Store effects, explicit mutation-only repair and uncertain-effect handling. No general migration of every Python store or permission to bootstrap/rewrite production state.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/io/src/directory.rs",
+          "rust/crates/server/src/projects/store.rs"
+        ]
       }
     },
     {
@@ -4026,10 +4092,14 @@
       "migration_status": "partial_foundation",
       "python_baseline_unchanged": true,
       "rust_foundation": {
-        "path": "rust/crates/server/src/experiments/domain.rs",
-        "scope": "Limited pure bounded YAML/JSON manifest decoder and Project name/schema checks used by the authoritative reader, with legacy safe_dump fixtures. Not the full Project schema, registration/lifecycle, YAML 1.1 compatibility or configuration resolver.",
+        "path": "rust/crates/core/src/projects.rs",
+        "scope": "Pure Project definition/lifecycle/path-planning subset and native authoritative Project read/discovery integration. Original scientific ProjectAdapter callbacks and all public Python-library behavior are not replaced.",
         "compatibility_accepted": false,
-        "isolated_domain_tests": true
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/core/src/projects/definition.rs",
+          "rust/crates/server/src/experiments/scanner.rs"
+        ]
       }
     },
     {
@@ -4270,11 +4340,12 @@
       "migration_status": "partial_foundation",
       "python_baseline_unchanged": true,
       "rust_foundation": {
-        "path": "rust/crates/worker/src/lib.rs",
-        "scope": "Local process supervision foundation only; sealed managed launch/input/checkpoint/records/results protocols not ported.",
+        "path": "rust/crates/worker/src/process.rs",
+        "scope": "Shared local process supervisor and sealed local managed-launch execution foundation only. This Python module's input download/cache, immutable checkpoint publication, records callbacks and result-upload protocols remain unported; managed-launch explicitly rejects their ML_EXPD_* capabilities instead of reporting success.",
         "compatibility_accepted": false,
+        "isolated_domain_tests": true,
         "additional_paths": [
-          "rust/crates/worker/src/process.rs"
+          "rust/crates/worker/src/managed.rs"
         ]
       }
     },
@@ -4398,9 +4469,14 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/core/src/launch.rs",
-        "scope": "Pure exact-Attempt manifest validation/canonical encoding and body checksum/identity verification; 137 Python encoding cases plus endpoint/capability negatives. Native HTTPS fetch/report and managed execution remain incomplete.",
+        "scope": "Pure exact-Attempt sealed manifest/canonical-byte validation plus native private-config managed-launch initialize/inspect/execute chain. Local input tree is operator-staged; exact local manifest digest/endpoint/config/identity and append-only STARTED-before-spawn ledger bind execution, bounded process receipt separates training from unsupported publication. Native HTTPS fetch/report, provider bootstrap and full worker protocols remain incomplete.",
         "compatibility_accepted": false,
-        "isolated_domain_tests": true
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/worker/src/managed.rs",
+          "rust/crates/worker/src/managed_cli.rs",
+          "rust/crates/worker/src/process.rs"
+        ]
       }
     },
     {

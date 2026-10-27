@@ -2,13 +2,15 @@ use clap::Parser;
 use std::{path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
 #[cfg(unix)]
 mod cli;
+#[cfg(unix)]
+mod managed_cli;
 
 #[derive(Parser)]
 #[command(
     name = "ml-exp-worker-rs",
     version,
     about = "Native local process preview; not a replacement for frozen managed workers",
-    after_help = "Slurm metadata: ml-exp-worker-rs slurm-helper --config /absolute/private.json --stdio\nExplicit bootstrap: replace --stdio with --initialize. See slurm-helper --help."
+    after_help = "Slurm metadata: ml-exp-worker-rs slurm-helper --config /absolute/private.json --stdio\nExplicit bootstrap: replace --stdio with --initialize. See slurm-helper --help.\nSealed local worker: ml-exp-worker-rs managed-launch --config /absolute/private.json [--initialize|--inspect]"
 )]
 struct Args {
     #[arg(long)]
@@ -43,11 +45,18 @@ fn main() -> ExitCode {
     {
         let mut arguments = std::env::args_os();
         let binary = arguments.next().expect("binary argv");
-        if arguments
+        match arguments
             .next()
-            .is_some_and(|value| value == "slurm-helper")
+            .as_deref()
+            .and_then(std::ffi::OsStr::to_str)
         {
-            return cli::main_from(std::iter::once(binary).chain(arguments));
+            Some("slurm-helper") => {
+                return cli::main_from(std::iter::once(binary).chain(arguments));
+            }
+            Some("managed-launch") => {
+                return managed_cli::main_from(std::iter::once(binary).chain(arguments));
+            }
+            _ => {}
         }
     }
     match run(Args::parse()) {

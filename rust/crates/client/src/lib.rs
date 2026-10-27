@@ -1,10 +1,11 @@
-//! Native read-only client: pure connection planning, private credential I/O,
+//! Native client: pure connection and business request planning, private credential I/O,
 //! and HTTP transport are separate boundaries. No mutation replay.
 
 pub mod config;
 pub mod credentials;
 pub mod observation;
 pub mod presentation;
+pub mod projects;
 pub mod read;
 pub mod session;
 pub mod status;
@@ -34,6 +35,10 @@ pub enum Error {
     Response,
     #[error("daemon did not provide a supported protocol-2 handshake")]
     Protocol,
+    #[error(
+        "project change outcome is not confirmed; query project list before retrying; no automatic replay was attempted: {0}"
+    )]
+    ProjectOutcomeUnknown(Box<Error>),
     #[error("{0}")]
     Observation(&'static str),
 }

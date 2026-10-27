@@ -41,7 +41,7 @@ pub struct ProjectBinding {
 /// It is not an untrusted client/index input. Matching file IDs or SHA cannot
 /// establish the unique canonical location when a copied manifest exists. A
 /// future scanner must resolve approved layout and reject duplicates first.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunRef {
     pub project: String,
     pub run_id: String,
@@ -170,6 +170,28 @@ impl ProjectAnchor {
 }
 
 impl Store {
+    /// Discover unique authoritative Runs below the bound Project's approved
+    /// roots. This observes existing files/fences only and never repairs them.
+    pub fn discover(
+        &self,
+        project: &str,
+        limits: &super::scanner::DiscoveryLimits,
+    ) -> std::result::Result<super::scanner::Discovery, super::scanner::DiscoveryError> {
+        let anchor = self
+            .projects
+            .get(project)
+            .ok_or(super::scanner::DiscoveryError::UnknownProject)?;
+        super::scanner::scan(
+            project,
+            &anchor.parent,
+            &anchor.filename,
+            &anchor.roots,
+            &self.fence,
+            limits,
+            RUN_SOURCES,
+        )
+    }
+
     /// No directory, lock, manifest, SQLite file or recovery artifact is created.
     /// A missing existing deletion fence fails closed instead of bootstrapping.
     pub fn open(bindings: Vec<ProjectBinding>, fence: RunFence) -> Result<Self> {
@@ -274,7 +296,13 @@ impl Store {
     /// Metadata for every bounded Attempt; only the explicitly selected current
     /// Attempt contributes logs/JSONL. Directory sorting never selects current.
     pub fn snapshot(&self, reference: &RunRef) -> Result<super::Snapshot> {
-        self.snapshot_selected(reference, None)
+        self.snapshot_selected(reference, None, true)
+    }
+
+    /// Bounded Run/Attempt metadata only, for project-level status summaries.
+    /// Even the explicitly current Attempt has unloaded log/metric tails.
+    pub fn snapshot_metadata(&self, reference: &RunRef) -> Result<super::Snapshot> {
+        self.snapshot_selected(reference, None, false)
     }
 
     /// Read one exact Attempt only. Historical malformed siblings, Run mirrors
@@ -285,13 +313,14 @@ impl Store {
         attempt_id: &str,
     ) -> Result<super::Snapshot> {
         identity::validate_id(attempt_id).map_err(|_| Error::Binding)?;
-        self.snapshot_selected(reference, Some(attempt_id))
+        self.snapshot_selected(reference, Some(attempt_id), true)
     }
 
     fn snapshot_selected(
         &self,
         reference: &RunRef,
         exact: Option<&str>,
+        load_heavy: bool,
     ) -> Result<super::Snapshot> {
         use super::snapshot::{self, AttemptSnapshot, Snapshot};
         let guard = self
@@ -392,17 +421,18 @@ impl Store {
             let collection = evidence("collection.json");
             let decision = evidence("decision.json");
             let submission = evidence("submission.json");
-            let (stdout, stderr, metrics) =
-                if exact.is_some() || current_attempt_id.as_deref() == Some(&attempt_id) {
-                    snapshot::heavy(
-                        &attempt_directory,
-                        &reference.project,
-                        &reference.run_id,
-                        &attempt_id,
-                    )?
-                } else {
-                    snapshot::unloaded(&attempt_id)
-                };
+            let (stdout, stderr, metrics) = if load_heavy
+                && (exact.is_some() || current_attempt_id.as_deref() == Some(&attempt_id))
+            {
+                snapshot::heavy(
+                    &attempt_directory,
+                    &reference.project,
+                    &reference.run_id,
+                    &attempt_id,
+                )?
+            } else {
+                snapshot::unloaded(&attempt_id)
+            };
             retained.push(attempt_directory);
             attempts.push(AttemptSnapshot {
                 attempt_id,

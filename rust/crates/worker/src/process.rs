@@ -93,17 +93,49 @@ pub(super) fn execute(
     timeout: Duration,
     cancelled: &AtomicBool,
 ) -> io::Result<Execution> {
+    execute_environment(workdir, output, argv, timeout, cancelled, None)
+}
+
+/// Managed launches supply the complete environment explicitly. The local CLI
+/// keeps its established inherited-environment behavior through `execute`.
+pub(crate) fn execute_explicit(
+    workdir: &Path,
+    output: &Path,
+    argv: &[String],
+    timeout: Duration,
+    cancelled: &AtomicBool,
+    environment: &BTreeMap<String, String>,
+) -> io::Result<Execution> {
+    execute_environment(workdir, output, argv, timeout, cancelled, Some(environment))
+}
+
+fn execute_environment(
+    workdir: &Path,
+    output: &Path,
+    argv: &[String],
+    timeout: Duration,
+    cancelled: &AtomicBool,
+    explicit: Option<&BTreeMap<String, String>>,
+) -> io::Result<Execution> {
     fs::DirBuilder::new().mode(0o700).create(output)?;
     let mut stdout = Log::create(output.join("stdout.log"))?;
     let mut stderr = Log::create(output.join("stderr.log"))?;
-    let environment = BTreeMap::from([(
-        "OUTPUT_DIR".into(),
-        output.canonicalize()?.display().to_string(),
-    )]);
+    let canonical_output = output.canonicalize()?.display().to_string();
+    let mut environment = explicit.cloned().unwrap_or_default();
+    if explicit.is_some() && environment.get("OUTPUT_DIR") != Some(&canonical_output) {
+        return Err(io::Error::other(
+            "managed output directory identity differs",
+        ));
+    }
+    environment.insert("OUTPUT_DIR".into(), canonical_output);
     let outcome = process::execute(process::Request {
         argv,
         cwd: workdir,
-        environment: process::Environment::Inherit(&environment),
+        environment: if explicit.is_some() {
+            process::Environment::Replace(&environment)
+        } else {
+            process::Environment::Inherit(&environment)
+        },
         stdin: process::Input::Null,
         stdout: process::Capture::File {
             file: &mut stdout.file,

@@ -1050,3 +1050,60 @@ pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) 
     value["evidence"]["model"]["detail"] = detail;
     bounded(value)
 }
+
+/// A lightweight metadata projection for project aggregation. No scientific
+/// payload or indexed collector state is substituted for missing evidence.
+pub fn run_summary(snapshot: &Snapshot, now_unix: f64) -> Result<Value> {
+    clock(now_unix)?;
+    let evidence = match current(snapshot)? {
+        Some(attempt) => layers(snapshot, attempt, now_unix, None)?,
+        None => json!({}),
+    };
+    let state = &evidence["scheduler"]["state"];
+    if !state.is_null() && !state.is_string() {
+        return Err(Error::Evidence);
+    }
+    let stale = ["scheduler", "worker", "process", "model", "evaluation"]
+        .iter()
+        .any(|name| evidence[name]["stale"] == true);
+    bounded(
+        json!({"project":snapshot.project,"run_id":snapshot.run_id,"scheduler_state":state,"evidence_stale":stale}),
+    )
+}
+
+/// Public project-list DTO matches the established REST array member shape.
+/// Collector errors must be supplied explicitly once the native collector is
+/// migrated; this read service has no collector and makes no such observations.
+pub fn project_summary(project: &str, title: &str, rows: &[Value]) -> Result<Value> {
+    ml_exp_core::identity::validate_id(project).map_err(|_| Error::Identity)?;
+    if title.chars().count() > 2000 {
+        return Err(Error::OutputLimit);
+    }
+    let mut counts = Map::new();
+    let mut ids = BTreeSet::new();
+    let mut attention = 0usize;
+    for row in rows {
+        if row["project"] != project || !ids.insert(row["run_id"].as_str().ok_or(Error::Identity)?)
+        {
+            return Err(Error::Identity);
+        }
+        let state = match row["scheduler_state"].as_str() {
+            Some(s) if !s.is_empty() => s,
+            None if !row["scheduler_state"].is_null() => return Err(Error::Evidence),
+            _ => "UNKNOWN",
+        };
+        let count = counts.get(state).and_then(Value::as_u64).unwrap_or(0) + 1;
+        counts.insert(state.into(), json!(count));
+        if matches!(state.to_uppercase().as_str(), "FAILED" | "PREEMPTED") {
+            attention += 1;
+        }
+        match row["evidence_stale"].as_bool() {
+            Some(true) => attention += 1,
+            Some(false) => {}
+            None => return Err(Error::Evidence),
+        }
+    }
+    bounded(experiment_redact::redact_json(
+        json!({"project":project,"title":title,"run_counts":counts,"attention_count":attention}),
+    ))
+}

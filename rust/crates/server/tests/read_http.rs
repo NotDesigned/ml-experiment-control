@@ -267,10 +267,7 @@ fn native_clients_pin_exact_attempt_and_keep_scientific_metric_dimensions() {
             .unwrap()
             .contains(&json!("result-collection.v1"))
     );
-    assert_eq!(
-        client.get("/api/projects").unwrap()["projects"][0]["project"],
-        "demo"
-    );
+    assert_eq!(client.get("/api/projects").unwrap()[0]["project"], "demo");
     let initial = status::observe(&client, &health, None, selected(None), true).unwrap();
     assert_eq!(initial["attempt_id"], "attempt-001");
     assert_eq!(initial["training"]["status"], "COMPLETED");

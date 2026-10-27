@@ -4,6 +4,7 @@ pub mod deletion;
 pub mod experiments;
 pub mod index;
 pub mod operations;
+pub mod projects;
 pub mod read_api;
 pub mod read_config;
 mod read_http;
@@ -92,10 +93,18 @@ async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next)
     next.run(request).await
 }
 
-fn health_document(projects: usize, workspace_id: &str, reads: bool) -> serde_json::Value {
+fn health_document(
+    projects: usize,
+    workspace_id: &str,
+    reads: bool,
+    lifecycle: bool,
+) -> serde_json::Value {
     let mut capabilities = vec!["bearer-auth.v1", "deployment-readiness.v1"];
     if reads {
         capabilities.extend(["metric-records.v1", "result-collection-read.v1"]);
+    }
+    if lifecycle {
+        capabilities.push("project-lifecycle.v1");
     }
     json!({
         "status":"ok", "server_version":env!("CARGO_PKG_VERSION"),
@@ -111,13 +120,19 @@ fn health_document(projects: usize, workspace_id: &str, reads: bool) -> serde_js
     })
 }
 
-async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let reads = state.reads.as_deref();
-    Json(health_document(
-        reads.map_or(0, read_api::Api::project_count),
-        reads.map_or("rust-isolated-preview", read_api::Api::workspace_id),
-        reads.is_some(),
-    ))
+async fn health(State(state): State<Arc<AppState>>) -> Response {
+    if state.reads.is_none() {
+        return Json(health_document(0, "rust-isolated-preview", false, false)).into_response();
+    }
+    read_http::execute(state, read_http::Access::Read, |api, _| {
+        Ok(health_document(
+            api.active_project_count()?,
+            api.workspace_id(),
+            true,
+            api.lifecycle().is_some(),
+        ))
+    })
+    .await
 }
 async fn readiness() -> Json<serde_json::Value> {
     Json(
@@ -178,8 +193,8 @@ fn schema_document() -> serde_json::Value {
     ]);
     let mut collection = run();
     collection.push(parameter("attempt"));
-    json!({"openapi":"3.1.0", "info":{"title":"ML-Expd Rust read-only preview", "version":env!("CARGO_PKG_VERSION"),
-    "description":"Incomplete native migration. Only explicitly configured isolated files are observed; no provider refresh, submission, collection, repair or acknowledgement is performed. ArtifactStore publication receipts are not migrated, so collection observations never assert verified download availability."},
+    let mut document = json!({"openapi":"3.1.0", "info":{"title":"ML-Expd Rust isolated preview", "version":env!("CARGO_PKG_VERSION"),
+    "description":"Incomplete native migration. Experiment GETs only observe approved isolated files. Explicitly enabled project lifecycle POSTs update their dedicated registry ledger; they do not edit research files, submit or stop jobs, refresh providers, collect artifacts or acknowledge downloads. ArtifactStore publication receipts are not migrated, so collection observations never assert verified download availability."},
     "components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}},"parameters":{
         "protocol":{"in":"header","name":CLIENT_PROTOCOL_HEADER,"required":true,"schema":{"type":"integer","const":2}},
         "project":{"in":"path","name":"project","required":true,"schema":{"type":"string"}},
@@ -187,7 +202,7 @@ fn schema_document() -> serde_json::Value {
         "attempt":{"in":"path","name":"attempt","required":true,"schema":{"type":"string","pattern":"^attempt-[0-9]{3,}$"}},
         "identity":{"in":"path","name":"identity","required":true,"schema":{"type":"string"},"description":"Exact Run::Attempt identity, e.g. train::attempt-001"}
     }},"security":[{"bearer":[]}],"paths":{
-        "/api/health":{"get":{"description":"Authenticated bootstrap; protocol header may be omitted only here","responses":{"200":{"description":"Capabilities and incomplete training readiness"},"401":{"description":"Authentication required"}}}},
+        "/api/health":{"get":{"description":"Authenticated bootstrap with active project count; protocol header may be omitted only here","responses":{"200":{"description":"Enabled capabilities and incomplete training readiness"},"401":{"description":"Authentication required"},"409":{"description":"Project lifecycle evidence is unavailable"},"429":{"description":"Local observation concurrency is full"},"504":{"description":"Observation deadline elapsed; underlying I/O can continue"}}}},
         "/api/readiness":operation("Preview readiness; training remains incomplete",vec![parameter("protocol")]),
         "/api/v2/openapi.json":operation("This static preview contract",vec![parameter("protocol")]),
         "/api/projects":operation("List only configured projects, without filesystem paths or private configuration",vec![parameter("protocol")]),
@@ -197,7 +212,43 @@ fn schema_document() -> serde_json::Value {
         "/api/attempts/{project}/{identity}/show":operation("Exact Attempt metadata and evidence provenance",exact()),
         "/api/attempts/{project}/{identity}/logs":operation("Exact Attempt bounded captured log tails with source diagnostics",logs),
         "/api/attempts/{project}/{identity}/metrics":operation("Exact Attempt scientific metrics; truncated raw history is PARTIAL, oversized canonical journal is refused",metrics)
-    }})
+    }});
+    let revision = json!({"type":["integer","null"],"minimum":0,"maximum":u64::MAX,"description":"Optional exact registry revision for compare-and-set; null omits the precondition"});
+    let lifecycle_body = json!({"type":"object","additionalProperties":false,"properties":{"reason":{"type":"string","maxLength":4000,"default":""},"expected_revision":revision}});
+    let source = json!({"type":"object","additionalProperties":false,"required":["manifest_path"],"properties":{"kind":{"type":"string","enum":["daemon_path"],"default":"daemon_path"},"manifest_path":{"type":"string","minLength":1,"maxLength":4096}}});
+    let register_body = json!({"type":"object","additionalProperties":false,"properties":{
+        "project_file":{"type":["string","null"],"minLength":1,"maxLength":4096},
+        "source":{"anyOf":[source,{"type":"null"}]},"expected_revision":revision},
+        "oneOf":[{"required":["project_file"],"properties":{"project_file":{"type":"string"}}},{"required":["source"],"properties":{"source":{"type":"object"}}}]});
+    let post = |description: &str, body: serde_json::Value, parameters: Vec<serde_json::Value>| {
+        json!({"post":{
+        "description":description,"parameters":parameters,"requestBody":{"required":true,"description":"Strict JSON mapping; at most 64 KiB","content":{"application/json":{"schema":body}}},
+        "responses":{"200":{"description":"Durable local project lifecycle result; research files and jobs are unchanged"},"401":{"description":"Bearer authentication required"},"404":{"description":"Registered project is unknown"},"409":{"description":"Lifecycle conflict, binding mismatch or invalid durable evidence"},"413":{"description":"Request exceeds the 64 KiB body limit"},"422":{"description":"Invalid or unsupported request"},"426":{"description":"Client protocol 2 required"},"429":{"description":"Local operation concurrency is full; no operation admitted"},"500":{"description":"Operation may have changed state, including after timeout or response failure; inspect lifecycle ledger before retrying"},"501":{"description":"Project lifecycle was not explicitly enabled"},"503":{"description":"Registry lock or transition context is unavailable"}}}})
+    };
+    let paths = document["paths"]
+        .as_object_mut()
+        .expect("static OpenAPI paths object");
+    paths.insert("/api/project-lifecycle".into(),operation("Observe the existing lifecycle registry and audit tail without repairing its pending journal",vec![parameter("protocol")]));
+    paths.insert("/api/project-lifecycle/register".into(),post("Register one configured approved daemon manifest path; this does not discover arbitrary client paths or import a source tree",register_body,vec![parameter("protocol")]));
+    paths.insert(
+        "/api/project-lifecycle/unregister-all".into(),
+        post(
+            "Remove all daemon tracking registrations; research files, artifacts and jobs remain",
+            lifecycle_body.clone(),
+            vec![parameter("protocol")],
+        ),
+    );
+    for action in ["pause", "resume", "archive", "restore", "unregister"] {
+        paths.insert(
+            format!("/api/project-lifecycle/{{project}}/{action}"),
+            post(
+                "Change daemon project tracking only; archive requires a nonempty reason",
+                lifecycle_body.clone(),
+                vec![parameter("protocol"), parameter("project")],
+            ),
+        );
+    }
+    document
 }
 async fn schema() -> Json<serde_json::Value> {
     Json(schema_document())
@@ -221,6 +272,7 @@ pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
         .route("/api/readiness", get(readiness))
         .route("/api/v2/openapi.json", get(schema))
         .merge(read_http::routes())
+        .merge(projects::http::routes())
         .fallback(unavailable)
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
@@ -338,13 +390,17 @@ mod tests {
 #[cfg(test)]
 mod schema_tests {
     #[test]
-    fn native_read_contract_contains_only_gets_and_declares_exact_identity() {
+    fn native_contract_declares_narrow_lifecycle_posts_and_exact_read_identity() {
         let schema = super::schema_document();
         let paths = schema["paths"].as_object().unwrap();
-        assert_eq!(paths.len(), 10);
-        for operations in paths.values() {
+        assert_eq!(paths.len(), 18);
+        for (path, operations) in paths {
             assert_eq!(operations.as_object().unwrap().len(), 1);
-            assert!(operations.get("get").is_some());
+            if path.starts_with("/api/project-lifecycle/") {
+                assert!(operations.get("post").is_some());
+            } else {
+                assert!(operations.get("get").is_some());
+            }
         }
         assert!(paths.contains_key("/api/attempts/{project}/{identity}/metrics"));
         assert!(paths.contains_key("/api/runs/{project}/{run}/attempts/{attempt}/collection"));
@@ -352,7 +408,7 @@ mod schema_tests {
             schema["components"]["parameters"]["protocol"]["schema"]["const"],
             2
         );
-        let health = super::health_document(1, "isolated", true);
+        let health = super::health_document(1, "isolated", true, false);
         assert!(
             health["capabilities"]
                 .as_array()
@@ -367,5 +423,22 @@ mod schema_tests {
                 .iter()
                 .any(|v| v == "result-collection.v1")
         );
+        assert!(
+            !health["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "project-lifecycle.v1")
+        );
+        let lifecycle = super::health_document(1, "isolated", true, true);
+        assert!(
+            lifecycle["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "project-lifecycle.v1")
+        );
+        assert_eq!(lifecycle["project_writes"], false);
+        assert_eq!(lifecycle["scheduler_mutations"], false);
     }
 }

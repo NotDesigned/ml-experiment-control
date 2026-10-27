@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod canonical;
 pub mod diagnostic;
+pub mod durable;
 pub mod failures;
 pub mod identity;
 pub mod index;
@@ -12,6 +13,7 @@ pub mod manifest;
 pub mod metrics;
 pub mod observation;
 pub mod operations;
+pub mod projects;
 pub mod records;
 pub mod slurm;
 pub mod state;

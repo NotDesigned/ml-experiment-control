@@ -9,7 +9,7 @@ pub use metrics::{
 };
 pub use projection::{
     LiveMetrics, LogQuery, LogStream, attempt_collection, attempt_logs, attempt_metrics,
-    attempt_show, outward_metadata, run_attempts, run_detail,
+    attempt_show, outward_metadata, project_summary, run_attempts, run_detail, run_summary,
 };
 
 pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -37,6 +37,12 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 fn bounded(value: Value) -> Result<Value> {
+    encoded_size(&value)?;
+    Ok(value)
+}
+
+/// Count a projection without allocating another serialized payload.
+pub(crate) fn encoded_size(value: &Value) -> Result<usize> {
     struct Limit(usize);
     impl std::io::Write for Limit {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -53,6 +59,36 @@ fn bounded(value: Value) -> Result<Value> {
             Ok(())
         }
     }
-    serde_json::to_writer(Limit(0), &value).map_err(|_| Error::OutputLimit)?;
-    Ok(value)
+    let mut limit = Limit(0);
+    serde_json::to_writer(&mut limit, value).map_err(|_| Error::OutputLimit)?;
+    Ok(limit.0)
+}
+
+/// Account for the next member before retaining it in a bounded JSON array.
+pub(crate) fn array_size(size: usize, value: &Value) -> Result<usize> {
+    size.checked_add(encoded_size(value)?)
+        .and_then(|size| size.checked_add(1))
+        .filter(|size| *size <= MAX_RESPONSE_BYTES)
+        .ok_or(Error::OutputLimit)
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_budget_counts_escaped_bytes_and_refuses_growth_before_retention() {
+        let unicode = Value::String("训练\n\"".into());
+        assert_eq!(
+            encoded_size(&unicode).unwrap(),
+            serde_json::to_vec(&unicode).unwrap().len()
+        );
+        let large = Value::String("x".repeat(MAX_RESPONSE_BYTES / 2));
+        let first = array_size(2, &large).unwrap();
+        assert!(matches!(array_size(first, &large), Err(Error::OutputLimit)));
+        assert!(matches!(
+            array_size(usize::MAX, &Value::Null),
+            Err(Error::OutputLimit)
+        ));
+    }
 }

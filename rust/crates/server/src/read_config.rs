@@ -19,22 +19,26 @@ const FORMAT: &str = "ml-expd-rust-preview.v1";
 #[error("invalid isolated experiment read configuration or workspace")]
 pub struct Error;
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub schema_version: u32,
     pub registry_root: PathBuf,
     pub projects: Vec<Project>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Project {
     pub project: String,
     pub project_file: PathBuf,
     pub run_roots: Vec<PathBuf>,
+    #[serde(default)]
     pub runs: Vec<Run>,
+    /// Omitted with no explicit locators enables canonical bounded discovery.
+    #[serde(default)]
+    pub discover_runs: Option<bool>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Run {
     pub run_id: String,
@@ -56,6 +60,11 @@ fn absolute(path: &Path) -> bool {
                 std::path::Component::RootDir | std::path::Component::Normal(_)
             )
         })
+}
+impl Project {
+    pub fn discovery_enabled(&self) -> bool {
+        self.discover_runs.unwrap_or(self.runs.is_empty())
+    }
 }
 impl Settings {
     pub fn from_json(bytes: &[u8]) -> Result<Self, Error> {
@@ -79,6 +88,7 @@ impl Settings {
                 || project.run_roots.is_empty()
                 || project.run_roots.len() > 64
                 || project.run_roots.iter().any(|p| !absolute(p))
+                || project.discovery_enabled() && !project.runs.is_empty()
             {
                 return Err(Error);
             }
@@ -198,6 +208,24 @@ pub fn workspace(path: &Path) -> Result<(Directory, String), Error> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn canonical_discovery_defaults_without_locators_and_refuses_mixed_sources() {
+        let mut value = json!({"schema_version":1,"registry_root":"/isolated/registry","projects":[{"project":"demo","project_file":"/isolated/demo/project.yaml","run_roots":["/isolated/demo/runs"]}]});
+        let parse =
+            |value: &serde_json::Value| Settings::from_json(&serde_json::to_vec(value).unwrap());
+        assert!(parse(&value).unwrap().projects[0].discovery_enabled());
+        value["projects"][0]["discover_runs"] = json!(false);
+        assert!(!parse(&value).unwrap().projects[0].discovery_enabled());
+        value["projects"][0]["runs"] =
+            json!([{"run_id":"train","root_index":0,"relative_components":["train"]}]);
+        value["projects"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("discover_runs");
+        assert!(!parse(&value).unwrap().projects[0].discovery_enabled());
+        value["projects"][0]["discover_runs"] = json!(true);
+        assert!(parse(&value).is_err());
+    }
     #[test]
     fn pure_config_refuses_ambiguous_unsafe_and_duplicate_bindings() {
         let value = json!({"schema_version":1,"registry_root":"/isolated/registry","projects":[{"project":"demo","project_file":"/isolated/demo/research_project.yaml","run_roots":["/isolated/demo/runs"],"runs":[{"run_id":"train","root_index":0,"relative_components":["train"]}]}]});
