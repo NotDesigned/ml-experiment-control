@@ -12,16 +12,18 @@ platform programs. User training code may still be Python.
 
 | Crate | Preview executable | Current scope |
 | --- | --- | --- |
-| `ml-exp-core` | Library | Pure identity/state contracts and limited typed metric validation |
-| `ml-exp-io` | Library | Shared explicit file/hash/atomic-write effects |
+| `ml-exp-core` | Library | Pure frozen JSON/Run/launch identities, metrics, Action/index reducers, observation views and Slurm plans/parsers |
+| `ml-exp-io` | Library | Shared explicit file/hash/atomic-write effects and Unix directory capabilities |
 | `ml-exp-client` | `ml-exp-rs` | Private saved settings and bounded read-only JSON API calls |
-| `ml-exp-server` | `ml-expd-rs` | Loopback-only authenticated health/readiness boundary |
+| `ml-exp-server` | `ml-expd-rs` | Loopback-only HTTP preview; isolated Action/RunIndex SQLite stores and permanent Run fences |
 | `ml-exp-worker` | `ml-exp-worker-rs` | Unix local subprocess supervision in a fresh output directory |
 
-There is no provider adapter, real experiment API, managed-worker protocol,
-artifact/data transfer or W&B implementation in the preview. Metrics are not yet
-the complete deployed schema, normalization or aggregation contract. A successful
-preview `check` does not mean training is configured.
+There is no executing provider adapter, real experiment API, managed-worker
+protocol, artifact/data transfer or W&B implementation in the preview. Metrics
+have native schema, observation and aggregation logic, but record ingress and
+durable publication are still missing. Slurm planners return data, never execute
+SSH or submit a job. The Action store, RunIndex and fences are not yet exposed through
+the preview HTTP server. A successful `check` does not mean training is configured.
 
 ## Build and check
 

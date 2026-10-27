@@ -24,23 +24,23 @@
       "server": {
         "modules": 160,
         "lines": 30572,
-        "partial_foundation": 6,
-        "not_started": 154
+        "partial_foundation": 15,
+        "not_started": 145
       },
       "core": {
         "modules": 25,
         "lines": 5122,
-        "partial_foundation": 6,
-        "not_started": 19
+        "partial_foundation": 9,
+        "not_started": 16
       },
       "worker": {
         "modules": 14,
         "lines": 1953,
-        "partial_foundation": 1,
-        "not_started": 13
+        "partial_foundation": 2,
+        "not_started": 12
       }
     },
-    "partial_foundation_modules": 17,
+    "partial_foundation_modules": 30,
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
@@ -556,8 +556,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "operations",
       "proposed_consolidation": "One reviewed mutation engine and durable intent store; consolidate mixins and forwarding facades.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/server/src/operations/mod.rs",
+        "scope": "Pure reviewed Action state transitions plus schema-v1 SQLite store, immutable plans, revisions/CAS, atomic audit, command journal and restart reconciliation. Real legacy SQLite and concurrent/crash fixtures; native HTTP/executor/project-fence integration remains incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/actions/errors.py",
@@ -676,8 +682,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "operations",
       "proposed_consolidation": "One reviewed mutation engine and durable intent store; consolidate mixins and forwarding facades.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/operations.rs",
+        "scope": "Pure reviewed Action state transitions plus schema-v1 SQLite store, immutable plans, revisions/CAS, atomic audit, command journal and restart reconciliation. Real legacy SQLite and concurrent/crash fixtures; native HTTP/executor/project-fence integration remains incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/actions/project_writes.py",
@@ -713,8 +725,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "operations",
       "proposed_consolidation": "One reviewed mutation engine and durable intent store; consolidate mixins and forwarding facades.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/operations.rs",
+        "scope": "Pure reviewed Action state transitions plus schema-v1 SQLite store, immutable plans, revisions/CAS, atomic audit, command journal and restart reconciliation. Real legacy SQLite and concurrent/crash fixtures; native HTTP/executor/project-fence integration remains incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/actions/service.py",
@@ -743,8 +761,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "operations",
       "proposed_consolidation": "One reviewed mutation engine and durable intent store; consolidate mixins and forwarding facades.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/server/src/operations/mod.rs",
+        "scope": "Pure reviewed Action state transitions plus schema-v1 SQLite store, immutable plans, revisions/CAS, atomic audit, command journal and restart reconciliation. Real legacy SQLite and concurrent/crash fixtures; native HTTP/executor/project-fence integration remains incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/api/__init__.py",
@@ -1486,8 +1510,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "providers.slurm",
       "proposed_consolidation": "Co-locate provider preparation/collection/deletion with scheduling adapters; preserve separate effects and exact ownership.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/slurm.rs",
+        "scope": "Pure Slurm resource allocation parsing/planning only; actual SSH/storage/result effects remain incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/backends/states.py",
@@ -2136,8 +2166,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "persistence",
       "proposed_consolidation": "Shared durable storage and capacity policy; do not merge data, checkpoint, journal and result lifetimes.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/server/src/deletion.rs",
+        "scope": "Permanent tombstone and shared/exclusive Run guards with explicit deletion timestamp; malformed records remain fenced. Not yet wired into all native mutation/read paths.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/deployment.py",
@@ -2290,8 +2326,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "observation",
       "proposed_consolidation": "Read old layouts at one compatibility boundary; one indexed evidence read model, never scheduler authority.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/server/src/index/mod.rs",
+        "scope": "Legacy SQLite RunIndex store with explicit-time pure diff/poll reducers, exact key checks, unknown metadata retention and deletion fences. Does not yet implement scan/index_project, complete HTTP DTO/failure assessment, collector or invalidations.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/ingest/legacy.py",
@@ -2384,8 +2426,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "http",
       "proposed_consolidation": "One sanitized outward projection of domain read models.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/observation.rs",
+        "scope": "Recursive transport sanitization and operational decision projection; 23 legacy reference cases. Full DTO composition remains incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/pai_storage.py",
@@ -2626,8 +2674,9 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/core/src/metrics.rs",
-        "scope": "Typed in-memory metric validation/context keys only; no normalized-record pipeline, schema definitions, ratio_of_sums, required-item checks, conflict merge or frozen protocol hash parity.",
-        "compatibility_accepted": false
+        "scope": "Generic metric definitions/schema, typed/wide observations, conditional requirements, exact context conflicts, ratio_of_sums and frozen protocol hashes. 4205 differential cases; ingress/journal/W&B integration remains incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
       }
     },
     {
@@ -2963,8 +3012,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "observation",
       "proposed_consolidation": "One backend-neutral evidence reducer; provider snapshots and worker facts remain independent.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/observation.rs",
+        "scope": "Pure progress history/view with explicit time and 218 differential cases. File read/write composition remains incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/runs/executor_capabilities.py",
@@ -3697,8 +3752,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "providers.slurm",
       "proposed_consolidation": "Merge scheduler and related server storage/debug operations behind a provider module; retain separate job/storage/debug ports.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/slurm.rs",
+        "scope": "Pure Slurm job scripts, command plans, status/ownership/resource parsing; synthetic differential/negative fixtures. Actual SSH staging, durable outbox, transfer, Apptainer execution and real provider acceptance remain incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "src/experiment_control/checkpoints.py",
@@ -3826,8 +3887,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "persistence",
       "proposed_consolidation": "One durable state/intent implementation with atomic publication, locks and no uncertain replay.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/observation.rs",
+        "scope": "Terminal evidence merge and Python semantic equality; 1300 exact-output synthetic comparisons. No provider refresh or automatic replay.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "src/experiment_control/outbox.py",
@@ -3912,8 +3979,14 @@
       "target_crate": "ml-exp-core",
       "target_domain": "contracts",
       "proposed_consolidation": "Shared wire values, exact identities and pure validation; storage and scheduler effects stay in server.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/manifest.rs",
+        "scope": "Run manifest construction and comparison with exact canonical bytes/SHA; 40 legacy reference cases. Not yet wired into native Run creation.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "src/experiment_control/runner.py",
@@ -4238,8 +4311,14 @@
       "target_crate": "ml-exp-worker",
       "target_domain": "execution",
       "proposed_consolidation": "One native worker entry with explicit subcommands and a sealed launch contract; never invoke Python platform scripts.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/launch.rs",
+        "scope": "Pure exact-Attempt manifest validation/canonical encoding and body checksum/identity verification; 137 Python encoding cases plus endpoint/capability negatives. Native HTTPS fetch/report and managed execution remain incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "worker/src/ml_exp_worker/worker_records.py",

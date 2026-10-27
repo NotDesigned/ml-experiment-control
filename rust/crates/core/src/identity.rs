@@ -27,6 +27,22 @@ pub fn validate_attempt(value: &str) -> Result<&str, IdentityError> {
     Ok(value)
 }
 
+/// The two daemon-generated companion identities are readable and fenced with
+/// their original parent ID, even when the suffix takes them over 128 bytes.
+pub fn validate_observation_id(value: &str) -> Result<&str, IdentityError> {
+    if validate_id(value).is_ok()
+        || ["--preparation", "--backfill"].iter().any(|suffix| {
+            value
+                .strip_suffix(suffix)
+                .is_some_and(|parent| validate_id(parent).is_ok())
+        })
+    {
+        Ok(value)
+    } else {
+        Err(IdentityError("observation"))
+    }
+}
+
 pub fn submission_marker(token: &str) -> Result<String, IdentityError> {
     if token.len() != 32
         || !token

@@ -1,6 +1,26 @@
 //! Explicit metric units and context. Scientific meanings remain project-owned.
 use serde::{Deserialize, Serialize};
 
+mod observation;
+mod python_printability;
+mod result;
+mod schema;
+
+pub use crate::canonical::protocol_identity;
+pub(crate) use observation::python_string;
+
+pub use observation::{MetricValue, ObservationInput, finite, observations, observations_typed};
+pub use result::{metric_result, metric_result_typed, numeric_compare, numeric_equal};
+pub use schema::{MetricDefinition, MetricSchema, RequiredWhen};
+
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum MetricError {
+    #[error("invalid metric schema")]
+    Schema,
+    #[error("metric record or normalized identity is invalid")]
+    Record,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum MetricStatus {

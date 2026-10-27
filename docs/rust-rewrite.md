@@ -22,18 +22,52 @@ rewrite of users' training code.
 
 | Component | Implemented foundation | Still missing |
 | --- | --- | --- |
-| Core | Pure identifier/marker validation, lifecycle enum and typed metric values | Full frozen contracts, exact compatibility and domain validation |
-| Shared I/O | Private file reads, atomic writes and SHA256 file streaming | Complete storage/lock/transport primitives and all durable domain protocols |
+| Core | Python-compatible frozen JSON/digests, Run and launch manifests, generic metric schema/aggregation, Action/index reducers, Slurm command plans/parsers and observation projections | Remaining frozen contracts and complete cross-domain integration |
+| Shared I/O | Private file reads, atomic writes, SHA256 streaming and Unix directory capabilities | Remaining transport primitives and durable domain protocols |
 | Client | Private URL-bound connection settings, bounded JSON GET, preview `check/get/config` commands | Submit/upload/download/ACK, saved-state workflows, updates and full command coverage |
-| Server | Loopback-only authenticated health/readiness boundary, protocol checks and a minimal preview schema | Real projects, persistence, collectors, all provider integrations, TLS and mutation APIs |
+| Server | Loopback-only HTTP boundary; isolated legacy-compatible Action/RunIndex SQLite stores and permanent Run deletion fences | Experiment API composition, canonical journal, projects, scanners/collectors, provider executors, TLS and mutation APIs |
 | Worker | Fresh-directory local subprocess execution, timeout/process-group supervision and result hashes | Sealed managed launch, data, checkpoint, journal, artifact, build, copy and deletion protocols |
 
-Typed metrics are a validation slice. They do not yet implement the deployed
-normalization pipeline, schema definitions, required metric rules,
-`ratio_of_sums`, aggregation, conflict merging, persisted record identity or
-protocol hashing. An in-memory context key is not a new frozen protocol hash.
-No Rust source module is yet accepted as a complete replacement for its Python
-domain. A passing native test is evidence for its tested slice only.
+Metrics now include schema/definition validation, typed and wide observations,
+explicit units, required/conditional metrics, context-sensitive conflicts and
+`ratio_of_sums`. Variant, protocol, checkpoint, dataset, step and epoch remain
+separate. Non-finite observations retain diagnostics. These pure functions do
+not yet replace the record ingress, journal, displayed metrics or W&B publisher.
+
+Compatibility fixtures preserve the baseline source hashes and synthetic inputs.
+Frozen JSON tests compare exact bytes and SHA256, including Python float formatting,
+large integers and Unicode; observational projections also compare exact output
+encoding. Action tests use a real legacy SQLite fixture, competing claims and
+interrupted transactions. Slurm tests compare generated scripts and parse synthetic
+scheduler evidence. None of these tests uses a live provider or production state.
+
+The Action store keeps schema version 1 and immutable plan files. Pure reducers
+take time, transition IDs and PID as input. Unknown submission outcomes remain
+`RECONCILE_REQUIRED`; a retry plan requires exact, unambiguous evidence that no
+job was submitted. Deletion guards never expire tombstones or delete assets.
+Unix deletion storage retains directory descriptors rather than checking a path
+and later reopening it. Intermediate symlinks, renamed/replaced parents and
+non-regular lock targets are refused; new directory entries and immutable
+tombstones are synced. Queries and index mutations share the deletion lock.
+That directory-capability guarantee currently covers deletion storage. Action
+plan/command paths and SQLite's path-based opens still need a common anchored
+storage integration before exposing mutation APIs; final-component no-follow
+checks alone are not protection against every concurrent parent replacement.
+
+The disposable Run index preserves its legacy schema and unknown row metadata.
+Pure change detection ignores only `scanned_at`, collector errors stay isolated
+per verb, and evidence merging requires an exact Project/Run/Attempt. It is not
+the complete outward `run_detail` or daemon-built failure assessment. Launch
+validation similarly verifies the sealed manifest without fetching or executing it.
+
+Several native policies deliberately reject unsafe legacy inputs: foreign or
+duplicate Slurm identities, backwards terminal-state observations, malformed lock
+targets and permission errors on deletion fences. Such validation changes are
+recorded explicitly; they are not silent changes to old frozen identities.
+
+No Rust module has been installed as a replacement for production. A passing
+domain test is evidence for that tested domain, not acceptance of the entire
+platform, an HTTP operation, or GPU training.
 
 The preview commands are `ml-exp-rs`, `ml-expd-rs` and `ml-exp-worker-rs`.
 They deliberately do not replace `ml-exp`, `ml-expd`, installed service units or

@@ -1,0 +1,2910 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "e725faec689fb8395e692e27d00a8896fa7fe5a5",
+  "generation": "Evaluated unchanged Python functions and allocation parser AST with synthetic inputs; no subprocess, SSH, scheduler, production config or credential access. Native hardening differences are labelled separately.",
+  "sources": [
+    {
+      "path": "src/experiment_control/backends/slurm.py",
+      "sha256": "9a6211594602375c151fdcf0ede6a76a4df1efb3938e9ebba879b14657b779b3",
+      "symbols": [
+        "normalize_state",
+        "scheduler_job_name",
+        "render_job",
+        "parse_accounting",
+        "SlurmBackend.validate"
+      ]
+    },
+    {
+      "path": "server/src/ml_exp_server/runs/allocation_status.py",
+      "sha256": "3eaedaf5a0d8d26dbd8a75b474c43c41b59cb3b17d4fddfed0a6bbbdfbc37ba7",
+      "symbols": [
+        "count",
+        "parse"
+      ]
+    },
+    {
+      "path": "src/experiment_control/submission.py",
+      "sha256": "ec5b38bb27ea71d818deda7babdaa3229058c8f1e01a278a21c83ba94486ebad",
+      "symbols": [
+        "submission_marker"
+      ]
+    }
+  ],
+  "normalization_cases": [
+    {
+      "raw": "PENDING",
+      "exit_code": null,
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "PENDING",
+      "exit_code": "",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "PENDING",
+      "exit_code": "0:0",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "PENDING",
+      "exit_code": "1:0",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "PENDING",
+      "exit_code": "0:9",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "CONFIGURING",
+      "exit_code": null,
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "CONFIGURING",
+      "exit_code": "",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "CONFIGURING",
+      "exit_code": "0:0",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "CONFIGURING",
+      "exit_code": "1:0",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "CONFIGURING",
+      "exit_code": "0:9",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "REQUEUED",
+      "exit_code": null,
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "REQUEUED",
+      "exit_code": "",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "REQUEUED",
+      "exit_code": "0:0",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "REQUEUED",
+      "exit_code": "1:0",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "REQUEUED",
+      "exit_code": "0:9",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "REQUEUE_FED",
+      "exit_code": null,
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "REQUEUE_FED",
+      "exit_code": "",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "REQUEUE_FED",
+      "exit_code": "0:0",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "REQUEUE_FED",
+      "exit_code": "1:0",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "REQUEUE_FED",
+      "exit_code": "0:9",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "RUNNING",
+      "exit_code": null,
+      "expected": "RUNNING"
+    },
+    {
+      "raw": "RUNNING",
+      "exit_code": "",
+      "expected": "RUNNING"
+    },
+    {
+      "raw": "RUNNING",
+      "exit_code": "0:0",
+      "expected": "RUNNING"
+    },
+    {
+      "raw": "RUNNING",
+      "exit_code": "1:0",
+      "expected": "RUNNING"
+    },
+    {
+      "raw": "RUNNING",
+      "exit_code": "0:9",
+      "expected": "RUNNING"
+    },
+    {
+      "raw": "COMPLETING",
+      "exit_code": null,
+      "expected": "RUNNING"
+    },
+    {
+      "raw": "COMPLETING",
+      "exit_code": "",
+      "expected": "RUNNING"
+    },
+    {
+      "raw": "COMPLETING",
+      "exit_code": "0:0",
+      "expected": "RUNNING"
+    },
+    {
+      "raw": "COMPLETING",
+      "exit_code": "1:0",
+      "expected": "RUNNING"
+    },
+    {
+      "raw": "COMPLETING",
+      "exit_code": "0:9",
+      "expected": "RUNNING"
+    },
+    {
+      "raw": "COMPLETED",
+      "exit_code": null,
+      "expected": "SUCCEEDED"
+    },
+    {
+      "raw": "COMPLETED",
+      "exit_code": "",
+      "expected": "SUCCEEDED"
+    },
+    {
+      "raw": "COMPLETED",
+      "exit_code": "0:0",
+      "expected": "SUCCEEDED"
+    },
+    {
+      "raw": "COMPLETED",
+      "exit_code": "1:0",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "COMPLETED",
+      "exit_code": "0:9",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "PREEMPTED",
+      "exit_code": null,
+      "expected": "PREEMPTED"
+    },
+    {
+      "raw": "PREEMPTED",
+      "exit_code": "",
+      "expected": "PREEMPTED"
+    },
+    {
+      "raw": "PREEMPTED",
+      "exit_code": "0:0",
+      "expected": "PREEMPTED"
+    },
+    {
+      "raw": "PREEMPTED",
+      "exit_code": "1:0",
+      "expected": "PREEMPTED"
+    },
+    {
+      "raw": "PREEMPTED",
+      "exit_code": "0:9",
+      "expected": "PREEMPTED"
+    },
+    {
+      "raw": "FAILED",
+      "exit_code": null,
+      "expected": "FAILED"
+    },
+    {
+      "raw": "FAILED",
+      "exit_code": "",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "FAILED",
+      "exit_code": "0:0",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "FAILED",
+      "exit_code": "1:0",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "FAILED",
+      "exit_code": "0:9",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "NODE_FAIL",
+      "exit_code": null,
+      "expected": "FAILED"
+    },
+    {
+      "raw": "NODE_FAIL",
+      "exit_code": "",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "NODE_FAIL",
+      "exit_code": "0:0",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "NODE_FAIL",
+      "exit_code": "1:0",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "NODE_FAIL",
+      "exit_code": "0:9",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "OUT_OF_MEMORY",
+      "exit_code": null,
+      "expected": "FAILED"
+    },
+    {
+      "raw": "OUT_OF_MEMORY",
+      "exit_code": "",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "OUT_OF_MEMORY",
+      "exit_code": "0:0",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "OUT_OF_MEMORY",
+      "exit_code": "1:0",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "OUT_OF_MEMORY",
+      "exit_code": "0:9",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "TIMEOUT",
+      "exit_code": null,
+      "expected": "FAILED"
+    },
+    {
+      "raw": "TIMEOUT",
+      "exit_code": "",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "TIMEOUT",
+      "exit_code": "0:0",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "TIMEOUT",
+      "exit_code": "1:0",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "TIMEOUT",
+      "exit_code": "0:9",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "CANCELLED",
+      "exit_code": null,
+      "expected": "CANCELLED"
+    },
+    {
+      "raw": "CANCELLED",
+      "exit_code": "",
+      "expected": "CANCELLED"
+    },
+    {
+      "raw": "CANCELLED",
+      "exit_code": "0:0",
+      "expected": "CANCELLED"
+    },
+    {
+      "raw": "CANCELLED",
+      "exit_code": "1:0",
+      "expected": "CANCELLED"
+    },
+    {
+      "raw": "CANCELLED",
+      "exit_code": "0:9",
+      "expected": "CANCELLED"
+    },
+    {
+      "raw": "BOOT_FAIL",
+      "exit_code": null,
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "BOOT_FAIL",
+      "exit_code": "",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "BOOT_FAIL",
+      "exit_code": "0:0",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "BOOT_FAIL",
+      "exit_code": "1:0",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "BOOT_FAIL",
+      "exit_code": "0:9",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "DEADLINE",
+      "exit_code": null,
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "DEADLINE",
+      "exit_code": "",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "DEADLINE",
+      "exit_code": "0:0",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "DEADLINE",
+      "exit_code": "1:0",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "DEADLINE",
+      "exit_code": "0:9",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "SUSPENDED",
+      "exit_code": null,
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "SUSPENDED",
+      "exit_code": "",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "SUSPENDED",
+      "exit_code": "0:0",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "SUSPENDED",
+      "exit_code": "1:0",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "SUSPENDED",
+      "exit_code": "0:9",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "UNKNOWN",
+      "exit_code": null,
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "UNKNOWN",
+      "exit_code": "",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "UNKNOWN",
+      "exit_code": "0:0",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "UNKNOWN",
+      "exit_code": "1:0",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "UNKNOWN",
+      "exit_code": "0:9",
+      "expected": "UNKNOWN"
+    },
+    {
+      "raw": "COMPLETED+",
+      "exit_code": null,
+      "expected": "SUCCEEDED"
+    },
+    {
+      "raw": "COMPLETED+",
+      "exit_code": "",
+      "expected": "SUCCEEDED"
+    },
+    {
+      "raw": "COMPLETED+",
+      "exit_code": "0:0",
+      "expected": "SUCCEEDED"
+    },
+    {
+      "raw": "COMPLETED+",
+      "exit_code": "1:0",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "COMPLETED+",
+      "exit_code": "0:9",
+      "expected": "FAILED"
+    },
+    {
+      "raw": "CANCELLED by 1000",
+      "exit_code": null,
+      "expected": "CANCELLED"
+    },
+    {
+      "raw": "CANCELLED by 1000",
+      "exit_code": "",
+      "expected": "CANCELLED"
+    },
+    {
+      "raw": "CANCELLED by 1000",
+      "exit_code": "0:0",
+      "expected": "CANCELLED"
+    },
+    {
+      "raw": "CANCELLED by 1000",
+      "exit_code": "1:0",
+      "expected": "CANCELLED"
+    },
+    {
+      "raw": "CANCELLED by 1000",
+      "exit_code": "0:9",
+      "expected": "CANCELLED"
+    },
+    {
+      "raw": "pending",
+      "exit_code": null,
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "pending",
+      "exit_code": "",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "pending",
+      "exit_code": "0:0",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "pending",
+      "exit_code": "1:0",
+      "expected": "QUEUED"
+    },
+    {
+      "raw": "pending",
+      "exit_code": "0:9",
+      "expected": "QUEUED"
+    }
+  ],
+  "quote_cases": [
+    {
+      "value": "",
+      "expected": "''"
+    },
+    {
+      "value": "simple",
+      "expected": "simple"
+    },
+    {
+      "value": "-option",
+      "expected": "-option"
+    },
+    {
+      "value": "a/b:c",
+      "expected": "a/b:c"
+    },
+    {
+      "value": "a b",
+      "expected": "'a b'"
+    },
+    {
+      "value": "a'b",
+      "expected": "'a'\"'\"'b'"
+    },
+    {
+      "value": "\"quoted\"",
+      "expected": "'\"quoted\"'"
+    },
+    {
+      "value": "$(touch never)",
+      "expected": "'$(touch never)'"
+    },
+    {
+      "value": "`never`",
+      "expected": "'`never`'"
+    },
+    {
+      "value": "semi;colon",
+      "expected": "'semi;colon'"
+    },
+    {
+      "value": "x|y",
+      "expected": "'x|y'"
+    },
+    {
+      "value": "\n",
+      "expected": "'\n'"
+    },
+    {
+      "value": "a\nb",
+      "expected": "'a\nb'"
+    },
+    {
+      "value": "中文",
+      "expected": "'中文'"
+    },
+    {
+      "value": "a\\b",
+      "expected": "'a\\b'"
+    },
+    {
+      "value": "100%",
+      "expected": "100%"
+    },
+    {
+      "value": "a=b",
+      "expected": "a=b"
+    },
+    {
+      "value": "user@example.org",
+      "expected": "user@example.org"
+    },
+    {
+      "value": "a\tb",
+      "expected": "'a\tb'"
+    },
+    {
+      "value": "*",
+      "expected": "'*'"
+    },
+    {
+      "value": "{x}",
+      "expected": "'{x}'"
+    },
+    {
+      "value": "[a]",
+      "expected": "'[a]'"
+    },
+    {
+      "value": "a&b",
+      "expected": "'a&b'"
+    },
+    {
+      "value": "#comment",
+      "expected": "'#comment'"
+    },
+    {
+      "value": "x\ry",
+      "expected": "'x\ry'"
+    }
+  ],
+  "job_name_cases": [
+    {
+      "run_id": "run",
+      "attempt_id": "attempt-001",
+      "expected": "run--attempt-001"
+    },
+    {
+      "run_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+      "attempt_id": "attempt-001",
+      "expected": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr--attempt-001"
+    },
+    {
+      "run_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+      "attempt_id": "attempt-001",
+      "expected": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr--attempt-001"
+    },
+    {
+      "run_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+      "attempt_id": "attempt-999",
+      "expected": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr--ed792ab5be19"
+    },
+    {
+      "run_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+      "attempt_id": "attempt-9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999",
+      "expected": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr--8c858fb953ef"
+    }
+  ],
+  "render_cases": [
+    {
+      "id": "basic-dry",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "token": null,
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+    },
+    {
+      "id": "basic-intent",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+    },
+    {
+      "id": "memory-dry",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8,
+          "memory_gb": 128
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "token": null,
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --mem=128G\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+    },
+    {
+      "id": "memory-intent",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8,
+          "memory_gb": 128
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --mem=128G\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+    },
+    {
+      "id": "managed-dry",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app",
+          "managed_io": true
+        }
+      },
+      "token": null,
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+    },
+    {
+      "id": "managed-intent",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app",
+          "managed_io": true
+        }
+      },
+      "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+    },
+    {
+      "id": "oci-dry",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif",
+          "oci_image": "registry.example/ns/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app",
+          "managed_io": true
+        }
+      },
+      "token": null,
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+    },
+    {
+      "id": "oci-intent",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif",
+          "oci_image": "registry.example/ns/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app",
+          "managed_io": true
+        }
+      },
+      "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+    },
+    {
+      "id": "unsquash-dry",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif",
+          "apptainer_unsquash": true,
+          "apptainer_cache_dir": "/shared/cache",
+          "apptainer_tmp_dir": "/tmp/native-reference"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "token": null,
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/cache\nexport APPTAINER_TMPDIR=/tmp/native-reference\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/cache /tmp/native-reference\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv --unsquash \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+    },
+    {
+      "id": "unsquash-intent",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif",
+          "apptainer_unsquash": true,
+          "apptainer_cache_dir": "/shared/cache",
+          "apptainer_tmp_dir": "/tmp/native-reference"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/cache\nexport APPTAINER_TMPDIR=/tmp/native-reference\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/cache /tmp/native-reference\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv --unsquash \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+    },
+    {
+      "id": "spaces-dry",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project space/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project space/sources/source-fixed",
+          "sif_path": "/shared/project space/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "token": null,
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output='/shared/project space/runs/native-reference/attempts/attempt-001/slurm-%j.out'\n#SBATCH --error='/shared/project space/runs/native-reference/attempts/attempt-001/slurm-%j.err'\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p '/shared/project space/runs/native-reference' /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir='/shared/project space/runs/native-reference/attempts/attempt-001'\nmkdir -p \"$attempt_log_dir\"\ntest -d '/shared/project space/sources/source-fixed'\ntest -s '/shared/project space/images/test.sif'\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind '/shared/project space/sources/source-fixed':/app \\\n  --pwd /app \\\n  '/shared/project space/images/test.sif' \\\n  python train.py\n"
+    },
+    {
+      "id": "spaces-intent",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project space/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project space/sources/source-fixed",
+          "sif_path": "/shared/project space/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output='/shared/project space/runs/native-reference/attempts/attempt-001/slurm-%j.out'\n#SBATCH --error='/shared/project space/runs/native-reference/attempts/attempt-001/slurm-%j.err'\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p '/shared/project space/runs/native-reference' /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir='/shared/project space/runs/native-reference/attempts/attempt-001'\nmkdir -p \"$attempt_log_dir\"\ntest -d '/shared/project space/sources/source-fixed'\ntest -s '/shared/project space/images/test.sif'\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind '/shared/project space/sources/source-fixed':/app \\\n  --pwd /app \\\n  '/shared/project space/images/test.sif' \\\n  python train.py\n"
+    },
+    {
+      "id": "quoting-dry",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "script with space.py",
+          "a'b",
+          "$(not-executed)",
+          "中文",
+          "line\nbreak"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "token": null,
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python 'script with space.py' 'a'\"'\"'b' '$(not-executed)' '中文' 'line\nbreak'\n"
+    },
+    {
+      "id": "quoting-intent",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "script with space.py",
+          "a'b",
+          "$(not-executed)",
+          "中文",
+          "line\nbreak"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python 'script with space.py' 'a'\"'\"'b' '$(not-executed)' '中文' 'line\nbreak'\n"
+    },
+    {
+      "id": "long_name-dry",
+      "spec": {
+        "run_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "token": null,
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr--7aade965de39\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+    },
+    {
+      "id": "long_name-intent",
+      "spec": {
+        "run_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr--7aade965de39\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+    }
+  ],
+  "config_cases": [
+    {
+      "id": "good",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": true,
+      "native_valid": true,
+      "difference": null
+    },
+    {
+      "id": "gpu_mismatch",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 2,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "gpu_zero",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 0,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "gpu_bool",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": true,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "nodes_two",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8,
+          "nodes": 2
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "nodes_bool",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8,
+          "nodes": true
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "gres_empty",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "gres_type_missing",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "gres_zero",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:h100:0",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "gres_leading_zero",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:h100:01",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "gres_injection",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:h100:1\nX",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "partition_shell",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "gpu;touch",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "account_newline",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab\n",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "qos_option",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "--bad",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": true,
+      "native_valid": false,
+      "difference": "reject option-shaped component at configured scope boundary"
+    },
+    {
+      "id": "image_mutable",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "latest",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "mount_relative",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "source_outside",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/another/source",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "run_outside",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/another/run",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "cache_relative",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif",
+          "apptainer_cache_dir": "relative"
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "timeout_low",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif",
+          "image_stage_timeout_seconds": 29
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "timeout_high",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif",
+          "image_stage_timeout_seconds": 1081
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "timeout_bool",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif",
+          "image_stage_timeout_seconds": true
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": false,
+      "native_valid": false,
+      "difference": null
+    },
+    {
+      "id": "timeout_min",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif",
+          "image_stage_timeout_seconds": 30
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": true,
+      "native_valid": true,
+      "difference": null
+    },
+    {
+      "id": "timeout_max",
+      "spec": {
+        "run_id": "native-reference",
+        "image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resources": {
+          "gpus": 1,
+          "cpus": 8
+        },
+        "storage": {
+          "run_dir": "/shared/project/runs/native-reference",
+          "project_data_root": "/shared/project",
+          "additional_roots": {
+            "data_root": "/shared",
+            "hf_home": "/shared/project/cache/huggingface"
+          }
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "cluster-login",
+          "partition": "accelerator",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:accelerator:1",
+          "time": "00:10:00",
+          "mount_root": "/shared",
+          "source_dir": "/shared/project/sources/source-fixed",
+          "sif_path": "/shared/project/images/test.sif",
+          "image_stage_timeout_seconds": 1080
+        },
+        "attempt_id": "attempt-001",
+        "command": [
+          "python",
+          "train.py"
+        ],
+        "execution": {
+          "source_mount": "/app",
+          "workdir": "/app"
+        }
+      },
+      "python_valid": true,
+      "native_valid": true,
+      "difference": null
+    }
+  ],
+  "accounting_cases": [
+    {
+      "id": "running",
+      "source": "squeue",
+      "output": "1234|native-reference--attempt-001|accelerator|RUNNING|00:01:00|0:0|node-a\n",
+      "expected": {
+        "run_id": "native-reference",
+        "backend": "slurm",
+        "backend_job_id": "1234",
+        "state": "RUNNING",
+        "raw_state": "RUNNING",
+        "partition": "accelerator",
+        "elapsed": "00:01:00",
+        "exit_code": "0:0",
+        "reason": null,
+        "detail": {}
+      },
+      "native_exit_code": null,
+      "difference": "squeue 0:0 placeholder is not actual exit evidence"
+    },
+    {
+      "id": "pending",
+      "source": "squeue",
+      "output": "1234|native-reference--attempt-001|accelerator|PENDING|00:01:00|0:0|Priority\n",
+      "expected": {
+        "run_id": "native-reference",
+        "backend": "slurm",
+        "backend_job_id": "1234",
+        "state": "QUEUED",
+        "raw_state": "PENDING",
+        "partition": "accelerator",
+        "elapsed": "00:01:00",
+        "exit_code": "0:0",
+        "reason": "Priority",
+        "detail": {
+          "pending_reason": "Priority"
+        }
+      },
+      "native_exit_code": null,
+      "difference": "squeue 0:0 placeholder is not actual exit evidence"
+    },
+    {
+      "id": "configuring",
+      "source": "squeue",
+      "output": "1234|native-reference--attempt-001|accelerator|CONFIGURING|00:01:00|0:0|Resources\n",
+      "expected": {
+        "run_id": "native-reference",
+        "backend": "slurm",
+        "backend_job_id": "1234",
+        "state": "QUEUED",
+        "raw_state": "CONFIGURING",
+        "partition": "accelerator",
+        "elapsed": "00:01:00",
+        "exit_code": "0:0",
+        "reason": "Resources",
+        "detail": {
+          "pending_reason": "Resources"
+        }
+      },
+      "native_exit_code": null,
+      "difference": "squeue 0:0 placeholder is not actual exit evidence"
+    },
+    {
+      "id": "succeeded",
+      "source": "sacct",
+      "output": "1234|native-reference--attempt-001|accelerator|COMPLETED|00:01:00|0:0\n",
+      "expected": {
+        "run_id": "native-reference",
+        "backend": "slurm",
+        "backend_job_id": "1234",
+        "state": "SUCCEEDED",
+        "raw_state": "COMPLETED",
+        "partition": "accelerator",
+        "elapsed": "00:01:00",
+        "exit_code": "0:0",
+        "reason": null,
+        "detail": {}
+      },
+      "native_exit_code": "0:0",
+      "difference": null
+    },
+    {
+      "id": "nonzero",
+      "source": "sacct",
+      "output": "1234|native-reference--attempt-001|accelerator|COMPLETED|00:01:00|1:0\n",
+      "expected": {
+        "run_id": "native-reference",
+        "backend": "slurm",
+        "backend_job_id": "1234",
+        "state": "FAILED",
+        "raw_state": "COMPLETED",
+        "partition": "accelerator",
+        "elapsed": "00:01:00",
+        "exit_code": "1:0",
+        "reason": null,
+        "detail": {}
+      },
+      "native_exit_code": "1:0",
+      "difference": null
+    },
+    {
+      "id": "oom",
+      "source": "sacct",
+      "output": "1234|native-reference--attempt-001|accelerator|OUT_OF_MEMORY|00:01:00|0:9\n",
+      "expected": {
+        "run_id": "native-reference",
+        "backend": "slurm",
+        "backend_job_id": "1234",
+        "state": "FAILED",
+        "raw_state": "OUT_OF_MEMORY",
+        "partition": "accelerator",
+        "elapsed": "00:01:00",
+        "exit_code": "0:9",
+        "reason": null,
+        "detail": {}
+      },
+      "native_exit_code": "0:9",
+      "difference": null
+    },
+    {
+      "id": "boot",
+      "source": "sacct",
+      "output": "1234|native-reference--attempt-001|accelerator|BOOT_FAIL|00:01:00|0:0\n",
+      "expected": {
+        "run_id": "native-reference",
+        "backend": "slurm",
+        "backend_job_id": "1234",
+        "state": "UNKNOWN",
+        "raw_state": "BOOT_FAIL",
+        "partition": "accelerator",
+        "elapsed": "00:01:00",
+        "exit_code": "0:0",
+        "reason": null,
+        "detail": {}
+      },
+      "native_exit_code": "0:0",
+      "difference": null
+    },
+    {
+      "id": "cancelled",
+      "source": "sacct",
+      "output": "1234|native-reference--attempt-001|accelerator|CANCELLED by 1000|00:01:00|0:15\n",
+      "expected": {
+        "run_id": "native-reference",
+        "backend": "slurm",
+        "backend_job_id": "1234",
+        "state": "CANCELLED",
+        "raw_state": "CANCELLED",
+        "partition": "accelerator",
+        "elapsed": "00:01:00",
+        "exit_code": "0:15",
+        "reason": null,
+        "detail": {}
+      },
+      "native_exit_code": "0:15",
+      "difference": null
+    },
+    {
+      "id": "requeue",
+      "source": "squeue",
+      "output": "1234|native-reference--attempt-001|accelerator|REQUEUED|00:01:00|0:0|node-list\n",
+      "expected": {
+        "run_id": "native-reference",
+        "backend": "slurm",
+        "backend_job_id": "1234",
+        "state": "QUEUED",
+        "raw_state": "REQUEUED",
+        "partition": "accelerator",
+        "elapsed": "00:01:00",
+        "exit_code": "0:0",
+        "reason": null,
+        "detail": {}
+      },
+      "native_exit_code": null,
+      "difference": "squeue 0:0 placeholder is not actual exit evidence"
+    }
+  ],
+  "allocation_cases": [
+    {
+      "id": "basic",
+      "output": "NodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED\nML_EXPD_QUEUE\n123\n124_[1-3]\n",
+      "partition": "gpu",
+      "valid": true,
+      "expected": {
+        "resources": {
+          "gpus": {
+            "total": 8,
+            "allocated": 3,
+            "unallocated": 5
+          },
+          "cpus": {
+            "total": 16,
+            "allocated": 4,
+            "unallocated": 12
+          },
+          "memory_bytes": {
+            "total": 1073741824,
+            "allocated": 268435456,
+            "unallocated": 805306368
+          }
+        },
+        "nodes": [
+          {
+            "node": "n1",
+            "state": "MIXED",
+            "resources": {
+              "gpus": {
+                "total": 8,
+                "allocated": 3,
+                "unallocated": 5
+              },
+              "cpus": {
+                "total": 16,
+                "allocated": 4,
+                "unallocated": 12
+              },
+              "memory_bytes": {
+                "total": 1073741824,
+                "allocated": 268435456,
+                "unallocated": 805306368
+              }
+            }
+          }
+        ],
+        "pending_queue_entries": 2
+      }
+    },
+    {
+      "id": "filtered",
+      "output": "ignored line\nNodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED\nNodeName=n2 Partitions=other,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED\nML_EXPD_QUEUE\n123\n",
+      "partition": "gpu",
+      "valid": true,
+      "expected": {
+        "resources": {
+          "gpus": {
+            "total": 8,
+            "allocated": 3,
+            "unallocated": 5
+          },
+          "cpus": {
+            "total": 16,
+            "allocated": 4,
+            "unallocated": 12
+          },
+          "memory_bytes": {
+            "total": 1073741824,
+            "allocated": 268435456,
+            "unallocated": 805306368
+          }
+        },
+        "nodes": [
+          {
+            "node": "n1",
+            "state": "MIXED",
+            "resources": {
+              "gpus": {
+                "total": 8,
+                "allocated": 3,
+                "unallocated": 5
+              },
+              "cpus": {
+                "total": 16,
+                "allocated": 4,
+                "unallocated": 12
+              },
+              "memory_bytes": {
+                "total": 1073741824,
+                "allocated": 268435456,
+                "unallocated": 805306368
+              }
+            }
+          }
+        ],
+        "pending_queue_entries": 1
+      }
+    },
+    {
+      "id": "two_nodes",
+      "output": "NodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED\nNodeName=n2 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED\nML_EXPD_QUEUE\n",
+      "partition": "gpu",
+      "valid": true,
+      "expected": {
+        "resources": {
+          "gpus": {
+            "total": 16,
+            "allocated": 6,
+            "unallocated": 10
+          },
+          "cpus": {
+            "total": 32,
+            "allocated": 8,
+            "unallocated": 24
+          },
+          "memory_bytes": {
+            "total": 2147483648,
+            "allocated": 536870912,
+            "unallocated": 1610612736
+          }
+        },
+        "nodes": [
+          {
+            "node": "n1",
+            "state": "MIXED",
+            "resources": {
+              "gpus": {
+                "total": 8,
+                "allocated": 3,
+                "unallocated": 5
+              },
+              "cpus": {
+                "total": 16,
+                "allocated": 4,
+                "unallocated": 12
+              },
+              "memory_bytes": {
+                "total": 1073741824,
+                "allocated": 268435456,
+                "unallocated": 805306368
+              }
+            }
+          },
+          {
+            "node": "n2",
+            "state": "MIXED",
+            "resources": {
+              "gpus": {
+                "total": 8,
+                "allocated": 3,
+                "unallocated": 5
+              },
+              "cpus": {
+                "total": 16,
+                "allocated": 4,
+                "unallocated": 12
+              },
+              "memory_bytes": {
+                "total": 1073741824,
+                "allocated": 268435456,
+                "unallocated": 805306368
+              }
+            }
+          }
+        ],
+        "pending_queue_entries": 0
+      }
+    },
+    {
+      "id": "down_idle",
+      "output": "NodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES= CPUTot=16 CPUAlloc=0 RealMemory=1024 AllocMem=0 State=DOWN\nML_EXPD_QUEUE\n",
+      "partition": "gpu",
+      "valid": true,
+      "expected": {
+        "resources": {
+          "gpus": {
+            "total": 8,
+            "allocated": 0,
+            "unallocated": 8
+          },
+          "cpus": {
+            "total": 16,
+            "allocated": 0,
+            "unallocated": 16
+          },
+          "memory_bytes": {
+            "total": 1073741824,
+            "allocated": 0,
+            "unallocated": 1073741824
+          }
+        },
+        "nodes": [
+          {
+            "node": "n1",
+            "state": "DOWN",
+            "resources": {
+              "gpus": {
+                "total": 8,
+                "allocated": 0,
+                "unallocated": 8
+              },
+              "cpus": {
+                "total": 16,
+                "allocated": 0,
+                "unallocated": 16
+              },
+              "memory_bytes": {
+                "total": 1073741824,
+                "allocated": 0,
+                "unallocated": 1073741824
+              }
+            }
+          }
+        ],
+        "pending_queue_entries": 0
+      }
+    },
+    {
+      "id": "missing_gpu_alloc",
+      "output": "NodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED\nML_EXPD_QUEUE\n123\n124_[1-3]\n",
+      "partition": "gpu",
+      "valid": true,
+      "expected": {
+        "resources": {
+          "gpus": {
+            "total": 8,
+            "allocated": 0,
+            "unallocated": 8
+          },
+          "cpus": {
+            "total": 16,
+            "allocated": 4,
+            "unallocated": 12
+          },
+          "memory_bytes": {
+            "total": 1073741824,
+            "allocated": 268435456,
+            "unallocated": 805306368
+          }
+        },
+        "nodes": [
+          {
+            "node": "n1",
+            "state": "MIXED",
+            "resources": {
+              "gpus": {
+                "total": 8,
+                "allocated": 0,
+                "unallocated": 8
+              },
+              "cpus": {
+                "total": 16,
+                "allocated": 4,
+                "unallocated": 12
+              },
+              "memory_bytes": {
+                "total": 1073741824,
+                "allocated": 268435456,
+                "unallocated": 805306368
+              }
+            }
+          }
+        ],
+        "pending_queue_entries": 2
+      }
+    },
+    {
+      "id": "missing_marker",
+      "output": "NodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED",
+      "partition": "gpu",
+      "valid": false,
+      "expected": null
+    },
+    {
+      "id": "duplicate_marker",
+      "output": "NodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED\nML_EXPD_QUEUE\n\nML_EXPD_QUEUE\n",
+      "partition": "gpu",
+      "valid": false,
+      "expected": null
+    },
+    {
+      "id": "no_nodes",
+      "output": "nothing\nML_EXPD_QUEUE\n",
+      "partition": "gpu",
+      "valid": false,
+      "expected": null
+    },
+    {
+      "id": "duplicate_node",
+      "output": "NodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED\nNodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED\nML_EXPD_QUEUE\n",
+      "partition": "gpu",
+      "valid": false,
+      "expected": null
+    },
+    {
+      "id": "negative",
+      "output": "NodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=-1 RealMemory=1024 AllocMem=256 State=MIXED\nML_EXPD_QUEUE\n123\n124_[1-3]\n",
+      "partition": "gpu",
+      "valid": false,
+      "expected": null
+    },
+    {
+      "id": "gpu_over",
+      "output": "NodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=9 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED\nML_EXPD_QUEUE\n123\n124_[1-3]\n",
+      "partition": "gpu",
+      "valid": false,
+      "expected": null
+    },
+    {
+      "id": "missing_alloc",
+      "output": "NodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES= CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED\nML_EXPD_QUEUE\n123\n124_[1-3]\n",
+      "partition": "gpu",
+      "valid": false,
+      "expected": null
+    },
+    {
+      "id": "missing_gpu_config",
+      "output": "NodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED\nML_EXPD_QUEUE\n123\n124_[1-3]\n",
+      "partition": "gpu",
+      "valid": false,
+      "expected": null
+    },
+    {
+      "id": "bad_memory",
+      "output": "NodeName=n1 Partitions=gpu,gpu-debug CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=4 RealMemory=oops AllocMem=256 State=MIXED\nML_EXPD_QUEUE\n123\n124_[1-3]\n",
+      "partition": "gpu",
+      "valid": false,
+      "expected": null
+    }
+  ]
+}

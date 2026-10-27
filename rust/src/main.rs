@@ -153,6 +153,9 @@ fn redact_lines(input: &str) -> String {
             match serde_json::from_str::<Value>(&payload) {
                 Ok(mut value) if value.is_object() => {
                     redact_json_value(&mut value);
+                    // Preserve the historical BTreeMap wire ordering even when
+                    // application crates enable serde_json preserve_order.
+                    value.sort_all_objects();
                     match serde_json::to_string(&value) {
                         Ok(payload) => output.push_str(&payload),
                         Err(_) => output.push_str("<redacted-malformed>"),
