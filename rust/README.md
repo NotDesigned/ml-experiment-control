@@ -75,6 +75,14 @@ outbox reducer. Random tokens, durable file publication and Slurm/PAI/SenseCore
 calls remain in the imperative shells. An unavailable provider query stays
 UNKNOWN and cannot be silently retried.
 
+W&B publication planning is also native in
+`ml-exp-core::tracking::publication`. It consumes an explicit local event
+suffix, publisher reservations and remote history/display evidence, then
+returns deterministic `EmitHistory`, `PublishDisplay` or `Finish` actions.
+Local SDK writes are kept distinct from remote history ACKs; sequence/event-ID
+conflicts and incomplete provider reads fail closed. The W&B SDK session,
+credentials, HTTP operations and durable outbox remain in the Python shell.
+
 `ml-exp-core::transfers` applies the same boundary to the one-GiB unacknowledged
 upload buffer. It validates part identities, metadata names, block-rounded
 capacity charges and exact durable receipts, and reduces `RECEIVING`, `SEALED`

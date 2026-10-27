@@ -76,6 +76,16 @@ atomic JSON files, clocks, random token generation and provider calls. This keep
 the difficult replay boundary in a deterministic library without pretending the
 Rust preview is a deployable scheduler.
 
+W&B publication now has a matching pure reducer in
+`ml-exp-core::tracking::publication`. It checks the exact sequence/event-ID
+prefix returned by remote history, distinguishes an SDK send that is still
+pending from a proven history ACK, and requires a separate display-version and
+display-through ACK before terminal `finish`. The reducer returns only
+`EmitHistory`, `PublishDisplay` and `Finish` actions; the Python shell retains
+the SDK session, credentials, HTTP calls, durable outbox and retry timing.
+Missing, stale or ambiguous remote history remains `ReconcileRequired`, so a
+publisher timeout cannot create a duplicate row or falsely finish a Run.
+
 The upload transfer buffer now has a native pure contract as well. Rust validates
 the `upload.<sha256>`/part identity, derives the metadata filename and charged
 filesystem bytes, applies the fixed one-GiB ceiling, checks durable remote

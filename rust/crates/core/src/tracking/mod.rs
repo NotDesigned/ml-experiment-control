@@ -3,6 +3,7 @@
 //! remain authoritative regardless of any publication/display failure.
 mod contract;
 mod display;
+pub mod publication;
 
 pub use contract::{
     RoutingSettings, WandbOptions, WandbSettings, finite_parameters, finite_parameters_json,

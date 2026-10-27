@@ -24,14 +24,14 @@
       "server": {
         "modules": 160,
         "lines": 30572,
-        "partial_foundation": 32,
-        "not_started": 132
+        "partial_foundation": 34,
+        "not_started": 130
       },
       "core": {
         "modules": 25,
         "lines": 5122,
-        "partial_foundation": 10,
-        "not_started": 15
+        "partial_foundation": 12,
+        "not_started": 13
       },
       "worker": {
         "modules": 14,
@@ -40,7 +40,7 @@
         "not_started": 10
       }
     },
-    "partial_foundation_modules": 58,
+    "partial_foundation_modules": 59,
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
@@ -3704,8 +3704,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "tracking",
       "proposed_consolidation": "Optional native W&B publisher over accepted records; replace Python SDK only after real protocol/heartbeat acceptance.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/tracking/publication.rs",
+        "scope": "Pure remote-history/display-ACK publication reducer: sequence/event-ID reconciliation, SDK-send reservations, display ACK and terminal finish decisions. W&B SDK, credentials, HTTP and durable outbox remain in the Python shell.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/worker_contract.py",

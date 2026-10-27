@@ -6,6 +6,7 @@
 //! into either an uncharged leak or an unsafe deletion.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 pub const BUFFER_BYTES: u64 = 1024 * 1024 * 1024;
 pub const LOCK_STRIPES: u64 = 128;
@@ -205,6 +206,125 @@ impl BufferSnapshot {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Claim {
+    pub state: TransferState,
+    /// The shell could not acquire this part's stripe lock during recovery.
+    /// Such a claim must remain charged and cannot be cleaned speculatively.
+    pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryAction {
+    KeepActive,
+    KeepSealed,
+    RemoveReceiving,
+    RemoveConfirmed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimDecision {
+    pub identity: PartIdentity,
+    pub action: RecoveryAction,
+    pub charged_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BufferAccounting {
+    pub limit_bytes: u64,
+    pub reserved_bytes: u64,
+    pub payload_bytes: u64,
+    pub charged_bytes: u64,
+    pub fixed_overhead_bytes: u64,
+    pub filesystem_block_bytes: u64,
+    pub pending_bytes: u64,
+    pub available_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoverySnapshot {
+    pub accounting: BufferAccounting,
+    pub decisions: Vec<ClaimDecision>,
+}
+
+/// Reduce the shell's no-follow recovery observations into accounting and
+/// cleanup actions. Lock acquisition, receipt file reads and deletion remain
+/// effects; a caller must apply only the returned action after its own lock.
+pub fn snapshot(
+    claims: &[Claim],
+    limit_bytes: u64,
+    filesystem_block_bytes: u64,
+) -> Result<RecoverySnapshot> {
+    if limit_bytes == 0 || limit_bytes > BUFFER_BYTES || filesystem_block_bytes == 0 {
+        return Err(Error::Accounting);
+    }
+    let fixed = fixed_overhead(filesystem_block_bytes)?;
+    let mut reserved = 0u64;
+    let mut pending = 0u64;
+    let mut charged = fixed;
+    let mut seen = BTreeSet::new();
+    let mut decisions = Vec::with_capacity(claims.len());
+    for claim in claims {
+        let identity = claim.state.identity();
+        let key = identity.key()?;
+        if !seen.insert(key) {
+            return Err(Error::State);
+        }
+        claim.state.validate(&identity.metadata_name()?)?;
+        let keep = claim.active || claim.state.status == TransferStatus::Sealed;
+        let (action, charge) = if claim.active {
+            (
+                RecoveryAction::KeepActive,
+                charged_bytes(identity.bytes, filesystem_block_bytes)?,
+            )
+        } else {
+            match claim.state.status {
+                TransferStatus::Sealed => {
+                    pending = pending
+                        .checked_add(identity.bytes)
+                        .ok_or(Error::Accounting)?;
+                    (
+                        RecoveryAction::KeepSealed,
+                        charged_bytes(identity.bytes, filesystem_block_bytes)?,
+                    )
+                }
+                TransferStatus::Receiving => (RecoveryAction::RemoveReceiving, 0),
+                TransferStatus::Confirmed => {
+                    check_receipt(
+                        &identity,
+                        claim.state.receipt.as_ref().ok_or(Error::Receipt)?,
+                    )?;
+                    (RecoveryAction::RemoveConfirmed, 0)
+                }
+            }
+        };
+        if keep {
+            reserved = reserved
+                .checked_add(identity.bytes)
+                .ok_or(Error::Accounting)?;
+            charged = charged.checked_add(charge).ok_or(Error::Accounting)?;
+        }
+        decisions.push(ClaimDecision {
+            identity,
+            action,
+            charged_bytes: charge,
+        });
+    }
+    Ok(RecoverySnapshot {
+        accounting: BufferAccounting {
+            limit_bytes,
+            reserved_bytes: reserved,
+            payload_bytes: reserved,
+            charged_bytes: charged,
+            fixed_overhead_bytes: fixed,
+            filesystem_block_bytes,
+            pending_bytes: pending,
+            available_bytes: limit_bytes.saturating_sub(charged),
+        },
+        decisions,
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdmissionAction {
     Receive,
@@ -336,7 +456,7 @@ mod tests {
             durable: true,
         }
     }
-    fn snapshot() -> BufferSnapshot {
+    fn buffer_snapshot() -> BufferSnapshot {
         BufferSnapshot {
             limit_bytes: BUFFER_BYTES,
             charged_bytes: fixed_overhead(4096).unwrap(),
@@ -390,12 +510,12 @@ mod tests {
     #[test]
     fn admission_new_part_uses_charged_capacity_and_filesystem_bytes() {
         let part = identity(0, 4096);
-        let admitted = admit(None, part, snapshot(), 4096).unwrap();
+        let admitted = admit(None, part, buffer_snapshot(), 4096).unwrap();
         assert_eq!(admitted.action, AdmissionAction::Receive);
         assert_eq!(admitted.state.status, TransferStatus::Receiving);
         assert!(admitted.charged_bytes > admitted.state.bytes);
         assert_eq!(
-            admit(None, identity(0, 4096), snapshot(), 0),
+            admit(None, identity(0, 4096), buffer_snapshot(), 0),
             Err(Error::Storage)
         );
     }
@@ -409,9 +529,9 @@ mod tests {
             &part.sha256,
         )
         .unwrap();
-        let admitted = admit(Some(&state), part, snapshot(), 0).unwrap();
+        let admitted = admit(Some(&state), part, buffer_snapshot(), 0).unwrap();
         assert_eq!(admitted.action, AdmissionAction::Resume);
-        assert_eq!(admitted.charged_bytes, snapshot().charged_bytes);
+        assert_eq!(admitted.charged_bytes, buffer_snapshot().charged_bytes);
     }
 
     #[test]
@@ -424,7 +544,7 @@ mod tests {
         )
         .unwrap();
         let confirmed = acknowledge(&state, receipt(&part)).unwrap();
-        let admitted = admit(Some(&confirmed), part, snapshot(), 0).unwrap();
+        let admitted = admit(Some(&confirmed), part, buffer_snapshot(), 0).unwrap();
         assert_eq!(admitted.action, AdmissionAction::ResetConfirmed);
         assert_eq!(admitted.state.status, TransferStatus::Receiving);
     }
@@ -434,7 +554,7 @@ mod tests {
         let part = identity(0, 4096);
         let full = BufferSnapshot {
             charged_bytes: BUFFER_BYTES,
-            ..snapshot()
+            ..buffer_snapshot()
         };
         assert_eq!(admit(None, part, full, 4096), Err(Error::Busy));
     }
@@ -457,8 +577,96 @@ mod tests {
         let mut changed = identity(0, 100);
         changed.sha256 = "c".repeat(64);
         assert_eq!(
-            admit(Some(&state), changed, snapshot(), 0),
+            admit(Some(&state), changed, buffer_snapshot(), 0),
             Err(Error::Identity)
+        );
+    }
+
+    #[test]
+    fn recovery_keeps_active_and_sealed_claims_but_cleans_receiving_and_confirmed() {
+        let receiving = TransferState::new(identity(0, 100)).unwrap();
+        let sealed_part = identity(1, 200);
+        let sealed = seal(
+            &TransferState::new(sealed_part.clone()).unwrap(),
+            sealed_part.bytes,
+            &sealed_part.sha256,
+        )
+        .unwrap();
+        let confirmed_part = identity(2, 300);
+        let confirmed = acknowledge(
+            &seal(
+                &TransferState::new(confirmed_part.clone()).unwrap(),
+                confirmed_part.bytes,
+                &confirmed_part.sha256,
+            )
+            .unwrap(),
+            receipt(&confirmed_part),
+        )
+        .unwrap();
+        let result = snapshot(
+            &[
+                Claim {
+                    state: receiving,
+                    active: true,
+                },
+                Claim {
+                    state: sealed,
+                    active: false,
+                },
+                Claim {
+                    state: TransferState::new(identity(3, 50)).unwrap(),
+                    active: false,
+                },
+                Claim {
+                    state: confirmed,
+                    active: false,
+                },
+            ],
+            BUFFER_BYTES,
+            4096,
+        )
+        .unwrap();
+        assert_eq!(result.decisions[0].action, RecoveryAction::KeepActive);
+        assert_eq!(result.decisions[1].action, RecoveryAction::KeepSealed);
+        assert_eq!(result.decisions[2].action, RecoveryAction::RemoveReceiving);
+        assert_eq!(result.decisions[3].action, RecoveryAction::RemoveConfirmed);
+        assert_eq!(result.accounting.reserved_bytes, 300);
+        assert_eq!(result.accounting.pending_bytes, 200);
+        assert!(result.accounting.charged_bytes > result.accounting.fixed_overhead_bytes);
+    }
+
+    #[test]
+    fn recovery_rejects_duplicate_claims_and_unproved_confirmed_cleanup() {
+        let state = TransferState::new(identity(0, 100)).unwrap();
+        assert_eq!(
+            snapshot(
+                &[
+                    Claim {
+                        state: state.clone(),
+                        active: true,
+                    },
+                    Claim {
+                        state,
+                        active: false,
+                    },
+                ],
+                BUFFER_BYTES,
+                4096,
+            ),
+            Err(Error::State)
+        );
+        let mut corrupt = TransferState::new(identity(1, 100)).unwrap();
+        corrupt.status = TransferStatus::Confirmed;
+        assert_eq!(
+            snapshot(
+                &[Claim {
+                    state: corrupt,
+                    active: false,
+                }],
+                BUFFER_BYTES,
+                4096,
+            ),
+            Err(Error::Receipt)
         );
     }
 }
