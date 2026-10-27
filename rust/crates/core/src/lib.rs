@@ -13,6 +13,7 @@ pub mod index;
 pub mod launch;
 pub mod manifest;
 pub mod metrics;
+pub mod multipart;
 pub mod observation;
 pub mod operations;
 pub mod projects;
