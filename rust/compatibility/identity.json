@@ -1,0 +1,1132 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "baseline_commit": "e725faec689fb8395e692e27d00a8896fa7fe5a5",
+    "source_path": "src/experiment_control/manifest.py",
+    "source_sha256": "2b51c7ccb21ef21f98f395de2487aa901a0b470331ad1b13e4173f2c80369ba6",
+    "symbols": [
+      "validate_identity",
+      "IDENTITY_RE"
+    ],
+    "generation": "Imported the baseline Python implementation and evaluated every case; no production state or provider access."
+  },
+  "input_scope": "String identities only; includes every ASCII code point as first and subsequent character and length boundaries.",
+  "cases": [
+    {
+      "value": "",
+      "valid": false
+    },
+    {
+      "value": "a",
+      "valid": true
+    },
+    {
+      "value": "A",
+      "valid": true
+    },
+    {
+      "value": "0",
+      "valid": true
+    },
+    {
+      "value": "project-2026.10_27",
+      "valid": true
+    },
+    {
+      "value": "attempt-001",
+      "valid": true
+    },
+    {
+      "value": "source.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": true
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": true
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": true
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": false
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": false
+    },
+    {
+      "value": "0...............................................................................................................................",
+      "valid": true
+    },
+    {
+      "value": "Z_______________________________________________________________________________________________________________________________",
+      "valid": true
+    },
+    {
+      "value": "1-------------------------------------------------------------------------------------------------------------------------------",
+      "valid": true
+    },
+    {
+      "value": ".hidden",
+      "valid": false
+    },
+    {
+      "value": "..",
+      "valid": false
+    },
+    {
+      "value": "../run",
+      "valid": false
+    },
+    {
+      "value": "a/b",
+      "valid": false
+    },
+    {
+      "value": "a\\b",
+      "valid": false
+    },
+    {
+      "value": "\u00e9",
+      "valid": false
+    },
+    {
+      "value": "a\u00e9",
+      "valid": false
+    },
+    {
+      "value": "\u6a21\u578b",
+      "valid": false
+    },
+    {
+      "value": "a\u6a21\u578b",
+      "valid": false
+    },
+    {
+      "value": "a\u00a0",
+      "valid": false
+    },
+    {
+      "value": "\u00a0a",
+      "valid": false
+    },
+    {
+      "value": "a\ud83d\ude42",
+      "valid": false
+    },
+    {
+      "value": "\u0000",
+      "valid": false
+    },
+    {
+      "value": "\u0001",
+      "valid": false
+    },
+    {
+      "value": "\u0002",
+      "valid": false
+    },
+    {
+      "value": "\u0003",
+      "valid": false
+    },
+    {
+      "value": "\u0004",
+      "valid": false
+    },
+    {
+      "value": "\u0005",
+      "valid": false
+    },
+    {
+      "value": "\u0006",
+      "valid": false
+    },
+    {
+      "value": "\u0007",
+      "valid": false
+    },
+    {
+      "value": "\b",
+      "valid": false
+    },
+    {
+      "value": "\t",
+      "valid": false
+    },
+    {
+      "value": "\n",
+      "valid": false
+    },
+    {
+      "value": "\u000b",
+      "valid": false
+    },
+    {
+      "value": "\f",
+      "valid": false
+    },
+    {
+      "value": "\r",
+      "valid": false
+    },
+    {
+      "value": "\u000e",
+      "valid": false
+    },
+    {
+      "value": "\u000f",
+      "valid": false
+    },
+    {
+      "value": "\u0010",
+      "valid": false
+    },
+    {
+      "value": "\u0011",
+      "valid": false
+    },
+    {
+      "value": "\u0012",
+      "valid": false
+    },
+    {
+      "value": "\u0013",
+      "valid": false
+    },
+    {
+      "value": "\u0014",
+      "valid": false
+    },
+    {
+      "value": "\u0015",
+      "valid": false
+    },
+    {
+      "value": "\u0016",
+      "valid": false
+    },
+    {
+      "value": "\u0017",
+      "valid": false
+    },
+    {
+      "value": "\u0018",
+      "valid": false
+    },
+    {
+      "value": "\u0019",
+      "valid": false
+    },
+    {
+      "value": "\u001a",
+      "valid": false
+    },
+    {
+      "value": "\u001b",
+      "valid": false
+    },
+    {
+      "value": "\u001c",
+      "valid": false
+    },
+    {
+      "value": "\u001d",
+      "valid": false
+    },
+    {
+      "value": "\u001e",
+      "valid": false
+    },
+    {
+      "value": "\u001f",
+      "valid": false
+    },
+    {
+      "value": " ",
+      "valid": false
+    },
+    {
+      "value": "!",
+      "valid": false
+    },
+    {
+      "value": "\"",
+      "valid": false
+    },
+    {
+      "value": "#",
+      "valid": false
+    },
+    {
+      "value": "$",
+      "valid": false
+    },
+    {
+      "value": "%",
+      "valid": false
+    },
+    {
+      "value": "&",
+      "valid": false
+    },
+    {
+      "value": "'",
+      "valid": false
+    },
+    {
+      "value": "(",
+      "valid": false
+    },
+    {
+      "value": ")",
+      "valid": false
+    },
+    {
+      "value": "*",
+      "valid": false
+    },
+    {
+      "value": "+",
+      "valid": false
+    },
+    {
+      "value": ",",
+      "valid": false
+    },
+    {
+      "value": "-",
+      "valid": false
+    },
+    {
+      "value": ".",
+      "valid": false
+    },
+    {
+      "value": "/",
+      "valid": false
+    },
+    {
+      "value": "1",
+      "valid": true
+    },
+    {
+      "value": "2",
+      "valid": true
+    },
+    {
+      "value": "3",
+      "valid": true
+    },
+    {
+      "value": "4",
+      "valid": true
+    },
+    {
+      "value": "5",
+      "valid": true
+    },
+    {
+      "value": "6",
+      "valid": true
+    },
+    {
+      "value": "7",
+      "valid": true
+    },
+    {
+      "value": "8",
+      "valid": true
+    },
+    {
+      "value": "9",
+      "valid": true
+    },
+    {
+      "value": ":",
+      "valid": false
+    },
+    {
+      "value": ";",
+      "valid": false
+    },
+    {
+      "value": "<",
+      "valid": false
+    },
+    {
+      "value": "=",
+      "valid": false
+    },
+    {
+      "value": ">",
+      "valid": false
+    },
+    {
+      "value": "?",
+      "valid": false
+    },
+    {
+      "value": "@",
+      "valid": false
+    },
+    {
+      "value": "B",
+      "valid": true
+    },
+    {
+      "value": "C",
+      "valid": true
+    },
+    {
+      "value": "D",
+      "valid": true
+    },
+    {
+      "value": "E",
+      "valid": true
+    },
+    {
+      "value": "F",
+      "valid": true
+    },
+    {
+      "value": "G",
+      "valid": true
+    },
+    {
+      "value": "H",
+      "valid": true
+    },
+    {
+      "value": "I",
+      "valid": true
+    },
+    {
+      "value": "J",
+      "valid": true
+    },
+    {
+      "value": "K",
+      "valid": true
+    },
+    {
+      "value": "L",
+      "valid": true
+    },
+    {
+      "value": "M",
+      "valid": true
+    },
+    {
+      "value": "N",
+      "valid": true
+    },
+    {
+      "value": "O",
+      "valid": true
+    },
+    {
+      "value": "P",
+      "valid": true
+    },
+    {
+      "value": "Q",
+      "valid": true
+    },
+    {
+      "value": "R",
+      "valid": true
+    },
+    {
+      "value": "S",
+      "valid": true
+    },
+    {
+      "value": "T",
+      "valid": true
+    },
+    {
+      "value": "U",
+      "valid": true
+    },
+    {
+      "value": "V",
+      "valid": true
+    },
+    {
+      "value": "W",
+      "valid": true
+    },
+    {
+      "value": "X",
+      "valid": true
+    },
+    {
+      "value": "Y",
+      "valid": true
+    },
+    {
+      "value": "Z",
+      "valid": true
+    },
+    {
+      "value": "[",
+      "valid": false
+    },
+    {
+      "value": "\\",
+      "valid": false
+    },
+    {
+      "value": "]",
+      "valid": false
+    },
+    {
+      "value": "^",
+      "valid": false
+    },
+    {
+      "value": "_",
+      "valid": false
+    },
+    {
+      "value": "`",
+      "valid": false
+    },
+    {
+      "value": "b",
+      "valid": true
+    },
+    {
+      "value": "c",
+      "valid": true
+    },
+    {
+      "value": "d",
+      "valid": true
+    },
+    {
+      "value": "e",
+      "valid": true
+    },
+    {
+      "value": "f",
+      "valid": true
+    },
+    {
+      "value": "g",
+      "valid": true
+    },
+    {
+      "value": "h",
+      "valid": true
+    },
+    {
+      "value": "i",
+      "valid": true
+    },
+    {
+      "value": "j",
+      "valid": true
+    },
+    {
+      "value": "k",
+      "valid": true
+    },
+    {
+      "value": "l",
+      "valid": true
+    },
+    {
+      "value": "m",
+      "valid": true
+    },
+    {
+      "value": "n",
+      "valid": true
+    },
+    {
+      "value": "o",
+      "valid": true
+    },
+    {
+      "value": "p",
+      "valid": true
+    },
+    {
+      "value": "q",
+      "valid": true
+    },
+    {
+      "value": "r",
+      "valid": true
+    },
+    {
+      "value": "s",
+      "valid": true
+    },
+    {
+      "value": "t",
+      "valid": true
+    },
+    {
+      "value": "u",
+      "valid": true
+    },
+    {
+      "value": "v",
+      "valid": true
+    },
+    {
+      "value": "w",
+      "valid": true
+    },
+    {
+      "value": "x",
+      "valid": true
+    },
+    {
+      "value": "y",
+      "valid": true
+    },
+    {
+      "value": "z",
+      "valid": true
+    },
+    {
+      "value": "{",
+      "valid": false
+    },
+    {
+      "value": "|",
+      "valid": false
+    },
+    {
+      "value": "}",
+      "valid": false
+    },
+    {
+      "value": "~",
+      "valid": false
+    },
+    {
+      "value": "\u007f",
+      "valid": false
+    },
+    {
+      "value": "a\u0000",
+      "valid": false
+    },
+    {
+      "value": "a\u0001",
+      "valid": false
+    },
+    {
+      "value": "a\u0002",
+      "valid": false
+    },
+    {
+      "value": "a\u0003",
+      "valid": false
+    },
+    {
+      "value": "a\u0004",
+      "valid": false
+    },
+    {
+      "value": "a\u0005",
+      "valid": false
+    },
+    {
+      "value": "a\u0006",
+      "valid": false
+    },
+    {
+      "value": "a\u0007",
+      "valid": false
+    },
+    {
+      "value": "a\b",
+      "valid": false
+    },
+    {
+      "value": "a\t",
+      "valid": false
+    },
+    {
+      "value": "a\n",
+      "valid": false
+    },
+    {
+      "value": "a\u000b",
+      "valid": false
+    },
+    {
+      "value": "a\f",
+      "valid": false
+    },
+    {
+      "value": "a\r",
+      "valid": false
+    },
+    {
+      "value": "a\u000e",
+      "valid": false
+    },
+    {
+      "value": "a\u000f",
+      "valid": false
+    },
+    {
+      "value": "a\u0010",
+      "valid": false
+    },
+    {
+      "value": "a\u0011",
+      "valid": false
+    },
+    {
+      "value": "a\u0012",
+      "valid": false
+    },
+    {
+      "value": "a\u0013",
+      "valid": false
+    },
+    {
+      "value": "a\u0014",
+      "valid": false
+    },
+    {
+      "value": "a\u0015",
+      "valid": false
+    },
+    {
+      "value": "a\u0016",
+      "valid": false
+    },
+    {
+      "value": "a\u0017",
+      "valid": false
+    },
+    {
+      "value": "a\u0018",
+      "valid": false
+    },
+    {
+      "value": "a\u0019",
+      "valid": false
+    },
+    {
+      "value": "a\u001a",
+      "valid": false
+    },
+    {
+      "value": "a\u001b",
+      "valid": false
+    },
+    {
+      "value": "a\u001c",
+      "valid": false
+    },
+    {
+      "value": "a\u001d",
+      "valid": false
+    },
+    {
+      "value": "a\u001e",
+      "valid": false
+    },
+    {
+      "value": "a\u001f",
+      "valid": false
+    },
+    {
+      "value": "a ",
+      "valid": false
+    },
+    {
+      "value": "a!",
+      "valid": false
+    },
+    {
+      "value": "a\"",
+      "valid": false
+    },
+    {
+      "value": "a#",
+      "valid": false
+    },
+    {
+      "value": "a$",
+      "valid": false
+    },
+    {
+      "value": "a%",
+      "valid": false
+    },
+    {
+      "value": "a&",
+      "valid": false
+    },
+    {
+      "value": "a'",
+      "valid": false
+    },
+    {
+      "value": "a(",
+      "valid": false
+    },
+    {
+      "value": "a)",
+      "valid": false
+    },
+    {
+      "value": "a*",
+      "valid": false
+    },
+    {
+      "value": "a+",
+      "valid": false
+    },
+    {
+      "value": "a,",
+      "valid": false
+    },
+    {
+      "value": "a-",
+      "valid": true
+    },
+    {
+      "value": "a.",
+      "valid": true
+    },
+    {
+      "value": "a/",
+      "valid": false
+    },
+    {
+      "value": "a0",
+      "valid": true
+    },
+    {
+      "value": "a1",
+      "valid": true
+    },
+    {
+      "value": "a2",
+      "valid": true
+    },
+    {
+      "value": "a3",
+      "valid": true
+    },
+    {
+      "value": "a4",
+      "valid": true
+    },
+    {
+      "value": "a5",
+      "valid": true
+    },
+    {
+      "value": "a6",
+      "valid": true
+    },
+    {
+      "value": "a7",
+      "valid": true
+    },
+    {
+      "value": "a8",
+      "valid": true
+    },
+    {
+      "value": "a9",
+      "valid": true
+    },
+    {
+      "value": "a:",
+      "valid": false
+    },
+    {
+      "value": "a;",
+      "valid": false
+    },
+    {
+      "value": "a<",
+      "valid": false
+    },
+    {
+      "value": "a=",
+      "valid": false
+    },
+    {
+      "value": "a>",
+      "valid": false
+    },
+    {
+      "value": "a?",
+      "valid": false
+    },
+    {
+      "value": "a@",
+      "valid": false
+    },
+    {
+      "value": "aA",
+      "valid": true
+    },
+    {
+      "value": "aB",
+      "valid": true
+    },
+    {
+      "value": "aC",
+      "valid": true
+    },
+    {
+      "value": "aD",
+      "valid": true
+    },
+    {
+      "value": "aE",
+      "valid": true
+    },
+    {
+      "value": "aF",
+      "valid": true
+    },
+    {
+      "value": "aG",
+      "valid": true
+    },
+    {
+      "value": "aH",
+      "valid": true
+    },
+    {
+      "value": "aI",
+      "valid": true
+    },
+    {
+      "value": "aJ",
+      "valid": true
+    },
+    {
+      "value": "aK",
+      "valid": true
+    },
+    {
+      "value": "aL",
+      "valid": true
+    },
+    {
+      "value": "aM",
+      "valid": true
+    },
+    {
+      "value": "aN",
+      "valid": true
+    },
+    {
+      "value": "aO",
+      "valid": true
+    },
+    {
+      "value": "aP",
+      "valid": true
+    },
+    {
+      "value": "aQ",
+      "valid": true
+    },
+    {
+      "value": "aR",
+      "valid": true
+    },
+    {
+      "value": "aS",
+      "valid": true
+    },
+    {
+      "value": "aT",
+      "valid": true
+    },
+    {
+      "value": "aU",
+      "valid": true
+    },
+    {
+      "value": "aV",
+      "valid": true
+    },
+    {
+      "value": "aW",
+      "valid": true
+    },
+    {
+      "value": "aX",
+      "valid": true
+    },
+    {
+      "value": "aY",
+      "valid": true
+    },
+    {
+      "value": "aZ",
+      "valid": true
+    },
+    {
+      "value": "a[",
+      "valid": false
+    },
+    {
+      "value": "a\\",
+      "valid": false
+    },
+    {
+      "value": "a]",
+      "valid": false
+    },
+    {
+      "value": "a^",
+      "valid": false
+    },
+    {
+      "value": "a_",
+      "valid": true
+    },
+    {
+      "value": "a`",
+      "valid": false
+    },
+    {
+      "value": "aa",
+      "valid": true
+    },
+    {
+      "value": "ab",
+      "valid": true
+    },
+    {
+      "value": "ac",
+      "valid": true
+    },
+    {
+      "value": "ad",
+      "valid": true
+    },
+    {
+      "value": "ae",
+      "valid": true
+    },
+    {
+      "value": "af",
+      "valid": true
+    },
+    {
+      "value": "ag",
+      "valid": true
+    },
+    {
+      "value": "ah",
+      "valid": true
+    },
+    {
+      "value": "ai",
+      "valid": true
+    },
+    {
+      "value": "aj",
+      "valid": true
+    },
+    {
+      "value": "ak",
+      "valid": true
+    },
+    {
+      "value": "al",
+      "valid": true
+    },
+    {
+      "value": "am",
+      "valid": true
+    },
+    {
+      "value": "an",
+      "valid": true
+    },
+    {
+      "value": "ao",
+      "valid": true
+    },
+    {
+      "value": "ap",
+      "valid": true
+    },
+    {
+      "value": "aq",
+      "valid": true
+    },
+    {
+      "value": "ar",
+      "valid": true
+    },
+    {
+      "value": "as",
+      "valid": true
+    },
+    {
+      "value": "at",
+      "valid": true
+    },
+    {
+      "value": "au",
+      "valid": true
+    },
+    {
+      "value": "av",
+      "valid": true
+    },
+    {
+      "value": "aw",
+      "valid": true
+    },
+    {
+      "value": "ax",
+      "valid": true
+    },
+    {
+      "value": "ay",
+      "valid": true
+    },
+    {
+      "value": "az",
+      "valid": true
+    },
+    {
+      "value": "a{",
+      "valid": false
+    },
+    {
+      "value": "a|",
+      "valid": false
+    },
+    {
+      "value": "a}",
+      "valid": false
+    },
+    {
+      "value": "a~",
+      "valid": false
+    },
+    {
+      "value": "a\u007f",
+      "valid": false
+    }
+  ]
+}

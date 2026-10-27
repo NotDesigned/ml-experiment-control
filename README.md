@@ -1,5 +1,12 @@
 # ML-Expd
 
+> **`rewrite/rust` development branch:** a full native rewrite and module
+> consolidation is in progress. Only the first isolated slices exist; this branch
+> is **not a complete or deployable replacement**. See the
+> [rewrite architecture and acceptance plan](docs/rust-rewrite.md) and
+> [native preview instructions](rust/README.md). The guides below describe the
+> retained Python baseline, unless explicitly marked as Rust preview behavior.
+
 Submit code, a Dockerfile and data to an existing HTTP API; run experiments on
 SSH Slurm/Apptainer, SenseCore ACP or Alibaba PAI DLC; retrieve verified results.
 Backend credentials and image builds stay on the server side.

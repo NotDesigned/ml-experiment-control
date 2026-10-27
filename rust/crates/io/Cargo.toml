@@ -1,0 +1,11 @@
+[package]
+name = "ml-exp-io"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tempfile.workspace = true
+libc.workspace = true
+sha2 = "0.10"

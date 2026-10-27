@@ -1,0 +1,29 @@
+//! Native read-only client: pure connection planning, private credential I/O,
+//! and HTTP transport are separate boundaries. No mutation replay.
+
+pub mod config;
+pub mod credentials;
+pub mod transport;
+
+pub use config::{ConnectionPlan, Settings, TokenSource, normalize_url};
+pub use transport::Client;
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("invalid API URL; use HTTPS or loopback HTTP without userinfo, query or fragment")]
+    Url,
+    #[error("invalid API token")]
+    Token,
+    #[error("cannot read or write private client configuration")]
+    Config,
+    #[error("saved credentials belong to a different API URL")]
+    CredentialScope,
+    #[error("API path must remain under the configured /api/ prefix")]
+    Path,
+    #[error("HTTP request failed; no automatic retry was attempted")]
+    Transport,
+    #[error("HTTP {0}; response body suppressed")]
+    Http(u16),
+    #[error("API response is too large or is not JSON")]
+    Response,
+}
