@@ -41,8 +41,7 @@ impl TargetIdentity {
     pub fn validate(&self) -> Result<()> {
         identity::validate_id(&self.project).map_err(|_| Error::Identity("project"))?;
         identity::validate_id(&self.run_id).map_err(|_| Error::Identity("run_id"))?;
-        identity::validate_attempt(&self.attempt_id)
-            .map_err(|_| Error::Identity("attempt_id"))?;
+        identity::validate_attempt(&self.attempt_id).map_err(|_| Error::Identity("attempt_id"))?;
         Ok(())
     }
 }
@@ -130,7 +129,10 @@ fn string_field<'a>(value: &'a Value, name: &'static str) -> Result<&'a str> {
 }
 
 fn optional_job(value: &Value) -> Result<Option<String>> {
-    match value.as_object().and_then(|object| object.get("backend_job_id")) {
+    match value
+        .as_object()
+        .and_then(|object| object.get("backend_job_id"))
+    {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(job)) if !job.is_empty() => {
             if job.len() > 256 || job.chars().any(|character| character.is_control()) {
@@ -177,9 +179,7 @@ fn check_existing(
         Some(Value::String(token)) => Some(validate_submission_token(token)?.to_owned()),
         Some(_) => return Err(Error::Intent("submission_token")),
     };
-    if token.is_none()
-        && object.get("state").and_then(Value::as_str) == Some("SUBMITTING")
-    {
+    if token.is_none() && object.get("state").and_then(Value::as_str) == Some("SUBMITTING") {
         return Err(Error::LegacyUnsafe);
     }
     Ok((existing.clone(), optional_job(existing)?))
@@ -195,7 +195,9 @@ pub enum BeginDecision {
         intent: Value,
         request_digest: String,
     },
-    Conflict { fields: Vec<String> },
+    Conflict {
+        fields: Vec<String>,
+    },
     LegacyUnsafe,
 }
 
@@ -218,10 +220,24 @@ pub fn begin_submission(
     let request_digest = frozen_request_digest(identity, &request)?;
     if let Some(existing) = existing {
         return match check_existing(existing, identity, &request) {
-            Ok((intent, _)) => Ok(BeginDecision::Reuse {
-                intent,
-                request_digest,
-            }),
+            Ok((intent, _)) => {
+                // The token is part of the scheduler mutation identity.  A
+                // caller that presents a different token is asking about a
+                // different mutation, even when all frozen request fields
+                // happen to match.  Reusing the old intent in that case would
+                // allow an accidental second submission to masquerade as an
+                // idempotent retry.
+                let existing_token = intent.get("submission_token").and_then(Value::as_str);
+                if existing_token.is_some_and(|value| value != token) {
+                    return Ok(BeginDecision::Conflict {
+                        fields: vec!["submission_token".into()],
+                    });
+                }
+                Ok(BeginDecision::Reuse {
+                    intent,
+                    request_digest,
+                })
+            }
             Err(Error::Conflict(fields)) => Ok(BeginDecision::Conflict {
                 fields: fields.split(", ").map(str::to_owned).collect(),
             }),
@@ -302,7 +318,7 @@ pub fn reconcile_submission(
     identity: &SubmissionIdentity,
     existing: Option<&Value>,
     observation: &ProviderObservation,
-    state: RunState,
+    _state: RunState,
     reconciled_at: &str,
 ) -> Result<ReconcileDecision> {
     identity.validate()?;
@@ -322,6 +338,20 @@ pub fn reconcile_submission(
     {
         return Err(Error::Intent("reconciled_at"));
     }
+    // The first successful reconciliation fixes the receipt timestamp.  A
+    // repeated provider read must be byte-for-byte idempotent rather than
+    // rewriting the frozen intent with the poller's later wall clock.
+    let effective_reconciled_at = match intent.get("reconciled_at") {
+        None | Some(Value::Null) => reconciled_at.to_owned(),
+        Some(Value::String(previous))
+            if !previous.is_empty()
+                && previous.len() <= 128
+                && !previous.chars().any(char::is_control) =>
+        {
+            previous.clone()
+        }
+        Some(_) => return Err(Error::Intent("reconciled_at")),
+    };
     match observation {
         ProviderObservation::UnavailableOrAmbiguous { reason } => {
             Ok(ReconcileDecision::UnknownDoNotRetry {
@@ -337,7 +367,8 @@ pub fn reconcile_submission(
             let current_state = intent.get("state").and_then(Value::as_str).unwrap_or("");
             if current_job.is_none() && matches!(current_state, "SUBMITTING" | "NOT_SUBMITTED") {
                 Ok(ReconcileDecision::NotSubmittedSafeToRetry {
-                    reason: "provider confirms that this exact Run/Attempt was not submitted".into(),
+                    reason: "provider confirms that this exact Run/Attempt was not submitted"
+                        .into(),
                 })
             } else {
                 Ok(ReconcileDecision::UnknownDoNotRetry {
@@ -351,16 +382,24 @@ pub fn reconcile_submission(
                     reason: "provider job was not bound to this Run/Attempt".into(),
                 });
             }
-            if current_job.as_deref().is_some_and(|current| current != job_id) {
+            if current_job
+                .as_deref()
+                .is_some_and(|current| current != job_id)
+            {
                 return Err(Error::Conflict("backend_job_id".into()));
             }
-            if matches!(state, RunState::NotSubmitted | RunState::Created | RunState::Submitting) {
-                return Err(Error::Intent("attached lifecycle state"));
-            }
+            // Provider identity is authoritative for this reconciliation.  A
+            // scheduler may accept a job before the local lifecycle reader
+            // observes QUEUED/RUNNING (and a caller may still report the
+            // durable SUBMITTING state), so do not reject an exact match based
+            // on a lagging sampled state.
             let object = intent.as_object_mut().ok_or(Error::Intent("object"))?;
             object.insert("state".into(), Value::String("SUBMITTED".into()));
             object.insert("backend_job_id".into(), Value::String(job_id.clone()));
-            object.insert("reconciled_at".into(), Value::String(reconciled_at.into()));
+            object.insert(
+                "reconciled_at".into(),
+                Value::String(effective_reconciled_at),
+            );
             Ok(ReconcileDecision::Attached {
                 intent,
                 job_id: job_id.clone(),
@@ -400,7 +439,9 @@ pub enum CancelStatus {
         state: String,
         result: Value,
     },
-    UnavailableOrAmbiguous { reason: String },
+    UnavailableOrAmbiguous {
+        reason: String,
+    },
 }
 
 impl CancelStatus {
@@ -452,7 +493,9 @@ fn terminal_state(state: &str) -> bool {
 }
 
 fn cancel_identity_matches(intent: &Value, identity: &CancelIdentity) -> bool {
-    let Some(object) = intent.as_object() else { return false };
+    let Some(object) = intent.as_object() else {
+        return false;
+    };
     object.get("project").and_then(Value::as_str) == Some(identity.target.project.as_str())
         && object.get("run_id").and_then(Value::as_str) == Some(identity.target.run_id.as_str())
         && object.get("attempt_id").and_then(Value::as_str)
@@ -473,13 +516,10 @@ pub fn plan_cancel(
     identity: &CancelIdentity,
     existing: Option<&Value>,
     status: Option<&CancelStatus>,
-    requested_at: &str,
+    now: &str,
 ) -> Result<CancelDecision> {
     identity.validate()?;
-    if requested_at.is_empty()
-        || requested_at.len() > 128
-        || requested_at.chars().any(char::is_control)
-    {
+    if now.is_empty() || now.len() > 128 || now.chars().any(char::is_control) {
         return Err(Error::Intent("requested_at"));
     }
     if let Some(status) = status {
@@ -490,7 +530,7 @@ pub fn plan_cancel(
             intent: json!({
                 "schema_version": 1,
                 "state": "REQUESTED",
-                "requested_at": requested_at,
+                "requested_at": now,
                 "project": identity.target.project,
                 "run_id": identity.target.run_id,
                 "attempt_id": identity.target.attempt_id,
@@ -505,9 +545,12 @@ pub fn plan_cancel(
     }
     let state = string_field(existing, "state")?;
     if state == "VERIFIED" {
-        return Ok(CancelDecision::AlreadyVerified {
-            result: existing.get("result").cloned().unwrap_or(Value::Null),
-        });
+        let result = existing
+            .get("result")
+            .filter(|value| value.is_object())
+            .cloned()
+            .ok_or(Error::Intent("result"))?;
+        return Ok(CancelDecision::AlreadyVerified { result });
     }
     if state != "REQUESTED" {
         return Err(Error::Intent("cancel state"));
@@ -536,7 +579,7 @@ pub fn plan_cancel(
                 let mut intent = existing.clone();
                 let object = intent.as_object_mut().ok_or(Error::Intent("object"))?;
                 object.insert("state".into(), Value::String("VERIFIED".into()));
-                object.insert("verified_at".into(), Value::String(requested_at.into()));
+                object.insert("verified_at".into(), Value::String(now.into()));
                 object.insert("result".into(), result.clone());
                 Ok(CancelDecision::VerifyTerminal {
                     intent,
@@ -599,13 +642,17 @@ mod tests {
             BeginDecision::Create { intent, .. } => intent.clone(),
             _ => unreachable!(),
         };
-        let second = begin_submission(&identity(), &request, Some(&intent), TOKEN, "later").unwrap();
+        let second =
+            begin_submission(&identity(), &request, Some(&intent), TOKEN, "later").unwrap();
         match second {
             BeginDecision::Reuse { intent: reused, .. } => assert_eq!(reused, intent),
             _ => unreachable!(),
         }
         assert_eq!(intent["request"]["environment"]["API_TOKEN"], "<redacted>");
-        assert_eq!(intent["request"]["callback"], "https://<redacted>@example.invalid/status");
+        assert_eq!(
+            intent["request"]["callback"],
+            "https://<redacted>@example.invalid/status"
+        );
     }
 
     #[test]
@@ -620,21 +667,59 @@ mod tests {
         ] {
             let mut candidate = identity();
             let mut request = json!({"argv":["sbatch"],"environment":{"API_TOKEN":"secret"}});
-            if name == "project" { candidate.target.project = altered["project"].as_str().unwrap().into(); }
-            if name == "run_id" { candidate.target.run_id = altered["run_id"].as_str().unwrap().into(); }
-            if name == "attempt_id" { candidate.target.attempt_id = altered["attempt_id"].as_str().unwrap().into(); }
-            if name == "backend" { candidate.backend = altered["backend"].as_str().unwrap().into(); }
-            if name == "request" { request = altered["request"].clone(); }
-            assert!(matches!(
-                begin_submission(&candidate, &request, Some(&base), TOKEN, "now").unwrap(),
-                BeginDecision::Conflict { .. }
-            ), "{name}");
+            if name == "project" {
+                candidate.target.project = altered["project"].as_str().unwrap().into();
+            }
+            if name == "run_id" {
+                candidate.target.run_id = altered["run_id"].as_str().unwrap().into();
+            }
+            if name == "attempt_id" {
+                candidate.target.attempt_id = altered["attempt_id"].as_str().unwrap().into();
+            }
+            if name == "backend" {
+                candidate.backend = altered["backend"].as_str().unwrap().into();
+            }
+            if name == "request" {
+                request = altered["request"].clone();
+            }
+            assert!(
+                matches!(
+                    begin_submission(&candidate, &request, Some(&base), TOKEN, "now").unwrap(),
+                    BeginDecision::Conflict { .. }
+                ),
+                "{name}"
+            );
         }
-        let legacy = json!({"project":"project","run_id":"run-s0","attempt_id":"attempt-001","backend":"slurm","request":{},"state":"SUBMITTING"});
+        let legacy = json!({
+            "project": "project",
+            "run_id": "run-s0",
+            "attempt_id": "attempt-001",
+            "backend": "slurm",
+            "request": {},
+            "state": "SUBMITTING"
+        });
         assert_eq!(
             begin_submission(&identity(), &json!({}), Some(&legacy), TOKEN, "now").unwrap(),
             BeginDecision::LegacyUnsafe
         );
+    }
+
+    #[test]
+    fn begin_rejects_a_different_submission_token() {
+        let base = created();
+        let other = "fedcba9876543210fedcba9876543210";
+        assert!(matches!(
+            begin_submission(
+                &identity(),
+                &json!({"argv":["sbatch"],"environment":{"API_TOKEN":"secret"}}),
+                Some(&base),
+                other,
+                "later",
+            )
+            .unwrap(),
+            BeginDecision::Conflict { fields }
+                if fields == vec!["submission_token".to_owned()]
+        ));
     }
 
     #[test]
@@ -648,16 +733,24 @@ mod tests {
             "now",
         )
         .unwrap();
-        assert!(matches!(absent, ReconcileDecision::NotSubmittedSafeToRetry { .. }));
+        assert!(matches!(
+            absent,
+            ReconcileDecision::NotSubmittedSafeToRetry { .. }
+        ));
         let unknown = reconcile_submission(
             &identity(),
             Some(&intent),
-            &ProviderObservation::UnavailableOrAmbiguous { reason: "timeout".into() },
+            &ProviderObservation::UnavailableOrAmbiguous {
+                reason: "timeout".into(),
+            },
             RunState::Submitting,
             "now",
         )
         .unwrap();
-        assert!(matches!(unknown, ReconcileDecision::UnknownDoNotRetry { .. }));
+        assert!(matches!(
+            unknown,
+            ReconcileDecision::UnknownDoNotRetry { .. }
+        ));
     }
 
     #[test]
@@ -666,7 +759,10 @@ mod tests {
         let attached = reconcile_submission(
             &identity(),
             Some(&intent),
-            &ProviderObservation::ExactFound { target: target(), job_id: "job-1".into() },
+            &ProviderObservation::ExactFound {
+                target: target(),
+                job_id: "job-1".into(),
+            },
             RunState::Queued,
             "now",
         )
@@ -678,21 +774,51 @@ mod tests {
         let repeated = reconcile_submission(
             &identity(),
             Some(&attached_intent),
-            &ProviderObservation::ExactFound { target: target(), job_id: "job-1".into() },
+            &ProviderObservation::ExactFound {
+                target: target(),
+                job_id: "job-1".into(),
+            },
             RunState::Queued,
             "later",
         )
         .unwrap();
-        assert!(matches!(repeated, ReconcileDecision::Attached { .. }));
+        let repeated_intent = match repeated {
+            ReconcileDecision::Attached { intent, .. } => intent,
+            _ => unreachable!(),
+        };
+        assert_eq!(repeated_intent, attached_intent);
         assert!(matches!(
             reconcile_submission(
                 &identity(),
                 Some(&attached_intent),
-                &ProviderObservation::ExactFound { target: target(), job_id: "job-2".into() },
+                &ProviderObservation::ExactFound {
+                    target: target(),
+                    job_id: "job-2".into()
+                },
                 RunState::Queued,
                 "later",
             ),
             Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn exact_job_attachment_is_allowed_while_local_state_is_submitting() {
+        let intent = created();
+        let attached = reconcile_submission(
+            &identity(),
+            Some(&intent),
+            &ProviderObservation::ExactFound {
+                target: target(),
+                job_id: "job-1".into(),
+            },
+            RunState::Submitting,
+            "now",
+        )
+        .unwrap();
+        assert!(matches!(
+            attached,
+            ReconcileDecision::Attached { job_id, .. } if job_id == "job-1"
         ));
     }
 
@@ -754,6 +880,28 @@ mod tests {
         assert!(matches!(
             plan_cancel(&cancel, Some(&verified_intent), None, "again").unwrap(),
             CancelDecision::AlreadyVerified { .. }
+        ));
+    }
+
+    #[test]
+    fn cancel_rejects_a_corrupt_verified_receipt() {
+        let cancel = CancelIdentity {
+            target: identity().target,
+            backend: Some("slurm".into()),
+            backend_job_id: "job-1".into(),
+        };
+        let corrupt = json!({
+            "state": "VERIFIED",
+            "project": "project",
+            "run_id": "run-s0",
+            "attempt_id": "attempt-001",
+            "backend": "slurm",
+            "backend_job_id": "job-1",
+            "result": null,
+        });
+        assert!(matches!(
+            plan_cancel(&cancel, Some(&corrupt), None, "now"),
+            Err(Error::Intent("result"))
         ));
     }
 }
