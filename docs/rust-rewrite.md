@@ -36,10 +36,10 @@ forwarding code merely to make the language uniform.
 
 | Component | Implemented foundation | Still missing |
 | --- | --- | --- |
-| Core | Frozen identities, Project schema/lifecycle and durable transitions, metric/journal decisions, source/archive identity and retention decisions, tracking plans, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
-| Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O and deadline-bound single-frame pipe transport | Remaining transport primitives and durable domain protocols |
+| Core | Frozen identities, Project schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint identity/retention decisions, tracking plans, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
+| Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O, deadline-bound single-frame pipe transport and checkpoint generation verification/sealing | Remaining transport primitives and durable domain protocols |
 | Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands and deterministic source archive upload/lookup | General asset/data transfers, artifact downloads/ACK, updates and full command coverage |
-| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts and isolated journals; SQLite stores/Run fences; Slurm transport | Artifact/checkpoint result store, submission/provider executors, collectors, TLS and tracking transport |
+| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint registry and isolated journals; SQLite stores/Run fences; Slurm transport | Artifact/result store, submission/provider executors, collectors, TLS and tracking transport |
 | Worker | Local process supervision, sealed local launch and scoped Slurm prepare/submit/inspect helper | Remote managed-launch transport, data/checkpoint/journal/artifact/build/copy/deletion protocols |
 
 The native source path is deliberately Project-scoped: a shared tree digest does
@@ -50,6 +50,19 @@ metadata. The native artifact core keeps the Python compatibility shape: receipt
 file paths are internal names, while proof maps use `outputs/<path>`, and release
 timestamps are explicit RFC3339 values. The object-store and provider shells are
 still Python until their effect receipts have an equivalent native contract.
+
+The checkpoint migration now spans the pure contract and local effect shell. A
+ready marker is validated as one generation with bounded paths, file counts,
+sizes and SHA256 values; the derived identity is bound to the exact
+Project/Run/Attempt, source, image and storage scope. Descriptor-based
+verification rejects links, special files, missing or extra files and changes
+during hashing, then optionally seals the generation. The native server registry
+stores immutable checkpoint receipts and makes duplicate registration idempotent
+while rejecting a second manifest for the same generation. Worker HTTPS
+registration, backend storage selection and process polling remain adapters.
+The older completed-marker protocol used by legacy Slurm discovery remains a
+separate compatibility path; it is not treated as a
+`checkpoint.<sha256>` persistent-generation identity.
 
 Metrics now include schema/definition validation, typed and wide observations,
 explicit units, required/conditional metrics, context-sensitive conflicts and

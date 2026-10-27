@@ -167,19 +167,16 @@ pub fn validate_receipt(value: &ArchiveReceipt) -> Result<()> {
         return Err(Error::Receipt);
     }
     let mut paths = BTreeSet::new();
-    let mut total = 0u64;
     for file in &value.files {
         if !receipt_path(&file.path) || !sha256(&file.sha256) || !paths.insert(file.path.as_str()) {
             return Err(Error::Receipt);
         }
-        total = total.checked_add(file.bytes).ok_or(Error::Receipt)?;
     }
-    if total == 0
-        || value.object_key
-            != format!(
-                "{}/{}/{}/{}.tar",
-                value.project, value.run_id, value.attempt_id, value.sha256
-            )
+    if value.object_key
+        != format!(
+            "{}/{}/{}/{}.tar",
+            value.project, value.run_id, value.attempt_id, value.sha256
+        )
     {
         return Err(Error::Receipt);
     }
@@ -351,5 +348,13 @@ mod tests {
         bad.attempt_id = "attempt-002".into();
         bad.object_key = format!("demo/run-1/attempt-001/{}.tar", "a".repeat(64));
         assert_eq!(validate_receipt(&bad), Err(Error::Receipt));
+    }
+
+    #[test]
+    fn zero_byte_regular_outputs_are_valid_receipt_members() {
+        let mut receipt = receipt();
+        receipt.bytes = 1;
+        receipt.files[0].bytes = 0;
+        assert!(validate_receipt(&receipt).is_ok());
     }
 }

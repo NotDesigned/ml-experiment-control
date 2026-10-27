@@ -1,5 +1,6 @@
 //! Isolated HTTP boundary preview. No production workspace or provider access.
 pub mod backends;
+pub mod checkpoints;
 pub mod deletion;
 pub mod experiments;
 pub mod index;

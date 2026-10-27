@@ -1,6 +1,8 @@
 //! Shared filesystem boundary. No domain decisions, HTTP, provider calls or hidden configuration.
 //! Durable writes and bounded private reads never silently replace an immutable record.
 #[cfg(unix)]
+pub mod checkpoints;
+#[cfg(unix)]
 pub mod directory;
 #[cfg(unix)]
 pub mod framing;

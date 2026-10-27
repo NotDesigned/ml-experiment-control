@@ -22,10 +22,10 @@ receipt and retry decision are validated by a native contract before use.
 
 | Crate | Preview executable | Current scope |
 | --- | --- | --- |
-| `ml-exp-core` | Library | Pure frozen identities, Project/schema/lifecycle and durable transitions, metric/journal decisions, source/archive receipt and retention decisions, observations, failure assessment and Slurm/helper protocols |
-| `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O and single-frame pipe transport |
+| `ml-exp-core` | Library | Pure frozen identities, Project/schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint receipt/restore decisions, observations, failure assessment and Slurm/helper protocols |
+| `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O, single-frame pipe transport and descriptor-safe checkpoint verification/sealing |
 | `ml-exp-client` | `ml-exp-rs` | Private settings, bounded exact-identity reads/watch, Project operations and deterministic source archive upload/lookup |
-| `ml-exp-server` | `ml-expd-rs` | Approved discovery/reads, Project lifecycle, immutable source archive storage/receipts, isolated SQLite/Run fences and Slurm transport |
+| `ml-exp-server` | `ml-expd-rs` | Approved discovery/reads, Project lifecycle, immutable source archive storage/receipts, native checkpoint registry, isolated SQLite/Run fences and Slurm transport |
 | `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision, sealed local managed launch and scoped Slurm metadata helper |
 
 The experiment API observes explicitly approved isolated files. Project metadata
@@ -48,6 +48,17 @@ pure-core boundary: receipt paths are internal paths, while download proofs use
 the compatibility key `outputs/<path>`, and retention timestamps must be valid
 RFC3339 values. Object storage, direct downloads, ACKs and provider collection
 remain Python shell work until their I/O protocol is ported.
+
+Persistent checkpoints now have a native contract and local registry preview.
+The core validates the complete-generation manifest, derives the exact
+`checkpoint.<sha256>` identity, rejects mixed generations, binds the restore
+plan to the original Run/Attempt and storage scope, and models registration
+without moving state bytes. The I/O crate verifies every declared file through
+directory descriptors, rejects extra or unstable files, and can seal the
+generation. The server registry persists immutable receipts and detects an
+existing generation bound to a different manifest. HTTPS registration, worker
+polling, provider storage and automatic restore orchestration remain outer
+adapters.
 
 ## Build and check
 

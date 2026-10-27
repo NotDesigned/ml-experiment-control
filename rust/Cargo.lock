@@ -924,9 +924,12 @@ version = "0.1.0-dev.1"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
+ "ml-exp-core",
  "rustix",
+ "serde_json",
  "sha2",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]
