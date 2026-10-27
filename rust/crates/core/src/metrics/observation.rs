@@ -188,7 +188,8 @@ pub(crate) fn python_repr(value: &Value) -> String {
     }
 }
 
-pub(crate) fn python_string(value: &Value) -> String {
+/// Preserve legacy textual observation fields without changing their identity.
+pub fn python_string(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
         _ => python_repr(value),

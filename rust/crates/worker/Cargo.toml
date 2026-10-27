@@ -10,7 +10,10 @@ name = "ml-exp-worker-rs"
 path = "src/main.rs"
 
 [dependencies]
+ml-exp-core.workspace = true
 ml-exp-io.workspace = true
+fs2.workspace = true
+thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true

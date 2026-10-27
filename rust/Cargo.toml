@@ -19,6 +19,8 @@ rust-version = "1.85"
 license = "MIT"
 
 [workspace.dependencies]
+experiment-redact = { path = "." }
+regex = "1.12"
 ml-exp-core = { path = "crates/core" }
 ml-exp-io = { path = "crates/io" }
 serde = { version = "1.0", features = ["derive"] }
@@ -31,7 +33,7 @@ sha2 = "0.10"
 time = { version = "0.3", features = ["parsing", "formatting"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 fs2 = "0.4"
-rustix = { version = "1.1", features = ["fs", "process"] }
+rustix = { version = "1.1", features = ["fs", "process", "event"] }
 getrandom = "0.3"
 
 [profile.dev]

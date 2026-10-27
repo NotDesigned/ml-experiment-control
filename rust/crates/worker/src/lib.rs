@@ -5,6 +5,8 @@ use std::{io, path::Path, sync::atomic::AtomicBool, time::Duration};
 
 #[cfg(unix)]
 mod process;
+#[cfg(unix)]
+pub mod slurm;
 
 #[derive(Debug, Serialize)]
 pub struct Failure {

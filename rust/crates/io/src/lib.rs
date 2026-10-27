@@ -3,6 +3,8 @@
 #[cfg(unix)]
 pub mod directory;
 #[cfg(unix)]
+pub mod framing;
+#[cfg(unix)]
 pub mod process;
 
 use sha2::{Digest, Sha256};

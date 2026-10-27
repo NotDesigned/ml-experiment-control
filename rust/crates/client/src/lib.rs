@@ -4,6 +4,7 @@
 pub mod config;
 pub mod credentials;
 pub mod observation;
+pub mod status;
 pub mod transport;
 
 pub use config::{ConnectionPlan, Settings, TokenSource, normalize_url};
@@ -23,8 +24,8 @@ pub enum Error {
     Path,
     #[error("HTTP request failed; no automatic retry was attempted")]
     Transport,
-    #[error("HTTP {0}; response body suppressed")]
-    Http(u16),
+    #[error("{0}")]
+    Http(Box<ml_exp_core::diagnostic::HttpFailure>),
     #[error("API response is too large or is not JSON")]
     Response,
     #[error("{0}")]

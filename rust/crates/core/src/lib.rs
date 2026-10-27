@@ -3,6 +3,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]
 pub mod auth;
 pub mod canonical;
+pub mod diagnostic;
 pub mod identity;
 pub mod index;
 pub mod launch;
@@ -13,6 +14,7 @@ pub mod operations;
 pub mod records;
 pub mod slurm;
 pub mod state;
+pub mod tracking;
 
 pub const API_PROTOCOL_VERSION: u32 = 2;
 pub const CLIENT_PROTOCOL_HEADER: &str = "X-ML-Expd-Client-Protocol";

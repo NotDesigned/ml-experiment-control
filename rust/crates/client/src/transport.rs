@@ -46,7 +46,40 @@ impl Client {
             .send()
             .map_err(|_| Error::Transport)?;
         if !response.status().is_success() {
-            return Err(Error::Http(response.status().as_u16()));
+            let status = response.status().as_u16();
+            let code = response
+                .headers()
+                .get("X-ML-Expd-Error-Code")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let retry = response
+                .headers()
+                .get("Retry-After")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let mut body = Vec::new();
+            if response
+                .take(ml_exp_core::diagnostic::ERROR_BODY_BYTES as u64 + 1)
+                .read_to_end(&mut body)
+                .is_err()
+            {
+                body.clear();
+            }
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|value| value.as_secs().try_into().ok())
+                .unwrap_or(0);
+            return Err(Error::Http(Box::new(
+                ml_exp_core::diagnostic::HttpFailure::from_response(
+                    status,
+                    code.as_deref(),
+                    retry.as_deref(),
+                    &body,
+                    &self.token,
+                    now,
+                ),
+            )));
         }
         let mut bytes = Vec::new();
         response
@@ -101,7 +134,9 @@ mod tests {
             socket.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/leak\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
         });
         let client = Client::new(&base, "native-test".into()).unwrap();
-        assert!(matches!(client.get("/api/health"), Err(Error::Http(302))));
+        assert!(
+            matches!(client.get("/api/health"), Err(Error::Http(value)) if value.status == 302)
+        );
         assert!(matches!(client.get("/api/../../outside"), Err(Error::Path)));
         thread.join().unwrap();
     }

@@ -1,11 +1,14 @@
 use clap::Parser;
 use std::{path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
+#[cfg(unix)]
+mod cli;
 
 #[derive(Parser)]
 #[command(
     name = "ml-exp-worker-rs",
     version,
-    about = "Native local process preview; not a replacement for frozen managed workers"
+    about = "Native local process preview; not a replacement for frozen managed workers",
+    after_help = "Slurm metadata: ml-exp-worker-rs slurm-helper --config /absolute/private.json --stdio\nExplicit bootstrap: replace --stdio with --initialize. See slurm-helper --help."
 )]
 struct Args {
     #[arg(long)]
@@ -36,6 +39,17 @@ fn run(args: Args) -> std::io::Result<ml_exp_worker::Execution> {
 }
 
 fn main() -> ExitCode {
+    #[cfg(unix)]
+    {
+        let mut arguments = std::env::args_os();
+        let binary = arguments.next().expect("binary argv");
+        if arguments
+            .next()
+            .is_some_and(|value| value == "slurm-helper")
+        {
+            return cli::main_from(std::iter::once(binary).chain(arguments));
+        }
+    }
     match run(Args::parse()) {
         Ok(result) => {
             println!(

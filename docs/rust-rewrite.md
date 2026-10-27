@@ -22,11 +22,11 @@ rewrite of users' training code.
 
 | Component | Implemented foundation | Still missing |
 | --- | --- | --- |
-| Core | Python-compatible frozen JSON/digests, Run and launch manifests, generic metrics, canonical record/import decisions, Action/index reducers, Slurm command plans/parsers and observation projections | Remaining frozen contracts and complete cross-domain integration |
-| Shared I/O | Private file/hash effects, Unix directory capabilities and bounded child stdin/stdout/stderr supervision | Remaining transport primitives and durable domain protocols |
-| Client | Private URL-bound settings, bounded JSON GET, pure saved-identity resolution and preview `check/get/config` commands | Submit/upload/download/ACK, full saved-state commands, updates and full command coverage |
-| Server | Loopback-only HTTP boundary; isolated legacy-compatible Action/RunIndex/record SQLite stores and permanent Run deletion fences | Experiment API composition, projects, scanners/collectors, provider executors, TLS, mutation APIs and tracking transport |
-| Worker | Fresh-directory local subprocess execution, timeout/process-group supervision and result hashes | Sealed managed launch, data, checkpoint, journal, artifact, build, copy and deletion protocols |
+| Core | Frozen identities, generic metrics/journal decisions, tracking routes/display plans, Action/index reducers, Slurm/helper protocols and observation projections | Remaining frozen contracts and complete cross-domain integration |
+| Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O and deadline-bound single-frame pipe transport | Remaining transport primitives and durable domain protocols |
+| Client | URL-bound settings, bounded/sanitized JSON GET, pure saved-identity/status resolution and preview `check/get/config` commands | Submit/upload/download/ACK, full saved-state commands, updates and full command coverage |
+| Server | Loopback HTTP preview; isolated SQLite stores/Run fences; explicit one-call Slurm SSH transport | Experiment API composition, projects, scanners/collectors, provider executors, TLS, mutation APIs and tracking transport |
+| Worker | Local process supervision and scoped Slurm prepare/submit/inspect helper | Sealed managed launch, data, checkpoint, journal, artifact, build, copy and deletion protocols |
 
 Metrics now include schema/definition validation, typed and wide observations,
 explicit units, required/conditional metrics, context-sensitive conflicts and
@@ -46,6 +46,21 @@ response to advance. The small HTTP shell executes those GETs. It checks the
 original server, Project, Run, nested Submission and Attempt; it never chooses a
 new Attempt or retries a mutation. This library path is not yet a public status
 command in the preview CLI.
+
+The status library follows the same consumed-continuation pattern. Its output
+keeps preparation, scheduler, training, publication and verification independent.
+It preserves exact queue reasons and metric provenance, keeps missing timestamps
+unknown, and handles unavailable collection/progress reads without inventing
+success. These GET plans have synthetic differential and real loopback HTTP tests;
+the full human CLI, logs/metrics commands and watch loop are still pending.
+
+HTTP error bodies are capped at 16 KiB and sanitized before retention. The
+existing native redactor is now a shared pure library with the original CLI
+policy preserved. Diagnostic JSON additionally hides request fields, known secret
+keys and credential echoes represented as numbers. Malformed/nonstandard JSON,
+unpaired UTF-16 and non-ASCII Retry-After headers are conservatively discarded;
+date headers support RFC 2822. This is an explicit stricter boundary, not a claim
+that every Python error-string spelling has been reproduced.
 
 Compatibility fixtures preserve the baseline source hashes and synthetic inputs.
 Frozen JSON tests compare exact bytes and SHA256, including Python float formatting,
@@ -104,6 +119,42 @@ platform, an HTTP operation, or GPU training.
 The preview commands are `ml-exp-rs`, `ml-expd-rs` and `ml-exp-worker-rs`.
 They deliberately do not replace `ml-exp`, `ml-expd`, installed service units or
 frozen worker image entries. See the [native development instructions](../rust/README.md).
+
+## Isolated Slurm helper and tracking plans
+
+Native Slurm control messages bind the configured backend/profile/storage scope,
+Project/Run/Attempt, submission token and frozen manifest/script hashes. The server
+executes one fixed SSH command with explicit configuration, host-key checks and
+bounded stdin/stdout/stderr. Lost, truncated, foreign or timed-out replies remain
+uncertain; the transport never retries automatically.
+
+The worker's separate `slurm-helper --config /private/config.json --stdio` entry
+implements prepare, submit and inspect. Initialization is explicit and separate.
+A required root registry records the scope before creating its claim; an immutable
+start marker is synced before invoking `sbatch`. A missing claim cannot become a
+fresh submission. The helper rechecks its required registry and retained directory
+bindings before dispatch, after the child exits and before returning success.
+Name/comment are fixed command-line arguments, which Slurm documents as taking
+precedence over script and environment options. See the
+[sbatch input-environment rules](https://slurm.schedmd.com/sbatch.html#SECTION_INPUT-ENVIRONMENT-VARIABLES).
+The initial helper refuses SBATCH overrides and SLURM cluster/config environment
+variables; non-system Slurm configuration needs a separately bound configuration
+extension before real deployment.
+
+Every helper response has `safe_to_retry=false`, including PREPARED. An older
+Submit may still be in transit; observing no start marker does not revoke it.
+SUBMITTED means a durable job-ID receipt, not verified scheduler ownership.
+Local tests use real Rust processes, fake SSH/sbatch and temporary state, including
+lost replies, concurrency and missing metadata. Runtime/SIF preparation, shared
+data, native ownership observation, Action dispatch and actual cluster acceptance
+are not connected. The preview HTTP API still does not submit training.
+
+Tracking is similarly split: pure options/routing and consuming display reducers
+produce metric-definition and summary patches. They preserve variant, protocol,
+unit, dataset and checkpoint provenance, explicit summaries, shadow curves and
+bounded contexts. They use the same journal and existing display-name reservations;
+there is no second W&B database. No SDK, HTTP publisher, remote ACK or live cloud
+session is implemented by these plans.
 
 ## Five crates: functional core and imperative shell
 

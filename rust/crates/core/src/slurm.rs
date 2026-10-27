@@ -7,6 +7,7 @@
 
 mod allocation;
 mod config;
+pub mod helper;
 mod observation;
 mod plans;
 

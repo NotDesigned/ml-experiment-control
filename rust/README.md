@@ -12,18 +12,20 @@ platform programs. User training code may still be Python.
 
 | Crate | Preview executable | Current scope |
 | --- | --- | --- |
-| `ml-exp-core` | Library | Pure frozen identities, metrics and journal/import decisions, Action/index reducers, observation views and Slurm plans/parsers |
-| `ml-exp-io` | Library | Explicit file/hash effects, Unix directory capabilities and bounded process I/O |
-| `ml-exp-client` | `ml-exp-rs` | Private saved settings, bounded JSON GET and pure exact-identity observation library |
-| `ml-exp-server` | `ml-expd-rs` | Loopback-only HTTP preview; isolated Action/RunIndex/record SQLite stores and permanent Run fences |
-| `ml-exp-worker` | `ml-exp-worker-rs` | Unix local subprocess supervision in a fresh output directory |
+| `ml-exp-core` | Library | Pure frozen identities, metrics/journal/tracking decisions, reducers, observations and Slurm/helper protocols |
+| `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O and single-frame pipe transport |
+| `ml-exp-client` | `ml-exp-rs` | Private settings, bounded JSON GET and pure exact-identity/status libraries |
+| `ml-exp-server` | `ml-expd-rs` | Loopback HTTP preview; isolated SQLite stores/Run fences; explicit Slurm SSH call |
+| `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision and scoped Slurm metadata helper |
 
-There is no executing provider adapter, real experiment API, managed-worker
-protocol, artifact/data transfer or W&B transport in the preview. Metrics and the
+There is no real experiment API, managed-worker protocol, artifact/data transfer
+or W&B transport in the preview. Metrics and the
 isolated canonical journal have native validation, aggregation, persistence and
 publication-cursor logic; there is no accepted cloud publisher. Slurm planners
-return data, never execute SSH or submit a job. The stores, fences and saved-state
-observation library are not yet exposed through the preview API/CLI command tree.
+return data. The separate native helper can invoke `sbatch` only after explicit
+isolated configuration/bootstrap; it is not wired to Actions or the HTTP server.
+The stores, fences and status/observation libraries are not yet exposed through
+the preview API/CLI command tree.
 A successful `check` does not mean training is configured.
 
 ## Build and check
@@ -118,6 +120,17 @@ still opens a pathname. Private ownership, no-follow checks and identity checks
 detect ordinary replacement, but do not provide protection from hostile
 same-UID/root namespace changes. See the architecture document for that explicit
 storage boundary and uncertain-effect handling.
+
+The Slurm helper entry is `slurm-helper --config /absolute/private.json --stdio`;
+initialization uses `--initialize` instead, in a fresh dedicated root. Its trusted
+configuration fixes target, root, executable, environment and finite budgets.
+stdin/stdout must be pipes or sockets: one 4-byte-length-prefixed control message,
+at most 8 MiB, followed by EOF, with bounded read/write waiting. This cap is for
+metadata, not datasets or checkpoints. There is no general command RPC or implicit
+bootstrap. All `safe_to_retry` results are false; a submitted receipt alone does
+not verify scheduler ownership. Do not configure this preview against an existing
+cluster workspace. Use the temporary-state tests until the remaining provider
+and Action integration gates are complete.
 
 ## Contribution boundary
 

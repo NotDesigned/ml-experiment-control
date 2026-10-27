@@ -214,14 +214,14 @@ fn nonblocking(fd: &impl AsRawFd) -> io::Result<()> {
 // A pipe write may generate SIGPIPE. Block it only in this calling thread,
 // preserving the previous mask/pending state, rather than installing a global
 // handler. The child is spawned before this guard, so it inherits no new mask.
-struct PipeSignals {
+pub(crate) struct PipeSignals {
     previous: libc::sigset_t,
     set: libc::sigset_t,
     pending_before: bool,
     broken_pipe: bool,
 }
 impl PipeSignals {
-    fn block() -> io::Result<Self> {
+    pub(crate) fn block() -> io::Result<Self> {
         // SAFETY: these are valid writable C signal sets, initialized before use.
         let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
         let mut previous: libc::sigset_t = unsafe { std::mem::zeroed() };
@@ -247,6 +247,9 @@ impl PipeSignals {
             pending_before: unsafe { libc::sigismember(&pending, libc::SIGPIPE) } == 1,
             broken_pipe: false,
         })
+    }
+    pub(crate) fn mark_broken_pipe(&mut self) {
+        self.broken_pipe = true;
     }
 }
 impl Drop for PipeSignals {

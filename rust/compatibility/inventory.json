@@ -18,14 +18,14 @@
       "client": {
         "modules": 21,
         "lines": 3712,
-        "partial_foundation": 5,
-        "not_started": 16
+        "partial_foundation": 6,
+        "not_started": 15
       },
       "server": {
         "modules": 160,
         "lines": 30572,
-        "partial_foundation": 17,
-        "not_started": 143
+        "partial_foundation": 19,
+        "not_started": 141
       },
       "core": {
         "modules": 25,
@@ -40,7 +40,7 @@
         "not_started": 11
       }
     },
-    "partial_foundation_modules": 34,
+    "partial_foundation_modules": 37,
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
@@ -124,8 +124,9 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/client/src/transport.rs",
-        "scope": "Bounded native JSON GET only; mutation transport and full structured-error parity not ported.",
-        "compatibility_accepted": false
+        "scope": "Bounded native JSON GET with URL-bound auth, no redirect/retry, 16KiB sanitized structured HTTP diagnostics using shared native redactor. Mutation/object transport, full connection-error classification, polling and nonstandard-body parity remain missing.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
       }
     },
     {
@@ -463,8 +464,14 @@
       "target_crate": "ml-exp-client",
       "target_domain": "observation",
       "proposed_consolidation": "One exact-identity observation model and renderer; observation never executes work.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/client/src/status.rs",
+        "scope": "Consumed pure exact-identity status GET machine, separate scheduler/training/publication/verification and partial unavailable reads; 66 actual Python cases and real loopback HTTP. No public status CLI, logs/metrics commands, pinned watch or human formatter yet.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "client/src/ml_exp_client/updater.py",
@@ -1519,8 +1526,8 @@
       "migration_status": "partial_foundation",
       "python_baseline_unchanged": true,
       "rust_foundation": {
-        "path": "rust/crates/core/src/slurm.rs",
-        "scope": "Pure Slurm resource allocation parsing/planning only; actual SSH/storage/result effects remain incomplete.",
+        "path": "rust/crates/server/src/backends/slurm/transport.rs",
+        "scope": "Native explicit one-call SSH metadata transport with exact bound helper replies and uncertain failures; tested against native helper/fake sbatch. Resource/SIF/data staging, frozen Action integration and real provider acceptance remain absent.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true
       }
@@ -3442,8 +3449,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "tracking",
       "proposed_consolidation": "Optional native W&B publisher over accepted records; replace Python SDK only after real protocol/heartbeat acceptance.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/tracking/contract.rs",
+        "scope": "Pure options/settings/routing and bounded parameter identities, including omitted preparation switch; part of 478 actual Python cases. No credential storage or SDK/network effects.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/tracking/tracking_service.py",
@@ -3517,8 +3530,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "tracking",
       "proposed_consolidation": "Optional native W&B publisher over accepted records; replace Python SDK only after real protocol/heartbeat acceptance.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/tracking/display.rs",
+        "scope": "Consuming pure display projection, context/variant separation, curve records and definition/summary plans; 478 shared reference cases. Name reservations supplied externally; no W&B publication or remote confirmation.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/wandb_exporter.py",
@@ -3774,7 +3793,7 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/core/src/slurm.rs",
-        "scope": "Pure Slurm job scripts, command plans, status/ownership/resource parsing; synthetic differential/negative fixtures. Actual SSH staging, durable outbox, transfer, Apptainer execution and real provider acceptance remain incomplete.",
+        "scope": "Pure legacy plans/parsers plus versioned native helper identities and durable worker ledger. Native prepare/submit/inspect supports isolated roots only; no production Action binding, runtime/data staging, real scheduler ownership or provider acceptance.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true
       }

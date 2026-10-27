@@ -488,6 +488,23 @@ fn blocked_stdin_handles_default_sigpipe_in_an_independent_process_and_restores_
     );
     assert_eq!(blocked(), before);
 
+    let (writer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    drop(reader);
+    let frame = [0, 0, 0, 1, b'x'];
+    assert_eq!(
+        crate::framing::write_frame(
+            &writer,
+            &frame,
+            16,
+            Instant::now() + Duration::from_secs(1),
+            &AtomicBool::new(false)
+        )
+        .unwrap_err()
+        .kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    assert_eq!(blocked(), before);
+
     // An already pending signal belongs to the caller. Preserve both it and
     // the caller's blocked mask across a second broken-pipe execution.
     // SAFETY: only this isolated test subprocess manipulates its own thread's
@@ -516,6 +533,19 @@ fn blocked_stdin_handles_default_sigpipe_in_an_independent_process_and_restores_
             stage: "STDIN",
             code: "BROKEN_PIPE"
         })
+    );
+    assert!(blocked());
+    assert_eq!(
+        crate::framing::write_frame(
+            &writer,
+            &frame,
+            16,
+            Instant::now() + Duration::from_secs(1),
+            &AtomicBool::new(false)
+        )
+        .unwrap_err()
+        .kind(),
+        io::ErrorKind::BrokenPipe
     );
     assert!(blocked());
     let mut pending: libc::sigset_t = unsafe { std::mem::zeroed() };

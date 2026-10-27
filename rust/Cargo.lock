@@ -831,6 +831,8 @@ dependencies = [
 name = "ml-exp-core"
 version = "0.1.0-dev.1"
 dependencies = [
+ "experiment-redact",
+ "regex",
  "ryu",
  "serde",
  "serde_json",
@@ -861,6 +863,7 @@ dependencies = [
  "libc",
  "ml-exp-core",
  "ml-exp-io",
+ "ml-exp-worker",
  "rusqlite",
  "serde",
  "serde_json",
@@ -877,13 +880,16 @@ name = "ml-exp-worker"
 version = "0.1.0-dev.1"
 dependencies = [
  "clap",
+ "fs2",
  "libc",
+ "ml-exp-core",
  "ml-exp-io",
  "serde",
  "serde_json",
  "sha2",
  "signal-hook",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]
