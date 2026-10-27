@@ -545,11 +545,10 @@ pub fn plan_cancel(
     }
     let state = string_field(existing, "state")?;
     if state == "VERIFIED" {
-        let result = existing
-            .get("result")
-            .filter(|value| value.is_object())
-            .cloned()
-            .ok_or(Error::Intent("result"))?;
+        let result = match existing.get("result") {
+            Some(value) if value.is_object() => value.clone(),
+            _ => return Err(Error::Intent("result")),
+        };
         return Ok(CancelDecision::AlreadyVerified { result });
     }
     if state != "REQUESTED" {
