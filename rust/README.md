@@ -89,6 +89,13 @@ capacity charges and exact durable receipts, and reduces `RECEIVING`, `SEALED`
 and `CONFIRMED` states. The Python shell still performs locks, file I/O,
 streaming hashes, deletion fences and remote calls.
 
+`ml-exp-core::multipart` covers the adjacent resumable archive contract: it
+keeps the historical upload ID encoding, validates part policy and arithmetic,
+handles immutable session reuse/restart and exact duplicate parts, and refuses
+publication until every part and the whole SHA256 match. Staging files,
+streaming reads, locks, capacity effects and object-store publication remain
+imperative.
+
 ## Build and check
 
 From the repository root, with a toolchain satisfying the locked dependencies

@@ -95,6 +95,13 @@ fcntl locks, descriptor-safe files, streaming SHA256, run-deletion fences and
 object-store calls; those effects consume the Rust decision rather than
 reimplementing its safety rules.
 
+Resumable multipart sessions now have a separate pure contract. Rust preserves
+the Python upload ID byte format, validates policy and zero-based part sizes,
+decides create/reuse/restart for immutable sessions, rejects replacement of a
+sealed part, and checks the complete part set and whole-archive digest before
+publication. Python continues to own staging directories, locks, streaming
+`PartStream`, disk admission and the final object-store write.
+
 Metrics now include schema/definition validation, typed and wide observations,
 explicit units, required/conditional metrics, context-sensitive conflicts and
 `ratio_of_sums`. Variant, protocol, checkpoint, dataset, step and epoch remain
