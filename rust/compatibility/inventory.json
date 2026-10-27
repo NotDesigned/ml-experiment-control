@@ -40,7 +40,7 @@
         "not_started": 10
       }
     },
-    "partial_foundation_modules": 57,
+    "partial_foundation_modules": 58,
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
@@ -2115,8 +2115,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "data",
       "proposed_consolidation": "One upload/delivery state machine and bounded buffer; old desktop assets are read-only compatibility.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/transfers.rs",
+        "scope": "Pure part identity, metadata naming, block-rounded capacity accounting, admission and RECEIVING/SEALED/CONFIRMED receipt reducer; locks, file/hash I/O and deletion fences remain Python.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/data_image_recipe.py",

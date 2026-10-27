@@ -76,6 +76,15 @@ atomic JSON files, clocks, random token generation and provider calls. This keep
 the difficult replay boundary in a deterministic library without pretending the
 Rust preview is a deployable scheduler.
 
+The upload transfer buffer now has a native pure contract as well. Rust validates
+the `upload.<sha256>`/part identity, derives the metadata filename and charged
+filesystem bytes, applies the fixed one-GiB ceiling, checks durable remote
+receipts, and reduces `RECEIVING → SEALED → CONFIRMED`. A confirmed part can be
+reserved again only after its exact receipt has been proved. Python retains
+fcntl locks, descriptor-safe files, streaming SHA256, run-deletion fences and
+object-store calls; those effects consume the Rust decision rather than
+reimplementing its safety rules.
+
 Metrics now include schema/definition validation, typed and wide observations,
 explicit units, required/conditional metrics, context-sensitive conflicts and
 `ratio_of_sums`. Variant, protocol, checkpoint, dataset, step and epoch remain

@@ -75,6 +75,12 @@ outbox reducer. Random tokens, durable file publication and Slurm/PAI/SenseCore
 calls remain in the imperative shells. An unavailable provider query stays
 UNKNOWN and cannot be silently retried.
 
+`ml-exp-core::transfers` applies the same boundary to the one-GiB unacknowledged
+upload buffer. It validates part identities, metadata names, block-rounded
+capacity charges and exact durable receipts, and reduces `RECEIVING`, `SEALED`
+and `CONFIRMED` states. The Python shell still performs locks, file I/O,
+streaming hashes, deletion fences and remote calls.
+
 ## Build and check
 
 From the repository root, with a toolchain satisfying the locked dependencies

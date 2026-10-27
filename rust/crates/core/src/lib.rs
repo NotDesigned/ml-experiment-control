@@ -22,6 +22,7 @@ pub mod sources;
 pub mod state;
 pub mod submission;
 pub mod tracking;
+pub mod transfers;
 
 pub const API_PROTOCOL_VERSION: u32 = 2;
 pub const CLIENT_PROTOCOL_HEADER: &str = "X-ML-Expd-Client-Protocol";
