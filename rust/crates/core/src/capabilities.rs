@@ -132,7 +132,10 @@ fn resource_mismatch(capability: &Capability, request: &Request) -> Vec<String> 
             problems.push("resources.memory_gb".into());
         }
     }
-    if capability.fixed_gpu_count.is_some_and(|count| count != request.resources.gpus) {
+    if capability
+        .fixed_gpu_count
+        .is_some_and(|count| count != request.resources.gpus)
+    {
         problems.push("resources.fixed_gpu_count".into());
     }
     problems
@@ -146,15 +149,30 @@ pub fn mismatches(
     requirements: &Requirements,
 ) -> Vec<String> {
     let mut problems = Vec::new();
-    if !capability.platforms.iter().any(|value| value == &requirements.platform) {
+    if !capability
+        .platforms
+        .iter()
+        .any(|value| value == &requirements.platform)
+    {
         problems.push("runtime.platforms".into());
     }
-    if !matches!(capability.materialization, Materialization::Oci | Materialization::OciToSif) {
+    if !matches!(
+        capability.materialization,
+        Materialization::Oci | Materialization::OciToSif
+    ) {
         problems.push("runtime.materialization".into());
     }
     for (needed, supported, path) in [
-        (requirements.queue_reason, capability.queue_reason, "observability.queue_reason"),
-        (requirements.exit_code, capability.exit_code, "observability.exit_code"),
+        (
+            requirements.queue_reason,
+            capability.queue_reason,
+            "observability.queue_reason",
+        ),
+        (
+            requirements.exit_code,
+            capability.exit_code,
+            "observability.exit_code",
+        ),
         (
             requirements.preemption_reason,
             capability.preemption_reason,
@@ -196,11 +214,17 @@ pub fn mismatches(
     {
         problems.push("storage.checkpoint_registration".into());
     }
-    if request.has_checkpoint_upload && (!capability.assets || matches!(capability.backend, Backend::PaiDlc)) {
+    if request.has_checkpoint_upload
+        && (!capability.assets || matches!(capability.backend, Backend::PaiDlc))
+    {
         problems.push("checkpoint_upload".into());
     }
     if let Some(policy) = &request.allocation_policy {
-        if !capability.allocation_policies.iter().any(|value| value == policy) {
+        if !capability
+            .allocation_policies
+            .iter()
+            .any(|value| value == policy)
+        {
             problems.push("resources.allocation_policy".into());
         }
     }
@@ -269,14 +293,22 @@ pub fn select(
     if selector.is_none_or(|value| value.candidates.is_empty()) && explicit_executor.is_none() {
         accepted.sort_by_key(|candidate| {
             let capacity = candidate.capability.capacity.clone().unwrap_or_default();
-            (capacity.gpus, capacity.cpus, capacity.memory_gb, candidate.name.clone())
+            (
+                capacity.gpus,
+                capacity.cpus,
+                capacity.memory_gb,
+                candidate.name.clone(),
+            )
         });
     }
     let chosen = accepted[0];
     Ok(Match {
         executor: chosen.name.clone(),
         capability: chosen.capability.clone(),
-        compatible_executors: accepted.into_iter().map(|value| value.name.clone()).collect(),
+        compatible_executors: accepted
+            .into_iter()
+            .map(|value| value.name.clone())
+            .collect(),
         rejected,
         live_availability_checked: false,
     })
@@ -330,14 +362,22 @@ mod tests {
             offline_output_export: true,
             allocation_policies: vec!["guaranteed".into(), "allow_idle".into()],
             priority: matches!(backend, Backend::PaiDlc),
-            capacity: Some(Resources { gpus: 8, cpus: 200, memory_gb: 1600 }),
+            capacity: Some(Resources {
+                gpus: 8,
+                cpus: 200,
+                memory_gb: 1600,
+            }),
             fixed_gpu_count: None,
         }
     }
 
     fn request() -> Request {
         Request {
-            resources: Resources { gpus: 4, cpus: 64, memory_gb: 512 },
+            resources: Resources {
+                gpus: 4,
+                cpus: 64,
+                memory_gb: 512,
+            },
             has_inputs: true,
             has_data_preparation: true,
             data_preparation_timeout_seconds: Some(1800),
@@ -370,24 +410,42 @@ mod tests {
     #[test]
     fn selector_preserves_explicit_preference_and_rejects_unknown() {
         let values = vec![
-            Candidate { name: "h100".into(), capability: capability(Backend::Slurm) },
-            Candidate { name: "pai".into(), capability: capability(Backend::PaiDlc) },
+            Candidate {
+                name: "h100".into(),
+                capability: capability(Backend::Slurm),
+            },
+            Candidate {
+                name: "pai".into(),
+                capability: capability(Backend::PaiDlc),
+            },
         ];
         let result = select(
             &values,
             None,
-            Some(&Selector { backend: None, candidates: vec!["pai".into(), "h100".into()] }),
+            Some(&Selector {
+                backend: None,
+                candidates: vec!["pai".into(), "h100".into()],
+            }),
             &request(),
-            &Requirements { platform: "linux/amd64".into(), ..Requirements::default() },
+            &Requirements {
+                platform: "linux/amd64".into(),
+                ..Requirements::default()
+            },
         )
         .unwrap();
         assert_eq!(result.executor, "pai");
         let error = select(
             &values,
             None,
-            Some(&Selector { backend: None, candidates: vec!["missing".into()] }),
+            Some(&Selector {
+                backend: None,
+                candidates: vec!["missing".into()],
+            }),
             &request(),
-            &Requirements { platform: "linux/amd64".into(), ..Requirements::default() },
+            &Requirements {
+                platform: "linux/amd64".into(),
+                ..Requirements::default()
+            },
         )
         .unwrap_err();
         assert_eq!(error, Error::NoMatch);
@@ -396,15 +454,38 @@ mod tests {
     #[test]
     fn automatic_selection_prefers_smallest_fitting_capacity() {
         let mut small = capability(Backend::Slurm);
-        small.capacity = Some(Resources { gpus: 4, cpus: 64, memory_gb: 512 });
+        small.capacity = Some(Resources {
+            gpus: 4,
+            cpus: 64,
+            memory_gb: 512,
+        });
         let mut large = capability(Backend::Sensecore);
-        large.capacity = Some(Resources { gpus: 8, cpus: 128, memory_gb: 1024 });
+        large.capacity = Some(Resources {
+            gpus: 8,
+            cpus: 128,
+            memory_gb: 1024,
+        });
         let result = select(
-            &[Candidate { name: "large".into(), capability: large }, Candidate { name: "small".into(), capability: small }],
+            &[
+                Candidate {
+                    name: "large".into(),
+                    capability: large,
+                },
+                Candidate {
+                    name: "small".into(),
+                    capability: small,
+                },
+            ],
             None,
-            Some(&Selector { backend: None, candidates: Vec::new() }),
+            Some(&Selector {
+                backend: None,
+                candidates: Vec::new(),
+            }),
             &request(),
-            &Requirements { platform: "linux/amd64".into(), ..Requirements::default() },
+            &Requirements {
+                platform: "linux/amd64".into(),
+                ..Requirements::default()
+            },
         )
         .unwrap();
         assert_eq!(result.executor, "small");
@@ -417,6 +498,14 @@ mod tests {
         let mut selected = capability(Backend::Slurm);
         selected.api_relay = true;
         let missing = missing_worker_capabilities(&value, &selected, &[]);
-        assert_eq!(missing, vec!["api-relay.v1", "data-assets.v1", "data-preparation.v1", "persistent-checkpoints.v1"]);
+        assert_eq!(
+            missing,
+            vec![
+                "api-relay.v1",
+                "data-assets.v1",
+                "data-preparation.v1",
+                "persistent-checkpoints.v1"
+            ]
+        );
     }
 }
