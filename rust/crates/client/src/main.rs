@@ -270,7 +270,10 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     } = &args.command
     {
         let mut input = String::new();
-        io::stdin().read_to_string(&mut input)?;
+        io::stdin().take(8 * 1024 * 1024 + 1).read_to_string(&mut input)?;
+        if input.len() > 8 * 1024 * 1024 {
+            return Err("contract input exceeds 8 MiB".into());
+        }
         let value: serde_json::Value = serde_json::from_str(&input)?;
         let intent = ml_exp_core::intent::OperationIntent::from_value(&value)
             .map_err(|error| format!("invalid operation intent: {error}"))?;
@@ -288,7 +291,10 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             partition: String,
         }
         let mut input = String::new();
-        io::stdin().read_to_string(&mut input)?;
+        io::stdin().take(8 * 1024 * 1024 + 1).read_to_string(&mut input)?;
+        if input.len() > 8 * 1024 * 1024 {
+            return Err("contract input exceeds 8 MiB".into());
+        }
         let request: Input = serde_json::from_str(&input)?;
         let snapshot = ml_exp_core::slurm::parse_allocation(&request.output, &request.partition)
             .map_err(|error| format!("invalid Slurm allocation: {error}"))?;

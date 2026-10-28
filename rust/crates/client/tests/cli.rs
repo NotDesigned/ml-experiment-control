@@ -503,3 +503,41 @@ fn invalid_watch_duration_is_rejected_before_connection_or_configuration_io() {
     }
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
 }
+
+#[test]
+fn allocation_contract_preserves_counts_and_rejects_incomplete_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let node = "NodeName=n1 Partitions=gpu CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED";
+    for valid in [true, false] {
+        let evidence = if valid {
+            format!("{node}\nML_EXPD_QUEUE\n123\n")
+        } else {
+            node.to_owned()
+        };
+        let input = serde_json::json!({"output": evidence, "partition": "gpu"});
+        let mut child = command(temp.path())
+            .args(["contract", "slurm-allocation-validate"])
+            .env("ML_EXPD_CLIENT_CONFIG", temp.path().join("missing.json"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.success(), valid);
+        if valid {
+            let snapshot = json_output(output);
+            assert_eq!(snapshot["resources"]["gpus"]["unallocated"], 5);
+            assert_eq!(snapshot["resources"]["memory_bytes"]["allocated"], 268435456);
+            assert_eq!(snapshot["pending_queue_entries"], 1);
+        } else {
+            assert!(output.stdout.is_empty());
+        }
+    }
+}
