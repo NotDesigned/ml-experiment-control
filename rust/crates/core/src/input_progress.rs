@@ -127,17 +127,14 @@ pub fn parse_line(line: &str) -> ParsedLine {
         .and_then(Value::as_str)
         .and_then(Phase::parse);
     let asset_id = fields.get("asset_id").and_then(Value::as_str);
-    let Some((at, phase, asset_id)) = at.zip(phase).zip(asset_id).map(|((a, p), i)| (a, p, i)) else {
+    let Some((at, phase, asset_id)) = at.zip(phase).zip(asset_id).map(|((a, p), i)| (a, p, i))
+    else {
         return ParsedLine {
             record: None,
             legacy_failed: false,
         };
     };
-    if at.is_empty()
-        || at.len() > 256
-        || at.chars().any(char::is_control)
-        || !valid_asset(asset_id)
-    {
+    if at.is_empty() || at.len() > 256 || at.chars().any(char::is_control) || !valid_asset(asset_id) {
         return ParsedLine {
             record: None,
             legacy_failed: false,
