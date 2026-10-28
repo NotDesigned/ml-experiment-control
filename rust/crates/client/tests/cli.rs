@@ -40,7 +40,11 @@ fn native_contract_validation_does_not_load_config_or_contact_http() {
         .write_all(br#"{"kind":"SUBMIT_RUN","title":"native","draft":"{}"}"#)
         .unwrap();
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["kind"], "SUBMIT_RUN");
     assert_eq!(value["resource_estimate"], "unknown");

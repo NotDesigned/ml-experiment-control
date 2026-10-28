@@ -3,7 +3,10 @@ use ml_exp_client::{
     Client, config, credentials, observation, presentation, projects, read, session, sources,
     status, watch,
 };
-use std::{io::{self, Read}, path::PathBuf};
+use std::{
+    io::{self, Read},
+    path::PathBuf,
+};
 
 #[derive(Parser)]
 #[command(
