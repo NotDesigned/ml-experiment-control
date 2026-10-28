@@ -280,6 +280,13 @@ async fn create(
         Err(error) => return read_http::failure(error),
     };
     read_http::execute(state, Access::RunCreate, move |api, now| {
+        if let Some(cloud) = api.cloud() {
+            if cloud.accepts(&request.executor) {
+                return cloud
+                    .create_run(&project, request, &clock(now)?)
+                    .map_err(crate::cloud_runs::failure);
+            }
+        }
         service(api)?
             .create_run(&project, request, &clock(now)?)
             .map_err(creation_failure)
@@ -332,6 +339,16 @@ async fn existing(
         return read_http::failure(error);
     }
     read_http::execute(state, Access::Read, move |api, now| {
+        if let Some(cloud) = api.cloud() {
+            if cloud
+                .handles_run(&project, &run)
+                .map_err(crate::cloud_runs::failure)?
+            {
+                return cloud
+                    .for_run(&project, &run, &clock(now)?)
+                    .map_err(crate::cloud_runs::failure);
+            }
+        }
         service(api)?
             .for_run(&project, &run, &clock(now)?)
             .map_err(failure)
@@ -366,6 +383,16 @@ async fn prepare(
             .format(&Rfc3339)
             .map_err(|_| invalid())?;
         let (_, identity) = crate::projects::transition_context().map_err(read_api::Error::from)?;
+        if let Some(cloud) = api.cloud() {
+            if cloud
+                .handles_run(&project, &run)
+                .map_err(crate::cloud_runs::failure)?
+            {
+                return cloud
+                    .prepare(&project, &run, approval, &now, &expires, &identity)
+                    .map_err(crate::cloud_runs::failure);
+            }
+        }
         service(api)?
             .prepare(
                 &project,
@@ -486,7 +513,6 @@ async fn change(
         access,
         std::time::Duration::from_secs(120),
         move |api, now| {
-            let service = service(api)?;
             let now = clock(now)?;
             let (_, transition) =
                 crate::projects::transition_context().map_err(read_api::Error::from)?;
@@ -495,6 +521,18 @@ async fn change(
                 expires: &now,
                 transition_id: &transition,
             };
+            if let Some(cloud)=api.cloud(){if cloud.handles_action(&identity).map_err(crate::cloud_runs::failure)?{
+                let cancelled=AtomicBool::new(false);
+                return match operation {
+                    Operation::Authorize(reason)=>cloud.authorize(&identity,&reason,&now,&transition),
+                    Operation::Execute(confirmation)=>cloud.execute(&identity,&confirmation,&now,&transition,&cancelled),
+                    Operation::Reconcile=>cloud.reconcile(&identity,&now,&transition,&cancelled),
+                    Operation::Refresh=>cloud.refresh(&identity,&now,&cancelled),
+                    Operation::Cancel(confirmation)=>cloud.cancel(&identity,&confirmation,&now,&cancelled),
+                    _=>return Err(read_api::Error{status:501,code:"CLOUD_OPERATION_NOT_IMPLEMENTED",detail:"cloud checkpoint, history, artifact and retry composition is not yet implemented; no provider mutation issued"}),
+                }.map_err(crate::cloud_runs::failure);
+            }}
+            let service = service(api)?;
             let refreshing = matches!(&operation,Operation::History | Operation::Refresh | Operation::Checkpoint | Operation::Collect | Operation::Acknowledge(_));
             match operation {
                 Operation::Retry(request)=>service.retry(&identity,request,&now,&AtomicBool::new(false)),

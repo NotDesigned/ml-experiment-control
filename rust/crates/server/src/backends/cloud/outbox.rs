@@ -282,6 +282,23 @@ impl Outbox {
         lock.validate()?;
         self.view(&entry)
     }
+    pub fn optional_status(&self, job: &Job) -> Result<Option<Value>> {
+        let lock = self.lock()?;
+        let name = Self::slot(job)?;
+        if !self
+            .directory
+            .entry_exists(OsStr::new(&name))
+            .map_err(|_| Error::evidence())?
+        {
+            return Ok(None);
+        }
+        let entry = self.load(&name)?;
+        if entry.job != *job {
+            return Err(Error::evidence());
+        }
+        lock.validate()?;
+        self.view(&entry).map(Some)
+    }
     fn view(&self, entry: &Entry) -> Result<Value> {
         let slot = Self::slot(&entry.job)?;
         Ok(

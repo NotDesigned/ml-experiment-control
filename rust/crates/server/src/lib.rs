@@ -2,6 +2,7 @@
 pub mod backends;
 pub mod background;
 pub mod checkpoints;
+pub mod cloud_runs;
 pub mod deletion;
 pub mod experiments;
 pub mod index;
@@ -118,6 +119,7 @@ fn health_document(
         capabilities.push("source-archive.v1");
     }
     if submissions.is_some() {
+        capabilities.push("native-submissions.v1");
         capabilities.push("native-slurm-submissions.v1");
         capabilities.push("native-worker-observation.v1");
         capabilities.push("native-checkpoints.v1");
@@ -163,22 +165,49 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
         .into_response();
     }
     read_http::execute(state, read_http::Access::Read, |api, _| {
-        Ok(health_document(
+        let mut document = health_document(
             api.active_project_count()?,
             api.workspace_id(),
             true,
             api.lifecycle().is_some(),
             api.sources().as_deref(),
             api.submissions().as_deref(),
-        ))
+        );
+        if let Some(cloud) = api.cloud() {
+            for field in ["capabilities", "supported_capabilities"] {
+                let values = document[field].as_array_mut().expect("capabilities array");
+                for capability in [
+                    "native-cloud-submissions.v1",
+                    "native-submissions.v1",
+                    "native-cancellation.v1",
+                    "native-scheduler-observation.v1",
+                ] {
+                    if !values.iter().any(|v| v == capability) {
+                        values.push(json!(capability));
+                    }
+                }
+                if cloud.can_create_runs() && !values.iter().any(|v| v == "native-run-creation.v1")
+                {
+                    values.push(json!("native-run-creation.v1"));
+                }
+            }
+            document["cloud_scheduler_mutations"] = json!(cloud.enabled());
+            document["cloud_run_creation"] = json!(cloud.can_create_runs());
+            document["scheduler_mutations"] =
+                json!(cloud.enabled() || document["scheduler_mutations"] == true);
+            document["run_writes"] =
+                json!(cloud.can_create_runs() || document["run_writes"] == true);
+        }
+        Ok(document)
     })
     .await
 }
 async fn readiness(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let submission = state.reads.as_ref().and_then(|api| api.submissions());
+    let cloud = state.reads.as_ref().and_then(|api| api.cloud());
     Json(
         json!({"api":"READY", "training":"INCOMPLETE", "migration":"IN_PROGRESS",
-        "scheduler_mutations":submission.as_ref().is_some_and(|service|service.enabled()),"providers_configured":submission.is_some()}),
+        "scheduler_mutations":submission.as_ref().is_some_and(|service|service.enabled())||cloud.as_ref().is_some_and(|service|service.enabled()),"providers_configured":submission.is_some()||cloud.is_some()}),
     )
 }
 fn schema_document() -> serde_json::Value {

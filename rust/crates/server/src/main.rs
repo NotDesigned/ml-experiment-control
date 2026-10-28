@@ -11,7 +11,7 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:18765")]
     bind: SocketAddr,
     #[arg(long)]
-    #[arg(required_unless_present_any = ["initialize_registry", "initialize_project_lifecycle", "initialize_source_archives", "initialize_submissions"])]
+    #[arg(required_unless_present_any = ["initialize_registry", "initialize_project_lifecycle", "initialize_source_archives", "initialize_submissions", "initialize_cloud_submissions"])]
     token_file: Option<PathBuf>,
     /// Private approved source configuration for an isolated Rust preview.
     #[arg(long, conflicts_with = "initialize_registry")]
@@ -34,9 +34,15 @@ struct Args {
     /// Explicit offline initialization of a fresh native submission namespace.
     #[arg(long, requires = "read_config", conflicts_with_all = ["initialize_registry", "token_file", "initialize_project_lifecycle", "initialize_source_archives", "submission_config"])]
     initialize_submissions: bool,
+    /// Explicit offline creation of a fresh cloud Run and effect namespace.
+    #[arg(long,requires="read_config",conflicts_with_all=["initialize_registry","token_file","cloud_config"])]
+    initialize_cloud_submissions: bool,
     /// Trusted native Slurm profiles and published-image receipts, never client input.
     #[arg(long, requires_all = ["read_config", "source_archives"], conflicts_with = "initialize_registry")]
     submission_config: Option<PathBuf>,
+    /// Independent approved PAI/SenseCore configuration; native HTTPS effects.
+    #[arg(long,requires_all=["read_config","source_archives"],conflicts_with="initialize_registry")]
+    cloud_config: Option<PathBuf>,
     /// Optional private official-cloud W&B credentials and SDK interpreter.
     #[arg(long, requires = "submission_config")]
     tracking_config: Option<PathBuf>,
@@ -99,6 +105,25 @@ async fn main() -> std::process::ExitCode {
             }
         };
     }
+    if args.initialize_cloud_submissions {
+        let result =
+            ml_exp_server::read_config::load(args.read_config.as_deref().expect("required config"))
+                .map_err(|_| "invalid read configuration")
+                .and_then(|settings| {
+                    ml_exp_server::cloud_runs::Service::initialize(&settings)
+                        .map_err(|_| "cannot initialize fresh cloud namespace")
+                });
+        return match result {
+            Ok(()) => {
+                println!("cloud submission storage initialized; no provider job submitted");
+                std::process::ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     if !args.bind.ip().is_loopback() {
         eprintln!("Rust preview requires loopback binding; native TLS has not been ported");
         return std::process::ExitCode::FAILURE;
@@ -133,19 +158,34 @@ async fn main() -> std::process::ExitCode {
         eprintln!("optional W&B publisher: {error}");
     }
     let (reads, polling) = match args.read_config.as_deref() {
-        Some(path) => match open_api(
-            path,
-            args.project_lifecycle,
-            args.source_archives,
-            args.submission_config.as_deref(),
-            tracking.as_ref().map(|runtime| runtime.routing().clone()),
-        ) {
-            Ok((reads, polling)) => (Some(std::sync::Arc::new(reads)), polling),
-            Err(error) => {
-                eprintln!("{error}");
-                return std::process::ExitCode::FAILURE;
+        Some(path) => {
+            let path = path.to_owned();
+            let lifecycle = args.project_lifecycle;
+            let archives = args.source_archives;
+            let submission = args.submission_config.clone();
+            let cloud = args.cloud_config.clone();
+            let routing = tracking.as_ref().map(|runtime| runtime.routing().clone());
+            let opened = tokio::task::spawn_blocking(move || {
+                open_api(
+                    &path,
+                    lifecycle,
+                    archives,
+                    submission.as_deref(),
+                    cloud.as_deref(),
+                    routing,
+                )
+                .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap_or_else(|_| Err("native service initialization failed".into()));
+            match opened {
+                Ok((reads, polling)) => (Some(std::sync::Arc::new(reads)), polling),
+                Err(error) => {
+                    eprintln!("{error}");
+                    return std::process::ExitCode::FAILURE;
+                }
             }
-        },
+        }
         None => (None, None),
     };
     let listener = match tokio::net::TcpListener::bind(args.bind).await {
@@ -225,6 +265,7 @@ fn open_api(
     lifecycle: bool,
     source_archives: bool,
     submission_config: Option<&std::path::Path>,
+    cloud_config: Option<&std::path::Path>,
     tracking: Option<ml_exp_core::tracking::RoutingSettings>,
 ) -> Result<
     (
@@ -251,7 +292,18 @@ fn open_api(
             &settings,
             api.lifecycle(),
         )?);
-        let api = api.with_sources(source.clone())?;
+        let mut api = api.with_sources(source.clone())?;
+        if let Some(path) = cloud_config {
+            let config = ml_exp_server::cloud_runs::Settings::load(path)?;
+            let cloud = ml_exp_server::cloud_runs::Service::open(
+                settings.clone(),
+                config,
+                source.clone(),
+                api.lifecycle(),
+                tracking.clone().unwrap_or_default(),
+            )?;
+            api = api.with_cloud(std::sync::Arc::new(cloud))?;
+        }
         if let Some(path) = submission_config {
             let config = ml_exp_server::submissions::config::load(path)?;
             let submissions = std::sync::Arc::new(

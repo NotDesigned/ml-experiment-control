@@ -3,6 +3,8 @@ use std::{path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
 #[cfg(unix)]
 mod cli;
 #[cfg(unix)]
+mod cloud_cli;
+#[cfg(unix)]
 mod data_cli;
 #[cfg(unix)]
 mod import_cli;
@@ -54,6 +56,9 @@ fn main() -> ExitCode {
             .as_deref()
             .and_then(std::ffi::OsStr::to_str)
         {
+            Some("cloud-launch") => {
+                return cloud_cli::main_from(std::iter::once(binary).chain(arguments));
+            }
             Some("data-import") => {
                 return import_cli::main_from(std::iter::once(binary).chain(arguments));
             }

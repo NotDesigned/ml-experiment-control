@@ -271,6 +271,7 @@ pub struct Api {
     sources: Option<Arc<crate::sources::Service>>,
     actions: Option<crate::operations::Store>,
     submissions: Option<Arc<crate::submissions::Service>>,
+    cloud: Option<Arc<crate::cloud_runs::Service>>,
 }
 impl Api {
     pub fn open(settings: read_config::Settings) -> Result<Self, read_config::Error> {
@@ -329,6 +330,7 @@ impl Api {
             sources: None,
             actions,
             submissions: None,
+            cloud: None,
         })
     }
     pub fn with_lifecycle(
@@ -386,6 +388,23 @@ impl Api {
     pub fn submissions(&self) -> Option<Arc<crate::submissions::Service>> {
         self.submissions.clone()
     }
+    pub fn with_cloud(
+        mut self,
+        service: Arc<crate::cloud_runs::Service>,
+    ) -> Result<Self, read_config::Error> {
+        if !service.matches(
+            &self.registry_root,
+            &self.read_scope_sha256,
+            self.sources.as_ref(),
+        ) {
+            return Err(read_config::Error);
+        }
+        self.cloud = Some(service);
+        Ok(self)
+    }
+    pub fn cloud(&self) -> Option<Arc<crate::cloud_runs::Service>> {
+        self.cloud.clone()
+    }
     pub fn active_project_count(&self) -> Result<usize, Error> {
         self.validate_registry()?;
         match &self.lifecycle {
@@ -442,6 +461,20 @@ impl Api {
             .map_err(|_| invalid_clock())?
             .format(&time::format_description::well_known::Rfc3339)
             .map_err(|_| invalid_clock())?;
+        if snapshot["native_cloud"]["format"] == "native-cloud-action.v1" {
+            return self
+                .cloud
+                .as_ref()
+                .ok_or_else(|| {
+                    error(
+                        501,
+                        "CLOUD_NOT_CONFIGURED",
+                        "cloud submission service is not configured",
+                    )
+                })?
+                .get(id, &now)
+                .map_err(crate::cloud_runs::failure);
+        }
         if let Some(service) = &self.submissions {
             return service
                 .get(id, &now)
@@ -778,6 +811,20 @@ impl Api {
         attempt: Option<&str>,
         now_unix: f64,
     ) -> Result<Value, Error> {
+        if let Some(cloud) = &self.cloud {
+            if cloud
+                .handles_run(project, run)
+                .map_err(crate::cloud_runs::failure)?
+            {
+                let now = time::OffsetDateTime::from_unix_timestamp_nanos((now_unix * 1e9) as i128)
+                    .map_err(|_| invalid_query())?
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .map_err(|_| invalid_query())?;
+                return cloud
+                    .project_view(value, project, run, attempt, &now)
+                    .map_err(crate::cloud_runs::failure);
+            }
+        }
         let Some(service) = &self.submissions else {
             return Ok(value);
         };

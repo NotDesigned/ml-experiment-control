@@ -859,3 +859,27 @@ phase and safe failure code. The command deadline also sets the worker cancellat
 flag; provider/outer worker supervision remains responsible for hard process limits.
 Private signed URLs never appear in receipts or errors. Direct import does not
 create a scheduler job, attach the dataset to a Run or publish a server receipt.
+
+## Native cloud Run composition
+
+Cloud submissions are an independent opt-in configuration. Initialize their
+namespace once using `--initialize-cloud-submissions --read-config /private/reads.json`.
+Start the preview with `--source-archives --cloud-config /private/cloud.json`;
+Slurm configuration is optional and independent. Cloud configuration contains
+`schema_version: 1`, `enabled`, `allow_run_creation` and `backends`. Each backend
+fixes its `executor`, native `profile`, approved `run_root`, `credentials_file`,
+optional `registry_auth_file`, timeout, allocation and published `runtimes`.
+An entry in `runtimes` fixes `runtime_id`, `source_id`, digest-pinned `image`,
+`source_dir`, `worker_path` and `worker_sha256`. These are operator/builder
+receipts, not client assertions.
+
+The ordinary `run create`, `prepare`, `authorize`, `execute`, `submission`,
+`reconcile`, `refresh` and `cancel` commands are reused. GET reads only cached
+evidence. Cancellation remains unconfirmed until an exact terminal provider
+observation. The image starts `ml-exp-worker-rs cloud-launch` with one sealed
+package; the worker preserves backend state and refuses uncertain replay.
+
+This cloud path currently rejects dataset and checkpoint-restore inputs and
+does not yet compose metrics/history, result collection or retries. These
+limitations are explicit errors; this preview remains unsuitable as a complete
+production replacement. No live cloud/GPU acceptance is claimed.

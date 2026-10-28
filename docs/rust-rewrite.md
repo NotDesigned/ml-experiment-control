@@ -778,11 +778,27 @@ private outbox records submit/cancel intent before effects, survives restart and
 never replays a started effect after response loss or an empty provider list.
 The runner uses the ordinary Action authorization, frozen-file checks and CAS.
 
-These are internal callable adapters, not yet a complete public cloud Run path.
-The main preview HTTP composition still configures native Slurm submissions.
-Cloud worker bootstrap/callbacks, orchestration and real provider acceptance are
-pending. No provider training mutation is authorized merely by constructing an
-adapter or observing a configured capability.
+The opt-in `server::cloud_runs` service now composes published cloud runtimes,
+immutable source receipts and the ordinary Run/Action HTTP routes. Create,
+prepare, authorize, execute, reconcile, refresh and cancel retain their existing
+client commands. The client recognizes a provider-neutral submission capability;
+old Slurm capability responses remain supported. Private per-provider configuration
+is independent of Slurm. Only explicit offline initialization creates the cloud
+namespace; normal startup and GET never repair it. Cached scheduler evidence
+is distinct from training completion, metrics and artifact publication.
+
+`cloud-launch` accepts one frozen package, checks its own executable against the
+published worker hash, initializes dedicated backend Attempt/state paths and uses
+the existing native at-most-once managed worker. Completed attempts can be
+inspected without executing twice; STARTED or broken initialization is never
+replayed. GPU runtime variables are captured once. Source code is already in the
+digest-pinned image; the worker does not fetch it or install an environment.
+
+Cloud dataset/restore attachment, complete metric/checkpoint/result transport,
+background cloud observation, debug lifecycle and automatic build composition
+remain incomplete. Unsupported cloud operations return explicit errors rather
+than falling back to Slurm or silently ignoring inputs. Real provider acceptance
+is pending; constructing an adapter or observing a capability is not acceptance.
 
 The native `data-import` worker uses the existing immutable dataset store and
 progress marker. It receives data in 16MiB ranges from an approved HTTPS host,

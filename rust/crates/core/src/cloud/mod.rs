@@ -1,8 +1,10 @@
 //! Provider request compilers. No credentials, clocks, network or persistence.
 //! A compiled request is an effect description, never authority to execute it.
 pub mod action;
+pub mod launch;
 mod observation;
 pub mod pai;
+pub mod run;
 pub mod sensecore;
 use crate::{canonical, identity, slurm::helper, submission};
 pub use observation::{JobObservation, Page, QueueDiagnostic};

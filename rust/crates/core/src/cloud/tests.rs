@@ -61,6 +61,91 @@ fn sense() -> sensecore::Profile {
     }
 }
 #[test]
+fn cloud_run_authorship_launch_and_approval_preserve_science_and_exact_attempt() {
+    let runtime = run::Runtime {
+        runtime_id: format!("runtime.{}", "1".repeat(64)),
+        source_id: job().source_id,
+        image: job().image,
+        source_dir: "/workspace".into(),
+        worker_path: "/opt/ml-expd/worker".into(),
+        worker_sha256: format!("sha256:{}", "d".repeat(64)),
+    };
+    let request:run::Create=serde_json::from_value(json!({"run_id":"train","runtime_id":runtime.runtime_id,"executor":"pai-h200","command":["python","train.py","'$(not-a-shell)'","中文"],"resources":{"gpus":1,"cpus":8,"memory_gb":64},"walltime_seconds":3600,"seed":42})).unwrap();
+    let p = format!("sha256:{}", "a".repeat(64));
+    let s = format!("sha256:{}", "b".repeat(64));
+    let profile = pai().scope().unwrap();
+    let docs = run::documents(
+        "demo",
+        &request,
+        &runtime,
+        run::Authority {
+            project_sha256: &p,
+            source_receipt_sha256: &s,
+            profile_sha256: &profile,
+            tracking_route: &json!({"enabled":false}),
+        },
+        "2026-10-29T00:00:00Z",
+    )
+    .unwrap();
+    let binding = crate::first_submission::native::Binding {
+        project: "demo".into(),
+        run_id: "train".into(),
+        attempt_id: "attempt-001".into(),
+        project_sha256: p,
+        run_sha256: helper::sha256_bytes(&serde_json::to_vec(&docs.run).unwrap()),
+        attempt_sha256: helper::sha256_bytes(&serde_json::to_vec(&docs.attempt).unwrap()),
+        source_receipt_sha256: s,
+        backend_config_sha256: profile,
+    };
+    let execution = run::execution(
+        &docs.run,
+        &docs.attempt,
+        binding.clone(),
+        &runtime,
+        "/mnt/workspace/ml-expd/runs",
+        &"0".repeat(32),
+        pai::Allocation::AllowIdle,
+    )
+    .unwrap();
+    assert_eq!(execution.job.command[1], "cloud-launch");
+    let package: launch::Package = serde_json::from_str(&execution.job.command[3]).unwrap();
+    assert_eq!(package.manifest.argv, request.command);
+    assert_eq!(package.manifest.identity.attempt_id, "attempt-001");
+    assert!(
+        package
+            .config
+            .attempt_root
+            .ends_with("demo/train/attempt-001")
+    );
+    let approval = crate::first_submission::native::Approval {
+        max_gpu_hours: 1.,
+        reason: String::new(),
+    };
+    let plan = action::prepare(
+        &execution,
+        &approval,
+        "2026-10-29T00:00:00Z",
+        "2026-10-29T01:00:00Z",
+    )
+    .unwrap();
+    assert!(!plan.to_string().contains(&"0".repeat(32)));
+    action::validate(&plan, &execution).unwrap();
+    let mut mixed = docs.attempt.clone();
+    mixed["seed"] = json!(43);
+    assert!(
+        run::execution(
+            &docs.run,
+            &mixed,
+            binding,
+            &runtime,
+            "/mnt/workspace/ml-expd/runs",
+            &"0".repeat(32),
+            pai::Allocation::AllowIdle
+        )
+        .is_err()
+    );
+}
+#[test]
 fn dlc_resources_idle_permission_personal_mounts_and_frozen_ownership_are_explicit() {
     let p = pai();
     let job = job();
