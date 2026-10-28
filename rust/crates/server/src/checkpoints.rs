@@ -43,11 +43,20 @@ impl Store {
     pub fn open(registry_root: &Path) -> Result<Self> {
         let root = Directory::open(registry_root, true)?;
         let namespace = root.child(OsStr::new(NAMESPACE), true)?;
+        namespace.open_lock(OsStr::new(LOCK))?;
+        Ok(Self { namespace })
+    }
+
+    pub fn open_existing(registry_root: &Path) -> Result<Self> {
+        let root = Directory::open(registry_root, false)?;
+        let namespace = root.child(OsStr::new(NAMESPACE), false)?;
+        namespace.verify_private_parent()?;
+        namespace.open_existing_lock(OsStr::new(LOCK))?;
         Ok(Self { namespace })
     }
 
     fn lock(&self) -> Result<Guard> {
-        let file = self.namespace.open_lock(OsStr::new(LOCK))?;
+        let file = self.namespace.open_existing_lock(OsStr::new(LOCK))?;
         file.try_lock_exclusive().map_err(|error| {
             if error.kind() == std::io::ErrorKind::WouldBlock {
                 Error::Busy
@@ -59,6 +68,8 @@ impl Store {
     }
 
     fn attempt_directory(&self, context: &Context, create: bool) -> Result<Option<Directory>> {
+        checkpoints::context(&serde_json::to_value(context).map_err(|_| Error::Document)?)
+            .map_err(|_| Error::Document)?;
         let project = match self.namespace.child(OsStr::new(&context.project), create) {
             Ok(directory) => directory,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),

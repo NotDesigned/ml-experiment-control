@@ -117,6 +117,7 @@ fn health_document(
     if submissions.is_some() {
         capabilities.push("native-slurm-submissions.v1");
         capabilities.push("native-worker-observation.v1");
+        capabilities.push("native-checkpoints.v1");
     }
     if submissions.is_some_and(submissions::Service::can_create_runs) {
         capabilities.push("native-run-creation.v1");
@@ -257,6 +258,28 @@ fn schema_document() -> serde_json::Value {
     let paths = document["paths"]
         .as_object_mut()
         .expect("static OpenAPI paths object");
+    let checkpoint_parameters = vec![
+        parameter("protocol"),
+        parameter("project"),
+        parameter("run"),
+        json!({"name":"attempt","in":"path","required":true,"schema":{"type":"string","pattern":"^attempt-[0-9]{3,}$"}}),
+    ];
+    paths.insert(
+        "/api/runs/{project}/{run}/attempts/{attempt}/checkpoints".into(),
+        operation(
+            "Read registered backend checkpoint metadata; no remote file access",
+            checkpoint_parameters.clone(),
+        ),
+    );
+    let mut checkpoint = checkpoint_parameters;
+    checkpoint.push(json!({"name":"checkpoint","in":"path","required":true,"schema":{"type":"string","pattern":"^checkpoint[.][0-9a-f]{64}$"}}));
+    paths.insert(
+        "/api/runs/{project}/{run}/attempts/{attempt}/checkpoints/{checkpoint}".into(),
+        operation(
+            "Read one exact registered checkpoint and provenance",
+            checkpoint,
+        ),
+    );
     paths.insert("/api/project-lifecycle".into(),operation("Observe the existing lifecycle registry and audit tail without repairing its pending journal",vec![parameter("protocol")]));
     paths.insert("/api/project-lifecycle/register".into(),post("Register one configured approved daemon manifest path; this does not discover arbitrary client paths or import a source tree",register_body,vec![parameter("protocol")]));
     paths.insert(
@@ -305,6 +328,11 @@ fn schema_document() -> serde_json::Value {
             "Read bounded exact-worker logs, metrics and process evidence into the local observation cache; never changes a Submission or provider job",
             json!({"type":"object","additionalProperties":false}),
         ),
+        (
+            "checkpoint",
+            "Verify and seal the named complete generation on backend storage and register metadata only; never resubmits training",
+            json!({"type":"object","additionalProperties":false}),
+        ),
     ] {
         let mut operation = post(
             description,
@@ -319,7 +347,7 @@ fn schema_document() -> serde_json::Value {
         );
         operation["post"]["responses"]["403"] =
             json!({"description":"Native scheduler execution is disabled by the operator"});
-        if name == "refresh" {
+        if name == "refresh" || name == "checkpoint" {
             operation["post"]["responses"]["200"]["description"] = json!(
                 "Original Submission plus sampled worker phase and receive time; no Action or scheduler mutation"
             );
@@ -330,6 +358,12 @@ fn schema_document() -> serde_json::Value {
                 .as_object_mut()
                 .expect("response mapping")
                 .remove("403");
+        }
+        if name == "checkpoint" {
+            operation["post"]["responses"]["200"]["description"] = json!(
+                "Original Submission identity and registered checkpoint metadata; payload remains on backend storage; no scheduler operation"
+            );
+            operation["post"]["responses"]["503"] = json!({"description":"Ready marker or generation verification unavailable; prior registrations retained; query the checkpoint list before repeating registration"});
         }
         paths.insert(format!("/api/submissions/{{identity}}/{name}"), operation);
     }
@@ -483,7 +517,7 @@ mod schema_tests {
     fn native_contract_declares_narrow_lifecycle_posts_and_exact_read_identity() {
         let schema = super::schema_document();
         let paths = schema["paths"].as_object().unwrap();
-        assert_eq!(paths.len(), 26);
+        assert_eq!(paths.len(), 29);
         for (path, operations) in paths {
             assert_eq!(operations.as_object().unwrap().len(), 1);
             if path.starts_with("/api/project-lifecycle/")

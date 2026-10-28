@@ -1361,6 +1361,230 @@ fn trusted_image_worker_changes_only_launch_entry_and_keeps_scientific_command_f
 }
 
 #[test]
+fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_immutable() {
+    let mut f = Fixture::new();
+    let workdir = f.root.path().join("code");
+    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
+        program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
+        base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+        runtime_environment: Vec::new(),
+    });
+    let ready = json!({"step":4,"files":[{"path":"checkpoints/step-4/state.bin","bytes":7,"sha256":"9a129038d9a00aed0cf6a7ea059ca50a813449061ab87848cf1a13eafdf33b2c"}]});
+    for filename in ["manifest.yaml", "attempts/attempt-001/attempt.yaml"] {
+        let path = f.root.path().join("project/runs/train").join(filename);
+        let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        value["execution"]["workdir"] = json!(workdir);
+        value["command"] = json!([
+            "/bin/sh",
+            "-c",
+            format!(
+                "mkdir -p \"$OUTPUT_DIR/checkpoints/step-4\"; printf weights > \"$OUTPUT_DIR/checkpoints/step-4/state.bin\"; printf %s {} > \"$OUTPUT_DIR/checkpoint.ready.json\"",
+                ml_exp_core::slurm::shell_quote(&ready.to_string()).unwrap()
+            )
+        ]);
+        write(&path, &value);
+    }
+    let service = f.service("ledger", true).with_run_creation(true).unwrap();
+    let prepared = service
+        .prepare("demo", "train", approval(), context(1))
+        .unwrap();
+    let id = prepared["submission_id"].as_str().unwrap();
+    let frozen = f.prepared();
+    f.tools(&frozen);
+    assert!(
+        service
+            .refresh_checkpoint(id, NOW, &AtomicBool::new(false))
+            .is_err()
+    );
+    service.authorize(id, "test", "", context(2)).unwrap();
+    service
+        .execute(
+            id,
+            &format!("EXECUTE {id}"),
+            context(3),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(
+        service
+            .checkpoints("demo", "train", "attempt-001", None)
+            .unwrap()["checkpoints"],
+        json!([])
+    );
+    let plan = ml_exp_core::slurm::staging::plan(
+        frozen.request.intent(),
+        frozen.request.prepared_content().unwrap().0.as_bytes(),
+    )
+    .unwrap()
+    .unwrap();
+    let config = plan.managed.unwrap().config;
+    ml_exp_worker::managed::initialize(&config).unwrap();
+    ml_exp_worker::managed::run(&config, &AtomicBool::new(false)).unwrap();
+    let registered = service
+        .refresh_checkpoint(id, NOW, &AtomicBool::new(false))
+        .unwrap();
+    let document = registered["checkpoint"].clone();
+    let checkpoint_id = document["checkpoint_id"].as_str().unwrap();
+    assert_eq!(document["step"], 4);
+    assert_eq!(registered["scheduler_mutation_performed"], false);
+    assert_eq!(
+        service
+            .refresh_checkpoint(id, NOW, &AtomicBool::new(false))
+            .unwrap(),
+        registered
+    );
+    assert_eq!(
+        service
+            .checkpoints("demo", "train", "attempt-001", Some(checkpoint_id))
+            .unwrap(),
+        document
+    );
+    assert!(
+        service
+            .checkpoints("demo", "train", "attempt-002", Some(checkpoint_id))
+            .is_err()
+    );
+    let original = fs::read(
+        f.root
+            .path()
+            .join("project/runs/train/attempts/attempt-001/attempt.yaml"),
+    )
+    .unwrap();
+    let mut request = creation_request(&f);
+    request.command=vec!["/bin/sh".into(),"-c".into(),"test \"$(cat \"$RESUME_DIR/state.bin\")\" = weights; test \"$RESUME_STEP\" = 4; printf restored".into()];
+    request.resume_from = Some(ml_exp_core::checkpoints::Reference {
+        run_id: "train".into(),
+        attempt_id: "attempt-001".into(),
+        checkpoint_id: checkpoint_id.into(),
+    });
+    let created = service.create_run("demo", request.clone(), NOW).unwrap();
+    assert!(!created["reused"].as_bool().unwrap());
+    assert_eq!(
+        service.create_run("demo", request.clone(), NOW).unwrap()["reused"],
+        true
+    );
+    let value: Value = serde_json::from_slice(
+        &fs::read(f.root.path().join("project/runs/created/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(value["native_checkpoint"], document);
+    let spec = native::job(
+        &value,
+        &native::Binding {
+            project: "demo".into(),
+            run_id: "created".into(),
+            attempt_id: "attempt-001".into(),
+            project_sha256: "".into(),
+            run_sha256: "".into(),
+            attempt_sha256: "".into(),
+            source_receipt_sha256: "".into(),
+            backend_config_sha256: "".into(),
+        },
+    )
+    .unwrap();
+    let mut package = ml_exp_core::slurm::managed::plan_restoring(
+        &helper::Scope {
+            project: "demo".into(),
+            run_id: "created".into(),
+            attempt_id: "attempt-001".into(),
+        },
+        &spec,
+        f.runtime.worker.as_ref().unwrap(),
+        Some(&document),
+    )
+    .unwrap();
+    let encoded = ml_exp_core::canonical::python_json_bytes(&document).unwrap();
+    let reordered: Value = serde_json::from_slice(&encoded).unwrap();
+    let other = ml_exp_core::slurm::managed::plan_restoring(
+        &helper::Scope {
+            project: "demo".into(),
+            run_id: "created".into(),
+            attempt_id: "attempt-001".into(),
+        },
+        &spec,
+        f.runtime.worker.as_ref().unwrap(),
+        Some(&reordered),
+    )
+    .unwrap();
+    assert_eq!(
+        package.config_bytes().unwrap(),
+        other.config_bytes().unwrap()
+    );
+    // Local effect shell exercises the actual restore check without a second scheduler job.
+    package.config.workdir = workdir.clone();
+    package.manifest.workdir = workdir.to_str().unwrap().into();
+    let restore = f.root.path().join("restore-local");
+    fs::create_dir(&restore).unwrap();
+    package.config.attempt_root = restore.join("worker");
+    package.config.output_directory = Some(restore.join("outputs"));
+    package.manifest.environment.insert(
+        "OUTPUT_DIR".into(),
+        restore.join("outputs").to_str().unwrap().into(),
+    );
+    package.config.manifest_path = restore.join("manifest.json");
+    let bytes = package.manifest.encode().unwrap();
+    fs::write(&package.config.manifest_path, &bytes).unwrap();
+    fs::set_permissions(
+        &package.config.manifest_path,
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    package.config.local_binding = Some(ml_exp_core::launch::Binding {
+        identity: package.manifest.identity.clone(),
+        sha256: helper::sha256_bytes(&bytes)[7..].into(),
+    });
+    ml_exp_worker::managed::initialize(&package.config).unwrap();
+    let finished = ml_exp_worker::managed::run(&package.config, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        finished.receipt.unwrap().training,
+        ml_exp_worker::managed::Training::Completed
+    );
+    let checkpoint_file = std::path::Path::new(document["state_root"].as_str().unwrap())
+        .join("checkpoints/step-4/state.bin");
+    fs::set_permissions(&checkpoint_file, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(&checkpoint_file, b"changed").unwrap();
+    package.config.attempt_root = restore.join("rejected-worker");
+    package.config.output_directory = Some(restore.join("rejected-outputs"));
+    package.manifest.environment.insert(
+        "OUTPUT_DIR".into(),
+        restore.join("rejected-outputs").to_str().unwrap().into(),
+    );
+    let bytes = package.manifest.encode().unwrap();
+    fs::write(&package.config.manifest_path, &bytes).unwrap();
+    package.config.local_binding.as_mut().unwrap().sha256 =
+        helper::sha256_bytes(&bytes)[7..].into();
+    ml_exp_worker::managed::initialize(&package.config).unwrap();
+    assert!(matches!(
+        ml_exp_worker::managed::run(&package.config, &AtomicBool::new(false)),
+        Err(ml_exp_worker::managed::Error::Binding)
+    ));
+    assert!(!restore.join("rejected-outputs").exists());
+    assert!(matches!(
+        service.refresh_checkpoint(id, NOW, &AtomicBool::new(false)),
+        Err(ServiceError::CheckpointUnavailable)
+    ));
+    assert_eq!(
+        service
+            .checkpoints("demo", "train", "attempt-001", Some(checkpoint_id))
+            .unwrap(),
+        document
+    );
+    assert_eq!(
+        fs::read_to_string(f.root.path().join("sbatch-calls")).unwrap(),
+        "call\n"
+    );
+    assert_eq!(
+        fs::read(
+            f.root
+                .path()
+                .join("project/runs/train/attempts/attempt-001/attempt.yaml")
+        )
+        .unwrap(),
+        original
+    );
+}
+
+#[test]
 fn exact_worker_refresh_survives_restart_and_never_changes_submission_or_retrains() {
     let mut f = Fixture::new();
     let workdir = f.root.path().join("code");

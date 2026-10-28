@@ -61,6 +61,18 @@ impl Service {
             .map_err(|_| Error::Authority)?;
         let source_sha = canonical::protocol_identity(&source).map_err(|_| Error::Authority)?;
         let backend_sha = backend.fingerprint()?;
+        let checkpoint = request
+            .resume_from
+            .as_ref()
+            .map(|reference| {
+                self.checkpoints(
+                    project,
+                    &reference.run_id,
+                    &reference.attempt_id,
+                    Some(&reference.checkpoint_id),
+                )
+            })
+            .transpose()?;
         let documents = creation::plan(
             project,
             &request,
@@ -70,6 +82,7 @@ impl Service {
                 project_sha256: &project_document.raw_sha256,
                 source_receipt_sha256: &source_sha,
                 backend_config_sha256: &backend_sha,
+                checkpoint: checkpoint.as_ref(),
             },
             now,
         )?;
@@ -178,7 +191,7 @@ fn publish_json(directory: &Directory, name: &str, value: &Value) -> Result<()> 
 }
 fn read_json(directory: &Directory, name: &str) -> Result<Value> {
     let bytes = directory
-        .read_regular(OsStr::new(name), creation::MAX_REQUEST_BYTES as u64 * 4)
+        .read_regular(OsStr::new(name), creation::MAX_REQUEST_BYTES as u64 * 8)
         .map_err(|_| Error::Authority)?;
     let value = experiments::parse_mapping(&bytes, experiments::Format::Json)
         .map(Value::Object)

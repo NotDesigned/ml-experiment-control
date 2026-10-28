@@ -321,3 +321,56 @@ fn worker_refresh_is_explicit_bounded_and_never_requires_scheduler_mutation_perm
     ));
     worker.join().unwrap();
 }
+
+#[test]
+fn checkpoint_queries_and_registration_replies_preserve_exact_source_identity() {
+    use ml_exp_core::checkpoints::{self, Context};
+    let context = Context {
+        project: "demo".into(),
+        run_id: "train".into(),
+        attempt_id: "attempt-001".into(),
+        source_id: format!("source.{}", "1".repeat(64)),
+        image_id: format!("sha256:{}", "2".repeat(64)),
+        storage_scope: "shared".into(),
+        state_root: "/shared/demo/train/outputs".into(),
+    };
+    let doc=checkpoints::register(&checkpoints::document(&context,&json!({"step":4,"files":[{"path":"checkpoints/step-4/state.bin","bytes":7,"sha256":"3".repeat(64)}]})).unwrap(),"2026-10-29T00:00:00Z").unwrap();
+    let id = doc["checkpoint_id"].as_str().unwrap();
+    let list = submissions::plan(Command::Checkpoints {
+        project: "demo",
+        run: "train",
+        attempt: "attempt-001",
+        checkpoint: None,
+    })
+    .unwrap();
+    let value =
+        json!({"project":"demo","run_id":"train","attempt_id":"attempt-001","checkpoints":[doc]});
+    assert!(!list.is_mutation());
+    assert_eq!(submissions::response(&list, value.clone()).unwrap(), value);
+    let exact = submissions::plan(Command::Checkpoints {
+        project: "demo",
+        run: "train",
+        attempt: "attempt-001",
+        checkpoint: Some(id),
+    })
+    .unwrap();
+    assert_eq!(submissions::response(&exact, doc.clone()).unwrap(), doc);
+    let mut wrong = value.clone();
+    wrong["checkpoints"][0]["attempt_id"] = json!("attempt-002");
+    assert!(submissions::response(&list, wrong).is_err());
+    let refresh = submissions::plan(Command::Checkpoint { submission: ID }).unwrap();
+    let mut reply =
+        json!({"submission_id":ID,"checkpoint":doc,"scheduler_mutation_performed":false});
+    assert!(submissions::response(&refresh, reply.clone()).is_ok());
+    reply["submission_id"] = json!("action-1111111111111111");
+    assert!(submissions::response(&refresh, reply).is_err());
+    assert!(
+        submissions::plan(Command::Checkpoints {
+            project: "demo",
+            run: "../foreign",
+            attempt: "attempt-001",
+            checkpoint: None
+        })
+        .is_err()
+    );
+}

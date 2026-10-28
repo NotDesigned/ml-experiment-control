@@ -28,7 +28,64 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/api/runs/{project}/{run}/submission", get(existing))
         .route("/api/projects/{project}/runs", post(create))
         .route("/api/submissions/{identity}/{operation}", post(change))
+        .route(
+            "/api/runs/{project}/{run}/attempts/{attempt}/checkpoints",
+            get(checkpoint_list),
+        )
+        .route(
+            "/api/runs/{project}/{run}/attempts/{attempt}/checkpoints/{checkpoint}",
+            get(checkpoint_read),
+        )
         .layer(DefaultBodyLimit::max(MAX_BODY))
+}
+async fn checkpoint_list(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<(String, String, String)>, PathRejection>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let Ok(Path((project, run, attempt))) = path else {
+        return read_http::failure(invalid());
+    };
+    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+        return read_http::failure(error);
+    }
+    checkpoint_get(state, project, run, attempt, None).await
+}
+async fn checkpoint_read(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<(String, String, String, String)>, PathRejection>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let Ok(Path((project, run, attempt, id))) = path else {
+        return read_http::failure(invalid());
+    };
+    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+        return read_http::failure(error);
+    }
+    checkpoint_get(state, project, run, attempt, Some(id)).await
+}
+async fn checkpoint_get(
+    state: Arc<AppState>,
+    project: String,
+    run: String,
+    attempt: String,
+    id: Option<String>,
+) -> Response {
+    if ml_exp_core::identity::validate_id(&project).is_err()
+        || ml_exp_core::identity::validate_id(&run).is_err()
+        || ml_exp_core::identity::validate_attempt(&attempt).is_err()
+        || id
+            .as_ref()
+            .is_some_and(|id| ml_exp_core::checkpoints::validate_checkpoint_id(id).is_err())
+    {
+        return read_http::failure(invalid());
+    }
+    read_http::execute(state, Access::Read, move |api, _| {
+        service(api)?
+            .checkpoints(&project, &run, &attempt, id.as_deref())
+            .map_err(failure)
+    })
+    .await
 }
 fn invalid() -> read_api::Error {
     read_api::Error {
@@ -48,6 +105,21 @@ pub(crate) fn failure(error: Error) -> read_api::Error {
             409,
             "WORKER_OBSERVATION_CONFLICT",
             "remote worker state or accepted metric history changed; previous evidence is retained and no provider mutation was issued",
+        ),
+        Error::CheckpointUnavailable => (
+            503,
+            "CHECKPOINT_VERIFICATION_UNAVAILABLE",
+            "backend checkpoint ready marker or generation could not be verified; no scheduler operation was requested",
+        ),
+        Error::CheckpointMissing => (
+            404,
+            "CHECKPOINT_NOT_FOUND",
+            "the exact registered checkpoint is unavailable",
+        ),
+        Error::CheckpointConflict => (
+            409,
+            "CHECKPOINT_EVIDENCE_UNAVAILABLE",
+            "checkpoint identity or immutable registry evidence cannot be validated",
         ),
         Error::ObservationUnavailable => (
             503,
@@ -270,6 +342,7 @@ enum Operation {
     Execute(String),
     Reconcile,
     Refresh,
+    Checkpoint,
 }
 async fn change(
     State(state): State<Arc<AppState>>,
@@ -304,13 +377,14 @@ async fn change(
         }),
         "reconcile" => decode::<Empty>(body).map(|_| Operation::Reconcile),
         "refresh" => decode::<Empty>(body).map(|_| Operation::Refresh),
+        "checkpoint" => decode::<Empty>(body).map(|_| Operation::Checkpoint),
         _ => Err(invalid()),
     };
     let operation = match operation {
         Ok(value) => value,
         Err(error) => return read_http::failure(error),
     };
-    let access = if matches!(&operation, Operation::Refresh) {
+    let access = if matches!(&operation, Operation::Refresh | Operation::Checkpoint) {
         Access::Read
     } else {
         Access::Submission
@@ -329,7 +403,7 @@ async fn change(
                 expires: &now,
                 transition_id: &transition,
             };
-            let refreshing = matches!(&operation,Operation::Refresh);
+            let refreshing = matches!(&operation,Operation::Refresh | Operation::Checkpoint);
             match operation {
                 Operation::Authorize(reason) => {
                     service.authorize(&identity, "bearer-client", &reason, context)
@@ -339,6 +413,7 @@ async fn change(
                 }
                 Operation::Reconcile => service.reconcile(&identity, &now, &AtomicBool::new(false)),
                 Operation::Refresh => service.refresh(&identity, &now, &AtomicBool::new(false)),
+                Operation::Checkpoint => service.refresh_checkpoint(&identity,&now,&AtomicBool::new(false)),
             }
             .map_err(|cause| {
                 if refreshing && matches!(cause,Error::Uncertain) {

@@ -35,11 +35,26 @@ pub enum Command<'a> {
     Refresh {
         submission: &'a str,
     },
+    Checkpoint {
+        submission: &'a str,
+    },
+    Checkpoints {
+        project: &'a str,
+        run: &'a str,
+        attempt: &'a str,
+        checkpoint: Option<&'a str>,
+    },
     Reconcile {
         submission: &'a str,
     },
 }
 enum Expected {
+    Checkpoints {
+        project: String,
+        run: String,
+        attempt: String,
+        checkpoint: Option<String>,
+    },
     Creation {
         project: String,
         run: String,
@@ -58,6 +73,7 @@ pub struct Plan {
     expected: Expected,
     executes: bool,
     refreshes: bool,
+    checkpoint: bool,
 }
 impl Plan {
     pub(crate) fn path(&self) -> &str {
@@ -83,7 +99,41 @@ fn reason(value: &str) -> Result<(), Error> {
     }
 }
 pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
-    let refreshes = matches!(&command, Command::Refresh { .. });
+    let refreshes = matches!(
+        &command,
+        Command::Refresh { .. } | Command::Checkpoint { .. }
+    );
+    let checkpoint = matches!(&command, Command::Checkpoint { .. });
+    if let Command::Checkpoints {
+        project,
+        run,
+        attempt,
+        checkpoint,
+    } = &command
+    {
+        identity::validate_id(project).map_err(|_| invalid())?;
+        identity::validate_id(run).map_err(|_| invalid())?;
+        identity::validate_attempt(attempt).map_err(|_| invalid())?;
+        if let Some(id) = checkpoint {
+            ml_exp_core::checkpoints::validate_checkpoint_id(id).map_err(|_| invalid())?;
+        }
+        return Ok(Plan {
+            path: format!(
+                "/api/runs/{project}/{run}/attempts/{attempt}/checkpoints{}",
+                checkpoint.map(|id| format!("/{id}")).unwrap_or_default()
+            ),
+            body: None,
+            expected: Expected::Checkpoints {
+                project: (*project).into(),
+                run: (*run).into(),
+                attempt: (*attempt).into(),
+                checkpoint: checkpoint.map(str::to_owned),
+            },
+            executes: false,
+            refreshes: false,
+            checkpoint: false,
+        });
+    }
     if let Command::Create { project, request } = &command {
         let request_sha256 = request
             .identity(project)
@@ -99,6 +149,7 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
             },
             executes: false,
             refreshes,
+            checkpoint,
         });
     }
     let (project, run, body) = match command {
@@ -147,6 +198,9 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
                     )
                 }
                 Command::Refresh { submission } => (submission, "/refresh", Some(json!({})), false),
+                Command::Checkpoint { submission } => {
+                    (submission, "/checkpoint", Some(json!({})), false)
+                }
                 Command::Reconcile { submission } => {
                     (submission, "/reconcile", Some(json!({})), false)
                 }
@@ -161,6 +215,7 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
                 expected: Expected::Submission(id.into()),
                 executes,
                 refreshes,
+                checkpoint,
             });
         }
     };
@@ -182,9 +237,57 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
         },
         executes: false,
         refreshes,
+        checkpoint,
     })
 }
 pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
+    if let Expected::Checkpoints {
+        project,
+        run,
+        attempt,
+        checkpoint,
+    } = &plan.expected
+    {
+        if value["project"] != *project
+            || value["run_id"] != *run
+            || value["attempt_id"] != *attempt
+        {
+            return Err(Error::Response);
+        }
+        let rows = if checkpoint.is_some() {
+            vec![&value]
+        } else {
+            value["checkpoints"]
+                .as_array()
+                .ok_or(Error::Response)?
+                .iter()
+                .collect()
+        };
+        for row in rows {
+            let (context, _) =
+                ml_exp_core::checkpoints::validate_document(row, None, checkpoint.as_deref())
+                    .map_err(|_| Error::Response)?;
+            if context.project != *project
+                || context.run_id != *run
+                || context.attempt_id != *attempt
+                || row["status"] != "REGISTERED"
+            {
+                return Err(Error::Response);
+            }
+        }
+        return Ok(value);
+    }
+    if plan.checkpoint {
+        ml_exp_core::checkpoints::validate_document(&value["checkpoint"], None, None)
+            .map_err(|_| Error::Response)?;
+        if !matches!(&plan.expected,Expected::Submission(id) if value["submission_id"]==*id)
+            || value["checkpoint"]["status"] != "REGISTERED"
+            || value["scheduler_mutation_performed"] != false
+        {
+            return Err(Error::Response);
+        }
+        return Ok(value);
+    }
     if let Expected::Creation {
         project,
         run,
@@ -257,6 +360,8 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
     let creates = matches!(plan.expected, Expected::Creation { .. });
     let capability = if creates {
         "native-run-creation.v1"
+    } else if plan.checkpoint || matches!(plan.expected, Expected::Checkpoints { .. }) {
+        "native-checkpoints.v1"
     } else if plan.refreshes {
         "native-worker-observation.v1"
     } else {

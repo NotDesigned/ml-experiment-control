@@ -31,6 +31,8 @@ pub struct Config {
     pub output_directory: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_environment: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_restore: Option<serde_json::Value>,
 }
 pub fn absolute(path: &Path) -> bool {
     path.is_absolute()
@@ -103,6 +105,9 @@ impl Config {
             .unwrap_or_else(|| self.attempt_root.join("outputs"))
     }
     pub fn validate(&self) -> Result<()> {
+        if let Some(value) = &self.checkpoint_restore {
+            crate::checkpoints::restore_plan(value, None).map_err(|_| Error)?;
+        }
         if !absolute(&self.manifest_path)
             || !absolute(&self.attempt_root)
             || self.attempt_root.file_name().is_none()
@@ -183,6 +188,27 @@ pub fn execution_environment(
     }
     let mut values = config.base_environment.clone();
     values.extend(manifest.environment.clone());
+    if let Some(value) = &config.checkpoint_restore {
+        let plan =
+            crate::checkpoints::restore_plan(value, None).map_err(|_| AdmissionError::Binding)?;
+        for (key, expected) in [
+            (
+                "RESUME_DIR",
+                format!("{}/checkpoints/{}", plan.state_root, plan.generation),
+            ),
+            ("RESUME_CHECKPOINT_ID", plan.checkpoint_id),
+            ("RESUME_STEP", plan.step.to_string()),
+        ] {
+            if values.get(key) != Some(&expected) {
+                return Err(AdmissionError::Binding);
+            }
+        }
+    } else if ["RESUME_DIR", "RESUME_CHECKPOINT_ID", "RESUME_STEP"]
+        .iter()
+        .any(|key| values.contains_key(*key))
+    {
+        return Err(AdmissionError::Binding);
+    }
     for (name, expected) in [
         ("PROJECT_NAME", &target.identity.project),
         ("RUN_ID", &target.identity.run_id),

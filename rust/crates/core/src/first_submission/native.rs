@@ -289,7 +289,6 @@ pub fn definition(
             || value["identity_version"] != 2
             || field(value, "project")? != binding.project
             || field(value, "run_id")? != binding.run_id
-            || !value.get("resume_from").is_none_or(Value::is_null)
             || !value.get("resume").is_none_or(Value::is_null)
         {
             return Err(Error("manifest identity"));
@@ -308,10 +307,31 @@ pub fn definition(
         return Err(Error("unsupported first Attempt or unmaterialized input"));
     }
     crate::sources::validate_source_id(field(run, "source_id")?).map_err(|_| Error("source"))?;
+    match (
+        run.get("resume_from").filter(|v| !v.is_null()),
+        run.get("native_checkpoint"),
+    ) {
+        (Some(reference), Some(value)) => {
+            let reference: crate::checkpoints::Reference = decode(reference)?;
+            crate::checkpoints::selected(
+                &reference,
+                value,
+                &binding.project,
+                &profile.target.storage_scope,
+                &profile.run_root,
+            )
+            .map_err(|_| Error("checkpoint scope or identity"))?;
+            if reference.run_id == binding.run_id || runtime.worker.is_none() {
+                return Err(Error("checkpoint restore"));
+            }
+        }
+        (None, None) => {}
+        _ => return Err(Error("checkpoint evidence")),
+    }
     let spec = job(run, binding)?;
     spec.validate().map_err(|_| Error("job"))?;
     if let Some(worker) = &runtime.worker {
-        slurm::managed::plan(
+        slurm::managed::plan_restoring(
             &Scope {
                 project: binding.project.clone(),
                 run_id: binding.run_id.clone(),
@@ -319,6 +339,7 @@ pub fn definition(
             },
             &spec,
             worker,
+            run.get("native_checkpoint"),
         )
         .map_err(|_| Error("managed worker runtime or environment"))?;
     }
@@ -416,7 +437,8 @@ pub fn prepare(
     let mut launch_spec = spec.clone();
     if let Some(worker) = &runtime.worker {
         let package =
-            slurm::managed::plan(&scope, &spec, worker).map_err(|_| Error("managed launch"))?;
+            slurm::managed::plan_restoring(&scope, &spec, worker, run.get("native_checkpoint"))
+                .map_err(|_| Error("managed launch"))?;
         launch_spec.command = slurm::managed::command(&package, worker)
             .map_err(|_| Error("managed launch command"))?;
     }

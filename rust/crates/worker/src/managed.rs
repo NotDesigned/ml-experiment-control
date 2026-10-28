@@ -466,6 +466,13 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
     if !ml_exp_core::managed::environment(&environment) {
         return Err(Error::Configuration);
     }
+    if let Some(document) = &config.checkpoint_restore {
+        let (context, manifest) = ml_exp_core::checkpoints::validate_document(document, None, None)
+            .map_err(|_| Error::Binding)?;
+        let root = Directory::open(std::path::Path::new(&context.state_root), false)
+            .map_err(|_| Error::Storage)?;
+        ml_exp_io::checkpoints::verify_sealed(&root, &manifest).map_err(|_| Error::Binding)?;
+    }
     // This fsync completes before any spawn attempt. Any later error leaves a
     // non-replayable STARTED record, including setup errors with no known child.
     held.append(

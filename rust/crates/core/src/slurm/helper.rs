@@ -129,6 +129,7 @@ pub enum OperationTag {
     InspectSubmission,
     ObserveJob,
     ObserveWorker,
+    ObserveCheckpoint,
     CancelJob,
 }
 
@@ -141,6 +142,7 @@ enum Operation {
     InspectSubmission,
     ObserveJob { job_id: String },
     ObserveWorker { job_id: String },
+    ObserveCheckpoint { job_id: String },
     CancelJob { job_id: String },
 }
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,6 +198,15 @@ impl Request {
         request.validate()?;
         Ok(request)
     }
+    pub fn observe_checkpoint(intent: FrozenIntent, job_id: String) -> Result<Self> {
+        let request = Self {
+            version: PROTOCOL_VERSION,
+            intent,
+            operation: Operation::ObserveCheckpoint { job_id },
+        };
+        request.validate()?;
+        Ok(request)
+    }
     pub fn cancel_job(intent: FrozenIntent, job_id: String) -> Result<Self> {
         let request = Self {
             version: PROTOCOL_VERSION,
@@ -209,6 +220,7 @@ impl Request {
         match &self.operation {
             Operation::ObserveJob { job_id }
             | Operation::ObserveWorker { job_id }
+            | Operation::ObserveCheckpoint { job_id }
             | Operation::CancelJob { job_id } => Some(job_id),
             _ => None,
         }
@@ -223,6 +235,7 @@ impl Request {
             Operation::InspectSubmission => OperationTag::InspectSubmission,
             Operation::ObserveJob { .. } => OperationTag::ObserveJob,
             Operation::ObserveWorker { .. } => OperationTag::ObserveWorker,
+            Operation::ObserveCheckpoint { .. } => OperationTag::ObserveCheckpoint,
             Operation::CancelJob { .. } => OperationTag::CancelJob,
         }
     }
@@ -349,6 +362,9 @@ pub enum ReplyOutcome {
     WorkerObserved {
         evidence: Box<crate::managed::remote::Evidence>,
     },
+    CheckpointObserved {
+        document: Box<serde_json::Value>,
+    },
     /// The durable cancel marker exists; no terminal provider read is proved.
     CancelPending {
         job_id: String,
@@ -385,6 +401,18 @@ impl Reply {
                 &request.intent.scope,
                 request.requested_job_id().ok_or(Error::Identity)?,
             )?;
+        }
+        if let ReplyOutcome::CheckpointObserved { document } = &self.outcome {
+            let (context, _) = crate::checkpoints::validate_document(document, None, None)
+                .map_err(|_| Error::Metadata)?;
+            if self.identity.operation != OperationTag::ObserveCheckpoint
+                || context.project != request.intent.scope.project
+                || context.run_id != request.intent.scope.run_id
+                || context.attempt_id != request.intent.scope.attempt_id
+                || context.storage_scope != request.intent.target.storage_scope
+            {
+                return Err(Error::Identity);
+            }
         }
         match &self.outcome {
             ReplyOutcome::WorkerObserved { .. }
@@ -453,6 +481,7 @@ impl Reply {
                     self.identity.operation,
                     OperationTag::ObserveJob
                         | OperationTag::ObserveWorker
+                        | OperationTag::ObserveCheckpoint
                         | OperationTag::CancelJob
                 ) =>
             {

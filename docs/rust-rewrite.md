@@ -59,7 +59,12 @@ verification rejects links, special files, missing or extra files and changes
 during hashing, then optionally seals the generation. The native server registry
 stores immutable checkpoint receipts and makes duplicate registration idempotent
 while rejecting a second manifest for the same generation. Worker HTTPS
-registration, backend storage selection and process polling remain adapters.
+registration and periodic discovery remain adapters. The opt-in native Slurm
+path now supports explicit metadata-only checkpoint registration through its
+SSH helper, exact list/read APIs and an explicit checkpoint choice in new Run
+creation. Payload bytes stay on shared backend storage. The helper hashes and
+seals one ready generation; a restored worker verifies those bytes again before
+starting user code. No automatic choice or retry is implied.
 The older completed-marker protocol used by legacy Slurm discovery remains a
 separate compatibility path; it is not treated as a
 `checkpoint.<sha256>` persistent-generation identity.
@@ -96,7 +101,7 @@ without changing the original Action or scientific manifests. GET reads that
 cache only. Interrupted reads retain accepted evidence, and STARTED is possible
 execution, never a heartbeat. Each file window is limited to 128 KiB; truncated,
 partial or malformed metric history is explicitly incomplete. Full journal
-streaming, periodic observation, checkpoint restoration and artifact download
+streaming, periodic observation and artifact download
 remain incomplete.
 
 Native committed scheduler projection is shared by Run, exact Attempt and

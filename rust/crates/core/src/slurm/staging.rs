@@ -83,6 +83,27 @@ pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Op
     if spec.storage.run_dir != run_dir {
         return Err(helper::Error::Identity);
     }
+    match (
+        doc.get("resume_from").filter(|v| !v.is_null()),
+        doc.get("native_checkpoint"),
+    ) {
+        (Some(reference), Some(value)) => {
+            let reference: crate::checkpoints::Reference = decode(reference)?;
+            crate::checkpoints::selected(
+                &reference,
+                value,
+                &intent.scope.project,
+                &intent.target.storage_scope,
+                &requirement.runs_root,
+            )
+            .map_err(|_| helper::Error::Identity)?;
+            if reference.run_id == intent.scope.run_id || requirement.worker.is_none() {
+                return Err(helper::Error::Identity);
+            }
+        }
+        (None, None) => {}
+        _ => return Err(helper::Error::Identity),
+    }
     Ok(Some(Plan {
         contract: CONTRACT.into(),
         scope: intent.scope.clone(),
@@ -94,7 +115,44 @@ pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Op
         managed: requirement
             .worker
             .as_ref()
-            .map(|runtime| super::managed::plan(&intent.scope, &spec, runtime))
+            .map(|runtime| {
+                super::managed::plan_restoring(
+                    &intent.scope,
+                    &spec,
+                    runtime,
+                    doc.get("native_checkpoint"),
+                )
+            })
             .transpose()?,
     }))
+}
+
+pub fn checkpoint_context(
+    intent: &helper::FrozenIntent,
+    manifest: &[u8],
+) -> helper::Result<crate::checkpoints::Context> {
+    let plan = plan(intent, manifest)?.ok_or(helper::Error::Metadata)?;
+    let package = plan.managed.ok_or(helper::Error::Metadata)?;
+    let doc = Value::Object(crate::json::mapping(manifest).map_err(|_| helper::Error::Metadata)?);
+    let context = crate::checkpoints::Context {
+        project: intent.scope.project.clone(),
+        run_id: intent.scope.run_id.clone(),
+        attempt_id: intent.scope.attempt_id.clone(),
+        source_id: doc["source_id"]
+            .as_str()
+            .ok_or(helper::Error::Metadata)?
+            .into(),
+        image_id: doc["image_id"]
+            .as_str()
+            .ok_or(helper::Error::Metadata)?
+            .into(),
+        storage_scope: intent.target.storage_scope.clone(),
+        state_root: package
+            .config
+            .output_path()
+            .to_str()
+            .ok_or(helper::Error::Metadata)?
+            .into(),
+    };
+    Ok(context)
 }

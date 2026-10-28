@@ -24,6 +24,8 @@ pub struct Request {
     pub evaluation: Map<String, Value>,
     #[serde(default)]
     pub metrics_schema: MetricSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_from: Option<crate::checkpoints::Reference>,
 }
 impl Request {
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
@@ -34,6 +36,14 @@ impl Request {
         serde_json::from_value(Value::Object(value)).map_err(|_| Error("Run request schema"))
     }
     pub fn validate(&self, project: &str) -> Result<()> {
+        if let Some(reference) = &self.resume_from {
+            reference
+                .validate()
+                .map_err(|_| Error("checkpoint reference"))?;
+            if reference.run_id == self.run_id {
+                return Err(Error("checkpoint source is the new Run"));
+            }
+        }
         identity::validate_id(project).map_err(|_| Error("project"))?;
         identity::validate_id(&self.run_id).map_err(|_| Error("run_id"))?;
         identity::validate_id(&self.executor).map_err(|_| Error("executor"))?;
@@ -78,6 +88,7 @@ pub struct Authority<'a> {
     pub project_sha256: &'a str,
     pub source_receipt_sha256: &'a str,
     pub backend_config_sha256: &'a str,
+    pub checkpoint: Option<&'a Value>,
 }
 pub fn plan(
     project: &str,
@@ -132,9 +143,27 @@ pub fn plan(
         },
         command,
     };
-    let protocol = json!({"source_id":runtime.source_id,"image":runtime.oci_image,"runtime_id":runtime.runtime_id,
+    let mut protocol = json!({"source_id":runtime.source_id,"image":runtime.oci_image,"runtime_id":runtime.runtime_id,
         "command":request.command,"parameters":request.parameters,"seed":request.seed,
         "evaluation":request.evaluation,"metrics_schema":request.metrics_schema});
+    match (&request.resume_from, authority.checkpoint) {
+        (Some(reference), Some(value)) => {
+            crate::checkpoints::selected(
+                reference,
+                value,
+                project,
+                &profile.target.storage_scope,
+                &profile.run_root,
+            )
+            .map_err(|_| Error("checkpoint scope or identity"))?;
+            if runtime.worker.is_none() {
+                return Err(Error("checkpoint restore requires managed worker"));
+            }
+            protocol["resume_from"] = json!(reference);
+        }
+        (None, None) => {}
+        _ => return Err(Error("checkpoint evidence")),
+    }
     let mut run = json!({"schema_version":1,"identity_version":2,"project":project,"run_id":request.run_id,
         "created_at":now,"source_id":runtime.source_id,"image_id":runtime.image_id,
         "config_path":"request.json","seed":request.seed,"campaign":format!("run-{}",request.run_id),
@@ -146,6 +175,10 @@ pub fn plan(
         "native_creation":{"format":"native-run-creation.v1","request_sha256":request.identity(project)?,
             "project_sha256":authority.project_sha256,"source_receipt_sha256":authority.source_receipt_sha256,
             "backend_config_sha256":authority.backend_config_sha256}});
+    if let Some(checkpoint) = authority.checkpoint {
+        run["resume_from"] = json!(request.resume_from);
+        run["native_checkpoint"] = checkpoint.clone();
+    }
     // Bind the full trusted runtime, including its materialization receipt.
     run["native_creation"]["runtime_sha256"] = json!(
         canonical::protocol_identity(&json!(runtime)).map_err(|_| Error("runtime identity"))?

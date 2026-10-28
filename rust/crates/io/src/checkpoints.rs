@@ -41,7 +41,9 @@ pub struct Verified {
 
 pub fn read_ready(root: &Directory) -> Result<Manifest> {
     let bytes = root.read_regular(OsStr::new("checkpoint.ready.json"), READY_LIMIT)?;
-    let value = serde_json::from_slice(&bytes).map_err(|_| checkpoints::Error::Manifest)?;
+    let value = serde_json::Value::Object(
+        ml_exp_core::json::mapping(&bytes).map_err(|_| checkpoints::Error::Manifest)?,
+    );
     Ok(checkpoints::manifest(&value)?)
 }
 
@@ -50,8 +52,20 @@ fn generation_directory(root: &Directory, generation: &str) -> Result<Directory>
     Ok(checkpoints.child(OsStr::new(generation), false)?)
 }
 
-fn walk(directory: &Directory, prefix: &str, found: &mut BTreeSet<String>) -> Result<()> {
+fn walk(
+    directory: &Directory,
+    prefix: &str,
+    found: &mut BTreeSet<String>,
+    entries: &mut usize,
+) -> Result<()> {
+    if prefix.len() > checkpoints::MAX_PATH_BYTES || prefix.split('/').count() > 256 {
+        return Err(Error::UnsafeTree);
+    }
     for name in directory.entry_names_limited(checkpoints::MAX_FILES)? {
+        *entries += 1;
+        if *entries > checkpoints::MAX_FILES {
+            return Err(Error::UnsafeTree);
+        }
         let name = name.to_str().ok_or(Error::UnsafeTree)?;
         let path = if prefix.is_empty() {
             name.to_owned()
@@ -59,10 +73,13 @@ fn walk(directory: &Directory, prefix: &str, found: &mut BTreeSet<String>) -> Re
             format!("{prefix}/{name}")
         };
         if let Ok(child) = directory.child(OsStr::new(name), false) {
-            walk(&child, &path, found)?;
+            walk(&child, &path, found, entries)?;
         } else {
             let file = directory.open_regular_read(OsStr::new(name))?;
             if !found.insert(path) {
+                return Err(Error::FileSet);
+            }
+            if found.len() > checkpoints::MAX_FILES {
                 return Err(Error::FileSet);
             }
             directory.validate_regular_entry(OsStr::new(name), &file)?;
@@ -103,7 +120,9 @@ fn verify_file(root: &Directory, record: &FileRecord) -> Result<()> {
     let after = file.metadata()?;
     if before.ino() != after.ino()
         || before.len() != after.len()
+        || before.mtime() != after.mtime()
         || before.mtime_nsec() != after.mtime_nsec()
+        || before.ctime() != after.ctime()
         || before.ctime_nsec() != after.ctime_nsec()
         || bytes != record.bytes
         || format!("{:x}", digest.finalize()) != record.sha256
@@ -117,6 +136,38 @@ fn verify_file(root: &Directory, record: &FileRecord) -> Result<()> {
     Ok(())
 }
 
+fn seal_directories(directory: &Directory, depth: usize, budget: &mut usize) -> Result<()> {
+    if depth > 256 {
+        return Err(Error::UnsafeTree);
+    }
+    for name in directory.entry_names_limited(checkpoints::MAX_FILES)? {
+        *budget += 1;
+        if *budget > checkpoints::MAX_FILES {
+            return Err(Error::UnsafeTree);
+        }
+        if let Ok(child) = directory.child(&name, false) {
+            seal_directories(&child, depth + 1, budget)?;
+        }
+    }
+    directory.source_mode(true)?;
+    Ok(())
+}
+
+/// A restored generation was already sealed by the original registration.
+/// Checking those permissions again catches accidental writable replacements.
+pub fn verify_sealed(root: &Directory, manifest: &Manifest) -> Result<Verified> {
+    for record in &manifest.files {
+        let (parent, file) = open_file(root, &record.path)?;
+        parent
+            .validate_immutable_regular_entry(
+                OsStr::new(record.path.rsplit('/').next().ok_or(Error::UnsafeTree)?),
+                &file,
+            )
+            .map_err(|_| Error::UnsafeTree)?;
+    }
+    verify(root, manifest, false)
+}
+
 /// Verify that exactly the manifest's generation files exist and are stable.
 /// If seal is true, files and the generation directory become read-only.
 pub fn verify(root: &Directory, manifest: &Manifest, seal: bool) -> Result<Verified> {
@@ -126,6 +177,7 @@ pub fn verify(root: &Directory, manifest: &Manifest, seal: bool) -> Result<Verif
         &generation,
         &format!("checkpoints/{}", manifest.generation),
         &mut found,
+        &mut 0,
     )?;
     let expected: BTreeSet<_> = manifest
         .files
@@ -147,8 +199,24 @@ pub fn verify(root: &Directory, manifest: &Manifest, seal: bool) -> Result<Verif
                 false,
             )?;
         }
-        generation.source_mode(true)?;
+        seal_directories(&generation, 0, &mut 0)?;
     }
+    // Detect added/replaced files across hashing and sealing, including nested
+    // paths. A registration never trusts only the initial directory listing.
+    let mut after = BTreeSet::new();
+    walk(
+        &generation,
+        &format!("checkpoints/{}", manifest.generation),
+        &mut after,
+        &mut 0,
+    )?;
+    if after != expected {
+        return Err(Error::FileSet);
+    }
+    for record in &manifest.files {
+        verify_file(root, record)?;
+    }
+    generation.verify_private_parent()?;
     Ok(Verified {
         manifest: manifest.clone(),
         generation: manifest.generation.clone(),

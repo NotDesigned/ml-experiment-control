@@ -66,9 +66,10 @@ plan to the original Run/Attempt and storage scope, and models registration
 without moving state bytes. The I/O crate verifies every declared file through
 directory descriptors, rejects extra or unstable files, and can seal the
 generation. The server registry persists immutable receipts and detects an
-existing generation bound to a different manifest. HTTPS registration, worker
-polling, provider storage and automatic restore orchestration remain outer
-adapters.
+existing generation bound to a different manifest. The native Slurm path now
+connects explicit SSH verification, metadata-only registration, exact list/read
+APIs and a selected checkpoint in a new Run. Worker polling and other provider
+storage/registration adapters remain incomplete; no automatic restore is chosen.
 
 The submission boundary is also native: `ml-exp-core::submission` owns frozen
 identity checks, bounded redacted request digests, idempotent Create/Reuse/
@@ -502,7 +503,7 @@ variants and protocol context. Partial JSONL lines and malformed records never
 become zeros or complete history. STARTED remains possible execution, rather
 than proof of a live process. A finished receipt proves its process outcome,
 independently of artifact publication and download availability. Periodic
-observation, complete-history journal ingress, checkpoint restoration and
+observation, complete-history journal ingress and
 artifact publication/download remain necessary for the full research workflow.
 
 ## Opt-in native Slurm submissions
@@ -573,9 +574,49 @@ command, metric schema and evaluation protocol identity. An identical repeated
 request returns the original creation time and hashes; a different request for
 the same Run is refused. Missing or damaged existing files are not recreated.
 A lost response requires querying that Project/Run before deciding to repeat
-the same request. The client never repeats a POST automatically. Inputs, resume
-and arbitrary environment fields are not accepted by this initial creation
-contract; their native worker/data protocols are still being migrated.
+the same request. The client never repeats a POST automatically. Inputs and
+arbitrary environment fields are not accepted by this initial creation contract;
+their native worker/data protocols are still being migrated.
+
+## Explicit backend checkpoint restore
+
+Training saves one complete generation under
+`$OUTPUT_DIR/checkpoints/<generation>/` and atomically publishes
+`$OUTPUT_DIR/checkpoint.ready.json` after the files are closed:
+
+```json
+{"step":24,"files":[{"path":"checkpoints/step-24/state.json","bytes":7,"sha256":"9a129038d9a00aed0cf6a7ea059ca50a813449061ab87848cf1a13eafdf33b2c"}]}
+```
+
+The byte count and SHA256 must describe the actual files. This is a format
+example, not a model checkpoint. The training program defines the complete
+restore state, including any optimizer, scheduler, RNG and data cursor it needs.
+
+```bash
+ml-exp-rs run checkpoint action-0123456789abcdef
+ml-exp-rs run checkpoints --project demo --run train --attempt attempt-001
+```
+
+The explicit checkpoint operation verifies and seals the selected generation
+through the existing SSH helper, then saves only immutable metadata on the API
+server. It never starts a training job. GET reads the registry without remote
+file access. A missing or changed ready generation fails verification and leaves
+previous registrations intact.
+
+To start a new Run, add an explicit reference to its normal creation request:
+
+```json
+{"resume_from":{"run_id":"train","attempt_id":"attempt-001","checkpoint_id":"checkpoint.1111111111111111111111111111111111111111111111111111111111111111"}}
+```
+
+This fragment accompanies the required Run fields and a new `run_id`. The server
+resolves the registered choice in the same Project and approved storage scope,
+freezes its provenance, and derives the backend path. The new worker rechecks
+the sealed file set, sizes and SHA256 before starting user code. Training reads
+`RESUME_DIR`, `RESUME_CHECKPOINT_ID` and `RESUME_STEP`; the original state stays
+on shared storage. A missing/corrupt generation prevents the process from
+starting. No "latest" selection, automatic retry, general file download or
+artifact publication is provided by this checkpoint path.
 
 ## Contribution boundary
 

@@ -5,6 +5,7 @@
 //! exact Run/Attempt and returns a restore plan. Filesystem verification,
 //! sealing and HTTP registration belong to an outer effect shell.
 use crate::{canonical, identity, sources};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::Digest;
 use std::collections::BTreeSet;
@@ -46,7 +47,8 @@ pub struct Manifest {
     pub generation: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Context {
     pub project: String,
     pub run_id: String,
@@ -64,6 +66,53 @@ pub struct RestorePlan {
     pub generation: String,
     pub state_root: String,
     pub files: Vec<FileRecord>,
+}
+
+/// An explicit choice in the same Project; neither "latest" nor a free path.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reference {
+    pub run_id: String,
+    pub attempt_id: String,
+    pub checkpoint_id: String,
+}
+impl Reference {
+    pub fn validate(&self) -> Result<()> {
+        identity::validate_id(&self.run_id).map_err(|_| Error::Identity)?;
+        identity::validate_attempt(&self.attempt_id).map_err(|_| Error::Identity)?;
+        validate_checkpoint_id(&self.checkpoint_id)?;
+        Ok(())
+    }
+}
+
+/// Bind a registered choice to operator-approved shared storage, never a path
+/// supplied by a client. Source/image provenance stays in the frozen document.
+pub fn selected(
+    reference: &Reference,
+    value: &Value,
+    project: &str,
+    storage_scope: &str,
+    runs_root: &str,
+) -> Result<RestorePlan> {
+    reference.validate()?;
+    let (context, _) = validate_document(value, None, Some(&reference.checkpoint_id))?;
+    if context.project != project
+        || context.run_id != reference.run_id
+        || context.attempt_id != reference.attempt_id
+        || context.state_root
+            != format!(
+                "{runs_root}/{project}/{}/attempts/{}/outputs/payload",
+                reference.run_id, reference.attempt_id
+            )
+        || value["status"] != "REGISTERED"
+        || value["verification"] != "worker-sha256"
+        || value["registered_at"]
+            .as_str()
+            .is_none_or(|s| OffsetDateTime::parse(s, &Rfc3339).is_err())
+    {
+        return Err(Error::Identity);
+    }
+    restore_plan(value, Some(storage_scope))
 }
 
 fn object(value: &Value) -> Result<&Map<String, Value>> {
@@ -247,6 +296,7 @@ fn identity_digest(value: &Value) -> Result<String> {
 
 /// Build the immutable checkpoint document and derive its exact identity.
 pub fn document(context: &Context, ready: &Value) -> Result<Value> {
+    self::context(&context_value(context))?;
     let manifest = manifest(ready)?;
     let mut fields = context_value(context)
         .as_object()
@@ -439,5 +489,45 @@ mod tests {
             ensure_generation_compatible(&[value], &different),
             Err(Error::GenerationConflict)
         );
+    }
+
+    #[test]
+    fn explicit_restore_refuses_foreign_projects_storage_paths_and_unregistered_choices() {
+        let root = "/shared/runs";
+        let mut context = context(&context_value()).unwrap();
+        context.state_root = format!("{root}/demo/trial/attempts/attempt-001/outputs/payload");
+        let doc = register(
+            &document(&context, &ready()).unwrap(),
+            "2026-10-29T00:00:00Z",
+        )
+        .unwrap();
+        let reference = Reference {
+            run_id: "trial".into(),
+            attempt_id: "attempt-001".into(),
+            checkpoint_id: doc["checkpoint_id"].as_str().unwrap().into(),
+        };
+        assert_eq!(
+            selected(&reference, &doc, "demo", &context.storage_scope, root)
+                .unwrap()
+                .step,
+            42
+        );
+        for (project, scope, path) in [
+            ("other", context.storage_scope.as_str(), root),
+            ("demo", "other", root),
+            ("demo", context.storage_scope.as_str(), "/other"),
+        ] {
+            assert!(selected(&reference, &doc, project, scope, path).is_err());
+        }
+        let mut absent = doc.clone();
+        absent.as_object_mut().unwrap().remove("status");
+        assert!(selected(&reference, &absent, "demo", &context.storage_scope, root).is_err());
+        let mut other = reference.clone();
+        other.attempt_id = "attempt-002".into();
+        assert!(selected(&other, &doc, "demo", &context.storage_scope, root).is_err());
+        let mut other = reference.clone();
+        other.run_id = "../foreign".into();
+        assert!(other.validate().is_err());
+        assert!(serde_json::from_value::<Reference>(json!({"run_id":"trial","attempt_id":"attempt-001","checkpoint_id":reference.checkpoint_id,"path":"/other"})).is_err());
     }
 }

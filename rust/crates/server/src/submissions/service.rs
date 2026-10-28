@@ -41,6 +41,12 @@ pub enum Error {
         "remote worker history conflicts with its accepted sample; previous evidence is retained"
     )]
     ObservationConflict,
+    #[error("checkpoint files or ready marker cannot be verified on backend storage")]
+    CheckpointUnavailable,
+    #[error("the exact registered checkpoint is unavailable")]
+    CheckpointMissing,
+    #[error("checkpoint registry or frozen checkpoint identity is invalid")]
+    CheckpointConflict,
     #[error("approved Run, first Attempt, source or runtime evidence is unavailable or changed")]
     Authority,
     #[error(
@@ -132,6 +138,7 @@ impl Backend {
     }
 }
 mod authority;
+mod checkpoints;
 mod creation;
 mod observation;
 mod preparation;
@@ -198,6 +205,8 @@ impl Service {
             .map_err(|_| Error::Configuration)?;
         lock.sync_all().map_err(|_| Error::Configuration)?;
         operations::Store::open(settings.registry_root.join("actions"))?;
+        crate::checkpoints::Store::open(&settings.registry_root)
+            .map_err(|_| Error::Configuration)?;
         namespace
             .verify_private_parent()
             .map_err(|_| Error::Configuration)

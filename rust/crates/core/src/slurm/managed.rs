@@ -63,6 +63,14 @@ impl Package {
     }
 }
 pub fn plan(scope: &helper::Scope, spec: &JobSpec, runtime: &Runtime) -> helper::Result<Package> {
+    plan_restoring(scope, spec, runtime, None)
+}
+pub fn plan_restoring(
+    scope: &helper::Scope,
+    spec: &JobSpec,
+    runtime: &Runtime,
+    restore: Option<&serde_json::Value>,
+) -> helper::Result<Package> {
     scope.validate()?;
     spec.validate().map_err(|_| helper::Error::Metadata)?;
     runtime.validate()?;
@@ -78,7 +86,7 @@ pub fn plan(scope: &helper::Scope, spec: &JobSpec, runtime: &Runtime) -> helper:
     let output = format!("{root}/outputs/payload");
     let timeout =
         super::walltime_seconds(&spec.backend.time).map_err(|_| helper::Error::Metadata)?;
-    let manifest = launch::Manifest {
+    let mut manifest = launch::Manifest {
         contract: launch::CONTRACT.into(),
         identity: launch::Identity {
             project: scope.project.clone(),
@@ -94,6 +102,18 @@ pub fn plan(scope: &helper::Scope, spec: &JobSpec, runtime: &Runtime) -> helper:
         workdir: spec.execution.workdir.clone(),
         timeout_seconds: timeout,
     };
+    if let Some(value) = restore {
+        let plan =
+            crate::checkpoints::restore_plan(value, None).map_err(|_| helper::Error::Metadata)?;
+        manifest.environment.extend([
+            (
+                "RESUME_DIR".into(),
+                format!("{}/checkpoints/{}", plan.state_root, plan.generation),
+            ),
+            ("RESUME_CHECKPOINT_ID".into(), plan.checkpoint_id),
+            ("RESUME_STEP".into(), plan.step.to_string()),
+        ]);
+    }
     let bytes = manifest.encode().map_err(|_| helper::Error::Metadata)?;
     let config = managed::Config {
         manifest_path: PathBuf::from(format!("{root}/{MANIFEST_FILE}")),
@@ -108,6 +128,16 @@ pub fn plan(scope: &helper::Scope, spec: &JobSpec, runtime: &Runtime) -> helper:
         }),
         output_directory: Some(PathBuf::from(output)),
         runtime_environment: runtime.runtime_environment.clone(),
+        // Frozen Attempt encoding sorts nested mapping keys. Normalize this
+        // newly introduced Value before hashing the typed configuration too,
+        // so API authorship and helper re-reading derive identical bytes.
+        checkpoint_restore: restore
+            .map(|value| {
+                let bytes = crate::canonical::python_json_bytes(value)
+                    .map_err(|_| helper::Error::Metadata)?;
+                serde_json::from_slice(&bytes).map_err(|_| helper::Error::Metadata)
+            })
+            .transpose()?,
     };
     managed::execution_environment(&config, &manifest).map_err(|_| helper::Error::Metadata)?;
     Ok(Package { config, manifest })

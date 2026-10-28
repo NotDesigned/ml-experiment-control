@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+mod checkpoints;
 mod jobs;
 mod observation;
 mod staging;
@@ -545,6 +546,12 @@ impl Helper {
             OperationTag::ObserveWorker => match ledger {
                 ReadLedger::Found(snapshot) => {
                     self.worker_observation(request, &snapshot, &lock)?
+                }
+                other => Self::observed(&other),
+            },
+            OperationTag::ObserveCheckpoint => match ledger {
+                ReadLedger::Found(snapshot) => {
+                    self.checkpoint_observation(request, &snapshot, &lock)?
                 }
                 other => Self::observed(&other),
             },
