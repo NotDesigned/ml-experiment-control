@@ -3,7 +3,7 @@ use ml_exp_client::{
     Client, config, credentials, observation, presentation, projects, read, session, sources,
     status, watch,
 };
-use std::path::PathBuf;
+use std::{io::{self, Read}, path::PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -48,6 +48,17 @@ enum Command {
         #[command(subcommand)]
         command: Config,
     },
+    /// Run a pure native contract validator without credentials or HTTP.
+    Contract {
+        #[command(subcommand)]
+        command: Contract,
+    },
+}
+
+#[derive(Subcommand)]
+enum Contract {
+    /// Validate one JSON OperationIntent read from standard input.
+    IntentValidate,
 }
 #[derive(Subcommand)]
 enum Source {
@@ -249,6 +260,18 @@ enum Output {
 }
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Business parameter validation precedes config or credential file loading.
+    if let Command::Contract {
+        command: Contract::IntentValidate,
+    } = &args.command
+    {
+        let mut input = String::new();
+        io::stdin().read_to_string(&mut input)?;
+        let value: serde_json::Value = serde_json::from_str(&input)?;
+        let intent = ml_exp_core::intent::OperationIntent::from_value(&value)
+            .map_err(|error| format!("invalid operation intent: {error}"))?;
+        println!("{}", serde_json::to_string_pretty(&intent)?);
+        return Ok(());
+    }
     let project_plan = match &args.command {
         Command::Project { command } => Some(command.plan()?),
         _ => None,

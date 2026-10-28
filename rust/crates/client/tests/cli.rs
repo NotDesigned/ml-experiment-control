@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use ml_exp_io::{create_private_dir, write_atomic};
@@ -21,6 +21,30 @@ fn json_output(output: Output) -> serde_json::Value {
     );
     assert!(output.stderr.is_empty());
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn native_contract_validation_does_not_load_config_or_contact_http() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut child = command(temp.path())
+        .args(["contract", "intent-validate"])
+        .env("ML_EXPD_CLIENT_CONFIG", temp.path().join("missing.json"))
+        .env("ML_EXPD_API_TOKEN", "must-not-be-read")
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"kind":"SUBMIT_RUN","title":"native","draft":"{}"}"#)
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["kind"], "SUBMIT_RUN");
+    assert_eq!(value["resource_estimate"], "unknown");
+    assert!(output.stderr.is_empty());
 }
 
 #[test]

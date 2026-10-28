@@ -150,6 +150,12 @@ server shell still reads Campaign files, checks the source service, serializes
 the draft for the legacy API, persists the Action and performs authorization or
 execution.
 
+The preview client exposes `ml-exp-rs contract intent-validate` as a small
+native bridge for this schema. The Python server can opt into it with
+`ML_EXPD_CONTRACT_BIN`; when the binary is absent, the existing Pydantic path
+continues to work. The bridge only validates and returns a receipt, so it
+cannot authorize or execute an Action.
+
 Metrics now include schema/definition validation, typed and wide observations,
 explicit units, required/conditional metrics, context-sensitive conflicts and
 `ratio_of_sums`. Variant, protocol, checkpoint, dataset, step and epoch remain

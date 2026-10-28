@@ -118,6 +118,10 @@ projection remain in the server shell.
 field bounds, unknown-field rejection and idempotency-key format. It does not
 authorize or execute the resulting Action.
 
+`ml-exp-rs contract intent-validate` is the optional process bridge for this
+contract. It reads one JSON intent from stdin and emits the normalized receipt;
+it does not load client credentials or contact the server.
+
 `ml-exp-core::data_delivery` covers the SenseCore zero-GPU data-copy contract:
 frozen delivery identity, NAS scope, sealed READY reuse, callback transitions,
 and exact ACP scheduler-job binding. `ml-exp-core::result_collection` covers
