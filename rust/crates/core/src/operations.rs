@@ -149,6 +149,81 @@ pub fn initial_execution(plan: &Value) -> Value {
         "authorized_at":null,"authorization_note":"","started_at":null,"finished_at":null,"result":null,"error":null})
 }
 
+/// Public Submission projection of an already observed Action. Time is supplied
+/// by the shell; this does not authorize, execute, repair or refresh anything.
+pub fn submission_view(action: &Value, now: &str) -> Result<Value, Error> {
+    let now = timestamp(now)?;
+    let id = field(action, "action_id")?;
+    if !id.strip_prefix("action-").is_some_and(|suffix| {
+        suffix.len() == 16
+            && suffix
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    }) {
+        return Err(Error::Identity("action_id"));
+    }
+    let project = field(&action["scope"], "project")?;
+    let run = field(action, "run_id")?;
+    let attempt = field(action, "attempt_id")?;
+    crate::identity::validate_id(project).map_err(|_| Error::Identity("project"))?;
+    crate::identity::validate_observation_id(run).map_err(|_| Error::Identity("run_id"))?;
+    crate::identity::validate_attempt(attempt).map_err(|_| Error::Identity("attempt_id"))?;
+    let operation = field(action, "operation")?;
+    if !matches!(operation, "SUBMIT_RUN" | "RETRY_ATTEMPT" | "RUN_EVALUATION") {
+        return Err(Error::Invalid("Action is not a Submission"));
+    }
+    let execution = action
+        .get("execution")
+        .filter(|v| v.is_object())
+        .ok_or(Error::Invalid("execution"))?;
+    revision(execution)?;
+    let status = field(execution, "status")?;
+    let next = match status {
+        "PREPARED" | "AUTHORIZED" => {
+            if action
+                .get("gate_expires_at")
+                .and_then(Value::as_str)
+                .and_then(|value| timestamp(value).ok())
+                .is_none_or(|expiry| expiry <= now)
+            {
+                "REPREPARE"
+            } else if status == "PREPARED" {
+                "AUTHORIZE"
+            } else {
+                "EXECUTE"
+            }
+        }
+        "EXECUTING" | "RECONCILE_REQUIRED" => "RECONCILE",
+        "BLOCKED" => "REPREPARE",
+        _ => "NONE",
+    };
+    let summary = action
+        .get("preflight_summary")
+        .filter(|v| v.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let git_commit = summary
+        .get("git_commit")
+        .filter(|v| !v.is_null() && **v != "")
+        .cloned()
+        .or_else(|| {
+            action
+                .get("semantic_changes")
+                .and_then(Value::as_array)
+                .and_then(|changes| changes.iter().find(|change| change["path"] == "git_commit"))
+                .and_then(|change| change.get("after"))
+                .cloned()
+        });
+    Ok(json!({
+        "submission_id":id, "project":project, "run_id":run, "attempt_id":attempt,
+        "operation":operation, "status":status, "ready":action.get("ready") == Some(&Value::Bool(true)),
+        "next_action":next, "reused":false, "confirmation":format!("EXECUTE {id}"),
+        "gate_expires_at":action.get("gate_expires_at"), "intent_digest":action.get("intent_digest"),
+        "gates":action.get("gates").filter(|v| v.is_array()).cloned().unwrap_or_else(|| json!([])),
+        "preflight_summary":summary, "git_commit":git_commit, "execution":execution,
+    }))
+}
+
 /// Prepare exactly the SQLite CAS update and its audit event, without mutating input.
 pub fn commit_transition(
     current: &Value,

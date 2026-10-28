@@ -268,6 +268,7 @@ pub struct Api {
     project_files: BTreeMap<String, PathBuf>,
     lifecycle: Option<Arc<crate::projects::Service>>,
     sources: Option<Arc<crate::sources::Service>>,
+    actions: Option<crate::operations::Store>,
 }
 impl Api {
     pub fn open(settings: read_config::Settings) -> Result<Self, read_config::Error> {
@@ -297,6 +298,19 @@ impl Api {
             .iter()
             .map(|project| (project.project.clone(), project.project_file.clone()))
             .collect();
+        // This is the fixed isolated namespace, never a request-selected path.
+        // Missing Action storage stays absent; startup and GET do not create it.
+        let actions = if registry
+            .entry_exists(OsStr::new("actions"))
+            .map_err(|_| read_config::Error)?
+        {
+            Some(
+                crate::operations::Store::open_existing(settings.registry_root.join("actions"))
+                    .map_err(|_| read_config::Error)?,
+            )
+        } else {
+            None
+        };
         Ok(Self {
             store,
             registry_root: settings.registry_root,
@@ -309,6 +323,7 @@ impl Api {
             project_files,
             lifecycle: None,
             sources: None,
+            actions,
         })
     }
     pub fn with_lifecycle(
@@ -371,6 +386,149 @@ impl Api {
     }
     pub fn project_count(&self) -> usize {
         self.projects.len()
+    }
+    pub fn submission(&self, id: &str, now_unix: f64) -> Result<Value, Error> {
+        if !id.strip_prefix("action-").is_some_and(|suffix| {
+            suffix.len() == 16
+                && suffix
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        }) {
+            return Err(invalid_query());
+        }
+        self.validate_registry()?;
+        let actions = self.actions.as_ref().ok_or_else(|| {
+            error(
+                501,
+                "SUBMISSION_STORAGE_NOT_CONFIGURED",
+                "existing native Action storage is not configured",
+            )
+        })?;
+        let snapshot = actions.observe(id).map_err(|cause| match cause {
+            crate::operations::Error::NotFound => {
+                error(404, "UNKNOWN_SUBMISSION", "exact Submission is unavailable")
+            }
+            _ => error(
+                409,
+                "SUBMISSION_EVIDENCE_UNAVAILABLE",
+                "committed Submission evidence cannot be validated; no recovery was attempted",
+            ),
+        })?;
+        let invalid_clock = || error(503, "CLOCK_UNAVAILABLE", "observation clock is unavailable");
+        if !now_unix.is_finite() {
+            return Err(invalid_clock());
+        }
+        let now = time::OffsetDateTime::from_unix_timestamp_nanos((now_unix * 1e9) as i128)
+            .map_err(|_| invalid_clock())?
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|_| invalid_clock())?;
+        let value =
+            ml_exp_core::operations::submission_view(&snapshot, &now).map_err(
+                |cause| match cause {
+                    ml_exp_core::operations::Error::Invalid("Action is not a Submission") => error(
+                        404,
+                        "UNKNOWN_SUBMISSION",
+                        "Action is not an experiment Submission",
+                    ),
+                    _ => error(
+                        409,
+                        "SUBMISSION_EVIDENCE_UNAVAILABLE",
+                        "Action is not a valid bound Submission",
+                    ),
+                },
+            )?;
+        let project = value["project"].as_str().ok_or_else(invalid_query)?;
+        let run = value["run_id"].as_str().ok_or_else(invalid_query)?;
+        if !self.project_files.contains_key(project) {
+            return Err(error(
+                404,
+                "UNKNOWN_SUBMISSION",
+                "Submission Project is not approved",
+            ));
+        }
+        let guard = self
+            .fence
+            .existing_observation_guard(project, run)
+            .map_err(|_| {
+                error(
+                    409,
+                    "SUBMISSION_EVIDENCE_UNAVAILABLE",
+                    "Submission Run is deleted or unavailable",
+                )
+            })?;
+        // Validate the configured Run without resolving or borrowing its current
+        // Attempt. A first planned Attempt may not yet have a manifest on disk.
+        self.ensure_active(project)?;
+        let (reference, discovery) = self.locate_run(project, run)?;
+        let metadata = self.store.snapshot_metadata(&reference)?;
+        if discovery.as_ref().is_some_and(|found| {
+            found
+                .runs
+                .iter()
+                .find(|entry| entry.reference.run_id == run)
+                .is_none_or(|entry| entry.raw_sha256 != metadata.run.raw_sha256)
+        }) {
+            return Err(error(
+                409,
+                "EXPERIMENT_DISCOVERY_CHANGED",
+                "Run binding changed during Submission observation",
+            ));
+        }
+        if let Some(before) = discovery {
+            let after = self
+                .store
+                .discover(project, &experiments::DiscoveryLimits::default())?;
+            if !before.same_bindings(&after) {
+                return Err(error(
+                    409,
+                    "EXPERIMENT_DISCOVERY_CHANGED",
+                    "Run bindings changed during Submission observation",
+                ));
+            }
+        }
+        guard.require_observed_live(project, run).map_err(|_| {
+            error(
+                409,
+                "SUBMISSION_EVIDENCE_UNAVAILABLE",
+                "Submission Run changed during observation",
+            )
+        })?;
+        self.ensure_active(project)?;
+        self.validate_registry()?;
+        Ok(experiment_redact::redact_json(
+            ml_exp_core::observation::sanitized_outward(&value),
+        ))
+    }
+    fn locate_run(
+        &self,
+        project: &str,
+        run: &str,
+    ) -> Result<(RunRef, Option<experiments::Discovery>), Error> {
+        let discovery = if self.discovery_projects.contains(project) {
+            Some(
+                self.store
+                    .discover(project, &experiments::DiscoveryLimits::default())?,
+            )
+        } else {
+            None
+        };
+        let reference = match &discovery {
+            Some(found) => found
+                .runs
+                .iter()
+                .find(|entry| entry.reference.run_id == run)
+                .map(|entry| &entry.reference),
+            None => self.runs.get(&(project.into(), run.into())),
+        }
+        .cloned()
+        .ok_or_else(|| {
+            error(
+                404,
+                "EXPERIMENT_NOT_FOUND",
+                "the exact Run is unavailable in approved storage",
+            )
+        })?;
+        Ok((reference, discovery))
     }
     fn validate_registry(&self) -> Result<(), Error> {
         self.registry.verify_private_parent().map_err(|_| {
@@ -611,34 +769,16 @@ impl Api {
                     "Run is unavailable or deleted",
                 )
             })?;
-        let discovery = if self.discovery_projects.contains(&query.project) {
-            Some(
-                self.store
-                    .discover(&query.project, &experiments::DiscoveryLimits::default())?,
-            )
-        } else {
-            None
-        };
+        let (reference, discovery) = self.locate_run(&query.project, &query.run)?;
         let located = discovery
             .as_ref()
             .and_then(|d| d.runs.iter().find(|r| r.reference.run_id == query.run));
-        let reference = match &discovery {
-            Some(_) => located.map(|r| &r.reference),
-            None => self.runs.get(&(query.project.clone(), query.run.clone())),
-        }
-        .ok_or_else(|| {
-            error(
-                404,
-                "EXPERIMENT_NOT_FOUND",
-                "the exact Run is unavailable in approved storage",
-            )
-        })?;
         let snapshot: Snapshot = match &query.view {
-            View::Run | View::Attempts => self.store.snapshot(reference)?,
+            View::Run | View::Attempts => self.store.snapshot(&reference)?,
             View::Show { attempt }
             | View::Logs { attempt, .. }
             | View::Metrics { attempt, .. }
-            | View::Collection { attempt } => self.store.snapshot_attempt(reference, attempt)?,
+            | View::Collection { attempt } => self.store.snapshot_attempt(&reference, attempt)?,
         };
         if located.is_some_and(|run| run.raw_sha256 != snapshot.run.raw_sha256) {
             return Err(error(

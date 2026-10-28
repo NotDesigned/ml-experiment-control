@@ -215,12 +215,14 @@ fn schema_document() -> serde_json::Value {
         "project":{"in":"path","name":"project","required":true,"schema":{"type":"string"}},
         "run":{"in":"path","name":"run","required":true,"schema":{"type":"string"}},
         "attempt":{"in":"path","name":"attempt","required":true,"schema":{"type":"string","pattern":"^attempt-[0-9]{3,}$"}},
+        "submission":{"in":"path","name":"identity","required":true,"schema":{"type":"string","pattern":"^action-[a-f0-9]{16}$"}},
         "identity":{"in":"path","name":"identity","required":true,"schema":{"type":"string"},"description":"Exact Run::Attempt identity, e.g. train::attempt-001"}
     }},"security":[{"bearer":[]}],"paths":{
         "/api/health":{"get":{"description":"Authenticated bootstrap with active project count; protocol header may be omitted only here","responses":{"200":{"description":"Enabled capabilities and incomplete training readiness"},"401":{"description":"Authentication required"},"409":{"description":"Project lifecycle evidence is unavailable"},"429":{"description":"Local observation concurrency is full"},"504":{"description":"Observation deadline elapsed; underlying I/O can continue"}}}},
         "/api/readiness":operation("Preview readiness; training remains incomplete",vec![parameter("protocol")]),
         "/api/v2/openapi.json":operation("This static preview contract",vec![parameter("protocol")]),
         "/api/projects":operation("List only configured projects, without filesystem paths or private configuration",vec![parameter("protocol")]),
+        "/api/submissions/{identity}":operation("Read one committed Submission from existing isolated Action storage; never repairs or submits",vec![parameter("protocol"),parameter("submission")]),
         "/api/runs/{project}/{run}":operation("Current explicitly bound Attempt and independent evidence layers; missing scheduler evidence is unknown",run()),
         "/api/runs/{project}/{run}/attempts":operation("Verified Attempt manifests; no latest-attempt guessing",run()),
         "/api/runs/{project}/{run}/attempts/{attempt}/collection":operation("Read process completion separately from unobserved artifact publication; never starts collection",collection),
@@ -409,7 +411,7 @@ mod schema_tests {
     fn native_contract_declares_narrow_lifecycle_posts_and_exact_read_identity() {
         let schema = super::schema_document();
         let paths = schema["paths"].as_object().unwrap();
-        assert_eq!(paths.len(), 18);
+        assert_eq!(paths.len(), 19);
         for (path, operations) in paths {
             assert_eq!(operations.as_object().unwrap().len(), 1);
             if path.starts_with("/api/project-lifecycle/") {

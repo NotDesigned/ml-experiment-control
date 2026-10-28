@@ -19,19 +19,19 @@
         "modules": 21,
         "lines": 3712,
         "partial_foundation": 9,
-        "not_started": 13
+        "not_started": 12
       },
       "server": {
         "modules": 160,
         "lines": 30572,
-        "partial_foundation": 43,
-        "not_started": 122
+        "partial_foundation": 45,
+        "not_started": 115
       },
       "core": {
         "modules": 25,
         "lines": 5122,
-        "partial_foundation": 12,
-        "not_started": 13
+        "partial_foundation": 11,
+        "not_started": 14
       },
       "worker": {
         "modules": 14,
@@ -40,7 +40,7 @@
         "not_started": 10
       }
     },
-    "partial_foundation_modules": 68,
+    "partial_foundation_modules": 69,
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
@@ -1313,8 +1313,9 @@
       "target_crate": "ml-exp-server",
       "target_domain": "http",
       "proposed_consolidation": "Thin HTTP parsing/authentication/serialization only; route calls its owning domain directly.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "native_scope": "Exact read-only Submission lookup, committed Action observation and pure public view. Submission preparation, progress, listing and mutation/provider dispatch remain incomplete."
     },
     {
       "path": "server/src/ml_exp_server/api/tracking_routes.py",
@@ -3409,8 +3410,9 @@
       "target_crate": "ml-exp-server",
       "target_domain": "experiments",
       "proposed_consolidation": "One prepare/submit/retry/cancel workflow over reviewed operations; keep Run and Attempt distinct.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "native_scope": "Exact read-only Submission lookup, committed Action observation and pure public view. Submission preparation, progress, listing and mutation/provider dispatch remain incomplete."
     },
     {
       "path": "server/src/ml_exp_server/runs/terminal_snapshot.py",

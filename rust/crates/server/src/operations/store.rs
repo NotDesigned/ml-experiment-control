@@ -80,6 +80,22 @@ pub struct Store {
     database: Database,
 }
 impl Store {
+    /// Existing storage only. Unlike `open`, this never bootstraps a lock or
+    /// creates the root. Reads also use `observe`, not snapshot recovery.
+    pub fn open_existing(root: impl Into<PathBuf>) -> Result<Self> {
+        let root = root.into();
+        let directory = Directory::open(&root, false)?;
+        directory.verify_private_parent()?;
+        let file = directory.open_existing_lock(OsStr::new(".actions.lock"))?;
+        directory.validate_regular_entry(OsStr::new(".actions.lock"), &file)?;
+        Ok(Self {
+            database: Database::in_directory(directory.clone())?,
+            root,
+            directory,
+            lock_anchor: Arc::new(file),
+            directories: Arc::new(Mutex::new(BTreeMap::new())),
+        })
+    }
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         let directory = Directory::open(&root, true)?;
@@ -257,6 +273,20 @@ impl Store {
     }
     pub fn snapshot(&self, action_id: &str, now: &str, transition_id: &str) -> Result<Value> {
         self.locked(|lock| self.snapshot_unlocked(action_id, now, transition_id, lock))
+    }
+    /// Immutable plan plus one committed execution revision. No journal repair,
+    /// generated transition ID, clock read or provider effect accompanies this.
+    pub fn observe(&self, action_id: &str) -> Result<Value> {
+        self.locked(|lock| {
+            let plan = self.plan(action_id, lock)?;
+            if plan.get("action_id").and_then(Value::as_str) != Some(action_id) {
+                return Err(Error::Invalid("plan Action identity mismatch"));
+            }
+            let execution = self.database.observe(&|| lock.validate(), action_id)?;
+            let mut value = plan.as_object().cloned().ok_or(Error::Invalid("plan"))?;
+            value.insert("execution".into(), execution);
+            Ok(Value::Object(value))
+        })
     }
     pub fn save_plan(&self, plan: &Value, now: &str, transition_id: &str) -> Result<Value> {
         self.locked(|lock| {

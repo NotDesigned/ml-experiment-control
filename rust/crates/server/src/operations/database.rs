@@ -1,7 +1,7 @@
 use crate::storage::SqliteDatabase;
 use ml_exp_core::operations;
 use ml_exp_io::directory::{Directory, effective_uid};
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::{
     ffi::OsStr,
@@ -187,7 +187,7 @@ impl Database {
         )
     }
 
-    fn read_transaction(&self, connection: &Transaction<'_>, action_id: &str) -> Result<Value> {
+    fn read_transaction(&self, connection: &Connection, action_id: &str) -> Result<Value> {
         let row = connection
             .query_row(
                 "SELECT revision,payload FROM executions WHERE action_id=?",
@@ -223,6 +223,33 @@ impl Database {
         self.transaction(validate, |connection| {
             self.read_transaction(connection, action_id)
         })
+    }
+
+    /// Observe an existing execution without initialization, recovery, schema
+    /// changes or a write transaction. A plan with no committed execution is
+    /// incomplete evidence; a GET must never turn it into PREPARED.
+    pub fn observe(&self, validate: &dyn Fn() -> Result<()>, action_id: &str) -> Result<Value> {
+        operations::validate_action_id(action_id)?;
+        validate()?;
+        if !self.marker_exists()? {
+            return Err(Error::MissingAuthoritative);
+        }
+        let value = self.sqlite.read_only(|connection| {
+            let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            if version != 1 {
+                return Err(Error::UnsupportedSchema);
+            }
+            let value = self.read_transaction(connection, action_id)?;
+            if value.as_object().is_none_or(|map| map.is_empty()) {
+                return Err(Error::Invalid("execution has not been committed"));
+            }
+            Ok(value)
+        })?;
+        validate()?;
+        if !self.marker_exists()? {
+            return Err(Error::MissingAuthoritative);
+        }
+        Ok(value)
     }
 
     pub fn commit(

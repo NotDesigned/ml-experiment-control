@@ -199,6 +199,17 @@ scheduler layer or interpreting a process state as scheduler evidence. Only the
 separate opt-in tracking lifecycle exposes metadata POSTs; scheduler and research
 asset mutations remain unavailable.
 
+Native saved-state reads can now resolve an exact Submission through
+`GET /api/submissions/{identity}` when the isolated registry already contains
+native Action storage at `actions/`. The server reads its immutable plan and
+one committed SQLite execution revision in read-only mode. Opening this path
+does not create a directory, lock, database, initial execution, audit event or
+recovery transition. Missing or damaged committed evidence fails closed. The
+projection preserves the original Project/Run/Attempt and expiry advice; it
+does not select a current Attempt or authorize the suggested next action.
+Project approval and the Run deletion fence also apply to these reads. This
+does not implement Submission preparation, execution or provider dispatch.
+
 HTTP error bodies are capped at 16 KiB and sanitized before retention. The
 existing native redactor is now a shared pure library with the original CLI
 policy preserved. Diagnostic JSON additionally hides request fields, known secret

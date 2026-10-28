@@ -186,6 +186,12 @@ synthetic credentials out of normal configuration. The server reports training
 `INCOMPLETE`; unsupported API paths return an explicit not-implemented response.
 It refuses a non-loopback bind. No job is created.
 
+When existing native Action storage is present under the isolated registry's
+`actions/` directory at startup, saved Submission identities can also be read
+through `GET /api/submissions/{identity}`. This reads committed state without
+creating missing executions or running interruption recovery. Submission
+prepare/authorize/execute and provider dispatch are still unavailable.
+
 The client now groups observation commands under `run`:
 
 ```bash

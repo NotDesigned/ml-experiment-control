@@ -6,6 +6,108 @@ use std::{
     sync::{Arc, Barrier},
 };
 const NOW: &str = "2026-10-27T00:00:00Z";
+
+#[test]
+fn observation_never_bootstraps_or_recovers_action_state() {
+    let root = tempfile::tempdir().unwrap();
+    let missing = root.path().join("missing");
+    assert!(Store::open_existing(&missing).is_err());
+    assert!(!missing.exists());
+    assert!(Store::open_existing(root.path()).is_err());
+    assert!(fs::read_dir(root.path()).unwrap().next().is_none());
+    let writer = Store::open(root.path()).unwrap();
+    let plan = golden()["plan"].clone();
+    let id = plan["action_id"].as_str().unwrap();
+    // An unpublished execution is not PREPARED, and GET does not create a DB.
+    let directory = writer.directory(id).unwrap();
+    fs::create_dir(&directory).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+    ml_exp_io::write_atomic(
+        &directory.join("plan.json"),
+        &serde_json::to_vec(&plan).unwrap(),
+        true,
+    )
+    .unwrap();
+    let reader = Store::open_existing(root.path()).unwrap();
+    assert!(reader.observe(id).is_err());
+    assert!(!writer.database().path().exists());
+    let prepared = writer.save_plan(&plan, NOW, &uid(1)).unwrap();
+    let events = writer.database().journal(&|| Ok(()), id, 100).unwrap();
+    let observed = reader.observe(id).unwrap();
+    assert_eq!(observed["execution"], prepared["execution"]);
+    assert!(!observed.as_object().unwrap().contains_key("journal"));
+    assert_eq!(
+        writer.database().journal(&|| Ok(()), id, 100).unwrap(),
+        events
+    );
+    let mut execution = observed["execution"].clone();
+    execution["status"] = json!("EXECUTING");
+    writer
+        .commit(
+            id,
+            &ml_exp_core::operations::Transition {
+                execution,
+                event: json!({"event":"synthetic_start","timestamp":NOW}),
+                expected_status: Some("PREPARED".into()),
+            },
+            &uid(2),
+            NOW,
+        )
+        .unwrap();
+    assert_eq!(
+        Store::open_existing(root.path())
+            .unwrap()
+            .observe(id)
+            .unwrap()["execution"]["status"],
+        "EXECUTING"
+    );
+    assert_eq!(
+        writer
+            .database()
+            .journal(&|| Ok(()), id, 100)
+            .unwrap()
+            .len(),
+        events.len() + 1
+    );
+    // Missing rows and legacy execution files remain untouched, even though
+    // the authoritative database already exists for a different Action.
+    let orphan_id = "action-1111111111111111";
+    let orphan = writer.directory(orphan_id).unwrap();
+    fs::create_dir(&orphan).unwrap();
+    fs::set_permissions(&orphan, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut orphan_plan = plan.clone();
+    orphan_plan["action_id"] = json!(orphan_id);
+    ml_exp_io::write_atomic(
+        &orphan.join("plan.json"),
+        &serde_json::to_vec(&orphan_plan).unwrap(),
+        true,
+    )
+    .unwrap();
+    assert!(reader.observe(orphan_id).is_err());
+    assert_eq!(
+        writer.database().read(&|| Ok(()), orphan_id).unwrap(),
+        json!({})
+    );
+    ml_exp_io::write_atomic(
+        &orphan.join("execution.json"),
+        b"{\"status\":\"EXECUTING\"}",
+        true,
+    )
+    .unwrap();
+    assert!(matches!(
+        reader.observe(orphan_id),
+        Err(Error::LegacyMigration)
+    ));
+    assert_eq!(
+        fs::read(orphan.join("execution.json")).unwrap(),
+        b"{\"status\":\"EXECUTING\"}"
+    );
+    fs::remove_file(root.path().join(".actions.lock")).unwrap();
+    assert!(reader.observe(id).is_err());
+    assert!(Store::open_existing(root.path()).is_err());
+    assert!(!root.path().join(".actions.lock").exists());
+}
 fn uid(value: u32) -> String {
     format!("{value:032x}")
 }

@@ -19,6 +19,7 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route("/api/projects", get(projects))
         .route("/api/runs/{project}/{run}", get(run))
         .route("/api/runs/{project}/{run}/attempts", get(attempts))
+        .route("/api/submissions/{identity}", get(submission))
         .route(
             "/api/runs/{project}/{run}/attempts/{attempt}/collection",
             get(collection),
@@ -155,6 +156,22 @@ async fn projects(State(state): State<Arc<AppState>>, RawQuery(raw): RawQuery) -
         return failure(e);
     }
     execute(state, Access::Read, |api, now| api.projects(now)).await
+}
+async fn submission(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<String>, PathRejection>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let Ok(Path(identity)) = path else {
+        return bad_path();
+    };
+    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+        return failure(error);
+    }
+    execute(state, Access::Read, move |api, now| {
+        api.submission(&identity, now)
+    })
+    .await
 }
 async fn run(
     State(state): State<Arc<AppState>>,

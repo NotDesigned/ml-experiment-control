@@ -244,6 +244,119 @@ fn selected(attempt: Option<&str>) -> Selection<'_> {
 fn headers() -> String {
     format!("Authorization: Bearer {TOKEN}\r\nX-ML-Expd-Client-Protocol: 2\r\n")
 }
+
+#[test]
+fn saved_submission_reads_committed_identity_without_bootstrap_or_latest_guess() {
+    use ml_exp_server::operations;
+    let fixture = Fixture::new();
+    let actions = operations::Store::open(fixture.registry.join("actions")).unwrap();
+    let id = "action-0123456789abcdef";
+    let plan = json!({"action_id":id,"scope":{"project":"demo","scope_type":"run","object_id":"train"},
+        "run_id":"train","attempt_id":"attempt-001","operation":"SUBMIT_RUN","ready":true,
+        "gate_expires_at":"2100-01-01T00:00:00Z", "request_digest":format!("sha256:{}","a".repeat(64)),
+        "intent_digest":format!("sha256:{}","b".repeat(64)),"command_preview":["do not expose"],
+        "preflight_summary":{"git_commit":"frozen-commit"}});
+    let prepared = actions
+        .save_plan(&plan, "2026-10-28T00:00:00Z", &"1".repeat(32))
+        .unwrap();
+    let before_events = actions.database().journal(&|| Ok(()), id, 100).unwrap();
+    fixture.current("attempt-002");
+    for _restart in 0..2 {
+        let server = fixture.server();
+        let client = server.client();
+        let health = client.negotiate().unwrap();
+        let submission = client.get(&format!("/api/submissions/{id}")).unwrap();
+        assert_eq!(submission["attempt_id"], "attempt-001");
+        assert_eq!(submission["status"], "PREPARED");
+        assert_eq!(submission["next_action"], "AUTHORIZE");
+        assert!(submission.get("command_preview").is_none());
+        let saved = json!({"server":format!("http://{}/ml-expd", server.address),"project":"demo","run_id":"train", "config_sha256":"synthetic",
+            "submission":{"submission_id":id,"attempt_id":"attempt-001"}});
+        let selected = Selection {
+            project: None,
+            run: None,
+            attempt: None,
+        };
+        let view = status::observe(&client, &health, Some(&saved), selected, true).unwrap();
+        assert_eq!(view["attempt_id"], "attempt-001");
+        assert_eq!(view["preparation"]["status"], "PREPARED");
+        let selected = Selection {
+            project: None,
+            run: None,
+            attempt: None,
+        };
+        let logs = read::observe(
+            &client,
+            &health,
+            Some(&saved),
+            selected,
+            read::View::Logs {
+                stream: "both".into(),
+                lines: 80,
+            },
+        )
+        .unwrap();
+        assert!(logs.to_string().contains("attempt-001 exact output"));
+        assert!(!logs.to_string().contains("attempt-002 exact output"));
+        assert_eq!(
+            actions.observe(id).unwrap()["execution"],
+            prepared["execution"]
+        );
+        assert_eq!(
+            actions.database().journal(&|| Ok(()), id, 100).unwrap(),
+            before_events
+        );
+        for bad in ["action-../bad", "action-a", "action-AAAAAAAAAAAAAAAA"] {
+            let (_, body) = server.raw(&format!("/api/submissions/{bad}"), &headers());
+            assert!(body.get("detail").is_some());
+        }
+        assert_eq!(
+            server
+                .raw(&format!("/api/submissions/{id}?repair=true"), &headers())
+                .0,
+            422
+        );
+        assert_eq!(
+            server
+                .raw(
+                    &format!("/api/submissions/{id}"),
+                    "X-ML-Expd-Client-Protocol: 2\r\n"
+                )
+                .0,
+            401
+        );
+    }
+    let mut foreign = plan.clone();
+    foreign["action_id"] = json!("action-1111111111111111");
+    foreign["scope"]["project"] = json!("foreign");
+    actions
+        .save_plan(&foreign, "2026-10-28T00:00:00Z", &"2".repeat(32))
+        .unwrap();
+    let server = fixture.server();
+    assert_eq!(
+        server
+            .raw("/api/submissions/action-1111111111111111", &headers())
+            .0,
+        404
+    );
+    drop(server);
+    let fence = ml_exp_server::deletion::RunFence::new(&fixture.registry);
+    let guard = fence.exclusive(true).unwrap();
+    guard
+        .mark(
+            "demo",
+            "train",
+            &serde_json::Map::new(),
+            "2026-10-28T00:00:00Z",
+        )
+        .unwrap();
+    drop(guard);
+    let server = fixture.server();
+    assert_eq!(
+        server.raw(&format!("/api/submissions/{id}"), &headers()).0,
+        409
+    );
+}
 fn http_failure(error: ClientError, status: u16) -> Box<ml_exp_core::diagnostic::HttpFailure> {
     let ClientError::Http(error) = error else {
         panic!("expected HTTP failure: {error}")

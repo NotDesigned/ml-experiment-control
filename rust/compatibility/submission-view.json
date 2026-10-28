@@ -1,0 +1,1334 @@
+{
+  "reference_commit": "e725faec689fb8395e692e27d00a8896fa7fe5a5",
+  "sources": {
+    "server/src/ml_exp_server/runs/submissions.py": "ed3ac557398eaf404b763ce7472dc04d5873108122c910cf76a2f5857c3e0792"
+  },
+  "now": "2026-10-28T00:00:00Z",
+  "generator": "ExperimentSubmissionService._view; frozen datetime; synthetic Actions; no provider calls",
+  "cases": [
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "status": "PREPARED",
+        "ready": true,
+        "next_action": "AUTHORIZE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "AUTHORIZED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "status": "AUTHORIZED",
+        "ready": true,
+        "next_action": "EXECUTE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "AUTHORIZED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "EXECUTING",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "status": "EXECUTING",
+        "ready": true,
+        "next_action": "RECONCILE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "EXECUTING",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "RECONCILE_REQUIRED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "status": "RECONCILE_REQUIRED",
+        "ready": true,
+        "next_action": "RECONCILE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "RECONCILE_REQUIRED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "VERIFIED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "status": "VERIFIED",
+        "ready": true,
+        "next_action": "NONE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "VERIFIED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "FAILED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "status": "FAILED",
+        "ready": true,
+        "next_action": "NONE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "FAILED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "BLOCKED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "status": "BLOCKED",
+        "ready": true,
+        "next_action": "REPREPARE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "BLOCKED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "status": "PREPARED",
+        "ready": true,
+        "next_action": "AUTHORIZE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "AUTHORIZED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "status": "AUTHORIZED",
+        "ready": true,
+        "next_action": "EXECUTE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "AUTHORIZED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "EXECUTING",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "status": "EXECUTING",
+        "ready": true,
+        "next_action": "RECONCILE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "EXECUTING",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "RECONCILE_REQUIRED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "status": "RECONCILE_REQUIRED",
+        "ready": true,
+        "next_action": "RECONCILE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "RECONCILE_REQUIRED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "VERIFIED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "status": "VERIFIED",
+        "ready": true,
+        "next_action": "NONE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "VERIFIED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "FAILED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "status": "FAILED",
+        "ready": true,
+        "next_action": "NONE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "FAILED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "BLOCKED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RETRY_ATTEMPT",
+        "status": "BLOCKED",
+        "ready": true,
+        "next_action": "REPREPARE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "BLOCKED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "status": "PREPARED",
+        "ready": true,
+        "next_action": "AUTHORIZE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "AUTHORIZED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "status": "AUTHORIZED",
+        "ready": true,
+        "next_action": "EXECUTE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "AUTHORIZED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "EXECUTING",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "status": "EXECUTING",
+        "ready": true,
+        "next_action": "RECONCILE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "EXECUTING",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "RECONCILE_REQUIRED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "status": "RECONCILE_REQUIRED",
+        "ready": true,
+        "next_action": "RECONCILE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "RECONCILE_REQUIRED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "VERIFIED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "status": "VERIFIED",
+        "ready": true,
+        "next_action": "NONE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "VERIFIED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "FAILED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "status": "FAILED",
+        "ready": true,
+        "next_action": "NONE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "FAILED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "BLOCKED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "RUN_EVALUATION",
+        "status": "BLOCKED",
+        "ready": true,
+        "next_action": "REPREPARE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "BLOCKED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "ready": true,
+        "gate_expires_at": null,
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "status": "PREPARED",
+        "ready": true,
+        "next_action": "REPREPARE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": null,
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "ready": true,
+        "gate_expires_at": "invalid",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "status": "PREPARED",
+        "ready": true,
+        "next_action": "REPREPARE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "invalid",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:00Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "status": "PREPARED",
+        "ready": true,
+        "next_action": "REPREPARE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:00Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "ready": true,
+        "gate_expires_at": "2026-10-27T00:00:00Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "status": "PREPARED",
+        "ready": true,
+        "next_action": "REPREPARE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-27T00:00:00Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T01:00:01+01:00",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        },
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "command_preview": [
+          "private-internal"
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "status": "PREPARED",
+        "ready": true,
+        "next_action": "AUTHORIZE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T01:00:01+01:00",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {
+          "git_commit": "frozen-commit"
+        },
+        "git_commit": "frozen-commit",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "action": {
+        "action_id": "action-0123456789abcdef",
+        "scope": {
+          "project": "demo",
+          "scope_type": "run",
+          "object_id": "train"
+        },
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "ready": true,
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        },
+        "command_preview": [
+          "private-internal"
+        ],
+        "semantic_changes": [
+          {
+            "path": "git_commit",
+            "after": "legacy-commit"
+          }
+        ]
+      },
+      "expected": {
+        "submission_id": "action-0123456789abcdef",
+        "project": "demo",
+        "run_id": "train",
+        "attempt_id": "attempt-001",
+        "operation": "SUBMIT_RUN",
+        "status": "PREPARED",
+        "ready": true,
+        "next_action": "AUTHORIZE",
+        "reused": false,
+        "confirmation": "EXECUTE action-0123456789abcdef",
+        "gate_expires_at": "2026-10-28T00:00:01Z",
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gates": [],
+        "preflight_summary": {},
+        "git_commit": "legacy-commit",
+        "execution": {
+          "status": "PREPARED",
+          "revision": 1
+        }
+      }
+    }
+  ]
+}
