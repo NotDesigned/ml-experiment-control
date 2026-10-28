@@ -278,3 +278,46 @@ fn creation_receipt() -> Value {
 
     receipt
 }
+
+#[test]
+fn worker_refresh_is_explicit_bounded_and_never_requires_scheduler_mutation_permission() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let plan = submissions::plan(Command::Refresh { submission: ID }).unwrap();
+    let client = Client::new(
+        &format!("http://{address}"),
+        "synthetic-bearer-not-production".into(),
+    )
+    .unwrap();
+    assert!(matches!(
+        submissions::execute(&client, &plan, &health()),
+        Err(Error::Observation(_))
+    ));
+    let worker = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            socket.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+            assert!(head.len() < 16384);
+        }
+        assert!(
+            String::from_utf8(head)
+                .unwrap()
+                .starts_with(&format!("POST /api/submissions/{ID}/refresh HTTP/1.1"))
+        );
+        // A dropped observation reply does not make scheduler submission uncertain.
+    });
+    let mut allowed = health();
+    allowed["capabilities"] = json!(["native-worker-observation.v1"]);
+    allowed["scheduler_mutations"] = json!(false);
+    assert!(matches!(
+        submissions::execute(&client, &plan, &allowed),
+        Err(Error::Transport)
+    ));
+    worker.join().unwrap();
+}

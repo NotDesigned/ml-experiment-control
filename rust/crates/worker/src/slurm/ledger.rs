@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 mod jobs;
+mod observation;
 mod staging;
 use fs2::FileExt;
 use ml_exp_core::identity::submission_marker;
@@ -539,6 +540,12 @@ impl Helper {
                 ReadLedger::Missing => ReplyOutcome::Rejected {
                     code: Rejection::Unprepared,
                 },
+                other => Self::observed(&other),
+            },
+            OperationTag::ObserveWorker => match ledger {
+                ReadLedger::Found(snapshot) => {
+                    self.worker_observation(request, &snapshot, &lock)?
+                }
                 other => Self::observed(&other),
             },
             OperationTag::ObserveJob | OperationTag::CancelJob => match ledger {

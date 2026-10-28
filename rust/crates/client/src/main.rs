@@ -256,6 +256,8 @@ enum Run {
     },
     /// Inspect the original scheduler identity; never submit a second job.
     Reconcile { submission: String },
+    /// Sample bounded logs, metrics and process evidence from the exact remote worker.
+    Refresh { submission: String },
     /// Show independent scheduler, training and result-publication evidence.
     Status {
         #[command(flatten)]
@@ -325,6 +327,7 @@ impl Run {
                 confirmation,
             },
             Self::Reconcile { submission } => submissions::Command::Reconcile { submission },
+            Self::Refresh { submission } => submissions::Command::Refresh { submission },
             _ => return Ok(None),
         };
         submissions::plan(command).map(Some)
@@ -500,7 +503,8 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         | Run::Submission { .. }
                         | Run::Authorize { .. }
                         | Run::Execute { .. }
-                        | Run::Reconcile { .. } => Output::Json(submissions::execute(
+                        | Run::Reconcile { .. }
+                        | Run::Refresh { .. } => Output::Json(submissions::execute(
                             &client,
                             submission_plan.as_ref().expect("validated native plan"),
                             &health,

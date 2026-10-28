@@ -128,6 +128,7 @@ pub enum OperationTag {
     Submit,
     InspectSubmission,
     ObserveJob,
+    ObserveWorker,
     CancelJob,
 }
 
@@ -139,6 +140,7 @@ enum Operation {
     Submit,
     InspectSubmission,
     ObserveJob { job_id: String },
+    ObserveWorker { job_id: String },
     CancelJob { job_id: String },
 }
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +187,15 @@ impl Request {
         request.validate()?;
         Ok(request)
     }
+    pub fn observe_worker(intent: FrozenIntent, job_id: String) -> Result<Self> {
+        let request = Self {
+            version: PROTOCOL_VERSION,
+            intent,
+            operation: Operation::ObserveWorker { job_id },
+        };
+        request.validate()?;
+        Ok(request)
+    }
     pub fn cancel_job(intent: FrozenIntent, job_id: String) -> Result<Self> {
         let request = Self {
             version: PROTOCOL_VERSION,
@@ -196,7 +207,9 @@ impl Request {
     }
     pub fn requested_job_id(&self) -> Option<&str> {
         match &self.operation {
-            Operation::ObserveJob { job_id } | Operation::CancelJob { job_id } => Some(job_id),
+            Operation::ObserveJob { job_id }
+            | Operation::ObserveWorker { job_id }
+            | Operation::CancelJob { job_id } => Some(job_id),
             _ => None,
         }
     }
@@ -209,6 +222,7 @@ impl Request {
             Operation::Submit => OperationTag::Submit,
             Operation::InspectSubmission => OperationTag::InspectSubmission,
             Operation::ObserveJob { .. } => OperationTag::ObserveJob,
+            Operation::ObserveWorker { .. } => OperationTag::ObserveWorker,
             Operation::CancelJob { .. } => OperationTag::CancelJob,
         }
     }
@@ -332,6 +346,9 @@ pub enum ReplyOutcome {
     JobObserved {
         observation: Box<super::StatusObservation>,
     },
+    WorkerObserved {
+        evidence: Box<crate::managed::remote::Evidence>,
+    },
     /// The durable cancel marker exists; no terminal provider read is proved.
     CancelPending {
         job_id: String,
@@ -363,7 +380,18 @@ impl Reply {
         if self.identity != request.identity()? {
             return Err(Error::Identity);
         }
+        if let ReplyOutcome::WorkerObserved { evidence } = &self.outcome {
+            evidence.validate_scope(
+                &request.intent.scope,
+                request.requested_job_id().ok_or(Error::Identity)?,
+            )?;
+        }
         match &self.outcome {
+            ReplyOutcome::WorkerObserved { .. }
+                if self.identity.operation != OperationTag::ObserveWorker =>
+            {
+                return Err(Error::Metadata);
+            }
             ReplyOutcome::JobObserved { observation }
                 if request.requested_job_id() != Some(observation.status.job_id.as_str())
                     || observation.status.scheduler_name != request.intent.scheduler_name
@@ -423,7 +451,9 @@ impl Reply {
             ReplyOutcome::Prepared | ReplyOutcome::Submitted { .. }
                 if matches!(
                     self.identity.operation,
-                    OperationTag::ObserveJob | OperationTag::CancelJob
+                    OperationTag::ObserveJob
+                        | OperationTag::ObserveWorker
+                        | OperationTag::CancelJob
                 ) =>
             {
                 return Err(Error::Metadata);

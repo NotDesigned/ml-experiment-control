@@ -578,3 +578,41 @@ fn local_and_endpoint_bindings_are_exclusive_and_legacy_configuration_bytes_are_
             .is_err()
     );
 }
+
+#[test]
+fn readonly_sampling_during_execution_never_unlocks_or_replays_the_process() {
+    let mut fixture = Fixture::new("success");
+    fixture.document["argv"] = json!([
+        "/bin/sh",
+        "-c",
+        "printf live; while ! test -f \"$OUTPUT_DIR/release\"; do sleep 0.01; done; printf done"
+    ]);
+    fixture.seal();
+    fixture.initialize();
+    let config = fixture.config.clone();
+    let child = thread::spawn(move || managed::run(&config, &AtomicBool::new(false)).unwrap());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if fixture.config.output_path().join("stdout.log").exists() {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    let sample = managed::sample(&fixture.config).unwrap();
+    assert_eq!(sample.phase, Phase::Started);
+    assert!(sample.receipt.is_none());
+    assert!(!sample.safe_to_retry);
+    assert!(matches!(
+        managed::inspect(&fixture.config),
+        Err(Error::Busy)
+    ));
+    assert!(matches!(
+        managed::run(&fixture.config, &AtomicBool::new(false)),
+        Err(Error::Busy)
+    ));
+    fs::write(fixture.config.output_path().join("release"), b"").unwrap();
+    let completed = child.join().unwrap();
+    assert_eq!(completed.phase, Phase::Finished);
+    assert_eq!(managed::sample(&fixture.config).unwrap(), completed);
+}

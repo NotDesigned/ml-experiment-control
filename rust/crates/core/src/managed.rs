@@ -1,5 +1,7 @@
 //! Pure configuration and environment decisions for a sealed managed launch.
 //! Paths are values here; opening files and taking runtime snapshots are effects.
+pub mod evidence;
+pub mod remote;
 use crate::{canonical, launch};
 use serde::{Deserialize, Serialize};
 use std::{

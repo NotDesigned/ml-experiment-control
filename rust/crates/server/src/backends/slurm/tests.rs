@@ -167,9 +167,11 @@ fn fake_ssh_child() {
             OperationTag::Submit | OperationTag::InspectSubmission => ReplyOutcome::Submitted {
                 job_id: "24827".into(),
             },
-            OperationTag::ObserveJob | OperationTag::CancelJob => ReplyOutcome::Rejected {
-                code: helper::Rejection::UnsupportedOperation,
-            },
+            OperationTag::ObserveJob | OperationTag::ObserveWorker | OperationTag::CancelJob => {
+                ReplyOutcome::Rejected {
+                    code: helper::Rejection::UnsupportedOperation,
+                }
+            }
         };
         helper::Reply::for_request(&request, outcome).unwrap()
     };

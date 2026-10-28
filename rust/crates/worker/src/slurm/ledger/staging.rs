@@ -101,8 +101,16 @@ impl Helper {
         Ok(())
     }
     pub(super) fn verify_shared(&self, intent: &FrozenIntent, ledger: &Directory) -> Result<()> {
+        self.observe_shared(intent, ledger, true).map(|_| ())
+    }
+    pub(super) fn observe_shared(
+        &self,
+        intent: &FrozenIntent,
+        ledger: &Directory,
+        fresh: bool,
+    ) -> Result<Option<(domain::Plan, Vec<Directory>)>> {
         if intent.staging.is_none() {
-            return Ok(());
+            return Ok(None);
         }
         let manifest =
             ledger.read_regular(OsStr::new(MANIFEST), helper::MAX_METADATA_BYTES as u64)?;
@@ -116,7 +124,7 @@ impl Helper {
         )?;
         if sealed
             != (Sealed {
-                plan,
+                plan: plan.clone(),
                 directory_identities: identities(&directories)?,
             })
             || attempt.read_regular(
@@ -135,12 +143,13 @@ impl Helper {
                     OsStr::new(ml_exp_core::slurm::managed::MANIFEST_FILE),
                     1024 * 1024,
                 )? != package.manifest_bytes()?
-                || attempt.entry_exists(OsStr::new("worker"))?
-                || directories[5].entry_exists(OsStr::new("payload"))?
+                || fresh
+                    && (attempt.entry_exists(OsStr::new("worker"))?
+                        || directories[5].entry_exists(OsStr::new("payload"))?)
             {
                 return Err(Error::Bootstrap);
             }
         }
-        Ok(())
+        Ok(Some((plan, directories)))
     }
 }

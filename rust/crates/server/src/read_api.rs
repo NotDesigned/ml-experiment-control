@@ -842,7 +842,7 @@ impl Api {
         let located = discovery
             .as_ref()
             .and_then(|d| d.runs.iter().find(|r| r.reference.run_id == query.run));
-        let snapshot: Snapshot = match &query.view {
+        let mut snapshot: Snapshot = match &query.view {
             View::Run | View::Attempts => self.store.snapshot(&reference)?,
             View::Show { attempt }
             | View::Logs { attempt, .. }
@@ -855,6 +855,11 @@ impl Api {
                 "EXPERIMENT_DISCOVERY_CHANGED",
                 "Run manifest changed between discovery and observation",
             ));
+        }
+        if let Some(service) = &self.submissions {
+            service
+                .apply_observation(&mut snapshot)
+                .map_err(crate::submissions::http::failure)?;
         }
         let value = match query.view {
             View::Run => {

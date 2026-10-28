@@ -44,6 +44,16 @@ pub(crate) fn failure(error: Error) -> read_api::Error {
             "SUBMISSION_NOT_FOUND",
             "the original preparation is unavailable; no new identity was created",
         ),
+        Error::ObservationConflict => (
+            409,
+            "WORKER_OBSERVATION_CONFLICT",
+            "remote worker state or accepted metric history changed; previous evidence is retained and no provider mutation was issued",
+        ),
+        Error::ObservationUnavailable => (
+            503,
+            "WORKER_OBSERVATION_UNAVAILABLE",
+            "worker evidence is unavailable; the last accepted sample is retained and no provider mutation was issued",
+        ),
         Error::Busy => (
             503,
             "SUBMISSION_BUSY",
@@ -259,6 +269,7 @@ enum Operation {
     Authorize(String),
     Execute(String),
     Reconcile,
+    Refresh,
 }
 async fn change(
     State(state): State<Arc<AppState>>,
@@ -292,15 +303,21 @@ async fn change(
             }
         }),
         "reconcile" => decode::<Empty>(body).map(|_| Operation::Reconcile),
+        "refresh" => decode::<Empty>(body).map(|_| Operation::Refresh),
         _ => Err(invalid()),
     };
     let operation = match operation {
         Ok(value) => value,
         Err(error) => return read_http::failure(error),
     };
+    let access = if matches!(&operation, Operation::Refresh) {
+        Access::Read
+    } else {
+        Access::Submission
+    };
     read_http::execute_timeout(
         state,
-        Access::Submission,
+        access,
         std::time::Duration::from_secs(120),
         move |api, now| {
             let service = service(api)?;
@@ -312,6 +329,7 @@ async fn change(
                 expires: &now,
                 transition_id: &transition,
             };
+            let refreshing = matches!(&operation,Operation::Refresh);
             match operation {
                 Operation::Authorize(reason) => {
                     service.authorize(&identity, "bearer-client", &reason, context)
@@ -320,8 +338,13 @@ async fn change(
                     service.execute(&identity, &confirmation, context, &AtomicBool::new(false))
                 }
                 Operation::Reconcile => service.reconcile(&identity, &now, &AtomicBool::new(false)),
+                Operation::Refresh => service.refresh(&identity, &now, &AtomicBool::new(false)),
             }
-            .map_err(failure)
+            .map_err(|cause| {
+                if refreshing && matches!(cause,Error::Uncertain) {
+                    read_api::Error { status:503, code:"WORKER_OBSERVATION_CACHE_UNCERTAIN", detail:"the sample may have been saved; query it or repeat refresh; no scheduler effect was requested" }
+                } else { failure(cause) }
+            })
         },
     )
     .await

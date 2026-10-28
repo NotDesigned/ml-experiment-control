@@ -479,9 +479,31 @@ not invent or contact an HTTPS manifest endpoint. Older frozen Runtimes without
 
 Run, exact Attempt and collection reads now use the same committed native
 scheduler receipt without borrowing another Attempt or promoting scheduler
-success to process success. Automatic worker startup and its shared-storage
-receipt do not yet connect remote log/metric/receipt ingress to the API, nor
-publish an artifact download. These remain required before a full trial release.
+success to process success. After submission ownership is VERIFIED, explicit worker observation is available:
+
+```sh
+ml-exp-rs run refresh action-0123456789abcdef
+ml-exp-rs run status --project demo --run train --json
+ml-exp-rs run logs --project demo --run train
+ml-exp-rs run metrics --project demo --run train --json
+```
+
+Refresh uses the original job identity and shared-storage binding. The helper
+cannot submit, cancel or bootstrap through this operation. Process state,
+stdout/stderr and metrics are cached independently of the immutable Submission;
+ordinary GET and watch read accepted samples without provider calls. Refresh
+also works when new scheduler mutations are disabled. A lost refresh response
+can be observed or refreshed again; it does not require submission reconciliation.
+
+Each file contributes at most a 128 KiB window. Missing, changing, invalid or
+truncated windows have explicit diagnostics; failed file reads preserve the last
+accepted bounded text. Complete records retain arbitrary metric names, units,
+variants and protocol context. Partial JSONL lines and malformed records never
+become zeros or complete history. STARTED remains possible execution, rather
+than proof of a live process. A finished receipt proves its process outcome,
+independently of artifact publication and download availability. Periodic
+observation, complete-history journal ingress, checkpoint restoration and
+artifact publication/download remain necessary for the full research workflow.
 
 ## Opt-in native Slurm submissions
 

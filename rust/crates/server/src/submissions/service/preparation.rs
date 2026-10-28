@@ -6,7 +6,7 @@ pub(super) struct PreparationLock<'a> {
     file: File,
 }
 impl PreparationLock<'_> {
-    fn validate(&self) -> Result<()> {
+    pub(super) fn validate(&self) -> Result<()> {
         self.service
             .directory
             .validate_regular_entry(OsStr::new(LOCK), &self.service.lock_anchor)

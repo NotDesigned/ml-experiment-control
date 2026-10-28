@@ -1023,7 +1023,28 @@ pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) 
         (Some("RUNNING"), Some(_)) => true,
         _ => false,
     };
-    let training = if conflicting {
+    let managed_training =
+        if process["managed_contract"] == ml_exp_core::managed::evidence::CONTRACT {
+            serde_json::from_value::<ml_exp_core::managed::evidence::Training>(
+                process["managed_training"].clone(),
+            )
+            .ok()
+        } else {
+            None
+        };
+    let training = if let Some(managed) = managed_training {
+        match managed {
+            ml_exp_core::managed::evidence::Training::Completed
+                if exit_code == Some(0) && !conflicting =>
+            {
+                "COMPLETED"
+            }
+            ml_exp_core::managed::evidence::Training::Failed => "FAILED",
+            ml_exp_core::managed::evidence::Training::TimedOut => "TIMED_OUT",
+            ml_exp_core::managed::evidence::Training::Cancelled => "CANCELLED",
+            _ => "UNKNOWN",
+        }
+    } else if conflicting {
         "UNKNOWN"
     } else if terminal && exit_code.is_some() {
         if exit_code == Some(0) {

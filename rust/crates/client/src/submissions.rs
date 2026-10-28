@@ -32,6 +32,9 @@ pub enum Command<'a> {
         submission: &'a str,
         confirmation: &'a str,
     },
+    Refresh {
+        submission: &'a str,
+    },
     Reconcile {
         submission: &'a str,
     },
@@ -54,6 +57,7 @@ pub struct Plan {
     body: Option<Vec<u8>>,
     expected: Expected,
     executes: bool,
+    refreshes: bool,
 }
 impl Plan {
     pub(crate) fn path(&self) -> &str {
@@ -79,6 +83,7 @@ fn reason(value: &str) -> Result<(), Error> {
     }
 }
 pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
+    let refreshes = matches!(&command, Command::Refresh { .. });
     if let Command::Create { project, request } = &command {
         let request_sha256 = request
             .identity(project)
@@ -93,6 +98,7 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
                 request_sha256,
             },
             executes: false,
+            refreshes,
         });
     }
     let (project, run, body) = match command {
@@ -140,6 +146,7 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
                         true,
                     )
                 }
+                Command::Refresh { submission } => (submission, "/refresh", Some(json!({})), false),
                 Command::Reconcile { submission } => {
                     (submission, "/reconcile", Some(json!({})), false)
                 }
@@ -153,6 +160,7 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
                     .transpose()?,
                 expected: Expected::Submission(id.into()),
                 executes,
+                refreshes,
             });
         }
     };
@@ -173,6 +181,7 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
             run: run.into(),
         },
         executes: false,
+        refreshes,
     })
 }
 pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
@@ -248,6 +257,8 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
     let creates = matches!(plan.expected, Expected::Creation { .. });
     let capability = if creates {
         "native-run-creation.v1"
+    } else if plan.refreshes {
+        "native-worker-observation.v1"
     } else {
         "native-slurm-submissions.v1"
     };
@@ -264,7 +275,10 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
         .send_submission(plan)
         .and_then(|value| response(plan, value))
         .map_err(|error| {
-            if plan.is_mutation() && matches!(error, Error::Transport | Error::Response) {
+            if plan.is_mutation()
+                && !plan.refreshes
+                && matches!(error, Error::Transport | Error::Response)
+            {
                 if creates {
                     Error::RunCreationOutcomeUnknown(Box::new(error))
                 } else {

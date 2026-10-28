@@ -116,6 +116,7 @@ fn health_document(
     }
     if submissions.is_some() {
         capabilities.push("native-slurm-submissions.v1");
+        capabilities.push("native-worker-observation.v1");
     }
     if submissions.is_some_and(submissions::Service::can_create_runs) {
         capabilities.push("native-run-creation.v1");
@@ -299,6 +300,11 @@ fn schema_document() -> serde_json::Value {
             "Inspect the original helper ledger and owned scheduler evidence; never submits or replays",
             json!({"type":"object","additionalProperties":false}),
         ),
+        (
+            "refresh",
+            "Read bounded exact-worker logs, metrics and process evidence into the local observation cache; never changes a Submission or provider job",
+            json!({"type":"object","additionalProperties":false}),
+        ),
     ] {
         let mut operation = post(
             description,
@@ -313,6 +319,18 @@ fn schema_document() -> serde_json::Value {
         );
         operation["post"]["responses"]["403"] =
             json!({"description":"Native scheduler execution is disabled by the operator"});
+        if name == "refresh" {
+            operation["post"]["responses"]["200"]["description"] = json!(
+                "Original Submission plus sampled worker phase and receive time; no Action or scheduler mutation"
+            );
+            operation["post"]["responses"]["500"]["description"] =
+                json!("Observation response failed; no scheduler effect was requested");
+            operation["post"]["responses"]["503"] = json!({"description":"Sample unavailable or cache response uncertain; accepted evidence retained; safe to query or repeat refresh"});
+            operation["post"]["responses"]
+                .as_object_mut()
+                .expect("response mapping")
+                .remove("403");
+        }
         paths.insert(format!("/api/submissions/{{identity}}/{name}"), operation);
     }
     document
@@ -465,7 +483,7 @@ mod schema_tests {
     fn native_contract_declares_narrow_lifecycle_posts_and_exact_read_identity() {
         let schema = super::schema_document();
         let paths = schema["paths"].as_object().unwrap();
-        assert_eq!(paths.len(), 25);
+        assert_eq!(paths.len(), 26);
         for (path, operations) in paths {
             assert_eq!(operations.as_object().unwrap().len(), 1);
             if path.starts_with("/api/project-lifecycle/")

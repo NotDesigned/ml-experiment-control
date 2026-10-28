@@ -35,6 +35,12 @@ pub enum Error {
     Busy,
     #[error("no native preparation is recorded for this Run")]
     Missing,
+    #[error("remote worker evidence is temporarily unavailable; retained evidence is unchanged")]
+    ObservationUnavailable,
+    #[error(
+        "remote worker history conflicts with its accepted sample; previous evidence is retained"
+    )]
+    ObservationConflict,
     #[error("approved Run, first Attempt, source or runtime evidence is unavailable or changed")]
     Authority,
     #[error(
@@ -127,6 +133,7 @@ impl Backend {
 }
 mod authority;
 mod creation;
+mod observation;
 mod preparation;
 
 impl Service {

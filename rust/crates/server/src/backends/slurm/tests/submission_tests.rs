@@ -1359,3 +1359,128 @@ fn trusted_image_worker_changes_only_launch_entry_and_keeps_scientific_command_f
     );
     assert!(!f.root.path().join("sbatch-calls").exists());
 }
+
+#[test]
+fn exact_worker_refresh_survives_restart_and_never_changes_submission_or_retrains() {
+    let mut f = Fixture::new();
+    let workdir = f.root.path().join("code");
+    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
+        program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
+        base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+        runtime_environment: Vec::new(),
+    });
+    for filename in ["manifest.yaml", "attempts/attempt-001/attempt.yaml"] {
+        let path = f.root.path().join("project/runs/train").join(filename);
+        let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        value["execution"]["workdir"] = json!(workdir);
+        value["command"] = json!([
+            "/bin/sh",
+            "-c",
+            "printf 'training started\\n'; printf '{\"step\":1,\"name\":\"custom/loss\",\"value\":2,\"unit\":\"nats/token\",\"variant_id\":\"a\"}\\n' > \"$OUTPUT_DIR/metrics.jsonl\""
+        ]);
+        write(&path, &value);
+    }
+    let service = f.service("ledger", true);
+    let initial = service
+        .prepare("demo", "train", approval(), context(1))
+        .unwrap();
+    let id = initial["submission_id"].as_str().unwrap();
+    assert!(service.refresh(id, NOW, &AtomicBool::new(false)).is_err());
+    let prepared = f.prepared();
+    f.tools(&prepared);
+    service.authorize(id, "test", "", context(2)).unwrap();
+    let submitted = service
+        .execute(
+            id,
+            &format!("EXECUTE {id}"),
+            context(3),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let bytes = fs::read(
+        f.root
+            .path()
+            .join("project/runs/train/attempts/attempt-001/attempt.yaml"),
+    )
+    .unwrap();
+    let plan = ml_exp_core::slurm::staging::plan(
+        prepared.request.intent(),
+        prepared.request.prepared_content().unwrap().0.as_bytes(),
+    )
+    .unwrap()
+    .unwrap();
+    let config = plan.managed.unwrap().config;
+    ml_exp_worker::managed::initialize(&config).unwrap();
+    ml_exp_worker::managed::run(&config, &AtomicBool::new(false)).unwrap();
+    let refreshed = service.refresh(id, NOW, &AtomicBool::new(false)).unwrap();
+    assert_eq!(refreshed["execution"], submitted["execution"]);
+    assert_eq!(refreshed["worker_observation"]["phase"], "FINISHED");
+    assert_eq!(
+        fs::read_to_string(f.root.path().join("sbatch-calls")).unwrap(),
+        "call\n"
+    );
+    let evidence = crate::experiments::Store::open(
+        f.settings.bindings(),
+        crate::deletion::RunFence::new(&f.settings.registry_root),
+    )
+    .unwrap();
+    let reference = evidence
+        .discover("demo", &crate::experiments::DiscoveryLimits::default())
+        .unwrap()
+        .runs
+        .into_iter()
+        .find(|r| r.reference.run_id == "train")
+        .unwrap()
+        .reference;
+    let mut snapshot = evidence.snapshot(&reference).unwrap();
+    service.apply_observation(&mut snapshot).unwrap();
+    let collection =
+        crate::read_model::attempt_collection(&snapshot, "attempt-001", 1793145600.).unwrap();
+    assert_eq!(collection["training"]["status"], "COMPLETED");
+    assert_eq!(collection["training"]["exit_code"], 0);
+    assert_eq!(collection["download_available"], false);
+    let logs = crate::read_model::attempt_logs(
+        &snapshot,
+        "attempt-001",
+        &crate::read_model::LogQuery::default(),
+    )
+    .unwrap();
+    assert_eq!(logs["streams"]["stdout"]["lines"][0], "training started");
+    assert_eq!(snapshot.attempts[0].metrics.records[0]["variant_id"], "a");
+    assert!(!snapshot.attempts[0].metrics.truncated);
+    drop(service);
+    let service = f.service("ledger", false);
+    service.refresh(id, NOW, &AtomicBool::new(false)).unwrap(); // reads work with submissions disabled
+    let mut after = evidence.snapshot(&reference).unwrap();
+    service.apply_observation(&mut after).unwrap();
+    assert_eq!(
+        after.attempts[0].metrics.records,
+        snapshot.attempts[0].metrics.records
+    );
+    // Temporarily missing worker state preserves the last accepted sample.
+    let state = config.attempt_root.join(".managed-launch.lock");
+    fs::rename(&state, state.with_extension("saved")).unwrap();
+    assert!(matches!(
+        service.refresh(id, NOW, &AtomicBool::new(false)),
+        Err(ServiceError::ObservationUnavailable)
+    ));
+    let mut retained = evidence.snapshot(&reference).unwrap();
+    service.apply_observation(&mut retained).unwrap();
+    assert_eq!(
+        retained.attempts[0].metrics.records,
+        snapshot.attempts[0].metrics.records
+    );
+    assert_eq!(
+        fs::read(
+            f.root
+                .path()
+                .join("project/runs/train/attempts/attempt-001/attempt.yaml")
+        )
+        .unwrap(),
+        bytes
+    );
+    assert_eq!(
+        fs::read_to_string(f.root.path().join("sbatch-calls")).unwrap(),
+        "call\n"
+    );
+}

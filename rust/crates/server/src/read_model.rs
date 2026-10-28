@@ -4,6 +4,7 @@ use serde_json::Value;
 
 mod metrics;
 mod projection;
+mod remote;
 pub use metrics::{
     MetricFormat, MetricQuery, merge_metrics, metric_payload, validate_journal_observations,
 };
@@ -11,6 +12,7 @@ pub use projection::{
     LiveMetrics, LogQuery, LogStream, attempt_collection, attempt_logs, attempt_metrics,
     attempt_show, outward_metadata, project_summary, run_attempts, run_detail, run_summary,
 };
+pub(crate) use remote::project_worker;
 
 pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_METRIC_OBSERVATIONS: usize = 100_000;
