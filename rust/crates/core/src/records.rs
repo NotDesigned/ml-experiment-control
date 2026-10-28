@@ -127,6 +127,52 @@ pub fn historical_binding(manifest: &Value) -> Result<Value> {
     )
 }
 
+/// Native local ingestion freezes the entire Run document identity. It cannot
+/// turn an absent W&B configuration into cloud publication authorization.
+pub fn native_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
+    if run["native_creation"]["format"] != "native-run-creation.v1"
+        || !crate::slurm::helper::valid_digest(raw_sha256)
+    {
+        return Err(Error::Invalid("native journal Run authority"));
+    }
+    let original = run
+        .as_object()
+        .ok_or(Error::Invalid("native Run mapping"))?;
+    let mut config: Map<String, Value> = [
+        "project",
+        "run_id",
+        "source_id",
+        "image_id",
+        "resources",
+        "evaluation",
+        "parameters",
+        "resume_from",
+        "seed",
+        "native_datasets",
+    ]
+    .iter()
+    .filter_map(|k| original.get(*k).map(|v| ((*k).into(), v.clone())))
+    .collect();
+    config.insert("native_run_sha256".into(), json!(raw_sha256));
+    config.insert("runtime_id".into(), run["container"]["runtime_id"].clone());
+    config.insert("backend".into(), run["backend"]["kind"].clone());
+    let inputs = run["inputs"]
+        .as_array()
+        .ok_or(Error::Invalid("native Run inputs"))?
+        .iter()
+        .map(|input| {
+            Value::Object(
+                ["asset_id", "sha256", "mount_path"]
+                    .iter()
+                    .filter_map(|k| input.get(*k).map(|v| ((*k).into(), v.clone())))
+                    .collect(),
+            )
+        })
+        .collect::<Vec<_>>();
+    config.insert("inputs".into(), json!(inputs));
+    Ok(json!({"route":{"enabled":false,"reason":"NATIVE_LOCAL_ONLY"},"config":{"ml_expd":config}}))
+}
+
 pub fn normalized_metric(record: &Value, config: &Value) -> Result<Value> {
     normalized_metric_typed(&metrics::ObservationInput::from_json(record)?, config)
 }
@@ -306,7 +352,8 @@ pub struct ImportEmission {
 /// Pure state transition for verified output bytes. The shell commits emitted
 /// batches before retaining the returned state. Replaying a transition is safe:
 /// all event IDs derive from frozen content, never a clock or random value.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JsonlImporter {
     name: String,
     config: Value,
@@ -330,6 +377,10 @@ impl JsonlImporter {
             oversized: false,
             counts: ImportCounts::default(),
         })
+    }
+    /// Validate a private continuation against the original frozen schema.
+    pub fn matches(&self, name: &str, config: &Value) -> bool {
+        self.name == name && self.config == *config && self.chunk.len() <= Self::READLINE_BOUND
     }
     fn line(&mut self, bytes: &[u8], oversized: bool) -> Result<Event> {
         self.number += 1;

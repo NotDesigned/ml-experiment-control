@@ -13,6 +13,7 @@ pub struct Error(pub &'static str);
 pub type Result<T> = std::result::Result<T, Error>;
 const FORMAT: &str = "native-first-submission.v1";
 pub mod creation;
+pub mod retry;
 
 /// Project committed native submission evidence into an otherwise unsubmitted
 /// Run read. This never refreshes a provider or replaces an existing scheduler
@@ -29,10 +30,13 @@ pub fn project_run(mut run: Value, submission: &Value) -> Result<Value> {
         return Err(Error("Submission scope"));
     }
     run["native_submission"] = json!({"submission_id":id,"status":submission["status"],"source":"native-action-commit","next_action":submission["next_action"]});
-    if !matches!(
-        run["evidence"]["scheduler"]["state"].as_str(),
-        None | Some("UNKNOWN" | "NOT_SUBMITTED")
-    ) {
+    let cancelled = submission["cancellation"]["termination_verified"] == true;
+    if !cancelled
+        && !matches!(
+            run["evidence"]["scheduler"]["state"].as_str(),
+            None | Some("UNKNOWN" | "NOT_SUBMITTED")
+        )
+    {
         return Ok(run);
     }
     let (state, detail, at) = match submission["status"].as_str() {
@@ -62,6 +66,34 @@ pub fn project_run(mut run: Value, submission: &Value) -> Result<Value> {
             {
                 return Err(Error("scheduler binding"));
             }
+            let status = if cancelled {
+                let cancellation: slurm::cancellation::State = decode(&submission["cancellation"])?;
+                cancellation
+                    .validate()
+                    .map_err(|_| Error("cancellation receipt"))?;
+                let terminal = cancellation
+                    .observation
+                    .ok_or(Error("cancellation observation"))?
+                    .status;
+                if terminal.job_id != status.job_id
+                    || terminal.ssh_alias != status.ssh_alias
+                    || terminal.scheduler_name != status.scheduler_name
+                    || terminal.partition != status.partition
+                    || !terminal.state.is_terminal()
+                    || run["evidence"]["scheduler"]["state"]
+                        .as_str()
+                        .is_some_and(|state| {
+                            matches!(state, "SUCCEEDED" | "FAILED" | "CANCELLED" | "PREEMPTED")
+                                && serde_json::to_value(terminal.state).ok().as_ref()
+                                    != Some(&json!(state))
+                        })
+                {
+                    return Err(Error("cancellation scope or terminal conflict"));
+                }
+                terminal
+            } else {
+                status
+            };
             let state = serde_json::to_value(status.state).map_err(|_| Error("scheduler state"))?;
             let at = serde_json::to_value(&status.observed_at)
                 .map_err(|_| Error("scheduler timestamp"))?;
@@ -107,10 +139,11 @@ pub fn project_attempt(mut value: Value, submission: &Value, scope: &Scope) -> R
     value["native_submission"] = projected["native_submission"].clone();
     if shown
         && projected["scheduler_state"].is_string()
-        && matches!(
-            value["attempt"]["state"].as_str(),
-            None | Some("UNKNOWN" | "NOT_SUBMITTED")
-        )
+        && (submission["cancellation"]["termination_verified"] == true
+            || matches!(
+                value["attempt"]["state"].as_str(),
+                None | Some("UNKNOWN" | "NOT_SUBMITTED")
+            ))
     {
         value["attempt"]["state"] = projected["scheduler_state"].clone();
         value["attempt"]["backend_job_id"] =
@@ -204,6 +237,17 @@ pub fn slot(project: &str, run: &str) -> Result<String> {
     identity::validate_id(run).map_err(|_| Error("run"))?;
     digest(&json!({"format":FORMAT,"project":project,"run_id":run})).map(|value| value[7..].into())
 }
+/// Preserve the original first-Attempt filename; every continuation has its own
+/// immutable slot so historical reads cannot resolve the current Attempt.
+pub fn attempt_slot(project: &str, run: &str, attempt: &str) -> Result<String> {
+    retry::number(attempt)?;
+    let original = slot(project, run)?;
+    Ok(if attempt == "attempt-001" {
+        original
+    } else {
+        format!("{original}.{attempt}")
+    })
+}
 impl Profile {
     pub fn validate(&self) -> Result<()> {
         self.target.validate().map_err(|_| Error("target"))?;
@@ -270,9 +314,7 @@ pub fn definition(
     }
     identity::validate_id(&binding.project).map_err(|_| Error("project"))?;
     slot(&binding.project, &binding.run_id)?;
-    if binding.attempt_id != "attempt-001" {
-        return Err(Error("first Attempt"));
-    }
+    retry::number(&binding.attempt_id)?;
     for hash in [
         &binding.project_sha256,
         &binding.run_sha256,
@@ -294,9 +336,19 @@ pub fn definition(
             return Err(Error("manifest identity"));
         }
     }
+    let continuation = binding.attempt_id != "attempt-001";
+    if continuation {
+        let receipt = retry::validate_attempt(run, attempt, binding)?;
+        if receipt.backend_id != profile.target.backend_id
+            || receipt.reserved_gpu_seconds as f64 > approval.max_gpu_hours * 3600.
+            || approval.max_gpu_hours > receipt.request.max_gpu_hours
+        {
+            return Err(Error("retry cumulative approval"));
+        }
+    }
     if field(attempt, "attempt_id")? != binding.attempt_id
         || run.get("attempt_id").is_some()
-        || comparable(run)? != comparable(attempt)?
+        || !continuation && comparable(run)? != comparable(attempt)?
         || !run
             .get("inputs")
             .is_none_or(|v| v.is_array() && v.as_array().unwrap().is_empty())
@@ -308,8 +360,8 @@ pub fn definition(
     }
     crate::sources::validate_source_id(field(run, "source_id")?).map_err(|_| Error("source"))?;
     match (
-        run.get("resume_from").filter(|v| !v.is_null()),
-        run.get("native_checkpoint"),
+        attempt.get("resume_from").filter(|v| !v.is_null()),
+        attempt.get("native_checkpoint"),
     ) {
         (Some(reference), Some(value)) => {
             let reference: crate::checkpoints::Reference = decode(reference)?;
@@ -321,17 +373,27 @@ pub fn definition(
                 &profile.run_root,
             )
             .map_err(|_| Error("checkpoint scope or identity"))?;
-            if reference.run_id == binding.run_id || runtime.worker.is_none() {
+            if reference.run_id == binding.run_id && !continuation || runtime.worker.is_none() {
                 return Err(Error("checkpoint restore"));
             }
         }
         (None, None) => {}
         _ => return Err(Error("checkpoint evidence")),
     }
-    let spec = job(run, binding)?;
+    let spec = job(attempt, binding)?;
     spec.validate().map_err(|_| Error("job"))?;
+    let datasets = crate::datasets::document_mounts(
+        run,
+        &binding.project,
+        &profile.target,
+        &spec.storage.project_data_root,
+    )
+    .map_err(|_| Error("dataset bindings"))?;
+    if !datasets.is_empty() && runtime.worker.is_none() {
+        return Err(Error("datasets require managed worker"));
+    }
     if let Some(worker) = &runtime.worker {
-        slurm::managed::plan_restoring(
+        slurm::managed::plan_with_inputs(
             &Scope {
                 project: binding.project.clone(),
                 run_id: binding.run_id.clone(),
@@ -339,7 +401,8 @@ pub fn definition(
             },
             &spec,
             worker,
-            run.get("native_checkpoint"),
+            attempt.get("native_checkpoint"),
+            &datasets,
         )
         .map_err(|_| Error("managed worker runtime or environment"))?;
     }
@@ -428,7 +491,14 @@ pub fn prepare(
     let manifest =
         String::from_utf8(canonical::python_json_bytes(attempt).map_err(|_| Error("encoding"))?)
             .map_err(|_| Error("encoding"))?;
-    let spec = job(run, &binding)?;
+    let spec = job(attempt, &binding)?;
+    let datasets = crate::datasets::document_mounts(
+        run,
+        &binding.project,
+        &profile.target,
+        &spec.storage.project_data_root,
+    )
+    .map_err(|_| Error("dataset bindings"))?;
     let scope = Scope {
         project: binding.project.clone(),
         run_id: binding.run_id.clone(),
@@ -436,13 +506,19 @@ pub fn prepare(
     };
     let mut launch_spec = spec.clone();
     if let Some(worker) = &runtime.worker {
-        let package =
-            slurm::managed::plan_restoring(&scope, &spec, worker, run.get("native_checkpoint"))
-                .map_err(|_| Error("managed launch"))?;
+        let package = slurm::managed::plan_with_inputs(
+            &scope,
+            &spec,
+            worker,
+            attempt.get("native_checkpoint"),
+            &datasets,
+        )
+        .map_err(|_| Error("managed launch"))?;
         launch_spec.command = slurm::managed::command(&package, worker)
             .map_err(|_| Error("managed launch command"))?;
     }
-    let script = slurm::render_job(&launch_spec, Some(token)).map_err(|_| Error("script"))?;
+    let script = slurm::render_job_with_datasets(&launch_spec, Some(token), &datasets)
+        .map_err(|_| Error("script"))?;
     let attempt_path = format!(
         "{}/attempts/{}/attempt.json",
         spec.storage.run_dir, binding.attempt_id

@@ -52,6 +52,7 @@ impl Fixture {
             output_directory: None,
             runtime_environment: Vec::new(),
             checkpoint_restore: None,
+            datasets: Vec::new(),
         };
         let mut fixture = Self {
             _root: root,

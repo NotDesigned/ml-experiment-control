@@ -13,7 +13,7 @@ platform programs. User training code may still be Python.
 ## Migration order
 
 This branch uses a complexity-first boundary. Rust owns correctness-critical
-identities, durable CAS and journals, bounded archives, checkpoint provenance,
+identities, durable CAS and journals, bounded archives, immutable dataset receipts, checkpoint provenance,
 receipts, filesystem confinement and uncertain-effect reconciliation. Simple
 orchestration may remain Python initially: Dockerfile and image-build wrappers,
 provider SDK adapters, thin HTTP routes, compatibility aliases and presentation
@@ -23,16 +23,16 @@ receipt and retry decision are validated by a native contract before use.
 | Crate | Preview executable | Current scope |
 | --- | --- | --- |
 | `ml-exp-core` | Library | Pure frozen identities, Project/schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint receipt/restore decisions, data-delivery/result-collection reducers, observations, failure assessment and Slurm/helper protocols |
-| `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O, single-frame pipe transport descriptor-safe checkpoint verification/sealing, deterministic backend result tar and streaming verification |
-| `ml-exp-client` | `ml-exp-rs` | Private settings, bounded exact-identity reads/watch, Project operations, deterministic source upload/lookup, standalone Run creation and opt-in Slurm submissions |
-| `ml-exp-server` | `ml-expd-rs` | Approved discovery/reads, Project lifecycle, immutable source archive storage/receipts, native checkpoint registry, isolated SQLite/Run fences, standalone Run creation and opt-in Slurm submissions |
-| `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision, sealed managed launch, opt-in automatic Slurm image worker and scoped metadata helper |
+| `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O, single-frame pipe transport descriptor-safe checkpoint verification/sealing, deterministic dataset/result tar, confined data extraction and streaming verification |
+| `ml-exp-client` | `ml-exp-rs` | Private settings, bounded exact-identity reads/watch, Project operations, deterministic source upload/lookup, standalone Run creation, resumable gateway dataset delivery and opt-in Slurm submissions |
+| `ml-exp-server` | `ml-expd-rs` | Approved discovery/reads, Project lifecycle, immutable source archive storage/receipts, native checkpoint registry, isolated SQLite/Run fences, standalone Run creation, resumable gateway dataset delivery and opt-in Slurm submissions |
+| `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision, sealed managed launch, opt-in automatic Slurm image worker and scoped metadata and dataset helpers |
 
 The experiment API observes explicitly approved isolated files. Project metadata
 registration/lifecycle is a separate opt-in mode. A separate opt-in native Slurm
 submission API handles first Runs with trusted source and materialized-image
 receipts. Explicitly enabled Run creation can publish a standalone Run and first
-Attempt; it does not submit a job. Cloud managed-worker transport, managed dataset transfer and W&B transport remain unported. Native Slurm now supports explicit backend-resident result collection, streaming download and verified ACK/release. Source archive publication is now a bounded native subchain: the
+Attempt; it does not submit a job. Cloud managed-worker transport, managed cloud dataset adapters and W&B transport remain unported. The opt-in native Slurm path now supports deterministic dataset packing, bounded gateway upload, immutable receipts and named Run inputs. Native Slurm now supports explicit backend-resident result collection, streaming download and verified ACK/release. Source archive publication is now a bounded native subchain: the
 client packs regular files into deterministic tar/gzip, the server verifies the
 transport SHA, rejects links/protected paths, seals the tree, computes the
 length-framed tree identity and records an immutable archive receipt. Lost
@@ -137,6 +137,86 @@ unfinished-archive conflicts, capacity arithmetic and publication planning.
 SenseCore/Slurm calls, image builds, locks, clocks, file traversal and object
 storage remain Python effects until an outer compatibility facade is accepted.
 
+
+## Exact-job cancellation
+
+The opt-in native Slurm submission path exposes an explicit cancellation command:
+
+```sh
+ml-exp-rs run cancel <action_id> --confirmation "CANCEL <action_id>"
+```
+
+The server accepts only its already verified original job identity. It saves a
+cancellation intent before the pinned helper RPC. The helper's durable cancel
+outbox prevents duplicate scheduler cancellation after a lost response. Repeating
+the command explicitly reconciles the same intent; GET never sends a cancel.
+Submission metadata includes `cancellation.termination_verified`, which remains
+false until exact terminal scheduler evidence is observed. A stopped process is
+not inferred from a successful local SSH exit. An already terminal job can be
+confirmed without sending a scheduler cancellation. Same-Run/new-Attempt retry
+and automatic restart remain separate unfinished paths.
+
+## Native managed datasets
+
+This preview supports configured SSH Slurm backends. PAI and SenseCore dataset
+adapters still need integration. It does not enable a cloud dataset capability
+just because the native contracts exist.
+
+The operator creates a private `data-helper` configuration containing only
+`root` (an approved existing empty shared directory) and the exact profile
+`target`. Initialize that root once on the gateway:
+
+```sh
+ml-exp-worker-rs data-helper --config /private/data-helper.json --initialize
+```
+
+Add `data_helper_config` to the trusted server backend definition. It is the
+absolute path of that gateway configuration; the worker executable, SSH alias,
+SSH configuration and pinned host key come from the existing trusted backend.
+The data helper is separate from the scheduler helper and cannot submit a job.
+Existing roots are never implicitly initialized or repaired.
+
+The client path is:
+
+```sh
+ml-exp-rs data upload --project demo --executor slurm --directory ./training-data
+ml-exp-rs data show --project demo --executor slurm --asset asset.<archive-sha256>
+```
+
+Upload packs regular files deterministically on the client, sends zero-based
+16 MiB parts through bounded API memory to the gateway and publishes only after
+whole-archive and exact file size/SHA validation. Repeating upload with the same
+unchanged directory reconciles durable parts after a lost response. Complete
+also reconciles an already published tree and finishes its owned scratch cleanup.
+The API stores metadata; the shared backend retains the sealed dataset tree.
+Completed parts and generated archives are removed after the READY receipt is
+durable. GET returns that stored receipt, not a fresh scan of backend files.
+
+A Run request supplies named references, for example:
+
+```json
+{"data":[{"name":"training","asset_id":"asset.<archive-sha256>"}]}
+```
+
+The server selects its own READY receipts and freezes their identities and file
+manifests in the Run. Data references become part of the evaluation protocol
+identity. The gateway verifies bytes before scheduling and the managed worker
+verifies them again before starting user code. Datasets are bound read-only at
+both their original source path and named input destinations. Training code
+reads `$INPUT_DIR/training`; `DATASETS_JSON` maps names to these input paths.
+Compute nodes need no outgoing data-download connection. With no data field,
+legacy request, configuration and script encodings are retained.
+
+Payload arithmetic allows up to 65,536 parts (1 TiB), subject to backend disk
+space and time limits; it has no 4 GiB total ceiling. Metadata remains bounded:
+control frames are at most 8 MiB, definitions at most 4 MiB, and all frozen named
+input receipts in one Run at most 256 KiB. This is not a 1 TiB transfer benchmark.
+API ingress admits at most four data requests before reading their bounded
+bodies; one process holds at most a bounded part and framed copies, not the
+complete dataset. Gateway completion temporarily needs parts, a full archive
+and the expanded tree. No new automatic dataset deletion or orphan sweep is
+implied by result-download acknowledgement.
+
 ## Build and check
 
 From the repository root, with a toolchain satisfying the locked dependencies
@@ -191,7 +271,7 @@ When existing native Action storage is present under the isolated registry's
 `actions/` directory at startup, saved Submission identities can also be read
 through `GET /api/submissions/{identity}`. This reads committed state without
 creating missing executions or running interruption recovery. Submission
-prepare/authorize/execute and provider dispatch are disabled in this default
+prepare/authorize/execute/cancel and provider dispatch are disabled in this default
 configuration; the separately configured Slurm path is described below.
 
 The client now groups observation commands under `run`:
@@ -644,6 +724,50 @@ A released archive returns 410 and collection never regenerates it; its metadata
 tombstone survives restart. Transfer payload sizes use `u64`; control metadata
 and proofs retain their 8 MiB ceiling, and active streams have a one-hour deadline.
 The old object-store download URLs and cloud result collectors are not provided.
+
+## Explicit same-Run checkpoint retry
+
+A failed, preempted or completed native job can continue in a new Attempt. Select
+one registered checkpoint from the immediately previous Attempt; the server does
+not choose a checkpoint. Use the original Action identity:
+
+```bash
+ml-exp-rs run retry action-0123456789abcdef \
+  --confirmation 'RETRY action-0123456789abcdef' \
+  --run train --attempt attempt-001 --checkpoint checkpoint.<sha256> \
+  --max-gpu-hours 2
+ml-exp-rs run prepare --project demo --run train --max-gpu-hours 2
+```
+
+This appends `attempt-002`; it does not submit a job. Review and authorize the new
+Action, then execute it explicitly. Every Attempt reserves its full requested GPU
+limit, including prior Attempts. For two one-GPU, one-hour Attempts, the cumulative
+approval must cover two GPU hours. Up to 256 sequential Attempts are supported.
+The command requires fresh exact terminal scheduler evidence and the same source,
+image and backend storage. Unknown submissions remain blocked. A repeated retry
+with the same request reuses the appended Attempt, including after response loss
+or restart. It cannot reset a later current Attempt. Run and historical Attempt
+manifests, checkpoint registrations and Action identities remain unchanged.
+
+## Full metrics history
+
+```bash
+ml-exp-rs run history action-0123456789abcdef
+```
+
+Each explicit call imports the next 128 KiB from the exact managed Attempt's fixed
+`metrics.jsonl` file. Repeat until `status=COMPLETE`. During training the last page
+remains `PARTIAL`, even when its bytes currently reach EOF. Completion requires a
+finished process observation. The maximum accepted history file is 128 MiB.
+
+The backend verifies the original file identity and the accepted SHA256 prefix;
+replacement, truncation or changes to accepted bytes stop ingestion. The service
+saves canonical records before advancing the private cursor. Lost replies or cursor
+updates repeat deterministic event identities, so they cannot duplicate metrics.
+`records` and `invalid_lines` distinguish parsed metrics from damaged input. The
+existing metrics API queries the imported journal; generic units, protocol,
+checkpoint and variant identities still apply. No raw metrics file is retained on
+the API host. This command does not enable W&B or install a background collector.
 
 ## Contribution boundary
 

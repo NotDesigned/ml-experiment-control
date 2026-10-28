@@ -3,6 +3,8 @@ use std::{path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
 #[cfg(unix)]
 mod cli;
 #[cfg(unix)]
+mod data_cli;
+#[cfg(unix)]
 mod managed_cli;
 
 #[derive(Parser)]
@@ -50,6 +52,9 @@ fn main() -> ExitCode {
             .as_deref()
             .and_then(std::ffi::OsStr::to_str)
         {
+            Some("data-helper") => {
+                return data_cli::main_from(std::iter::once(binary).chain(arguments));
+            }
             Some("slurm-helper") => {
                 return cli::main_from(std::iter::once(binary).chain(arguments));
             }

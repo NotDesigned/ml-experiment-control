@@ -71,6 +71,15 @@ pub fn plan_restoring(
     runtime: &Runtime,
     restore: Option<&serde_json::Value>,
 ) -> helper::Result<Package> {
+    plan_with_inputs(scope, spec, runtime, restore, &[])
+}
+pub fn plan_with_inputs(
+    scope: &helper::Scope,
+    spec: &JobSpec,
+    runtime: &Runtime,
+    restore: Option<&serde_json::Value>,
+    datasets: &[crate::datasets::Mount],
+) -> helper::Result<Package> {
     scope.validate()?;
     spec.validate().map_err(|_| helper::Error::Metadata)?;
     runtime.validate()?;
@@ -115,6 +124,22 @@ pub fn plan_restoring(
         ]);
     }
     let bytes = manifest.encode().map_err(|_| helper::Error::Metadata)?;
+    if !datasets.is_empty() {
+        crate::datasets::mounts(datasets).map_err(|_| helper::Error::Metadata)?;
+        let mapping: BTreeMap<_, _> = datasets
+            .iter()
+            .map(|v| (v.name.clone(), format!("{root}/inputs/{}", v.name)))
+            .collect();
+        manifest.environment.insert(
+            "DATASETS_JSON".into(),
+            serde_json::to_string(&mapping).map_err(|_| helper::Error::Metadata)?,
+        );
+    }
+    let bytes = if datasets.is_empty() {
+        bytes
+    } else {
+        manifest.encode().map_err(|_| helper::Error::Metadata)?
+    };
     let config = managed::Config {
         manifest_path: PathBuf::from(format!("{root}/{MANIFEST_FILE}")),
         endpoint: String::new(),
@@ -138,6 +163,7 @@ pub fn plan_restoring(
                 serde_json::from_slice(&bytes).map_err(|_| helper::Error::Metadata)
             })
             .transpose()?,
+        datasets: datasets.to_vec(),
     };
     managed::execution_environment(&config, &manifest).map_err(|_| helper::Error::Metadata)?;
     Ok(Package { config, manifest })

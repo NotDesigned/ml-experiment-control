@@ -28,6 +28,8 @@ pub struct Request {
     pub resume_from: Option<crate::checkpoints::Reference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifacts: Option<crate::artifacts::publication::Policy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data: Vec<crate::datasets::Input>,
 }
 impl Request {
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
@@ -38,6 +40,7 @@ impl Request {
         serde_json::from_value(Value::Object(value)).map_err(|_| Error("Run request schema"))
     }
     pub fn validate(&self, project: &str) -> Result<()> {
+        crate::datasets::inputs(&self.data).map_err(|_| Error("dataset inputs"))?;
         if let Some(policy) = &self.artifacts {
             policy.validate().map_err(|_| Error("artifact policy"))?;
         }
@@ -94,6 +97,7 @@ pub struct Authority<'a> {
     pub source_receipt_sha256: &'a str,
     pub backend_config_sha256: &'a str,
     pub checkpoint: Option<&'a Value>,
+    pub datasets: &'a [crate::datasets::Receipt],
 }
 pub fn plan(
     project: &str,
@@ -109,6 +113,17 @@ pub fn plan(
         return Err(Error("Run runtime or executor"));
     }
     let command = request.command.clone();
+    let datasets = crate::datasets::select(
+        &request.data,
+        authority.datasets,
+        project,
+        &profile.target,
+        &profile.data_root,
+    )
+    .map_err(|_| Error("dataset receipt scope"))?;
+    if !datasets.is_empty() && runtime.worker.is_none() {
+        return Err(Error("datasets require managed worker"));
+    }
     let spec = slurm::JobSpec {
         run_id: request.run_id.clone(),
         attempt_id: "attempt-001".into(),
@@ -151,6 +166,9 @@ pub fn plan(
     let mut protocol = json!({"source_id":runtime.source_id,"image":runtime.oci_image,"runtime_id":runtime.runtime_id,
         "command":request.command,"parameters":request.parameters,"seed":request.seed,
         "evaluation":request.evaluation,"metrics_schema":request.metrics_schema});
+    if !request.data.is_empty() {
+        protocol["data"] = json!(request.data);
+    }
     match (&request.resume_from, authority.checkpoint) {
         (Some(reference), Some(value)) => {
             crate::checkpoints::selected(
@@ -186,6 +204,9 @@ pub fn plan(
     }
     if let Some(policy) = &request.artifacts {
         run["artifacts"] = json!(policy);
+    }
+    if !datasets.is_empty() {
+        run["native_datasets"] = json!(datasets);
     }
     // Bind the full trusted runtime, including its materialization receipt.
     run["native_creation"]["runtime_sha256"] = json!(

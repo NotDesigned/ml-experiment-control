@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 mod artifacts;
 mod checkpoints;
+mod history;
 mod jobs;
 mod observation;
 mod staging;
@@ -542,6 +543,10 @@ impl Helper {
                 ReadLedger::Missing => ReplyOutcome::Rejected {
                     code: Rejection::Unprepared,
                 },
+                other => Self::observed(&other),
+            },
+            OperationTag::ReadMetricHistory => match ledger {
+                ReadLedger::Found(snapshot) => self.metric_history(request, &snapshot, &lock)?,
                 other => Self::observed(&other),
             },
             OperationTag::ObserveWorker => match ledger {

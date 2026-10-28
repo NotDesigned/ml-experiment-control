@@ -37,10 +37,10 @@ forwarding code merely to make the language uniform.
 | Component | Implemented foundation | Still missing |
 | --- | --- | --- |
 | Core | Frozen identities, Project schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint identity/retention decisions, tracking plans, data-delivery and result-collection reducers, capability matcher, operation catalog, first-submission planner, input-progress parser, intent schema, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
-| Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O, deadline-bound control/payload pipe transport, checkpoint generation verification/sealing and deterministic result tar effects | Remaining transport primitives and durable domain protocols |
-| Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands, deterministic source archive upload/lookup and native Slurm result download/ACK | General asset/data transfers, updates and full command coverage |
+| Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O, deadline-bound control/payload pipe transport, checkpoint generation verification/sealing and deterministic dataset/result tar effects | Remaining transport primitives and durable domain protocols |
+| Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands, deterministic source upload/lookup, native Slurm dataset upload, explicit checkpoint retry, history ingestion and result download/ACK | Cloud asset/data transfers, updates and full command coverage |
 | Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint/result metadata registries and isolated journals; SQLite stores/Run fences; opt-in standalone Run creation and first-submission Slurm HTTP/client path and native Action runner; pure data-delivery and result-collection decisions | General Run workflows, build orchestration, remaining provider executors, object result stores, collectors, TLS and tracking transport |
-| Worker | Local process supervision, sealed local launch, opt-in automatic image worker for native Slurm and scoped prepare/submit/inspect/observe/cancel helper | Periodic/full-history evidence ingress, managed dataset/journal/cloud artifact/build/copy/deletion protocols |
+| Worker | Local process supervision, sealed local launch, opt-in automatic image worker for native Slurm scoped prepare/submit/inspect/observe/cancel helper and independent dataset gateway | Background evidence polling and cloud dataset/journal/artifact/build/copy/deletion protocols |
 
 The native source path is deliberately Project-scoped: a shared tree digest does
 not make one Project's metadata authoritative for another. Upload bodies are
@@ -62,7 +62,7 @@ member without extracting it, fsyncs the completed local file and only then send
 an ACK. An explicit release saves intent before unlinking only the generated tar;
 original outputs and checkpoints remain. A lost ACK can be reconciled using the
 same local file. Released tombstones prevent regeneration after restart. Managed
-dataset delivery, cloud result collectors and complete Run deletion remain separate.
+cloud dataset delivery, cloud result collectors and complete Run deletion remain separate.
 
 The checkpoint migration now spans the pure contract and local effect shell. A
 ready marker is validated as one generation with bounded paths, file counts,
@@ -92,7 +92,7 @@ repairs them on an observation or retry. Job startup verifies both the Attempt
 and SIF bytes before user code. This closes the gap where Slurm could open its
 log paths before the script had created their parent directory. After dispatch,
 mutable output paths cannot erase a known scheduler identity or permit replay.
-This does not stage datasets or checkpoints or prove a real Slurm/GPU run.
+The managed dataset gateway and checkpoint registration are separate explicit paths. Shared staging alone does not prove data delivery or a real Slurm/GPU run.
 
 An optional trusted Runtime worker declaration now connects that preparation to
 the native managed process supervisor inside the image. `core::managed` owns
@@ -113,8 +113,9 @@ read-view projection is also pure. The service shell persists a separate cache
 without changing the original Action or scientific manifests. GET reads that
 cache only. Interrupted reads retain accepted evidence, and STARTED is possible
 execution, never a heartbeat. Each file window is limited to 128 KiB; truncated,
-partial or malformed metric history is explicitly incomplete. Full journal
-streaming, periodic observation and cloud artifact download remain incomplete.
+partial or malformed metric history is explicitly incomplete. A separate explicit history operation now imports stable metrics pages beyond
+the tail window into the local canonical journal. Background observation and
+cloud artifact download remain incomplete.
 
 Native committed scheduler projection is shared by Run, exact Attempt and
 collection views. It cannot supply a receipt to another Attempt or convert
@@ -507,7 +508,7 @@ approved canonical root, publishing Run/first Attempt and states atomically.
 Client request planning and duplicate-safe immutable authorship are pure; only
 the service shell reads authority and publishes files. Strict JSON parsing is
 shared in core, so client and server reject duplicate nested configuration keys.
-Retry/cancel HTTP, general Run workflows and remaining providers are incomplete.
+Exact-job cancellation HTTP/client wiring now persists a local request and reconciles the helper cancel outbox. Explicit same-Run retry now appends an immutable Attempt after an exact terminal job observation, with an explicit registered checkpoint and cumulative GPU reservation. General Run workflows and remaining providers are incomplete.
 Default daemon startup does not enable mutations or use production credentials.
 
 Every helper response has `safe_to_retry=false`, including PREPARED. An older
@@ -655,6 +656,30 @@ fully replaced. The two newest foundations are the SenseCore data-delivery
 contract and the exact-Attempt result-collection reducer. This percentage is a
 scope indicator, not a claim that 14.8% of the production system can already be
 cut over.
+
+## Current implementation order
+
+Complete the outer application paths before a broad bug-fixing campaign. Keep
+compilation, formatting and existing CI checks; avoid repeating complete provider
+acceptance after every individual module edit. The current native SSH Slurm data
+path joins client packing, bounded API ingress, pinned gateway delivery, immutable
+READY metadata, named frozen Run inputs and worker verification. It uses no API
+payload spool and needs no network access from compute nodes. See the [native
+workspace guide](../rust/README.md#native-managed-datasets) for current limits.
+
+Same-Run/new-Attempt retry and bounded full-history ingestion now have native
+core, helper, HTTP and CLI wiring. Retry leaves Run/old Attempt manifests intact,
+requires terminal scheduler evidence, and reserves the full limit of each Attempt
+against an explicit cumulative budget. History pages pin file identity and a
+SHA256 prefix; canonical journal events commit before the cursor, making a lost
+cursor update repeatable without duplicate metrics. Ingestion is an explicit
+operation; it does not enable W&B or start a background poller.
+
+The remaining application work is: continuous background ingestion and W&B publication effects; PAI and SenseCore job,
+data and result adapters; remaining operator/client distribution and lifecycle
+commands. Then run coordinated end-to-end and real-provider acceptance, fix
+observed failures and perform the guarded stable 0.1.0 cutover. An isolated CPU
+trial with synthetic scheduler/container tools is not that final acceptance.
 
 ## Migration sequence and acceptance
 

@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod credentials;
+pub mod datasets;
 pub mod observation;
 pub mod presentation;
 pub mod projects;
@@ -19,6 +20,10 @@ pub use transport::Client;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(
+        "dataset {asset} transfer is unconfirmed; repeat upload with the same directory to reconcile durable parts: {source}"
+    )]
+    DatasetOutcomeUnknown { asset: String, source: Box<Error> },
     #[error("invalid API URL; use HTTPS or loopback HTTP without userinfo, query or fragment")]
     Url,
     #[error("invalid API token")]

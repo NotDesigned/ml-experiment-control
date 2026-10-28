@@ -129,6 +129,7 @@ pub enum OperationTag {
     InspectSubmission,
     ObserveJob,
     ObserveWorker,
+    ReadMetricHistory,
     ObserveCheckpoint,
     Artifacts,
     CancelJob,
@@ -149,6 +150,10 @@ enum Operation {
     },
     ObserveWorker {
         job_id: String,
+    },
+    ReadMetricHistory {
+        job_id: String,
+        cursor: Option<crate::managed::history::Cursor>,
     },
     ObserveCheckpoint {
         job_id: String,
@@ -214,6 +219,25 @@ impl Request {
         request.validate()?;
         Ok(request)
     }
+    pub fn metric_history(
+        intent: FrozenIntent,
+        job_id: String,
+        cursor: Option<crate::managed::history::Cursor>,
+    ) -> Result<Self> {
+        let request = Self {
+            version: PROTOCOL_VERSION,
+            intent,
+            operation: Operation::ReadMetricHistory { job_id, cursor },
+        };
+        request.validate()?;
+        Ok(request)
+    }
+    pub fn history_cursor(&self) -> Option<&crate::managed::history::Cursor> {
+        match &self.operation {
+            Operation::ReadMetricHistory { cursor, .. } => cursor.as_ref(),
+            _ => None,
+        }
+    }
     pub fn observe_checkpoint(intent: FrozenIntent, job_id: String) -> Result<Self> {
         let request = Self {
             version: PROTOCOL_VERSION,
@@ -255,6 +279,7 @@ impl Request {
         match &self.operation {
             Operation::ObserveJob { job_id }
             | Operation::ObserveWorker { job_id }
+            | Operation::ReadMetricHistory { job_id, .. }
             | Operation::ObserveCheckpoint { job_id }
             | Operation::Artifacts { job_id, .. }
             | Operation::CancelJob { job_id } => Some(job_id),
@@ -271,6 +296,7 @@ impl Request {
             Operation::InspectSubmission => OperationTag::InspectSubmission,
             Operation::ObserveJob { .. } => OperationTag::ObserveJob,
             Operation::ObserveWorker { .. } => OperationTag::ObserveWorker,
+            Operation::ReadMetricHistory { .. } => OperationTag::ReadMetricHistory,
             Operation::ObserveCheckpoint { .. } => OperationTag::ObserveCheckpoint,
             Operation::Artifacts { .. } => OperationTag::Artifacts,
             Operation::CancelJob { .. } => OperationTag::CancelJob,
@@ -287,6 +313,9 @@ impl Request {
             return Err(Error::Version);
         }
         self.intent.validate()?;
+        if let Some(cursor) = self.history_cursor() {
+            cursor.validate()?;
+        }
         if let Some(command) = self.artifact_command() {
             command.validate().map_err(|_| Error::Metadata)?;
         }
@@ -402,6 +431,9 @@ pub enum ReplyOutcome {
     WorkerObserved {
         evidence: Box<crate::managed::remote::Evidence>,
     },
+    MetricHistory {
+        page: Box<crate::managed::history::Page>,
+    },
     CheckpointObserved {
         document: Box<serde_json::Value>,
     },
@@ -438,6 +470,12 @@ impl Reply {
         self.validate()?;
         if self.identity != request.identity()? {
             return Err(Error::Identity);
+        }
+        if let ReplyOutcome::MetricHistory { page } = &self.outcome {
+            if self.identity.operation != OperationTag::ReadMetricHistory {
+                return Err(Error::Identity);
+            }
+            page.validate(request.history_cursor())?;
         }
         if let ReplyOutcome::WorkerObserved { evidence } = &self.outcome {
             evidence.validate_scope(

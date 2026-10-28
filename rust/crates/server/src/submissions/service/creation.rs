@@ -83,6 +83,15 @@ impl Service {
                 source_receipt_sha256: &source_sha,
                 backend_config_sha256: &backend_sha,
                 checkpoint: checkpoint.as_ref(),
+                datasets: &request
+                    .data
+                    .iter()
+                    .map(|input| {
+                        self.dataset_state(project, &request.executor, &input.asset_id)?
+                            .ready
+                            .ok_or(Error::DatasetUnavailable)
+                    })
+                    .collect::<Result<Vec<_>>>()?,
             },
             now,
         )?;
@@ -181,7 +190,7 @@ impl Service {
         result
     }
 }
-fn publish_json(directory: &Directory, name: &str, value: &Value) -> Result<()> {
+pub(super) fn publish_json(directory: &Directory, name: &str, value: &Value) -> Result<()> {
     directory
         .publish_new(
             OsStr::new(name),
@@ -189,7 +198,7 @@ fn publish_json(directory: &Directory, name: &str, value: &Value) -> Result<()> 
         )
         .map_err(|_| Error::Uncertain)
 }
-fn read_json(directory: &Directory, name: &str) -> Result<Value> {
+pub(super) fn read_json(directory: &Directory, name: &str) -> Result<Value> {
     let bytes = directory
         .read_regular(OsStr::new(name), creation::MAX_REQUEST_BYTES as u64 * 8)
         .map_err(|_| Error::Authority)?;
@@ -253,7 +262,7 @@ fn cleanup_stage(parent: &Directory, stage: &Directory) -> Result<()> {
         .remove_staged_empty_child(stage)
         .map_err(|_| Error::Authority)
 }
-fn clean_files(directory: &Directory, names: &[&str]) -> Result<()> {
+pub(super) fn clean_files(directory: &Directory, names: &[&str]) -> Result<()> {
     for name in names {
         if directory
             .entry_exists(OsStr::new(name))

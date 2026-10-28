@@ -973,6 +973,7 @@ version = "0.1.0-dev.1"
 dependencies = [
  "clap",
  "fs2",
+ "getrandom 0.3.4",
  "libc",
  "ml-exp-core",
  "ml-exp-io",

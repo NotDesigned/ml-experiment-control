@@ -51,6 +51,12 @@ pub enum Error {
     CheckpointMissing,
     #[error("checkpoint registry or frozen checkpoint identity is invalid")]
     CheckpointConflict,
+    #[error(
+        "dataset transfer is unconfirmed; resume the same asset identity; no scheduler operation was issued"
+    )]
+    DatasetUnavailable,
+    #[error("the exact dataset is not registered for this Project and backend")]
+    DatasetMissing,
     #[error("approved Run, first Attempt, source or runtime evidence is unavailable or changed")]
     Authority,
     #[error(
@@ -78,6 +84,7 @@ pub struct Backend {
     pub profile: Profile,
     pub ssh: SshConfig,
     pub runtimes: BTreeMap<String, Runtime>,
+    pub data_helper_config: Option<String>,
 }
 #[derive(Clone, Copy)]
 pub struct Context<'a> {
@@ -114,6 +121,11 @@ impl Backend {
     pub(super) fn validate(&self) -> Result<()> {
         self.profile.validate()?;
         self.ssh.validate().map_err(|_| Error::Configuration)?;
+        if let Some(path) = &self.data_helper_config {
+            let mut data = self.ssh.clone();
+            data.helper_config_path = path.clone();
+            data.validate().map_err(|_| Error::Configuration)?;
+        }
         if self.profile.target != self.ssh.target
             || self.profile.ssh_alias != self.ssh.target_alias
             || self.runtimes.is_empty()
@@ -133,20 +145,24 @@ impl Backend {
             .map_err(|_| Error::Authority)?;
         let hosts = ml_exp_io::read_private(&ssh.known_hosts_file, 1024 * 1024, true)
             .map_err(|_| Error::Authority)?;
-        canonical::protocol_identity(&json!({"target":ssh.target,"binary":ssh.ssh_binary,"config_path":ssh.config_file,
+        let value = json!({"target":ssh.target,"binary":ssh.ssh_binary,"config_path":ssh.config_file,
             "config_sha256":helper::sha256_bytes(&configuration),"known_hosts_path":ssh.known_hosts_file,"known_hosts_sha256":helper::sha256_bytes(&hosts),
             "alias":ssh.target_alias,"helper":ssh.helper_path,"helper_config":ssh.helper_config_path,"cwd":ssh.local_cwd,"agent":ssh.agent_socket,
             "timeout_nanos":ssh.budget.timeout.as_nanos().to_string(),"connect_timeout":ssh.budget.connect_timeout_seconds,
-            "termination_grace_nanos":ssh.budget.termination_grace.as_nanos().to_string(),"drain_grace_nanos":ssh.budget.drain_grace.as_nanos().to_string()}))
-            .map_err(|_|Error::Configuration)
+            "termination_grace_nanos":ssh.budget.termination_grace.as_nanos().to_string(),"drain_grace_nanos":ssh.budget.drain_grace.as_nanos().to_string()});
+        canonical::protocol_identity(&value).map_err(|_| Error::Configuration)
     }
 }
 mod artifacts;
 mod authority;
+mod cancellation;
 mod checkpoints;
 mod creation;
+mod datasets;
+mod history;
 mod observation;
 mod preparation;
+mod retry;
 
 impl Service {
     pub fn enabled(&self) -> bool {
@@ -186,6 +202,18 @@ impl Service {
     pub fn for_run(&self, project: &str, run: &str, now: &str) -> Result<Value> {
         self.validate_workspace(project, run)?;
         let prepared = self.saved(project, run)?.ok_or(Error::Missing)?;
+        self.get(
+            prepared.plan["action_id"]
+                .as_str()
+                .ok_or(Error::Authority)?,
+            now,
+        )
+    }
+    pub fn for_attempt(&self, project: &str, run: &str, attempt: &str, now: &str) -> Result<Value> {
+        self.validate_workspace(project, run)?;
+        let prepared = self
+            .saved_attempt(project, run, attempt)?
+            .ok_or(Error::Missing)?;
         self.get(
             prepared.plan["action_id"]
                 .as_str()
@@ -300,7 +328,11 @@ impl Service {
         let prepared = self.load(action)?;
         let snapshot = self.actions.observe(action)?;
         self.check(&prepared)?;
-        self.public(snapshot, now)
+        let mut result = self.public(snapshot, now)?;
+        if let Some(state) = self.cancellation_state(&prepared)? {
+            result["cancellation"] = json!(state);
+        }
+        Ok(result)
     }
     pub fn authorize(
         &self,
@@ -341,7 +373,10 @@ impl Service {
             .map_err(|_| Error::Authority)?;
         if self.actions.observe(action)?["execution"]["status"] == "AUTHORIZED" {
             let facts = self.facts(&prepared.binding.project, &prepared.binding.run_id)?;
-            if facts.scheduler_state != "NOT_SUBMITTED" || facts.submitted {
+            if facts.binding != prepared.binding
+                || facts.scheduler_state != "NOT_SUBMITTED"
+                || facts.submitted
+            {
                 return Err(Error::Authority);
             }
         }

@@ -150,3 +150,4 @@ mod tests {
 }
 
 pub mod artifacts;
+pub mod datasets;

@@ -175,6 +175,7 @@ impl Fixture {
                 profile: self.profile.clone(),
                 ssh,
                 runtimes: BTreeMap::from([(self.runtime.runtime_id.clone(), self.runtime.clone())]),
+                data_helper_config: None,
             }],
             enabled,
         )

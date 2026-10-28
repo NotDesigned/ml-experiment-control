@@ -7,6 +7,7 @@
 
 pub mod action;
 mod allocation;
+pub mod cancellation;
 mod config;
 pub mod helper;
 pub mod managed;

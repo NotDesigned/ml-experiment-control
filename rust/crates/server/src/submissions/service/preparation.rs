@@ -45,11 +45,41 @@ impl Service {
         lock.validate()?;
         Ok(lock)
     }
-    fn slot_name(project: &str, run: &str) -> Result<String> {
-        Ok(format!("{}.json", native::slot(project, run)?))
+    fn slot_name(project: &str, run: &str, attempt: &str) -> Result<String> {
+        Ok(format!(
+            "{}.json",
+            native::attempt_slot(project, run, attempt)?
+        ))
     }
     pub(super) fn saved(&self, project: &str, run: &str) -> Result<Option<Prepared>> {
-        let name = Self::slot_name(project, run)?;
+        // A legacy/non-native Run has no slot; do not impose native admission
+        // while serving unrelated approved read-only Runs.
+        let original = Self::slot_name(project, run, "attempt-001")?;
+        if !self
+            .slots
+            .entry_exists(OsStr::new(&original))
+            .map_err(|_| Error::Authority)?
+        {
+            return Ok(None);
+        }
+        let reference = self.resolve(project, run)?;
+        let snapshot = self
+            .evidence
+            .snapshot_metadata(&reference)
+            .map_err(|_| Error::Authority)?;
+        let attempt = snapshot
+            .current_attempt_id
+            .as_deref()
+            .ok_or(Error::Authority)?;
+        self.saved_attempt(project, run, attempt)
+    }
+    pub(super) fn saved_attempt(
+        &self,
+        project: &str,
+        run: &str,
+        attempt: &str,
+    ) -> Result<Option<Prepared>> {
+        let name = Self::slot_name(project, run, attempt)?;
         match self
             .slots
             .regular_identity(OsStr::new(&name))
@@ -68,7 +98,10 @@ impl Service {
         )
         .map_err(|_| Error::Authority)?;
         value.validate()?;
-        if value.binding.project != project || value.binding.run_id != run {
+        if value.binding.project != project
+            || value.binding.run_id != run
+            || value.binding.attempt_id != attempt
+        {
             return Err(Error::Authority);
         }
         Ok(Some(value))
@@ -114,7 +147,9 @@ impl Service {
                 scope_type: ml_exp_core::operations::ScopeType::Run,
                 object_id: run.into(),
             };
-            if self.actions.has_scope_history(&scope)? {
+            if facts.binding.attempt_id == "attempt-001"
+                && self.actions.has_scope_history(&scope)?
+            {
                 return Err(Error::Conflict);
             }
             let mut token = [0u8; 16];
@@ -137,7 +172,10 @@ impl Service {
                 return Err(Error::Configuration);
             }
             self.slots
-                .publish_new(OsStr::new(&Self::slot_name(project, run)?), &bytes)
+                .publish_new(
+                    OsStr::new(&Self::slot_name(project, run, &facts.binding.attempt_id)?),
+                    &bytes,
+                )
                 .map_err(|_| Error::Uncertain)?;
             prepared
         };

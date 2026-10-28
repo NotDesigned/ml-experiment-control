@@ -100,6 +100,7 @@ fn evidence_requires_exact_sealed_identity_and_immutable_terminal_receipt() {
         output_directory: None,
         runtime_environment: Vec::new(),
         checkpoint_restore: None,
+        datasets: Vec::new(),
     };
     let scope = Scope {
         project: "demo".into(),

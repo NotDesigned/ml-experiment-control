@@ -77,6 +77,7 @@ pub(crate) struct AppState {
     auth: Auth,
     reads: Option<Arc<read_api::Api>>,
     read_slots: Arc<tokio::sync::Semaphore>,
+    data_slots: Arc<tokio::sync::Semaphore>,
 }
 
 async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
@@ -119,9 +120,17 @@ fn health_document(
         capabilities.push("native-worker-observation.v1");
         capabilities.push("native-checkpoints.v1");
         capabilities.push("native-artifacts.v1");
+        capabilities.push("native-cancellation.v1");
+        capabilities.push("native-metric-history.v1");
+        if submissions.is_some_and(submissions::Service::can_create_runs) {
+            capabilities.push("native-attempt-retry.v1");
+        }
     }
     if submissions.is_some_and(submissions::Service::can_create_runs) {
         capabilities.push("native-run-creation.v1");
+    }
+    if submissions.is_some_and(submissions::Service::has_datasets) {
+        capabilities.push("native-datasets.v1");
     }
     json!({
         "status":"ok", "server_version":env!("CARGO_PKG_VERSION"),
@@ -324,13 +333,71 @@ fn schema_document() -> serde_json::Value {
         );
     }
     paths.insert("/api/runs/{project}/{run}/submission".into(),operation("Read the original native preparation slot after response loss; never creates an identity",run()));
+    let data_parameters = || {
+        vec![
+            parameter("protocol"),
+            parameter("project"),
+            json!({"in":"path","name":"executor","required":true,"schema":{"type":"string"}}),
+        ]
+    };
+    let data_asset_parameters = || {
+        let mut p = data_parameters();
+        p.push(json!({"in":"path","name":"asset","required":true,"schema":{"type":"string","pattern":"^asset[.][a-f0-9]{64}$"}}));
+        p
+    };
+    paths.insert("/api/projects/{project}/datasets/{executor}".into(),post("Create or reconcile the same immutable dataset on an explicitly configured gateway; no scheduler operation",
+        json!({"type":"object","additionalProperties":false,"required":["sha256","archive_bytes","files"],"properties":{"sha256":{"type":"string"},"archive_bytes":{"type":"integer","minimum":1},"files":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["path","bytes","sha256"],"properties":{"path":{"type":"string"},"bytes":{"type":"integer","minimum":0},"sha256":{"type":"string"}}}}}}),data_parameters()));
+    paths.insert(
+        "/api/projects/{project}/datasets/{executor}/{asset}".into(),
+        operation(
+            "Read cached durable dataset receipts; does not reverify backend bytes",
+            data_asset_parameters(),
+        ),
+    );
+    paths.insert("/api/projects/{project}/datasets/{executor}/{asset}/complete".into(),post("Verify and publish the existing backend dataset, then remove owned parts and archive; send an empty request body",json!({"type":"object","maxProperties":0}),data_asset_parameters()));
+    let mut data_part = post(
+        "Persist one exact zero-based part on the gateway; fixed 16 MiB maximum; no API disk spool",
+        json!({"type":"string","format":"binary","maxLength":16777216}),
+        {
+            let mut p = data_asset_parameters();
+            p.push(json!({"in":"path","name":"number","required":true,"schema":{"type":"integer","minimum":0,"maximum":65535}}));
+            p.push(json!({"in":"path","name":"sha256","required":true,"schema":{"type":"string"}}));
+            p
+        },
+    );
+    let mut part_operation = data_part
+        .as_object_mut()
+        .expect("operation object")
+        .remove("post")
+        .expect("post operation");
+    part_operation["requestBody"]["content"] = json!({"application/octet-stream":{"schema":{"type":"string","format":"binary","maxLength":16777216}}});
+    data_part["put"] = part_operation;
+    paths.insert(
+        "/api/projects/{project}/datasets/{executor}/{asset}/parts/{number}/{sha256}".into(),
+        data_part,
+    );
     paths.insert("/api/projects/{project}/runs".into(),post("Create one immutable standalone Run and first Attempt in an explicitly approved canonical root; never submits a scheduler job",
         json!({"type":"object","additionalProperties":false,"required":["run_id","runtime_id","executor","command","resources","walltime_seconds","seed"],"properties":{
             "run_id":{"type":"string"},"runtime_id":{"type":"string"},"executor":{"type":"string"},"command":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"}},
             "resources":{"type":"object","additionalProperties":false,"required":["gpus","memory_gb"],"properties":{"gpus":{"type":"integer","minimum":1},"cpus":{"type":"integer","minimum":1,"default":8},"nodes":{"type":"integer","const":1,"default":1},"memory_gb":{"type":"integer","minimum":1}}},
-            "walltime_seconds":{"type":"integer","minimum":1,"maximum":3600000},"seed":{"type":"integer"},"parameters":{"type":"object"},"evaluation":{"type":"object"},"metrics_schema":{"type":"object"},"artifacts":{"type":"object","additionalProperties":false,"properties":{"required_files":{"type":"array","items":{"type":"string"},"maxItems":20000}}}}}),vec![parameter("protocol"),parameter("project")]));
+            "walltime_seconds":{"type":"integer","minimum":1,"maximum":3600000},"seed":{"type":"integer"},"data":{"type":"array","maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["name","asset_id"],"properties":{"name":{"type":"string"},"asset_id":{"type":"string"}}}},"parameters":{"type":"object"},"evaluation":{"type":"object"},"metrics_schema":{"type":"object"},"artifacts":{"type":"object","additionalProperties":false,"properties":{"required_files":{"type":"array","items":{"type":"string"},"maxItems":20000}}}}}),vec![parameter("protocol"),parameter("project")]));
     paths.insert("/api/runs/{project}/{run}/submissions".into(),post("Prepare the first authored Run/Attempt with trusted source and materialized-image receipts; never submits a scheduler job",json!({"type":"object","additionalProperties":false,"required":["max_gpu_hours"],"properties":{"max_gpu_hours":{"type":"number","exclusiveMinimum":0},"reason":{"type":"string","maxLength":4000,"default":""}}}),run()));
     for (name, description, body) in [
+        (
+            "history",
+            "Ingest one bounded metrics page into the canonical local journal; persist events before advancing the exact Attempt cursor; never submits",
+            json!({"type":"object","additionalProperties":false}),
+        ),
+        (
+            "retry",
+            "Append a new Attempt from an explicit parent checkpoint after exact terminal scheduler evidence; reserves cumulative GPU budget and never submits",
+            json!({"type":"object","additionalProperties":false,"required":["confirmation","resume_from","max_gpu_hours"],"properties":{"confirmation":{"type":"string","pattern":"^RETRY action-[a-f0-9]{16}$"},"max_gpu_hours":{"type":"number","exclusiveMinimum":0},"reason":{"type":"string","maxLength":4000},"resume_from":{"type":"object","additionalProperties":false,"required":["run_id","attempt_id","checkpoint_id"],"properties":{"run_id":{"type":"string"},"attempt_id":{"type":"string"},"checkpoint_id":{"type":"string"}}}}}),
+        ),
+        (
+            "cancel",
+            "Persist an exact owned-job cancellation intent and reconcile the helper cancel outbox; terminal observation is required for termination verification",
+            json!({"type":"object","additionalProperties":false,"required":["confirmation"],"properties":{"confirmation":{"type":"string","pattern":"^CANCEL action-[a-f0-9]{16}$"}}}),
+        ),
         (
             "authorize",
             "Authorize the original immutable preparation without submitting",
@@ -422,6 +489,7 @@ pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
         auth,
         reads,
         read_slots: Arc::new(tokio::sync::Semaphore::new(4)),
+        data_slots: Arc::new(tokio::sync::Semaphore::new(4)),
     });
     Router::new()
         .route("/api/health", get(health))
@@ -431,6 +499,7 @@ pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
         .merge(projects::http::routes())
         .merge(sources::http::routes())
         .merge(submissions::http::routes())
+        .merge(submissions::dataset_http::routes())
         .method_not_allowed_fallback(|| async {
             (StatusCode::METHOD_NOT_ALLOWED,Json(json!({"code":"METHOD_NOT_ALLOWED","detail":"HTTP method is unavailable for this endpoint"})))
         })
@@ -554,11 +623,15 @@ mod schema_tests {
     fn native_contract_declares_narrow_lifecycle_posts_and_exact_read_identity() {
         let schema = super::schema_document();
         let paths = schema["paths"].as_object().unwrap();
-        assert_eq!(paths.len(), 33);
+        assert_eq!(paths.len(), 40);
         for (path, operations) in paths {
             assert_eq!(operations.as_object().unwrap().len(), 1);
-            if path.starts_with("/api/project-lifecycle/")
+            if path.contains("/datasets/") && path.contains("/parts/") {
+                assert!(operations.get("put").is_some());
+            } else if path.starts_with("/api/project-lifecycle/")
                 || path.ends_with("/submissions")
+                || path == "/api/projects/{project}/datasets/{executor}"
+                || path.ends_with("/datasets/{executor}/{asset}/complete")
                 || path == "/api/projects/{project}/runs"
                 || path.starts_with("/api/submissions/")
                     && path != "/api/submissions/{identity}"

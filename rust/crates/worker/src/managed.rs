@@ -473,6 +473,12 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
             .map_err(|_| Error::Storage)?;
         ml_exp_io::checkpoints::verify_sealed(&root, &manifest).map_err(|_| Error::Binding)?;
     }
+    for dataset in &config.datasets {
+        let root = Directory::open(std::path::Path::new(&dataset.receipt.root), false)
+            .map_err(|_| Error::Storage)?;
+        ml_exp_io::datasets::verify(&root, &dataset.receipt.definition, true)
+            .map_err(|_| Error::Binding)?;
+    }
     // This fsync completes before any spawn attempt. Any later error leaves a
     // non-replayable STARTED record, including setup errors with no known child.
     held.append(

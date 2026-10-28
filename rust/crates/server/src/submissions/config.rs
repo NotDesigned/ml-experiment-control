@@ -26,6 +26,8 @@ pub struct Definition {
     pub profile: Profile,
     pub ssh: Ssh,
     pub runtimes: BTreeMap<String, Runtime>,
+    #[serde(default)]
+    pub data_helper_config: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -88,6 +90,7 @@ impl Settings {
                     },
                     profile: definition.profile,
                     runtimes: definition.runtimes,
+                    data_helper_config: definition.data_helper_config,
                 };
                 backend.validate()?;
                 Ok(backend)

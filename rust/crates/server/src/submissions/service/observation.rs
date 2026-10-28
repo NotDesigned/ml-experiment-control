@@ -17,7 +17,11 @@ impl Service {
     fn observation_name(prepared: &Prepared) -> Result<String> {
         Ok(format!(
             "{}.observation.json",
-            native::slot(&prepared.binding.project, &prepared.binding.run_id)?
+            native::attempt_slot(
+                &prepared.binding.project,
+                &prepared.binding.run_id,
+                &prepared.binding.attempt_id
+            )?
         ))
     }
     fn observation(&self, prepared: &Prepared) -> Result<Option<Saved>> {
@@ -170,21 +174,30 @@ impl Service {
     }
     /// GET projects only a previously accepted sample, never makes an RPC.
     pub fn apply_observation(&self, snapshot: &mut Snapshot) -> Result<()> {
-        let Some(prepared) = self.saved(&snapshot.project, &snapshot.run_id)? else {
-            return Ok(());
-        };
-        let Some(saved) = self.observation(&prepared)? else {
-            return Ok(());
-        };
-        crate::read_model::project_worker(
-            snapshot,
-            &prepared.binding,
-            &saved.evidence,
-            prepared.plan["action_id"]
-                .as_str()
-                .ok_or(Error::Authority)?,
-            &saved.observed_at,
-        )
-        .map_err(|_| Error::Authority)
+        let ids: Vec<_> = snapshot
+            .attempts
+            .iter()
+            .map(|v| v.attempt_id.clone())
+            .collect();
+        for id in ids {
+            let Some(prepared) = self.saved_attempt(&snapshot.project, &snapshot.run_id, &id)?
+            else {
+                continue;
+            };
+            let Some(saved) = self.observation(&prepared)? else {
+                continue;
+            };
+            crate::read_model::project_worker(
+                snapshot,
+                &prepared.binding,
+                &saved.evidence,
+                prepared.plan["action_id"]
+                    .as_str()
+                    .ok_or(Error::Authority)?,
+                &saved.observed_at,
+            )
+            .map_err(|_| Error::Authority)?;
+        }
+        Ok(())
     }
 }

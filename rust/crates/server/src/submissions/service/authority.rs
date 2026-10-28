@@ -58,6 +58,9 @@ impl Service {
         }
     }
     pub(super) fn facts(&self, project: &str, run: &str) -> Result<Facts> {
+        self.facts_for(project, run, None)
+    }
+    pub(super) fn facts_for(&self, project: &str, run: &str, exact: Option<&str>) -> Result<Facts> {
         self.validate_workspace(project, run)?;
         let reference = self.resolve(project, run)?;
         let project_document = self
@@ -69,13 +72,21 @@ impl Service {
             .snapshot_metadata(&reference)
             .map_err(|_| Error::Authority)?;
         if snapshot.run.legacy_observation_only
-            || snapshot.attempts.len() != 1
-            || snapshot.attempts[0].attempt_id != "attempt-001"
+            || snapshot.attempts.is_empty()
+            || snapshot.attempts.len() > 256
             || !snapshot.diagnostics.is_empty()
         {
             return Err(Error::Authority);
         }
-        let attempt = &snapshot.attempts[0];
+        let selected = exact
+            .or(snapshot.current_attempt_id.as_deref())
+            .ok_or(Error::Authority)?;
+        let attempt = snapshot
+            .attempts
+            .iter()
+            .find(|v| v.attempt_id == selected)
+            .ok_or(Error::Authority)?;
+        native::retry::number(selected)?;
         if attempt.manifest.legacy_observation_only
             || !attempt.provenance.compared_fields_complete
             || matches!(attempt.status, EvidenceDocument::Unavailable { .. })
@@ -85,8 +96,12 @@ impl Service {
         {
             return Err(Error::Authority);
         }
-        let scheduler_state = snapshot
-            .current_status
+        let status = if snapshot.current_attempt_id.as_deref() == Some(selected) {
+            &snapshot.current_status
+        } else {
+            &attempt.status
+        };
+        let scheduler_state = status
             .metadata()
             .and_then(|v| v.get("state"))
             .and_then(Value::as_str)
@@ -134,7 +149,8 @@ impl Service {
             submitted: !matches!(attempt.submission, EvidenceDocument::Missing)
                 || !matches!(attempt.backend, EvidenceDocument::Missing)
                 || !matches!(attempt.collection, EvidenceDocument::Missing)
-                || !matches!(snapshot.current_collection, EvidenceDocument::Missing)
+                || snapshot.current_attempt_id.as_deref() == Some(selected)
+                    && !matches!(snapshot.current_collection, EvidenceDocument::Missing)
                 || attempt
                     .status
                     .metadata()
@@ -152,7 +168,11 @@ impl Service {
     }
     pub(super) fn check(&self, prepared: &Prepared) -> Result<()> {
         prepared.validate()?;
-        let facts = self.facts(&prepared.binding.project, &prepared.binding.run_id)?;
+        let facts = self.facts_for(
+            &prepared.binding.project,
+            &prepared.binding.run_id,
+            Some(&prepared.binding.attempt_id),
+        )?;
         let backend = &self.backends[&facts.backend];
         if facts.binding != prepared.binding
             || native::definition(
@@ -167,10 +187,36 @@ impl Service {
             return Err(Error::Conflict);
         }
         let saved = self
-            .saved(&facts.binding.project, &facts.binding.run_id)?
+            .saved_attempt(
+                &facts.binding.project,
+                &facts.binding.run_id,
+                &facts.binding.attempt_id,
+            )?
             .ok_or(Error::Authority)?;
         if saved.plan != prepared.plan || saved.request != prepared.request {
             return Err(Error::Authority);
+        }
+        if prepared.binding.attempt_id != "attempt-001" {
+            let receipt =
+                native::retry::validate_attempt(&facts.run, &facts.attempt, &facts.binding)?;
+            let parent = self
+                .saved_attempt(
+                    &facts.binding.project,
+                    &facts.binding.run_id,
+                    &receipt.parent_binding.attempt_id,
+                )?
+                .ok_or(Error::Authority)?;
+            let parent_facts = self.facts_for(
+                &facts.binding.project,
+                &facts.binding.run_id,
+                Some(&receipt.parent_binding.attempt_id),
+            )?;
+            if parent.binding != receipt.parent_binding
+                || parent_facts.binding != parent.binding
+                || parent.plan["action_id"] != receipt.parent_action
+            {
+                return Err(Error::Authority);
+            }
         }
         Ok(())
     }
@@ -180,7 +226,10 @@ impl Service {
             .as_str()
             .ok_or(Error::Authority)?;
         let run = snapshot["run_id"].as_str().ok_or(Error::Authority)?;
-        let prepared = self.saved(project, run)?.ok_or(Error::Authority)?;
+        let attempt = snapshot["attempt_id"].as_str().ok_or(Error::Authority)?;
+        let prepared = self
+            .saved_attempt(project, run, attempt)?
+            .ok_or(Error::Authority)?;
         if prepared.plan["action_id"] != action {
             return Err(Error::Authority);
         }

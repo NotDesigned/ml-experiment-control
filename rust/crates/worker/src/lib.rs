@@ -4,6 +4,8 @@ use serde::Serialize;
 use std::{io, path::Path, sync::atomic::AtomicBool, time::Duration};
 
 #[cfg(unix)]
+pub mod datasets;
+#[cfg(unix)]
 pub mod managed;
 #[cfg(unix)]
 mod process;

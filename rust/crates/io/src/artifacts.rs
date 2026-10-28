@@ -17,11 +17,23 @@ use std::{
 fn invalid() -> io::Error {
     io::Error::other("result archive files are invalid or changed")
 }
-fn walk(
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Results,
+    Data,
+}
+fn allowed(kind: Kind, path: &str) -> bool {
+    match kind {
+        Kind::Results => export_path(path),
+        Kind::Data => ml_exp_core::datasets::path(path),
+    }
+}
+pub(crate) fn walk(
     directory: &Directory,
     prefix: &str,
     found: &mut Vec<String>,
     budget: &mut usize,
+    kind: Kind,
 ) -> io::Result<()> {
     if prefix.len() > artifacts::MAX_PATH || prefix.split('/').count() > 128 {
         return Err(invalid());
@@ -34,7 +46,10 @@ fn walk(
             return Err(invalid());
         }
         let name = name.to_str().ok_or_else(invalid)?;
-        if prefix.is_empty() && matches!(name, "checkpoints" | "checkpoint.ready.json") {
+        if kind == Kind::Results
+            && prefix.is_empty()
+            && matches!(name, "checkpoints" | "checkpoint.ready.json")
+        {
             continue;
         }
         let path = if prefix.is_empty() {
@@ -42,11 +57,11 @@ fn walk(
         } else {
             format!("{prefix}/{name}")
         };
-        if !export_path(&path) {
+        if !allowed(kind, &path) {
             return Err(invalid());
         }
         if let Ok(child) = directory.child(OsStr::new(name), false) {
-            walk(&child, &path, found, budget)?;
+            walk(&child, &path, found, budget, kind)?;
         } else {
             let file = directory.open_regular_read(OsStr::new(name))?;
             directory.validate_regular_entry(OsStr::new(name), &file)?;
@@ -56,8 +71,8 @@ fn walk(
     directory.verify_private_parent()?;
     Ok(())
 }
-fn open(root: &Directory, path: &str) -> io::Result<(Directory, File)> {
-    if !export_path(path) {
+pub(crate) fn open(root: &Directory, path: &str, kind: Kind) -> io::Result<(Directory, File)> {
+    if !allowed(kind, path) {
         return Err(invalid());
     }
     let mut names = path.split('/').collect::<Vec<_>>();
@@ -105,9 +120,26 @@ pub fn pack(
     output: &mut File,
     policy: &Policy,
 ) -> io::Result<(String, u64, Vec<FileReceipt>)> {
+    pack_kind(root, output, policy, Kind::Results)
+}
+pub fn pack_data(
+    root: &Directory,
+    output: &mut File,
+) -> io::Result<(String, u64, Vec<FileReceipt>)> {
+    pack_kind(root, output, &Policy::default(), Kind::Data)
+}
+fn pack_kind(
+    root: &Directory,
+    output: &mut File,
+    policy: &Policy,
+    kind: Kind,
+) -> io::Result<(String, u64, Vec<FileReceipt>)> {
     policy.validate().map_err(|_| invalid())?;
     let mut paths = Vec::new();
-    walk(root, "", &mut paths, &mut 0)?;
+    walk(root, "", &mut paths, &mut 0, kind)?;
+    if kind == Kind::Data {
+        paths.sort();
+    }
     if paths.is_empty() {
         return Err(invalid());
     }
@@ -131,7 +163,7 @@ pub fn pack(
     let mut archive = tar::Builder::new(writer);
     let mut files = Vec::new();
     for path in &paths {
-        let (parent, mut file) = open(root, path)?;
+        let (parent, mut file) = open(root, path, kind)?;
         let before = file.metadata()?;
         let mut header = tar::Header::new_gnu();
         header.set_entry_type(tar::EntryType::Regular);
@@ -146,7 +178,15 @@ pub fn pack(
             hash: Sha256::new(),
             bytes: 0,
         };
-        archive.append_data(&mut header, format!("outputs/{path}"), &mut reader)?;
+        archive.append_data(
+            &mut header,
+            if kind == Kind::Results {
+                format!("outputs/{path}")
+            } else {
+                path.clone()
+            },
+            &mut reader,
+        )?;
         let bytes = reader.bytes;
         let sha256 = format!("{:x}", reader.hash.finalize());
         let after = file.metadata()?;
@@ -173,13 +213,16 @@ pub fn pack(
     let writer = archive.into_inner()?;
     writer.inner.sync_all()?;
     let mut after = Vec::new();
-    walk(root, "", &mut after, &mut 0)?;
+    walk(root, "", &mut after, &mut 0, kind)?;
+    if kind == Kind::Data {
+        after.sort();
+    }
     if paths != after {
         return Err(invalid());
     }
     // A second hash pass also catches a file changed after its own first read.
     for record in &files {
-        let (_, mut file) = open(root, &record.path)?;
+        let (_, mut file) = open(root, &record.path, kind)?;
         let (h, n) = hash(&mut file)?;
         if h != record.sha256 || n != record.bytes {
             return Err(invalid());
@@ -249,10 +292,10 @@ pub fn verify(
 
 pub fn estimate(root: &Directory) -> io::Result<u64> {
     let mut paths = Vec::new();
-    walk(root, "", &mut paths, &mut 0)?;
+    walk(root, "", &mut paths, &mut 0, Kind::Results)?;
     let mut bytes = 16u64 * 1024 * 1024;
     for path in paths {
-        let (_, file) = open(root, &path)?;
+        let (_, file) = open(root, &path, Kind::Results)?;
         bytes = bytes
             .checked_add(file.metadata()?.len())
             .and_then(|v| v.checked_add(8192))

@@ -168,6 +168,7 @@ fn fake_ssh_child() {
                 job_id: "24827".into(),
             },
             OperationTag::ObserveJob
+            | OperationTag::ReadMetricHistory
             | OperationTag::ObserveWorker
             | OperationTag::ObserveCheckpoint
             | OperationTag::Artifacts

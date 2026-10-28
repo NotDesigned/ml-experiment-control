@@ -1,6 +1,7 @@
 //! Pure configuration and environment decisions for a sealed managed launch.
 //! Paths are values here; opening files and taking runtime snapshots are effects.
 pub mod evidence;
+pub mod history;
 pub mod remote;
 use crate::{canonical, launch};
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,8 @@ pub struct Config {
     pub runtime_environment: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_restore: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub datasets: Vec<crate::datasets::Mount>,
 }
 pub fn absolute(path: &Path) -> bool {
     path.is_absolute()
@@ -71,7 +74,14 @@ pub fn environment_policy(base: &BTreeMap<String, String>, runtime: &[String]) -
     environment(base)
         && !base.keys().any(|name| {
             name.starts_with("ML_EXPD_")
-                || ["OUTPUT_DIR", "PROJECT_NAME", "RUN_ID", "ATTEMPT_ID"].contains(&name.as_str())
+                || [
+                    "OUTPUT_DIR",
+                    "PROJECT_NAME",
+                    "RUN_ID",
+                    "ATTEMPT_ID",
+                    "DATASETS_JSON",
+                ]
+                .contains(&name.as_str())
         })
         && runtime.len() <= 4
         && runtime.iter().all(|name| runtime_key(name))
@@ -105,6 +115,11 @@ impl Config {
             .unwrap_or_else(|| self.attempt_root.join("outputs"))
     }
     pub fn validate(&self) -> Result<()> {
+        crate::datasets::mounts(&self.datasets).map_err(|_| Error)?;
+        let project = self.binding()?.identity.project;
+        if self.datasets.iter().any(|v| v.receipt.project != project) {
+            return Err(Error);
+        }
         if let Some(value) = &self.checkpoint_restore {
             crate::checkpoints::restore_plan(value, None).map_err(|_| Error)?;
         }
@@ -188,6 +203,20 @@ pub fn execution_environment(
     }
     let mut values = config.base_environment.clone();
     values.extend(manifest.environment.clone());
+    if !config.datasets.is_empty() {
+        let inputs = values.get("INPUT_DIR").ok_or(AdmissionError::Binding)?;
+        let mapping: BTreeMap<_, _> = config
+            .datasets
+            .iter()
+            .map(|v| (v.name.clone(), format!("{inputs}/{}", v.name)))
+            .collect();
+        let expected = serde_json::to_string(&mapping).map_err(|_| AdmissionError::Binding)?;
+        if values.get("DATASETS_JSON") != Some(&expected) {
+            return Err(AdmissionError::Binding);
+        }
+    } else if values.contains_key("DATASETS_JSON") {
+        return Err(AdmissionError::Binding);
+    }
     if let Some(value) = &config.checkpoint_restore {
         let plan =
             crate::checkpoints::restore_plan(value, None).map_err(|_| AdmissionError::Binding)?;

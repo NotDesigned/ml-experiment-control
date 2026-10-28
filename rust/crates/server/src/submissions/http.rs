@@ -134,6 +134,16 @@ pub(crate) fn failure(error: Error) -> read_api::Error {
             "CHECKPOINT_NOT_FOUND",
             "the exact registered checkpoint is unavailable",
         ),
+        Error::DatasetMissing => (
+            404,
+            "DATASET_NOT_FOUND",
+            "the exact asset is not registered for this Project and backend",
+        ),
+        Error::DatasetUnavailable => (
+            503,
+            "DATASET_TRANSFER_UNCONFIRMED",
+            "dataset transfer or verification is unconfirmed; resume the same asset identity; no scheduler operation was issued",
+        ),
         Error::CheckpointConflict => (
             409,
             "CHECKPOINT_EVIDENCE_UNAVAILABLE",
@@ -159,11 +169,7 @@ pub(crate) fn failure(error: Error) -> read_api::Error {
             "RUN_CREATION_DISABLED",
             "native Run creation is not enabled for this Project",
         ),
-        Error::Admission(_) => (
-            422,
-            "SUBMISSION_ADMISSION_REJECTED",
-            "Run resources, provenance, inputs or budget fail native admission",
-        ),
+        Error::Admission(cause) => (422, "SUBMISSION_ADMISSION_REJECTED", cause.0),
         Error::Authority | Error::Conflict | Error::Configuration => (
             409,
             "SUBMISSION_EVIDENCE_UNAVAILABLE",
@@ -364,8 +370,11 @@ struct Acknowledge {
 enum Operation {
     Authorize(String),
     Execute(String),
+    Cancel(String),
+    Retry(ml_exp_core::first_submission::native::retry::Request),
     Reconcile,
     Refresh,
+    History,
     Checkpoint,
     Collect,
     Acknowledge(Acknowledge),
@@ -386,6 +395,19 @@ async fn change(
         return read_http::failure(error);
     }
     let operation = match operation.as_str() {
+        "retry" => {
+            decode::<ml_exp_core::first_submission::native::retry::Request>(body).and_then(|r| {
+                r.validate(&identity).map_err(|_| invalid())?;
+                Ok(Operation::Retry(r))
+            })
+        }
+        "cancel" => decode::<Execute>(body).and_then(|r| {
+            if r.confirmation == format!("CANCEL {identity}") {
+                Ok(Operation::Cancel(r.confirmation))
+            } else {
+                Err(invalid())
+            }
+        }),
         "authorize" => decode::<Authorize>(body).and_then(|request| {
             if request.reason.chars().count() > 4000 || request.reason.chars().any(char::is_control)
             {
@@ -403,6 +425,7 @@ async fn change(
         }),
         "reconcile" => decode::<Empty>(body).map(|_| Operation::Reconcile),
         "refresh" => decode::<Empty>(body).map(|_| Operation::Refresh),
+        "history" => decode::<Empty>(body).map(|_| Operation::History),
         "checkpoint" => decode::<Empty>(body).map(|_| Operation::Checkpoint),
         "collect" => decode::<Empty>(body).map(|_| Operation::Collect),
         "acknowledge" => decode::<Acknowledge>(body).map(Operation::Acknowledge),
@@ -414,7 +437,11 @@ async fn change(
     };
     let access = if matches!(
         &operation,
-        Operation::Refresh | Operation::Checkpoint | Operation::Collect | Operation::Acknowledge(_)
+        Operation::History
+            | Operation::Refresh
+            | Operation::Checkpoint
+            | Operation::Collect
+            | Operation::Acknowledge(_)
     ) {
         Access::Read
     } else {
@@ -434,8 +461,10 @@ async fn change(
                 expires: &now,
                 transition_id: &transition,
             };
-            let refreshing = matches!(&operation,Operation::Refresh | Operation::Checkpoint | Operation::Collect | Operation::Acknowledge(_));
+            let refreshing = matches!(&operation,Operation::History | Operation::Refresh | Operation::Checkpoint | Operation::Collect | Operation::Acknowledge(_));
             match operation {
+                Operation::Retry(request)=>service.retry(&identity,request,&now,&AtomicBool::new(false)),
+                Operation::Cancel(confirmation)=>service.cancel(&identity,&confirmation,&now,&AtomicBool::new(false)),
                 Operation::Authorize(reason) => {
                     service.authorize(&identity, "bearer-client", &reason, context)
                 }
@@ -443,6 +472,7 @@ async fn change(
                     service.execute(&identity, &confirmation, context, &AtomicBool::new(false))
                 }
                 Operation::Reconcile => service.reconcile(&identity, &now, &AtomicBool::new(false)),
+                Operation::History=>service.ingest_history(&identity,&AtomicBool::new(false)),
                 Operation::Refresh => service.refresh(&identity, &now, &AtomicBool::new(false)),
                 Operation::Checkpoint => service.refresh_checkpoint(&identity,&now,&AtomicBool::new(false)),
                 Operation::Collect=>service.collect_artifacts(&identity,&AtomicBool::new(false)),

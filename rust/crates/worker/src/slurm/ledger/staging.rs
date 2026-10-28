@@ -71,12 +71,26 @@ impl Helper {
         };
         let inputs = attempt.child(OsStr::new("inputs"), create)?;
         let outputs = attempt.child(OsStr::new("outputs"), create)?;
-        Ok(vec![project, run, attempts, attempt, inputs, outputs])
+        let mut named = Vec::new();
+        if let Some(package) = &plan.managed {
+            for dataset in &package.config.datasets {
+                named.push(inputs.child(OsStr::new(&dataset.name), create)?);
+            }
+        }
+        let mut directories = vec![project, run, attempts, attempt, inputs, outputs];
+        directories.extend(named);
+        Ok(directories)
     }
     pub(super) fn prepare_shared(&self, intent: &FrozenIntent, manifest: &[u8]) -> Result<()> {
         let Some(plan) = self.shared_plan(intent, manifest)? else {
             return Ok(());
         };
+        if let Some(package) = &plan.managed {
+            for dataset in &package.config.datasets {
+                let root = Directory::open(std::path::Path::new(&dataset.receipt.root), false)?;
+                ml_exp_io::datasets::verify(&root, &dataset.receipt.definition, true)?;
+            }
+        }
         let directories = self.shared_directories(&plan, true)?;
         let sealed = Sealed {
             plan,
@@ -135,6 +149,12 @@ impl Helper {
             return Err(Error::Bootstrap);
         }
         if let Some(package) = &sealed.plan.managed {
+            if fresh {
+                for dataset in &package.config.datasets {
+                    let root = Directory::open(std::path::Path::new(&dataset.receipt.root), false)?;
+                    ml_exp_io::datasets::verify(&root, &dataset.receipt.definition, true)?;
+                }
+            }
             if attempt.read_regular(
                 OsStr::new(ml_exp_core::slurm::managed::CONFIG_FILE),
                 1024 * 1024,

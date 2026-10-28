@@ -7,6 +7,10 @@ use ml_exp_core::{
 use serde_json::{Value, json};
 
 pub enum Command<'a> {
+    Retry {
+        submission: &'a str,
+        request: &'a ml_exp_core::first_submission::native::retry::Request,
+    },
     Create {
         project: &'a str,
         request: &'a ml_exp_core::first_submission::native::creation::Request,
@@ -32,6 +36,13 @@ pub enum Command<'a> {
         submission: &'a str,
         confirmation: &'a str,
     },
+    Cancel {
+        submission: &'a str,
+        confirmation: &'a str,
+    },
+    History {
+        submission: &'a str,
+    },
     Refresh {
         submission: &'a str,
     },
@@ -49,6 +60,11 @@ pub enum Command<'a> {
     },
 }
 enum Expected {
+    Retry {
+        parent: String,
+        request: ml_exp_core::first_submission::native::retry::Request,
+        request_sha256: String,
+    },
     Checkpoints {
         project: String,
         run: String,
@@ -101,9 +117,28 @@ fn reason(value: &str) -> Result<(), Error> {
 pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
     let refreshes = matches!(
         &command,
-        Command::Refresh { .. } | Command::Checkpoint { .. }
+        Command::History { .. } | Command::Refresh { .. } | Command::Checkpoint { .. }
     );
     let checkpoint = matches!(&command, Command::Checkpoint { .. });
+    if let Command::Retry {
+        submission,
+        request,
+    } = &command
+    {
+        let request_sha256 = request.identity(submission).map_err(|_| invalid())?;
+        return Ok(Plan {
+            path: format!("/api/submissions/{submission}/retry"),
+            body: Some(serde_json::to_vec(request).map_err(|_| invalid())?),
+            expected: Expected::Retry {
+                parent: (*submission).into(),
+                request: (*request).clone(),
+                request_sha256,
+            },
+            executes: false,
+            refreshes: false,
+            checkpoint: false,
+        });
+    }
     if let Command::Checkpoints {
         project,
         run,
@@ -170,6 +205,20 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
         Command::Existing { project, run } => (project, run, None),
         command => {
             let (id, suffix, body, executes) = match command {
+                Command::Cancel {
+                    submission,
+                    confirmation,
+                } => {
+                    if confirmation != format!("CANCEL {submission}") {
+                        return Err(invalid());
+                    }
+                    (
+                        submission,
+                        "/cancel",
+                        Some(json!({"confirmation":confirmation})),
+                        true,
+                    )
+                }
                 Command::Show { submission } => (submission, "", None, false),
                 Command::Authorize {
                     submission,
@@ -197,6 +246,7 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
                         true,
                     )
                 }
+                Command::History { submission } => (submission, "/history", Some(json!({})), false),
                 Command::Refresh { submission } => (submission, "/refresh", Some(json!({})), false),
                 Command::Checkpoint { submission } => {
                     (submission, "/checkpoint", Some(json!({})), false)
@@ -241,6 +291,54 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
     })
 }
 pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
+    if plan.path.ends_with("/history") {
+        if !matches!(&plan.expected,Expected::Submission(id) if value["submission_id"]==*id)
+            || !matches!(value["status"].as_str(), Some("PARTIAL" | "COMPLETE"))
+            || value["scheduler_mutation_performed"] != false
+            || value["source"] != "native-shared-metric-history"
+            || ["received_bytes", "records", "invalid_lines"]
+                .iter()
+                .any(|k| value[k].as_u64().is_none())
+        {
+            return Err(Error::Response);
+        }
+        return Ok(value);
+    }
+    if let Expected::Retry {
+        parent,
+        request,
+        request_sha256,
+    } = &plan.expected
+    {
+        let next =
+            ml_exp_core::first_submission::native::retry::next(&request.resume_from.attempt_id)
+                .map_err(|_| Error::Response)?;
+        if value["parent_submission_id"] != *parent
+            || value["run_id"] != request.resume_from.run_id
+            || value["attempt_id"] != next
+            || value["request_sha256"] != *request_sha256
+            || value["resume_from"] != json!(request.resume_from)
+            || value["max_gpu_hours"] != request.max_gpu_hours
+            || value["retry_state"] != "CREATED"
+            || value["scheduler_mutation_performed"] != false
+            || value["next_action"] != "PREPARE_NEW_ACTION"
+            || !value["reused"].is_boolean()
+            || value["project"]
+                .as_str()
+                .is_none_or(|v| identity::validate_id(v).is_err())
+            || value["reserved_gpu_seconds"]
+                .as_u64()
+                .is_none_or(|v| v == 0 || v as f64 > request.max_gpu_hours * 3600.)
+            || ["run_sha256", "attempt_sha256"].iter().any(|k| {
+                value[k]
+                    .as_str()
+                    .is_none_or(|v| !ml_exp_core::slurm::helper::valid_digest(v))
+            })
+        {
+            return Err(Error::Response);
+        }
+        return Ok(value);
+    }
     if let Expected::Checkpoints {
         project,
         run,
@@ -324,7 +422,9 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
     let run = value["run_id"].as_str().ok_or(Error::Response)?;
     identity::validate_id(project).map_err(|_| Error::Response)?;
     identity::validate_id(run).map_err(|_| Error::Response)?;
-    if value["attempt_id"] != "attempt-001"
+    if value["attempt_id"]
+        .as_str()
+        .is_none_or(|v| ml_exp_core::first_submission::native::retry::number(v).is_err())
         || value["operation"] != "SUBMIT_RUN"
         || value["confirmation"] != format!("EXECUTE {id}")
         || value["execution"]["status"] != value["status"]
@@ -353,12 +453,26 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
         Expected::Submission(expected) if id != expected => return Err(Error::Response),
         _ => {}
     }
+    if plan.path.ends_with("/cancel") {
+        let state: ml_exp_core::slurm::cancellation::State =
+            serde_json::from_value(value["cancellation"].clone()).map_err(|_| Error::Response)?;
+        state.validate().map_err(|_| Error::Response)?;
+        if value["execution"]["result"]["submission"]["backend_job_id"] != state.job_id {
+            return Err(Error::Response);
+        }
+    }
     Ok(value)
 }
 pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Error> {
     session::validate_health(health)?;
     let creates = matches!(plan.expected, Expected::Creation { .. });
-    let capability = if creates {
+    let capability = if plan.path.ends_with("/history") {
+        "native-metric-history.v1"
+    } else if matches!(plan.expected, Expected::Retry { .. }) {
+        "native-attempt-retry.v1"
+    } else if plan.path.ends_with("/cancel") {
+        "native-cancellation.v1"
+    } else if creates {
         "native-run-creation.v1"
     } else if plan.checkpoint || matches!(plan.expected, Expected::Checkpoints { .. }) {
         "native-checkpoints.v1"

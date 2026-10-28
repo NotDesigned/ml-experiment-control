@@ -17,6 +17,26 @@ pub struct Client {
 }
 
 impl Client {
+    pub(crate) fn send_dataset(
+        &self,
+        plan: &crate::datasets::Plan,
+    ) -> Result<serde_json::Value, Error> {
+        let endpoint = api_url(&self.base, &plan.path)?;
+        let response = self
+            .http
+            .request(plan.method.clone(), endpoint)
+            .bearer_auth(&self.token)
+            .header(
+                ml_exp_core::CLIENT_PROTOCOL_HEADER,
+                ml_exp_core::API_PROTOCOL_VERSION.to_string(),
+            )
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .timeout(plan.timeout)
+            .body(plan.body.clone())
+            .send()
+            .map_err(|_| Error::Transport)?;
+        self.decode(response)
+    }
     pub fn negotiate(&self) -> Result<serde_json::Value, Error> {
         let health = self.get("/api/health")?;
         crate::session::validate_health(&health)?;

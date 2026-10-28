@@ -23,7 +23,9 @@ impl Service {
         attempt: &str,
         id: Option<&str>,
     ) -> Result<Value> {
-        let prepared = self.saved(project, run)?.ok_or(Error::Missing)?;
+        let prepared = self
+            .saved_attempt(project, run, attempt)?
+            .ok_or(Error::Missing)?;
         self.check(&prepared)?;
         if prepared.binding.attempt_id != attempt {
             return Err(Error::CheckpointMissing);

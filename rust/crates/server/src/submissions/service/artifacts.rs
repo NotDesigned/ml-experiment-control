@@ -17,7 +17,11 @@ impl Service {
     fn artifact_name(prepared: &Prepared) -> Result<String> {
         Ok(format!(
             "{}.artifacts.json",
-            native::slot(&prepared.binding.project, &prepared.binding.run_id)?
+            native::attempt_slot(
+                &prepared.binding.project,
+                &prepared.binding.run_id,
+                &prepared.binding.attempt_id
+            )?
         ))
     }
     fn artifact_saved(&self, prepared: &Prepared) -> Result<Option<State>> {
@@ -226,13 +230,22 @@ impl Service {
         &self,
         snapshot: &mut crate::experiments::Snapshot,
     ) -> Result<()> {
-        let Some(prepared) = self.saved(&snapshot.project, &snapshot.run_id)? else {
-            return Ok(());
-        };
-        let Some(state) = self.artifact_saved(&prepared)? else {
-            return Ok(());
-        };
-        crate::read_model::project_artifacts(snapshot, &prepared.binding, &state)
-            .map_err(|_| Error::Authority)
+        let ids: Vec<_> = snapshot
+            .attempts
+            .iter()
+            .map(|v| v.attempt_id.clone())
+            .collect();
+        for id in ids {
+            let Some(prepared) = self.saved_attempt(&snapshot.project, &snapshot.run_id, &id)?
+            else {
+                continue;
+            };
+            let Some(state) = self.artifact_saved(&prepared)? else {
+                continue;
+            };
+            crate::read_model::project_artifacts(snapshot, &prepared.binding, &state)
+                .map_err(|_| Error::Authority)?;
+        }
+        Ok(())
     }
 }

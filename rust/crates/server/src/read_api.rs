@@ -785,7 +785,10 @@ impl Api {
             .map_err(|_| invalid_query())?
             .format(&time::format_description::well_known::Rfc3339)
             .map_err(|_| invalid_query())?;
-        let submission = match service.for_run(project, run, &now) {
+        let submission = match attempt
+            .map(|attempt| service.for_attempt(project, run, attempt, &now))
+            .unwrap_or_else(|| service.for_run(project, run, &now))
+        {
             Ok(value) => value,
             Err(crate::submissions::Error::Missing) => return Ok(value),
             Err(cause) => return Err(crate::submissions::http::failure(cause)),
@@ -966,6 +969,12 @@ pub fn journal_binding_matches(snapshot: &Snapshot, binding: Option<&Value>) -> 
     };
     if ml.get("project").and_then(Value::as_str) != Some(&snapshot.project)
         || ml.get("run_id").and_then(Value::as_str) != Some(&snapshot.run_id)
+    {
+        return false;
+    }
+    if ml
+        .get("native_run_sha256")
+        .is_some_and(|v| v.as_str() != Some(&snapshot.run.raw_sha256))
     {
         return false;
     }

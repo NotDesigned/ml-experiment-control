@@ -326,6 +326,7 @@ mod tests {
         (
             temp,
             Arc::new(AppState {
+                data_slots: Arc::new(tokio::sync::Semaphore::new(4)),
                 auth: crate::Auth {
                     token: TOKEN.into(),
                 },

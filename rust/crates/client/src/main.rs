@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use ml_exp_client::{
-    Client, artifacts, config, credentials, observation, presentation, projects, read, session,
-    sources, status, submissions, watch,
+    Client, artifacts, config, credentials, datasets, observation, presentation, projects, read,
+    session, sources, status, submissions, watch,
 };
 use std::{
     io::{self, Read},
@@ -27,6 +27,11 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Upload or inspect immutable datasets on a configured backend.
+    Data {
+        #[command(subcommand)]
+        command: Data,
+    },
     /// Validate the authenticated protocol handshake (no job submission).
     Check,
     /// Read a protocol-2 JSON endpoint under /api/.
@@ -55,6 +60,25 @@ enum Command {
     Contract {
         #[command(subcommand)]
         command: Contract,
+    },
+}
+#[derive(Subcommand)]
+enum Data {
+    Upload {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        executor: String,
+        #[arg(long)]
+        directory: PathBuf,
+    },
+    Show {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        executor: String,
+        #[arg(long)]
+        asset: String,
     },
 }
 
@@ -215,6 +239,30 @@ impl Target {
 }
 #[derive(Subcommand)]
 enum Run {
+    /// Ingest the next metrics history page; repeat until COMPLETE. Does not change the job.
+    History { submission: String },
+    /// Append a new Attempt from an explicit checkpoint and cumulative budget; does not submit.
+    Retry {
+        submission: String,
+        #[arg(long)]
+        confirmation: String,
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        attempt: String,
+        #[arg(long)]
+        checkpoint: String,
+        #[arg(long)]
+        max_gpu_hours: f64,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+    /// Cancel an exact owned job; repeated calls reconcile the same cancel intent.
+    Cancel {
+        submission: String,
+        #[arg(long)]
+        confirmation: String,
+    },
     /// Create immutable Run/Attempt metadata from one local JSON configuration; does not submit.
     Create {
         #[arg(long)]
@@ -328,6 +376,14 @@ impl Run {
     }
     fn submission_plan(&self) -> Result<Option<submissions::Plan>, ml_exp_client::Error> {
         let command = match self {
+            Self::History { submission } => submissions::Command::History { submission },
+            Self::Cancel {
+                submission,
+                confirmation,
+            } => submissions::Command::Cancel {
+                submission,
+                confirmation,
+            },
             Self::Prepare {
                 project,
                 run,
@@ -376,6 +432,18 @@ enum Output {
     Text(String),
 }
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    if let Command::Data { command } = &args.command {
+        match command {
+            Data::Upload {
+                project, executor, ..
+            } => datasets::validate(project, executor, None)?,
+            Data::Show {
+                project,
+                executor,
+                asset,
+            } => datasets::validate(project, executor, Some(asset))?,
+        }
+    }
     // Business parameter validation precedes config or credential file loading.
     if let Command::Run {
         command:
@@ -449,6 +517,33 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 request: &request,
             })?)
         }
+        Command::Run {
+            command:
+                Run::Retry {
+                    submission,
+                    confirmation,
+                    run,
+                    attempt,
+                    checkpoint,
+                    max_gpu_hours,
+                    reason,
+                },
+        } => {
+            let request = ml_exp_core::first_submission::native::retry::Request {
+                confirmation: confirmation.clone(),
+                resume_from: ml_exp_core::checkpoints::Reference {
+                    run_id: run.clone(),
+                    attempt_id: attempt.clone(),
+                    checkpoint_id: checkpoint.clone(),
+                },
+                max_gpu_hours: *max_gpu_hours,
+                reason: reason.clone(),
+            };
+            Some(submissions::plan(submissions::Command::Retry {
+                submission,
+                request: &request,
+            })?)
+        }
         Command::Run { command } => command.submission_plan()?,
         _ => None,
     };
@@ -519,6 +614,21 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             let token = credentials::load_token(plan.token_source)?;
             let client = Client::new(&plan.base_url, token)?;
             match command {
+                Command::Data { command } => {
+                    let health = client.negotiate()?;
+                    Output::Json(match command {
+                        Data::Upload {
+                            project,
+                            executor,
+                            directory,
+                        } => datasets::upload(&client, &project, &executor, &directory, &health)?,
+                        Data::Show {
+                            project,
+                            executor,
+                            asset,
+                        } => datasets::show(&client, &project, &executor, &asset, &health)?,
+                    })
+                }
                 Command::Check => Output::Json(client.negotiate()?),
                 Command::Get { path } => Output::Json(client.get(&path)?),
                 Command::Project { .. } => {
@@ -563,12 +673,15 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             !keep,
                             &health,
                         )?),
-                        Run::Create { .. }
+                        Run::History { .. }
+                        | Run::Retry { .. }
+                        | Run::Create { .. }
                         | Run::Prepare { .. }
                         | Run::Preparation { .. }
                         | Run::Submission { .. }
                         | Run::Authorize { .. }
                         | Run::Execute { .. }
+                        | Run::Cancel { .. }
                         | Run::Reconcile { .. }
                         | Run::Refresh { .. }
                         | Run::Checkpoint { .. }

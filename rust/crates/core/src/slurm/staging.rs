@@ -76,6 +76,16 @@ pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Op
         command: decode(&doc["command"])?,
     };
     spec.validate().map_err(|_| helper::Error::Metadata)?;
+    let datasets = crate::datasets::document_mounts(
+        &doc,
+        &intent.scope.project,
+        &intent.target,
+        &spec.storage.project_data_root,
+    )
+    .map_err(|_| helper::Error::Identity)?;
+    if !datasets.is_empty() && requirement.worker.is_none() {
+        return Err(helper::Error::Identity);
+    }
     let run_dir = format!(
         "{}/{}/{}",
         requirement.runs_root, intent.scope.project, intent.scope.run_id
@@ -97,7 +107,17 @@ pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Op
                 &requirement.runs_root,
             )
             .map_err(|_| helper::Error::Identity)?;
-            if reference.run_id == intent.scope.run_id || requirement.worker.is_none() {
+            if reference.run_id == intent.scope.run_id {
+                let receipt: crate::first_submission::native::retry::Receipt =
+                    decode(&doc["native_retry"])?;
+                receipt
+                    .validate(&doc, &intent.scope.attempt_id)
+                    .map_err(|_| helper::Error::Identity)?;
+                if receipt.request.resume_from != reference {
+                    return Err(helper::Error::Identity);
+                }
+            }
+            if requirement.worker.is_none() {
                 return Err(helper::Error::Identity);
             }
         }
@@ -116,11 +136,12 @@ pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Op
             .worker
             .as_ref()
             .map(|runtime| {
-                super::managed::plan_restoring(
+                super::managed::plan_with_inputs(
                     &intent.scope,
                     &spec,
                     runtime,
                     doc.get("native_checkpoint"),
+                    &datasets,
                 )
             })
             .transpose()?,

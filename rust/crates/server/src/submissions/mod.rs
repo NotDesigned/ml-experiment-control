@@ -7,3 +7,4 @@ mod service;
 pub use service::{Backend, Context, Error, Service};
 
 mod artifact_http;
+pub(crate) mod dataset_http;
