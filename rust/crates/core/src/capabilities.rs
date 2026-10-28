@@ -333,11 +333,13 @@ pub fn missing_worker_capabilities(
     if capability.api_relay {
         required.push("api-relay.v1");
     }
-    required
+    let mut missing: Vec<_> = required
         .into_iter()
         .filter(|value| !worker_capabilities.iter().any(|item| item == value))
         .map(str::to_owned)
-        .collect()
+        .collect();
+    missing.sort();
+    missing
 }
 
 #[cfg(test)]
@@ -459,7 +461,7 @@ mod tests {
             cpus: 64,
             memory_gb: 512,
         });
-        let mut large = capability(Backend::Sensecore);
+        let mut large = capability(Backend::Slurm);
         large.capacity = Some(Resources {
             gpus: 8,
             cpus: 128,
@@ -478,7 +480,7 @@ mod tests {
             ],
             None,
             Some(&Selector {
-                backend: None,
+                backend: Some(Backend::Slurm),
                 candidates: Vec::new(),
             }),
             &request(),
