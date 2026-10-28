@@ -122,6 +122,8 @@ pub enum OperationTag {
     PrepareSubmission,
     Submit,
     InspectSubmission,
+    ObserveJob,
+    CancelJob,
 }
 
 // Never debug-format a manifest, script or request frame.
@@ -131,6 +133,8 @@ enum Operation {
     PrepareSubmission { manifest: String, script: String },
     Submit,
     InspectSubmission,
+    ObserveJob { job_id: String },
+    CancelJob { job_id: String },
 }
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -167,6 +171,30 @@ impl Request {
         request.validate()?;
         Ok(request)
     }
+    pub fn observe_job(intent: FrozenIntent, job_id: String) -> Result<Self> {
+        let request = Self {
+            version: PROTOCOL_VERSION,
+            intent,
+            operation: Operation::ObserveJob { job_id },
+        };
+        request.validate()?;
+        Ok(request)
+    }
+    pub fn cancel_job(intent: FrozenIntent, job_id: String) -> Result<Self> {
+        let request = Self {
+            version: PROTOCOL_VERSION,
+            intent,
+            operation: Operation::CancelJob { job_id },
+        };
+        request.validate()?;
+        Ok(request)
+    }
+    pub fn requested_job_id(&self) -> Option<&str> {
+        match &self.operation {
+            Operation::ObserveJob { job_id } | Operation::CancelJob { job_id } => Some(job_id),
+            _ => None,
+        }
+    }
     pub fn intent(&self) -> &FrozenIntent {
         &self.intent
     }
@@ -175,6 +203,8 @@ impl Request {
             Operation::PrepareSubmission { .. } => OperationTag::PrepareSubmission,
             Operation::Submit => OperationTag::Submit,
             Operation::InspectSubmission => OperationTag::InspectSubmission,
+            Operation::ObserveJob { .. } => OperationTag::ObserveJob,
+            Operation::CancelJob { .. } => OperationTag::CancelJob,
         }
     }
     pub fn prepared_content(&self) -> Option<(&str, &str)> {
@@ -188,6 +218,12 @@ impl Request {
             return Err(Error::Version);
         }
         self.intent.validate()?;
+        if let Some(job_id) = self.requested_job_id() {
+            let job = JobId::parse(job_id).map_err(|_| Error::Identity)?;
+            if job.as_str().contains('_') {
+                return Err(Error::Identity);
+            }
+        }
         if let Some((manifest, script)) = self.prepared_content() {
             if manifest.is_empty()
                 || script.is_empty()
@@ -262,6 +298,9 @@ pub enum UnknownReason {
     StorageUnavailable,
     LockUnavailable,
     Cancelled,
+    SchedulerNotObserved,
+    SchedulerUnavailable,
+    SchedulerEvidenceInvalid,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -283,6 +322,14 @@ pub enum ReplyOutcome {
     Submitted {
         job_id: String,
     },
+    /// Current scheduler evidence with exact ownership checked in the same row.
+    JobObserved {
+        observation: Box<super::StatusObservation>,
+    },
+    /// The durable cancel marker exists; no terminal provider read is proved.
+    CancelPending {
+        job_id: String,
+    },
     Unknown {
         reason: UnknownReason,
     },
@@ -302,8 +349,38 @@ impl Reply {
             identity: request.identity()?,
             outcome,
         };
-        reply.validate()?;
+        reply.validate_for(request)?;
         Ok(reply)
+    }
+    fn validate_for(&self, request: &Request) -> Result<()> {
+        self.validate()?;
+        if self.identity != request.identity()? {
+            return Err(Error::Identity);
+        }
+        match &self.outcome {
+            ReplyOutcome::JobObserved { observation }
+                if request.requested_job_id() != Some(observation.status.job_id.as_str())
+                    || observation.status.scheduler_name != request.intent.scheduler_name
+                    || observation.status.ssh_alias != request.intent.target.backend_id =>
+            {
+                return Err(Error::Identity);
+            }
+            ReplyOutcome::CancelPending { job_id }
+                if request.requested_job_id() != Some(job_id.as_str()) =>
+            {
+                return Err(Error::Identity);
+            }
+            _ => {}
+        }
+        // A scheduler reason is untrusted text. Refuse known-token echoes;
+        // never rewrite frozen identity or scientific content to sanitize it.
+        if serde_json::to_string(&self.outcome)
+            .map_err(|_| Error::Metadata)?
+            .contains(&request.intent.submission_token)
+        {
+            return Err(Error::Metadata);
+        }
+        Ok(())
     }
     fn validate(&self) -> Result<()> {
         if !valid_digest(&self.identity.request_sha256)
@@ -316,6 +393,36 @@ impl Reply {
             if job.as_str().contains('_') {
                 return Err(Error::Identity);
             }
+        }
+        match &self.outcome {
+            ReplyOutcome::JobObserved { observation } => {
+                observation.status.validate().map_err(|_| Error::Metadata)?;
+                if observation.retained_previous
+                    || observation.checked_at != observation.status.observed_at
+                    || !matches!(
+                        self.identity.operation,
+                        OperationTag::ObserveJob | OperationTag::CancelJob
+                    )
+                {
+                    return Err(Error::Metadata);
+                }
+            }
+            ReplyOutcome::CancelPending { job_id } => {
+                let job = JobId::parse(job_id).map_err(|_| Error::Identity)?;
+                if job.as_str().contains('_') || self.identity.operation != OperationTag::CancelJob
+                {
+                    return Err(Error::Metadata);
+                }
+            }
+            ReplyOutcome::Prepared | ReplyOutcome::Submitted { .. }
+                if matches!(
+                    self.identity.operation,
+                    OperationTag::ObserveJob | OperationTag::CancelJob
+                ) =>
+            {
+                return Err(Error::Metadata);
+            }
+            _ => {}
         }
         if self.identity.operation == OperationTag::Submit && self.outcome == ReplyOutcome::Prepared
         {
@@ -470,10 +577,7 @@ pub fn encode_reply(reply: &Reply) -> Result<Vec<u8>> {
 }
 pub fn decode_reply(frame: &[u8], expected: &Request) -> Result<Reply> {
     let reply: Reply = serde_json::from_slice(body(frame)?).map_err(|_| Error::Metadata)?;
-    reply.validate()?;
-    if reply.identity != expected.identity()? {
-        return Err(Error::Identity);
-    }
+    reply.validate_for(expected)?;
     Ok(reply)
 }
 

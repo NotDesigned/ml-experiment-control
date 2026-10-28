@@ -400,7 +400,12 @@ configuration fixes target, root, executable, environment and finite budgets.
 stdin/stdout must be pipes or sockets: one 4-byte-length-prefixed control message,
 at most 8 MiB, followed by EOF, with bounded read/write waiting. This cap is for
 metadata, not datasets or checkpoints. There is no general command RPC or implicit
-bootstrap. All `safe_to_retry` results are false; a submitted receipt alone does
+bootstrap. Optional `scheduler` configuration fixes absolute `sacct_program`,
+`squeue_program`, `scancel_program` paths and a single `partition`. Owned observe
+and cancel operations require a matching durable submission receipt and an exact
+scheduler row (ID, name, Comment token and partition). Cancellation persists its
+outbox before one effect; repeated calls only observe until terminal evidence.
+All `safe_to_retry` results are false; a submitted receipt alone does
 not verify scheduler ownership. Do not configure this preview against an existing
 cluster workspace. Use the temporary-state tests until the remaining provider
 and Action integration gates are complete.

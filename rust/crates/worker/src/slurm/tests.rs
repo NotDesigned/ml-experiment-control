@@ -55,6 +55,7 @@ fn config(root: &Path) -> HelperConfig {
         ]),
         lock_timeout: Duration::from_secs(2),
         execution_timeout: Duration::from_secs(1),
+        scheduler: None,
     }
 }
 fn fixture(body: &str) -> (tempfile::TempDir, Helper) {
@@ -465,6 +466,9 @@ fn bootstrap_rejects_unknown_content_and_invalid_trusted_environment() {
     for key in [
         "SBATCH_TIMELIMIT",
         "SBATCH_JOB_NAME",
+        "SQUEUE_FORMAT",
+        "SACCT_FORMAT",
+        "SCANCEL_INTERACTIVE",
         "SLURM_CLUSTERS",
         "SLURM_CONF",
         "SLURM_CONF_SERVER",
@@ -510,4 +514,232 @@ fn cancelling_before_dispatch_creates_no_attempt_and_lock_wait_is_bounded() {
     assert!(started.elapsed() < Duration::from_secs(3));
     FileExt::unlock(&file).unwrap();
     assert_eq!(calls(root.path()), 0);
+}
+
+fn job_fixture(cancel_body: &str) -> (tempfile::TempDir, Helper) {
+    let root = tempfile::tempdir().unwrap();
+    fake_program(root.path(), "printf '12345\\n'");
+    for (name, body) in [
+        (
+            "sacct",
+            "[ \"$1\" = -j ] && [ \"$2\" = 12345 ] && [ \"$3\" = -X ] || exit 99; cat \"$EVIDENCE\"",
+        ),
+        (
+            "squeue",
+            "[ \"$1\" = -j ] && [ \"$2\" = 12345 ] || exit 99; cat \"$QUEUE\"",
+        ),
+        ("scancel", cancel_body),
+    ] {
+        fs::write(root.path().join(name), format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(root.path().join(name), fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let mut cfg = config(root.path());
+    cfg.scheduler = Some(super::SchedulerTools {
+        sacct_program: root.path().join("sacct"),
+        squeue_program: root.path().join("squeue"),
+        scancel_program: root.path().join("scancel"),
+        partition: "h100".into(),
+    });
+    for (key, file) in [
+        ("EVIDENCE", "evidence"),
+        ("QUEUE", "queue"),
+        ("CANCEL_CALLS", "cancel-calls"),
+    ] {
+        cfg.environment
+            .insert(key.into(), root.path().join(file).display().to_string());
+    }
+    let helper = Helper::initialize(cfg).unwrap();
+    let prepare = request();
+    handle(&helper, &prepare);
+    handle(&helper, &Request::submit(prepare.intent().clone()).unwrap());
+    (root, helper)
+}
+fn evidence(root: &Path, state: &str, marker: &str) {
+    fs::write(
+        root.join("evidence"),
+        format!("12345|train--attempt-001|ml-exp-{marker}|h100|{state}|00:01|0:0\n"),
+    )
+    .unwrap();
+}
+fn job_request(cancel: bool) -> Request {
+    if cancel {
+        Request::cancel_job(request().intent().clone(), "12345".into()).unwrap()
+    } else {
+        Request::observe_job(request().intent().clone(), "12345".into()).unwrap()
+    }
+}
+const CANCEL: &str =
+    "[ \"$#\" -eq 1 ] && [ \"$1\" = 12345 ] || exit 99; printf 'call\\n' >> \"$CANCEL_CALLS\"";
+#[test]
+fn owned_job_progress_and_durable_cancel_never_reissue_after_lost_response() {
+    let (root, helper) = job_fixture(CANCEL);
+    evidence(root.path(), "PENDING", &"a".repeat(32));
+    fs::write(
+        root.path().join("queue"),
+        format!(
+            "12345|train--attempt-001|ml-exp-{}|h100|PENDING|0:01|0:0|Resources\n",
+            "a".repeat(32)
+        ),
+    )
+    .unwrap();
+    let ReplyOutcome::JobObserved { observation } = handle(&helper, &job_request(false)).outcome
+    else {
+        panic!("missing owned status");
+    };
+    assert_eq!(observation.status.reason.as_deref(), Some("Resources"));
+    assert_eq!(
+        observation.status.state,
+        ml_exp_core::state::RunState::Queued
+    );
+    let cancel = job_request(true);
+    assert_eq!(
+        handle(&helper, &cancel).outcome,
+        ReplyOutcome::CancelPending {
+            job_id: "12345".into()
+        }
+    );
+    drop(helper);
+    // Reopen trusted config without bootstrap: durable REQUESTED prevents replay.
+    let mut cfg = config(root.path());
+    cfg.scheduler = Some(super::SchedulerTools {
+        sacct_program: root.path().join("sacct"),
+        squeue_program: root.path().join("squeue"),
+        scancel_program: root.path().join("scancel"),
+        partition: "h100".into(),
+    });
+    for (key, file) in [
+        ("EVIDENCE", "evidence"),
+        ("QUEUE", "queue"),
+        ("CANCEL_CALLS", "cancel-calls"),
+    ] {
+        cfg.environment
+            .insert(key.into(), root.path().join(file).display().to_string());
+    }
+    let reopened = Helper::open(cfg).unwrap();
+    evidence(root.path(), "RUNNING", &"a".repeat(32));
+    assert!(matches!(
+        handle(&reopened, &cancel).outcome,
+        ReplyOutcome::CancelPending { .. }
+    ));
+    evidence(root.path(), "CANCELLED", &"a".repeat(32));
+    let terminal = handle(&reopened, &cancel);
+    assert!(
+        matches!(&terminal.outcome, ReplyOutcome::JobObserved {observation} if observation.status.state == ml_exp_core::state::RunState::Cancelled)
+    );
+    fs::write(root.path().join("evidence"), "invalid").unwrap();
+    assert_eq!(handle(&reopened, &cancel).outcome, terminal.outcome);
+    assert_eq!(
+        fs::read_to_string(root.path().join("cancel-calls")).unwrap(),
+        "call\n"
+    );
+    assert!(!terminal.safe_to_retry());
+}
+#[test]
+fn foreign_missing_duplicate_and_failed_evidence_never_cancel() {
+    for text in [
+        format!(
+            "12345|train--attempt-001|ml-exp-{}|h100|RUNNING|0:01|0:0\n",
+            "b".repeat(32)
+        ),
+        "12345|foreign|wrong|h100|RUNNING|0:01|0:0\n".into(),
+        "bad\nbad\n".into(),
+        String::new(),
+    ] {
+        let (root, helper) = job_fixture(CANCEL);
+        fs::write(root.path().join("evidence"), text).unwrap();
+        fs::write(root.path().join("queue"), "").unwrap();
+        assert!(matches!(
+            handle(&helper, &job_request(true)).outcome,
+            ReplyOutcome::Unknown { .. }
+        ));
+        assert!(!root.path().join("cancel-calls").exists());
+        assert!(!claim(root.path()).join("cancel.started.json").exists());
+    }
+}
+#[test]
+fn cancel_timeout_leaves_outbox_and_missing_or_corrupt_head_cannot_replay() {
+    let (root, helper) = job_fixture(&format!("{CANCEL}; sleep 2"));
+    evidence(root.path(), "RUNNING", &"a".repeat(32));
+    let cancel = job_request(true);
+    assert!(matches!(
+        handle(&helper, &cancel).outcome,
+        ReplyOutcome::CancelPending { .. }
+    ));
+    assert!(matches!(
+        handle(&helper, &cancel).outcome,
+        ReplyOutcome::CancelPending { .. }
+    ));
+    let head = claim(root.path()).join("cancel-intent.json");
+    let original = fs::read(&head).unwrap();
+    fs::remove_file(&head).unwrap();
+    assert!(helper.handle(&cancel, &AtomicBool::new(false)).is_err());
+    fs::write(&head, "{}").unwrap();
+    assert!(helper.handle(&cancel, &AtomicBool::new(false)).is_err());
+    fs::write(&head, original).unwrap();
+    assert!(matches!(
+        handle(&helper, &cancel).outcome,
+        ReplyOutcome::CancelPending { .. }
+    ));
+    assert_eq!(
+        fs::read_to_string(root.path().join("cancel-calls")).unwrap(),
+        "call\n"
+    );
+}
+#[test]
+fn unavailable_tools_wrong_receipt_and_known_token_echo_fail_closed() {
+    let (root, helper) = fixture("printf '12345\\n'");
+    let prepare = request();
+    handle(&helper, &prepare);
+    handle(&helper, &Request::submit(prepare.intent().clone()).unwrap());
+    assert!(matches!(
+        handle(&helper, &job_request(false)).outcome,
+        ReplyOutcome::Rejected {
+            code: helper::Rejection::UnsupportedOperation
+        }
+    ));
+    let wrong = Request::cancel_job(prepare.intent().clone(), "67890".into()).unwrap();
+    assert!(matches!(
+        handle(&helper, &wrong).outcome,
+        ReplyOutcome::Rejected {
+            code: helper::Rejection::IdentityConflict
+        }
+    ));
+    assert_eq!(calls(root.path()), 1);
+    let (root, helper) = job_fixture(CANCEL);
+    evidence(root.path(), "PENDING", &"a".repeat(32));
+    fs::write(
+        root.path().join("queue"),
+        format!(
+            "12345|train--attempt-001|ml-exp-{}|h100|PENDING|0:01|0:0|secret {}\n",
+            "a".repeat(32),
+            "a".repeat(32)
+        ),
+    )
+    .unwrap();
+    assert!(
+        helper
+            .handle(&job_request(true), &AtomicBool::new(false))
+            .is_err()
+    );
+    assert!(!root.path().join("cancel-calls").exists());
+}
+
+#[test]
+fn immediate_cancel_success_requires_terminal_observation_and_stores_it() {
+    let body = format!(
+        "{CANCEL}; printf '12345|train--attempt-001|ml-exp-{}|h100|CANCELLED|0:02|0:15\\n' > \"$EVIDENCE\"",
+        "a".repeat(32)
+    );
+    let (root, helper) = job_fixture(&body);
+    evidence(root.path(), "RUNNING", &"a".repeat(32));
+    let cancel = job_request(true);
+    let result = handle(&helper, &cancel);
+    assert!(
+        matches!(&result.outcome,ReplyOutcome::JobObserved {observation} if observation.status.state==ml_exp_core::state::RunState::Cancelled)
+    );
+    assert_eq!(handle(&helper, &cancel).outcome, result.outcome);
+    assert_eq!(
+        fs::read_to_string(root.path().join("cancel-calls")).unwrap(),
+        "call\n"
+    );
 }

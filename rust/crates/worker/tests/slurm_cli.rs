@@ -174,6 +174,69 @@ fn binary_prepares_submits_and_inspects_one_frozen_claim_without_replaying_sbatc
     assert_eq!(fs::read_to_string(&fixture.calls).unwrap(), "call\n");
 }
 #[test]
+fn binary_observes_and_cancels_owned_job_once_across_separate_processes() {
+    let fixture = Fixture::new();
+    let root = fixture.config.parent().unwrap();
+    let evidence = root.join("evidence");
+    let cancel_calls = root.join("cancel-calls");
+    for (name, body) in [
+        ("sacct", "cat \"$EVIDENCE\""),
+        ("squeue", "exit 0"),
+        (
+            "scancel",
+            "[ \"$#\" = 1 ] && [ \"$1\" = 12345 ] || exit 99; printf 'call\\n' >> \"$CANCEL_CALLS\"",
+        ),
+    ] {
+        let path = root.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fixture.update(|value| {
+        value["scheduler"]=json!({"sacct_program":root.join("sacct"),"squeue_program":root.join("squeue"),"scancel_program":root.join("scancel"),"partition":"h100"});
+        value["environment"]["EVIDENCE"]=json!(evidence);
+        value["environment"]["CANCEL_CALLS"]=json!(cancel_calls);
+    });
+    fixture.initialize();
+    let prepare = request();
+    reply(
+        fixture.rpc(&helper::encode_request(&prepare).unwrap()),
+        &prepare,
+    );
+    let submit = Request::submit(prepare.intent().clone()).unwrap();
+    reply(
+        fixture.rpc(&helper::encode_request(&submit).unwrap()),
+        &submit,
+    );
+    fs::write(
+        &evidence,
+        "12345|train--attempt-001|ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|h100|RUNNING|0:01|0:0",
+    )
+    .unwrap();
+    let observe = Request::observe_job(prepare.intent().clone(), "12345".into()).unwrap();
+    assert!(
+        matches!(reply(fixture.rpc(&helper::encode_request(&observe).unwrap()),&observe).outcome,ReplyOutcome::JobObserved {observation} if observation.status.state==ml_exp_core::state::RunState::Running)
+    );
+    let cancel = Request::cancel_job(prepare.intent().clone(), "12345".into()).unwrap();
+    let frame = helper::encode_request(&cancel).unwrap();
+    for _ in 0..2 {
+        assert!(matches!(
+            reply(fixture.rpc(&frame), &cancel).outcome,
+            ReplyOutcome::CancelPending { .. }
+        ));
+    }
+    fs::write(
+        &evidence,
+        "12345|train--attempt-001|ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|h100|CANCELLED|0:02|0:15",
+    )
+    .unwrap();
+    let result = reply(fixture.rpc(&frame), &cancel);
+    assert!(
+        matches!(result.outcome,ReplyOutcome::JobObserved {observation} if observation.status.state==ml_exp_core::state::RunState::Cancelled)
+    );
+    assert_eq!(fs::read_to_string(cancel_calls).unwrap(), "call\n");
+    assert_eq!(fs::read_to_string(&fixture.calls).unwrap(), "call\n");
+}
+#[test]
 fn ordinary_rpc_never_bootstraps_or_repairs_missing_helper_locks() {
     let fixture = Fixture::new();
     let frame = helper::encode_request(&request()).unwrap();

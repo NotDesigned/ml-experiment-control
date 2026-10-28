@@ -125,6 +125,52 @@ pub struct JobStatus {
     pub queue: Option<QueueDetail>,
 }
 impl JobStatus {
+    /// Validate an IPC observation independently of serde's field types.
+    pub fn validate(&self) -> Result<(), Error> {
+        let source = self
+            .observation_source
+            .ok_or(Error::Evidence("status source"))?;
+        let scope = JobScope {
+            ssh_alias: self.ssh_alias.clone(),
+            job_id: self.job_id.clone(),
+            scheduler_name: self.scheduler_name.clone(),
+            partition: self.partition.clone(),
+        };
+        let mut row = vec![
+            self.job_id.as_str(),
+            &self.scheduler_name,
+            &self.partition,
+            &self.raw_state,
+            self.elapsed.as_deref().unwrap_or(""),
+            self.exit_code.as_deref().unwrap_or(""),
+        ];
+        if source == StatusSource::Squeue {
+            if self.exit_code.is_some() {
+                return Err(Error::Evidence("unobserved queue exit code"));
+            }
+            row.push(self.reason.as_deref().unwrap_or(""));
+        }
+        let mut parsed =
+            parse_job_status(&row.join("|"), &scope, source, self.observed_at.as_deref())?
+                .ok_or(Error::Evidence("missing status"))?;
+        if let Some(queue) = &self.queue {
+            if self.state != RunState::Queued
+                || source != StatusSource::Sacct
+                || queue.source != "slurm-squeue"
+                || queue.reason != self.reason
+                || self.reason.as_deref().is_some_and(|v| !printable(v, 1024))
+                || queue.availability != Availability::Observed && self.reason.is_some()
+            {
+                return Err(Error::Evidence("queue detail"));
+            }
+            parsed.reason = self.reason.clone();
+            parsed.queue = self.queue.clone();
+        }
+        if &parsed != self {
+            return Err(Error::Evidence("status projection"));
+        }
+        Ok(())
+    }
     fn unknown(scope: &JobScope) -> Self {
         Self {
             ssh_alias: scope.ssh_alias.clone(),
@@ -251,13 +297,49 @@ pub fn parse_job_status(
     }))
 }
 
+/// Parse status and ownership in the same scheduler row. Looking up a Comment
+/// separately and then reading status would permit a job-ID reuse race.
+pub fn parse_owned_job_status(
+    output: &str,
+    scope: &JobScope,
+    token: &str,
+    source: StatusSource,
+    observed_at: Option<&str>,
+) -> Result<Option<JobStatus>, Error> {
+    let marker = submission_marker(token).map_err(|_| Error::Ownership)?;
+    if output.len() > MAX_OUTPUT {
+        return Err(Error::Evidence("status size"));
+    }
+    let rows: Vec<_> = output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if rows.is_empty() {
+        return parse_job_status("", scope, source, observed_at);
+    }
+    if rows.len() != 1 {
+        return Err(Error::Ambiguous);
+    }
+    let row = fields(rows[0], if source == StatusSource::Sacct { 7 } else { 8 })?;
+    if row[2] != marker {
+        return Err(Error::Ownership);
+    }
+    let projected = row[..2]
+        .iter()
+        .chain(row[3..].iter())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("|");
+    parse_job_status(&projected, scope, source, observed_at)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Query<'a> {
     NotRequested,
     Failed,
     Success(&'a str),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Diagnostic {
     NoEvidence,
@@ -267,7 +349,7 @@ pub enum Diagnostic {
     QueueUnavailable,
     RegressiveState,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusObservation {
     pub status: JobStatus,
     pub checked_at: Option<String>,
@@ -284,6 +366,47 @@ pub fn observe_status(
     accounting: Query<'_>,
     queue: Query<'_>,
     observed_at: Option<&str>,
+) -> Result<StatusObservation, Error> {
+    observe_with(
+        scope,
+        previous,
+        accounting,
+        queue,
+        observed_at,
+        &parse_job_status,
+    )
+}
+
+/// Same reducer with a submission-marker check in every accepted row. Query
+/// failures preserve previous evidence; no missing row proves scheduler absence.
+pub fn observe_owned_status(
+    scope: &JobScope,
+    token: &str,
+    previous: Option<&JobStatus>,
+    accounting: Query<'_>,
+    queue: Query<'_>,
+    observed_at: Option<&str>,
+) -> Result<StatusObservation, Error> {
+    submission_marker(token).map_err(|_| Error::Ownership)?;
+    observe_with(
+        scope,
+        previous,
+        accounting,
+        queue,
+        observed_at,
+        &|text, scope, source, at| parse_owned_job_status(text, scope, token, source, at),
+    )
+}
+
+type StatusParser<'a> =
+    dyn Fn(&str, &JobScope, StatusSource, Option<&str>) -> Result<Option<JobStatus>, Error> + 'a;
+fn observe_with(
+    scope: &JobScope,
+    previous: Option<&JobStatus>,
+    accounting: Query<'_>,
+    queue: Query<'_>,
+    observed_at: Option<&str>,
+    parse: &StatusParser<'_>,
 ) -> Result<StatusObservation, Error> {
     scope.validate()?;
     if observed_at.is_some_and(|v| !printable(v, 64)) {
@@ -302,14 +425,12 @@ pub fn observe_status(
     };
     let mut status = match accounting {
         Query::Failed => return Ok(retain(Diagnostic::QueryUnavailable)),
-        Query::Success(text) => {
-            match parse_job_status(text, scope, StatusSource::Sacct, observed_at) {
-                Ok(Some(status)) => status,
-                Err(_) => return Ok(retain(Diagnostic::MalformedOrForeignEvidence)),
-                Ok(None) => return observe_queue(scope, previous, queue, observed_at),
-            }
-        }
-        Query::NotRequested => return observe_queue(scope, previous, queue, observed_at),
+        Query::Success(text) => match parse(text, scope, StatusSource::Sacct, observed_at) {
+            Ok(Some(status)) => status,
+            Err(_) => return Ok(retain(Diagnostic::MalformedOrForeignEvidence)),
+            Ok(None) => return observe_queue(scope, previous, queue, observed_at, parse),
+        },
+        Query::NotRequested => return observe_queue(scope, previous, queue, observed_at, parse),
     };
     if previous.is_some_and(|prior| !prior.state.allows(status.state)) {
         return Ok(retain(Diagnostic::RegressiveState));
@@ -327,17 +448,15 @@ pub fn observe_status(
                 diagnostic = Some(Diagnostic::QueueUnavailable);
             }
             Query::NotRequested => diagnostic = Some(Diagnostic::QueueNotObserved),
-            Query::Success(text) => {
-                match parse_job_status(text, scope, StatusSource::Squeue, observed_at) {
-                    Ok(Some(other)) if other.state == RunState::Queued => {
-                        status.reason = other.reason;
-                        detail.reason = status.reason.clone();
-                        detail.availability = Availability::Observed;
-                    }
-                    Ok(_) => diagnostic = Some(Diagnostic::QueueNotObserved),
-                    Err(_) => diagnostic = Some(Diagnostic::MalformedOrForeignEvidence),
+            Query::Success(text) => match parse(text, scope, StatusSource::Squeue, observed_at) {
+                Ok(Some(other)) if other.state == RunState::Queued => {
+                    status.reason = other.reason;
+                    detail.reason = status.reason.clone();
+                    detail.availability = Availability::Observed;
                 }
-            }
+                Ok(_) => diagnostic = Some(Diagnostic::QueueNotObserved),
+                Err(_) => diagnostic = Some(Diagnostic::MalformedOrForeignEvidence),
+            },
         }
         status.queue = Some(detail);
     }
@@ -353,9 +472,10 @@ fn observe_queue(
     previous: Option<&JobStatus>,
     queue: Query<'_>,
     observed_at: Option<&str>,
+    parse: &StatusParser<'_>,
 ) -> Result<StatusObservation, Error> {
     let result = match queue {
-        Query::Success(text) => parse_job_status(text, scope, StatusSource::Squeue, observed_at),
+        Query::Success(text) => parse(text, scope, StatusSource::Squeue, observed_at),
         Query::Failed => Err(Error::Unavailable),
         Query::NotRequested => Ok(None),
     };

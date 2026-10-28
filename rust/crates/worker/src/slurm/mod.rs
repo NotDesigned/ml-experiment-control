@@ -1,8 +1,9 @@
 //! Scoped native Slurm metadata operations. No arbitrary shell RPC, data upload,
-//! automatic retry, runtime staging or scheduler-ownership verification.
+//! automatic retry or runtime staging. Observation/cancellation require exact
+//! scheduler ownership as well as a durable native submission receipt.
 #![forbid(unsafe_code)]
 mod ledger;
-pub use ledger::{Helper, HelperConfig};
+pub use ledger::{Helper, HelperConfig, SchedulerTools};
 
 use ml_exp_core::slurm::helper;
 pub type Result<T> = std::result::Result<T, Error>;

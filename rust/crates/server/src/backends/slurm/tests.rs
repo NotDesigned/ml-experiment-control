@@ -109,9 +109,23 @@ fn ledger_config(root: &Path) -> ml_exp_worker::slurm::HelperConfig {
                 "COUNTER".into(),
                 root.join("sbatch-calls").display().to_string(),
             ),
+            (
+                "EVIDENCE".into(),
+                root.join("evidence").display().to_string(),
+            ),
+            (
+                "CANCEL_CALLS".into(),
+                root.join("cancel-calls").display().to_string(),
+            ),
         ]),
         lock_timeout: Duration::from_secs(2),
         execution_timeout: Duration::from_secs(1),
+        scheduler: Some(ml_exp_worker::slurm::SchedulerTools {
+            sacct_program: root.join("sacct"),
+            squeue_program: root.join("squeue"),
+            scancel_program: root.join("scancel"),
+            partition: "h100".into(),
+        }),
     }
 }
 
@@ -146,6 +160,9 @@ fn fake_ssh_child() {
             OperationTag::PrepareSubmission => ReplyOutcome::Prepared,
             OperationTag::Submit | OperationTag::InspectSubmission => ReplyOutcome::Submitted {
                 job_id: "24827".into(),
+            },
+            OperationTag::ObserveJob | OperationTag::CancelJob => ReplyOutcome::Rejected {
+                code: helper::Rejection::UnsupportedOperation,
             },
         };
         helper::Reply::for_request(&request, outcome).unwrap()
@@ -518,4 +535,80 @@ fn invalid_targets_commands_or_budgets_never_spawn_and_local_spawn_failures_stay
         }
     ));
     assert!(!result.safe_to_retry());
+}
+
+#[test]
+fn lost_cancel_ssh_reply_is_observed_without_second_scheduler_effect() {
+    let root = tempfile::tempdir().unwrap();
+    let config = config(root.path(), "ledger");
+    for (name, body) in [
+        ("sbatch", "cat >/dev/null; printf '24827\\n'"),
+        ("sacct", "cat \"$EVIDENCE\""),
+        ("squeue", "exit 0"),
+        (
+            "scancel",
+            "[ \"$#\" = 1 ] && [ \"$1\" = 24827 ] || exit 99; printf 'call\\n' >> \"$CANCEL_CALLS\"",
+        ),
+    ] {
+        let path = root.path().join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    drop(ml_exp_worker::slurm::Helper::initialize(ledger_config(root.path())).unwrap());
+    let prepare = request();
+    let cancelled = AtomicBool::new(false);
+    for request in [
+        &prepare,
+        &Request::submit(prepare.intent().clone()).unwrap(),
+    ] {
+        assert!(matches!(
+            call(&config, request, &cancelled).unwrap(),
+            CallOutcome::Receipt { .. }
+        ));
+    }
+    let evidence = root.path().join("evidence");
+    fs::write(
+        &evidence,
+        "24827|train--attempt-001|ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|h100|RUNNING|0:01|0:0",
+    )
+    .unwrap();
+    let observe = Request::observe_job(prepare.intent().clone(), "24827".into()).unwrap();
+    assert!(matches!(
+        call(&config, &observe, &cancelled).unwrap(),
+        CallOutcome::Receipt {
+            reply: helper::Reply {
+                outcome: ReplyOutcome::JobObserved { .. },
+                ..
+            },
+            ..
+        }
+    ));
+    let cancel = Request::cancel_job(prepare.intent().clone(), "24827".into()).unwrap();
+    fs::write(root.path().join("mode"), "ledger-lost-response").unwrap();
+    let lost = call(&config, &cancel, &cancelled).unwrap();
+    assert!(matches!(lost, CallOutcome::Uncertain { .. }));
+    assert!(!lost.safe_to_retry());
+    fs::write(root.path().join("mode"), "ledger").unwrap();
+    assert!(matches!(
+        call(&config, &cancel, &cancelled).unwrap(),
+        CallOutcome::Receipt {
+            reply: helper::Reply {
+                outcome: ReplyOutcome::CancelPending { .. },
+                ..
+            },
+            ..
+        }
+    ));
+    fs::write(
+        &evidence,
+        "24827|train--attempt-001|ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|h100|CANCELLED|0:02|0:15",
+    )
+    .unwrap();
+    assert!(
+        matches!(call(&config,&cancel,&cancelled).unwrap(),CallOutcome::Receipt {reply:helper::Reply {outcome:ReplyOutcome::JobObserved {observation},..},..} if observation.status.state==ml_exp_core::state::RunState::Cancelled)
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("cancel-calls")).unwrap(),
+        "call\n"
+    );
 }

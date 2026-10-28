@@ -3,7 +3,7 @@
 use clap::{ArgGroup, Parser, error::ErrorKind};
 use ml_exp_core::slurm::helper::{self, Target};
 use ml_exp_io::framing;
-use ml_exp_worker::slurm::{Helper, HelperConfig};
+use ml_exp_worker::slurm::{Helper, HelperConfig, SchedulerTools};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -37,6 +37,8 @@ struct Config {
     lock_timeout_seconds: u64,
     execution_timeout_seconds: u64,
     stdio_timeout_seconds: u64,
+    #[serde(default)]
+    scheduler: Option<SchedulerTools>,
 }
 impl Config {
     fn load(path: &std::path::Path) -> io::Result<Self> {
@@ -60,6 +62,7 @@ impl Config {
                 environment: self.environment,
                 lock_timeout: Duration::from_secs(self.lock_timeout_seconds),
                 execution_timeout: Duration::from_secs(self.execution_timeout_seconds),
+                scheduler: self.scheduler,
             },
             Duration::from_secs(self.stdio_timeout_seconds),
         )

@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+mod jobs;
 use fs2::FileExt;
 use ml_exp_core::identity::submission_marker;
 use ml_exp_core::slurm::{
@@ -39,12 +40,49 @@ pub struct HelperConfig {
     pub environment: BTreeMap<String, String>,
     pub lock_timeout: Duration,
     pub execution_timeout: Duration,
+    pub scheduler: Option<SchedulerTools>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchedulerTools {
+    pub sacct_program: PathBuf,
+    pub squeue_program: PathBuf,
+    pub scancel_program: PathBuf,
+    pub partition: String,
+}
+impl SchedulerTools {
+    fn validate(&self) -> Result<()> {
+        if [
+            &self.sacct_program,
+            &self.squeue_program,
+            &self.scancel_program,
+        ]
+        .iter()
+        .any(|path| {
+            !path.is_absolute()
+                || path
+                    .to_str()
+                    .is_none_or(|s| s.len() > 4096 || s.chars().any(char::is_control))
+        }) || self.partition.is_empty()
+            || self.partition.len() > 128
+            || !self
+                .partition
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+        {
+            return Err(Error::Configuration);
+        }
+        Ok(())
+    }
 }
 impl HelperConfig {
     /// Pure trusted-configuration checks. This does not open paths, inspect
     /// process environment, read a clock, or initialize/repair helper state.
     pub fn validate(&self) -> Result<()> {
         self.target.validate()?;
+        if let Some(scheduler) = &self.scheduler {
+            scheduler.validate()?;
+        }
         if !self.root.is_absolute()
             || !self.sbatch_program.is_absolute()
             || self.lock_timeout.is_zero()
@@ -77,7 +115,7 @@ impl HelperConfig {
                     || value.contains('\0')
                     // sbatch environment flags can override the frozen script
                     // resource budget or silently target another cluster.
-                    || key.starts_with("SBATCH_")
+                    || ["SBATCH_", "SQUEUE_", "SACCT_", "SCANCEL_"].iter().any(|prefix| key.starts_with(prefix))
                     || matches!(key.as_str(), "SLURM_CLUSTERS" | "SLURM_CONF" | "SLURM_CONF_SERVER")
             })
         {
@@ -445,6 +483,15 @@ impl Helper {
             }
             OperationTag::Submit => match ledger {
                 ReadLedger::Found(snapshot) => self.submit(request, snapshot, &lock, cancelled)?,
+                ReadLedger::Missing => ReplyOutcome::Rejected {
+                    code: Rejection::Unprepared,
+                },
+                other => Self::observed(&other),
+            },
+            OperationTag::ObserveJob | OperationTag::CancelJob => match ledger {
+                ReadLedger::Found(snapshot) => {
+                    self.job_operation(request, snapshot, &lock, cancelled)?
+                }
                 ReadLedger::Missing => ReplyOutcome::Rejected {
                     code: Rejection::Unprepared,
                 },

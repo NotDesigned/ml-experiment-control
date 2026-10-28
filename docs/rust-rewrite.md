@@ -40,7 +40,7 @@ forwarding code merely to make the language uniform.
 | Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O, deadline-bound single-frame pipe transport and checkpoint generation verification/sealing | Remaining transport primitives and durable domain protocols |
 | Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands and deterministic source archive upload/lookup | General asset/data transfers, artifact downloads/ACK, updates and full command coverage |
 | Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint registry and isolated journals; SQLite stores/Run fences; Slurm transport; pure data-delivery and result-collection decisions | Python effect shells still own artifact/result stores, submission/provider executors, collectors, TLS and tracking transport |
-| Worker | Local process supervision, sealed local launch and scoped Slurm prepare/submit/inspect helper | Remote managed-launch transport, data/checkpoint/journal/artifact/build/copy/deletion protocols |
+| Worker | Local process supervision, sealed local launch and scoped Slurm prepare/submit/inspect/observe/cancel helper | Remote managed-launch transport, data/checkpoint/journal/artifact/build/copy/deletion protocols |
 
 The native source path is deliberately Project-scoped: a shared tree digest does
 not make one Project's metadata authoritative for another. Upload bodies are
@@ -405,7 +405,7 @@ bounded stdin/stdout/stderr. Lost, truncated, foreign or timed-out replies remai
 uncertain; the transport never retries automatically.
 
 The worker's separate `slurm-helper --config /private/config.json --stdio` entry
-implements prepare, submit and inspect. Initialization is explicit and separate.
+implements prepare, submit, inspect, owned observation and cancellation. Initialization is explicit and separate.
 A required root registry records the scope before creating its claim; an immutable
 start marker is synced before invoking `sbatch`. A missing claim cannot become a
 fresh submission. The helper rechecks its required registry and retained directory
@@ -413,17 +413,30 @@ bindings before dispatch, after the child exits and before returning success.
 Name/comment are fixed command-line arguments, which Slurm documents as taking
 precedence over script and environment options. See the
 [sbatch input-environment rules](https://slurm.schedmd.com/sbatch.html#SECTION_INPUT-ENVIRONMENT-VARIABLES).
-The initial helper refuses SBATCH overrides and SLURM cluster/config environment
+The helper refuses SBATCH/SACCT/SQUEUE/SCANCEL overrides and SLURM cluster/config environment
 variables; non-system Slurm configuration needs a separately bound configuration
 extension before real deployment.
 
 Every helper response has `safe_to_retry=false`, including PREPARED. An older
 Submit may still be in transit; observing no start marker does not revoke it.
 SUBMITTED means a durable job-ID receipt, not verified scheduler ownership.
-Local tests use real Rust processes, fake SSH/sbatch and temporary state, including
-lost replies, concurrency and missing metadata. Runtime/SIF preparation, shared
-data, native ownership observation, Action dispatch and actual cluster acceptance
-are not connected. The preview HTTP API still does not submit training.
+Optional trusted scheduler configuration fixes absolute sacct/squeue/scancel paths
+and one partition. Observe/cancel require the exact issued submission receipt;
+each accepted status row binds job ID, name, Comment token and partition together.
+Queued accounting can be supplemented with the exact squeue reason. Missing,
+failed or foreign reads never prove scheduler absence. No exit code is invented
+from squeue's format placeholder.
+
+Cancellation uses the existing pure outbox reducer. A synced immutable start
+marker and REQUESTED head precede one scancel call. Pending, lost or timed-out
+responses permit observation only; terminal owned scheduler evidence is required
+before VERIFIED is persisted. Missing/corrupt outbox evidence refuses replay.
+No arbitrary command or job ID is accepted from a client request.
+
+Local tests use real Rust processes, fake SSH and fake scheduler tools with
+temporary state, including lost replies, concurrency and missing metadata.
+Runtime/SIF preparation, shared data, Action dispatch and actual cluster
+acceptance are not connected. The preview HTTP API still does not submit training.
 
 Tracking is similarly split: pure options/routing and consuming display reducers
 produce metric-definition and summary patches. They preserve variant, protocol,
