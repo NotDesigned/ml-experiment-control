@@ -152,6 +152,7 @@ fn reason() -> Parameter {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn operation(
     operation_id: &str,
     label: &str,
