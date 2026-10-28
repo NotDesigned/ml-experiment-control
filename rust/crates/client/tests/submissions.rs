@@ -3,6 +3,7 @@ use ml_exp_client::{
     Client, Error,
     submissions::{self, Command},
 };
+use ml_exp_core::first_submission::native::creation::Request;
 use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
@@ -86,7 +87,10 @@ fn plans_reject_invalid_identity_budget_reason_and_confirmation_without_io() {
 }
 #[test]
 fn one_post_is_sent_and_lost_or_foreign_response_never_replays_it() {
-    for mode in ["success", "drop", "foreign"] {
+    for (mode, creates) in ["success", "drop", "foreign"]
+        .into_iter()
+        .flat_map(|mode| [(mode, false), (mode, true)])
+    {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let worker = std::thread::spawn(move || {
@@ -115,7 +119,11 @@ fn one_post_is_sent_and_lost_or_foreign_response_never_replays_it() {
                 assert!(head.len() < 16384);
             }
             let head = String::from_utf8(head).unwrap().to_lowercase();
-            assert!(head.starts_with("post /api/runs/demo/train/submissions http/1.1\r\n"));
+            assert!(head.starts_with(if creates {
+                "post /api/projects/demo/runs http/1.1\r\n"
+            } else {
+                "post /api/runs/demo/train/submissions http/1.1\r\n"
+            }));
             assert!(head.contains("authorization: bearer synthetic-token"));
             assert!(head.contains("x-ml-expd-client-protocol: 2"));
             let size: usize = head
@@ -128,10 +136,19 @@ fn one_post_is_sent_and_lost_or_foreign_response_never_replays_it() {
             let mut body = vec![0; size];
             socket.read_exact(&mut body).unwrap();
             let body: Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body["max_gpu_hours"], 1.);
-            assert_eq!(body["reason"], "reviewed");
+            if creates {
+                assert_eq!(body["run_id"], "train");
+                assert_eq!(body["resources"]["gpus"], 1);
+            } else {
+                assert_eq!(body["max_gpu_hours"], 1.);
+                assert_eq!(body["reason"], "reviewed");
+            }
             if mode != "drop" {
-                let mut result = response();
+                let mut result = if creates {
+                    creation_receipt()
+                } else {
+                    response()
+                };
                 if mode == "foreign" {
                     result["project"] = json!("foreign");
                 }
@@ -152,16 +169,33 @@ fn one_post_is_sent_and_lost_or_foreign_response_never_replays_it() {
             }
         });
         let client = Client::new(&format!("http://{address}"), "synthetic-token".into()).unwrap();
-        let plan = submissions::plan(Command::Prepare {
-            project: "demo",
-            run: "train",
-            max_gpu_hours: 1.,
-            reason: "reviewed",
+        let request = creation_request();
+        let plan = submissions::plan(if creates {
+            Command::Create {
+                project: "demo",
+                request: &request,
+            }
+        } else {
+            Command::Prepare {
+                project: "demo",
+                run: "train",
+                max_gpu_hours: 1.,
+                reason: "reviewed",
+            }
         })
         .unwrap();
-        let result = submissions::execute(&client, &plan, &health());
+        let mut h = health();
+        h["capabilities"] = json!(["native-run-creation.v1", "native-slurm-submissions.v1"]);
+        let result = submissions::execute(&client, &plan, &h);
         if mode == "success" {
-            assert_eq!(result.unwrap()["submission_id"], ID);
+            let value = result.unwrap();
+            if creates {
+                assert_eq!(value["creation_state"], "CREATED");
+            } else {
+                assert_eq!(value["submission_id"], ID);
+            }
+        } else if creates {
+            assert!(matches!(result, Err(Error::RunCreationOutcomeUnknown(_))));
         } else {
             assert!(matches!(result, Err(Error::SubmissionOutcomeUnknown(_))));
         }
@@ -194,4 +228,53 @@ fn disabled_or_missing_capability_prevents_mutation_before_connecting() {
         submissions::execute(&client, &plan, &malformed),
         Err(Error::Protocol)
     ));
+}
+
+#[test]
+fn run_creation_is_a_separate_capability_and_refuses_foreign_receipts() {
+    let request = creation_request();
+    let plan = submissions::plan(Command::Create {
+        project: "demo",
+        request: &request,
+    })
+    .unwrap();
+    let client = Client::new("http://127.0.0.1:1", "synthetic-token".into()).unwrap();
+    assert!(matches!(
+        submissions::execute(&client, &plan, &health()),
+        Err(Error::Observation(_))
+    ));
+    let receipt = creation_receipt();
+    assert!(submissions::response(&plan, receipt.clone()).is_ok());
+    for field in [
+        "project",
+        "run_id",
+        "runtime_id",
+        "source_id",
+        "attempt_id",
+        "creation_state",
+        "request_sha256",
+        "run_sha256",
+        "protocol_id",
+    ] {
+        let mut bad = receipt.clone();
+        bad[field] = json!("foreign");
+        assert!(submissions::response(&plan, bad).is_err(), "{field}");
+    }
+}
+
+fn creation_request() -> ml_exp_core::first_submission::native::creation::Request {
+    let request:Request=serde_json::from_value(json!({"run_id":"train","executor":"slurm-test","runtime_id":format!("runtime.{}","1".repeat(64)),
+        "command":["python","train.py"],"resources":{"gpus":1,"memory_gb":4},"walltime_seconds":300,"seed":42})).unwrap();
+
+    request
+}
+
+fn creation_receipt() -> Value {
+    let request = creation_request();
+    let hash = format!("sha256:{}", "1".repeat(64));
+    let receipt = json!({"project":"demo","run_id":"train","runtime_id":request.runtime_id,"source_id":format!("source.{}","2".repeat(64)),
+        "attempt_id":"attempt-001","creation_state":"CREATED","request_sha256":request.identity("demo").unwrap(),
+        "scheduler_mutation_performed":false,"run_sha256":hash,"attempt_sha256":hash,"protocol_id":hash,"reused":false});
+
+    receipt
 }

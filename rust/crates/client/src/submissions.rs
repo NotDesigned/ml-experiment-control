@@ -7,6 +7,10 @@ use ml_exp_core::{
 use serde_json::{Value, json};
 
 pub enum Command<'a> {
+    Create {
+        project: &'a str,
+        request: &'a ml_exp_core::first_submission::native::creation::Request,
+    },
     Prepare {
         project: &'a str,
         run: &'a str,
@@ -33,7 +37,16 @@ pub enum Command<'a> {
     },
 }
 enum Expected {
-    Run { project: String, run: String },
+    Creation {
+        project: String,
+        run: String,
+        runtime: String,
+        request_sha256: String,
+    },
+    Run {
+        project: String,
+        run: String,
+    },
     Submission(String),
 }
 pub struct Plan {
@@ -66,6 +79,22 @@ fn reason(value: &str) -> Result<(), Error> {
     }
 }
 pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
+    if let Command::Create { project, request } = &command {
+        let request_sha256 = request
+            .identity(project)
+            .map_err(|_| Error::Observation("invalid Run creation request; no request sent"))?;
+        return Ok(Plan {
+            path: format!("/api/projects/{project}/runs"),
+            body: Some(serde_json::to_vec(request).map_err(|_| invalid())?),
+            expected: Expected::Creation {
+                project: (*project).into(),
+                run: request.run_id.clone(),
+                runtime: request.runtime_id.clone(),
+                request_sha256,
+            },
+            executes: false,
+        });
+    }
     let (project, run, body) = match command {
         Command::Prepare {
             project,
@@ -147,6 +176,36 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
     })
 }
 pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
+    if let Expected::Creation {
+        project,
+        run,
+        runtime,
+        request_sha256,
+    } = &plan.expected
+    {
+        if value["project"] != *project
+            || value["run_id"] != *run
+            || value["attempt_id"] != "attempt-001"
+            || value["runtime_id"] != *runtime
+            || value["source_id"]
+                .as_str()
+                .is_none_or(|id| ml_exp_core::sources::validate_source_id(id).is_err())
+            || value["request_sha256"] != *request_sha256
+            || value["creation_state"] != "CREATED"
+            || value["scheduler_mutation_performed"] != false
+            || !value["reused"].is_boolean()
+            || !["run_sha256", "attempt_sha256", "protocol_id"]
+                .iter()
+                .all(|key| {
+                    value[key]
+                        .as_str()
+                        .is_some_and(ml_exp_core::slurm::helper::valid_digest)
+                })
+        {
+            return Err(Error::Response);
+        }
+        return Ok(value);
+    }
     let id = value["submission_id"].as_str().ok_or(Error::Response)?;
     validate_submission_id(id).map_err(|_| Error::Response)?;
     let project = value["project"].as_str().ok_or(Error::Response)?;
@@ -186,9 +245,15 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
 }
 pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Error> {
     session::validate_health(health)?;
+    let creates = matches!(plan.expected, Expected::Creation { .. });
+    let capability = if creates {
+        "native-run-creation.v1"
+    } else {
+        "native-slurm-submissions.v1"
+    };
     if !health["capabilities"]
         .as_array()
-        .is_some_and(|caps| caps.iter().any(|v| v == "native-slurm-submissions.v1"))
+        .is_some_and(|caps| caps.iter().any(|v| v == capability))
         || plan.executes && health["scheduler_mutations"] != true
     {
         return Err(Error::Observation(
@@ -200,7 +265,11 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
         .and_then(|value| response(plan, value))
         .map_err(|error| {
             if plan.is_mutation() && matches!(error, Error::Transport | Error::Response) {
-                Error::SubmissionOutcomeUnknown(Box::new(error))
+                if creates {
+                    Error::RunCreationOutcomeUnknown(Box::new(error))
+                } else {
+                    Error::SubmissionOutcomeUnknown(Box::new(error))
+                }
             } else {
                 error
             }

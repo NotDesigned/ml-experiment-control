@@ -50,8 +50,16 @@ pub(crate) enum Access {
     Read,
     Write,
     Submission,
+    RunCreate,
 }
 fn uncertain(access: Access) -> Response {
+    if matches!(access, Access::RunCreate) {
+        return failure(read_api::Error {
+            status: 500,
+            code: "RUN_CREATION_UNCERTAIN",
+            detail: "Run metadata may have been published; query the same Project/Run before retrying; no scheduler job was submitted by creation",
+        });
+    }
     if matches!(access, Access::Submission) {
         return failure(read_api::Error {
             status: 500,
@@ -444,19 +452,27 @@ mod tests {
     }
     #[tokio::test]
     async fn interrupted_submission_response_uses_domain_specific_uncertainty() {
-        let (_temp, state) = state();
-        let response = execute(state, Access::Submission, |_, _| {
-            panic!("owned failed response after possible claim")
-        })
-        .await;
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let value = value(response).await;
-        assert_eq!(value["code"], "SUBMISSION_OPERATION_UNCERTAIN");
-        assert!(
-            value["detail"]
-                .as_str()
-                .unwrap()
-                .contains("same Run or Submission")
-        );
+        for (access, code, needle) in [
+            (
+                Access::Submission,
+                "SUBMISSION_OPERATION_UNCERTAIN",
+                "same Run or Submission",
+            ),
+            (
+                Access::RunCreate,
+                "RUN_CREATION_UNCERTAIN",
+                "same Project/Run",
+            ),
+        ] {
+            let (_temp, state) = state();
+            let response = execute(state, access, |_, _| {
+                panic!("owned failed response after possible claim")
+            })
+            .await;
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let value = value(response).await;
+            assert_eq!(value["code"], code);
+            assert!(value["detail"].as_str().unwrap().contains(needle));
+        }
     }
 }

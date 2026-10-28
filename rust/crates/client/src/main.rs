@@ -31,7 +31,7 @@ enum Command {
     Check,
     /// Read a protocol-2 JSON endpoint under /api/.
     Get { path: String },
-    /// Observe one exact experiment; these commands never start or retry work.
+    /// Create, submit or observe an experiment through explicit native operations.
     Run {
         #[command(subcommand)]
         command: Run,
@@ -215,6 +215,13 @@ impl Target {
 }
 #[derive(Subcommand)]
 enum Run {
+    /// Create immutable Run/Attempt metadata from one local JSON configuration; does not submit.
+    Create {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        file: PathBuf,
+    },
     /// Prepare the already-authored first Run/Attempt; never dispatch a job.
     Prepare {
         #[arg(long)]
@@ -375,6 +382,21 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         _ => None,
     };
     let submission_plan = match &args.command {
+        Command::Run {
+            command: Run::Create { project, file },
+        } => {
+            ml_exp_core::identity::validate_id(project)?;
+            let mut bytes = Vec::new();
+            std::fs::File::open(file)?
+                .take(ml_exp_core::first_submission::native::creation::MAX_REQUEST_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            let request =
+                ml_exp_core::first_submission::native::creation::Request::from_slice(&bytes)?;
+            Some(submissions::plan(submissions::Command::Create {
+                project,
+                request: &request,
+            })?)
+        }
         Command::Run { command } => command.submission_plan()?,
         _ => None,
     };
@@ -472,7 +494,8 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Command::Run { command } => {
                     let health = client.negotiate()?;
                     match command {
-                        Run::Prepare { .. }
+                        Run::Create { .. }
+                        | Run::Prepare { .. }
                         | Run::Preparation { .. }
                         | Run::Submission { .. }
                         | Run::Authorize { .. }

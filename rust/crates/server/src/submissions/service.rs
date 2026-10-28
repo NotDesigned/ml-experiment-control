@@ -43,6 +43,8 @@ pub enum Error {
     Conflict,
     #[error("native submission execution is disabled")]
     Disabled,
+    #[error("native Run creation is disabled for this Project")]
+    RunCreationDisabled,
     #[error("native preparation may have been saved; query the same Run before retry")]
     Uncertain,
     #[error(transparent)]
@@ -80,6 +82,7 @@ pub struct Service {
     lifecycle: Option<Arc<projects::Service>>,
     backends: BTreeMap<String, Backend>,
     enabled: bool,
+    creation_roots: BTreeMap<String, Directory>,
 }
 struct Facts {
     reference: RunRef,
@@ -123,6 +126,7 @@ impl Backend {
     }
 }
 mod authority;
+mod creation;
 mod preparation;
 
 impl Service {
@@ -136,8 +140,13 @@ impl Service {
         workspace: &str,
         sources: Option<&Arc<sources::Service>>,
         lifecycle: Option<&Arc<projects::Service>>,
+        read_scope_sha256: &str,
     ) -> bool {
         self.settings.registry_root == registry
+            && self
+                .settings
+                .identity()
+                .is_ok_and(|scope| scope == read_scope_sha256)
             && self.workspace == workspace
             && self
                 .settings
@@ -259,6 +268,7 @@ impl Service {
             lifecycle,
             backends: bindings,
             enabled,
+            creation_roots: BTreeMap::new(),
         })
     }
     fn public(&self, snapshot: Value, now: &str) -> Result<Value> {

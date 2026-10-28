@@ -584,3 +584,31 @@ fn allocation_contract_preserves_counts_and_rejects_incomplete_evidence() {
         }
     }
 }
+
+#[test]
+fn create_run_rejects_bad_request_before_configuration_or_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("request.json");
+    std::fs::write(
+        &input,
+        br#"{"run_id":"invalid/identity","runtime_id":"invalid"}"#,
+    )
+    .unwrap();
+    let output = command(temp.path())
+        .args(["run", "create", "--project", "demo", "--file"])
+        .arg(&input)
+        .env(
+            "ML_EXPD_CLIENT_CONFIG",
+            temp.path().join("must-not-read.json"),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("Run request")
+    );
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+}

@@ -24,14 +24,15 @@ receipt and retry decision are validated by a native contract before use.
 | --- | --- | --- |
 | `ml-exp-core` | Library | Pure frozen identities, Project/schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint receipt/restore decisions, data-delivery/result-collection reducers, observations, failure assessment and Slurm/helper protocols |
 | `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O, single-frame pipe transport and descriptor-safe checkpoint verification/sealing |
-| `ml-exp-client` | `ml-exp-rs` | Private settings, bounded exact-identity reads/watch, Project operations, deterministic source archive upload/lookup and opt-in native Slurm submissions |
-| `ml-exp-server` | `ml-expd-rs` | Approved discovery/reads, Project lifecycle, immutable source archive storage/receipts, native checkpoint registry, isolated SQLite/Run fences and opt-in Slurm submissions |
+| `ml-exp-client` | `ml-exp-rs` | Private settings, bounded exact-identity reads/watch, Project operations, deterministic source upload/lookup, standalone Run creation and opt-in Slurm submissions |
+| `ml-exp-server` | `ml-expd-rs` | Approved discovery/reads, Project lifecycle, immutable source archive storage/receipts, native checkpoint registry, isolated SQLite/Run fences, standalone Run creation and opt-in Slurm submissions |
 | `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision, sealed local managed launch and scoped Slurm metadata helper |
 
 The experiment API observes explicitly approved isolated files. Project metadata
 registration/lifecycle is a separate opt-in mode. A separate opt-in native Slurm
-submission API handles already-authored first Runs with trusted source and
-materialized-image receipts. Cloud managed-worker transport, general artifact/data
+submission API handles first Runs with trusted source and materialized-image
+receipts. Explicitly enabled Run creation can publish a standalone Run and first
+Attempt; it does not submit a job. Cloud managed-worker transport, general artifact/data
 transfer and W&B transport remain unported. Source archive publication is now a bounded native subchain: the
 client packs regular files into deterministic tar/gzip, the server verifies the
 transport SHA, rejects links/protected paths, seals the tree, computes the
@@ -191,7 +192,8 @@ When existing native Action storage is present under the isolated registry's
 `actions/` directory at startup, saved Submission identities can also be read
 through `GET /api/submissions/{identity}`. This reads committed state without
 creating missing executions or running interruption recovery. Submission
-prepare/authorize/execute and provider dispatch are still unavailable.
+prepare/authorize/execute and provider dispatch are disabled in this default
+configuration; the separately configured Slurm path is described below.
 
 The client now groups observation commands under `run`:
 
@@ -419,7 +421,7 @@ original request by Action ID. Submission is verified only after an owned
 scheduler read. Lost replies retain uncertainty; reconciliation sends only
 INSPECT/OBSERVE. Caller-owned Run/deletion/source guards and frozen-file checks
 remain mandatory. An explicitly configured first-submission HTTP service now
-supplies these guards; automatic Run authorship, remaining providers and result
+supplies these guards; general Run workflows, remaining providers and result
 publication remain incomplete. Submission success does not prove training.
 
 ## Opt-in native Slurm submissions
@@ -453,6 +455,46 @@ excludes live dispatch before an interrupted claim is marked uncertain. Unknown
 or corrupt evidence remains blocked from replay. No automatic retry or checkpoint
 choice is implied. The global training readiness stays `INCOMPLETE` until the
 remaining data, worker and results paths are accepted.
+
+To create that first Run through the client, the operator separately enables
+`allow_run_creation: true` in the private submission configuration. It defaults
+to false. The Project must use discovery with one approved canonical Run root;
+the Run root and registry staging directory must support an atomic directory
+rename on the same filesystem. Reads alone never grant write permission.
+
+Create a local `run.json`, replacing the runtime and executor with approved
+identities. No Campaign or research-question setup is required:
+
+```json
+{
+  "run_id": "train",
+  "runtime_id": "runtime.<64 hex characters>",
+  "executor": "slurm-h100",
+  "command": ["python", "-u", "/workspace/train.py"],
+  "resources": {"gpus": 1, "cpus": 8, "memory_gb": 16},
+  "walltime_seconds": 300,
+  "seed": 42,
+  "parameters": {"lr": 0.001},
+  "metrics_schema": {"definitions": {"val_loss": {"unit": "nats/token"}}},
+  "evaluation": {"variant_id": "v1", "D_FT": 0}
+}
+```
+
+```bash
+ml-exp-rs run create --project demo --file run.json
+ml-exp-rs run status --project demo --run train
+ml-exp-rs run prepare --project demo --run train --max-gpu-hours 1
+```
+
+Creation atomically publishes the original request, Run manifest, first Attempt
+and initial states. The immutable manifest freezes source, runtime, resources,
+command, metric schema and evaluation protocol identity. An identical repeated
+request returns the original creation time and hashes; a different request for
+the same Run is refused. Missing or damaged existing files are not recreated.
+A lost response requires querying that Project/Run before deciding to repeat
+the same request. The client never repeats a POST automatically. Inputs, resume
+and arbitrary environment fields are not accepted by this initial creation
+contract; their native worker/data protocols are still being migrated.
 
 ## Contribution boundary
 

@@ -262,6 +262,7 @@ pub struct Api {
     registry: Directory,
     fence: RunFence,
     workspace_id: String,
+    read_scope_sha256: String,
     runs: BTreeMap<(String, String), RunRef>,
     projects: Vec<String>,
     discovery_projects: BTreeSet<String>,
@@ -274,6 +275,7 @@ pub struct Api {
 impl Api {
     pub fn open(settings: read_config::Settings) -> Result<Self, read_config::Error> {
         settings.validate()?;
+        let read_scope_sha256 = settings.identity()?;
         let (registry, workspace_id) = read_config::workspace(&settings.registry_root)?;
         let fence = RunFence::new(&settings.registry_root);
         let store =
@@ -318,6 +320,7 @@ impl Api {
             registry,
             fence,
             workspace_id,
+            read_scope_sha256,
             runs,
             projects,
             discovery_projects,
@@ -373,6 +376,7 @@ impl Api {
             &self.workspace_id,
             self.sources.as_ref(),
             self.lifecycle.as_ref(),
+            &self.read_scope_sha256,
         ) {
             return Err(read_config::Error);
         }

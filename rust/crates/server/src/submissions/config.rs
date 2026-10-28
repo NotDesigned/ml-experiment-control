@@ -16,6 +16,8 @@ pub struct Settings {
     pub schema_version: u32,
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
+    pub allow_run_creation: bool,
     pub backends: Vec<Definition>,
 }
 #[derive(Deserialize)]
@@ -53,8 +55,9 @@ impl Settings {
         }
         Ok(settings)
     }
-    pub fn into_backends(self) -> Result<(bool, Vec<Backend>), Error> {
+    pub fn into_backends(self) -> Result<(bool, bool, Vec<Backend>), Error> {
         let enabled = self.enabled;
+        let creation = self.allow_run_creation;
         let backends = self
             .backends
             .into_iter()
@@ -90,10 +93,10 @@ impl Settings {
                 Ok(backend)
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        Ok((enabled, backends))
+        Ok((enabled, creation, backends))
     }
 }
-pub fn load(path: &Path) -> Result<(bool, Vec<Backend>), Error> {
+pub fn load(path: &Path) -> Result<(bool, bool, Vec<Backend>), Error> {
     let bytes =
         ml_exp_io::read_private(path, 4 * 1024 * 1024, true).map_err(|_| Error::Configuration)?;
     Settings::from_slice(&bytes)?.into_backends()

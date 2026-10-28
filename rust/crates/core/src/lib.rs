@@ -14,6 +14,7 @@ pub mod identity;
 pub mod index;
 pub mod input_progress;
 pub mod intent;
+pub mod json;
 pub mod launch;
 pub mod manifest;
 pub mod metrics;

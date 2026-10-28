@@ -117,6 +117,9 @@ fn health_document(
     if submissions.is_some() {
         capabilities.push("native-slurm-submissions.v1");
     }
+    if submissions.is_some_and(submissions::Service::can_create_runs) {
+        capabilities.push("native-run-creation.v1");
+    }
     json!({
         "status":"ok", "server_version":env!("CARGO_PKG_VERSION"),
         "api_protocol_version":API_PROTOCOL_VERSION, "min_client_protocol_version":2,
@@ -127,7 +130,7 @@ fn health_document(
         "collector_requested":false, "collector_error":null, "storage_maintenance_error":null,
         "project_write_recovery_errors":[], "project_writes":false, "source_imports":sources.is_some(),
         "source_archive_limits":sources.map(sources::Service::limits),
-        "scheduler_mutations":submissions.is_some_and(submissions::Service::enabled), "local_evidence_rebuild":false, "telemetry_enabled":false,
+        "scheduler_mutations":submissions.is_some_and(submissions::Service::enabled), "run_writes":submissions.is_some_and(submissions::Service::can_create_runs), "local_evidence_rebuild":false, "telemetry_enabled":false,
         "deployment":{"api":"READY", "training":"INCOMPLETE", "migration":"IN_PROGRESS"}
     })
 }
@@ -248,7 +251,7 @@ fn schema_document() -> serde_json::Value {
     let post = |description: &str, body: serde_json::Value, parameters: Vec<serde_json::Value>| {
         json!({"post":{
         "description":description,"parameters":parameters,"requestBody":{"required":true,"description":"Strict JSON mapping; at most 64 KiB","content":{"application/json":{"schema":body}}},
-        "responses":{"200":{"description":"Durable operation result with the original identity and state"},"401":{"description":"Bearer authentication required"},"404":{"description":"Exact configured identity is unavailable"},"409":{"description":"Operation state conflict, binding mismatch or invalid durable evidence"},"413":{"description":"Request exceeds the 64 KiB body limit"},"422":{"description":"Invalid or unsupported request"},"426":{"description":"Client protocol 2 required"},"429":{"description":"Local operation concurrency is full; no operation admitted"},"500":{"description":"Operation may have changed state, including after timeout or response failure; query the original identity before deciding whether to retry"},"501":{"description":"Operation was not explicitly configured"},"503":{"description":"Operation lock or transition context is unavailable"}}}})
+        "responses":{"200":{"description":"Durable operation result with the original identity and state"},"401":{"description":"Bearer authentication required"},"403":{"description":"Operation is disabled by the operator"},"404":{"description":"Exact configured identity is unavailable"},"409":{"description":"Operation state conflict, binding mismatch or invalid durable evidence"},"413":{"description":"Request exceeds the 64 KiB body limit"},"422":{"description":"Invalid or unsupported request"},"426":{"description":"Client protocol 2 required"},"429":{"description":"Local operation concurrency is full; no operation admitted"},"500":{"description":"Operation may have changed state, including after timeout or response failure; query the original identity before deciding whether to retry"},"501":{"description":"Operation was not explicitly configured"},"503":{"description":"Operation lock or transition context is unavailable"}}}})
     };
     let paths = document["paths"]
         .as_object_mut()
@@ -274,6 +277,11 @@ fn schema_document() -> serde_json::Value {
         );
     }
     paths.insert("/api/runs/{project}/{run}/submission".into(),operation("Read the original native preparation slot after response loss; never creates an identity",run()));
+    paths.insert("/api/projects/{project}/runs".into(),post("Create one immutable standalone Run and first Attempt in an explicitly approved canonical root; never submits a scheduler job",
+        json!({"type":"object","additionalProperties":false,"required":["run_id","runtime_id","executor","command","resources","walltime_seconds","seed"],"properties":{
+            "run_id":{"type":"string"},"runtime_id":{"type":"string"},"executor":{"type":"string"},"command":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"}},
+            "resources":{"type":"object","additionalProperties":false,"required":["gpus","memory_gb"],"properties":{"gpus":{"type":"integer","minimum":1},"cpus":{"type":"integer","minimum":1,"default":8},"nodes":{"type":"integer","const":1,"default":1},"memory_gb":{"type":"integer","minimum":1}}},
+            "walltime_seconds":{"type":"integer","minimum":1,"maximum":3600000},"seed":{"type":"integer"},"parameters":{"type":"object"},"evaluation":{"type":"object"},"metrics_schema":{"type":"object"}}}),vec![parameter("protocol"),parameter("project")]));
     paths.insert("/api/runs/{project}/{run}/submissions".into(),post("Prepare the first authored Run/Attempt with trusted source and materialized-image receipts; never submits a scheduler job",json!({"type":"object","additionalProperties":false,"required":["max_gpu_hours"],"properties":{"max_gpu_hours":{"type":"number","exclusiveMinimum":0},"reason":{"type":"string","maxLength":4000,"default":""}}}),run()));
     for (name, description, body) in [
         (
@@ -457,11 +465,12 @@ mod schema_tests {
     fn native_contract_declares_narrow_lifecycle_posts_and_exact_read_identity() {
         let schema = super::schema_document();
         let paths = schema["paths"].as_object().unwrap();
-        assert_eq!(paths.len(), 24);
+        assert_eq!(paths.len(), 25);
         for (path, operations) in paths {
             assert_eq!(operations.as_object().unwrap().len(), 1);
             if path.starts_with("/api/project-lifecycle/")
                 || path.ends_with("/submissions")
+                || path == "/api/projects/{project}/runs"
                 || path.starts_with("/api/submissions/") && path != "/api/submissions/{identity}"
             {
                 assert!(operations.get("post").is_some());

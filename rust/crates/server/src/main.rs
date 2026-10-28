@@ -192,14 +192,17 @@ fn open_api(
         )?);
         let api = api.with_sources(source.clone())?;
         if let Some(path) = submission_config {
-            let (enabled, backends) = ml_exp_server::submissions::config::load(path)?;
-            let submissions = std::sync::Arc::new(ml_exp_server::submissions::Service::open(
-                settings,
-                source,
-                api.lifecycle(),
-                backends,
-                enabled,
-            )?);
+            let (enabled, creation, backends) = ml_exp_server::submissions::config::load(path)?;
+            let submissions = std::sync::Arc::new(
+                ml_exp_server::submissions::Service::open(
+                    settings,
+                    source,
+                    api.lifecycle(),
+                    backends,
+                    enabled,
+                )?
+                .with_run_creation(creation)?,
+            );
             return Ok(api.with_submissions(submissions)?);
         }
         return Ok(api);

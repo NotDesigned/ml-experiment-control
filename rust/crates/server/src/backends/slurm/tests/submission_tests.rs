@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     read_config, sources,
-    submissions::{Backend, Context, Service},
+    submissions::{Backend, Context, Error as ServiceError, Service},
 };
 use ml_exp_core::{
     first_submission::native::{self, Approval, Prepared, Profile, Runtime},
@@ -1011,4 +1011,260 @@ fn explicit_reconcile_recovers_a_dead_claim_without_replaying_submit() {
     assert_eq!(result["status"], "RECONCILE_REQUIRED");
     assert_eq!(result["execution"]["safe_to_retry"], false);
     assert!(!f.root.path().join("sbatch-calls").exists());
+}
+
+fn creation_request(f: &Fixture) -> native::creation::Request {
+    serde_json::from_value(json!({"run_id":"created","runtime_id":f.runtime.runtime_id,"executor":f.profile.target.backend_id,
+        "command":["python","-u","/workspace/train.py"],"resources":{"gpus":1,"cpus":8,"memory_gb":16},
+        "walltime_seconds":300,"seed":42,"parameters":{"lr":0.001},
+        "metrics_schema":{"definitions":{"val_loss":{"unit":"nats/token","required":true}}},
+        "evaluation":{"tokenizer":"fixture-v1","variant_id":"v1","D_FT":0}})).unwrap()
+}
+#[test]
+fn immutable_run_creation_reuses_exact_metadata_and_admits_first_submission_after_restart() {
+    let f = Fixture::new();
+    let request = creation_request(&f);
+    assert!(matches!(
+        f.service("ledger", true)
+            .create_run("demo", request.clone(), NOW),
+        Err(ServiceError::RunCreationDisabled)
+    ));
+    let service = f.service("ledger", true).with_run_creation(true).unwrap();
+    let first = service.create_run("demo", request.clone(), NOW).unwrap();
+    assert_eq!(first["creation_state"], "CREATED");
+    assert_eq!(first["scheduler_mutation_performed"], false);
+    assert_eq!(first["reused"], false);
+    assert!(!f.root.path().join("sbatch-calls").exists());
+    let directory = f.root.path().join("project/runs/created");
+    let manifest = fs::read(directory.join("manifest.json")).unwrap();
+    let attempt = fs::read(directory.join("attempts/attempt-001/attempt.json")).unwrap();
+    assert_eq!(first["run_sha256"], helper::sha256_bytes(&manifest));
+    assert_eq!(first["attempt_sha256"], helper::sha256_bytes(&attempt));
+    let run: Value = serde_json::from_slice(&manifest).unwrap();
+    assert_eq!(run["evaluation"]["protocol"]["evaluation"]["D_FT"], 0);
+    assert_eq!(
+        run["evaluation"]["metrics_schema"]["definitions"]["val_loss"]["unit"],
+        "nats/token"
+    );
+    assert!(
+        fs::read_dir(f.settings.registry_root.join("submissions/slots"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    drop(service);
+    let service = f.service("ledger", true).with_run_creation(true).unwrap();
+    let second = service
+        .create_run("demo", request.clone(), "2026-10-28T00:01:00Z")
+        .unwrap();
+    assert_eq!(second["reused"], true);
+    assert_eq!(second["created_at"], first["created_at"]);
+    assert_eq!(second["run_sha256"], first["run_sha256"]);
+    assert_eq!(fs::read(directory.join("manifest.json")).unwrap(), manifest);
+    assert_eq!(
+        fs::read(directory.join("attempts/attempt-001/attempt.json")).unwrap(),
+        attempt
+    );
+    let prepared = service
+        .prepare("demo", "created", approval(), context(1))
+        .unwrap();
+    assert_eq!(prepared["status"], "PREPARED");
+    assert_eq!(prepared["attempt_id"], "attempt-001");
+    assert!(!f.root.path().join("sbatch-calls").exists());
+    let mut changed = request.clone();
+    changed.seed = 43;
+    assert!(matches!(
+        service.create_run("demo", changed, NOW),
+        Err(ServiceError::Conflict)
+    ));
+    assert_eq!(fs::read(directory.join("manifest.json")).unwrap(), manifest);
+}
+#[test]
+fn creation_refuses_partial_corrupt_and_replaced_authority_without_repair() {
+    let f = Fixture::new();
+    let service = f.service("ledger", true).with_run_creation(true).unwrap();
+    let mut request = creation_request(&f);
+    request.resources.gpus = 99;
+    assert!(service.create_run("demo", request, NOW).is_err());
+    let directory = f.root.path().join("project/runs/created");
+    assert!(!directory.exists());
+    fs::create_dir(&directory).unwrap();
+    assert!(matches!(
+        service.create_run("demo", creation_request(&f), NOW),
+        Err(ServiceError::Conflict)
+    ));
+    assert!(fs::read_dir(&directory).unwrap().next().is_none());
+    fs::remove_dir(&directory).unwrap();
+    service
+        .create_run("demo", creation_request(&f), NOW)
+        .unwrap();
+    fs::remove_file(directory.join("attempts/attempt-001/attempt.json")).unwrap();
+    assert!(
+        service
+            .create_run("demo", creation_request(&f), NOW)
+            .is_err()
+    );
+    assert!(!directory.join("attempts/attempt-001/attempt.json").exists());
+    let root = f.root.path().join("project/runs");
+    fs::rename(&root, f.root.path().join("old-runs")).unwrap();
+    fs::create_dir(&root).unwrap();
+    assert!(
+        service
+            .create_run("demo", creation_request(&f), NOW)
+            .is_err()
+    );
+    assert!(fs::read_dir(root).unwrap().next().is_none());
+}
+#[test]
+fn creation_refuses_reformatted_original_files_without_replacing_them() {
+    for filename in [
+        "manifest.json",
+        "request.json",
+        "attempts/attempt-001/attempt.json",
+    ] {
+        let f = Fixture::new();
+        let service = f.service("ledger", true).with_run_creation(true).unwrap();
+        service
+            .create_run("demo", creation_request(&f), NOW)
+            .unwrap();
+        let path = f.root.path().join("project/runs/created").join(filename);
+        let original = fs::read(&path).unwrap();
+        let mut changed = original.clone();
+        changed.push(b'\n');
+        fs::write(&path, &changed).unwrap();
+        assert!(
+            service
+                .create_run("demo", creation_request(&f), NOW)
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), changed);
+        assert!(!f.root.path().join("sbatch-calls").exists());
+        fs::write(&path, original).unwrap();
+        assert_eq!(
+            service
+                .create_run("demo", creation_request(&f), NOW)
+                .unwrap()["reused"],
+            true
+        );
+    }
+}
+
+#[tokio::test]
+async fn run_creation_http_and_native_status_work_without_authored_run_files() {
+    let f = Fixture::new();
+    let service = Arc::new(f.service("ledger", true).with_run_creation(true).unwrap());
+    let api = crate::read_api::Api::open(f.settings.clone())
+        .unwrap()
+        .with_sources(f.source.clone())
+        .unwrap()
+        .with_submissions(service)
+        .unwrap();
+    let app = crate::app(
+        crate::Auth {
+            token: "synthetic-native-submission-http-token-00000000".into(),
+        },
+        Some(Arc::new(api)),
+    );
+    let (status, health) = http_request(app.clone(), "GET", "/api/health", "").await;
+    assert_eq!(status, 200);
+    assert!(
+        health["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("native-run-creation.v1"))
+    );
+    let body = serde_json::to_string(&creation_request(&f)).unwrap();
+    let (status, receipt) =
+        http_request(app.clone(), "POST", "/api/projects/demo/runs", &body).await;
+    assert_eq!(status, 200, "{receipt}");
+    assert_eq!(receipt["reused"], false);
+    let (status, run) = http_request(app.clone(), "GET", "/api/runs/demo/created", "").await;
+    assert_eq!(status, 200, "{run}");
+    assert_eq!(run["scheduler_state"], "NOT_SUBMITTED");
+    let (status, receipt) =
+        http_request(app.clone(), "POST", "/api/projects/demo/runs", &body).await;
+    assert_eq!(status, 200);
+    assert_eq!(receipt["reused"], true);
+    let bad = body.replacen("{", "{\"run_id\":\"foreign\",", 1);
+    assert_eq!(
+        http_request(app.clone(), "POST", "/api/projects/demo/runs", &bad)
+            .await
+            .0,
+        422
+    );
+    assert!(!f.root.path().join("project/runs/foreign").exists());
+    let (status, prepared) = http_request(
+        app,
+        "POST",
+        "/api/runs/demo/created/submissions",
+        r#"{"max_gpu_hours":1}"#,
+    )
+    .await;
+    assert_eq!(status, 200, "{prepared}");
+    assert_eq!(prepared["status"], "PREPARED");
+    assert!(!f.root.path().join("sbatch-calls").exists());
+}
+
+#[test]
+fn submission_composition_requires_the_same_complete_read_scope() {
+    let f = Fixture::new();
+    let service = Arc::new(f.service("ledger", true).with_run_creation(true).unwrap());
+    let mut changed = f.settings.clone();
+    changed.projects[0].discover_runs = Some(false);
+    let api = crate::read_api::Api::open(changed)
+        .unwrap()
+        .with_sources(f.source.clone())
+        .unwrap();
+    assert!(api.with_submissions(service).is_err());
+}
+
+#[test]
+fn competing_run_creators_and_deletion_fence_cannot_replace_an_identity() {
+    let f = Fixture::new();
+    let a = f.service("ledger", true).with_run_creation(true).unwrap();
+    let b = f.service("ledger", true).with_run_creation(true).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let jobs = [a, b]
+        .into_iter()
+        .enumerate()
+        .map(|(i, service)| {
+            let barrier = barrier.clone();
+            let mut request = creation_request(&f);
+            request.seed = 42 + i as i64;
+            std::thread::spawn(move || {
+                barrier.wait();
+                service.create_run("demo", request, NOW)
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = jobs
+        .into_iter()
+        .map(|job| job.join().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    assert!(
+        results
+            .iter()
+            .any(|r| matches!(r, Err(ServiceError::Busy | ServiceError::Conflict)))
+    );
+    let directory = f.root.path().join("project/runs/created");
+    let original = fs::read(directory.join("manifest.json")).unwrap();
+    let fence = crate::deletion::RunFence::new(&f.settings.registry_root);
+    let guard = fence.exclusive_existing(false).unwrap();
+    guard
+        .mark("demo", "created", &serde_json::Map::new(), NOW)
+        .unwrap();
+    drop(guard);
+    let service = f.service("ledger", true).with_run_creation(true).unwrap();
+    assert!(matches!(
+        service.create_run("demo", creation_request(&f), NOW),
+        Err(ServiceError::Authority)
+    ));
+    assert_eq!(fs::read(directory.join("manifest.json")).unwrap(), original);
+    assert!(
+        fs::read_dir(f.settings.registry_root.join("submissions/slots"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
 }

@@ -39,7 +39,7 @@ forwarding code merely to make the language uniform.
 | Core | Frozen identities, Project schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint identity/retention decisions, tracking plans, data-delivery and result-collection reducers, capability matcher, operation catalog, first-submission planner, input-progress parser, intent schema, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
 | Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O, deadline-bound single-frame pipe transport and checkpoint generation verification/sealing | Remaining transport primitives and durable domain protocols |
 | Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands and deterministic source archive upload/lookup | General asset/data transfers, artifact downloads/ACK, updates and full command coverage |
-| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint registry and isolated journals; SQLite stores/Run fences; opt-in first-submission Slurm HTTP/client path and native Action runner; pure data-delivery and result-collection decisions | Automatic Run authorship, build orchestration, remaining provider executors, artifact/result stores, collectors, TLS and tracking transport |
+| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint registry and isolated journals; SQLite stores/Run fences; opt-in standalone Run creation and first-submission Slurm HTTP/client path and native Action runner; pure data-delivery and result-collection decisions | General Run workflows, build orchestration, remaining provider executors, artifact/result stores, collectors, TLS and tracking transport |
 | Worker | Local process supervision, sealed local launch and scoped Slurm prepare/submit/inspect/observe/cancel helper | Remote managed-launch transport, data/checkpoint/journal/artifact/build/copy/deletion protocols |
 
 The native source path is deliberately Project-scoped: a shared tree digest does
@@ -448,8 +448,12 @@ for an already-authored Run/first Attempt with immutable source and published
 OCI/SIF receipts. Its optional HTTP/client path can prepare, find the original
 preparation, authorize, execute and reconcile this service. A private cross-process
 execution lock excludes an in-flight executor before explicit reconciliation
-marks a dead claim uncertain. GET/open do not recover or resubmit. Retry/cancel
-HTTP, automatic Run authorship and remaining providers are still incomplete.
+marks a dead claim uncertain. GET/open do not recover or resubmit. The same service now supports explicitly enabled standalone Run creation in one
+approved canonical root, publishing Run/first Attempt and states atomically.
+Client request planning and duplicate-safe immutable authorship are pure; only
+the service shell reads authority and publishes files. Strict JSON parsing is
+shared in core, so client and server reject duplicate nested configuration keys.
+Retry/cancel HTTP, general Run workflows and remaining providers are incomplete.
 Default daemon startup does not enable mutations or use production credentials.
 
 Every helper response has `safe_to_retry=false`, including PREPARED. An older

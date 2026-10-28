@@ -8,7 +8,6 @@ use yaml_rust2::{
     parser::{Event, Parser},
     scanner::TScalarStyle,
 };
-mod json;
 
 pub const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_DEPTH: usize = 64;
@@ -193,7 +192,12 @@ pub fn parse_mapping(bytes: &[u8], format: Format) -> Result<Map<String, Value>,
         return Err(DocumentError::TooLarge);
     }
     if format == Format::Json {
-        return json::parse(bytes);
+        return ml_exp_core::json::mapping(bytes).map_err(|error| match error {
+            ml_exp_core::json::Error::Malformed => DocumentError::Malformed,
+            ml_exp_core::json::Error::Complexity => DocumentError::Complexity,
+            ml_exp_core::json::Error::MappingKey => DocumentError::MappingKey,
+            ml_exp_core::json::Error::Number => DocumentError::Number,
+        });
     }
     let text = std::str::from_utf8(bytes).map_err(|_| DocumentError::Malformed)?;
     // YAML 1.1 treats these raw characters as line breaks, while YAML 1.2

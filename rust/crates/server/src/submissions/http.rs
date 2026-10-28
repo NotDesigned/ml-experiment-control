@@ -26,6 +26,7 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/runs/{project}/{run}/submissions", post(prepare))
         .route("/api/runs/{project}/{run}/submission", get(existing))
+        .route("/api/projects/{project}/runs", post(create))
         .route("/api/submissions/{identity}/{operation}", post(change))
         .layer(DefaultBodyLimit::max(MAX_BODY))
 }
@@ -52,6 +53,11 @@ pub(crate) fn failure(error: Error) -> read_api::Error {
             403,
             "SUBMISSION_DISABLED",
             "scheduler execution is disabled by the operator",
+        ),
+        Error::RunCreationDisabled => (
+            403,
+            "RUN_CREATION_DISABLED",
+            "native Run creation is not enabled for this Project",
         ),
         Error::Admission(_) => (
             422,
@@ -113,6 +119,57 @@ fn clock(now: f64) -> Result<String, read_api::Error> {
     let value =
         OffsetDateTime::from_unix_timestamp_nanos((now * 1e9) as i128).map_err(|_| invalid())?;
     value.format(&Rfc3339).map_err(|_| invalid())
+}
+async fn create(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<String>, PathRejection>,
+    RawQuery(raw): RawQuery,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(Path(project)) = path else {
+        return read_http::failure(invalid());
+    };
+    if ml_exp_core::identity::validate_id(&project).is_err() {
+        return read_http::failure(invalid());
+    }
+    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+        return read_http::failure(error);
+    }
+    let request: ml_exp_core::first_submission::native::creation::Request = match decode(body) {
+        Ok(value) => value,
+        Err(error) => return read_http::failure(error),
+    };
+    read_http::execute(state, Access::RunCreate, move |api, now| {
+        service(api)?
+            .create_run(&project, request, &clock(now)?)
+            .map_err(creation_failure)
+    })
+    .await
+}
+fn creation_failure(cause: Error) -> read_api::Error {
+    let mut error = failure(cause);
+    match error.status {
+        422 => {
+            error.code = "RUN_CREATION_REJECTED";
+            error.detail =
+                "Run request, resources, source or published runtime fail native admission";
+        }
+        409 => {
+            error.code = "RUN_CREATION_CONFLICT";
+            error.detail = "existing Run or approved authority differs or cannot be validated; existing files were not repaired";
+        }
+        500 => {
+            error.code = "RUN_CREATION_UNCERTAIN";
+            error.detail = "Run metadata may have been published; query the same Project/Run before deciding whether to repeat the request";
+        }
+        503 => {
+            error.code = "RUN_CREATION_BUSY";
+            error.detail =
+                "Run metadata creation is busy; query the same Project/Run before retrying";
+        }
+        _ => {}
+    }
+    error
 }
 fn identities(project: &str, run: &str) -> Result<(), read_api::Error> {
     ml_exp_core::identity::validate_id(project)

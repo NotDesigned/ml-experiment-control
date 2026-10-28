@@ -19,7 +19,7 @@ const FORMAT: &str = "ml-expd-rust-preview.v1";
 #[error("invalid isolated experiment read configuration or workspace")]
 pub struct Error;
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub schema_version: u32,
@@ -28,7 +28,7 @@ pub struct Settings {
     #[serde(default)]
     pub source_policy: Option<ml_exp_core::sources::Policy>,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Project {
     pub project: String,
@@ -40,7 +40,7 @@ pub struct Project {
     #[serde(default)]
     pub discover_runs: Option<bool>,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Run {
     pub run_id: String,
@@ -69,6 +69,11 @@ impl Project {
     }
 }
 impl Settings {
+    pub fn identity(&self) -> Result<String, Error> {
+        self.validate()?;
+        ml_exp_core::canonical::protocol_identity(&serde_json::to_value(self).map_err(|_| Error)?)
+            .map_err(|_| Error)
+    }
     pub fn from_json(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() > 1024 * 1024 {
             return Err(Error);

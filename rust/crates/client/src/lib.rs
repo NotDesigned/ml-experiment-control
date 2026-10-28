@@ -49,6 +49,10 @@ pub enum Error {
         "submission outcome is unknown; query the original Run preparation or Submission, then reconcile; no automatic replay was attempted: {0}"
     )]
     SubmissionOutcomeUnknown(Box<Error>),
+    #[error(
+        "Run creation outcome is unknown; query the same Project/Run before retrying; no automatic replay was attempted: {0}"
+    )]
+    RunCreationOutcomeUnknown(Box<Error>),
     #[error("{0}")]
     Observation(&'static str),
 }
