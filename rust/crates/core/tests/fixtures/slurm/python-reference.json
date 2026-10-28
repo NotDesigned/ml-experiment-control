@@ -20,7 +20,9 @@
       "symbols": [
         "count",
         "parse"
-      ]
+      ],
+      "baseline_sha256": "3eaedaf5a0d8d26dbd8a75b474c43c41b59cb3b17d4fddfed0a6bbbdfbc37ba7",
+      "integration_note": "Reference expected values were evaluated from the unchanged baseline parser. Current source adds only the optional native parser dispatch; sha256 tracks this integrated shell, baseline_sha256 preserves original provenance."
     },
     {
       "path": "src/experiment_control/submission.py",
