@@ -270,7 +270,9 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     } = &args.command
     {
         let mut input = String::new();
-        io::stdin().take(8 * 1024 * 1024 + 1).read_to_string(&mut input)?;
+        io::stdin()
+            .take(8 * 1024 * 1024 + 1)
+            .read_to_string(&mut input)?;
         if input.len() > 8 * 1024 * 1024 {
             return Err("contract input exceeds 8 MiB".into());
         }
@@ -291,7 +293,9 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             partition: String,
         }
         let mut input = String::new();
-        io::stdin().take(8 * 1024 * 1024 + 1).read_to_string(&mut input)?;
+        io::stdin()
+            .take(8 * 1024 * 1024 + 1)
+            .read_to_string(&mut input)?;
         if input.len() > 8 * 1024 * 1024 {
             return Err("contract input exceeds 8 MiB".into());
         }

@@ -534,7 +534,10 @@ fn allocation_contract_preserves_counts_and_rejects_incomplete_evidence() {
         if valid {
             let snapshot = json_output(output);
             assert_eq!(snapshot["resources"]["gpus"]["unallocated"], 5);
-            assert_eq!(snapshot["resources"]["memory_bytes"]["allocated"], 268435456);
+            assert_eq!(
+                snapshot["resources"]["memory_bytes"]["allocated"],
+                268435456
+            );
             assert_eq!(snapshot["pending_queue_entries"], 1);
         } else {
             assert!(output.stdout.is_empty());
