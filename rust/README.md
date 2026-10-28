@@ -105,6 +105,11 @@ validates requirements against configured declarations and selects candidates
 without claiming live capacity; provider profile loading and availability
 probes remain in the Python server shell.
 
+`ml-exp-core::first_submission` owns first-Attempt eligibility and intent
+planning: budget checks, exact Attempt/source identity and deterministic
+idempotency. Campaign/source reads, YAML compatibility, Action persistence and
+scheduler effects remain in the server shell.
+
 `ml-exp-core::data_delivery` covers the SenseCore zero-GPU data-copy contract:
 frozen delivery identity, NAS scope, sealed READY reuse, callback transitions,
 and exact ACP scheduler-job binding. `ml-exp-core::result_collection` covers

@@ -24,8 +24,8 @@
       "server": {
         "modules": 160,
         "lines": 30572,
-        "partial_foundation": 39,
-        "not_started": 125
+        "partial_foundation": 40,
+        "not_started": 124
       },
       "core": {
         "modules": 25,
@@ -40,7 +40,7 @@
         "not_started": 10
       }
     },
-    "partial_foundation_modules": 64,
+    "partial_foundation_modules": 65,
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
@@ -3273,8 +3273,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "experiments",
       "proposed_consolidation": "One prepare/submit/retry/cancel workflow over reviewed operations; keep Run and Attempt distinct.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/first_submission.rs",
+        "scope": "Pure first-Attempt eligibility, GPU-hour budget validation, exact Attempt/source binding, structured intent planning and deterministic idempotency key. Campaign/source file I/O, YAML serialization, source-service lookup, Action persistence and scheduler effects remain in the server shell.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/runs/input_progress.py",

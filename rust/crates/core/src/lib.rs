@@ -9,6 +9,7 @@ pub mod checkpoints;
 pub mod diagnostic;
 pub mod durable;
 pub mod failures;
+pub mod first_submission;
 pub mod identity;
 pub mod index;
 pub mod launch;
