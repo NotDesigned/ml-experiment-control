@@ -30,6 +30,8 @@ fn native_contract_validation_does_not_load_config_or_contact_http() {
         .args(["contract", "intent-validate"])
         .env("ML_EXPD_CLIENT_CONFIG", temp.path().join("missing.json"))
         .env("ML_EXPD_API_TOKEN", "must-not-be-read")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .stdin(Stdio::piped())
         .spawn()
         .unwrap();
