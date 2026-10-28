@@ -424,6 +424,31 @@ remain mandatory. An explicitly configured first-submission HTTP service now
 supplies these guards; general Run workflows, remaining providers and result
 publication remain incomplete. Submission success does not prove training.
 
+New native first submissions also freeze a `slurm-shared-attempt.v1` requirement.
+The helper's trusted JSON must set `shared_run_root` to the same existing
+directory as the backend Profile's `run_root`. Explicit helper initialization
+binds that root's path and filesystem identity; ordinary startup never adds
+this permission or repairs a missing root. Use a fresh isolated helper namespace
+when enabling it, rather than resetting an existing ledger.
+
+Before calling `sbatch`, the helper publishes the exact Attempt manifest and
+creates its `inputs`/`outputs` directories under
+`<shared_run_root>/<project>/<run>/attempts/<attempt>`. The receipt binds the
+original intent and directory identities. An existing Attempt directory,
+partial publication, mismatched manifest, replaced root or changed directory
+is refused before scheduler dispatch. Identical requests reuse the original
+publication after restart. Once dispatch has started, output-directory changes
+do not erase the recorded job ID or authorize another submission.
+
+This ordering matters because Slurm opens the configured log files before
+running the job script. The generated native script checks the staged Attempt
+SHA256 and the materialized SIF SHA256 before starting the payload. It exports
+Project/Run/Attempt identity and `DATA_DIR`; managed I/O additionally provides
+`INPUT_DIR=/inputs` and `OUTPUT_DIR=/outputs`. Legacy frozen helper requests
+without a staging requirement keep their original encoding. This stages metadata
+and directories only: datasets, checkpoints, metrics ingestion and artifact
+publication remain separate unfinished protocols.
+
 ## Opt-in native Slurm submissions
 
 The server accepts a private `--submission-config` only together with

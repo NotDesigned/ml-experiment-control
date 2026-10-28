@@ -11,6 +11,7 @@ mod config;
 pub mod helper;
 mod observation;
 mod plans;
+pub mod staging;
 
 pub use allocation::*;
 pub use config::*;

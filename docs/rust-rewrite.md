@@ -64,6 +64,18 @@ The older completed-marker protocol used by legacy Slurm discovery remains a
 separate compatibility path; it is not treated as a
 `checkpoint.<sha256>` persistent-generation identity.
 
+Native Slurm first submissions now have a shared-storage preparation boundary.
+The pure `slurm::staging` plan validates the frozen Attempt and exact
+Project/Run/Attempt directory under an independently configured shared root.
+The helper pins that root across restarts and publishes the original manifest,
+empty input/output directories and a receipt binding their filesystem identities
+before `sbatch`. It refuses existing or partial Attempt directories and never
+repairs them on an observation or retry. Job startup verifies both the Attempt
+and SIF bytes before user code. This closes the gap where Slurm could open its
+log paths before the script had created their parent directory. After dispatch,
+mutable output paths cannot erase a known scheduler identity or permit replay.
+This does not stage datasets or checkpoints or prove a real Slurm/GPU run.
+
 Submission intent and cancel-outbox decisions now have the same native boundary.
 The Rust core validates the exact Project/Run/Attempt/backend identity, freezes a
 bounded redacted request, derives a stable request digest and returns one of

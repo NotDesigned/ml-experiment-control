@@ -12,6 +12,8 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
+#[path = "staging_tests.rs"]
+mod staging_tests;
 
 fn target() -> Target {
     Target {
@@ -28,6 +30,7 @@ fn request() -> Request {
     );
     Request::prepare(
         FrozenIntent {
+            staging: None,
             target: target(),
             scope: Scope {
                 project: "demo".into(),
@@ -47,6 +50,7 @@ fn request() -> Request {
 fn config(root: &Path) -> HelperConfig {
     HelperConfig {
         root: root.join("helper"),
+        shared_run_root: None,
         target: target(),
         sbatch_program: root.join("sbatch"),
         environment: BTreeMap::from([

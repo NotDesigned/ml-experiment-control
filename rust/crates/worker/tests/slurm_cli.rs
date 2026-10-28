@@ -27,6 +27,7 @@ fn request() -> Request {
     );
     Request::prepare(
         FrozenIntent {
+            staging: None,
             target: target(),
             scope: Scope {
                 project: "demo".into(),

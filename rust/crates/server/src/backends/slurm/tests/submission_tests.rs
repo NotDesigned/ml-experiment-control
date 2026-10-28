@@ -63,7 +63,14 @@ impl Fixture {
             .unwrap();
         let source_id = receipt["source_id"].as_str().unwrap().to_owned();
         let image = format!("sha256:{}", "1".repeat(64));
-        let mount = "/datapool/ml-expd-synthetic";
+        let mount_path = root.path().join("shared");
+        fs::create_dir_all(mount_path.join("runs")).unwrap();
+        let mount = mount_path.to_str().unwrap();
+        fs::write(
+            root.path().join("native-shared-root"),
+            format!("{mount}/runs"),
+        )
+        .unwrap();
         let runtime = Runtime {
             runtime_id: format!("runtime.{}", "2".repeat(64)),
             source_id: source_id.clone(),
@@ -548,7 +555,10 @@ fn generated_native_script_checks_actual_sif_bytes_before_starting_payload() {
         .prepare("demo", "train", approval(), context(1))
         .unwrap();
     let prepared = f.prepared();
-    let (_, script) = prepared.request.prepared_content().unwrap();
+    let (manifest, script) = prepared.request.prepared_content().unwrap();
+    let attempt_directory = PathBuf::from(format!("{mount}/runs/demo/train/attempts/attempt-001"));
+    fs::create_dir_all(&attempt_directory).unwrap();
+    fs::write(attempt_directory.join("attempt.json"), manifest).unwrap();
     let script_path = f.root.path().join("job.sh");
     fs::write(&script_path, script).unwrap();
     let bin = f.root.path().join("bin");
@@ -593,6 +603,19 @@ fn generated_native_script_checks_actual_sif_bytes_before_starting_payload() {
             assert!(!String::from_utf8_lossy(&output.stdout).contains("ML_EXPD_RUNTIME=VERIFIED"));
         }
     }
+    fs::remove_file(&marker).unwrap();
+    fs::write(attempt_directory.join("attempt.json"), b"changed").unwrap();
+    let output = std::process::Command::new("/bin/bash")
+        .arg(&script_path)
+        .env_clear()
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("SLURM_JOB_ID", "24827")
+        .env("SYNTHETIC_PAYLOAD_MARKER", &marker)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(78));
+    assert!(!marker.exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ATTEMPT_VERIFICATION_FAILED"));
     assert!(!f.root.path().join("calls").exists());
 }
 

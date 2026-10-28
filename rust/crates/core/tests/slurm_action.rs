@@ -12,6 +12,7 @@ fn fixture() -> (Value, Request) {
     );
     let request = Request::prepare(
         FrozenIntent {
+            staging: None,
             target: Target {
                 backend_id: "slurm-test".into(),
                 profile_sha256: sha256_bytes(b"profile"),

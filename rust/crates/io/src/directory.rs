@@ -181,6 +181,15 @@ impl Directory {
         Ok(())
     }
 
+    /// Stable identity of this retained directory, for binding a trusted root
+    /// across process restarts. This is not an independently reopened pathname.
+    #[allow(clippy::unnecessary_cast)]
+    pub fn identity(&self) -> io::Result<(u64, u64)> {
+        self.verify_attached()?;
+        let stat = rfs::fstat(&self.inner.file)?;
+        Ok((stat.st_dev as u64, stat.st_ino as u64))
+    }
+
     /// Inspect a leaf through the directory FD without opening/closing it.
     /// Absence is distinct from a symlink, FIFO, device or directory.
     #[allow(clippy::unnecessary_cast)] // Stat field widths differ across Unix.

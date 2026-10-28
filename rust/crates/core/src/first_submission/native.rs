@@ -356,10 +356,32 @@ pub fn prepare(
     let manifest =
         String::from_utf8(canonical::python_json_bytes(attempt).map_err(|_| Error("encoding"))?)
             .map_err(|_| Error("encoding"))?;
-    let script =
-        slurm::render_job(&job(run, &binding)?, Some(token)).map_err(|_| Error("script"))?;
+    let spec = job(run, &binding)?;
+    let script = slurm::render_job(&spec, Some(token)).map_err(|_| Error("script"))?;
+    let attempt_path = format!(
+        "{}/attempts/{}/attempt.json",
+        spec.storage.run_dir, binding.attempt_id
+    );
+    let mut environment = String::new();
+    for (key, value) in [
+        ("PROJECT_NAME", binding.project.as_str()),
+        ("RUN_ID", binding.run_id.as_str()),
+        ("ATTEMPT_ID", binding.attempt_id.as_str()),
+        ("DATA_DIR", spec.storage.project_data_root.as_str()),
+    ] {
+        environment.push_str(&format!(
+            "export {key}={}\n",
+            slurm::shell_quote(value).map_err(|_| Error("execution environment"))?
+        ));
+    }
+    if spec.execution.managed_io {
+        environment.push_str("export INPUT_DIR=/inputs\nexport OUTPUT_DIR=/outputs\n");
+    }
     let verify = format!(
-        "set -euo pipefail\nif ! printf '%s  %s\\n' {} {} | sha256sum --check --status; then\n  printf '%s\\n' 'ML_EXPD_RUNTIME=FAILED code=SIF_VERIFICATION_FAILED' >&2\n  exit 78\nfi\nprintf '%s\\n' ML_EXPD_RUNTIME=VERIFIED\n",
+        "set -euo pipefail\n{environment}if ! printf '%s  %s\\n' {} {} | sha256sum --check --status; then\n  printf '%s\\n' 'ML_EXPD_STAGING=FAILED code=ATTEMPT_VERIFICATION_FAILED' >&2\n  exit 78\nfi\nprintf '%s\\n' ML_EXPD_STAGING=READY\nif ! printf '%s  %s\\n' {} {} | sha256sum --check --status; then\n  printf '%s\\n' 'ML_EXPD_RUNTIME=FAILED code=SIF_VERIFICATION_FAILED' >&2\n  exit 78\nfi\nprintf '%s\\n' ML_EXPD_RUNTIME=VERIFIED\n",
+        slurm::shell_quote(&helper::sha256_bytes(manifest.as_bytes())[7..])
+            .map_err(|_| Error("Attempt hash"))?,
+        slurm::shell_quote(&attempt_path).map_err(|_| Error("Attempt path"))?,
         slurm::shell_quote(&runtime.sif_sha256[7..]).map_err(|_| Error("SIF hash"))?,
         slurm::shell_quote(&runtime.sif_path).map_err(|_| Error("SIF path"))?
     );
@@ -367,6 +389,9 @@ pub fn prepare(
     let request = Request::prepare(
         FrozenIntent {
             target: profile.target.clone(),
+            staging: Some(slurm::staging::Requirement {
+                runs_root: profile.run_root.clone(),
+            }),
             scope: Scope {
                 project: binding.project.clone(),
                 run_id: binding.run_id.clone(),

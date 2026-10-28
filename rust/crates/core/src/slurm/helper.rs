@@ -90,6 +90,8 @@ impl Scope {
 pub struct FrozenIntent {
     pub target: Target,
     pub scope: Scope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staging: Option<super::staging::Requirement>,
     pub submission_token: String,
     pub scheduler_name: String,
     pub manifest_sha256: String,
@@ -99,6 +101,9 @@ impl FrozenIntent {
     pub fn validate(&self) -> Result<()> {
         self.target.validate()?;
         self.scope.validate()?;
+        if let Some(requirement) = &self.staging {
+            requirement.validate()?;
+        }
         submission_marker(&self.submission_token).map_err(|_| Error::Identity)?;
         if scheduler_job_name(&self.scope.run_id, &self.scope.attempt_id)
             .map_err(|_| Error::Identity)?
@@ -236,6 +241,7 @@ impl Request {
             {
                 return Err(Error::Content);
             }
+            super::staging::plan(&self.intent, manifest.as_bytes())?;
             // Require the generated long-form identity directives in pinned
             // bytes, but do not pretend this is a complete sbatch parser. The
             // executor must also force these fields on the sbatch CLI, whose
@@ -591,6 +597,7 @@ mod tests {
             "a".repeat(32)
         );
         let intent = FrozenIntent {
+            staging: None,
             target: Target {
                 backend_id: "slurm-test".into(),
                 profile_sha256: sha256_bytes(b"profile"),

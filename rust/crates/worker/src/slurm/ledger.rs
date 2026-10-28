@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 mod jobs;
+mod staging;
 use fs2::FileExt;
 use ml_exp_core::identity::submission_marker;
 use ml_exp_core::slurm::{
@@ -35,6 +36,7 @@ const RECEIPT: &str = "receipt.json";
 // cannot select or override any executable, path, environment or time budget.
 pub struct HelperConfig {
     pub root: PathBuf,
+    pub shared_run_root: Option<PathBuf>,
     pub target: Target,
     pub sbatch_program: PathBuf,
     pub environment: BTreeMap<String, String>,
@@ -80,6 +82,19 @@ impl HelperConfig {
     /// process environment, read a clock, or initialize/repair helper state.
     pub fn validate(&self) -> Result<()> {
         self.target.validate()?;
+        if let Some(root) = &self.shared_run_root {
+            let root = root.to_str().ok_or(Error::Configuration)?;
+            ml_exp_core::slurm::staging::Requirement {
+                runs_root: root.into(),
+            }
+            .validate()?;
+            let helper_root = self.root.to_str().ok_or(Error::Configuration)?;
+            if ml_exp_core::slurm::path_within(root, helper_root)
+                || ml_exp_core::slurm::path_within(helper_root, root)
+            {
+                return Err(Error::Configuration);
+            }
+        }
         if let Some(scheduler) = &self.scheduler {
             scheduler.validate()?;
         }
@@ -127,6 +142,7 @@ impl HelperConfig {
 pub struct Helper {
     config: HelperConfig,
     root: Directory,
+    shared: Option<Directory>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -134,6 +150,8 @@ pub struct Helper {
 struct RootMarker {
     version: u16,
     target: Target,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shared_storage: Option<staging::StorageBinding>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -200,6 +218,7 @@ impl Helper {
     /// with a missing lock; RPC requests can never initialize/repair this state.
     pub fn initialize(config: HelperConfig) -> Result<Self> {
         config.validate()?;
+        let shared = staging::open_root(&config)?;
         let root = Directory::open(&config.root, true)?;
         root.verify_private_parent()?;
         if !root.entry_names()?.is_empty() {
@@ -216,6 +235,7 @@ impl Helper {
             &json(&RootMarker {
                 version: helper::PROTOCOL_VERSION,
                 target: config.target.clone(),
+                shared_storage: staging::binding(shared.as_ref())?,
             })?,
         )?;
         root.publish_new(
@@ -227,13 +247,22 @@ impl Helper {
         )?;
         lock.validate()?;
         drop(lock);
-        Ok(Self { config, root })
+        Ok(Self {
+            config,
+            root,
+            shared,
+        })
     }
     pub fn open(config: HelperConfig) -> Result<Self> {
         config.validate()?;
+        let shared = staging::open_root(&config)?;
         let root = Directory::open(&config.root, false)?;
         root.verify_private_parent()?;
-        let result = Self { config, root };
+        let result = Self {
+            config,
+            root,
+            shared,
+        };
         let lock = result.lock(&AtomicBool::new(false))?;
         result.verify_root()?;
         lock.validate()?;
@@ -242,7 +271,10 @@ impl Helper {
     }
     fn verify_root(&self) -> Result<()> {
         let marker: RootMarker = read_json(&self.root, ROOT_MARKER)?;
-        if marker.version != helper::PROTOCOL_VERSION || marker.target != self.config.target {
+        if marker.version != helper::PROTOCOL_VERSION
+            || marker.target != self.config.target
+            || marker.shared_storage != staging::binding(self.shared.as_ref())?
+        {
             return Err(Error::Bootstrap);
         }
         self.registry()?;
@@ -383,6 +415,12 @@ impl Helper {
             return Ok(ReadLedger::Unknown(UnknownReason::MalformedLedger));
         }
         let start_exists = directory.entry_exists(OsStr::new(START))?;
+        // After dispatch, mutable training directories cannot erase the known
+        // scheduler identity or prevent its observation/cancellation. A new
+        // submission still requires the original complete staging receipt.
+        if !start_exists && self.verify_shared(intent, &directory).is_err() {
+            return Ok(ReadLedger::Unknown(UnknownReason::StorageUnavailable));
+        }
         if start_exists {
             let start: Started = match read_json(&directory, START) {
                 Ok(value) => value,
@@ -456,6 +494,20 @@ impl Helper {
                 request,
                 ReplyOutcome::Rejected {
                     code: Rejection::IdentityConflict,
+                },
+            )?);
+        }
+        if request.intent().staging.as_ref().is_some_and(|required| {
+            self.config
+                .shared_run_root
+                .as_ref()
+                .and_then(|p| p.to_str())
+                != Some(required.runs_root.as_str())
+        }) {
+            return Ok(Reply::for_request(
+                request,
+                ReplyOutcome::Rejected {
+                    code: Rejection::UnsupportedOperation,
                 },
             )?);
         }
@@ -558,6 +610,7 @@ impl Helper {
         directory.publish_new(OsStr::new(INTENT), &json(request.intent())?)?;
         directory.publish_new(OsStr::new(MANIFEST), manifest.as_bytes())?;
         directory.publish_new(OsStr::new(SCRIPT), script.as_bytes())?;
+        self.prepare_shared(request.intent(), manifest.as_bytes())?;
         directory.publish_new(
             OsStr::new(STATE),
             &json(&LedgerRecord::prepared(request.intent().clone())?)?,
@@ -612,6 +665,7 @@ impl Helper {
             .directory
             .replace_regular(OsStr::new(STATE), &json(&snapshot.record)?)?;
         self.verify_issued(request.intent(), &snapshot.directory)?;
+        self.verify_shared(request.intent(), &snapshot.directory)?;
         lock.validate()?;
         let argv = vec![
             self.config.sbatch_program.display().to_string(),

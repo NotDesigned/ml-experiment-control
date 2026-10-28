@@ -31,6 +31,8 @@ struct Args {
 #[serde(deny_unknown_fields)]
 struct Config {
     root: PathBuf,
+    #[serde(default)]
+    shared_run_root: Option<PathBuf>,
     target: Target,
     sbatch_program: PathBuf,
     environment: BTreeMap<String, String>,
@@ -57,6 +59,7 @@ impl Config {
         (
             HelperConfig {
                 root: self.root,
+                shared_run_root: self.shared_run_root,
                 target: self.target,
                 sbatch_program: self.sbatch_program,
                 environment: self.environment,

@@ -37,6 +37,7 @@ fn request() -> Request {
         "#!/usr/bin/env bash\n#SBATCH --job-name={name}\n#SBATCH --comment=ml-exp-{token}\n\ntrue\n"
     );
     let intent = FrozenIntent {
+        staging: None,
         target: target(),
         scope: Scope {
             project: "demo".into(),
@@ -103,6 +104,9 @@ fn ledger_config(root: &Path) -> ml_exp_worker::slurm::HelperConfig {
     // Trusted test-operator configuration, independent of the request frame.
     ml_exp_worker::slurm::HelperConfig {
         root: root.join("remote-helper"),
+        shared_run_root: fs::read_to_string(root.join("native-shared-root"))
+            .ok()
+            .map(PathBuf::from),
         target: target(),
         sbatch_program: root.join("sbatch"),
         environment: BTreeMap::from([
