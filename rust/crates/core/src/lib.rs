@@ -18,6 +18,7 @@ pub mod observation;
 pub mod operations;
 pub mod projects;
 pub mod records;
+pub mod result_collection;
 pub mod slurm;
 pub mod sources;
 pub mod state;
