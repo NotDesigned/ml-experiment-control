@@ -78,7 +78,11 @@ pub fn validate_gpu_budget(max_gpu_hours: Option<f64>, resource_approval: &str) 
 }
 
 fn attempt_id(evidence: &RunEvidence) -> Result<String> {
-    if evidence.attempts.iter().any(|attempt| attempt.has_submission) {
+    if evidence
+        .attempts
+        .iter()
+        .any(|attempt| attempt.has_submission)
+    {
         return Err(Error::RunAlreadySubmitted);
     }
     let id = evidence
@@ -127,8 +131,8 @@ pub fn plan(evidence: &RunEvidence, request: &Request) -> Result<IntentPlan> {
     {
         return Err(Error::Identity);
     }
-    let evidence_digest = canonical::protocol_identity(&request.evidence)
-        .map_err(|_| Error::Evidence)?;
+    let evidence_digest =
+        canonical::protocol_identity(&request.evidence).map_err(|_| Error::Evidence)?;
     let mut draft = json!({
         "campaign_file": request.campaign_file,
         "run_id": evidence.run_id,
