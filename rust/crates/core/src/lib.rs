@@ -6,6 +6,7 @@ pub mod auth;
 pub mod canonical;
 pub mod capabilities;
 pub mod checkpoints;
+pub mod cloud;
 pub mod datasets;
 pub mod diagnostic;
 pub mod durable;

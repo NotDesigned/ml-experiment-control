@@ -650,12 +650,9 @@ until equivalent native acceptance exists; deleting them is not migration.
 `partial_foundation` means a limited implementation exists with incomplete
 contract acceptance. `not_started` means the target is only assigned. Neither
 means production compatibility, and module counts are not a completion percentage.
-The current inventory has 68 partial foundations out of 458 tracked Python
-files (14.8% with some native foundation); no Python platform module is marked
-fully replaced. The two newest foundations are the SenseCore data-delivery
-contract and the exact-Attempt result-collection reducer. This percentage is a
-scope indicator, not a claim that 14.8% of the production system can already be
-cut over.
+The inventory records limited native foundations per Python module. These counts
+are scope indicators, not a deployment completion percentage; no Python module
+is marked fully replaced until its complete compatibility boundary is accepted.
 
 ## Current implementation order
 
@@ -673,11 +670,9 @@ requires terminal scheduler evidence, and reserves the full limit of each Attemp
 against an explicit cumulative budget. History pages pin file identity and a
 SHA256 prefix; canonical journal events commit before the cursor, making a lost
 cursor update repeatable without duplicate metrics. Ingestion is an explicit
-operation; it does not enable W&B or start a background poller.
+operation by default. Optional background ingestion and W&B publication are now implemented, configured independently and never enabled by a GET.
 
-The remaining application work is: continuous background ingestion and W&B publication effects; PAI and SenseCore job,
-data and result adapters; remaining operator/client distribution and lifecycle
-commands. Then run coordinated end-to-end and real-provider acceptance, fix
+Native signed PAI/SenseCore job adapters and their durable Action executor now exist. Cloud Run creation/HTTP composition, input/result orchestration, remaining operator/client distribution and lifecycle commands still need wiring. The native CPU dataset importer supports direct HTTPS/OSS ranges and image-file delivery to the shared dataset cache; neither path stores payloads on the API host. Then run coordinated end-to-end and real-provider acceptance, fix
 observed failures and perform the guarded stable 0.1.0 cutover. An isolated CPU
 trial with synthetic scheduler/container tools is not that final acceptance.
 
@@ -728,8 +723,7 @@ a Rust wrapper.
 | W&B / telemetry | Native authenticated publish/remote confirmation, optional defaults and independent cursors, stable displayed keys and metadata, heartbeat; sanitized optional OTLP transport |
 | Public library / distribution | Deliberate Python-consumer migration, native CLI/service entries, supported OS/architecture, offline installs and no hidden Python platform subprocess |
 
-W&B currently relies on its official Python SDK in the baseline. Native publishing
-and remote-confirmation semantics need dedicated work and real-cloud verification;
+W&B currently relies on its official Python SDK in the baseline. Native publication and remote-confirmation semantics are now implemented with a narrow optional SDK effect subprocess; real-cloud verification remains pending;
 a logging call that merely enqueues data is not sufficient. The same applies to
 Alibaba signing/MCP and SDK-mediated object-store behavior. Preserve the current
 implementation as a reference until native replacements are accepted.
@@ -766,3 +760,35 @@ Compilation, existing workspace regressions and a persistent fake-SDK transport
 check are development evidence. Real W&B cloud publication and the live provider
 end-to-end suite remain pending. The branch remains non-deployable until the
 remaining feature set and the coordinated acceptance pass are complete.
+
+## Native cloud adapter implementation
+
+`core::cloud` compiles PAI DLC and SenseCore ACP requests from explicit profiles
+and frozen jobs. PAI retains PRIVATE visibility, personal CPFS/role restrictions,
+resource limits, priority 5, paired Tide/oversold settings, RestartPolicy Never and
+its 24-hour cap. SenseCore excludes debug pools for training, confines CPU copy
+and collection to the reserved 2CPU/4GiB debug profile, and chooses compatible
+same-zone/VPC pools by exact SPOT allowance. This allowance is not free capacity.
+
+`server::backends::cloud` sends native signed HTTPS requests without provider CLI
+or SDK. It has ACS3/HMAC signing, bounded responses, safe HTTP/error codes, exact
+job ownership and pagination, PAI queue-rule evidence, private image-auth
+injection, SenseCore worker/offline-log scope checks and cluster reads. Its
+private outbox records submit/cancel intent before effects, survives restart and
+never replays a started effect after response loss or an empty provider list.
+The runner uses the ordinary Action authorization, frozen-file checks and CAS.
+
+These are internal callable adapters, not yet a complete public cloud Run path.
+The main preview HTTP composition still configures native Slurm submissions.
+Cloud worker bootstrap/callbacks, orchestration and real provider acceptance are
+pending. No provider training mutation is authorized merely by constructing an
+adapter or observing a configured capability.
+
+The native `data-import` worker uses the existing immutable dataset store and
+progress marker. It receives data in 16MiB ranges from an approved HTTPS host,
+or reads an archive included in the data image, commits exact parts and verifies
+the complete archive/files before READY. Retries reuse durable parts; READY reuse
+rehashes the sealed tree without downloading the source. Temporary signed URLs
+stay in private import configuration and are absent from receipts and diagnostics.
+This worker path still needs cloud dispatch/receipt integration and live HTTPS
+acceptance; file-import and interrupted-progress checks are development evidence.

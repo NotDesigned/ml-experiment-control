@@ -30,17 +30,17 @@
       "core": {
         "modules": 25,
         "lines": 5122,
-        "partial_foundation": 11,
-        "not_started": 14
+        "partial_foundation": 15,
+        "not_started": 10
       },
       "worker": {
         "modules": 14,
         "lines": 1953,
-        "partial_foundation": 4,
-        "not_started": 10
+        "partial_foundation": 5,
+        "not_started": 9
       }
     },
-    "partial_foundation_modules": 73,
+    "partial_foundation_modules": 78,
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
@@ -3929,8 +3929,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "providers.pai",
       "proposed_consolidation": "Merge scheduler and related server storage/debug operations behind a provider module; retain separate job/storage/debug ports.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/cloud/pai.rs",
+        "scope": "Native pure DLC request compilation, generic resources, personal CPFS/role, priority/Tide policies, 24h cap, exact tags/workspace/job evidence, normalized state and nested queue diagnostics. Native signed adapter and Action runner exist; public cloud Run facade and real-provider acceptance pending.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "src/experiment_control/backends/pai_api.py",
@@ -3946,8 +3952,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "providers.pai",
       "proposed_consolidation": "Merge scheduler and related server storage/debug operations behind a provider module; retain separate job/storage/debug ports.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/server/src/backends/cloud/mod.rs",
+        "scope": "Native ACS3 HTTPS signing, no implicit retry/redirect/proxy, bounded safe response/error handling and exact-host private registry authentication. No PAI SDK or CLI subprocess. Real provider acceptance pending.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "src/experiment_control/backends/sensecore.py",
@@ -3966,8 +3978,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "providers.sensecore",
       "proposed_consolidation": "Merge scheduler and related server storage/debug operations behind a provider module; retain separate job/storage/debug ports.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/cloud/sensecore.rs",
+        "scope": "Native pure ACP compiler with training/debug CPU separation, fixed worker shape, NAS scope, disabled provider retries, exact owned job evidence and compatible highest-SPOT quota selection. Native REST/Action shell exists; public cloud facade pending.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "src/experiment_control/backends/sensecore_rest.py",
@@ -3987,8 +4005,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "providers.sensecore",
       "proposed_consolidation": "Merge scheduler and related server storage/debug operations behind a provider module; retain separate job/storage/debug ports.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/server/src/backends/cloud/adapter.rs",
+        "scope": "Native signed SenseCore requests, bounded complete pagination, exact workspace/owner/UID, cluster/spec reads, zero-GPU profile compilation, worker and scoped offline log verification. Real provider acceptance and live logs pending.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "src/experiment_control/backends/services.py",
@@ -4396,8 +4420,14 @@
       "target_crate": "ml-exp-worker",
       "target_domain": "inputs",
       "proposed_consolidation": "Shared verify/cache/materialize logic, with separate copy and script-preparation modes.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/worker/src/data_import.rs",
+        "scope": "Native CPU direct backend import from approved HTTPS ranges or image file, existing dataset store, durable resumable parts, full archive/tree verification, stable READY reuse without source, common progress records and cancellation. Public cloud dispatch/callback integration and live HTTPS acceptance pending.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "worker/src/ml_exp_worker/data_preparation.py",

@@ -826,3 +826,36 @@ An SDK write is not a cloud ACK. Unknown outcomes never authorize blind replay.
 The subprocess contract is bounded and cancelled on shutdown. Fake-SDK subprocess
 coverage exists; real cloud connectivity, visibility and live green-dot acceptance
 are pending alongside the final provider acceptance phase.
+
+## Native cloud adapters and CPU dataset import
+
+`ml-exp-server::backends::cloud` provides callable native signed PAI DLC and
+SenseCore ACP adapters. They share the normal Action authorization/CAS and a
+private durable one-effect outbox. Job ownership, full pagination, queue rules,
+cluster quota selection and offline logs are validated before accepting evidence.
+These adapters are not yet configured by the public preview HTTP Run facade.
+Cloud creation/input/result orchestration and real-provider acceptance remain
+incomplete. Main startup still supports the opt-in Slurm submission path only.
+
+A backend CPU job can now run the native dataset import worker. Its private
+configuration contains `root`, `target`, `project`, the exact dataset `definition`,
+`timeout_seconds` and a source: either `{"kind":"file","path":"/image/data.tar"}`
+or `{"kind":"https","url":"https://approved-host/data.tar?...","allowed_hosts":["approved-host"]}`.
+The source is the native deterministic uncompressed dataset tar; this is not an
+implicit importer for legacy tar.gz uploads. The operator initializes an approved
+empty cache root once; retries must not repeat initialization:
+
+```sh
+ml-exp-worker-rs data-import --config /private/import.json --initialize
+ml-exp-worker-rs data-import --config /private/import.json
+```
+
+Imports reuse the existing dataset store, 16MiB durable parts, exact file/archive
+SHA checks and READY receipt. HTTPS requires exact byte ranges and no redirects
+or environment proxy. The final cache is verified again on reuse, without source
+network access. Dataset payloads stay on backend storage; no API-host spool is
+introduced. Progress uses `ML_EXPD_INPUT_PROGRESS`, with received bytes, rate,
+phase and safe failure code. The command deadline also sets the worker cancellation
+flag; provider/outer worker supervision remains responsible for hard process limits.
+Private signed URLs never appear in receipts or errors. Direct import does not
+create a scheduler job, attach the dataset to a Run or publish a server receipt.

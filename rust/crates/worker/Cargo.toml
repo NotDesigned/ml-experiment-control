@@ -22,6 +22,8 @@ libc.workspace = true
 sha2 = "0.10"
 time.workspace = true
 
+reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "rustls-tls"] }
+
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"
 

@@ -2,9 +2,9 @@
 //! for its Run/deletion/source guards. No bootstrap, authorization, Run selection
 //! or automatic provider replay is performed here.
 use super::{CallOutcome, SshConfig, call};
-use crate::operations::{self, ClaimContext, Store};
+use crate::operations::{self, Store};
 use ml_exp_core::{
-    operations::{Dispatch, FrozenFiles, Policy},
+    operations::Dispatch,
     slurm::{
         action::{self, Outcome, Uncertain},
         helper::{Reply, ReplyOutcome, Request},
@@ -30,13 +30,7 @@ pub enum Error {
     Action(#[from] operations::Error),
 }
 pub type Result<T> = std::result::Result<T, Error>;
-pub struct Execute<'a> {
-    pub action_id: &'a str,
-    pub confirmation: &'a str,
-    pub policy: &'a Policy,
-    pub files: &'a FrozenFiles,
-    pub claim: ClaimContext<'a>,
-}
+pub use crate::operations::Execute;
 pub struct Runner<'a> {
     pub actions: &'a Store,
     pub ssh: &'a SshConfig,

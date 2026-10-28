@@ -5,6 +5,8 @@ mod cli;
 #[cfg(unix)]
 mod data_cli;
 #[cfg(unix)]
+mod import_cli;
+#[cfg(unix)]
 mod managed_cli;
 
 #[derive(Parser)]
@@ -52,6 +54,9 @@ fn main() -> ExitCode {
             .as_deref()
             .and_then(std::ffi::OsStr::to_str)
         {
+            Some("data-import") => {
+                return import_cli::main_from(std::iter::once(binary).chain(arguments));
+            }
             Some("data-helper") => {
                 return data_cli::main_from(std::iter::once(binary).chain(arguments));
             }

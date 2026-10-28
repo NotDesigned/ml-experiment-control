@@ -348,6 +348,63 @@ impl Store {
     pub fn slurm_request(&self, action_id: &str) -> Result<ml_exp_core::slurm::helper::Request> {
         self.locked(|lock| self.slurm_request_unlocked(action_id, lock))
     }
+    /// The cloud adapter uses the same Action authorization/CAS as Slurm.
+    /// Private request bytes are immutable and must exist before execution.
+    pub fn bind_cloud_request(
+        &self,
+        action_id: &str,
+        request: &ml_exp_core::cloud::action::Execution,
+    ) -> Result<()> {
+        use ml_exp_core::cloud::action;
+        request
+            .validate()
+            .map_err(|_| Error::Invalid("native cloud request"))?;
+        self.locked(|lock| {
+            action::validate(&self.plan(action_id, lock)?, request)
+                .map_err(|_| Error::Invalid("native cloud binding"))?;
+            let directory = self.action_directory(action_id, false, lock)?;
+            let name = OsStr::new("native-cloud-request.json");
+            if directory.entry_exists(name)? {
+                if self.cloud_request_unlocked(action_id, lock)? != *request {
+                    return Err(Error::IdempotencyConflict);
+                }
+            } else {
+                let execution = self.database.observe(&|| lock.validate(), action_id)?;
+                if !matches!(
+                    execution["status"].as_str(),
+                    Some("PREPARED" | "AUTHORIZED")
+                ) {
+                    return Err(Error::Invalid(
+                        "missing native cloud input requires offline investigation",
+                    ));
+                }
+                directory.publish_new(name, &serde_json::to_vec(request)?)?;
+            }
+            Ok(())
+        })
+    }
+    fn cloud_request_unlocked(
+        &self,
+        action_id: &str,
+        lock: &Lock,
+    ) -> Result<ml_exp_core::cloud::action::Execution> {
+        let directory = self.action_directory(action_id, false, lock)?;
+        let name = OsStr::new("native-cloud-request.json");
+        let identity = directory.regular_identity(name)?.ok_or(Error::NotFound)?;
+        if !identity.is_private_for(effective_uid()) || identity.mode & 0o077 != 0 {
+            return Err(Error::Invalid("private native cloud request required"));
+        }
+        let bytes = directory.read_regular(name, 2 * 1024 * 1024)?;
+        let request = serde_json::from_value(Value::Object(
+            ml_exp_core::json::mapping(&bytes).map_err(|_| Error::Invalid("native cloud input"))?,
+        ))?;
+        ml_exp_core::cloud::action::validate(&self.plan(action_id, lock)?, &request)
+            .map_err(|_| Error::Invalid("native cloud binding"))?;
+        Ok(request)
+    }
+    pub fn cloud_request(&self, action_id: &str) -> Result<ml_exp_core::cloud::action::Execution> {
+        self.locked(|lock| self.cloud_request_unlocked(action_id, lock))
+    }
     pub fn save_plan(&self, plan: &Value, now: &str, transition_id: &str) -> Result<Value> {
         self.locked(|lock| {
             let action_id = plan
