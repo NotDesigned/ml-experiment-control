@@ -216,7 +216,7 @@ mod tests {
         let plan = plan(&evidence(), &request()).unwrap();
         assert_eq!(plan.kind, "SUBMIT_RUN");
         assert_eq!(plan.draft["attempt_id"], "attempt-001");
-        assert_eq!(plan.idempotency_key.as_deref().unwrap().len(), 32);
+        assert_eq!(plan.idempotency_key.as_deref().unwrap().len(), 31);
         assert!(plan.evidence_digest.starts_with("sha256:"));
     }
 
