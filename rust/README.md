@@ -22,7 +22,7 @@ receipt and retry decision are validated by a native contract before use.
 
 | Crate | Preview executable | Current scope |
 | --- | --- | --- |
-| `ml-exp-core` | Library | Pure frozen identities, Project/schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint receipt/restore decisions, observations, failure assessment and Slurm/helper protocols |
+| `ml-exp-core` | Library | Pure frozen identities, Project/schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint receipt/restore decisions, data-delivery/result-collection reducers, observations, failure assessment and Slurm/helper protocols |
 | `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O, single-frame pipe transport and descriptor-safe checkpoint verification/sealing |
 | `ml-exp-client` | `ml-exp-rs` | Private settings, bounded exact-identity reads/watch, Project operations and deterministic source archive upload/lookup |
 | `ml-exp-server` | `ml-expd-rs` | Approved discovery/reads, Project lifecycle, immutable source archive storage/receipts, native checkpoint registry, isolated SQLite/Run fences and Slurm transport |
@@ -95,6 +95,15 @@ handles immutable session reuse/restart and exact duplicate parts, and refuses
 publication until every part and the whole SHA256 match. Staging files,
 streaming reads, locks, capacity effects and object-store publication remain
 imperative.
+
+`ml-exp-core::data_delivery` covers the SenseCore zero-GPU data-copy contract:
+frozen delivery identity, NAS scope, sealed READY reuse, callback transitions,
+and exact ACP scheduler-job binding. `ml-exp-core::result_collection` covers
+the separate result-recovery contract: terminal Attempt gating, bounded CPU
+collector retries, interruption/reconciliation, exact provider observations,
+unfinished-archive conflicts, capacity arithmetic and publication planning.
+SenseCore/Slurm calls, image builds, locks, clocks, file traversal and object
+storage remain Python effects until an outer compatibility facade is accepted.
 
 ## Build and check
 

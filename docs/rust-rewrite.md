@@ -36,10 +36,10 @@ forwarding code merely to make the language uniform.
 
 | Component | Implemented foundation | Still missing |
 | --- | --- | --- |
-| Core | Frozen identities, Project schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint identity/retention decisions, tracking plans, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
+| Core | Frozen identities, Project schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint identity/retention decisions, tracking plans, data-delivery and result-collection reducers, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
 | Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O, deadline-bound single-frame pipe transport and checkpoint generation verification/sealing | Remaining transport primitives and durable domain protocols |
 | Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands and deterministic source archive upload/lookup | General asset/data transfers, artifact downloads/ACK, updates and full command coverage |
-| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint registry and isolated journals; SQLite stores/Run fences; Slurm transport | Artifact/result store, submission/provider executors, collectors, TLS and tracking transport |
+| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint registry and isolated journals; SQLite stores/Run fences; Slurm transport; pure data-delivery and result-collection decisions | Python effect shells still own artifact/result stores, submission/provider executors, collectors, TLS and tracking transport |
 | Worker | Local process supervision, sealed local launch and scoped Slurm prepare/submit/inspect helper | Remote managed-launch transport, data/checkpoint/journal/artifact/build/copy/deletion protocols |
 
 The native source path is deliberately Project-scoped: a shared tree digest does
@@ -101,6 +101,26 @@ decides create/reuse/restart for immutable sessions, rejects replacement of a
 sealed part, and checks the complete part set and whole-archive digest before
 publication. Python continues to own staging directories, locks, streaming
 `PartStream`, disk admission and the final object-store write.
+
+The SenseCore data-delivery state machine now has a native contract in
+`ml-exp-core::data_delivery`. It freezes the delivery definition and
+confirmation, compares only the NAS identity when reusing a sealed `READY`
+candidate, validates the data-image receipt and legal callback transitions, and
+binds an ACP copy job to one exact scheduler name and UID. A
+`RECONCILE_REQUIRED` record can be inspected or resumed, but its reducer never
+authorizes a second ACP create. Durable JSON/journals, image construction,
+SenseCore REST and ACP calls remain in the Python shell until a compatibility
+facade is accepted.
+
+Result recovery has the corresponding pure reducer in
+`ml-exp-core::result_collection`. It keeps the original training Attempt
+separate from bounded CPU/NAS collector retries, makes daemon interruption
+explicit, requires exact provider-job observations, rejects ambiguous or
+unavailable queries, detects conflicting unfinished archive identities, and
+plans capacity-safe publication without reading files or deleting caches.
+Archive streaming, storage reservations, locks, clocks and provider calls stay
+outside the core. This is a foundation for replacing the Python decision logic;
+it is not a claim that the production collector has already been switched.
 
 Metrics now include schema/definition validation, typed and wide observations,
 explicit units, required/conditional metrics, context-sensitive conflicts and
@@ -379,7 +399,7 @@ flowchart LR
 
 | Crate | Owns | Must not own |
 | --- | --- | --- |
-| `ml-exp-core` | Immutable wire values, exact identities, validation, state reducers, metric schema, request planning and pure redaction | Files, network, environment reads, clocks, randomness, processes or scientific model selection |
+| `ml-exp-core` | Immutable wire values, exact identities, validation, state reducers, metric schema, request planning, data-delivery/result-collection reducers and pure redaction | Files, network, environment reads, clocks, randomness, processes or scientific model selection |
 | `ml-exp-io` | Shared bounded file/hash/atomic-write and effect primitives | Business state transitions, automatic retries or implicit provider policy |
 | `ml-exp-client` | One command tree, connection/configuration, source packaging, resumable transfer, reviewed operations, observation and verified update | SSH/cloud credentials, a local scheduler or scientific completeness rules |
 | `ml-exp-server` | Composition, HTTP, projects/sources, experiment/operation workflows, persistence, observation, data/build/result services, providers and optional tracking | Training computation or hidden replay of uncertain effects |
@@ -470,6 +490,12 @@ until equivalent native acceptance exists; deleting them is not migration.
 `partial_foundation` means a limited implementation exists with incomplete
 contract acceptance. `not_started` means the target is only assigned. Neither
 means production compatibility, and module counts are not a completion percentage.
+The current inventory has 62 partial foundations out of 458 tracked Python
+files (13.5% with some native foundation); no Python platform module is marked
+fully replaced. The two newest foundations are the SenseCore data-delivery
+contract and the exact-Attempt result-collection reducer. This percentage is a
+scope indicator, not a claim that 13.5% of the production system can already be
+cut over.
 
 ## Migration sequence and acceptance
 
