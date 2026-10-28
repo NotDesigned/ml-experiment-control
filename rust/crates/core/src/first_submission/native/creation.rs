@@ -30,6 +30,8 @@ pub struct Request {
     pub artifacts: Option<crate::artifacts::publication::Policy>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub data: Vec<crate::datasets::Input>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wandb: Option<crate::tracking::WandbOptions>,
 }
 impl Request {
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
@@ -98,6 +100,7 @@ pub struct Authority<'a> {
     pub backend_config_sha256: &'a str,
     pub checkpoint: Option<&'a Value>,
     pub datasets: &'a [crate::datasets::Receipt],
+    pub tracking_route: Option<&'a Value>,
 }
 pub fn plan(
     project: &str,
@@ -207,6 +210,12 @@ pub fn plan(
     }
     if !datasets.is_empty() {
         run["native_datasets"] = json!(datasets);
+    }
+    if let Some(options) = &request.wandb {
+        run["wandb"] = options.to_value();
+    }
+    if let Some(route) = authority.tracking_route {
+        run["tracking_route"] = route.clone();
     }
     // Bind the full trusted runtime, including its materialization receipt.
     run["native_creation"]["runtime_sha256"] = json!(

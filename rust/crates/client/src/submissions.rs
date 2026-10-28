@@ -7,6 +7,10 @@ use ml_exp_core::{
 use serde_json::{Value, json};
 
 pub enum Command<'a> {
+    Tracking {
+        project: &'a str,
+        run: &'a str,
+    },
     Retry {
         submission: &'a str,
         request: &'a ml_exp_core::first_submission::native::retry::Request,
@@ -60,6 +64,10 @@ pub enum Command<'a> {
     },
 }
 enum Expected {
+    Tracking {
+        project: String,
+        run: String,
+    },
     Retry {
         parent: String,
         request: ml_exp_core::first_submission::native::retry::Request,
@@ -115,6 +123,21 @@ fn reason(value: &str) -> Result<(), Error> {
     }
 }
 pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
+    if let Command::Tracking { project, run } = &command {
+        identity::validate_id(project).map_err(|_| invalid())?;
+        identity::validate_id(run).map_err(|_| invalid())?;
+        return Ok(Plan {
+            path: format!("/api/runs/{project}/{run}/tracking"),
+            body: None,
+            expected: Expected::Tracking {
+                project: (*project).into(),
+                run: (*run).into(),
+            },
+            executes: false,
+            refreshes: false,
+            checkpoint: false,
+        });
+    }
     let refreshes = matches!(
         &command,
         Command::History { .. } | Command::Refresh { .. } | Command::Checkpoint { .. }
@@ -291,6 +314,16 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
     })
 }
 pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
+    if let Expected::Tracking { project, run } = &plan.expected {
+        if value["project"] != *project
+            || value["run_id"] != *run
+            || !value["scopes"].is_array()
+            || !value["wandb"]["enabled"].is_boolean()
+        {
+            return Err(Error::Response);
+        }
+        return Ok(value);
+    }
     if plan.path.ends_with("/history") {
         if !matches!(&plan.expected,Expected::Submission(id) if value["submission_id"]==*id)
             || !matches!(value["status"].as_str(), Some("PARTIAL" | "COMPLETE"))
@@ -466,7 +499,9 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
 pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Error> {
     session::validate_health(health)?;
     let creates = matches!(plan.expected, Expected::Creation { .. });
-    let capability = if plan.path.ends_with("/history") {
+    let capability = if matches!(plan.expected, Expected::Tracking { .. }) {
+        "native-tracking-status.v1"
+    } else if plan.path.ends_with("/history") {
         "native-metric-history.v1"
     } else if matches!(plan.expected, Expected::Retry { .. }) {
         "native-attempt-retry.v1"

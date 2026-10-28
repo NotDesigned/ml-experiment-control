@@ -32,7 +32,7 @@ The experiment API observes explicitly approved isolated files. Project metadata
 registration/lifecycle is a separate opt-in mode. A separate opt-in native Slurm
 submission API handles first Runs with trusted source and materialized-image
 receipts. Explicitly enabled Run creation can publish a standalone Run and first
-Attempt; it does not submit a job. Cloud managed-worker transport, managed cloud dataset adapters and W&B transport remain unported. The opt-in native Slurm path now supports deterministic dataset packing, bounded gateway upload, immutable receipts and named Run inputs. Native Slurm now supports explicit backend-resident result collection, streaming download and verified ACK/release. Source archive publication is now a bounded native subchain: the
+Attempt; it does not submit a job. Cloud managed-worker transport and managed cloud dataset adapters remain unported. An opt-in native background observer and durable W&B publisher are implemented; real W&B cloud acceptance remains pending. The opt-in native Slurm path now supports deterministic dataset packing, bounded gateway upload, immutable receipts and named Run inputs. Native Slurm now supports explicit backend-resident result collection, streaming download and verified ACK/release. Source archive publication is now a bounded native subchain: the
 client packs regular files into deterministic tar/gzip, the server verifies the
 transport SHA, rejects links/protected paths, seals the tree, computes the
 length-framed tree identity and records an immutable archive receipt. Lost
@@ -66,7 +66,7 @@ directory descriptors, rejects extra or unstable files, and can seal the
 generation. The server registry persists immutable receipts and detects an
 existing generation bound to a different manifest. The native Slurm path now
 connects explicit SSH verification, metadata-only registration, exact list/read
-APIs and a selected checkpoint in a new Run. Worker polling and other provider
+APIs and a selected checkpoint in a new Run. Native background worker/history polling is implemented; cloud-provider
 storage/registration adapters remain incomplete; no automatic restore is chosen.
 
 The submission boundary is also native: `ml-exp-core::submission` owns frozen
@@ -81,8 +81,7 @@ W&B publication planning is also native in
 suffix, publisher reservations and remote history/display evidence, then
 returns deterministic `EmitHistory`, `PublishDisplay` or `Finish` actions.
 Local SDK writes are kept distinct from remote history ACKs; sequence/event-ID
-conflicts and incomplete provider reads fail closed. The W&B SDK session,
-credentials, HTTP operations and durable outbox remain in the Python shell.
+conflicts and incomplete provider reads fail closed. The Rust server owns the durable outbox, credentials, routing and reconciliation. A narrow optional official-SDK Python subprocess owns only W&B network/session effects; it does not import the Python platform.
 
 `ml-exp-core::transfers` applies the same boundary to the one-GiB unacknowledged
 upload buffer. It validates part identities, metadata names, block-rounded
@@ -153,8 +152,7 @@ the command explicitly reconciles the same intent; GET never sends a cancel.
 Submission metadata includes `cancellation.termination_verified`, which remains
 false until exact terminal scheduler evidence is observed. A stopped process is
 not inferred from a successful local SSH exit. An already terminal job can be
-confirmed without sending a scheduler cancellation. Same-Run/new-Attempt retry
-and automatic restart remain separate unfinished paths.
+confirmed without sending a scheduler cancellation. Same-Run/new-Attempt retry is an explicit checkpoint-bound command. Automatic restart remains unimplemented.
 
 ## Native managed datasets
 
@@ -781,3 +779,50 @@ core helpers or add a trait for every function. Add compatibility fixtures befor
 replacing a frozen format. Preserve source failures and unknown effects rather than making
 preview output resemble success. Update the inventory's status only when the
 stated scope is implemented and its acceptance evidence exists.
+
+## Background observation and optional W&B
+
+Add `"polling":{"enabled":true,"interval_seconds":10,"max_candidates":4096,"rpc_timeout_seconds":5}`
+to the private submission configuration. One leader performs at most one bounded
+RPC per tick, rotating scheduler, worker and full-history reads fairly. Unmanaged
+jobs receive scheduler reads only. Terminal jobs retire after process completion,
+full metric history and local terminal journal persistence. GETs never trigger
+provider I/O. This observer never submits, retries, cancels or releases a result.
+
+`GET /api/observer` shows observer state. Each Submission includes phase-specific
+last attempt, last success and safe error codes. This reports observation progress,
+not a claimed worker heartbeat. A finished process that never wrote `metrics.jsonl`
+is explicitly `NOT_PRODUCED`; missing metrics are not fabricated.
+
+The optional `--tracking-config /private/tracking.json` accepts:
+
+```json
+{
+  "schema_version": 1,
+  "python": "/absolute/python-with-wandb",
+  "api_key_file": "/absolute/private/wandb-key",
+  "entity": null,
+  "project": null,
+  "enabled": true
+}
+```
+
+The official SDK resolves an omitted entity; an omitted project defaults to the
+ML-Expd Project. Each new Run may override `wandb.entity`, `wandb.project` or
+`wandb.enabled`; its resolved route is frozen. Existing Runs retain their original
+route. No credentials in a manifest, argv, journal or client configuration.
+Missing optional SDK/default-entity lookup disables unresolved routes with a
+diagnostic and leaves local collection available. Preparation export remains off.
+
+```sh
+ml-exp-rs run tracking --project demo --run train
+```
+
+This local-only status reports destination, confirmed/pending event counts and
+safe synchronization diagnostics. A persistent SDK session keeps active cloud
+Runs open. Rust reserves sends durably before SDK I/O, requires sequence/event-ID
+remote history proof before ACK, and requires remote display/finish confirmation.
+An SDK write is not a cloud ACK. Unknown outcomes never authorize blind replay.
+The subprocess contract is bounded and cancelled on shutdown. Fake-SDK subprocess
+coverage exists; real cloud connectivity, visibility and live green-dot acceptance
+are pending alongside the final provider acceptance phase.

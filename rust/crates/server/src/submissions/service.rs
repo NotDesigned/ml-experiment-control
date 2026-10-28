@@ -106,6 +106,7 @@ pub struct Service {
     backends: BTreeMap<String, Backend>,
     enabled: bool,
     creation_roots: BTreeMap<String, Directory>,
+    tracking: ml_exp_core::tracking::RoutingSettings,
 }
 struct Facts {
     reference: RunRef,
@@ -155,14 +156,17 @@ impl Backend {
 }
 mod artifacts;
 mod authority;
+mod background;
 mod cancellation;
 mod checkpoints;
 mod creation;
 mod datasets;
 mod history;
+mod journal;
 mod observation;
 mod preparation;
 mod retry;
+mod scheduler;
 
 impl Service {
     pub fn enabled(&self) -> bool {
@@ -318,6 +322,7 @@ impl Service {
             backends: bindings,
             enabled,
             creation_roots: BTreeMap::new(),
+            tracking: ml_exp_core::tracking::RoutingSettings::default(),
         })
     }
     fn public(&self, snapshot: Value, now: &str) -> Result<Value> {
@@ -332,6 +337,11 @@ impl Service {
         if let Some(state) = self.cancellation_state(&prepared)? {
             result["cancellation"] = json!(state);
         }
+        if let Some(saved) = self.scheduler_observation(&prepared)? {
+            result["execution"]["result"]["observation"] = json!(saved.observation);
+            result["native_scheduler_observation"] = json!(true);
+        }
+        result["background_observation"] = self.polling_status(&prepared)?;
         Ok(result)
     }
     pub fn authorize(

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS events (scope TEXT,seq INTEGER,event_id TEXT,payload 
 CREATE TABLE IF NOT EXISTS event_ids (scope TEXT,event_id TEXT,digest TEXT NOT NULL,PRIMARY KEY(scope,event_id));
 CREATE TABLE IF NOT EXISTS display_metrics (destination TEXT,signature TEXT,public_name TEXT,context TEXT,
  PRIMARY KEY(destination,signature),UNIQUE(destination,public_name));
+CREATE TABLE IF NOT EXISTS native_publications (scope TEXT PRIMARY KEY,state TEXT NOT NULL);
 "#;
 
 pub struct Store {
@@ -560,6 +561,7 @@ impl Store {
                     );
                 }
                 for scope in &scopes {
+                    tx.execute("DELETE FROM native_publications WHERE scope=?", [scope])?;
                     tx.execute("DELETE FROM events WHERE scope=?", [scope])?;
                     tx.execute("DELETE FROM event_ids WHERE scope=?", [scope])?;
                 }
@@ -582,6 +584,9 @@ impl Store {
         )
     }
 }
+
+#[path = "publication.rs"]
+mod publication;
 
 fn initialize_schema(transaction: &rusqlite::Transaction<'_>, workspace_seed: &str) -> Result<()> {
     transaction.execute_batch(SCHEMA)?;

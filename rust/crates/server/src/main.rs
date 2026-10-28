@@ -37,6 +37,9 @@ struct Args {
     /// Trusted native Slurm profiles and published-image receipts, never client input.
     #[arg(long, requires_all = ["read_config", "source_archives"], conflicts_with = "initialize_registry")]
     submission_config: Option<PathBuf>,
+    /// Optional private official-cloud W&B credentials and SDK interpreter.
+    #[arg(long, requires = "submission_config")]
+    tracking_config: Option<PathBuf>,
 }
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -111,20 +114,39 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let reads = match args.read_config.as_deref() {
+    let tracking = match args
+        .tracking_config
+        .as_deref()
+        .map(|path| {
+            ml_exp_server::tracking::Config::load(path)
+                .and_then(ml_exp_server::tracking::Runtime::open)
+        })
+        .transpose()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("{error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    if let Some(error) = tracking.as_ref().and_then(|runtime| runtime.diagnostic()) {
+        eprintln!("optional W&B publisher: {error}");
+    }
+    let (reads, polling) = match args.read_config.as_deref() {
         Some(path) => match open_api(
             path,
             args.project_lifecycle,
             args.source_archives,
             args.submission_config.as_deref(),
+            tracking.as_ref().map(|runtime| runtime.routing().clone()),
         ) {
-            Ok(reads) => Some(std::sync::Arc::new(reads)),
+            Ok((reads, polling)) => (Some(std::sync::Arc::new(reads)), polling),
             Err(error) => {
                 eprintln!("{error}");
                 return std::process::ExitCode::FAILURE;
             }
         },
-        None => None,
+        None => (None, None),
     };
     let listener = match tokio::net::TcpListener::bind(args.bind).await {
         Ok(listener) => listener,
@@ -136,6 +158,38 @@ async fn main() -> std::process::ExitCode {
     if let Ok(address) = listener.local_addr() {
         println!("{address}");
     }
+    let _observer = match polling.filter(|policy| policy.enabled) {
+        Some(policy) => match ml_exp_server::background::Observer::start(
+            reads
+                .as_ref()
+                .and_then(|api| api.submissions())
+                .expect("submission polling configuration"),
+            policy,
+        ) {
+            Ok(observer) => Some(observer),
+            Err(error) => {
+                eprintln!("{error}");
+                return std::process::ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
+    let _publisher = match tracking.filter(|runtime| runtime.routing().enabled) {
+        Some(runtime) => match ml_exp_server::tracking::Publisher::start(
+            reads
+                .as_ref()
+                .and_then(|api| api.submissions())
+                .expect("tracking requires native submissions"),
+            runtime,
+        ) {
+            Ok(publisher) => Some(publisher),
+            Err(error) => {
+                eprintln!("optional W&B publisher: {error}");
+                None
+            }
+        },
+        None => None,
+    };
     let result = axum::serve(listener, ml_exp_server::app(auth, reads))
         .with_graceful_shutdown(async {
             #[cfg(unix)]
@@ -171,7 +225,14 @@ fn open_api(
     lifecycle: bool,
     source_archives: bool,
     submission_config: Option<&std::path::Path>,
-) -> Result<ml_exp_server::read_api::Api, Box<dyn std::error::Error>> {
+    tracking: Option<ml_exp_core::tracking::RoutingSettings>,
+) -> Result<
+    (
+        ml_exp_server::read_api::Api,
+        Option<ml_exp_core::polling::Policy>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let settings = ml_exp_server::read_config::load(path)?;
     let service = if lifecycle {
         Some(std::sync::Arc::new(ml_exp_server::projects::Service::open(
@@ -192,22 +253,23 @@ fn open_api(
         )?);
         let api = api.with_sources(source.clone())?;
         if let Some(path) = submission_config {
-            let (enabled, creation, backends) = ml_exp_server::submissions::config::load(path)?;
+            let config = ml_exp_server::submissions::config::load(path)?;
             let submissions = std::sync::Arc::new(
                 ml_exp_server::submissions::Service::open(
                     settings,
                     source,
                     api.lifecycle(),
-                    backends,
-                    enabled,
+                    config.backends,
+                    config.enabled,
                 )?
-                .with_run_creation(creation)?,
+                .with_run_creation(config.creation)?
+                .with_tracking(tracking.unwrap_or_default()),
             );
-            return Ok(api.with_submissions(submissions)?);
+            return Ok((api.with_submissions(submissions)?, Some(config.polling)));
         }
-        return Ok(api);
+        return Ok((api, None));
     }
-    Ok(api)
+    Ok((api, None))
 }
 
 fn initialize_sources(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {

@@ -239,6 +239,13 @@ impl Target {
 }
 #[derive(Subcommand)]
 enum Run {
+    /// Show the frozen W&B route and local publication cursors/errors; no cloud request.
+    Tracking {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        run: String,
+    },
     /// Ingest the next metrics history page; repeat until COMPLETE. Does not change the job.
     History { submission: String },
     /// Append a new Attempt from an explicit checkpoint and cumulative budget; does not submit.
@@ -376,6 +383,7 @@ impl Run {
     }
     fn submission_plan(&self) -> Result<Option<submissions::Plan>, ml_exp_client::Error> {
         let command = match self {
+            Self::Tracking { project, run } => submissions::Command::Tracking { project, run },
             Self::History { submission } => submissions::Command::History { submission },
             Self::Cancel {
                 submission,
@@ -673,7 +681,8 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             !keep,
                             &health,
                         )?),
-                        Run::History { .. }
+                        Run::Tracking { .. }
+                        | Run::History { .. }
                         | Run::Retry { .. }
                         | Run::Create { .. }
                         | Run::Prepare { .. }

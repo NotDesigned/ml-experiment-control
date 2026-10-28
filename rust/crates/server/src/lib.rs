@@ -1,5 +1,6 @@
 //! Isolated HTTP boundary preview. No production workspace or provider access.
 pub mod backends;
+pub mod background;
 pub mod checkpoints;
 pub mod deletion;
 pub mod experiments;
@@ -14,6 +15,7 @@ pub mod records;
 pub mod sources;
 pub mod storage;
 pub mod submissions;
+pub mod tracking;
 use axum::{
     Json, Router,
     extract::{Request, State},
@@ -122,6 +124,7 @@ fn health_document(
         capabilities.push("native-artifacts.v1");
         capabilities.push("native-cancellation.v1");
         capabilities.push("native-metric-history.v1");
+        capabilities.push("native-tracking-status.v1");
         if submissions.is_some_and(submissions::Service::can_create_runs) {
             capabilities.push("native-attempt-retry.v1");
         }
@@ -243,6 +246,8 @@ fn schema_document() -> serde_json::Value {
     }},"security":[{"bearer":[]}],"paths":{
         "/api/health":{"get":{"description":"Authenticated bootstrap with active project count; protocol header may be omitted only here","responses":{"200":{"description":"Enabled capabilities and incomplete training readiness"},"401":{"description":"Authentication required"},"409":{"description":"Project lifecycle evidence is unavailable"},"429":{"description":"Local observation concurrency is full"},"504":{"description":"Observation deadline elapsed; underlying I/O can continue"}}}},
         "/api/readiness":operation("Preview readiness; training remains incomplete",vec![parameter("protocol")]),
+        "/api/observer":operation("Local background observer progress and sanitized failure; never performs a provider query",vec![parameter("protocol")]),
+        "/api/runs/{project}/{run}/tracking":operation("Frozen W&B destination and local publication cursors; never queries cloud or creates a binding",run()),
         "/api/v2/openapi.json":operation("This static preview contract",vec![parameter("protocol")]),
         "/api/projects":operation("List only configured projects, without filesystem paths or private configuration",vec![parameter("protocol")]),
         "/api/submissions/{identity}":operation("Read one committed Submission from existing isolated Action storage; never repairs or submits",vec![parameter("protocol"),parameter("submission")]),
@@ -380,7 +385,7 @@ fn schema_document() -> serde_json::Value {
         json!({"type":"object","additionalProperties":false,"required":["run_id","runtime_id","executor","command","resources","walltime_seconds","seed"],"properties":{
             "run_id":{"type":"string"},"runtime_id":{"type":"string"},"executor":{"type":"string"},"command":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"}},
             "resources":{"type":"object","additionalProperties":false,"required":["gpus","memory_gb"],"properties":{"gpus":{"type":"integer","minimum":1},"cpus":{"type":"integer","minimum":1,"default":8},"nodes":{"type":"integer","const":1,"default":1},"memory_gb":{"type":"integer","minimum":1}}},
-            "walltime_seconds":{"type":"integer","minimum":1,"maximum":3600000},"seed":{"type":"integer"},"data":{"type":"array","maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["name","asset_id"],"properties":{"name":{"type":"string"},"asset_id":{"type":"string"}}}},"parameters":{"type":"object"},"evaluation":{"type":"object"},"metrics_schema":{"type":"object"},"artifacts":{"type":"object","additionalProperties":false,"properties":{"required_files":{"type":"array","items":{"type":"string"},"maxItems":20000}}}}}),vec![parameter("protocol"),parameter("project")]));
+            "walltime_seconds":{"type":"integer","minimum":1,"maximum":3600000},"seed":{"type":"integer"},"wandb":{"type":"object","additionalProperties":false,"properties":{"enabled":{"type":"boolean","default":true},"preparation_enabled":{"type":"boolean","default":false},"entity":{"type":["string","null"]},"project":{"type":["string","null"]}}},"data":{"type":"array","maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["name","asset_id"],"properties":{"name":{"type":"string"},"asset_id":{"type":"string"}}}},"parameters":{"type":"object"},"evaluation":{"type":"object"},"metrics_schema":{"type":"object"},"artifacts":{"type":"object","additionalProperties":false,"properties":{"required_files":{"type":"array","items":{"type":"string"},"maxItems":20000}}}}}),vec![parameter("protocol"),parameter("project")]));
     paths.insert("/api/runs/{project}/{run}/submissions".into(),post("Prepare the first authored Run/Attempt with trusted source and materialized-image receipts; never submits a scheduler job",json!({"type":"object","additionalProperties":false,"required":["max_gpu_hours"],"properties":{"max_gpu_hours":{"type":"number","exclusiveMinimum":0},"reason":{"type":"string","maxLength":4000,"default":""}}}),run()));
     for (name, description, body) in [
         (
@@ -623,7 +628,7 @@ mod schema_tests {
     fn native_contract_declares_narrow_lifecycle_posts_and_exact_read_identity() {
         let schema = super::schema_document();
         let paths = schema["paths"].as_object().unwrap();
-        assert_eq!(paths.len(), 40);
+        assert_eq!(paths.len(), 42);
         for (path, operations) in paths {
             assert_eq!(operations.as_object().unwrap().len(), 1);
             if path.contains("/datasets/") && path.contains("/parts/") {

@@ -23,6 +23,22 @@ impl Default for WandbOptions {
         }
     }
 }
+impl serde::Serialize for WandbOptions {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        self.to_value().serialize(serializer)
+    }
+}
+impl<'de> serde::Deserialize<'de> for WandbOptions {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let value = <Value as serde::Deserialize>::deserialize(deserializer)?;
+        Self::from_value(&value).map_err(serde::de::Error::custom)
+    }
+}
 fn boolean(value: &Value) -> Result<bool> {
     match value {
         Value::Bool(value) => Ok(*value),

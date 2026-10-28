@@ -27,6 +27,8 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/api/runs/{project}/{run}/submissions", post(prepare))
         .route("/api/runs/{project}/{run}/submission", get(existing))
         .route("/api/projects/{project}/runs", post(create))
+        .route("/api/observer", get(observer))
+        .route("/api/runs/{project}/{run}/tracking", get(tracking))
         .route("/api/submissions/{identity}/{operation}", post(change))
         .route(
             "/api/runs/{project}/{run}/attempts/{attempt}/checkpoints",
@@ -45,6 +47,38 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             get(super::artifact_http::download),
         )
         .layer(DefaultBodyLimit::max(MAX_BODY))
+}
+async fn tracking(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<(String, String)>, PathRejection>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let Ok(Path((project, run))) = path else {
+        return read_http::failure(invalid());
+    };
+    if ml_exp_core::identity::validate_id(&project).is_err()
+        || ml_exp_core::identity::validate_id(&run).is_err()
+    {
+        return read_http::failure(invalid());
+    }
+    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+        return read_http::failure(error);
+    }
+    read_http::execute(state, Access::Read, move |api, _| {
+        service(api)?
+            .tracking_status(&project, &run)
+            .map_err(failure)
+    })
+    .await
+}
+async fn observer(State(state): State<Arc<AppState>>, RawQuery(raw): RawQuery) -> Response {
+    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+        return read_http::failure(error);
+    }
+    read_http::execute(state, Access::Read, move |api, _| {
+        service(api)?.background_status().map_err(failure)
+    })
+    .await
 }
 async fn checkpoint_list(
     State(state): State<Arc<AppState>>,

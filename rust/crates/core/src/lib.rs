@@ -24,6 +24,7 @@ pub mod multipart;
 pub mod observation;
 pub mod operation_catalog;
 pub mod operations;
+pub mod polling;
 pub mod projects;
 pub mod records;
 pub mod result_collection;

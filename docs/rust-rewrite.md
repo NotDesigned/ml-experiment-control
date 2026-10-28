@@ -39,8 +39,8 @@ forwarding code merely to make the language uniform.
 | Core | Frozen identities, Project schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint identity/retention decisions, tracking plans, data-delivery and result-collection reducers, capability matcher, operation catalog, first-submission planner, input-progress parser, intent schema, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
 | Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O, deadline-bound control/payload pipe transport, checkpoint generation verification/sealing and deterministic dataset/result tar effects | Remaining transport primitives and durable domain protocols |
 | Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands, deterministic source upload/lookup, native Slurm dataset upload, explicit checkpoint retry, history ingestion and result download/ACK | Cloud asset/data transfers, updates and full command coverage |
-| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint/result metadata registries and isolated journals; SQLite stores/Run fences; opt-in standalone Run creation and first-submission Slurm HTTP/client path and native Action runner; pure data-delivery and result-collection decisions | General Run workflows, build orchestration, remaining provider executors, object result stores, collectors, TLS and tracking transport |
-| Worker | Local process supervision, sealed local launch, opt-in automatic image worker for native Slurm scoped prepare/submit/inspect/observe/cancel helper and independent dataset gateway | Background evidence polling and cloud dataset/journal/artifact/build/copy/deletion protocols |
+| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint/result metadata registries and isolated journals; SQLite stores/Run fences; opt-in standalone Run creation and first-submission Slurm HTTP/client path and native Action runner; pure data-delivery and result-collection decisions | General Run workflows, build orchestration, remaining provider executors, object result stores, collectors and TLS; real W&B cloud acceptance |
+| Worker | Local process supervision, sealed local launch, opt-in automatic image worker for native Slurm scoped prepare/submit/inspect/observe/cancel helper and independent dataset gateway | Cloud dataset/journal/artifact/build/copy/deletion protocols |
 
 The native source path is deliberately Project-scoped: a shared tree digest does
 not make one Project's metadata authoritative for another. Upload bodies are
@@ -114,8 +114,8 @@ without changing the original Action or scientific manifests. GET reads that
 cache only. Interrupted reads retain accepted evidence, and STARTED is possible
 execution, never a heartbeat. Each file window is limited to 128 KiB; truncated,
 partial or malformed metric history is explicitly incomplete. A separate explicit history operation now imports stable metrics pages beyond
-the tail window into the local canonical journal. Background observation and
-cloud artifact download remain incomplete.
+the tail window into the local canonical journal. Optional bounded background scheduler/worker/history polling is implemented;
+cloud artifact download remains incomplete.
 
 Native committed scheduler projection is shared by Run, exact Attempt and
 collection views. It cannot supply a receipt to another Attempt or convert
@@ -742,3 +742,27 @@ services. A future cutover needs a separately reviewed release, all domain gates
 identity-preservation proof, idle checks, a clearly bounded state migration and
 formal installed-client/provider acceptance. Only then may public executable
 names and production service entries switch to the native implementation.
+
+## Background observations and tracking integration
+
+The native server now has an opt-in single-leader observer. Each tick performs one
+bounded exact-job read; fair scheduling and backoff live in the pure core. Cached
+scheduler evidence is separate from the original Action. Managed worker evidence
+feeds canonical lifecycle and full paginated metrics history. Local GET routes
+remain free of provider effects. Terminal retirement requires scheduler, worker,
+full-history and journal agreement. Missing metrics after a verified process exit
+are `NOT_PRODUCED`, distinct from a produced empty file or an unavailable read.
+
+The optional W&B publisher freezes per-Run routing, uses an isolated official SDK
+subprocess only for network/session effects, and persists send reservations in
+SQLite. Rust handles generic metric contexts, curves/final comparisons, display
+names, remote history proof and finish reconciliation. Existing Run bindings win;
+legacy manually authored Runs without native routing remain local-only. The
+publisher cannot change an existing destination or turn local writes into remote
+ACKs. A missing SDK or unavailable default entity is diagnosed independently of
+local record collection. See the [configuration and commands](../rust/README.md#background-observation-and-optional-wb).
+
+Compilation, existing workspace regressions and a persistent fake-SDK transport
+check are development evidence. Real W&B cloud publication and the live provider
+end-to-end suite remain pending. The branch remains non-deployable until the
+remaining feature set and the coordinated acceptance pass are complete.

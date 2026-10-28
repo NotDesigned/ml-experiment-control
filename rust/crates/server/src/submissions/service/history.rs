@@ -17,9 +17,54 @@ struct Saved {
     importer: Option<JsonlImporter>,
     counts: ImportCounts,
     complete: bool,
+    #[serde(default)]
+    missing_after_finish: bool,
 }
 impl Service {
+    pub(super) fn history_complete(&self, prepared: &Prepared) -> Result<bool> {
+        let name = format!(
+            "{}.history.json",
+            native::attempt_slot(
+                &prepared.binding.project,
+                &prepared.binding.run_id,
+                &prepared.binding.attempt_id
+            )?
+        );
+        if !self
+            .slots
+            .entry_exists(OsStr::new(&name))
+            .map_err(|_| Error::Authority)?
+        {
+            return Ok(false);
+        }
+        let bytes = self
+            .slots
+            .read_regular(OsStr::new(&name), 2 * 1024 * 1024)
+            .map_err(|_| Error::Authority)?;
+        let saved: Saved = serde_json::from_value(Value::Object(
+            ml_exp_core::json::mapping(&bytes).map_err(|_| Error::Authority)?,
+        ))
+        .map_err(|_| Error::Authority)?;
+        if saved.request_sha256
+            != prepared
+                .request
+                .identity()
+                .map_err(|_| Error::Authority)?
+                .request_sha256
+        {
+            return Err(Error::Authority);
+        }
+        Ok(saved.complete)
+    }
     pub fn ingest_history(&self, action: &str, cancelled: &AtomicBool) -> Result<Value> {
+        self.ingest_history_with_limit(action, cancelled, None)
+    }
+    pub(super) fn ingest_history_with_limit(
+        &self,
+        action: &str,
+        cancelled: &AtomicBool,
+        limit: Option<std::time::Duration>,
+    ) -> Result<Value> {
         let lock = self.lock()?;
         let prepared = self.load(action)?;
         let guard = self
@@ -57,53 +102,10 @@ impl Service {
             .request_sha256;
         // First use is an explicit metadata mutation in this isolated registry.
         // Existing bindings win: history import cannot enable or reroute W&B.
-        let records = crate::records::Store::open(
-            &self.settings.registry_root,
-            self.workspace
-                .strip_prefix("rust-preview-")
-                .ok_or(Error::Authority)?,
-        )
-        .map_err(|_| Error::ObservationConflict)?;
+        let records = self.journal(&prepared)?;
         let journal_guard = records
             .guard(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(|_| Error::Authority)?;
-        if records
-            .workspace_id(&journal_guard)
-            .map_err(|_| Error::Authority)?
-            != self
-                .workspace
-                .strip_prefix("rust-preview-")
-                .ok_or(Error::Authority)?
-        {
-            return Err(Error::Authority);
-        }
-        let facts = self.facts_for(
-            &prepared.binding.project,
-            &prepared.binding.run_id,
-            Some(&prepared.binding.attempt_id),
-        )?;
-        if records
-            .binding(&journal_guard)
-            .map_err(|_| Error::Authority)?
-            .is_none()
-        {
-            let binding =
-                ml_exp_core::records::native_binding(&facts.run, &facts.binding.run_sha256)
-                    .map_err(|_| Error::Authority)?;
-            records
-                .bind(&journal_guard, &binding["route"], &binding["config"])
-                .map_err(|_| Error::ObservationConflict)?;
-        }
-        let snapshot = self
-            .evidence
-            .snapshot_metadata(&facts.reference)
-            .map_err(|_| Error::Authority)?;
-        let binding = records
-            .binding(&journal_guard)
-            .map_err(|_| Error::Authority)?;
-        if !crate::read_api::journal_binding_matches(&snapshot, binding.as_ref()) {
-            return Err(Error::ObservationConflict);
-        }
         let document = Value::Object(
             ml_exp_core::json::mapping(manifest.as_bytes()).map_err(|_| Error::Authority)?,
         );
@@ -144,9 +146,15 @@ impl Service {
                 ),
                 counts: ImportCounts::default(),
                 complete: false,
+                missing_after_finish: false,
             }
         };
         if saved.complete {
+            if let Some(observation) = self.observation(&prepared)? {
+                if let Some(receipt) = observation.evidence.worker.receipt {
+                    self.journal_training_end(&prepared, &receipt)?;
+                }
+            }
             return Ok(history_view(action, &saved));
         }
         let request = helper::Request::metric_history(
@@ -160,8 +168,8 @@ impl Service {
             .values()
             .find(|v| v.profile.target == request.intent().target)
             .ok_or(Error::Authority)?;
-        let outcome =
-            call(&backend.ssh, &request, cancelled).map_err(|_| Error::ObservationUnavailable)?;
+        let outcome = call(&Self::observation_ssh(backend, limit), &request, cancelled)
+            .map_err(|_| Error::ObservationUnavailable)?;
         let CallOutcome::Receipt { reply, .. } = outcome else {
             return Err(Error::ObservationUnavailable);
         };
@@ -210,7 +218,15 @@ impl Service {
             importer,
             counts,
             complete,
+            missing_after_finish: page.missing_after_finish,
         };
+        if complete {
+            if let Some(saved) = self.observation(&prepared)? {
+                if let Some(receipt) = saved.evidence.worker.receipt {
+                    self.journal_training_end(&prepared, &receipt)?;
+                }
+            }
+        }
         let bytes = serde_json::to_vec(&next).map_err(|_| Error::Authority)?;
         if bytes.len() > 2 * 1024 * 1024 {
             return Err(Error::Authority);
@@ -228,5 +244,5 @@ impl Service {
 fn history_view(action: &str, saved: &Saved) -> Value {
     json!({"submission_id":action,"status":if saved.complete{"COMPLETE"}else{"PARTIAL"},
         "received_bytes":saved.cursor.as_ref().map(|v|v.offset_bytes).unwrap_or(0),"records":saved.counts.records,
-        "invalid_lines":saved.counts.invalid_lines,"scheduler_mutation_performed":false,"source":"native-shared-metric-history"})
+        "invalid_lines":saved.counts.invalid_lines,"metrics_file":if saved.missing_after_finish{"NOT_PRODUCED"}else{"PRESENT"},"scheduler_mutation_performed":false,"source":"native-shared-metric-history"})
 }

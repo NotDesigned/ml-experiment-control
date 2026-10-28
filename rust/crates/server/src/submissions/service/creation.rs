@@ -4,6 +4,10 @@ use super::*;
 use ml_exp_core::first_submission::native::creation::{self, Request};
 
 impl Service {
+    pub fn with_tracking(mut self, settings: ml_exp_core::tracking::RoutingSettings) -> Self {
+        self.tracking = settings;
+        self
+    }
     pub fn can_create_runs(&self) -> bool {
         !self.creation_roots.is_empty()
     }
@@ -73,6 +77,33 @@ impl Service {
                 )
             })
             .transpose()?;
+        let discovery = self
+            .evidence
+            .discover(project, &experiments::DiscoveryLimits::default())
+            .map_err(|_| Error::Authority)?;
+        let existing = discovery
+            .runs
+            .iter()
+            .find(|run| run.reference.run_id == request.run_id);
+        let route = if let Some(existing) = existing {
+            if existing.reference.root_index != 0
+                || existing.reference.relative_components != [request.run_id.clone()]
+            {
+                return Err(Error::Conflict);
+            }
+            let published = root
+                .child(OsStr::new(&request.run_id), false)
+                .map_err(|_| Error::Authority)?;
+            read_json(&published, "manifest.json")?
+                .get("tracking_route")
+                .cloned()
+        } else {
+            Some(ml_exp_core::tracking::resolve(
+                request.wandb.as_ref(),
+                &self.tracking,
+                project,
+            ))
+        };
         let documents = creation::plan(
             project,
             &request,
@@ -92,17 +123,10 @@ impl Service {
                             .ok_or(Error::DatasetUnavailable)
                     })
                     .collect::<Result<Vec<_>>>()?,
+                tracking_route: route.as_ref(),
             },
             now,
         )?;
-        let discovery = self
-            .evidence
-            .discover(project, &experiments::DiscoveryLimits::default())
-            .map_err(|_| Error::Authority)?;
-        let existing = discovery
-            .runs
-            .iter()
-            .find(|run| run.reference.run_id == request.run_id);
         if let Some(existing) = existing {
             if existing.reference.root_index != 0
                 || existing.reference.relative_components != [request.run_id.clone()]

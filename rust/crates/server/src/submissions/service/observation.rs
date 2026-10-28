@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Saved {
+pub(super) struct Saved {
     request_sha256: String,
     observed_at: String,
-    evidence: Evidence,
+    pub(super) evidence: Evidence,
 }
 impl Service {
     fn observation_name(prepared: &Prepared) -> Result<String> {
@@ -24,7 +24,7 @@ impl Service {
             )?
         ))
     }
-    fn observation(&self, prepared: &Prepared) -> Result<Option<Saved>> {
+    pub(super) fn observation(&self, prepared: &Prepared) -> Result<Option<Saved>> {
         let name = Self::observation_name(prepared)?;
         if !self
             .slots
@@ -94,6 +94,15 @@ impl Service {
     /// Refresh the already-owned exact job. No prepare, submit, cancel, claim,
     /// Action recovery or reconciliation is reachable from this operation.
     pub fn refresh(&self, action: &str, now: &str, cancelled: &AtomicBool) -> Result<Value> {
+        self.refresh_with_limit(action, now, cancelled, None)
+    }
+    pub(super) fn refresh_with_limit(
+        &self,
+        action: &str,
+        now: &str,
+        cancelled: &AtomicBool,
+        limit: Option<std::time::Duration>,
+    ) -> Result<Value> {
         time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
             .map_err(|_| Error::Configuration)?;
         let lock = self.lock()?;
@@ -117,8 +126,8 @@ impl Service {
             .values()
             .find(|b| b.profile.target == request.intent().target)
             .ok_or(Error::Authority)?;
-        let outcome =
-            call(&backend.ssh, &request, cancelled).map_err(|_| Error::ObservationUnavailable)?;
+        let outcome = call(&Self::observation_ssh(backend, limit), &request, cancelled)
+            .map_err(|_| Error::ObservationUnavailable)?;
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(|_| Error::Authority)?;
@@ -168,6 +177,19 @@ impl Service {
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(|_| Error::Authority)?;
         lock.validate()?;
+        self.journal_lifecycle(
+            &prepared,
+            json!({"phase":saved.evidence.worker.phase,"state":match saved.evidence.worker.phase {
+                ml_exp_core::managed::evidence::Phase::Prepared => "STARTING",
+                ml_exp_core::managed::evidence::Phase::Started => "RUNNING",
+                ml_exp_core::managed::evidence::Phase::Finished => "DRAINING_METRICS",
+            }}),
+        )?;
+        if self.history_complete(&prepared)? {
+            if let Some(receipt) = &saved.evidence.worker.receipt {
+                self.journal_training_end(&prepared, receipt)?;
+            }
+        }
         let mut response = self.public(snapshot, now)?;
         response["worker_observation"] = json!({"status":"OBSERVED","phase":saved.evidence.worker.phase,"received_at":saved.observed_at,"provider_mutations":false,"source":"native-worker-observation"});
         Ok(response)

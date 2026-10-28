@@ -35,6 +35,34 @@ impl Helper {
             let package = plan.managed.as_ref().ok_or(Error::Configuration)?;
             let worker = crate::managed::sample(&package.config).map_err(|_| Error::Metadata)?;
             let outputs = directories[5].child(OsStr::new("payload"), false)?;
+            if !outputs.entry_exists(OsStr::new("metrics.jsonl"))?
+                && worker.phase == Phase::Finished
+                && request.history_cursor().is_none()
+            {
+                self.observe_shared(request.intent(), &snapshot.directory, false)?;
+                if crate::managed::sample(&package.config).map_err(|_| Error::Metadata)? != worker
+                    || outputs.entry_exists(OsStr::new("metrics.jsonl"))?
+                {
+                    return Err(Error::Metadata);
+                }
+                let page = Page {
+                    contract: history::CONTRACT.into(),
+                    config_sha256: helper::sha256_bytes(&package.config_bytes()?),
+                    start: None,
+                    next: Cursor {
+                        device: 0,
+                        inode: 0,
+                        offset_bytes: 0,
+                        prefix_sha256: helper::sha256_bytes(&[]),
+                    },
+                    bytes: Vec::new(),
+                    total_bytes: 0,
+                    process_finished: true,
+                    missing_after_finish: true,
+                };
+                page.validate(None)?;
+                return Ok(page);
+            }
             let mut file = outputs.open_regular_read(OsStr::new("metrics.jsonl"))?;
             let before = file.metadata()?;
             let start = request.history_cursor();
@@ -92,6 +120,7 @@ impl Helper {
                 bytes,
                 total_bytes: before.len(),
                 process_finished: worker.phase == Phase::Finished,
+                missing_after_finish: false,
             };
             page.validate(start)?;
             Ok(page)

@@ -24,8 +24,8 @@
       "server": {
         "modules": 160,
         "lines": 30572,
-        "partial_foundation": 45,
-        "not_started": 115
+        "partial_foundation": 48,
+        "not_started": 112
       },
       "core": {
         "modules": 25,
@@ -40,7 +40,7 @@
         "not_started": 10
       }
     },
-    "partial_foundation_modules": 70,
+    "partial_foundation_modules": 73,
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
@@ -66,7 +66,7 @@
     "provider_io_owner": "server",
     "scientific_computation_owner": "user code, any supported image language",
     "read_preview_boundary": "Fresh marker-bearing isolated registry; trusted approved Project/Run roots, bounded canonical-layout discovery with ambiguity/alias/budget rejection, existing-only deletion guards and authenticated local reads. Optional Project lifecycle mutates tracking metadata only via approved manifests and durable CAS; no providers, automatic repair on reads, ArtifactStore download claims or production bootstrap.",
-    "execution_preview_boundary": "Native sealed managed-launch requires private operator config and pre-staged local code/environment. Existing-only exact Attempt ledger records STARTED before spawn; unknown outcomes are not replayed. Local process/training receipts do not establish dataset, checkpoint, object publication or provider acceptance. Separately configured native Slurm first submission binds authored Run/source/OCI/SIF evidence to one immutable preparation slot and durable Action, uses pinned SSH/helper transport, and reconciles original identity after response loss. Current acceptance uses a synthetic scheduler, not real Slurm/GPU allocation. Explicit standalone Run creation freezes the original request, source/runtime authority, command/resources and metric/evaluation protocol, publishes Run/Attempt/states atomically, reuses the original identity across restart, and never submits a job. Full read scope is bound at API composition. New native first submissions freeze a shared-storage requirement; a separately configured helper pins its shared root and publishes exact Attempt metadata plus log/input/output directories before sbatch. Partial/replaced evidence blocks dispatch; changes after dispatch preserve the known job identity. Explicit native Slurm collection now creates a backend-only deterministic tar, relays it over pinned SSH/HTTP without API payload spooling, and accepts a verified download ACK before durable archive release. Original outputs/checkpoints and all scientific identities remain. CPU process/HTTP/SSH flow accepted with synthetic scheduler/container tools; no actual Slurm/GPU allocation or complete research-workflow claim. Native Slurm data now joins deterministic client packing, bounded API-to-gateway parts, immutable READY receipts, named Run inputs, gateway and worker verification, and read-only bind rendering. The API does not spool dataset payloads. Exact-job cancellation HTTP/client wiring persists intent before delegating to the helper cancel outbox; same-Run retry and cloud-provider data/dispatch remain incomplete."
+    "execution_preview_boundary": "Native sealed managed-launch requires private operator config and pre-staged local code/environment. Existing-only exact Attempt ledger records STARTED before spawn; unknown outcomes are not replayed. Local process/training receipts do not establish dataset, checkpoint, object publication or provider acceptance. Separately configured native Slurm first submission binds authored Run/source/OCI/SIF evidence to one immutable preparation slot and durable Action, uses pinned SSH/helper transport, and reconciles original identity after response loss. Current acceptance uses a synthetic scheduler, not real Slurm/GPU allocation. Explicit standalone Run creation freezes the original request, source/runtime authority, command/resources and metric/evaluation protocol, publishes Run/Attempt/states atomically, reuses the original identity across restart, and never submits a job. Full read scope is bound at API composition. New native first submissions freeze a shared-storage requirement; a separately configured helper pins its shared root and publishes exact Attempt metadata plus log/input/output directories before sbatch. Partial/replaced evidence blocks dispatch; changes after dispatch preserve the known job identity. Explicit native Slurm collection now creates a backend-only deterministic tar, relays it over pinned SSH/HTTP without API payload spooling, and accepts a verified download ACK before durable archive release. Original outputs/checkpoints and all scientific identities remain. CPU process/HTTP/SSH flow accepted with synthetic scheduler/container tools; no actual Slurm/GPU allocation or complete research-workflow claim. Native Slurm data now joins deterministic client packing, bounded API-to-gateway parts, immutable READY receipts, named Run inputs, gateway and worker verification, and read-only bind rendering. The API does not spool dataset payloads. Exact-job cancellation HTTP/client wiring persists intent before delegating to the helper cancel outbox; explicit same-Run/new-Attempt checkpoint retry is implemented; cloud-provider data/dispatch remain incomplete. Optional background scheduler/worker/history sampling and canonical lifecycle integration are implemented, with bounded effects and local-only GETs. Optional W&B publication uses native durable reservations and remote history/display/finish proof with a narrow official-SDK subprocess; real cloud acceptance remains pending."
   },
   "modules": [
     {
@@ -2859,7 +2859,7 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/server/src/records/store.rs",
-        "scope": "Legacy tracking/outbox.sqlite schema, immutable route/config, event-ID/content dedup, Run guards and checked publication cursors. Configured read-only HTTP validates workspace and frozen Run binding before complete bounded journal reads (8 MiB/100000 observations), rejecting oversize instead of validating a suffix. No W&B network publisher or production acceptance.",
+        "scope": "Native isolated canonical journal, immutable route/config and scope bindings, metrics and lifecycle ingress, bounded reads, publication state, durable sent reservations and remote proof. Real cloud and production acceptance pending.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true
       }
@@ -3690,8 +3690,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "tracking",
       "proposed_consolidation": "Optional native W&B publisher over accepted records; replace Python SDK only after real protocol/heartbeat acceptance.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/server/src/tracking/publisher.rs",
+        "scope": "Optional leader-bound publisher, frozen route/config, durable reservations before SDK effects, remote history/display/finish ACK and local tracking status. Bounded official-SDK subprocess shell; fake SDK acceptance only.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/tracking/tracking_store.py",
@@ -3705,8 +3711,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "tracking",
       "proposed_consolidation": "Optional native W&B publisher over accepted records; replace Python SDK only after real protocol/heartbeat acceptance.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/server/src/records/publication.rs",
+        "scope": "Native SQLite publication state and guarded route/scopes, sent reservations, failure diagnostics, canonical display reconstruction and Run-scoped cleanup. No production migration acceptance.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/tracking/wandb_dependency.py",
@@ -3722,8 +3734,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "tracking",
       "proposed_consolidation": "Optional native W&B publisher over accepted records; replace Python SDK only after real protocol/heartbeat acceptance.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/server/src/tracking/mod.rs",
+        "scope": "Private configuration and optional SDK startup diagnostic; missing default entity or SDK does not stop local collection. Narrow Python official-SDK helper remains an explicitly permitted effect adapter.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/tracking/wandb_display.py",
@@ -3773,8 +3791,8 @@
       "migration_status": "partial_foundation",
       "python_baseline_unchanged": true,
       "rust_foundation": {
-        "path": "rust/crates/core/src/tracking/publication.rs",
-        "scope": "Pure remote-history/display-ACK publication reducer: sequence/event-ID reconciliation, SDK-send reservations, display ACK and terminal finish decisions. W&B SDK, credentials, HTTP and durable outbox remain in the Python shell.",
+        "path": "rust/crates/server/src/tracking/publisher.rs",
+        "scope": "Pure publication reducer connected to native durable outbox, credentials and bounded persistent official-SDK transport. Delayed remote ACK, restart without duplicate sends and terminal finish covered with fake SDK; cloud acceptance pending.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true
       }

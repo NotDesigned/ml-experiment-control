@@ -32,6 +32,7 @@ pub fn project_run(mut run: Value, submission: &Value) -> Result<Value> {
     run["native_submission"] = json!({"submission_id":id,"status":submission["status"],"source":"native-action-commit","next_action":submission["next_action"]});
     let cancelled = submission["cancellation"]["termination_verified"] == true;
     if !cancelled
+        && submission["native_scheduler_observation"] != true
         && !matches!(
             run["evidence"]["scheduler"]["state"].as_str(),
             None | Some("UNKNOWN" | "NOT_SUBMITTED")
@@ -108,9 +109,14 @@ pub fn project_run(mut run: Value, submission: &Value) -> Result<Value> {
         state.as_str(),
         Some("SUCCEEDED" | "FAILED" | "CANCELLED" | "PREEMPTED")
     ));
+    let source = if submission["native_scheduler_observation"] == true {
+        "native-scheduler-observation"
+    } else {
+        "native-action-commit"
+    };
     run["evidence"]["scheduler"] = json!({"state":state,"attempt_id":submission["attempt_id"],"detail":detail,"as_of":at,
-        "source":"native-action-commit","stale":true,"freshness":if at.is_null(){"UNKNOWN"}else{"STALE"},
-        "stale_reason":"committed observation; no provider refresh on GET","evidence_availability":{"availability":"PRESENT","source":"native-action-commit","submission_id":id}});
+        "source":source,"stale":true,"freshness":if at.is_null(){"UNKNOWN"}else{"STALE"},
+        "stale_reason":if source=="native-action-commit"{"committed observation; no provider refresh on GET"}else{"cached observation; no provider refresh on GET"},"evidence_availability":{"availability":"PRESENT","source":source,"submission_id":id}});
     Ok(run)
 }
 
@@ -140,6 +146,7 @@ pub fn project_attempt(mut value: Value, submission: &Value, scope: &Scope) -> R
     if shown
         && projected["scheduler_state"].is_string()
         && (submission["cancellation"]["termination_verified"] == true
+            || submission["native_scheduler_observation"] == true
             || matches!(
                 value["attempt"]["state"].as_str(),
                 None | Some("UNKNOWN" | "NOT_SUBMITTED")

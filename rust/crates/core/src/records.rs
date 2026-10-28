@@ -135,6 +135,47 @@ pub fn native_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
     {
         return Err(Error::Invalid("native journal Run authority"));
     }
+    frozen_binding(
+        run,
+        raw_sha256,
+        run.get("tracking_route")
+            .cloned()
+            .unwrap_or_else(|| json!({"enabled":false,"reason":"NATIVE_LOCAL_ONLY"})),
+    )
+}
+
+/// Previously authored managed Runs can be collected into a local journal.
+/// Their lack of a native creation record never authorizes a cloud route.
+pub fn observed_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
+    if run["native_creation"]["format"] == "native-run-creation.v1" {
+        return native_binding(run, raw_sha256);
+    }
+    let mut definition = run
+        .as_object()
+        .cloned()
+        .ok_or(Error::Invalid("Run mapping"))?;
+    if let Some(resolved) = run.get("resolved_config") {
+        definition.extend(
+            resolved
+                .as_object()
+                .ok_or(Error::Invalid("resolved Run mapping"))?
+                .clone(),
+        );
+    }
+    frozen_binding(
+        &Value::Object(definition),
+        raw_sha256,
+        json!({"enabled":false,"reason":"OBSERVED_LEGACY_LOCAL_ONLY"}),
+    )
+}
+fn frozen_binding(run: &Value, raw_sha256: &str, route: Value) -> Result<Value> {
+    if !crate::slurm::helper::valid_digest(raw_sha256) {
+        return Err(Error::Invalid("Run raw identity"));
+    }
+    for key in ["project", "run_id"] {
+        crate::identity::validate_id(run[key].as_str().ok_or(Error::Invalid("Run identity"))?)
+            .map_err(|_| Error::Invalid("Run identity"))?;
+    }
     let original = run
         .as_object()
         .ok_or(Error::Invalid("native Run mapping"))?;
@@ -156,9 +197,12 @@ pub fn native_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
     config.insert("native_run_sha256".into(), json!(raw_sha256));
     config.insert("runtime_id".into(), run["container"]["runtime_id"].clone());
     config.insert("backend".into(), run["backend"]["kind"].clone());
-    let inputs = run["inputs"]
-        .as_array()
-        .ok_or(Error::Invalid("native Run inputs"))?
+    let empty_inputs = Vec::new();
+    let inputs = run
+        .get("inputs")
+        .map(|value| value.as_array().ok_or(Error::Invalid("Run inputs")))
+        .transpose()?
+        .unwrap_or(&empty_inputs)
         .iter()
         .map(|input| {
             Value::Object(
@@ -170,7 +214,10 @@ pub fn native_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
         })
         .collect::<Vec<_>>();
     config.insert("inputs".into(), json!(inputs));
-    Ok(json!({"route":{"enabled":false,"reason":"NATIVE_LOCAL_ONLY"},"config":{"ml_expd":config}}))
+    if route.get("enabled").and_then(Value::as_bool).is_none() {
+        return Err(Error::Invalid("native frozen tracking route"));
+    }
+    Ok(json!({"route":route,"config":{"ml_expd":config}}))
 }
 
 pub fn normalized_metric(record: &Value, config: &Value) -> Result<Value> {

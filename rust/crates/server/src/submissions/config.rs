@@ -18,6 +18,8 @@ pub struct Settings {
     pub enabled: bool,
     #[serde(default)]
     pub allow_run_creation: bool,
+    #[serde(default)]
+    pub polling: ml_exp_core::polling::Policy,
     pub backends: Vec<Definition>,
 }
 #[derive(Deserialize)]
@@ -50,6 +52,7 @@ impl Settings {
         let settings: Self = serde_json::from_value(serde_json::Value::Object(value))
             .map_err(|_| Error::Configuration)?;
         if settings.schema_version != 1
+            || !settings.polling.validate()
             || settings.backends.is_empty()
             || settings.backends.len() > 64
         {
@@ -57,7 +60,7 @@ impl Settings {
         }
         Ok(settings)
     }
-    pub fn into_backends(self) -> Result<(bool, bool, Vec<Backend>), Error> {
+    pub fn into_backends(self) -> Result<Loaded, Error> {
         let enabled = self.enabled;
         let creation = self.allow_run_creation;
         let backends = self
@@ -96,10 +99,21 @@ impl Settings {
                 Ok(backend)
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        Ok((enabled, creation, backends))
+        Ok(Loaded {
+            enabled,
+            creation,
+            backends,
+            polling: self.polling,
+        })
     }
 }
-pub fn load(path: &Path) -> Result<(bool, bool, Vec<Backend>), Error> {
+pub struct Loaded {
+    pub enabled: bool,
+    pub creation: bool,
+    pub backends: Vec<Backend>,
+    pub polling: ml_exp_core::polling::Policy,
+}
+pub fn load(path: &Path) -> Result<Loaded, Error> {
     let bytes =
         ml_exp_io::read_private(path, 4 * 1024 * 1024, true).map_err(|_| Error::Configuration)?;
     Settings::from_slice(&bytes)?.into_backends()

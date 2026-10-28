@@ -33,6 +33,8 @@ pub struct Page {
     pub bytes: Vec<u8>,
     pub total_bytes: u64,
     pub process_finished: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub missing_after_finish: bool,
 }
 impl std::fmt::Debug for Page {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -56,6 +58,12 @@ impl Page {
             || self.next.offset_bytes != offset + self.bytes.len() as u64
             || self.next.offset_bytes > self.total_bytes
             || self.total_bytes > MAX_FILE_BYTES
+            || self.missing_after_finish
+                && (!self.process_finished
+                    || self.total_bytes != 0
+                    || self.next.device != 0
+                    || self.next.inode != 0
+                    || start.is_some())
             || self.bytes.len() != ((self.total_bytes - offset).min(PAGE_BYTES as u64) as usize)
             || start.is_some_and(|v| {
                 v.device != self.next.device
@@ -81,6 +89,43 @@ impl Page {
 mod tests {
     use super::*;
     #[test]
+    fn missing_metrics_requires_finished_empty_first_page_and_keeps_old_encoding() {
+        let page = Page {
+            contract: CONTRACT.into(),
+            config_sha256: helper::sha256_bytes(b"config"),
+            start: None,
+            next: Cursor {
+                device: 0,
+                inode: 0,
+                offset_bytes: 0,
+                prefix_sha256: helper::sha256_bytes(&[]),
+            },
+            bytes: Vec::new(),
+            total_bytes: 0,
+            process_finished: true,
+            missing_after_finish: true,
+        };
+        page.validate(None).unwrap();
+        assert!(page.complete());
+        let mut bad = page.clone();
+        bad.process_finished = false;
+        assert!(bad.validate(None).is_err());
+        let mut bad = page.clone();
+        bad.next.inode = 1;
+        assert!(bad.validate(None).is_err());
+        let mut bad = page.clone();
+        bad.start = Some(page.next.clone());
+        assert!(bad.validate(bad.start.as_ref()).is_err());
+        let mut present = page;
+        present.missing_after_finish = false;
+        assert!(
+            serde_json::to_value(present)
+                .unwrap()
+                .get("missing_after_finish")
+                .is_none()
+        );
+    }
+    #[test]
     fn page_binding_rejects_mutated_content_regression_and_replaced_files() {
         let bytes = b"{\"step\":1}\n".to_vec();
         let page = Page {
@@ -96,6 +141,7 @@ mod tests {
             total_bytes: bytes.len() as u64,
             bytes,
             process_finished: false,
+            missing_after_finish: false,
         };
         page.validate(None).unwrap();
         assert!(!page.complete());
