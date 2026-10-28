@@ -120,7 +120,7 @@ pub fn plan(evidence: &RunEvidence, request: &Request) -> Result<IntentPlan> {
     if !evidence.controller_configured {
         return Err(Error::ControllerUnavailable);
     }
-    if evidence.scheduler_state.to_ascii_uppercase() != "NOT_SUBMITTED" {
+    if !evidence.scheduler_state.eq_ignore_ascii_case("NOT_SUBMITTED") {
         return Err(Error::RunNotSubmittable);
     }
     let attempt_id = attempt_id(evidence)?;
