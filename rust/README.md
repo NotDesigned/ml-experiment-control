@@ -24,14 +24,15 @@ receipt and retry decision are validated by a native contract before use.
 | --- | --- | --- |
 | `ml-exp-core` | Library | Pure frozen identities, Project/schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint receipt/restore decisions, data-delivery/result-collection reducers, observations, failure assessment and Slurm/helper protocols |
 | `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O, single-frame pipe transport and descriptor-safe checkpoint verification/sealing |
-| `ml-exp-client` | `ml-exp-rs` | Private settings, bounded exact-identity reads/watch, Project operations and deterministic source archive upload/lookup |
-| `ml-exp-server` | `ml-expd-rs` | Approved discovery/reads, Project lifecycle, immutable source archive storage/receipts, native checkpoint registry, isolated SQLite/Run fences and Slurm transport |
+| `ml-exp-client` | `ml-exp-rs` | Private settings, bounded exact-identity reads/watch, Project operations, deterministic source archive upload/lookup and opt-in native Slurm submissions |
+| `ml-exp-server` | `ml-expd-rs` | Approved discovery/reads, Project lifecycle, immutable source archive storage/receipts, native checkpoint registry, isolated SQLite/Run fences and opt-in Slurm submissions |
 | `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision, sealed local managed launch and scoped Slurm metadata helper |
 
 The experiment API observes explicitly approved isolated files. Project metadata
-registration/lifecycle is a separate opt-in mode; there is no submission effect
-API, cloud managed-worker transport, general artifact/data transfer or W&B
-transport. Source archive publication is now a bounded native subchain: the
+registration/lifecycle is a separate opt-in mode. A separate opt-in native Slurm
+submission API handles already-authored first Runs with trusted source and
+materialized-image receipts. Cloud managed-worker transport, general artifact/data
+transfer and W&B transport remain unported. Source archive publication is now a bounded native subchain: the
 client packs regular files into deterministic tar/gzip, the server verifies the
 transport SHA, rejects links/protected paths, seals the tree, computes the
 length-framed tree identity and records an immutable archive receipt. Lost
@@ -39,10 +40,10 @@ upload responses are reconciled by archive SHA; a missing receipt does not
 authorize replay. Git import and automatic Project creation remain unported.
 Metrics and the
 isolated canonical journal have native validation, aggregation, persistence and
-publication-cursor logic; there is no accepted cloud publisher or submission
-effect API. Slurm planners
-return data. The separate native helper can invoke `sbatch` only after explicit
-isolated configuration/bootstrap; it is not wired to Actions or the HTTP server.
+publication-cursor logic; there is no accepted cloud publisher. Slurm planners
+return data; the native submission service connects their immutable Actions to
+the native SSH helper after explicit isolated configuration/bootstrap,
+authorization and confirmation. Default startup still disables submission.
 The client can query configured local Run/Attempt status, logs and metrics using
 protocol 2. This does not make the preview server a complete experiment API.
 A successful `check` does not mean training is configured.
@@ -417,8 +418,41 @@ is stored before claiming execution, so reconciliation after restart loads the
 original request by Action ID. Submission is verified only after an owned
 scheduler read. Lost replies retain uncertainty; reconciliation sends only
 INSPECT/OBSERVE. Caller-owned Run/deletion/source guards and frozen-file checks
-remain mandatory. Native HTTP submission and provider/workload integration are
-still incomplete, so this runner does not enable the preview daemon to train.
+remain mandatory. An explicitly configured first-submission HTTP service now
+supplies these guards; automatic Run authorship, remaining providers and result
+publication remain incomplete. Submission success does not prove training.
+
+## Opt-in native Slurm submissions
+
+The server accepts a private `--submission-config` only together with
+`--read-config` and `--source-archives`. Initialize its isolated submission
+namespace once with `--read-config /absolute/reads.json --initialize-submissions`.
+Existing namespaces are never reset or repaired by startup. The config contains
+`schema_version: 1`, an explicit `enabled` switch (default false), and `backends`.
+Each backend holds a native `Profile`, trusted `ssh` settings and a runtime map
+keyed by immutable runtime ID. Runtime receipts bind source ID, OCI digest and
+materialized SIF path/SHA256. The operator supplies SSH binary/config/host-key
+files, helper executable/config, working directory, optional agent socket and
+finite timeout/connect budgets; HTTP callers cannot replace them.
+
+An already-authored Run/`attempt-001` with no inputs can then use:
+
+```bash
+ml-exp-rs run prepare --project demo --run train --max-gpu-hours 1
+ml-exp-rs run preparation --project demo --run train
+ml-exp-rs run authorize action-0123456789abcdef --reason reviewed
+ml-exp-rs run execute action-0123456789abcdef --confirmation 'EXECUTE action-0123456789abcdef'
+ml-exp-rs run submission action-0123456789abcdef
+ml-exp-rs run reconcile action-0123456789abcdef
+```
+
+Use the actual identity returned by preparation. `preparation` finds the original
+slot after response loss; it does not prepare again. `reconcile` checks the
+original helper ledger/scheduler identity and never submits. The execution lock
+excludes live dispatch before an interrupted claim is marked uncertain. Unknown
+or corrupt evidence remains blocked from replay. No automatic retry or checkpoint
+choice is implied. The global training readiness stays `INCOMPLETE` until the
+remaining data, worker and results paths are accepted.
 
 ## Contribution boundary
 

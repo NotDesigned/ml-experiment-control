@@ -7,6 +7,8 @@ use crate::{canonical, identity};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub mod native;
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     #[error("invalid GPU-hour budget or resource approval mode")]

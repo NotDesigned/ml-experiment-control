@@ -1,5 +1,6 @@
 use super::*;
 mod action_tests;
+mod submission_tests;
 use ml_exp_core::slurm::{
     helper::{self, FrozenIntent, OperationTag, ReplyOutcome, Request, Scope, Target},
     scheduler_job_name,

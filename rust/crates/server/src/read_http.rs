@@ -49,8 +49,16 @@ fn bad_path() -> Response {
 pub(crate) enum Access {
     Read,
     Write,
+    Submission,
 }
-fn uncertain() -> Response {
+fn uncertain(access: Access) -> Response {
+    if matches!(access, Access::Submission) {
+        return failure(read_api::Error {
+            status: 500,
+            code: "SUBMISSION_OPERATION_UNCERTAIN",
+            detail: "submission state may have changed; query the same Run or Submission and reconcile; do not repeat execution",
+        });
+    }
     failure(read_api::Error {
         status: 500,
         code: "PROJECT_OPERATION_UNCERTAIN",
@@ -88,7 +96,7 @@ async fn execute_with_timeout(
     let Ok(permit) = state.read_slots.clone().try_acquire_owned() else {
         let mut response = failure(read_api::Error {
             status: 429,
-            code: if matches!(access, Access::Write) {
+            code: if !matches!(access, Access::Read) {
                 "LOCAL_OPERATION_BUSY"
             } else {
                 "READ_BUSY"
@@ -115,8 +123,8 @@ async fn execute_with_timeout(
     match tokio::time::timeout(timeout, task).await {
         Ok(Ok(Ok(value))) => {
             if crate::read_model::encoded_size(&value).is_err() {
-                if matches!(access, Access::Write) {
-                    return uncertain();
+                if !matches!(access, Access::Read) {
+                    return uncertain(access);
                 }
                 return failure(read_api::Error {
                     status: 413,
@@ -125,8 +133,8 @@ async fn execute_with_timeout(
                 });
             }
             if read_api::contains_secret(&value, &state.auth.token) {
-                if matches!(access, Access::Write) {
-                    return uncertain();
+                if !matches!(access, Access::Read) {
+                    return uncertain(access);
                 }
                 return failure(read_api::Error {
                     status: 409,
@@ -137,13 +145,13 @@ async fn execute_with_timeout(
             Json(value).into_response()
         }
         Ok(Ok(Err(error))) => failure(error),
-        Ok(Err(_)) if matches!(access, Access::Write) => uncertain(),
+        Ok(Err(_)) if !matches!(access, Access::Read) => uncertain(access),
         Ok(Err(_)) => failure(read_api::Error {
             status: 500,
             code: "READ_FAILED",
             detail: "local read failed",
         }),
-        Err(_) if matches!(access, Access::Write) => uncertain(),
+        Err(_) if !matches!(access, Access::Read) => uncertain(access),
         Err(_) => failure(read_api::Error {
             status: 504,
             code: "READ_TIMEOUT",
@@ -433,5 +441,22 @@ mod tests {
                 }
             );
         }
+    }
+    #[tokio::test]
+    async fn interrupted_submission_response_uses_domain_specific_uncertainty() {
+        let (_temp, state) = state();
+        let response = execute(state, Access::Submission, |_, _| {
+            panic!("owned failed response after possible claim")
+        })
+        .await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let value = value(response).await;
+        assert_eq!(value["code"], "SUBMISSION_OPERATION_UNCERTAIN");
+        assert!(
+            value["detail"]
+                .as_str()
+                .unwrap()
+                .contains("same Run or Submission")
+        );
     }
 }

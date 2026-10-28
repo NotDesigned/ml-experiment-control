@@ -82,6 +82,31 @@ impl Client {
         self.decode(response)
     }
 
+    pub(crate) fn send_submission(
+        &self,
+        plan: &crate::submissions::Plan,
+    ) -> Result<serde_json::Value, Error> {
+        let endpoint = api_url(&self.base, plan.path())?;
+        let request = match plan.body() {
+            Some(body) => self
+                .http
+                .post(endpoint)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.to_vec()),
+            None => self.http.get(endpoint),
+        };
+        let response = request
+            .bearer_auth(&self.token)
+            .header(
+                ml_exp_core::CLIENT_PROTOCOL_HEADER,
+                ml_exp_core::API_PROTOCOL_VERSION.to_string(),
+            )
+            .timeout(Duration::from_secs(150))
+            .send()
+            .map_err(|_| Error::Transport)?;
+        self.decode(response)
+    }
+
     /// Consume one finite source archive; only a validated typed plan can pick
     /// the endpoint. The caller retains the local SHA for explicit lookup.
     pub(crate) fn upload_source(

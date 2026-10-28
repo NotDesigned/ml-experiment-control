@@ -10,6 +10,7 @@ pub mod read;
 pub mod session;
 pub mod sources;
 pub mod status;
+pub mod submissions;
 pub mod transport;
 pub mod watch;
 
@@ -44,6 +45,10 @@ pub enum Error {
         "source publication outcome is not confirmed; use source lookup --project <project> --sha256 <archive-sha256> before retrying; no automatic replay was attempted: {0}"
     )]
     SourceOutcomeUnknown(Box<Error>),
+    #[error(
+        "submission outcome is unknown; query the original Run preparation or Submission, then reconcile; no automatic replay was attempted: {0}"
+    )]
+    SubmissionOutcomeUnknown(Box<Error>),
     #[error("{0}")]
     Observation(&'static str),
 }

@@ -13,6 +13,7 @@ pub mod read_model;
 pub mod records;
 pub mod sources;
 pub mod storage;
+pub mod submissions;
 use axum::{
     Json, Router,
     extract::{Request, State},
@@ -101,6 +102,7 @@ fn health_document(
     reads: bool,
     lifecycle: bool,
     sources: Option<&sources::Service>,
+    submissions: Option<&submissions::Service>,
 ) -> serde_json::Value {
     let mut capabilities = vec!["bearer-auth.v1", "deployment-readiness.v1"];
     if reads {
@@ -112,6 +114,9 @@ fn health_document(
     if sources.is_some() {
         capabilities.push("source-archive.v1");
     }
+    if submissions.is_some() {
+        capabilities.push("native-slurm-submissions.v1");
+    }
     json!({
         "status":"ok", "server_version":env!("CARGO_PKG_VERSION"),
         "api_protocol_version":API_PROTOCOL_VERSION, "min_client_protocol_version":2,
@@ -122,7 +127,7 @@ fn health_document(
         "collector_requested":false, "collector_error":null, "storage_maintenance_error":null,
         "project_write_recovery_errors":[], "project_writes":false, "source_imports":sources.is_some(),
         "source_archive_limits":sources.map(sources::Service::limits),
-        "scheduler_mutations":false, "local_evidence_rebuild":false, "telemetry_enabled":false,
+        "scheduler_mutations":submissions.is_some_and(submissions::Service::enabled), "local_evidence_rebuild":false, "telemetry_enabled":false,
         "deployment":{"api":"READY", "training":"INCOMPLETE", "migration":"IN_PROGRESS"}
     })
 }
@@ -135,6 +140,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
             false,
             false,
             None,
+            None,
         ))
         .into_response();
     }
@@ -145,14 +151,16 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
             true,
             api.lifecycle().is_some(),
             api.sources().as_deref(),
+            api.submissions().as_deref(),
         ))
     })
     .await
 }
-async fn readiness() -> Json<serde_json::Value> {
+async fn readiness(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let submission = state.reads.as_ref().and_then(|api| api.submissions());
     Json(
         json!({"api":"READY", "training":"INCOMPLETE", "migration":"IN_PROGRESS",
-        "scheduler_mutations":false,"providers_configured":false}),
+        "scheduler_mutations":submission.as_ref().is_some_and(|service|service.enabled()),"providers_configured":submission.is_some()}),
     )
 }
 fn schema_document() -> serde_json::Value {
@@ -209,7 +217,7 @@ fn schema_document() -> serde_json::Value {
     let mut collection = run();
     collection.push(parameter("attempt"));
     let mut document = json!({"openapi":"3.1.0", "info":{"title":"ML-Expd Rust isolated preview", "version":env!("CARGO_PKG_VERSION"),
-    "description":"Incomplete native migration. Experiment GETs only observe approved isolated files. Explicitly enabled project lifecycle POSTs update their dedicated registry ledger; they do not edit research files, submit or stop jobs, refresh providers, collect artifacts or acknowledge downloads. ArtifactStore publication receipts are not migrated, so collection observations never assert verified download availability."},
+    "description":"Incomplete native migration. Experiment GETs only observe approved isolated evidence. Explicit project lifecycle POSTs update their dedicated registry ledger. Separately configured native Slurm submissions can prepare, authorize, execute once and reconcile the original owned job. Neither path collects artifacts or acknowledges downloads. ArtifactStore publication receipts are not migrated, so collection observations never assert verified download availability."},
     "components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}},"parameters":{
         "protocol":{"in":"header","name":CLIENT_PROTOCOL_HEADER,"required":true,"schema":{"type":"integer","const":2}},
         "project":{"in":"path","name":"project","required":true,"schema":{"type":"string"}},
@@ -240,7 +248,7 @@ fn schema_document() -> serde_json::Value {
     let post = |description: &str, body: serde_json::Value, parameters: Vec<serde_json::Value>| {
         json!({"post":{
         "description":description,"parameters":parameters,"requestBody":{"required":true,"description":"Strict JSON mapping; at most 64 KiB","content":{"application/json":{"schema":body}}},
-        "responses":{"200":{"description":"Durable local project lifecycle result; research files and jobs are unchanged"},"401":{"description":"Bearer authentication required"},"404":{"description":"Registered project is unknown"},"409":{"description":"Lifecycle conflict, binding mismatch or invalid durable evidence"},"413":{"description":"Request exceeds the 64 KiB body limit"},"422":{"description":"Invalid or unsupported request"},"426":{"description":"Client protocol 2 required"},"429":{"description":"Local operation concurrency is full; no operation admitted"},"500":{"description":"Operation may have changed state, including after timeout or response failure; inspect lifecycle ledger before retrying"},"501":{"description":"Project lifecycle was not explicitly enabled"},"503":{"description":"Registry lock or transition context is unavailable"}}}})
+        "responses":{"200":{"description":"Durable operation result with the original identity and state"},"401":{"description":"Bearer authentication required"},"404":{"description":"Exact configured identity is unavailable"},"409":{"description":"Operation state conflict, binding mismatch or invalid durable evidence"},"413":{"description":"Request exceeds the 64 KiB body limit"},"422":{"description":"Invalid or unsupported request"},"426":{"description":"Client protocol 2 required"},"429":{"description":"Local operation concurrency is full; no operation admitted"},"500":{"description":"Operation may have changed state, including after timeout or response failure; query the original identity before deciding whether to retry"},"501":{"description":"Operation was not explicitly configured"},"503":{"description":"Operation lock or transition context is unavailable"}}}})
     };
     let paths = document["paths"]
         .as_object_mut()
@@ -264,6 +272,40 @@ fn schema_document() -> serde_json::Value {
                 vec![parameter("protocol"), parameter("project")],
             ),
         );
+    }
+    paths.insert("/api/runs/{project}/{run}/submission".into(),operation("Read the original native preparation slot after response loss; never creates an identity",run()));
+    paths.insert("/api/runs/{project}/{run}/submissions".into(),post("Prepare the first authored Run/Attempt with trusted source and materialized-image receipts; never submits a scheduler job",json!({"type":"object","additionalProperties":false,"required":["max_gpu_hours"],"properties":{"max_gpu_hours":{"type":"number","exclusiveMinimum":0},"reason":{"type":"string","maxLength":4000,"default":""}}}),run()));
+    for (name, description, body) in [
+        (
+            "authorize",
+            "Authorize the original immutable preparation without submitting",
+            json!({"type":"object","additionalProperties":false,"properties":{"reason":{"type":"string","maxLength":4000,"default":""}}}),
+        ),
+        (
+            "execute",
+            "Execute a previously authorized native Slurm Action once; response loss requires same-identity reconciliation",
+            json!({"type":"object","additionalProperties":false,"required":["confirmation"],"properties":{"confirmation":{"type":"string","pattern":"^EXECUTE action-[a-f0-9]{16}$"}}}),
+        ),
+        (
+            "reconcile",
+            "Inspect the original helper ledger and owned scheduler evidence; never submits or replays",
+            json!({"type":"object","additionalProperties":false}),
+        ),
+    ] {
+        let mut operation = post(
+            description,
+            body,
+            vec![parameter("protocol"), parameter("submission")],
+        );
+        operation["post"]["responses"]["200"]["description"] = json!(
+            "Original native Submission, exact Run/Attempt, durable execution revision and retry advice"
+        );
+        operation["post"]["responses"]["500"]["description"] = json!(
+            "Submission outcome is uncertain; query the original Run preparation or Submission before reconciliation; no automatic retry"
+        );
+        operation["post"]["responses"]["403"] =
+            json!({"description":"Native scheduler execution is disabled by the operator"});
+        paths.insert(format!("/api/submissions/{{identity}}/{name}"), operation);
     }
     document
 }
@@ -291,6 +333,10 @@ pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
         .merge(read_http::routes())
         .merge(projects::http::routes())
         .merge(sources::http::routes())
+        .merge(submissions::http::routes())
+        .method_not_allowed_fallback(|| async {
+            (StatusCode::METHOD_NOT_ALLOWED,Json(json!({"code":"METHOD_NOT_ALLOWED","detail":"HTTP method is unavailable for this endpoint"})))
+        })
         .fallback(unavailable)
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
@@ -411,10 +457,13 @@ mod schema_tests {
     fn native_contract_declares_narrow_lifecycle_posts_and_exact_read_identity() {
         let schema = super::schema_document();
         let paths = schema["paths"].as_object().unwrap();
-        assert_eq!(paths.len(), 19);
+        assert_eq!(paths.len(), 24);
         for (path, operations) in paths {
             assert_eq!(operations.as_object().unwrap().len(), 1);
-            if path.starts_with("/api/project-lifecycle/") {
+            if path.starts_with("/api/project-lifecycle/")
+                || path.ends_with("/submissions")
+                || path.starts_with("/api/submissions/") && path != "/api/submissions/{identity}"
+            {
                 assert!(operations.get("post").is_some());
             } else {
                 assert!(operations.get("get").is_some());
@@ -426,7 +475,7 @@ mod schema_tests {
             schema["components"]["parameters"]["protocol"]["schema"]["const"],
             2
         );
-        let health = super::health_document(1, "isolated", true, false, None);
+        let health = super::health_document(1, "isolated", true, false, None, None);
         assert!(
             health["capabilities"]
                 .as_array()
@@ -448,7 +497,7 @@ mod schema_tests {
                 .iter()
                 .any(|v| v == "project-lifecycle.v1")
         );
-        let lifecycle = super::health_document(1, "isolated", true, true, None);
+        let lifecycle = super::health_document(1, "isolated", true, true, None, None);
         assert!(
             lifecycle["capabilities"]
                 .as_array()

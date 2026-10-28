@@ -539,6 +539,35 @@ impl Store {
     ) -> Result<Vec<Value>> {
         self.locked(|lock| self.list_unlocked(scope, now, transition_id, lock))
     }
+    /// Prove no prior plan/committed execution belongs to this Run. An orphaned
+    /// committed row cannot be interpreted as absence merely because cleanup
+    /// removed its plan directory. Called only by explicit native admission.
+    pub fn has_scope_history(&self, scope: &Scope) -> Result<bool> {
+        self.locked(|lock| {
+            let committed = self.database.admission_action_ids(&|| lock.validate())?;
+            let mut ids = std::collections::BTreeSet::from_iter(committed.iter().cloned());
+            for name in self.directory.entry_names_limited(8192)? {
+                if let Some(id) = name
+                    .to_str()
+                    .filter(|id| operations::validate_action_id(id).is_ok())
+                {
+                    ids.insert(id.to_owned());
+                }
+            }
+            if ids.len() > 4096 {
+                return Err(Error::Invalid("Action admission inventory exceeds limit"));
+            }
+            let expected = serde_json::to_value(scope)?;
+            let mut found = false;
+            for id in ids {
+                let plan = self.plan(&id, lock)?;
+                if plan.get("scope") == Some(&expected) {
+                    found = true;
+                }
+            }
+            Ok(found)
+        })
+    }
     /// Startup must run before the daemon serves or resumes any queue worker.
     /// Merely records abandoned claims; it never issues provider submit calls.
     pub fn recover_interrupted(&self, now: &str, transition_id: &str) -> Result<Vec<Value>> {

@@ -66,7 +66,7 @@
     "provider_io_owner": "server",
     "scientific_computation_owner": "user code, any supported image language",
     "read_preview_boundary": "Fresh marker-bearing isolated registry; trusted approved Project/Run roots, bounded canonical-layout discovery with ambiguity/alias/budget rejection, existing-only deletion guards and authenticated local reads. Optional Project lifecycle mutates tracking metadata only via approved manifests and durable CAS; no providers, automatic repair on reads, ArtifactStore download claims or production bootstrap.",
-    "execution_preview_boundary": "Native sealed managed-launch requires private operator config and pre-staged local code/environment. Existing-only exact Attempt ledger records STARTED before spawn; unknown outcomes are not replayed. Local process/training receipts do not establish dataset, checkpoint, object publication or provider acceptance."
+    "execution_preview_boundary": "Native sealed managed-launch requires private operator config and pre-staged local code/environment. Existing-only exact Attempt ledger records STARTED before spawn; unknown outcomes are not replayed. Local process/training receipts do not establish dataset, checkpoint, object publication or provider acceptance. Separately configured native Slurm first submission binds authored Run/source/OCI/SIF evidence to one immutable preparation slot and durable Action, uses pinned SSH/helper transport, and reconciles original identity after response loss. Current acceptance uses a synthetic scheduler, not real Slurm/GPU allocation."
   },
   "modules": [
     {
@@ -126,7 +126,7 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/client/src/transport.rs",
-        "scope": "Bounded JSON GET, authenticated protocol-2 handshake and private typed project-lifecycle POST only; URL-bound auth, no redirects or automatic replay, shared bounded sanitized errors. Lost/malformed lifecycle replies are uncertain. General submission/object transport and full nonstandard-body parity remain incomplete.",
+        "scope": "Bounded protocol-2 JSON reads, Project lifecycle, streamed immutable source publication and opt-in typed native Slurm submission requests. URL-bound auth, no redirects or automatic mutation replay, shared bounded sanitized errors. Lost or malformed mutation replies retain uncertainty. General asset transport and full API parity remain incomplete.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true,
         "additional_paths": [
@@ -214,7 +214,7 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/client/src/main.rs",
-        "scope": "Private config/check/get, exact grouped run status/logs/metrics and pinned watch, plus typed project list/register/pause/resume/archive/restore/unregister commands with pure preflight before credentials. Full submission/source/environment/data/checkpoint/download/update command tree and native distribution remain incomplete.",
+        "scope": "Private config/check/get, exact grouped run status/logs/metrics and pinned watch, Project lifecycle, deterministic source upload/lookup, and opt-in native Slurm preparation/authorization/execute/reconcile. Pure preflight precedes credentials. Automatic Run authorship, other providers, environment/data/checkpoint/download/update and native distribution remain incomplete.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true,
         "additional_paths": [
@@ -270,7 +270,7 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/client/src/main.rs",
-        "scope": "Exact saved-state read/watch operations and typed project lifecycle request plans with optional revision CAS, capability checks and no mutation replay. Registration references an approved daemon-host manifest path; no local source upload or job submission is implemented by these commands.",
+        "scope": "Exact saved-state reads/watch, Project lifecycle plans, deterministic source upload and opt-in native Slurm submission plans with original-slot lookup after response loss. Capability checks and no automatic mutation replay. General Run authorship and full original API composition remain incomplete.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true,
         "additional_paths": [
@@ -870,7 +870,7 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/server/src/lib.rs",
-        "scope": "Loopback health/readiness/OpenAPI, configured bounded native experiment reads/discovery, and separately enabled isolated Project lifecycle composition. Capabilities reflect the selected preview services; no provider refresh/submission, ArtifactStore download/ACK, TLS termination or production acceptance.",
+        "scope": "Loopback discovery/readiness/OpenAPI, bounded approved experiment reads, separately enabled Project lifecycle/source archives and opt-in native first-Slurm-submission HTTP composition. Capabilities reflect configured services. Other providers, ArtifactStore download/ACK, TLS and production acceptance remain incomplete.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true,
         "additional_paths": [
@@ -1315,7 +1315,7 @@
       "proposed_consolidation": "Thin HTTP parsing/authentication/serialization only; route calls its owning domain directly.",
       "migration_status": "partial_foundation",
       "python_baseline_unchanged": true,
-      "native_scope": "Exact read-only Submission lookup, committed Action observation and pure public view. Submission preparation, progress, listing and mutation/provider dispatch remain incomplete."
+      "native_scope": "Opt-in first-authored-Run Slurm HTTP/client preparation, exact original slot lookup, authorization, single execution and INSPECT/OBSERVE reconciliation across restart. Trusted private configuration binds source and OCI/SIF receipts; Run reads expose committed stale scheduler evidence. No general listing/progress, retry/cancel HTTP, automatic Run authorship, other providers or production acceptance."
     },
     {
       "path": "server/src/ml_exp_server/api/tracking_routes.py",
@@ -3284,7 +3284,7 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/core/src/first_submission.rs",
-        "scope": "Pure first-Attempt eligibility, GPU-hour budget validation, exact Attempt/source binding, structured intent planning and deterministic idempotency key. Campaign/source file I/O, YAML serialization, source-service lookup, Action persistence and scheduler effects remain in the server shell.",
+        "scope": "Pure first-Attempt/budget/identity planning plus strict native admission of an authored Run and first Attempt against trusted source and published OCI/SIF receipts. The native service persists one original preparation slot and dispatches through guarded SQLite Action/SSH/helper shells. Automatic Run authorship, data inputs and other providers remain incomplete.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true
       }
@@ -3412,7 +3412,7 @@
       "proposed_consolidation": "One prepare/submit/retry/cancel workflow over reviewed operations; keep Run and Attempt distinct.",
       "migration_status": "partial_foundation",
       "python_baseline_unchanged": true,
-      "native_scope": "Exact read-only Submission lookup, committed Action observation and pure public view. Submission preparation, progress, listing and mutation/provider dispatch remain incomplete."
+      "native_scope": "Opt-in first-authored-Run Slurm HTTP/client preparation, exact original slot lookup, authorization, single execution and INSPECT/OBSERVE reconciliation across restart. Trusted private configuration binds source and OCI/SIF receipts; Run reads expose committed stale scheduler evidence. No general listing/progress, retry/cancel HTTP, automatic Run authorship, other providers or production acceptance."
     },
     {
       "path": "server/src/ml_exp_server/runs/terminal_snapshot.py",

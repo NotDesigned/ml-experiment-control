@@ -503,6 +503,46 @@ fn invalid_watch_duration_is_rejected_before_connection_or_configuration_io() {
     }
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
 }
+#[test]
+fn invalid_native_submission_is_rejected_before_loading_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    for args in [
+        vec![
+            "run",
+            "prepare",
+            "--project",
+            "demo",
+            "--run",
+            "train",
+            "--max-gpu-hours=NaN",
+        ],
+        vec![
+            "run",
+            "execute",
+            "action-0123456789abcdef",
+            "--confirmation",
+            "wrong",
+        ],
+        vec![
+            "run",
+            "preparation",
+            "--project",
+            "../foreign",
+            "--run",
+            "train",
+        ],
+    ] {
+        let output = command(temp.path()).args(args).output().unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("invalid submission")
+        );
+        assert!(output.stdout.is_empty());
+    }
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+}
 
 #[test]
 fn allocation_contract_preserves_counts_and_rejects_incomplete_evidence() {

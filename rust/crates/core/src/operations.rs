@@ -72,6 +72,21 @@ pub fn validate_action_id(value: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// The public Submission protocol uses the deterministic 16-hex Action ID;
+/// the historical on-disk Action validator deliberately remains broader.
+pub fn validate_submission_id(value: &str) -> Result<(), Error> {
+    if value.strip_prefix("action-").is_some_and(|suffix| {
+        suffix.len() == 16
+            && suffix
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    }) {
+        Ok(())
+    } else {
+        Err(Error::Identity("action_id"))
+    }
+}
+
 fn object(value: &Value) -> Result<&Map<String, Value>, Error> {
     value
         .as_object()
@@ -154,14 +169,7 @@ pub fn initial_execution(plan: &Value) -> Value {
 pub fn submission_view(action: &Value, now: &str) -> Result<Value, Error> {
     let now = timestamp(now)?;
     let id = field(action, "action_id")?;
-    if !id.strip_prefix("action-").is_some_and(|suffix| {
-        suffix.len() == 16
-            && suffix
-                .bytes()
-                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-    }) {
-        return Err(Error::Identity("action_id"));
-    }
+    validate_submission_id(id)?;
     let project = field(&action["scope"], "project")?;
     let run = field(action, "run_id")?;
     let attempt = field(action, "attempt_id")?;

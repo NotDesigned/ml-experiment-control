@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use ml_exp_client::{
     Client, config, credentials, observation, presentation, projects, read, session, sources,
-    status, watch,
+    status, submissions, watch,
 };
 use std::{
     io::{self, Read},
@@ -215,6 +215,40 @@ impl Target {
 }
 #[derive(Subcommand)]
 enum Run {
+    /// Prepare the already-authored first Run/Attempt; never dispatch a job.
+    Prepare {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        max_gpu_hours: f64,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+    /// Recover the original preparation after a lost response, without creating one.
+    Preparation {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        run: String,
+    },
+    /// Read the exact original Submission.
+    Submission { submission: String },
+    /// Authorize a reviewed preparation; does not submit it.
+    Authorize {
+        submission: String,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+    /// Dispatch once using the exact confirmation shown by preparation.
+    Execute {
+        submission: String,
+        #[arg(long)]
+        confirmation: String,
+    },
+    /// Inspect the original scheduler identity; never submit a second job.
+    Reconcile { submission: String },
     /// Show independent scheduler, training and result-publication evidence.
     Status {
         #[command(flatten)]
@@ -250,12 +284,43 @@ enum Run {
     },
 }
 impl Run {
-    fn target(&self) -> &Target {
+    fn target(&self) -> Option<&Target> {
         match self {
             Self::Status { target, .. }
             | Self::Logs { target, .. }
-            | Self::Metrics { target, .. } => target,
+            | Self::Metrics { target, .. } => Some(target),
+            _ => None,
         }
+    }
+    fn submission_plan(&self) -> Result<Option<submissions::Plan>, ml_exp_client::Error> {
+        let command = match self {
+            Self::Prepare {
+                project,
+                run,
+                max_gpu_hours,
+                reason,
+            } => submissions::Command::Prepare {
+                project,
+                run,
+                max_gpu_hours: *max_gpu_hours,
+                reason,
+            },
+            Self::Preparation { project, run } => submissions::Command::Existing { project, run },
+            Self::Submission { submission } => submissions::Command::Show { submission },
+            Self::Authorize { submission, reason } => {
+                submissions::Command::Authorize { submission, reason }
+            }
+            Self::Execute {
+                submission,
+                confirmation,
+            } => submissions::Command::Execute {
+                submission,
+                confirmation,
+            },
+            Self::Reconcile { submission } => submissions::Command::Reconcile { submission },
+            _ => return Ok(None),
+        };
+        submissions::plan(command).map(Some)
     }
 }
 
@@ -309,6 +374,10 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         Command::Project { command } => Some(command.plan()?),
         _ => None,
     };
+    let submission_plan = match &args.command {
+        Command::Run { command } => command.submission_plan()?,
+        _ => None,
+    };
     if let Command::Source { command } = &args.command {
         command.validate()?;
     }
@@ -351,7 +420,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
         command => {
             let target = match &command {
-                Command::Run { command } => Some(command.target()),
+                Command::Run { command } => command.target(),
                 _ => None,
             };
             let saved = target
@@ -403,6 +472,16 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Command::Run { command } => {
                     let health = client.negotiate()?;
                     match command {
+                        Run::Prepare { .. }
+                        | Run::Preparation { .. }
+                        | Run::Submission { .. }
+                        | Run::Authorize { .. }
+                        | Run::Execute { .. }
+                        | Run::Reconcile { .. } => Output::Json(submissions::execute(
+                            &client,
+                            submission_plan.as_ref().expect("validated native plan"),
+                            &health,
+                        )?),
                         Run::Status {
                             target, details, ..
                         } => {

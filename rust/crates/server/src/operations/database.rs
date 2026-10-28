@@ -225,6 +225,29 @@ impl Database {
         })
     }
 
+    /// Explicit admission check, not a GET. Bootstrap an empty store if needed
+    /// and retain every committed Action identity, including orphaned plans.
+    pub(super) fn admission_action_ids(
+        &self,
+        validate: &dyn Fn() -> Result<()>,
+    ) -> Result<Vec<String>> {
+        self.transaction(validate, |connection| {
+            let mut statement = connection
+                .prepare("SELECT action_id FROM executions ORDER BY action_id LIMIT 4097")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut ids = Vec::new();
+            for row in rows {
+                let id = row?;
+                operations::validate_action_id(&id)?;
+                ids.push(id);
+            }
+            if ids.len() > 4096 {
+                return Err(Error::Invalid("Action admission inventory exceeds limit"));
+            }
+            Ok(ids)
+        })
+    }
+
     /// Observe an existing execution without initialization, recovery, schema
     /// changes or a write transaction. A plan with no committed execution is
     /// incomplete evidence; a GET must never turn it into PREPARED.

@@ -1,0 +1,271 @@
+//! Narrow submission HTTP effects. GET is local-only; reconcile observes the
+//! original provider identity, while only execute can submit a new scheduler job.
+use super::{Context, Error, Service};
+use crate::{
+    AppState, read_api,
+    read_http::{self, Access},
+};
+use axum::{
+    Router,
+    body::Bytes,
+    extract::{
+        DefaultBodyLimit, Path, RawQuery, State,
+        rejection::{BytesRejection, PathRejection},
+    },
+    response::Response,
+    routing::{get, post},
+};
+use ml_exp_core::{first_submission::native::Approval, operations::validate_submission_id};
+use serde::Deserialize;
+use serde_json::Value;
+use std::sync::{Arc, atomic::AtomicBool};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+const MAX_BODY: usize = 64 * 1024;
+pub(crate) fn routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/api/runs/{project}/{run}/submissions", post(prepare))
+        .route("/api/runs/{project}/{run}/submission", get(existing))
+        .route("/api/submissions/{identity}/{operation}", post(change))
+        .layer(DefaultBodyLimit::max(MAX_BODY))
+}
+fn invalid() -> read_api::Error {
+    read_api::Error {
+        status: 422,
+        code: "INVALID_SUBMISSION_REQUEST",
+        detail: "invalid native submission identity or request",
+    }
+}
+pub(crate) fn failure(error: Error) -> read_api::Error {
+    let (status, code, detail) = match error {
+        Error::Missing | Error::Action(crate::operations::Error::NotFound) => (
+            404,
+            "SUBMISSION_NOT_FOUND",
+            "the original preparation is unavailable; no new identity was created",
+        ),
+        Error::Busy => (
+            503,
+            "SUBMISSION_BUSY",
+            "preparation is busy; query the same Run before retrying",
+        ),
+        Error::Disabled => (
+            403,
+            "SUBMISSION_DISABLED",
+            "scheduler execution is disabled by the operator",
+        ),
+        Error::Admission(_) => (
+            422,
+            "SUBMISSION_ADMISSION_REJECTED",
+            "Run resources, provenance, inputs or budget fail native admission",
+        ),
+        Error::Authority | Error::Conflict | Error::Configuration => (
+            409,
+            "SUBMISSION_EVIDENCE_UNAVAILABLE",
+            "frozen submission authority changed or cannot be validated; no replay is permitted",
+        ),
+        Error::Action(crate::operations::Error::Decision(_))
+        | Error::Runner(crate::backends::slurm::action::Error::Action(
+            crate::operations::Error::Decision(_),
+        )) => (
+            409,
+            "SUBMISSION_STATE_CONFLICT",
+            "the requested transition or confirmation does not match the original Action",
+        ),
+        _ => (
+            500,
+            "SUBMISSION_OPERATION_UNCERTAIN",
+            "submission state may have changed; query the same Run or Submission and reconcile before deciding any further action",
+        ),
+    };
+    read_api::Error {
+        status,
+        code,
+        detail,
+    }
+}
+fn service(api: &read_api::Api) -> Result<Arc<Service>, read_api::Error> {
+    api.submissions().ok_or(read_api::Error {
+        status: 501,
+        code: "SUBMISSION_NOT_CONFIGURED",
+        detail: "native submissions are not explicitly configured",
+    })
+}
+fn decode<T: serde::de::DeserializeOwned>(
+    body: Result<Bytes, BytesRejection>,
+) -> Result<T, read_api::Error> {
+    let bytes = body.map_err(|error| read_api::Error {
+        status: if error.status() == axum::http::StatusCode::PAYLOAD_TOO_LARGE {
+            413
+        } else {
+            422
+        },
+        code: "INVALID_SUBMISSION_BODY",
+        detail: "submission body is invalid or exceeds 64 KiB",
+    })?;
+    let value = crate::experiments::parse_mapping(&bytes, crate::experiments::Format::Json)
+        .map_err(|_| invalid())?;
+    serde_json::from_value(Value::Object(value)).map_err(|_| invalid())
+}
+fn clock(now: f64) -> Result<String, read_api::Error> {
+    if !now.is_finite() {
+        return Err(invalid());
+    }
+    let value =
+        OffsetDateTime::from_unix_timestamp_nanos((now * 1e9) as i128).map_err(|_| invalid())?;
+    value.format(&Rfc3339).map_err(|_| invalid())
+}
+fn identities(project: &str, run: &str) -> Result<(), read_api::Error> {
+    ml_exp_core::identity::validate_id(project)
+        .and_then(|_| ml_exp_core::identity::validate_id(run))
+        .map(|_| ())
+        .map_err(|_| invalid())
+}
+async fn existing(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<(String, String)>, PathRejection>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let Ok(Path((project, run))) = path else {
+        return read_http::failure(invalid());
+    };
+    if let Err(error) = identities(&project, &run) {
+        return read_http::failure(error);
+    }
+    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+        return read_http::failure(error);
+    }
+    read_http::execute(state, Access::Read, move |api, now| {
+        service(api)?
+            .for_run(&project, &run, &clock(now)?)
+            .map_err(failure)
+    })
+    .await
+}
+async fn prepare(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<(String, String)>, PathRejection>,
+    RawQuery(raw): RawQuery,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(Path((project, run))) = path else {
+        return read_http::failure(invalid());
+    };
+    if let Err(error) = identities(&project, &run) {
+        return read_http::failure(error);
+    }
+    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+        return read_http::failure(error);
+    }
+    let approval: Approval = match decode(body) {
+        Ok(value) => value,
+        Err(error) => return read_http::failure(error),
+    };
+    read_http::execute(state, Access::Submission, move |api, now| {
+        let now = clock(now)?;
+        let expires = OffsetDateTime::parse(&now, &Rfc3339)
+            .map_err(|_| invalid())?
+            .checked_add(time::Duration::hours(1))
+            .ok_or_else(invalid)?
+            .format(&Rfc3339)
+            .map_err(|_| invalid())?;
+        let (_, identity) = crate::projects::transition_context().map_err(read_api::Error::from)?;
+        service(api)?
+            .prepare(
+                &project,
+                &run,
+                approval,
+                Context {
+                    now: &now,
+                    expires: &expires,
+                    transition_id: &identity,
+                },
+            )
+            .map_err(failure)
+    })
+    .await
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Authorize {
+    #[serde(default)]
+    reason: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Execute {
+    confirmation: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
+enum Operation {
+    Authorize(String),
+    Execute(String),
+    Reconcile,
+}
+async fn change(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<(String, String)>, PathRejection>,
+    RawQuery(raw): RawQuery,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(Path((identity, operation))) = path else {
+        return read_http::failure(invalid());
+    };
+    if validate_submission_id(&identity).is_err() {
+        return read_http::failure(invalid());
+    }
+    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+        return read_http::failure(error);
+    }
+    let operation = match operation.as_str() {
+        "authorize" => decode::<Authorize>(body).and_then(|request| {
+            if request.reason.chars().count() > 4000 || request.reason.chars().any(char::is_control)
+            {
+                Err(invalid())
+            } else {
+                Ok(Operation::Authorize(request.reason))
+            }
+        }),
+        "execute" => decode::<Execute>(body).and_then(|request| {
+            if request.confirmation == format!("EXECUTE {identity}") {
+                Ok(Operation::Execute(request.confirmation))
+            } else {
+                Err(invalid())
+            }
+        }),
+        "reconcile" => decode::<Empty>(body).map(|_| Operation::Reconcile),
+        _ => Err(invalid()),
+    };
+    let operation = match operation {
+        Ok(value) => value,
+        Err(error) => return read_http::failure(error),
+    };
+    read_http::execute_timeout(
+        state,
+        Access::Submission,
+        std::time::Duration::from_secs(120),
+        move |api, now| {
+            let service = service(api)?;
+            let now = clock(now)?;
+            let (_, transition) =
+                crate::projects::transition_context().map_err(read_api::Error::from)?;
+            let context = Context {
+                now: &now,
+                expires: &now,
+                transition_id: &transition,
+            };
+            match operation {
+                Operation::Authorize(reason) => {
+                    service.authorize(&identity, "bearer-client", &reason, context)
+                }
+                Operation::Execute(confirmation) => {
+                    service.execute(&identity, &confirmation, context, &AtomicBool::new(false))
+                }
+                Operation::Reconcile => service.reconcile(&identity, &now, &AtomicBool::new(false)),
+            }
+            .map_err(failure)
+        },
+    )
+    .await
+}

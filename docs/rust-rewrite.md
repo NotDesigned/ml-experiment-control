@@ -39,7 +39,7 @@ forwarding code merely to make the language uniform.
 | Core | Frozen identities, Project schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint identity/retention decisions, tracking plans, data-delivery and result-collection reducers, capability matcher, operation catalog, first-submission planner, input-progress parser, intent schema, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
 | Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O, deadline-bound single-frame pipe transport and checkpoint generation verification/sealing | Remaining transport primitives and durable domain protocols |
 | Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands and deterministic source archive upload/lookup | General asset/data transfers, artifact downloads/ACK, updates and full command coverage |
-| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint registry and isolated journals; SQLite stores/Run fences; Slurm transport and native Action submission runner; pure data-delivery and result-collection decisions | Python effect shells still own artifact/result stores, submission/provider executors, collectors, TLS and tracking transport |
+| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint registry and isolated journals; SQLite stores/Run fences; opt-in first-submission Slurm HTTP/client path and native Action runner; pure data-delivery and result-collection decisions | Automatic Run authorship, build orchestration, remaining provider executors, artifact/result stores, collectors, TLS and tracking transport |
 | Worker | Local process supervision, sealed local launch and scoped Slurm prepare/submit/inspect/observe/cancel helper | Remote managed-launch transport, data/checkpoint/journal/artifact/build/copy/deletion protocols |
 
 The native source path is deliberately Project-scoped: a shared tree digest does
@@ -196,8 +196,9 @@ its pure reducer. Its shell cannot start another read after the observation
 window; an in-flight HTTP read retains its own finite timeout. Historical native
 status reads fetch exact Attempt evidence rather than borrowing the current
 scheduler layer or interpreting a process state as scheduler evidence. Only the
-separate opt-in tracking lifecycle exposes metadata POSTs; scheduler and research
-asset mutations remain unavailable.
+separate opt-in tracking lifecycle exposes metadata POSTs. The separately
+configured native Slurm submission path is described below; research asset
+deletion and general scheduler mutations remain unavailable.
 
 Native saved-state reads can now resolve an exact Submission through
 `GET /api/submissions/{identity}` when the isolated registry already contains
@@ -207,8 +208,10 @@ does not create a directory, lock, database, initial execution, audit event or
 recovery transition. Missing or damaged committed evidence fails closed. The
 projection preserves the original Project/Run/Attempt and expiry advice; it
 does not select a current Attempt or authorize the suggested next action.
-Project approval and the Run deletion fence also apply to these reads. This
-does not implement Submission preparation, execution or provider dispatch.
+Project approval and the Run deletion fence also apply to these reads. With the
+native Slurm submission service explicitly configured, this GET also validates
+the original preparation slot and frozen authority. Without it, the existing
+read-only projection remains available.
 
 HTTP error bodies are capped at 16 KiB and sanitized before retention. The
 existing native redactor is now a shared pure library with the original CLI
@@ -440,9 +443,14 @@ INSPECT and OBSERVE; a prepared or missing ledger never permits a new submit.
 Store CAS prevents a stale completion from overwriting another revision.
 
 The caller must supply live Run/deletion/source guard checks, policy and observed
-frozen-file hashes. Full Run admission, native HTTP submit/retry/cancel routes
-and workload/provider integration remain to be connected. This library runner
-does not enable mutation in the preview daemon or use production credentials.
+frozen-file hashes. The native first-submission service supplies these checks
+for an already-authored Run/first Attempt with immutable source and published
+OCI/SIF receipts. Its optional HTTP/client path can prepare, find the original
+preparation, authorize, execute and reconcile this service. A private cross-process
+execution lock excludes an in-flight executor before explicit reconciliation
+marks a dead claim uncertain. GET/open do not recover or resubmit. Retry/cancel
+HTTP, automatic Run authorship and remaining providers are still incomplete.
+Default daemon startup does not enable mutations or use production credentials.
 
 Every helper response has `safe_to_retry=false`, including PREPARED. An older
 Submit may still be in transit; observing no start marker does not revoke it.
@@ -462,8 +470,9 @@ No arbitrary command or job ID is accepted from a client request.
 
 Local tests use real Rust processes, fake SSH and fake scheduler tools with
 temporary state, including lost replies, concurrency and missing metadata.
-Runtime/SIF preparation, shared data, Action dispatch and actual cluster
-acceptance are not connected. The preview HTTP API still does not submit training.
+Automatic Runtime/SIF preparation, shared data and actual cluster acceptance
+remain incomplete. The configured native Slurm HTTP path can dispatch through
+its trusted helper; submission success is not training or result acceptance.
 
 Tracking is similarly split: pure options/routing and consuming display reducers
 produce metric-definition and summary patches. They preserve variant, protocol,

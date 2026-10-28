@@ -269,6 +269,7 @@ pub struct Api {
     lifecycle: Option<Arc<crate::projects::Service>>,
     sources: Option<Arc<crate::sources::Service>>,
     actions: Option<crate::operations::Store>,
+    submissions: Option<Arc<crate::submissions::Service>>,
 }
 impl Api {
     pub fn open(settings: read_config::Settings) -> Result<Self, read_config::Error> {
@@ -324,6 +325,7 @@ impl Api {
             lifecycle: None,
             sources: None,
             actions,
+            submissions: None,
         })
     }
     pub fn with_lifecycle(
@@ -361,6 +363,25 @@ impl Api {
     pub fn sources(&self) -> Option<Arc<crate::sources::Service>> {
         self.sources.clone()
     }
+    pub fn with_submissions(
+        mut self,
+        service: Arc<crate::submissions::Service>,
+    ) -> Result<Self, read_config::Error> {
+        if !service.matches_configuration(
+            &self.registry_root,
+            &self.project_files,
+            &self.workspace_id,
+            self.sources.as_ref(),
+            self.lifecycle.as_ref(),
+        ) {
+            return Err(read_config::Error);
+        }
+        self.submissions = Some(service);
+        Ok(self)
+    }
+    pub fn submissions(&self) -> Option<Arc<crate::submissions::Service>> {
+        self.submissions.clone()
+    }
     pub fn active_project_count(&self) -> Result<usize, Error> {
         self.validate_registry()?;
         match &self.lifecycle {
@@ -388,12 +409,7 @@ impl Api {
         self.projects.len()
     }
     pub fn submission(&self, id: &str, now_unix: f64) -> Result<Value, Error> {
-        if !id.strip_prefix("action-").is_some_and(|suffix| {
-            suffix.len() == 16
-                && suffix
-                    .bytes()
-                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-        }) {
+        if ml_exp_core::operations::validate_submission_id(id).is_err() {
             return Err(invalid_query());
         }
         self.validate_registry()?;
@@ -422,6 +438,11 @@ impl Api {
             .map_err(|_| invalid_clock())?
             .format(&time::format_description::well_known::Rfc3339)
             .map_err(|_| invalid_clock())?;
+        if let Some(service) = &self.submissions {
+            return service
+                .get(id, &now)
+                .map_err(crate::submissions::http::failure);
+        }
         let value =
             ml_exp_core::operations::submission_view(&snapshot, &now).map_err(
                 |cause| match cause {
@@ -791,14 +812,38 @@ impl Api {
             View::Run => {
                 let attempt = snapshot.current_attempt_id.as_deref();
                 let records = self.live_metrics(&snapshot, attempt)?;
-                read_model::run_detail(
+                let value = read_model::run_detail(
                     &snapshot,
                     now_unix,
                     attempt.map(|attempt_id| LiveMetrics {
                         attempt_id,
                         records: &records,
                     }),
-                )?
+                )?;
+                if let Some(service) = &self.submissions {
+                    let now =
+                        time::OffsetDateTime::from_unix_timestamp_nanos((now_unix * 1e9) as i128)
+                            .map_err(|_| invalid_query())?
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .map_err(|_| invalid_query())?;
+                    match service.for_run(&query.project, &query.run, &now) {
+                        Ok(submission) => ml_exp_core::first_submission::native::project_run(
+                            value,
+                            &submission,
+                        )
+                        .map_err(|_| {
+                            error(
+                                409,
+                                "SUBMISSION_EVIDENCE_UNAVAILABLE",
+                                "native scheduler receipt cannot be projected onto this exact Run",
+                            )
+                        })?,
+                        Err(crate::submissions::Error::Missing) => value,
+                        Err(cause) => return Err(crate::submissions::http::failure(cause)),
+                    }
+                } else {
+                    value
+                }
             }
             View::Attempts => read_model::run_attempts(&snapshot)?,
             View::Show { attempt } => read_model::attempt_show(&snapshot, &attempt, now_unix)?,

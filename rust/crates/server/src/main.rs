@@ -11,7 +11,7 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:18765")]
     bind: SocketAddr,
     #[arg(long)]
-    #[arg(required_unless_present_any = ["initialize_registry", "initialize_project_lifecycle", "initialize_source_archives"])]
+    #[arg(required_unless_present_any = ["initialize_registry", "initialize_project_lifecycle", "initialize_source_archives", "initialize_submissions"])]
     token_file: Option<PathBuf>,
     /// Private approved source configuration for an isolated Rust preview.
     #[arg(long, conflicts_with = "initialize_registry")]
@@ -31,6 +31,12 @@ struct Args {
     /// Enable immutable source archive storage for this isolated preview.
     #[arg(long, requires = "read_config", conflicts_with = "initialize_registry")]
     source_archives: bool,
+    /// Explicit offline initialization of a fresh native submission namespace.
+    #[arg(long, requires = "read_config", conflicts_with_all = ["initialize_registry", "token_file", "initialize_project_lifecycle", "initialize_source_archives", "submission_config"])]
+    initialize_submissions: bool,
+    /// Trusted native Slurm profiles and published-image receipts, never client input.
+    #[arg(long, requires_all = ["read_config", "source_archives"], conflicts_with = "initialize_registry")]
+    submission_config: Option<PathBuf>,
 }
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -71,6 +77,25 @@ async fn main() -> std::process::ExitCode {
             }
         };
     }
+    if args.initialize_submissions {
+        return match ml_exp_server::read_config::load(
+            args.read_config.as_deref().expect("required config"),
+        )
+        .map_err(|_| "invalid read configuration")
+        .and_then(|settings| {
+            ml_exp_server::submissions::Service::initialize(&settings)
+                .map_err(|_| "cannot initialize fresh submission namespace")
+        }) {
+            Ok(()) => {
+                println!("native submission storage initialized; no scheduler job submitted");
+                std::process::ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     if !args.bind.ip().is_loopback() {
         eprintln!("Rust preview requires loopback binding; native TLS has not been ported");
         return std::process::ExitCode::FAILURE;
@@ -87,7 +112,12 @@ async fn main() -> std::process::ExitCode {
         }
     };
     let reads = match args.read_config.as_deref() {
-        Some(path) => match open_api(path, args.project_lifecycle, args.source_archives) {
+        Some(path) => match open_api(
+            path,
+            args.project_lifecycle,
+            args.source_archives,
+            args.submission_config.as_deref(),
+        ) {
             Ok(reads) => Some(std::sync::Arc::new(reads)),
             Err(error) => {
                 eprintln!("{error}");
@@ -140,6 +170,7 @@ fn open_api(
     path: &std::path::Path,
     lifecycle: bool,
     source_archives: bool,
+    submission_config: Option<&std::path::Path>,
 ) -> Result<ml_exp_server::read_api::Api, Box<dyn std::error::Error>> {
     let settings = ml_exp_server::read_config::load(path)?;
     let service = if lifecycle {
@@ -159,7 +190,19 @@ fn open_api(
             &settings,
             api.lifecycle(),
         )?);
-        return Ok(api.with_sources(source)?);
+        let api = api.with_sources(source.clone())?;
+        if let Some(path) = submission_config {
+            let (enabled, backends) = ml_exp_server::submissions::config::load(path)?;
+            let submissions = std::sync::Arc::new(ml_exp_server::submissions::Service::open(
+                settings,
+                source,
+                api.lifecycle(),
+                backends,
+                enabled,
+            )?);
+            return Ok(api.with_submissions(submissions)?);
+        }
+        return Ok(api);
     }
     Ok(api)
 }
