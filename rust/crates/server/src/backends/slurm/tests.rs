@@ -1,4 +1,5 @@
 use super::*;
+mod action_tests;
 use ml_exp_core::slurm::{
     helper::{self, FrozenIntent, OperationTag, ReplyOutcome, Request, Scope, Target},
     scheduler_job_name,
@@ -172,6 +173,12 @@ fn fake_ssh_child() {
     let mut exit = 0;
     match mode.as_str() {
         "normal" | "ledger" => {}
+        "ledger-lost-submit" => {
+            if request.operation() == OperationTag::Submit {
+                response.clear();
+                exit = 17;
+            }
+        }
         "ledger-lost-response" => {
             // The remote effect and durable receipt precede transport failure.
             // A later explicit Inspect can read it; the transport never retries.

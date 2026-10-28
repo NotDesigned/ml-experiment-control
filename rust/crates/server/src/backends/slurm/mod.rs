@@ -3,6 +3,7 @@
 //! not select Attempts, consume budgets, retry or execute legacy command plans.
 mod transport;
 pub use transport::*;
+pub mod action;
 
 #[cfg(test)]
 mod tests;

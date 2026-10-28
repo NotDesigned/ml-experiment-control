@@ -5,6 +5,7 @@
 //! must durably persist and review intents, hold its leases, execute each effect
 //! once, and reconcile uncertain outcomes before preparing another effect.
 
+pub mod action;
 mod allocation;
 mod config;
 pub mod helper;

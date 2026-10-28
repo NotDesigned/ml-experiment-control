@@ -410,6 +410,16 @@ not verify scheduler ownership. Do not configure this preview against an existin
 cluster workspace. Use the temporary-state tests until the remaining provider
 and Action integration gates are complete.
 
+The native `slurm::action` runner connects an approved native Action to the
+helper through the existing SQLite claim/CAS store. `native-slurm-action.v1`
+binds the reviewed plan to the exact helper request. A private immutable frame
+is stored before claiming execution, so reconciliation after restart loads the
+original request by Action ID. Submission is verified only after an owned
+scheduler read. Lost replies retain uncertainty; reconciliation sends only
+INSPECT/OBSERVE. Caller-owned Run/deletion/source guards and frozen-file checks
+remain mandatory. Native HTTP submission and provider/workload integration are
+still incomplete, so this runner does not enable the preview daemon to train.
+
 ## Contribution boundary
 
 Keep `core` pure, shared I/O primitives in `io`, provider execution in `server`,

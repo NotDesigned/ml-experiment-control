@@ -39,7 +39,7 @@ forwarding code merely to make the language uniform.
 | Core | Frozen identities, Project schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint identity/retention decisions, tracking plans, data-delivery and result-collection reducers, capability matcher, operation catalog, first-submission planner, input-progress parser, intent schema, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
 | Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O, deadline-bound single-frame pipe transport and checkpoint generation verification/sealing | Remaining transport primitives and durable domain protocols |
 | Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands and deterministic source archive upload/lookup | General asset/data transfers, artifact downloads/ACK, updates and full command coverage |
-| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint registry and isolated journals; SQLite stores/Run fences; Slurm transport; pure data-delivery and result-collection decisions | Python effect shells still own artifact/result stores, submission/provider executors, collectors, TLS and tracking transport |
+| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint registry and isolated journals; SQLite stores/Run fences; Slurm transport and native Action submission runner; pure data-delivery and result-collection decisions | Python effect shells still own artifact/result stores, submission/provider executors, collectors, TLS and tracking transport |
 | Worker | Local process supervision, sealed local launch and scoped Slurm prepare/submit/inspect/observe/cancel helper | Remote managed-launch transport, data/checkpoint/journal/artifact/build/copy/deletion protocols |
 
 The native source path is deliberately Project-scoped: a shared tree digest does
@@ -416,6 +416,33 @@ precedence over script and environment options. See the
 The helper refuses SBATCH/SACCT/SQUEUE/SCANCEL overrides and SLURM cluster/config environment
 variables; non-system Slurm configuration needs a separately bound configuration
 extension before real deployment.
+
+The native Action runner now connects the existing SQLite execution CAS and
+audit store to this helper. A NEW plan uses `native-slurm-action.v1`; its stable
+Action ID and approval digests cover the exact helper intent, frozen manifest,
+reviewed configuration, gates and expiry. Existing legacy plans keep their
+original protocol and cannot be dispatched through this runner.
+
+Before an execution claim, the store fsyncs a private immutable
+`native-slurm-request.frame` beneath the Action directory. This input contains
+the original token and frozen bytes, stays outside public snapshots/journals,
+and can be loaded after a daemon restart using the Action ID alone. Missing,
+corrupt, linked or non-private frames require investigation after a claim; the
+runner cannot reconstruct them from a new request.
+
+The runner persists EXECUTING before PREPARE/SUBMIT RPCs and shares one finite
+transport budget across them and the ownership query. A durable helper receipt
+is followed by an exact owned scheduler observation before the submission is
+VERIFIED. A queued/running job can verify submission while training remains
+queued/running. Unknown receipts, changed authority or unavailable observations
+persist RECONCILE_REQUIRED with `safe_to_retry=false`. Reconciliation uses only
+INSPECT and OBSERVE; a prepared or missing ledger never permits a new submit.
+Store CAS prevents a stale completion from overwriting another revision.
+
+The caller must supply live Run/deletion/source guard checks, policy and observed
+frozen-file hashes. Full Run admission, native HTTP submit/retry/cancel routes
+and workload/provider integration remain to be connected. This library runner
+does not enable mutation in the preview daemon or use production credentials.
 
 Every helper response has `safe_to_retry=false`, including PREPARED. An older
 Submit may still be in transit; observing no start marker does not revoke it.

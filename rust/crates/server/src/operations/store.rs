@@ -288,6 +288,66 @@ impl Store {
             Ok(Value::Object(value))
         })
     }
+    /// Private, immutable execution input; never part of public snapshots or
+    /// journals. It must be durable before claiming a native scheduler Action.
+    pub fn bind_slurm_request(
+        &self,
+        action_id: &str,
+        request: &ml_exp_core::slurm::helper::Request,
+    ) -> Result<()> {
+        use ml_exp_core::slurm::{action, helper};
+        let frame =
+            helper::encode_request(request).map_err(|_| Error::Invalid("native Slurm request"))?;
+        self.locked(|lock| {
+            let plan = self.plan(action_id, lock)?;
+            action::validate(&plan, request)
+                .map_err(|_| Error::Invalid("native Slurm Action binding"))?;
+            let directory = self.action_directory(action_id, false, lock)?;
+            let name = OsStr::new("native-slurm-request.frame");
+            if directory.entry_exists(name)? {
+                let stored = self.slurm_request_unlocked(action_id, lock)?;
+                if &stored != request {
+                    return Err(Error::IdempotencyConflict);
+                }
+            } else {
+                let execution = self.database.observe(&|| lock.validate(), action_id)?;
+                if !matches!(
+                    execution["status"].as_str(),
+                    Some("PREPARED" | "AUTHORIZED")
+                ) {
+                    return Err(Error::Invalid(
+                        "missing native Slurm request requires offline investigation",
+                    ));
+                }
+                directory.publish_new(name, &frame)?;
+            }
+            Ok(())
+        })
+    }
+    fn slurm_request_unlocked(
+        &self,
+        action_id: &str,
+        lock: &Lock,
+    ) -> Result<ml_exp_core::slurm::helper::Request> {
+        use ml_exp_core::slurm::{action, helper};
+        let directory = self.action_directory(action_id, false, lock)?;
+        let name = OsStr::new("native-slurm-request.frame");
+        let identity = directory.regular_identity(name)?.ok_or(Error::NotFound)?;
+        if !identity.is_private_for(effective_uid()) || identity.mode & 0o077 != 0 {
+            return Err(Error::Invalid("private native Slurm request file required"));
+        }
+        let frame = directory.read_regular(name, helper::MAX_FRAME_BYTES as u64)?;
+        let request = helper::decode_request(&frame)
+            .map_err(|_| Error::Invalid("native Slurm request frame"))?;
+        action::validate(&self.plan(action_id, lock)?, &request)
+            .map_err(|_| Error::Invalid("native Slurm Action binding"))?;
+        Ok(request)
+    }
+    /// Existing private input only. Missing/corrupt state is never reconstructed
+    /// from a client request after execution may already have been claimed.
+    pub fn slurm_request(&self, action_id: &str) -> Result<ml_exp_core::slurm::helper::Request> {
+        self.locked(|lock| self.slurm_request_unlocked(action_id, lock))
+    }
     pub fn save_plan(&self, plan: &Value, now: &str, transition_id: &str) -> Result<Value> {
         self.locked(|lock| {
             let action_id = plan
