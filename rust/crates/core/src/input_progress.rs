@@ -134,7 +134,8 @@ pub fn parse_line(line: &str) -> ParsedLine {
             legacy_failed: false,
         };
     };
-    if at.is_empty() || at.len() > 256 || at.chars().any(char::is_control) || !valid_asset(asset_id) {
+    if at.is_empty() || at.len() > 256 || at.chars().any(char::is_control) || !valid_asset(asset_id)
+    {
         return ParsedLine {
             record: None,
             legacy_failed: false,
