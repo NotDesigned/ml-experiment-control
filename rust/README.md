@@ -100,6 +100,11 @@ imperative.
 stable operation definitions, parameter metadata, scope filtering and
 intent-scope validation. It does not authorize or execute an Action.
 
+`ml-exp-core::capabilities` owns backend-neutral capability matching. It
+validates requirements against configured declarations and selects candidates
+without claiming live capacity; provider profile loading and availability
+probes remain in the Python server shell.
+
 `ml-exp-core::data_delivery` covers the SenseCore zero-GPU data-copy contract:
 frozen delivery identity, NAS scope, sealed READY reuse, callback transitions,
 and exact ACP scheduler-job binding. `ml-exp-core::result_collection` covers

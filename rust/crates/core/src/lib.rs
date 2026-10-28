@@ -4,6 +4,7 @@
 pub mod artifacts;
 pub mod auth;
 pub mod canonical;
+pub mod capabilities;
 pub mod checkpoints;
 pub mod diagnostic;
 pub mod durable;

@@ -36,7 +36,7 @@ forwarding code merely to make the language uniform.
 
 | Component | Implemented foundation | Still missing |
 | --- | --- | --- |
-| Core | Frozen identities, Project schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint identity/retention decisions, tracking plans, data-delivery and result-collection reducers, operation catalog, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
+| Core | Frozen identities, Project schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint identity/retention decisions, tracking plans, data-delivery and result-collection reducers, capability matcher, operation catalog, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
 | Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O, deadline-bound single-frame pipe transport and checkpoint generation verification/sealing | Remaining transport primitives and durable domain protocols |
 | Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands and deterministic source archive upload/lookup | General asset/data transfers, artifact downloads/ACK, updates and full command coverage |
 | Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint registry and isolated journals; SQLite stores/Run fences; Slurm transport; pure data-delivery and result-collection decisions | Python effect shells still own artifact/result stores, submission/provider executors, collectors, TLS and tracking transport |
@@ -127,6 +127,13 @@ The renderer-neutral operation catalog is now represented by
 scope filtering and intent-kind validation in one immutable catalog. Action
 authorization, availability reasons and execution remain separate concerns in
 the Python server, so exposing a catalog cannot grant a scheduler mutation.
+
+Backend matching now has a pure contract in `ml-exp-core::capabilities`. It
+checks platform/materialization, data preparation, persistent storage,
+observability, resource policy and worker capability requirements, then chooses
+among configured candidates deterministically. The result explicitly says that
+live availability was not checked; Slurm/ACP/PAI profile loading and live
+capacity probes remain outside this reducer.
 
 Metrics now include schema/definition validation, typed and wide observations,
 explicit units, required/conditional metrics, context-sensitive conflicts and
@@ -496,7 +503,7 @@ until equivalent native acceptance exists; deleting them is not migration.
 `partial_foundation` means a limited implementation exists with incomplete
 contract acceptance. `not_started` means the target is only assigned. Neither
 means production compatibility, and module counts are not a completion percentage.
-The current inventory has 63 partial foundations out of 458 tracked Python
+The current inventory has 64 partial foundations out of 458 tracked Python
 files (13.5% with some native foundation); no Python platform module is marked
 fully replaced. The two newest foundations are the SenseCore data-delivery
 contract and the exact-Attempt result-collection reducer. This percentage is a
