@@ -110,6 +110,10 @@ planning: budget checks, exact Attempt/source identity and deterministic
 idempotency. Campaign/source reads, YAML compatibility, Action persistence and
 scheduler effects remain in the server shell.
 
+`ml-exp-core::input_progress` validates worker input-delivery marker records
+and the legacy failure marker. Log reads, freshness calculation and outward
+projection remain in the server shell.
+
 `ml-exp-core::data_delivery` covers the SenseCore zero-GPU data-copy contract:
 frozen delivery identity, NAS scope, sealed READY reuse, callback transitions,
 and exact ACP scheduler-job binding. `ml-exp-core::result_collection` covers
