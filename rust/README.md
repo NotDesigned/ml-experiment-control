@@ -122,6 +122,11 @@ authorize or execute the resulting Action.
 contract. It reads one JSON intent from stdin and emits the normalized receipt;
 it does not load client credentials or contact the server.
 
+`ml-exp-rs contract slurm-allocation-validate` is the matching bounded parser
+for the `scontrol`/`squeue` allocation evidence protocol. The Python Slurm
+observer can use it through `ML_EXPD_ALLOCATION_BIN`; absent the binary, the
+existing Python parser remains the compatibility path.
+
 `ml-exp-core::data_delivery` covers the SenseCore zero-GPU data-copy contract:
 frozen delivery identity, NAS scope, sealed READY reuse, callback transitions,
 and exact ACP scheduler-job binding. `ml-exp-core::result_collection` covers

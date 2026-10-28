@@ -156,6 +156,13 @@ native bridge for this schema. The Python server can opt into it with
 continues to work. The bridge only validates and returns a receipt, so it
 cannot authorize or execute an Action.
 
+The same client binary now exposes
+`ml-exp-rs contract slurm-allocation-validate`. It parses the bounded
+`scontrol show nodes` plus `squeue` marker protocol in Rust. The Python Slurm
+allocation observer may opt into the parser with `ML_EXPD_ALLOCATION_BIN`; a
+missing binary keeps the existing parser, while native rejection remains a
+fail-closed scheduler observation.
+
 Metrics now include schema/definition validation, typed and wide observations,
 explicit units, required/conditional metrics, context-sensitive conflicts and
 `ratio_of_sums`. Variant, protocol, checkpoint, dataset, step and epoch remain
@@ -524,11 +531,11 @@ until equivalent native acceptance exists; deleting them is not migration.
 `partial_foundation` means a limited implementation exists with incomplete
 contract acceptance. `not_started` means the target is only assigned. Neither
 means production compatibility, and module counts are not a completion percentage.
-The current inventory has 67 partial foundations out of 458 tracked Python
-files (13.5% with some native foundation); no Python platform module is marked
+The current inventory has 68 partial foundations out of 458 tracked Python
+files (14.8% with some native foundation); no Python platform module is marked
 fully replaced. The two newest foundations are the SenseCore data-delivery
 contract and the exact-Attempt result-collection reducer. This percentage is a
-scope indicator, not a claim that 13.5% of the production system can already be
+scope indicator, not a claim that 14.8% of the production system can already be
 cut over.
 
 ## Migration sequence and acceptance

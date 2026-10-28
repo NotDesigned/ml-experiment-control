@@ -24,7 +24,7 @@
       "server": {
         "modules": 160,
         "lines": 30572,
-        "partial_foundation": 42,
+        "partial_foundation": 43,
         "not_started": 122
       },
       "core": {
@@ -40,7 +40,7 @@
         "not_started": 10
       }
     },
-    "partial_foundation_modules": 67,
+    "partial_foundation_modules": 68,
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
@@ -3074,8 +3074,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "observation",
       "proposed_consolidation": "One backend-neutral evidence reducer; provider snapshots and worker facts remain independent.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/slurm/allocation.rs",
+        "scope": "Pure parsing and cache-result reduction for the bounded scontrol/squeue allocation protocol. Python retains SSH, PAI and SenseCore provider reads, cache locking and API projection; an optional ml-exp-rs bridge can run the native parser.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/runs/context.py",

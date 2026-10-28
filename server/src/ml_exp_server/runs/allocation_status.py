@@ -81,6 +81,10 @@ def pai_quota(backend):
 
 
 def parse(output, partition):
+    from .native_allocation import parse as parse_native
+    native = parse_native(output, partition)
+    if native is not None:
+        return native
     nodes_text, queue = output.split(MARKER)
     nodes = {}
     for line in nodes_text.splitlines():

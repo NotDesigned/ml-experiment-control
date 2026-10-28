@@ -62,6 +62,8 @@ enum Command {
 enum Contract {
     /// Validate one JSON OperationIntent read from standard input.
     IntentValidate,
+    /// Parse one Slurm allocation snapshot from standard input.
+    SlurmAllocationValidate,
 }
 #[derive(Subcommand)]
 enum Source {
@@ -273,6 +275,24 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let intent = ml_exp_core::intent::OperationIntent::from_value(&value)
             .map_err(|error| format!("invalid operation intent: {error}"))?;
         println!("{}", serde_json::to_string_pretty(&intent)?);
+        return Ok(());
+    }
+    if let Command::Contract {
+        command: Contract::SlurmAllocationValidate,
+    } = &args.command
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input {
+            output: String,
+            partition: String,
+        }
+        let mut input = String::new();
+        io::stdin().read_to_string(&mut input)?;
+        let request: Input = serde_json::from_str(&input)?;
+        let snapshot = ml_exp_core::slurm::parse_allocation(&request.output, &request.partition)
+            .map_err(|error| format!("invalid Slurm allocation: {error}"))?;
+        println!("{}", serde_json::to_string_pretty(&snapshot)?);
         return Ok(());
     }
     let project_plan = match &args.command {
