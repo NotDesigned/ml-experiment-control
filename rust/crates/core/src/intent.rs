@@ -125,7 +125,10 @@ mod tests {
     fn bounds_and_idempotency_are_fail_closed() {
         let mut bad = value();
         bad["title"] = json!("");
-        assert_eq!(OperationIntent::from_value(&bad), Err(Error::Field("title")));
+        assert_eq!(
+            OperationIntent::from_value(&bad),
+            Err(Error::Field("title"))
+        );
         let mut bad_key = value();
         bad_key["idempotency_key"] = json!("bad key");
         assert_eq!(
