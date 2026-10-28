@@ -33,7 +33,7 @@ pub enum ScopeType {
 }
 
 impl ScopeType {
-    fn name(&self) -> &'static str {
+    pub(crate) fn name(&self) -> &'static str {
         match self {
             Self::Project => "project",
             Self::Campaign => "campaign",

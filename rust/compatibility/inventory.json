@@ -24,8 +24,8 @@
       "server": {
         "modules": 160,
         "lines": 30572,
-        "partial_foundation": 37,
-        "not_started": 127
+        "partial_foundation": 38,
+        "not_started": 126
       },
       "core": {
         "modules": 25,
@@ -40,7 +40,7 @@
         "not_started": 10
       }
     },
-    "partial_foundation_modules": 62,
+    "partial_foundation_modules": 63,
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
@@ -3317,8 +3317,14 @@
       "target_crate": "ml-exp-server",
       "target_domain": "experiments",
       "proposed_consolidation": "One prepare/submit/retry/cancel workflow over reviewed operations; keep Run and Attempt distinct.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/core/src/operation_catalog.rs",
+        "scope": "Pure operation definitions, parameter metadata, stable scope filtering and intent-scope validation. Action persistence, availability checks, authorization and execution remain in the server shell.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true
+      }
     },
     {
       "path": "server/src/ml_exp_server/runs/queries.py",
