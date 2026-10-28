@@ -114,6 +114,10 @@ scheduler effects remain in the server shell.
 and the legacy failure marker. Log reads, freshness calculation and outward
 projection remain in the server shell.
 
+`ml-exp-core::intent` validates the client-authored `OperationIntent` schema,
+field bounds, unknown-field rejection and idempotency-key format. It does not
+authorize or execute the resulting Action.
+
 `ml-exp-core::data_delivery` covers the SenseCore zero-GPU data-copy contract:
 frozen delivery identity, NAS scope, sealed READY reuse, callback transitions,
 and exact ACP scheduler-job binding. `ml-exp-core::result_collection` covers

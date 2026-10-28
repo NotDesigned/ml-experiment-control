@@ -13,6 +13,7 @@ pub mod first_submission;
 pub mod identity;
 pub mod index;
 pub mod input_progress;
+pub mod intent;
 pub mod launch;
 pub mod manifest;
 pub mod metrics;
