@@ -135,11 +135,21 @@ pub struct ResultRecord {
 }
 
 fn request() -> Parameter {
-    Parameter::text("request", "Operation request", true, "Describe the requested change")
+    Parameter::text(
+        "request",
+        "Operation request",
+        true,
+        "Describe the requested change",
+    )
 }
 
 fn reason() -> Parameter {
-    Parameter::text("reason", "Reason", true, "Record why this operation is needed")
+    Parameter::text(
+        "reason",
+        "Reason",
+        true,
+        "Record why this operation is needed",
+    )
 }
 
 fn operation(
@@ -300,7 +310,12 @@ pub fn definitions() -> Vec<Definition> {
             Mode::Direct,
             "Prepare a scheduler Action",
             Some("RETRY_ATTEMPT"),
-            vec![reason(), gpu_budget.clone(), resource_approval.clone(), new_attempt],
+            vec![
+                reason(),
+                gpu_budget.clone(),
+                resource_approval.clone(),
+                new_attempt,
+            ],
             30,
         ),
         operation(
@@ -383,7 +398,10 @@ mod tests {
         let values = definitions();
         assert_eq!(values.len(), 10);
         assert_eq!(values[0].operation_id, "campaign.create");
-        assert_eq!(for_scope(ScopeType::Attempt)[0].operation_id, "attempt.cancel");
+        assert_eq!(
+            for_scope(ScopeType::Attempt)[0].operation_id,
+            "attempt.cancel"
+        );
         assert_eq!(for_scope(ScopeType::Run)[0].operation_id, "run.clone");
         assert!(values.iter().all(|value| !value.operation_id.is_empty()));
     }
@@ -391,10 +409,14 @@ mod tests {
     #[test]
     fn intent_scope_validation_is_explicit_and_fail_closed() {
         assert_eq!(intent_scope_error("SUBMIT_RUN", ScopeType::Run), None);
-        assert!(intent_scope_error("SUBMIT_RUN", ScopeType::Attempt)
-            .is_some_and(|value| value.contains("expected run")));
-        assert!(intent_scope_error("UNKNOWN", ScopeType::Run)
-            .is_some_and(|value| value.contains("unsupported")));
+        assert!(
+            intent_scope_error("SUBMIT_RUN", ScopeType::Attempt)
+                .is_some_and(|value| value.contains("expected run"))
+        );
+        assert!(
+            intent_scope_error("UNKNOWN", ScopeType::Run)
+                .is_some_and(|value| value.contains("unsupported"))
+        );
     }
 
     #[test]
