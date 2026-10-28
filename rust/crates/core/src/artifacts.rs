@@ -3,14 +3,16 @@
 //! Object storage, filesystem reads and clocks stay outside this module. The
 //! functions here only validate frozen identities and return the next durable
 //! value; callers must persist that value before performing an external effect.
+pub mod publication;
+
 use crate::identity::{validate_attempt, validate_id};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-const MAX_FILES: usize = 20_000;
-const MAX_PATH: usize = 4096;
+pub const MAX_FILES: usize = 20_000;
+pub const MAX_PATH: usize = 4096;
 const MAX_RECEIPT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,7 +91,7 @@ fn sha256(value: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
-fn receipt_path(value: &str) -> bool {
+pub fn receipt_path(value: &str) -> bool {
     value.len() <= MAX_PATH
         && !value.is_empty()
         && value != "outputs"

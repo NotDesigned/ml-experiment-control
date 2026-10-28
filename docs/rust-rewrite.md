@@ -37,10 +37,10 @@ forwarding code merely to make the language uniform.
 | Component | Implemented foundation | Still missing |
 | --- | --- | --- |
 | Core | Frozen identities, Project schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint identity/retention decisions, tracking plans, data-delivery and result-collection reducers, capability matcher, operation catalog, first-submission planner, input-progress parser, intent schema, Action/index reducers, Slurm/helper protocols, observation/failure projections | Remaining frozen contracts and complete cross-domain integration |
-| Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O, deadline-bound single-frame pipe transport and checkpoint generation verification/sealing | Remaining transport primitives and durable domain protocols |
-| Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands and deterministic source archive upload/lookup | General asset/data transfers, artifact downloads/ACK, updates and full command coverage |
-| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint registry and isolated journals; SQLite stores/Run fences; opt-in standalone Run creation and first-submission Slurm HTTP/client path and native Action runner; pure data-delivery and result-collection decisions | General Run workflows, build orchestration, remaining provider executors, artifact/result stores, collectors, TLS and tracking transport |
-| Worker | Local process supervision, sealed local launch, opt-in automatic image worker for native Slurm and scoped prepare/submit/inspect/observe/cancel helper | Periodic/full-history evidence ingress, data/checkpoint/journal/artifact/build/copy/deletion protocols |
+| Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O, deadline-bound control/payload pipe transport, checkpoint generation verification/sealing and deterministic result tar effects | Remaining transport primitives and durable domain protocols |
+| Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands, deterministic source archive upload/lookup and native Slurm result download/ACK | General asset/data transfers, updates and full command coverage |
+| Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint/result metadata registries and isolated journals; SQLite stores/Run fences; opt-in standalone Run creation and first-submission Slurm HTTP/client path and native Action runner; pure data-delivery and result-collection decisions | General Run workflows, build orchestration, remaining provider executors, object result stores, collectors, TLS and tracking transport |
+| Worker | Local process supervision, sealed local launch, opt-in automatic image worker for native Slurm and scoped prepare/submit/inspect/observe/cancel helper | Periodic/full-history evidence ingress, managed dataset/journal/cloud artifact/build/copy/deletion protocols |
 
 The native source path is deliberately Project-scoped: a shared tree digest does
 not make one Project's metadata authoritative for another. Upload bodies are
@@ -50,6 +50,19 @@ metadata. The native artifact core keeps the Python compatibility shape: receipt
 file paths are internal names, while proof maps use `outputs/<path>`, and release
 timestamps are explicit RFC3339 values. The object-store and provider shells are
 still Python until their effect receipts have an equivalent native contract.
+
+The native Slurm result path now joins this contract to a bounded effect shell.
+Only a finished, exact managed Attempt can collect its result payload. The helper
+creates a deterministic tar and immutable archive/file manifest on shared backend
+storage, checks any frozen `artifacts.required_files`, and excludes persistent
+checkpoint state. The server keeps metadata only and relays a single pinned SSH
+stream through a two-chunk channel; it withholds the last chunk until whole-file
+SHA, EOF and helper exit are verified. The client verifies the full tar and each
+member without extracting it, fsyncs the completed local file and only then sends
+an ACK. An explicit release saves intent before unlinking only the generated tar;
+original outputs and checkpoints remain. A lost ACK can be reconciled using the
+same local file. Released tombstones prevent regeneration after restart. Managed
+dataset delivery, cloud result collectors and complete Run deletion remain separate.
 
 The checkpoint migration now spans the pure contract and local effect shell. A
 ready marker is validated as one generation with bounded paths, file counts,
@@ -101,8 +114,7 @@ without changing the original Action or scientific manifests. GET reads that
 cache only. Interrupted reads retain accepted evidence, and STARTED is possible
 execution, never a heartbeat. Each file window is limited to 128 KiB; truncated,
 partial or malformed metric history is explicitly incomplete. Full journal
-streaming, periodic observation and artifact download
-remain incomplete.
+streaming, periodic observation and cloud artifact download remain incomplete.
 
 Native committed scheduler projection is shared by Run, exact Attempt and
 collection views. It cannot supply a receipt to another Attempt or convert
@@ -394,9 +406,7 @@ The read model separates scheduler, training, publication and verification.
 It explicitly treats `PREEMPTED` as terminal, matching the core Run state model;
 this corrects the old RunIndexRow flag rather than promising field-for-field
 compatibility with that disposable row.
-Collection is an observation of process evidence, **not** a migrated ArtifactStore:
-it never asserts verified publication or download availability from collection
-JSON alone. There is no artifact download, collection action or receipt ACK API.
+Collection keeps training completion separate from publication. Legacy collection JSON alone cannot establish download availability. The opt-in native Slurm result path adds explicit collection, exact tar streaming and verified ACK APIs; only its validated bundle registry can project AVAILABLE or RELEASED.
 Metric validation precedes filtering/downsampling. Truncated or damaged raw
 history reports `PARTIAL` coverage; a canonical journal exceeding 8 MiB or
 100,000 observations is refused instead of validating only a convenient suffix.
@@ -422,7 +432,7 @@ supervises the process, and publishes a checked receipt. Repeated FINISHED reads
 return that receipt; STARTED without a valid receipt remains uncertain and never
 replays. Unsupported managed data/checkpoint/journal/publication capabilities are
 refused before initialization/dispatch. Training completion is separate from
-publication, which remains `NOT_IMPLEMENTED` and not downloadable.
+publication. A local process receipt alone remains `NOT_IMPLEMENTED` and not downloadable; explicit native Slurm collection establishes its own separate bundle identity.
 
 This is a local staged subchain, not a cloud worker replacement or global
 exactly-once service. Destroying and recreating the whole Attempt generation is

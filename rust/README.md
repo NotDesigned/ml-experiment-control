@@ -23,7 +23,7 @@ receipt and retry decision are validated by a native contract before use.
 | Crate | Preview executable | Current scope |
 | --- | --- | --- |
 | `ml-exp-core` | Library | Pure frozen identities, Project/schema/lifecycle and durable transitions, metric/journal decisions, source/archive and checkpoint receipt/restore decisions, data-delivery/result-collection reducers, observations, failure assessment and Slurm/helper protocols |
-| `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O, single-frame pipe transport and descriptor-safe checkpoint verification/sealing |
+| `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O, single-frame pipe transport descriptor-safe checkpoint verification/sealing, deterministic backend result tar and streaming verification |
 | `ml-exp-client` | `ml-exp-rs` | Private settings, bounded exact-identity reads/watch, Project operations, deterministic source upload/lookup, standalone Run creation and opt-in Slurm submissions |
 | `ml-exp-server` | `ml-expd-rs` | Approved discovery/reads, Project lifecycle, immutable source archive storage/receipts, native checkpoint registry, isolated SQLite/Run fences, standalone Run creation and opt-in Slurm submissions |
 | `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision, sealed managed launch, opt-in automatic Slurm image worker and scoped metadata helper |
@@ -32,8 +32,7 @@ The experiment API observes explicitly approved isolated files. Project metadata
 registration/lifecycle is a separate opt-in mode. A separate opt-in native Slurm
 submission API handles first Runs with trusted source and materialized-image
 receipts. Explicitly enabled Run creation can publish a standalone Run and first
-Attempt; it does not submit a job. Cloud managed-worker transport, general artifact/data
-transfer and W&B transport remain unported. Source archive publication is now a bounded native subchain: the
+Attempt; it does not submit a job. Cloud managed-worker transport, managed dataset transfer and W&B transport remain unported. Native Slurm now supports explicit backend-resident result collection, streaming download and verified ACK/release. Source archive publication is now a bounded native subchain: the
 client packs regular files into deterministic tar/gzip, the server verifies the
 transport SHA, rejects links/protected paths, seals the tree, computes the
 length-framed tree identity and records an immutable archive receipt. Lost
@@ -56,8 +55,7 @@ memory; the durable store removes its archive scratch copy before publishing the
 sealed tree and read-only metadata. Artifact contracts are also native at the
 pure-core boundary: receipt paths are internal paths, while download proofs use
 the compatibility key `outputs/<path>`, and retention timestamps must be valid
-RFC3339 values. Object storage, direct downloads, ACKs and provider collection
-remain Python shell work until their I/O protocol is ported.
+RFC3339 values. The native Slurm result path streams a backend-generated tar through pinned SSH and HTTP, verifies the archive and exact files at the client, then explicitly acknowledges it. Object-store result backends and cloud-provider collectors remain unported.
 
 Persistent checkpoints now have a native contract and local registry preview.
 The core validates the complete-generation manifest, derives the exact
@@ -504,7 +502,7 @@ become zeros or complete history. STARTED remains possible execution, rather
 than proof of a live process. A finished receipt proves its process outcome,
 independently of artifact publication and download availability. Periodic
 observation, complete-history journal ingress and
-artifact publication/download remain necessary for the full research workflow.
+cloud artifact publication/download remain necessary for the full research workflow.
 
 ## Opt-in native Slurm submissions
 
@@ -617,6 +615,35 @@ the sealed file set, sizes and SHA256 before starting user code. Training reads
 on shared storage. A missing/corrupt generation prevents the process from
 starting. No "latest" selection, automatic retry, general file download or
 artifact publication is provided by this checkpoint path.
+
+## Backend result collection and verified download
+
+With the opt-in native Slurm service configured, a finished managed worker can
+publish a deterministic result tar on its shared backend storage:
+
+```sh
+ml-exp-rs run collect action-0123456789abcdef
+ml-exp-rs run artifacts action-0123456789abcdef
+ml-exp-rs run download action-0123456789abcdef --output results.tar
+```
+
+Run creation can freeze `"artifacts":{"required_files":["weights.bin","metrics.jsonl"]}`.
+Collection checks those files before publishing metadata. Paths are relative to
+`OUTPUT_DIR`; the `checkpoints/` subtree and `checkpoint.ready.json` stay separate.
+Collection needs no GPU and never submits a scheduler job.
+
+The API stores metadata and relays a bounded SSH stream. It keeps no result tar
+on the API host. The client hashes the whole tar and every exact regular member
+without extracting it, publishes the completed local file durably, and sends the
+verified proof. By default that ACK immediately releases only the generated
+backend tar. `--keep` retains it. Original outputs and persistent checkpoint state
+remain; this is not full Run deletion or a retention policy for original outputs.
+Repeat the same download command after a lost ACK response: a matching complete
+local file is reverified and reused. Corrupt/incomplete transfers send no ACK.
+A released archive returns 410 and collection never regenerates it; its metadata
+tombstone survives restart. Transfer payload sizes use `u64`; control metadata
+and proofs retain their 8 MiB ceiling, and active streams have a one-hour deadline.
+The old object-store download URLs and cloud result collectors are not provided.
 
 ## Contribution boundary
 

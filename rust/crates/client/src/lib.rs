@@ -56,3 +56,5 @@ pub enum Error {
     #[error("{0}")]
     Observation(&'static str),
 }
+
+pub mod artifacts;

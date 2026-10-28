@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use ml_exp_client::{
-    Client, config, credentials, observation, presentation, projects, read, session, sources,
-    status, submissions, watch,
+    Client, artifacts, config, credentials, observation, presentation, projects, read, session,
+    sources, status, submissions, watch,
 };
 use std::{
     io::{self, Read},
@@ -258,6 +258,18 @@ enum Run {
     Reconcile { submission: String },
     /// Sample bounded logs, metrics and process evidence from the exact remote worker.
     Refresh { submission: String },
+    /// Collect completed process outputs on backend storage.
+    Collect { submission: String },
+    /// Read the original backend result bundle and retention.
+    Artifacts { submission: String },
+    /// Download, verify every file, then acknowledge (use --keep to retain the generated archive).
+    Download {
+        submission: String,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        keep: bool,
+    },
     /// Verify a complete backend checkpoint and register its metadata.
     Checkpoint { submission: String },
     /// List registered checkpoints, or read one exact --checkpoint identity.
@@ -365,6 +377,18 @@ enum Output {
 }
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Business parameter validation precedes config or credential file loading.
+    if let Command::Run {
+        command:
+            Run::Collect { submission }
+            | Run::Artifacts { submission }
+            | Run::Download { submission, .. },
+    } = &args.command
+    {
+        ml_exp_core::operations::validate_submission_id(submission).map_err(|_| {
+            ml_exp_client::Error::Observation("invalid submission identity; no request sent")
+        })?;
+    }
+
     if let Command::Contract {
         command: Contract::IntentValidate,
     } = &args.command
@@ -522,6 +546,23 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Command::Run { command } => {
                     let health = client.negotiate()?;
                     match command {
+                        Run::Collect { submission } => {
+                            Output::Json(artifacts::observe(&client, &submission, true, &health)?)
+                        }
+                        Run::Artifacts { submission } => {
+                            Output::Json(artifacts::observe(&client, &submission, false, &health)?)
+                        }
+                        Run::Download {
+                            submission,
+                            output,
+                            keep,
+                        } => Output::Json(artifacts::download(
+                            &client,
+                            &submission,
+                            &output,
+                            !keep,
+                            &health,
+                        )?),
                         Run::Create { .. }
                         | Run::Prepare { .. }
                         | Run::Preparation { .. }

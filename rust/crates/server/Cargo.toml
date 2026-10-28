@@ -35,6 +35,8 @@ flate2.workspace = true
 http-body-util = "0.1"
 tempfile.workspace = true
 
+futures-core = "0.3"
+
 [dev-dependencies]
 ml-exp-client = { path = "../client" }
 ml-exp-worker = { path = "../worker" }

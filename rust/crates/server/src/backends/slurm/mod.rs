@@ -7,3 +7,5 @@ pub mod action;
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) mod artifact_stream;

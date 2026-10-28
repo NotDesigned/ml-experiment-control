@@ -26,6 +26,8 @@ pub struct Request {
     pub metrics_schema: MetricSchema,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_from: Option<crate::checkpoints::Reference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<crate::artifacts::publication::Policy>,
 }
 impl Request {
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
@@ -36,6 +38,9 @@ impl Request {
         serde_json::from_value(Value::Object(value)).map_err(|_| Error("Run request schema"))
     }
     pub fn validate(&self, project: &str) -> Result<()> {
+        if let Some(policy) = &self.artifacts {
+            policy.validate().map_err(|_| Error("artifact policy"))?;
+        }
         if let Some(reference) = &self.resume_from {
             reference
                 .validate()
@@ -178,6 +183,9 @@ pub fn plan(
     if let Some(checkpoint) = authority.checkpoint {
         run["resume_from"] = json!(request.resume_from);
         run["native_checkpoint"] = checkpoint.clone();
+    }
+    if let Some(policy) = &request.artifacts {
+        run["artifacts"] = json!(policy);
     }
     // Bind the full trusted runtime, including its materialization receipt.
     run["native_creation"]["runtime_sha256"] = json!(

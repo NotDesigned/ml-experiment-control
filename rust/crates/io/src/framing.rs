@@ -249,5 +249,127 @@ pub fn write_frame(
     result.and(restored)
 }
 
+/// Read just a control frame prefix when an explicitly selected protocol
+/// follows it with a raw payload. Ordinary RPC must continue using read_frame.
+pub fn read_prefix(
+    fd: impl AsFd,
+    max_payload: usize,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<u8>> {
+    bound(max_payload)?;
+    let fd = fd.as_fd();
+    let mut guard = Nonblocking::new(fd)?;
+    let result = (|| {
+        let mut header = [0u8; 4];
+        read_exact(fd, &mut header, deadline, cancelled)?;
+        let size = u32::from_be_bytes(header) as usize;
+        if size == 0 || size > max_payload {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "frame exceeds bound",
+            ));
+        }
+        let mut frame = Vec::with_capacity(size + 4);
+        frame.extend_from_slice(&header);
+        frame.resize(size + 4, 0);
+        read_exact(fd, &mut frame[4..], deadline, cancelled)?;
+        Ok(frame)
+    })();
+    let restored = guard.restore();
+    match result {
+        Ok(v) => restored.map(|()| v),
+        Err(e) => {
+            let _ = restored;
+            Err(e)
+        }
+    }
+}
+/// One bounded raw-payload read on an exclusively owned pipe/socket.
+pub fn read_payload(
+    fd: impl AsFd,
+    bytes: &mut [u8],
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> io::Result<usize> {
+    if bytes.is_empty() || bytes.len() > 65536 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid payload buffer",
+        ));
+    }
+    let fd = fd.as_fd();
+    let mut guard = Nonblocking::new(fd)?;
+    let result = read_part(fd, bytes, deadline, cancelled);
+    let restored = guard.restore();
+    match result {
+        Ok(n) => restored.map(|()| n),
+        Err(e) => {
+            let _ = restored;
+            Err(e)
+        }
+    }
+}
+/// Copy an exact regular-file payload to an owned pipe/socket with one bounded
+/// buffer and an explicit total deadline. Filesystem reads may themselves block
+/// in the kernel; no unbounded application allocation or output spool is used.
+pub fn copy_payload(
+    mut source: impl io::Read,
+    fd: impl AsFd,
+    bytes: u64,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    check(deadline, cancelled)?;
+    let fd = fd.as_fd();
+    let mut guard = Nonblocking::new(fd)?;
+    let result = (|| {
+        let mut signals = crate::process::PipeSignals::block()?;
+        let mut left = bytes;
+        let mut buffer = [0u8; 65536];
+        while left > 0 {
+            check(deadline, cancelled)?;
+            let count = source.read(&mut buffer[..left.min(65536) as usize])?;
+            if count == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "incomplete payload",
+                ));
+            }
+            let mut remaining = &buffer[..count];
+            while !remaining.is_empty() {
+                check(deadline, cancelled)?;
+                match write(fd, remaining) {
+                    Ok(0) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WriteZero,
+                            "payload write failed",
+                        ));
+                    }
+                    Ok(n) => remaining = &remaining[n..],
+                    Err(Errno::AGAIN) => wait(fd, PollFlags::OUT, deadline, cancelled)?,
+                    Err(Errno::INTR) => {}
+                    Err(e) => {
+                        if e == Errno::PIPE {
+                            signals.mark_broken_pipe();
+                        }
+                        return Err(e.into());
+                    }
+                }
+            }
+            left -= count as u64;
+        }
+        Ok(())
+    })();
+    let restored = guard.restore();
+    match result {
+        Ok(()) => restored,
+        Err(e) => {
+            let _ = restored;
+            Err(e)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

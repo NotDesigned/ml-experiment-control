@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+mod artifacts;
 mod checkpoints;
 mod jobs;
 mod observation;
@@ -552,6 +553,12 @@ impl Helper {
             OperationTag::ObserveCheckpoint => match ledger {
                 ReadLedger::Found(snapshot) => {
                     self.checkpoint_observation(request, &snapshot, &lock)?
+                }
+                other => Self::observed(&other),
+            },
+            OperationTag::Artifacts => match ledger {
+                ReadLedger::Found(snapshot) => {
+                    self.artifact_operation(request, &snapshot, &lock, cancelled)?
                 }
                 other => Self::observed(&other),
             },

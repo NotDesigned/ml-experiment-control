@@ -860,6 +860,9 @@ impl Api {
             service
                 .apply_observation(&mut snapshot)
                 .map_err(crate::submissions::http::failure)?;
+            service
+                .apply_artifacts(&mut snapshot)
+                .map_err(crate::submissions::http::failure)?;
         }
         let value = match query.view {
             View::Run => {

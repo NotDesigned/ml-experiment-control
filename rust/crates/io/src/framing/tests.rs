@@ -156,3 +156,51 @@ fn regular_files_and_invalid_write_frames_are_rejected_before_io() {
     }
     assert!(read_frame(&writer, 0, deadline(), &AtomicBool::new(false)).is_err());
 }
+
+#[test]
+fn explicit_stream_prefix_preserves_raw_payload_and_rejects_stalled_streams() {
+    let (reader, mut writer) = UnixStream::pair().unwrap();
+    let frame = encoded(b"header");
+    let body = vec![71u8; 256 * 1024];
+    let want = body.clone();
+    let sent = frame.clone();
+    let thread = std::thread::spawn(move || {
+        writer.write_all(&sent).unwrap();
+        copy_payload(
+            &body[..],
+            &writer,
+            body.len() as u64,
+            deadline(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        writer.shutdown(Shutdown::Write).unwrap();
+    });
+    assert_eq!(
+        read_prefix(&reader, 64, deadline(), &AtomicBool::new(false)).unwrap(),
+        frame
+    );
+    let mut actual = Vec::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let n = read_payload(&reader, &mut buffer, deadline(), &AtomicBool::new(false)).unwrap();
+        if n == 0 {
+            break;
+        }
+        actual.extend_from_slice(&buffer[..n]);
+    }
+    assert_eq!(actual, want);
+    thread.join().unwrap();
+    let (reader, _writer) = UnixStream::pair().unwrap();
+    assert_eq!(
+        read_payload(
+            &reader,
+            &mut [0],
+            Instant::now() + Duration::from_millis(20),
+            &AtomicBool::new(false)
+        )
+        .unwrap_err()
+        .kind(),
+        io::ErrorKind::TimedOut
+    );
+}

@@ -120,3 +120,45 @@ fn log_tail(window: &Window, source: &str) -> LogTail {
         diagnostics: diagnostic(window, source),
     }
 }
+
+pub(crate) fn project_artifacts(
+    snapshot: &mut Snapshot,
+    binding: &Binding,
+    state: &ml_exp_core::artifacts::publication::State,
+) -> Result<()> {
+    state.validate().map_err(|_| Error::Identity)?;
+    let receipt = &state.bundle.archive;
+    if snapshot.project != binding.project
+        || snapshot.run_id != binding.run_id
+        || snapshot.run.raw_sha256 != binding.run_sha256
+        || receipt.project != binding.project
+        || receipt.run_id != binding.run_id
+        || receipt.attempt_id != binding.attempt_id
+    {
+        return Err(Error::Identity);
+    }
+    let Some(attempt) = snapshot
+        .attempts
+        .iter_mut()
+        .find(|a| a.attempt_id == binding.attempt_id)
+    else {
+        return Ok(());
+    };
+    if attempt.manifest.raw_sha256 != binding.attempt_sha256 {
+        return Err(Error::Identity);
+    }
+    let mut metadata = attempt.collection.metadata().cloned().unwrap_or_default();
+    metadata.insert("project".into(), json!(binding.project));
+    metadata.insert("run_id".into(), json!(binding.run_id));
+    metadata.insert("attempt_id".into(), json!(binding.attempt_id));
+    metadata.insert("native_artifacts".into(), json!(state));
+    let raw_sha256 =
+        helper::sha256_bytes(&serde_json::to_vec(&metadata).map_err(|_| Error::Identity)?);
+    attempt.collection = EvidenceDocument::Present {
+        source: "native-artifact-registry".into(),
+        raw_sha256,
+        metadata,
+        modified_at_unix: None,
+    };
+    Ok(())
+}

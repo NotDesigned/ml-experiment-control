@@ -988,8 +988,8 @@ pub fn attempt_metrics(
     bounded(value)
 }
 
-/// The snapshot has process evidence, but no native ArtifactStore receipt. This
-/// read contract cannot claim publication, SHA verification or downloadability.
+/// Process and native artifact evidence remain independent. Only a validated
+/// exact bundle registry may establish publication or verified downloadability.
 pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) -> Result<Value> {
     clock(now_unix)?;
     let attempt = exact(snapshot, attempt_id)?;
@@ -1069,6 +1069,31 @@ pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) 
         "process":process,"diagnostics":snapshot.diagnostics}),
     );
     value["evidence"]["model"]["detail"] = detail;
+    if let Some(native) = effective_collection(snapshot, attempt).get("native_artifacts") {
+        let state: ml_exp_core::artifacts::publication::State =
+            serde_json::from_value(native.clone()).map_err(|_| Error::Evidence)?;
+        state.validate().map_err(|_| Error::Identity)?;
+        if state.bundle.archive.project != snapshot.project
+            || state.bundle.archive.run_id != snapshot.run_id
+            || state.bundle.archive.attempt_id != attempt_id
+        {
+            return Err(Error::Identity);
+        }
+        let available = state.available().map_err(|_| Error::Identity)?;
+        let status = if available {
+            "AVAILABLE"
+        } else if state.retention.status == ml_exp_core::artifacts::RetentionStatus::Released {
+            "RELEASED"
+        } else {
+            "RELEASING"
+        };
+        value["status"] = json!(status);
+        value["phase"] = json!(status);
+        value["verification"] = json!("SHA256_VERIFIED");
+        value["download_available"] = json!(available);
+        value["publication"] = json!({"status":status,"archive_sha256":state.bundle.archive.sha256,"archive_bytes":state.bundle.archive.bytes,"files":state.bundle.archive.files,"retention":state.retention});
+        value["diagnostic"] = Value::Null;
+    }
     bounded(value)
 }
 

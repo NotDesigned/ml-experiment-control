@@ -928,6 +928,7 @@ dependencies = [
  "rustix",
  "serde_json",
  "sha2",
+ "tar",
  "tempfile",
  "thiserror",
 ]
@@ -941,6 +942,7 @@ dependencies = [
  "experiment-redact",
  "flate2",
  "fs2",
+ "futures-core",
  "getrandom 0.3.4",
  "http-body-util",
  "libc",

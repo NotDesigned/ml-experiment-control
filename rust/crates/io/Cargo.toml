@@ -14,3 +14,5 @@ libc.workspace = true
 sha2 = "0.10"
 serde_json.workspace = true
 thiserror.workspace = true
+
+tar.workspace = true

@@ -16,12 +16,14 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(name="ml-exp-worker-rs slurm-helper",about="Scoped native Slurm metadata helper; explicit initialization is separate from RPC",group(ArgGroup::new("mode").required(true).args(["stdio","initialize"]).multiple(false)))]
+#[command(name="ml-exp-worker-rs slurm-helper",about="Scoped native Slurm metadata helper; explicit initialization is separate from RPC",group(ArgGroup::new("mode").required(true).args(["stdio","artifact_stream","initialize"]).multiple(false)))]
 struct Args {
     #[arg(long)]
     config: PathBuf,
     #[arg(long)]
     stdio: bool,
+    #[arg(long)]
+    artifact_stream: bool,
     #[arg(long)]
     initialize: bool,
 }
@@ -94,6 +96,28 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let request = helper::decode_request(&frame)?;
     let helper = Helper::open(config)?;
+    if args.artifact_stream {
+        let (reply, file) = helper.artifact_download(&request, &cancelled)?;
+        let helper::ReplyOutcome::Artifacts { publication: state } = &reply.outcome else {
+            return Err(io::Error::other("invalid artifact stream").into());
+        };
+        let frame = helper::encode_reply(&reply)?;
+        framing::write_frame(
+            std::io::stdout(),
+            &frame,
+            helper::MAX_METADATA_BYTES,
+            Instant::now() + timeout,
+            &cancelled,
+        )?;
+        framing::copy_payload(
+            file,
+            std::io::stdout(),
+            state.bundle.archive.bytes,
+            Instant::now() + Duration::from_secs(3600),
+            &cancelled,
+        )?;
+        return Ok(());
+    }
     let reply = helper.handle(&request, &cancelled)?;
     let frame = helper::encode_reply(&reply)?;
     framing::write_frame(

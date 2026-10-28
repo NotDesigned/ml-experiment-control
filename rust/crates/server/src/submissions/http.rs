@@ -21,7 +21,7 @@ use serde_json::Value;
 use std::sync::{Arc, atomic::AtomicBool};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-const MAX_BODY: usize = 64 * 1024;
+const MAX_BODY: usize = 8 * 1024 * 1024;
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/runs/{project}/{run}/submissions", post(prepare))
@@ -35,6 +35,14 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route(
             "/api/runs/{project}/{run}/attempts/{attempt}/checkpoints/{checkpoint}",
             get(checkpoint_read),
+        )
+        .route(
+            "/api/submissions/{identity}/artifacts",
+            get(artifact_metadata),
+        )
+        .route(
+            "/api/submissions/{identity}/artifacts/{sha256}",
+            get(super::artifact_http::download),
         )
         .layer(DefaultBodyLimit::max(MAX_BODY))
 }
@@ -106,6 +114,16 @@ pub(crate) fn failure(error: Error) -> read_api::Error {
             "WORKER_OBSERVATION_CONFLICT",
             "remote worker state or accepted metric history changed; previous evidence is retained and no provider mutation was issued",
         ),
+        Error::ArtifactsUnavailable => (
+            503,
+            "ARTIFACTS_UNAVAILABLE",
+            "backend archive cannot be collected, verified or streamed; original outputs and checkpoints are retained",
+        ),
+        Error::ArtifactsReleased => (
+            410,
+            "ARTIFACTS_RELEASED",
+            "the generated archive was released after a verified download; checkpoints and original outputs are retained",
+        ),
         Error::CheckpointUnavailable => (
             503,
             "CHECKPOINT_VERIFICATION_UNAVAILABLE",
@@ -171,7 +189,7 @@ pub(crate) fn failure(error: Error) -> read_api::Error {
         detail,
     }
 }
-fn service(api: &read_api::Api) -> Result<Arc<Service>, read_api::Error> {
+pub(super) fn service(api: &read_api::Api) -> Result<Arc<Service>, read_api::Error> {
     api.submissions().ok_or(read_api::Error {
         status: 501,
         code: "SUBMISSION_NOT_CONFIGURED",
@@ -188,7 +206,7 @@ fn decode<T: serde::de::DeserializeOwned>(
             422
         },
         code: "INVALID_SUBMISSION_BODY",
-        detail: "submission body is invalid or exceeds 64 KiB",
+        detail: "submission body is invalid or exceeds 8 MiB",
     })?;
     let value = crate::experiments::parse_mapping(&bytes, crate::experiments::Format::Json)
         .map_err(|_| invalid())?;
@@ -337,12 +355,20 @@ struct Execute {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Empty {}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Acknowledge {
+    proof: ml_exp_core::artifacts::DownloadProof,
+    release: bool,
+}
 enum Operation {
     Authorize(String),
     Execute(String),
     Reconcile,
     Refresh,
     Checkpoint,
+    Collect,
+    Acknowledge(Acknowledge),
 }
 async fn change(
     State(state): State<Arc<AppState>>,
@@ -378,13 +404,18 @@ async fn change(
         "reconcile" => decode::<Empty>(body).map(|_| Operation::Reconcile),
         "refresh" => decode::<Empty>(body).map(|_| Operation::Refresh),
         "checkpoint" => decode::<Empty>(body).map(|_| Operation::Checkpoint),
+        "collect" => decode::<Empty>(body).map(|_| Operation::Collect),
+        "acknowledge" => decode::<Acknowledge>(body).map(Operation::Acknowledge),
         _ => Err(invalid()),
     };
     let operation = match operation {
         Ok(value) => value,
         Err(error) => return read_http::failure(error),
     };
-    let access = if matches!(&operation, Operation::Refresh | Operation::Checkpoint) {
+    let access = if matches!(
+        &operation,
+        Operation::Refresh | Operation::Checkpoint | Operation::Collect | Operation::Acknowledge(_)
+    ) {
         Access::Read
     } else {
         Access::Submission
@@ -403,7 +434,7 @@ async fn change(
                 expires: &now,
                 transition_id: &transition,
             };
-            let refreshing = matches!(&operation,Operation::Refresh | Operation::Checkpoint);
+            let refreshing = matches!(&operation,Operation::Refresh | Operation::Checkpoint | Operation::Collect | Operation::Acknowledge(_));
             match operation {
                 Operation::Authorize(reason) => {
                     service.authorize(&identity, "bearer-client", &reason, context)
@@ -414,6 +445,8 @@ async fn change(
                 Operation::Reconcile => service.reconcile(&identity, &now, &AtomicBool::new(false)),
                 Operation::Refresh => service.refresh(&identity, &now, &AtomicBool::new(false)),
                 Operation::Checkpoint => service.refresh_checkpoint(&identity,&now,&AtomicBool::new(false)),
+                Operation::Collect=>service.collect_artifacts(&identity,&AtomicBool::new(false)),
+                Operation::Acknowledge(request)=>service.acknowledge_artifacts(&identity,request.proof,request.release,&now,&AtomicBool::new(false)),
             }
             .map_err(|cause| {
                 if refreshing && matches!(cause,Error::Uncertain) {
@@ -422,5 +455,25 @@ async fn change(
             })
         },
     )
+    .await
+}
+
+async fn artifact_metadata(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<String>, PathRejection>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let Ok(Path(identity)) = path else {
+        return read_http::failure(invalid());
+    };
+    if validate_submission_id(&identity).is_err() {
+        return read_http::failure(invalid());
+    }
+    if let Err(e) = read_api::no_parameters(raw.as_deref()) {
+        return read_http::failure(e);
+    }
+    read_http::execute(state, Access::Read, move |api, _| {
+        service(api)?.artifacts(&identity).map_err(failure)
+    })
     .await
 }

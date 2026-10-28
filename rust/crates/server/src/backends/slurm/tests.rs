@@ -170,6 +170,7 @@ fn fake_ssh_child() {
             OperationTag::ObserveJob
             | OperationTag::ObserveWorker
             | OperationTag::ObserveCheckpoint
+            | OperationTag::Artifacts
             | OperationTag::CancelJob => ReplyOutcome::Rejected {
                 code: helper::Rejection::UnsupportedOperation,
             },

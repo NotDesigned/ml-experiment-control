@@ -184,7 +184,7 @@ impl SshConfig {
         }
         Ok(())
     }
-    fn argv(&self) -> Vec<String> {
+    pub(crate) fn argv(&self) -> Vec<String> {
         let mut argv = vec![
             self.ssh_binary.to_string_lossy().into_owned(),
             "-F".into(),
@@ -225,7 +225,7 @@ impl SshConfig {
         ]);
         argv
     }
-    fn environment(&self) -> BTreeMap<String, String> {
+    pub(crate) fn environment(&self) -> BTreeMap<String, String> {
         let mut environment = BTreeMap::from([
             ("PATH".into(), "/usr/bin:/bin".into()),
             ("LANG".into(), "C".into()),

@@ -41,6 +41,10 @@ pub enum Error {
         "remote worker history conflicts with its accepted sample; previous evidence is retained"
     )]
     ObservationConflict,
+    #[error("backend results cannot be verified, collected or streamed")]
+    ArtifactsUnavailable,
+    #[error("the generated archive has been released after a verified download")]
+    ArtifactsReleased,
     #[error("checkpoint files or ready marker cannot be verified on backend storage")]
     CheckpointUnavailable,
     #[error("the exact registered checkpoint is unavailable")]
@@ -137,6 +141,7 @@ impl Backend {
             .map_err(|_|Error::Configuration)
     }
 }
+mod artifacts;
 mod authority;
 mod checkpoints;
 mod creation;

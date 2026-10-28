@@ -3,7 +3,7 @@
   "baseline_commit": "e725faec689fb8395e692e27d00a8896fa7fe5a5",
   "branch": "rewrite/rust",
   "inventory_scope": "Every tracked Python file at the baseline: platform modules plus separately listed test/tool/example support. No production state, credentials or payloads scanned.",
-  "status_as_of": "2026-10-28",
+  "status_as_of": "2026-10-29",
   "complete_rust_replacement": false,
   "deployable": false,
   "status_definitions": {
@@ -18,8 +18,8 @@
       "client": {
         "modules": 21,
         "lines": 3712,
-        "partial_foundation": 9,
-        "not_started": 12
+        "partial_foundation": 10,
+        "not_started": 11
       },
       "server": {
         "modules": 160,
@@ -40,7 +40,7 @@
         "not_started": 10
       }
     },
-    "partial_foundation_modules": 69,
+    "partial_foundation_modules": 70,
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
@@ -66,7 +66,7 @@
     "provider_io_owner": "server",
     "scientific_computation_owner": "user code, any supported image language",
     "read_preview_boundary": "Fresh marker-bearing isolated registry; trusted approved Project/Run roots, bounded canonical-layout discovery with ambiguity/alias/budget rejection, existing-only deletion guards and authenticated local reads. Optional Project lifecycle mutates tracking metadata only via approved manifests and durable CAS; no providers, automatic repair on reads, ArtifactStore download claims or production bootstrap.",
-    "execution_preview_boundary": "Native sealed managed-launch requires private operator config and pre-staged local code/environment. Existing-only exact Attempt ledger records STARTED before spawn; unknown outcomes are not replayed. Local process/training receipts do not establish dataset, checkpoint, object publication or provider acceptance. Separately configured native Slurm first submission binds authored Run/source/OCI/SIF evidence to one immutable preparation slot and durable Action, uses pinned SSH/helper transport, and reconciles original identity after response loss. Current acceptance uses a synthetic scheduler, not real Slurm/GPU allocation. Explicit standalone Run creation freezes the original request, source/runtime authority, command/resources and metric/evaluation protocol, publishes Run/Attempt/states atomically, reuses the original identity across restart, and never submits a job. Full read scope is bound at API composition. New native first submissions freeze a shared-storage requirement; a separately configured helper pins its shared root and publishes exact Attempt metadata plus log/input/output directories before sbatch. Partial/replaced evidence blocks dispatch; changes after dispatch preserve the known job identity."
+    "execution_preview_boundary": "Native sealed managed-launch requires private operator config and pre-staged local code/environment. Existing-only exact Attempt ledger records STARTED before spawn; unknown outcomes are not replayed. Local process/training receipts do not establish dataset, checkpoint, object publication or provider acceptance. Separately configured native Slurm first submission binds authored Run/source/OCI/SIF evidence to one immutable preparation slot and durable Action, uses pinned SSH/helper transport, and reconciles original identity after response loss. Current acceptance uses a synthetic scheduler, not real Slurm/GPU allocation. Explicit standalone Run creation freezes the original request, source/runtime authority, command/resources and metric/evaluation protocol, publishes Run/Attempt/states atomically, reuses the original identity across restart, and never submits a job. Full read scope is bound at API composition. New native first submissions freeze a shared-storage requirement; a separately configured helper pins its shared root and publishes exact Attempt metadata plus log/input/output directories before sbatch. Partial/replaced evidence blocks dispatch; changes after dispatch preserve the known job identity. Explicit native Slurm collection now creates a backend-only deterministic tar, relays it over pinned SSH/HTTP without API payload spooling, and accepts a verified download ACK before durable archive release. Original outputs/checkpoints and all scientific identities remain. CPU process/HTTP/SSH flow accepted with synthetic scheduler/container tools; no actual Slurm/GPU allocation or complete research-workflow claim."
   },
   "modules": [
     {
@@ -175,8 +175,18 @@
       "target_crate": "ml-exp-client",
       "target_domain": "transfers",
       "proposed_consolidation": "One bounded transfer engine with separate source, data, result and acknowledgement contracts.",
-      "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "migration_status": "partial_foundation",
+      "python_baseline_unchanged": true,
+      "rust_foundation": {
+        "path": "rust/crates/client/src/artifacts.rs",
+        "scope": "Native Slurm backend archive streaming, exact whole-tar/member verification without extraction, durable no-clobber local publication, verified ACK and release; matching complete local archives reconcile lost ACK without redownload. General object-store/cloud/legacy transport parity remains incomplete.",
+        "compatibility_accepted": false,
+        "isolated_domain_tests": true,
+        "additional_paths": [
+          "rust/crates/io/src/artifacts.rs",
+          "rust/crates/core/src/artifacts/publication.rs"
+        ]
+      }
     },
     {
       "path": "client/src/ml_exp_client/assets.py",

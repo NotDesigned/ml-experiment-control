@@ -130,6 +130,7 @@ pub enum OperationTag {
     ObserveJob,
     ObserveWorker,
     ObserveCheckpoint,
+    Artifacts,
     CancelJob,
 }
 
@@ -137,13 +138,28 @@ pub enum OperationTag {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
-    PrepareSubmission { manifest: String, script: String },
+    PrepareSubmission {
+        manifest: String,
+        script: String,
+    },
     Submit,
     InspectSubmission,
-    ObserveJob { job_id: String },
-    ObserveWorker { job_id: String },
-    ObserveCheckpoint { job_id: String },
-    CancelJob { job_id: String },
+    ObserveJob {
+        job_id: String,
+    },
+    ObserveWorker {
+        job_id: String,
+    },
+    ObserveCheckpoint {
+        job_id: String,
+    },
+    Artifacts {
+        job_id: String,
+        command: crate::artifacts::publication::Command,
+    },
+    CancelJob {
+        job_id: String,
+    },
 }
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -207,6 +223,25 @@ impl Request {
         request.validate()?;
         Ok(request)
     }
+    pub fn artifacts(
+        intent: FrozenIntent,
+        job_id: String,
+        command: crate::artifacts::publication::Command,
+    ) -> Result<Self> {
+        let request = Self {
+            version: PROTOCOL_VERSION,
+            intent,
+            operation: Operation::Artifacts { job_id, command },
+        };
+        request.validate()?;
+        Ok(request)
+    }
+    pub fn artifact_command(&self) -> Option<&crate::artifacts::publication::Command> {
+        match &self.operation {
+            Operation::Artifacts { command, .. } => Some(command),
+            _ => None,
+        }
+    }
     pub fn cancel_job(intent: FrozenIntent, job_id: String) -> Result<Self> {
         let request = Self {
             version: PROTOCOL_VERSION,
@@ -221,6 +256,7 @@ impl Request {
             Operation::ObserveJob { job_id }
             | Operation::ObserveWorker { job_id }
             | Operation::ObserveCheckpoint { job_id }
+            | Operation::Artifacts { job_id, .. }
             | Operation::CancelJob { job_id } => Some(job_id),
             _ => None,
         }
@@ -236,6 +272,7 @@ impl Request {
             Operation::ObserveJob { .. } => OperationTag::ObserveJob,
             Operation::ObserveWorker { .. } => OperationTag::ObserveWorker,
             Operation::ObserveCheckpoint { .. } => OperationTag::ObserveCheckpoint,
+            Operation::Artifacts { .. } => OperationTag::Artifacts,
             Operation::CancelJob { .. } => OperationTag::CancelJob,
         }
     }
@@ -250,6 +287,9 @@ impl Request {
             return Err(Error::Version);
         }
         self.intent.validate()?;
+        if let Some(command) = self.artifact_command() {
+            command.validate().map_err(|_| Error::Metadata)?;
+        }
         if let Some(job_id) = self.requested_job_id() {
             let job = JobId::parse(job_id).map_err(|_| Error::Identity)?;
             if job.as_str().contains('_') {
@@ -365,6 +405,9 @@ pub enum ReplyOutcome {
     CheckpointObserved {
         document: Box<serde_json::Value>,
     },
+    Artifacts {
+        publication: Box<crate::artifacts::publication::State>,
+    },
     /// The durable cancel marker exists; no terminal provider read is proved.
     CancelPending {
         job_id: String,
@@ -401,6 +444,26 @@ impl Reply {
                 &request.intent.scope,
                 request.requested_job_id().ok_or(Error::Identity)?,
             )?;
+        }
+        if let ReplyOutcome::Artifacts { publication: state } = &self.outcome {
+            state.validate().map_err(|_| Error::Metadata)?;
+            state
+                .bundle
+                .bind(&request.intent, None)
+                .map_err(|_| Error::Identity)?;
+            let command = request.artifact_command().ok_or(Error::Identity)?;
+            if let crate::artifacts::publication::Command::Download { sha256 } = command {
+                if state.bundle.archive.sha256 != *sha256
+                    || !state.available().map_err(|_| Error::Metadata)?
+                {
+                    return Err(Error::Identity);
+                }
+            }
+            if let crate::artifacts::publication::Command::Acknowledge { proof, .. } = command {
+                if state.acknowledgement.as_ref().map(|a| &a.proof) != Some(proof) {
+                    return Err(Error::Identity);
+                }
+            }
         }
         if let ReplyOutcome::CheckpointObserved { document } = &self.outcome {
             let (context, _) = crate::checkpoints::validate_document(document, None, None)
@@ -482,6 +545,7 @@ impl Reply {
                     OperationTag::ObserveJob
                         | OperationTag::ObserveWorker
                         | OperationTag::ObserveCheckpoint
+                        | OperationTag::Artifacts
                         | OperationTag::CancelJob
                 ) =>
             {

@@ -148,3 +148,5 @@ mod tests {
         assert!(sha256_file(&link).is_err());
     }
 }
+
+pub mod artifacts;

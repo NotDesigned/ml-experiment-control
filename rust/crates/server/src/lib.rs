@@ -118,6 +118,7 @@ fn health_document(
         capabilities.push("native-slurm-submissions.v1");
         capabilities.push("native-worker-observation.v1");
         capabilities.push("native-checkpoints.v1");
+        capabilities.push("native-artifacts.v1");
     }
     if submissions.is_some_and(submissions::Service::can_create_runs) {
         capabilities.push("native-run-creation.v1");
@@ -222,7 +223,7 @@ fn schema_document() -> serde_json::Value {
     let mut collection = run();
     collection.push(parameter("attempt"));
     let mut document = json!({"openapi":"3.1.0", "info":{"title":"ML-Expd Rust isolated preview", "version":env!("CARGO_PKG_VERSION"),
-    "description":"Incomplete native migration. Experiment GETs only observe approved isolated evidence. Explicit project lifecycle POSTs update their dedicated registry ledger. Separately configured native Slurm submissions can prepare, authorize, execute once and reconcile the original owned job. Neither path collects artifacts or acknowledges downloads. ArtifactStore publication receipts are not migrated, so collection observations never assert verified download availability."},
+    "description":"Incomplete native migration. Experiment GETs only observe approved isolated evidence. Explicit project lifecycle POSTs update their dedicated registry ledger. Separately configured native Slurm submissions can prepare, authorize, execute once and reconcile the original owned job. The optional native Slurm artifact path explicitly collects backend results, streams exact archives and accepts verified ACKs; original outputs and checkpoints remain. Legacy collection JSON alone never establishes download availability."},
     "components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}},"parameters":{
         "protocol":{"in":"header","name":CLIENT_PROTOCOL_HEADER,"required":true,"schema":{"type":"integer","const":2}},
         "project":{"in":"path","name":"project","required":true,"schema":{"type":"string"}},
@@ -280,6 +281,28 @@ fn schema_document() -> serde_json::Value {
             checkpoint,
         ),
     );
+    paths.insert(
+        "/api/submissions/{identity}/artifacts".into(),
+        operation(
+            "Read exact native bundle and retention metadata; no backend payload read",
+            vec![parameter("protocol"), parameter("submission")],
+        ),
+    );
+    let mut stream = operation(
+        "Stream the exact backend tar with bounded memory and no API disk spool; this GET sends no ACK",
+        vec![
+            parameter("protocol"),
+            parameter("submission"),
+            json!({"in":"path","name":"sha256","required":true,"schema":{"type":"string","pattern":"^[a-f0-9]{64}$"}}),
+        ],
+    );
+    stream["get"]["responses"]["200"] = json!({"description":"Exact immutable archive; a truncated transfer is not verified","content":{"application/x-tar":{"schema":{"type":"string","format":"binary"}}}});
+    stream["get"]["responses"]["410"] = json!({"description":"Generated archive released after verified ACK; original outputs and checkpoints remain"});
+    stream["get"]["responses"]["503"] = json!({"description":"Backend stream unavailable or archive release still pending; no acknowledgement is inferred"});
+    paths.insert(
+        "/api/submissions/{identity}/artifacts/{sha256}".into(),
+        stream,
+    );
     paths.insert("/api/project-lifecycle".into(),operation("Observe the existing lifecycle registry and audit tail without repairing its pending journal",vec![parameter("protocol")]));
     paths.insert("/api/project-lifecycle/register".into(),post("Register one configured approved daemon manifest path; this does not discover arbitrary client paths or import a source tree",register_body,vec![parameter("protocol")]));
     paths.insert(
@@ -305,7 +328,7 @@ fn schema_document() -> serde_json::Value {
         json!({"type":"object","additionalProperties":false,"required":["run_id","runtime_id","executor","command","resources","walltime_seconds","seed"],"properties":{
             "run_id":{"type":"string"},"runtime_id":{"type":"string"},"executor":{"type":"string"},"command":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"}},
             "resources":{"type":"object","additionalProperties":false,"required":["gpus","memory_gb"],"properties":{"gpus":{"type":"integer","minimum":1},"cpus":{"type":"integer","minimum":1,"default":8},"nodes":{"type":"integer","const":1,"default":1},"memory_gb":{"type":"integer","minimum":1}}},
-            "walltime_seconds":{"type":"integer","minimum":1,"maximum":3600000},"seed":{"type":"integer"},"parameters":{"type":"object"},"evaluation":{"type":"object"},"metrics_schema":{"type":"object"}}}),vec![parameter("protocol"),parameter("project")]));
+            "walltime_seconds":{"type":"integer","minimum":1,"maximum":3600000},"seed":{"type":"integer"},"parameters":{"type":"object"},"evaluation":{"type":"object"},"metrics_schema":{"type":"object"},"artifacts":{"type":"object","additionalProperties":false,"properties":{"required_files":{"type":"array","items":{"type":"string"},"maxItems":20000}}}}}),vec![parameter("protocol"),parameter("project")]));
     paths.insert("/api/runs/{project}/{run}/submissions".into(),post("Prepare the first authored Run/Attempt with trusted source and materialized-image receipts; never submits a scheduler job",json!({"type":"object","additionalProperties":false,"required":["max_gpu_hours"],"properties":{"max_gpu_hours":{"type":"number","exclusiveMinimum":0},"reason":{"type":"string","maxLength":4000,"default":""}}}),run()));
     for (name, description, body) in [
         (
@@ -329,6 +352,16 @@ fn schema_document() -> serde_json::Value {
             json!({"type":"object","additionalProperties":false}),
         ),
         (
+            "collect",
+            "Collect completed process outputs on backend shared storage; never starts a training job",
+            json!({"type":"object","additionalProperties":false}),
+        ),
+        (
+            "acknowledge",
+            "Acknowledge an exact fully verified download; optionally release only the generated backend archive",
+            json!({"type":"object","required":["proof","release"],"properties":{"proof":{"type":"object"},"release":{"type":"boolean"}},"additionalProperties":false}),
+        ),
+        (
             "checkpoint",
             "Verify and seal the named complete generation on backend storage and register metadata only; never resubmits training",
             json!({"type":"object","additionalProperties":false}),
@@ -339,6 +372,10 @@ fn schema_document() -> serde_json::Value {
             body,
             vec![parameter("protocol"), parameter("submission")],
         );
+        operation["post"]["requestBody"]["description"] =
+            json!("Strict JSON mapping; at most 8 MiB including a complete download proof");
+        operation["post"]["responses"]["413"]["description"] =
+            json!("Request exceeds the 8 MiB body limit");
         operation["post"]["responses"]["200"]["description"] = json!(
             "Original native Submission, exact Run/Attempt, durable execution revision and retry advice"
         );
@@ -347,7 +384,7 @@ fn schema_document() -> serde_json::Value {
         );
         operation["post"]["responses"]["403"] =
             json!({"description":"Native scheduler execution is disabled by the operator"});
-        if name == "refresh" || name == "checkpoint" {
+        if matches!(name, "refresh" | "checkpoint" | "collect" | "acknowledge") {
             operation["post"]["responses"]["200"]["description"] = json!(
                 "Original Submission plus sampled worker phase and receive time; no Action or scheduler mutation"
             );
@@ -517,13 +554,15 @@ mod schema_tests {
     fn native_contract_declares_narrow_lifecycle_posts_and_exact_read_identity() {
         let schema = super::schema_document();
         let paths = schema["paths"].as_object().unwrap();
-        assert_eq!(paths.len(), 29);
+        assert_eq!(paths.len(), 33);
         for (path, operations) in paths {
             assert_eq!(operations.as_object().unwrap().len(), 1);
             if path.starts_with("/api/project-lifecycle/")
                 || path.ends_with("/submissions")
                 || path == "/api/projects/{project}/runs"
-                || path.starts_with("/api/submissions/") && path != "/api/submissions/{identity}"
+                || path.starts_with("/api/submissions/")
+                    && path != "/api/submissions/{identity}"
+                    && !path.contains("/artifacts")
             {
                 assert!(operations.get("post").is_some());
             } else {
