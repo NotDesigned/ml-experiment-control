@@ -770,6 +770,50 @@ impl Api {
                 ),
             })
     }
+    fn native_view(
+        &self,
+        value: Value,
+        project: &str,
+        run: &str,
+        attempt: Option<&str>,
+        now_unix: f64,
+    ) -> Result<Value, Error> {
+        let Some(service) = &self.submissions else {
+            return Ok(value);
+        };
+        let now = time::OffsetDateTime::from_unix_timestamp_nanos((now_unix * 1e9) as i128)
+            .map_err(|_| invalid_query())?
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|_| invalid_query())?;
+        let submission = match service.for_run(project, run, &now) {
+            Ok(value) => value,
+            Err(crate::submissions::Error::Missing) => return Ok(value),
+            Err(cause) => return Err(crate::submissions::http::failure(cause)),
+        };
+        let projected = if let Some(attempt) = attempt {
+            if submission["attempt_id"] != attempt {
+                return Ok(value);
+            }
+            ml_exp_core::first_submission::native::project_attempt(
+                value,
+                &submission,
+                &ml_exp_core::slurm::helper::Scope {
+                    project: project.into(),
+                    run_id: run.into(),
+                    attempt_id: attempt.into(),
+                },
+            )
+        } else {
+            ml_exp_core::first_submission::native::project_run(value, &submission)
+        };
+        projected.map_err(|_| {
+            error(
+                409,
+                "SUBMISSION_EVIDENCE_UNAVAILABLE",
+                "native scheduler receipt cannot be projected onto this exact Attempt",
+            )
+        })
+    }
     pub fn query(&self, query: Query, now_unix: f64) -> Result<Value, Error> {
         validate_id(&query.project).map_err(|_| invalid_query())?;
         validate_observation_id(&query.run).map_err(|_| invalid_query())?;
@@ -824,33 +868,16 @@ impl Api {
                         records: &records,
                     }),
                 )?;
-                if let Some(service) = &self.submissions {
-                    let now =
-                        time::OffsetDateTime::from_unix_timestamp_nanos((now_unix * 1e9) as i128)
-                            .map_err(|_| invalid_query())?
-                            .format(&time::format_description::well_known::Rfc3339)
-                            .map_err(|_| invalid_query())?;
-                    match service.for_run(&query.project, &query.run, &now) {
-                        Ok(submission) => ml_exp_core::first_submission::native::project_run(
-                            value,
-                            &submission,
-                        )
-                        .map_err(|_| {
-                            error(
-                                409,
-                                "SUBMISSION_EVIDENCE_UNAVAILABLE",
-                                "native scheduler receipt cannot be projected onto this exact Run",
-                            )
-                        })?,
-                        Err(crate::submissions::Error::Missing) => value,
-                        Err(cause) => return Err(crate::submissions::http::failure(cause)),
-                    }
-                } else {
-                    value
-                }
+                self.native_view(value, &query.project, &query.run, None, now_unix)?
             }
             View::Attempts => read_model::run_attempts(&snapshot)?,
-            View::Show { attempt } => read_model::attempt_show(&snapshot, &attempt, now_unix)?,
+            View::Show { attempt } => self.native_view(
+                read_model::attempt_show(&snapshot, &attempt, now_unix)?,
+                &query.project,
+                &query.run,
+                Some(&attempt),
+                now_unix,
+            )?,
             View::Logs { attempt, query } => read_model::attempt_logs(&snapshot, &attempt, &query)?,
             View::Metrics {
                 attempt,
@@ -867,9 +894,13 @@ impl Api {
                     }),
                 )?
             }
-            View::Collection { attempt } => {
-                read_model::attempt_collection(&snapshot, &attempt, now_unix)?
-            }
+            View::Collection { attempt } => self.native_view(
+                read_model::attempt_collection(&snapshot, &attempt, now_unix)?,
+                &query.project,
+                &query.run,
+                Some(&attempt),
+                now_unix,
+            )?,
         };
         guard
             .require_observed_live(&query.project, &query.run)

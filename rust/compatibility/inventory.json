@@ -4589,13 +4589,15 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/core/src/launch.rs",
-        "scope": "Pure exact-Attempt sealed manifest/canonical-byte validation plus native private-config managed-launch initialize/inspect/execute chain. Local input tree is operator-staged; exact local manifest digest/endpoint/config/identity and append-only STARTED-before-spawn ledger bind execution, bounded process receipt separates training from unsupported publication. Native HTTPS fetch/report, provider bootstrap and full worker protocols remain incomplete.",
+        "scope": "Pure exact-Attempt sealed manifest and managed configuration/environment validation, plus private-config initialize/inspect/execute with STARTED-before-spawn. Optional trusted native Slurm image worker is launched automatically from the frozen staged package; local or HTTPS identities are explicit, approved runtime GPU/library variables are snapshotted and hash-bound, and fresh payload/control directories preserve no replay. Process exit/log hashes are sealed on shared storage. Remote evidence ingress, native HTTPS fetch/report, other providers and full worker protocols remain incomplete.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true,
         "additional_paths": [
           "rust/crates/worker/src/managed.rs",
           "rust/crates/worker/src/managed_cli.rs",
-          "rust/crates/worker/src/process.rs"
+          "rust/crates/worker/src/process.rs",
+          "rust/crates/core/src/managed.rs",
+          "rust/crates/core/src/slurm/managed.rs"
         ]
       }
     },

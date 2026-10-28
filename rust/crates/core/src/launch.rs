@@ -42,6 +42,29 @@ pub struct Endpoint {
     pub sha256: String,
 }
 
+/// A local sealed manifest has the same identity checks as a downloaded one,
+/// without pretending that an HTTPS endpoint was contacted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Binding {
+    pub identity: Identity,
+    pub sha256: String,
+}
+impl Binding {
+    pub fn validate(&self) -> Result<(), Error> {
+        validate_identity(&self.identity)?;
+        if self.sha256.len() != 64
+            || !self
+                .sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(Error("invalid sealed manifest checksum"));
+        }
+        Ok(())
+    }
+}
+
 fn exact_keys(value: &Value, expected: &[&str]) -> bool {
     value
         .as_object()
@@ -219,10 +242,21 @@ pub fn validate_capability(token: &str) -> Result<(), Error> {
 }
 
 pub fn verify(body: &[u8], endpoint: &Endpoint) -> Result<Manifest, Error> {
+    verify_binding(
+        body,
+        &Binding {
+            identity: endpoint.identity.clone(),
+            sha256: endpoint.sha256.clone(),
+        },
+    )
+}
+
+pub fn verify_binding(body: &[u8], binding: &Binding) -> Result<Manifest, Error> {
+    binding.validate()?;
     if body.len() > MAX_BYTES {
         return Err(Error("launch manifest exceeds size limit"));
     }
-    if format!("{:x}", Sha256::digest(body)) != endpoint.sha256 {
+    if format!("{:x}", Sha256::digest(body)) != binding.sha256 {
         return Err(Error("launch manifest checksum differs"));
     }
     let document: Value =
@@ -231,7 +265,7 @@ pub fn verify(body: &[u8], endpoint: &Endpoint) -> Result<Manifest, Error> {
         return Err(Error("launch manifest identity or encoding differs"));
     }
     let manifest = Manifest::from_value(&document)?;
-    if manifest.identity != endpoint.identity {
+    if manifest.identity != binding.identity {
         return Err(Error("launch manifest identity or encoding differs"));
     }
     Ok(manifest)

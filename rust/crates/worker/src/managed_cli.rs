@@ -18,15 +18,35 @@ struct Args {
     config: PathBuf,
     #[arg(long, conflicts_with = "inspect")]
     initialize: bool,
+    /// Bootstrap a fresh scoped worker and execute it once, never adopt state.
+    #[arg(long, conflicts_with_all = ["initialize", "inspect"])]
+    initialize_and_run: bool,
     #[arg(long)]
     inspect: bool,
+    /// Original job-script binding of the locally staged configuration bytes.
+    #[arg(long)]
+    sha256: Option<String>,
 }
 pub fn main_from(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     let args = Args::parse_from(arguments);
     let result = (|| {
-        let config = managed::Config::load(&args.config)?;
-        if args.initialize {
-            return managed::initialize(&config);
+        let config = managed::load_config(&args.config, args.sha256.as_deref())?;
+        if args.initialize || args.initialize_and_run {
+            let mut runtime = std::collections::BTreeMap::new();
+            for key in &config.runtime_environment {
+                if let Some(value) = std::env::var_os(key) {
+                    runtime.insert(
+                        key.clone(),
+                        value
+                            .into_string()
+                            .map_err(|_| managed::Error::Configuration)?,
+                    );
+                }
+            }
+            let prepared = managed::initialize_with_environment(&config, &runtime)?;
+            if args.initialize {
+                return Ok(prepared);
+            }
         }
         if args.inspect {
             return managed::inspect(&config);

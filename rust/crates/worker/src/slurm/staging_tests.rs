@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 fn staged_request(root: &Path) -> Request {
     let mut intent = request().intent().clone();
     intent.staging = Some(ml_exp_core::slurm::staging::Requirement {
+        worker: None,
         runs_root: root.join("shared-runs").display().to_string(),
     });
     let doc = json!({"schema_version":1,"identity_version":2,"project":"demo","run_id":"train","attempt_id":"attempt-001",
@@ -312,4 +313,123 @@ fn competing_shared_attempt_preparations_keep_one_immutable_manifest() {
     }
     assert_eq!(winners, 1);
     assert_eq!(calls(root.path()), 0);
+}
+
+fn managed_request(request: &Request) -> Request {
+    let mut intent = request.intent().clone();
+    intent.staging.as_mut().unwrap().worker = Some(ml_exp_core::slurm::managed::Runtime {
+        program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
+        base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+        runtime_environment: vec!["CUDA_VISIBLE_DEVICES".into()],
+    });
+    let (manifest, script) = request.prepared_content().unwrap();
+    Request::prepare(intent, manifest.into(), script.into()).unwrap()
+}
+#[test]
+fn managed_launch_is_staged_with_exact_local_binding_and_keeps_control_outputs_fresh() {
+    let (root, helper, request) = staged_fixture();
+    let request = managed_request(&request);
+    assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
+    let plan = ml_exp_core::slurm::staging::plan(
+        request.intent(),
+        request.prepared_content().unwrap().0.as_bytes(),
+    )
+    .unwrap()
+    .unwrap();
+    let package = plan.managed.unwrap();
+    let config: ml_exp_core::managed::Config = serde_json::from_slice(
+        &fs::read(attempt(root.path()).join("managed-config.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(config.endpoint.is_empty());
+    let binding = config.local_binding.as_ref().unwrap();
+    assert_eq!(binding.identity.project, "demo");
+    assert_eq!(binding.identity.run_id, "train");
+    assert_eq!(binding.identity.attempt_id, "attempt-001");
+    assert_eq!(
+        binding.sha256,
+        helper::sha256_bytes(&package.manifest_bytes().unwrap())[7..]
+    );
+    assert_eq!(package.manifest.argv, vec!["python", "train.py"]);
+    assert_eq!(config.runtime_environment, vec!["CUDA_VISIBLE_DEVICES"]);
+    assert!(!attempt(root.path()).join("worker").exists());
+    assert!(!attempt(root.path()).join("outputs/payload").exists());
+    assert_eq!(
+        handle(&helper, &Request::submit(request.intent().clone()).unwrap()).outcome,
+        ReplyOutcome::Submitted {
+            job_id: "12345".into()
+        }
+    );
+    assert_eq!(calls(root.path()), 1);
+}
+#[test]
+fn changed_launch_package_or_preexisting_worker_never_dispatches() {
+    for change in ["config", "launch", "control", "payload"] {
+        let (root, helper, request) = staged_fixture();
+        let request = managed_request(&request);
+        assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
+        let path = attempt(root.path());
+        match change {
+            "config" => fs::write(path.join("managed-config.json"), b"{}").unwrap(),
+            "launch" => fs::write(path.join("launch-manifest.json"), b"{}").unwrap(),
+            "control" => fs::create_dir(path.join("worker")).unwrap(),
+            "payload" => fs::create_dir(path.join("outputs/payload")).unwrap(),
+            _ => unreachable!(),
+        }
+        let submit = Request::submit(request.intent().clone()).unwrap();
+        assert_eq!(
+            handle(&helper, &submit).outcome,
+            ReplyOutcome::Unknown {
+                reason: UnknownReason::StorageUnavailable
+            },
+            "{change}"
+        );
+        assert_eq!(calls(root.path()), 0, "{change}");
+        assert!(
+            !claim(root.path()).join("submit.started.json").exists(),
+            "{change}"
+        );
+    }
+}
+#[test]
+fn managed_environment_admission_and_large_sealed_configuration_are_checked_before_dispatch() {
+    let (root, helper, request) = staged_fixture();
+    let mut request = managed_request(&request);
+    let mut intent = request.intent().clone();
+    intent
+        .staging
+        .as_mut()
+        .unwrap()
+        .worker
+        .as_mut()
+        .unwrap()
+        .base_environment
+        .clear();
+    assert!(
+        ml_exp_core::slurm::staging::plan(
+            &intent,
+            request.prepared_content().unwrap().0.as_bytes()
+        )
+        .is_err()
+    );
+    let mut intent = request.intent().clone();
+    intent
+        .staging
+        .as_mut()
+        .unwrap()
+        .worker
+        .as_mut()
+        .unwrap()
+        .base_environment
+        .insert("SYNTHETIC_LARGE_VALUE".into(), "x".repeat(40 * 1024));
+    let (manifest, script) = request.prepared_content().unwrap();
+    request = Request::prepare(intent, manifest.into(), script.into()).unwrap();
+    assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
+    assert_eq!(
+        handle(&helper, &Request::submit(request.intent().clone()).unwrap()).outcome,
+        ReplyOutcome::Submitted {
+            job_id: "12345".into()
+        }
+    );
+    assert_eq!(calls(root.path()), 1);
 }

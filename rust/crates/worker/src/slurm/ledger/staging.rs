@@ -84,6 +84,16 @@ impl Helper {
         };
         let attempt = &directories[3];
         attempt.publish_new(OsStr::new("attempt.json"), manifest)?;
+        if let Some(package) = &sealed.plan.managed {
+            attempt.publish_new(
+                OsStr::new(ml_exp_core::slurm::managed::CONFIG_FILE),
+                &package.config_bytes()?,
+            )?;
+            attempt.publish_new(
+                OsStr::new(ml_exp_core::slurm::managed::MANIFEST_FILE),
+                &package.manifest_bytes()?,
+            )?;
+        }
         attempt.publish_new(OsStr::new(MARKER), &json(&sealed)?)?;
         if identities(&directories)? != sealed.directory_identities {
             return Err(Error::Bootstrap);
@@ -101,8 +111,9 @@ impl Helper {
             .ok_or(Error::Configuration)?;
         let directories = self.shared_directories(&plan, false)?;
         let attempt = &directories[3];
-        let sealed: Sealed =
-            serde_json::from_slice(&attempt.read_regular(OsStr::new(MARKER), 32 * 1024)?)?;
+        let sealed: Sealed = serde_json::from_slice(
+            &attempt.read_regular(OsStr::new(MARKER), helper::MAX_METADATA_BYTES as u64)?,
+        )?;
         if sealed
             != (Sealed {
                 plan,
@@ -114,6 +125,21 @@ impl Helper {
             )? != manifest
         {
             return Err(Error::Bootstrap);
+        }
+        if let Some(package) = &sealed.plan.managed {
+            if attempt.read_regular(
+                OsStr::new(ml_exp_core::slurm::managed::CONFIG_FILE),
+                1024 * 1024,
+            )? != package.config_bytes()?
+                || attempt.read_regular(
+                    OsStr::new(ml_exp_core::slurm::managed::MANIFEST_FILE),
+                    1024 * 1024,
+                )? != package.manifest_bytes()?
+                || attempt.entry_exists(OsStr::new("worker"))?
+                || directories[5].entry_exists(OsStr::new("payload"))?
+            {
+                return Err(Error::Bootstrap);
+            }
         }
         Ok(())
     }

@@ -40,7 +40,7 @@ forwarding code merely to make the language uniform.
 | Shared I/O | Private file/hash effects, directory capabilities, bounded child I/O, deadline-bound single-frame pipe transport and checkpoint generation verification/sealing | Remaining transport primitives and durable domain protocols |
 | Client | URL-bound settings, bounded reads/watch, pure saved identity/status, Project commands and deterministic source archive upload/lookup | General asset/data transfers, artifact downloads/ACK, updates and full command coverage |
 | Server | Approved discovery/reads, durable Project lifecycle, immutable source archive storage/receipts, native checkpoint registry and isolated journals; SQLite stores/Run fences; opt-in standalone Run creation and first-submission Slurm HTTP/client path and native Action runner; pure data-delivery and result-collection decisions | General Run workflows, build orchestration, remaining provider executors, artifact/result stores, collectors, TLS and tracking transport |
-| Worker | Local process supervision, sealed local launch and scoped Slurm prepare/submit/inspect/observe/cancel helper | Remote managed-launch transport, data/checkpoint/journal/artifact/build/copy/deletion protocols |
+| Worker | Local process supervision, sealed local launch, opt-in automatic image worker for native Slurm and scoped prepare/submit/inspect/observe/cancel helper | Remote evidence ingress, data/checkpoint/journal/artifact/build/copy/deletion protocols |
 
 The native source path is deliberately Project-scoped: a shared tree digest does
 not make one Project's metadata authoritative for another. Upload bodies are
@@ -75,6 +75,24 @@ and SIF bytes before user code. This closes the gap where Slurm could open its
 log paths before the script had created their parent directory. After dispatch,
 mutable output paths cannot erase a known scheduler identity or permit replay.
 This does not stage datasets or checkpoints or prove a real Slurm/GPU run.
+
+An optional trusted Runtime worker declaration now connects that preparation to
+the native managed process supervisor inside the image. `core::managed` owns
+configuration, exact local-or-HTTPS binding and explicit environment decisions;
+`slurm::managed` derives the sealed launch package from the frozen Attempt.
+The helper publishes package bytes before dispatch. The in-image worker checks
+the configuration hash, opens the container workdir and starts one process with
+fresh control and payload directories. Only declared GPU/library runtime
+variables are snapshotted; their original values remain hash-bound across
+PREPARED, STARTED and FINISHED. The worker records exit status and bounded log
+hashes independently from artifact publication. Existing Runtime encodings and
+managed configurations retain their original hashes when optional fields are
+absent. Remote receipt/log/metric ingress, checkpoint restoration and artifact
+download remain incomplete.
+
+Native committed scheduler projection is shared by Run, exact Attempt and
+collection views. It cannot supply a receipt to another Attempt or convert
+scheduler completion into training/publication completion.
 
 Submission intent and cancel-outbox decisions now have the same native boundary.
 The Rust core validates the exact Project/Run/Attempt/backend identity, freezes a

@@ -85,6 +85,7 @@ impl HelperConfig {
         if let Some(root) = &self.shared_run_root {
             let root = root.to_str().ok_or(Error::Configuration)?;
             ml_exp_core::slurm::staging::Requirement {
+                worker: None,
                 runs_root: root.into(),
             }
             .validate()?;

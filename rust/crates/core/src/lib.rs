@@ -16,6 +16,7 @@ pub mod input_progress;
 pub mod intent;
 pub mod json;
 pub mod launch;
+pub mod managed;
 pub mod manifest;
 pub mod metrics;
 pub mod multipart;

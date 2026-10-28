@@ -9,9 +9,14 @@ pub const CONTRACT: &str = "slurm-shared-attempt.v1";
 #[serde(deny_unknown_fields)]
 pub struct Requirement {
     pub runs_root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<super::managed::Runtime>,
 }
 impl Requirement {
     pub fn validate(&self) -> helper::Result<()> {
+        if let Some(worker) = &self.worker {
+            worker.validate()?;
+        }
         if !absolute_path(&self.runs_root)
             || self.runs_root == "/"
             || self.runs_root.ends_with('/')
@@ -32,6 +37,8 @@ pub struct Plan {
     pub runs_root: String,
     pub run_dir: String,
     pub attempt_dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<super::managed::Package>,
 }
 fn decode<T: serde::de::DeserializeOwned>(value: &Value) -> helper::Result<T> {
     serde_json::from_value(value.clone()).map_err(|_| helper::Error::Metadata)
@@ -84,5 +91,10 @@ pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Op
         runs_root: requirement.runs_root.clone(),
         attempt_dir: format!("{run_dir}/attempts/{}", intent.scope.attempt_id),
         run_dir,
+        managed: requirement
+            .worker
+            .as_ref()
+            .map(|runtime| super::managed::plan(&intent.scope, &spec, runtime))
+            .transpose()?,
     }))
 }

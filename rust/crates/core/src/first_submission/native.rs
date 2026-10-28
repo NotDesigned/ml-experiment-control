@@ -82,6 +82,43 @@ pub fn project_run(mut run: Value, submission: &Value) -> Result<Value> {
     Ok(run)
 }
 
+/// Exact Attempt views consume the same committed scheduler evidence as Run
+/// views. A historical Attempt never borrows another Attempt's receipt, and a
+/// scheduler terminal state never becomes process or publication evidence.
+pub fn project_attempt(mut value: Value, submission: &Value, scope: &Scope) -> Result<Value> {
+    scope.validate().map_err(|_| Error("observation scope"))?;
+    let collection = value["project"] == scope.project
+        && value["run_id"] == scope.run_id
+        && value["attempt_id"] == scope.attempt_id;
+    let shown = value["scope"]["project"] == scope.project
+        && value["scope"]["scope_type"] == "attempt"
+        && value["scope"]["object_id"] == format!("{}::{}", scope.run_id, scope.attempt_id)
+        && value["run_id"] == scope.run_id
+        && value["attempt"]["attempt_id"] == scope.attempt_id;
+    if !collection && !shown {
+        return Err(Error("observation scope"));
+    }
+    let projected = project_run(
+        json!({"project":scope.project,"run_id":scope.run_id,
+        "current_attempt_id":scope.attempt_id,"evidence":value["evidence"]}),
+        submission,
+    )?;
+    value["evidence"] = projected["evidence"].clone();
+    value["native_submission"] = projected["native_submission"].clone();
+    if shown
+        && projected["scheduler_state"].is_string()
+        && matches!(
+            value["attempt"]["state"].as_str(),
+            None | Some("UNKNOWN" | "NOT_SUBMITTED")
+        )
+    {
+        value["attempt"]["state"] = projected["scheduler_state"].clone();
+        value["attempt"]["backend_job_id"] =
+            projected["evidence"]["scheduler"]["detail"]["backend_job_id"].clone();
+    }
+    Ok(value)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
@@ -111,6 +148,8 @@ pub struct Runtime {
     pub sif_path: String,
     pub sif_sha256: String,
     pub oci_image: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<slurm::managed::Runtime>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -271,6 +310,18 @@ pub fn definition(
     crate::sources::validate_source_id(field(run, "source_id")?).map_err(|_| Error("source"))?;
     let spec = job(run, binding)?;
     spec.validate().map_err(|_| Error("job"))?;
+    if let Some(worker) = &runtime.worker {
+        slurm::managed::plan(
+            &Scope {
+                project: binding.project.clone(),
+                run_id: binding.run_id.clone(),
+                attempt_id: binding.attempt_id.clone(),
+            },
+            &spec,
+            worker,
+        )
+        .map_err(|_| Error("managed worker runtime or environment"))?;
+    }
     let gpu = slurm::parse_gres(&spec.backend.gres).map_err(|_| Error("GPU request"))?;
     let seconds = slurm::walltime_seconds(&spec.backend.time).map_err(|_| Error("walltime"))?;
     if spec.storage.run_dir
@@ -357,7 +408,19 @@ pub fn prepare(
         String::from_utf8(canonical::python_json_bytes(attempt).map_err(|_| Error("encoding"))?)
             .map_err(|_| Error("encoding"))?;
     let spec = job(run, &binding)?;
-    let script = slurm::render_job(&spec, Some(token)).map_err(|_| Error("script"))?;
+    let scope = Scope {
+        project: binding.project.clone(),
+        run_id: binding.run_id.clone(),
+        attempt_id: binding.attempt_id.clone(),
+    };
+    let mut launch_spec = spec.clone();
+    if let Some(worker) = &runtime.worker {
+        let package =
+            slurm::managed::plan(&scope, &spec, worker).map_err(|_| Error("managed launch"))?;
+        launch_spec.command = slurm::managed::command(&package, worker)
+            .map_err(|_| Error("managed launch command"))?;
+    }
+    let script = slurm::render_job(&launch_spec, Some(token)).map_err(|_| Error("script"))?;
     let attempt_path = format!(
         "{}/attempts/{}/attempt.json",
         spec.storage.run_dir, binding.attempt_id
@@ -391,12 +454,9 @@ pub fn prepare(
             target: profile.target.clone(),
             staging: Some(slurm::staging::Requirement {
                 runs_root: profile.run_root.clone(),
+                worker: runtime.worker.clone(),
             }),
-            scope: Scope {
-                project: binding.project.clone(),
-                run_id: binding.run_id.clone(),
-                attempt_id: binding.attempt_id.clone(),
-            },
+            scope,
             submission_token: token.into(),
             scheduler_name: slurm::scheduler_job_name(&binding.run_id, &binding.attempt_id)
                 .map_err(|_| Error("scheduler name"))?,

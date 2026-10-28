@@ -48,6 +48,9 @@ impl Fixture {
             workdir,
             maximum_timeout_seconds: 5,
             base_environment: BTreeMap::new(),
+            local_binding: None,
+            output_directory: None,
+            runtime_environment: Vec::new(),
         };
         let mut fixture = Self {
             _root: root,
@@ -105,6 +108,9 @@ fn managed_child() {
     assert_eq!(std::env::var("PROJECT_NAME").unwrap(), "demo");
     assert_eq!(std::env::var("RUN_ID").unwrap(), "train");
     assert_eq!(std::env::var("ATTEMPT_ID").unwrap(), "attempt-001");
+    if let Ok(expected) = std::env::var("EXPECTED_CUDA") {
+        assert_eq!(std::env::var("CUDA_VISIBLE_DEVICES").unwrap(), expected);
+    }
     assert_eq!(
         std::env::var("FROZEN_PARAMETER").unwrap(),
         "scientific-value"
@@ -451,4 +457,124 @@ fn operator_cli_only_loads_private_config_and_can_initialize_run_and_inspect() {
     assert!(!exposed_config.status.success());
     assert!(!String::from_utf8_lossy(&exposed_config.stderr).contains("scientific-value"));
     assert_eq!(fixture.count(), 1);
+}
+
+#[test]
+fn local_sealed_launch_bootstraps_once_and_freezes_only_approved_runtime_environment() {
+    let mut f = Fixture::new("complete");
+    let outputs = f._root.path().join("shared-outputs");
+    private_directory(&outputs);
+    f.config.output_directory = Some(outputs.join("payload"));
+    f.config.runtime_environment = vec!["CUDA_VISIBLE_DEVICES".into()];
+    f.document["environment"]["OUTPUT_DIR"] = json!(f.config.output_path());
+    f.document["environment"]["EXPECTED_CUDA"] = json!("3,5");
+    f.seal();
+    let target = launch::endpoint(&f.config.endpoint).unwrap();
+    f.config.endpoint.clear();
+    f.config.local_binding = Some(launch::Binding {
+        identity: target.identity,
+        sha256: target.sha256,
+    });
+    let bytes = serde_json::to_vec(&f.config).unwrap();
+    private_file(&f.config_file, &bytes);
+    let hash = format!("{:x}", Sha256::digest(&bytes));
+    let result = Command::new(env!("CARGO_BIN_EXE_ml-exp-worker-rs"))
+        .env_clear()
+        .env("CUDA_VISIBLE_DEVICES", "3,5")
+        .env("ML_EXPD_BOOTSTRAP_TOKEN", "must-not-reach-child")
+        .args(["managed-launch", "--config"])
+        .arg(&f.config_file)
+        .args(["--sha256", &hash, "--initialize-and-run"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let observation: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(observation["phase"], "FINISHED");
+    assert_eq!(observation["receipt"]["training"], "COMPLETED");
+    assert!(observation["receipt"]["runtime_environment_sha256"].is_string());
+    assert_eq!(f.count(), 1);
+    assert_eq!(
+        fs::read(outputs.join("payload/weights.bin")).unwrap(),
+        b"synthetic model weights"
+    );
+    assert!(!f.config.attempt_root.join("outputs").exists());
+    let context = f.config.attempt_root.join("runtime-environment.json");
+    let saved: Value = serde_json::from_slice(&fs::read(&context).unwrap()).unwrap();
+    assert_eq!(saved, json!({"CUDA_VISIBLE_DEVICES":"3,5"}));
+    assert!(!f.cli(Some("--initialize-and-run")).status.success());
+    assert_eq!(f.count(), 1);
+    assert!(f.cli(Some("--inspect")).status.success());
+    private_file(&context, b"{\"CUDA_VISIBLE_DEVICES\":\"99\"}");
+    assert!(managed::inspect(&f.config).is_err());
+    assert_eq!(f.count(), 1);
+}
+
+#[test]
+fn staged_config_digest_and_existing_external_outputs_fail_before_payload_execution() {
+    let f = Fixture::new("complete");
+    let result = Command::new(env!("CARGO_BIN_EXE_ml-exp-worker-rs"))
+        .env_clear()
+        .args(["managed-launch", "--config"])
+        .arg(&f.config_file)
+        .args(["--sha256", &"0".repeat(64), "--initialize-and-run"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(!f.config.attempt_root.exists());
+    assert_eq!(f.count(), 0);
+    let mut f = Fixture::new("complete");
+    let outputs = f._root.path().join("preexisting-outputs");
+    private_directory(&outputs);
+    private_file(&outputs.join("keep"), b"existing result must survive");
+    f.config.output_directory = Some(outputs.clone());
+    f.document["environment"]["OUTPUT_DIR"] = json!(outputs);
+    f.seal();
+    f.initialize();
+    assert!(managed::run(&f.config, &AtomicBool::new(false)).is_err());
+    assert_eq!(
+        fs::read(outputs.join("keep")).unwrap(),
+        b"existing result must survive"
+    );
+    assert_eq!(f.count(), 0);
+}
+
+#[test]
+fn local_and_endpoint_bindings_are_exclusive_and_legacy_configuration_bytes_are_preserved() {
+    let f = Fixture::new("complete");
+    let old = json!({"manifest_path":f.config.manifest_path,"endpoint":f.config.endpoint,"attempt_root":f.config.attempt_root,
+        "workdir":f.config.workdir,"maximum_timeout_seconds":5,"base_environment":{}});
+    assert_eq!(serde_json::to_value(&f.config).unwrap(), old);
+    assert_eq!(
+        f.config.digest().unwrap(),
+        ml_exp_core::canonical::digest(&old).unwrap()
+    );
+    let mut config = f.config.clone();
+    let target = launch::endpoint(&config.endpoint).unwrap();
+    config.local_binding = Some(launch::Binding {
+        identity: target.identity,
+        sha256: target.sha256,
+    });
+    assert!(config.validate().is_err());
+    config.endpoint.clear();
+    assert!(config.validate().is_ok());
+    config.runtime_environment = vec!["HOME".into()];
+    assert!(config.validate().is_err());
+    config.runtime_environment = vec!["CUDA_VISIBLE_DEVICES".into()];
+    config
+        .base_environment
+        .insert("CUDA_VISIBLE_DEVICES".into(), "1".into());
+    assert!(config.validate().is_err());
+    config.base_environment.clear();
+    assert!(
+        config
+            .validate_runtime(&BTreeMap::from([(
+                "ML_EXPD_API_TOKEN".into(),
+                "not-a-real-token".into()
+            )]))
+            .is_err()
+    );
 }

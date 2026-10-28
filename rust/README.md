@@ -26,7 +26,7 @@ receipt and retry decision are validated by a native contract before use.
 | `ml-exp-io` | Library | File/hash effects, directory capabilities, bounded process I/O, single-frame pipe transport and descriptor-safe checkpoint verification/sealing |
 | `ml-exp-client` | `ml-exp-rs` | Private settings, bounded exact-identity reads/watch, Project operations, deterministic source upload/lookup, standalone Run creation and opt-in Slurm submissions |
 | `ml-exp-server` | `ml-expd-rs` | Approved discovery/reads, Project lifecycle, immutable source archive storage/receipts, native checkpoint registry, isolated SQLite/Run fences, standalone Run creation and opt-in Slurm submissions |
-| `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision, sealed local managed launch and scoped Slurm metadata helper |
+| `ml-exp-worker` | `ml-exp-worker-rs` | Local subprocess supervision, sealed managed launch, opt-in automatic Slurm image worker and scoped metadata helper |
 
 The experiment API observes explicitly approved isolated files. Project metadata
 registration/lifecycle is a separate opt-in mode. A separate opt-in native Slurm
@@ -445,9 +445,43 @@ running the job script. The generated native script checks the staged Attempt
 SHA256 and the materialized SIF SHA256 before starting the payload. It exports
 Project/Run/Attempt identity and `DATA_DIR`; managed I/O additionally provides
 `INPUT_DIR=/inputs` and `OUTPUT_DIR=/outputs`. Legacy frozen helper requests
-without a staging requirement keep their original encoding. This stages metadata
-and directories only: datasets, checkpoints, metrics ingestion and artifact
-publication remain separate unfinished protocols.
+without a staging requirement keep their original encoding. Datasets,
+checkpoints, metrics ingestion and artifact publication remain separate
+unfinished protocols.
+
+A trusted materialized Runtime can additionally declare a `worker` already
+installed inside its immutable image:
+
+```json
+{
+  "program": "/opt/ml-expd/bin/ml-exp-worker-rs",
+  "base_environment": {"PATH": "/opt/venv/bin:/usr/local/bin:/usr/bin:/bin"},
+  "runtime_environment": ["CUDA_VISIBLE_DEVICES", "LD_LIBRARY_PATH"]
+}
+```
+
+The helper then stages a locally sealed launch manifest and configuration before
+dispatch. The generated job invokes `managed-launch --initialize-and-run` with
+the original configuration SHA256. Inside the image, the worker opens the
+container workdir, creates fresh `worker/` control state and `outputs/payload/`,
+and exports the latter as `OUTPUT_DIR`. It never adopts the helper's existing
+output directory as a new process run. The worker commits STARTED before spawn,
+captures bounded logs and seals the process exit receipt on shared storage.
+Existing control/output paths cannot trigger a second training execution.
+
+Payload environment values come only from the sealed manifest, explicit image
+configuration and the declared runtime-variable snapshot. Only GPU visibility,
+NVIDIA capabilities and library paths can be selected from the container runtime;
+unrelated ambient variables are never forwarded. The snapshot is immutable and
+hash-bound to all execution phases and the final receipt. A local binding does
+not invent or contact an HTTPS manifest endpoint. Older frozen Runtimes without
+`worker` retain their original serialization and execution path.
+
+Run, exact Attempt and collection reads now use the same committed native
+scheduler receipt without borrowing another Attempt or promoting scheduler
+success to process success. Automatic worker startup and its shared-storage
+receipt do not yet connect remote log/metric/receipt ingress to the API, nor
+publish an artifact download. These remain required before a full trial release.
 
 ## Opt-in native Slurm submissions
 

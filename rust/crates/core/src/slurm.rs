@@ -9,6 +9,7 @@ pub mod action;
 mod allocation;
 mod config;
 pub mod helper;
+pub mod managed;
 mod observation;
 mod plans;
 pub mod staging;

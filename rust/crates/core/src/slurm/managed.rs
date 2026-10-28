@@ -1,0 +1,132 @@
+//! Sealed native-worker launch packages for an already-frozen Slurm Attempt.
+//! The helper stages these bytes; only the worker inside the image opens the
+//! container workdir and creates its fresh process/control directories.
+use super::{JobSpec, helper};
+use crate::{launch, managed};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+
+pub const CONFIG_FILE: &str = "managed-config.json";
+pub const MANIFEST_FILE: &str = "launch-manifest.json";
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Runtime {
+    /// Installed in the immutable SIF/OCI image by the trusted builder.
+    pub program: String,
+    #[serde(default)]
+    pub base_environment: BTreeMap<String, String>,
+    #[serde(default)]
+    pub runtime_environment: Vec<String>,
+}
+impl std::fmt::Debug for Runtime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManagedRuntime").finish_non_exhaustive()
+    }
+}
+impl Runtime {
+    pub fn validate(&self) -> helper::Result<()> {
+        if !managed::absolute(Path::new(&self.program))
+            || Path::new(&self.program).file_name().is_none()
+            || !managed::environment_policy(&self.base_environment, &self.runtime_environment)
+        {
+            return Err(helper::Error::Metadata);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Package {
+    pub config: managed::Config,
+    pub manifest: launch::Manifest,
+}
+impl std::fmt::Debug for Package {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManagedLaunchPackage")
+            .finish_non_exhaustive()
+    }
+}
+impl Package {
+    pub fn config_bytes(&self) -> helper::Result<Vec<u8>> {
+        self.config
+            .validate()
+            .map_err(|_| helper::Error::Metadata)?;
+        serde_json::to_vec(&self.config).map_err(|_| helper::Error::Metadata)
+    }
+    pub fn manifest_bytes(&self) -> helper::Result<Vec<u8>> {
+        self.manifest.encode().map_err(|_| helper::Error::Metadata)
+    }
+}
+pub fn plan(scope: &helper::Scope, spec: &JobSpec, runtime: &Runtime) -> helper::Result<Package> {
+    scope.validate()?;
+    spec.validate().map_err(|_| helper::Error::Metadata)?;
+    runtime.validate()?;
+    if scope.run_id != spec.run_id
+        || scope.attempt_id != spec.attempt_id
+        || !spec.execution.managed_io
+    {
+        return Err(helper::Error::Identity);
+    }
+    let root = format!("{}/attempts/{}", spec.storage.run_dir, scope.attempt_id);
+    // The existing outputs directory belongs to shared staging. A fresh child
+    // preserves managed execution's no-adoption/no-replay boundary.
+    let output = format!("{root}/outputs/payload");
+    let timeout =
+        super::walltime_seconds(&spec.backend.time).map_err(|_| helper::Error::Metadata)?;
+    let manifest = launch::Manifest {
+        contract: launch::CONTRACT.into(),
+        identity: launch::Identity {
+            project: scope.project.clone(),
+            run_id: scope.run_id.clone(),
+            attempt_id: scope.attempt_id.clone(),
+        },
+        environment: BTreeMap::from([
+            ("OUTPUT_DIR".into(), output.clone()),
+            ("INPUT_DIR".into(), format!("{root}/inputs")),
+            ("DATA_DIR".into(), spec.storage.project_data_root.clone()),
+        ]),
+        argv: spec.command.clone(),
+        workdir: spec.execution.workdir.clone(),
+        timeout_seconds: timeout,
+    };
+    let bytes = manifest.encode().map_err(|_| helper::Error::Metadata)?;
+    let config = managed::Config {
+        manifest_path: PathBuf::from(format!("{root}/{MANIFEST_FILE}")),
+        endpoint: String::new(),
+        attempt_root: PathBuf::from(format!("{root}/worker")),
+        workdir: PathBuf::from(&spec.execution.workdir),
+        maximum_timeout_seconds: timeout,
+        base_environment: runtime.base_environment.clone(),
+        local_binding: Some(launch::Binding {
+            identity: manifest.identity.clone(),
+            sha256: helper::sha256_bytes(&bytes)[7..].into(),
+        }),
+        output_directory: Some(PathBuf::from(output)),
+        runtime_environment: runtime.runtime_environment.clone(),
+    };
+    managed::execution_environment(&config, &manifest).map_err(|_| helper::Error::Metadata)?;
+    Ok(Package { config, manifest })
+}
+pub fn command(package: &Package, runtime: &Runtime) -> helper::Result<Vec<String>> {
+    let bytes = package.config_bytes()?;
+    let root = package
+        .config
+        .manifest_path
+        .parent()
+        .and_then(Path::to_str)
+        .ok_or(helper::Error::Metadata)?;
+    Ok(vec![
+        runtime.program.clone(),
+        "managed-launch".into(),
+        "--config".into(),
+        format!("{root}/{CONFIG_FILE}"),
+        "--sha256".into(),
+        helper::sha256_bytes(&bytes)[7..].into(),
+        "--initialize-and-run".into(),
+    ])
+}

@@ -4,7 +4,8 @@
 //! There is no manifest fetch, remote command RPC, provider call or upload in
 //! this slice. Unsupported managed I/O is refused before the durable start.
 use fs2::FileExt;
-use ml_exp_core::{canonical, launch};
+pub use ml_exp_core::managed::Config;
+use ml_exp_core::{launch, managed::absolute};
 use ml_exp_io::directory::Directory;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -14,7 +15,7 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     os::unix::fs::MetadataExt,
-    path::{Component, Path, PathBuf},
+    path::Path,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
@@ -48,75 +49,23 @@ pub enum Error {
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
-// Environment and paths are private configuration, never Debug/diagnostic text.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Config {
-    pub manifest_path: PathBuf,
-    pub endpoint: String,
-    pub attempt_root: PathBuf,
-    pub workdir: PathBuf,
-    pub maximum_timeout_seconds: u64,
-    #[serde(default)]
-    pub base_environment: BTreeMap<String, String>,
-}
-
-fn absolute(path: &Path) -> bool {
-    path.is_absolute()
-        && path.to_str().is_some()
-        && path
-            .components()
-            .all(|part| matches!(part, Component::RootDir | Component::Normal(_)))
-}
-fn key(value: &str) -> bool {
-    let mut bytes = value.bytes();
-    bytes
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
-        && bytes.all(|c| c.is_ascii_alphanumeric() || c == b'_')
-}
-fn environment(values: &BTreeMap<String, String>) -> bool {
-    values.len() <= 512
-        && values
-            .iter()
-            .all(|(name, value)| key(name) && !value.contains('\0'))
-        && values
-            .iter()
-            .try_fold(0usize, |total, (k, v)| {
-                total.checked_add(k.len() + v.len() + 2)
-            })
-            .is_some_and(|bytes| bytes <= 128 * 1024)
-}
-impl Config {
-    /// Pure configuration checks; no environment, clock or filesystem lookup.
-    pub fn validate(&self) -> Result<()> {
-        if !absolute(&self.manifest_path)
-            || !absolute(&self.attempt_root)
-            || self.attempt_root.file_name().is_none()
-            || !absolute(&self.workdir)
-            || !(1..1000 * 3600).contains(&self.maximum_timeout_seconds)
-            || !environment(&self.base_environment)
-            || self.base_environment.keys().any(|name| {
-                name.starts_with("ML_EXPD_")
-                    || ["OUTPUT_DIR", "PROJECT_NAME", "RUN_ID", "ATTEMPT_ID"]
-                        .contains(&name.as_str())
-            })
-            || launch::endpoint(&self.endpoint).is_err()
-        {
-            return Err(Error::Configuration);
-        }
-        Ok(())
+impl From<ml_exp_core::managed::Error> for Error {
+    fn from(_: ml_exp_core::managed::Error) -> Self {
+        Self::Configuration
     }
-    pub fn load(path: &Path) -> Result<Self> {
-        let bytes = private_file(path, 1024 * 1024).map_err(|_| Error::Configuration)?;
-        let config: Self = serde_json::from_slice(&bytes).map_err(|_| Error::Configuration)?;
-        config.validate()?;
-        Ok(config)
+}
+/// The shell reads private bytes; identity and configuration decisions are pure.
+pub fn load_config(path: &Path, expected_sha256: Option<&str>) -> Result<Config> {
+    let bytes = private_file(path, 1024 * 1024).map_err(|_| Error::Configuration)?;
+    if expected_sha256.is_some_and(|value| !hex(value) || sha(&bytes) != value) {
+        return Err(Error::Binding);
     }
-    fn digest(&self) -> Result<String> {
-        canonical::digest(&serde_json::to_value(self).map_err(|_| Error::Configuration)?)
-            .map_err(|_| Error::Configuration)
-    }
+    let config: Config = serde_json::from_value(serde_json::Value::Object(
+        ml_exp_core::json::mapping(&bytes).map_err(|_| Error::Configuration)?,
+    ))
+    .map_err(|_| Error::Configuration)?;
+    config.validate()?;
+    Ok(config)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,6 +82,8 @@ struct Record {
     phase: Phase,
     binding_sha256: String,
     receipt_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_environment_sha256: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -204,6 +155,8 @@ pub struct Receipt {
     pub training: Training,
     pub publication: Publication,
     pub download_available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_environment_sha256: Option<String>,
 }
 impl Receipt {
     /// Success covers the supervised local process and verified captured logs.
@@ -224,6 +177,8 @@ pub struct Observation {
     /// Even PREPARED is not a statement authorizing automatic replay.
     pub safe_to_retry: bool,
     pub receipt: Option<Receipt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_environment_sha256: Option<String>,
 }
 
 fn sha(bytes: &[u8]) -> String {
@@ -269,51 +224,17 @@ fn private_file(path: &Path, maximum: u64) -> Result<Vec<u8>> {
 fn verified(
     config: &Config,
     bytes: &[u8],
-) -> Result<(launch::Endpoint, launch::Manifest, BTreeMap<String, String>)> {
+) -> Result<(launch::Binding, launch::Manifest, BTreeMap<String, String>)> {
     config.validate()?;
-    let target = launch::endpoint(&config.endpoint).map_err(|_| Error::Configuration)?;
-    let manifest = launch::verify(bytes, &target).map_err(|_| Error::Manifest)?;
-    if manifest.workdir != config.workdir.to_str().ok_or(Error::Configuration)?
-        || manifest.environment.get("OUTPUT_DIR").map(String::as_str)
-            != config.attempt_root.join("outputs").to_str()
-        || manifest.timeout_seconds > config.maximum_timeout_seconds
-    {
-        return Err(Error::Binding);
-    }
-    if manifest
-        .environment
-        .keys()
-        .any(|name| name.starts_with("ML_EXPD_"))
-    {
-        return Err(Error::Unsupported);
-    }
-    let mut values = config.base_environment.clone();
-    values.extend(manifest.environment.clone());
-    for (name, expected) in [
-        ("PROJECT_NAME", &target.identity.project),
-        ("RUN_ID", &target.identity.run_id),
-        ("ATTEMPT_ID", &target.identity.attempt_id),
-    ] {
-        if values.get(name).is_some_and(|actual| actual != expected) {
-            return Err(Error::Binding);
-        }
-        values.insert(name.into(), expected.clone());
-    }
-    if !environment(&values) {
-        return Err(Error::Configuration);
-    }
-    let program = Path::new(&manifest.argv[0]);
-    if !program.is_absolute() {
-        if manifest.argv[0].contains('/')
-            || !values.get("PATH").is_some_and(|path| {
-                !path.is_empty() && path.split(':').all(|part| absolute(Path::new(part)))
-            })
-        {
-            return Err(Error::Configuration);
-        }
-    } else if !absolute(program) {
-        return Err(Error::Configuration);
-    }
+    let target = config.binding()?;
+    let manifest = launch::verify_binding(bytes, &target).map_err(|_| Error::Manifest)?;
+    let values = ml_exp_core::managed::execution_environment(config, &manifest).map_err(
+        |error| match error {
+            ml_exp_core::managed::AdmissionError::Configuration => Error::Configuration,
+            ml_exp_core::managed::AdmissionError::Binding => Error::Binding,
+            ml_exp_core::managed::AdmissionError::Unsupported => Error::Unsupported,
+        },
+    )?;
     Ok((target, manifest, values))
 }
 
@@ -385,7 +306,7 @@ impl Held {
         if !(1..=3).contains(&lines.len()) {
             return Err(Error::Uncertain);
         }
-        let mut last = None;
+        let mut last: Option<Record> = None;
         for (line, phase) in
             lines
                 .into_iter()
@@ -395,7 +316,13 @@ impl Held {
             if record.contract != CONTRACT || record.binding_sha256 != self.binding {
                 return Err(Error::Binding);
             }
-            if record.phase != phase
+            if last.as_ref().is_some_and(|previous| {
+                previous.runtime_environment_sha256 != record.runtime_environment_sha256
+            }) || record
+                .runtime_environment_sha256
+                .as_ref()
+                .is_some_and(|value| !hex(value))
+                || record.phase != phase
                 || (phase == Phase::Finished)
                     != record.receipt_sha256.as_ref().is_some_and(|v| hex(v))
                 || phase != Phase::Finished && record.receipt_sha256.is_some()
@@ -406,13 +333,19 @@ impl Held {
         }
         last.ok_or(Error::Uncertain)
     }
-    fn append(&self, phase: Phase, receipt: Option<String>) -> Result<()> {
+    fn append(
+        &self,
+        phase: Phase,
+        receipt: Option<String>,
+        runtime_sha256: Option<String>,
+    ) -> Result<()> {
         self.validate()?;
         let record = Record {
             contract: CONTRACT.into(),
             phase,
             binding_sha256: self.binding.clone(),
             receipt_sha256: receipt,
+            runtime_environment_sha256: runtime_sha256,
         };
         let mut bytes = serde_json::to_vec(&record).map_err(|_| Error::Storage)?;
         bytes.push(b'\n');
@@ -421,8 +354,32 @@ impl Held {
             .map_err(|_| Error::Storage)?;
         self.validate()
     }
+    fn runtime(&mut self, config: &Config) -> Result<BTreeMap<String, String>> {
+        let record = self.state()?;
+        if config.runtime_environment.is_empty() {
+            if record.runtime_environment_sha256.is_some() {
+                return Err(Error::Binding);
+            }
+            return Ok(BTreeMap::new());
+        }
+        let bytes = private_bytes(
+            &self.root,
+            OsStr::new("runtime-environment.json"),
+            128 * 1024,
+        )?;
+        if record.runtime_environment_sha256.as_deref() != Some(sha(&bytes).as_str()) {
+            return Err(Error::Binding);
+        }
+        let values: BTreeMap<String, String> = serde_json::from_value(serde_json::Value::Object(
+            ml_exp_core::json::mapping(&bytes).map_err(|_| Error::Binding)?,
+        ))
+        .map_err(|_| Error::Binding)?;
+        config.validate_runtime(&values)?;
+        Ok(values)
+    }
     fn observe(&mut self, config: &Config) -> Result<Observation> {
         let record = self.state()?;
+        self.runtime(config)?;
         let bytes = private_bytes(&self.root, OsStr::new(MANIFEST), launch::MAX_BYTES as u64)?;
         let (target, _, _) = verified(config, &bytes)?;
         let receipt = if record.phase == Phase::Finished {
@@ -435,6 +392,7 @@ impl Held {
                 || value.identity != target.identity
                 || value.manifest_sha256 != target.sha256
                 || value.download_available
+                || value.runtime_environment_sha256 != record.runtime_environment_sha256
                 || value.training != training(&value.process)
                 || value
                     .process
@@ -461,6 +419,7 @@ impl Held {
             phase: record.phase,
             safe_to_retry: false,
             receipt,
+            runtime_environment_sha256: record.runtime_environment_sha256,
         })
     }
 }
@@ -468,7 +427,17 @@ impl Held {
 /// Explicit bootstrap of one fresh, dedicated Attempt root. Existing paths are
 /// never adopted, reset or repaired. Its frozen OUTPUT_DIR fixes this location.
 pub fn initialize(config: &Config) -> Result<Observation> {
+    initialize_with_environment(config, &BTreeMap::new())
+}
+
+/// The caller selects the approved runtime variables. Their values are sealed
+/// once, never inherited again during inspect/restart or silently reinterpreted.
+pub fn initialize_with_environment(
+    config: &Config,
+    runtime: &BTreeMap<String, String>,
+) -> Result<Observation> {
     config.validate()?;
+    config.validate_runtime(runtime)?;
     let bytes = private_file(&config.manifest_path, launch::MAX_BYTES as u64)?;
     verified(config, &bytes)?;
     let workdir = Directory::open(&config.workdir, false).map_err(|_| Error::Storage)?;
@@ -499,7 +468,16 @@ pub fn initialize(config: &Config) -> Result<Observation> {
         file,
         binding: config.digest()?,
     };
-    held.append(Phase::Prepared, None)?;
+    let runtime_sha256 = if config.runtime_environment.is_empty() {
+        None
+    } else {
+        let bytes = serde_json::to_vec(runtime).map_err(|_| Error::Configuration)?;
+        held.root
+            .publish_new(OsStr::new("runtime-environment.json"), &bytes)
+            .map_err(|_| Error::Storage)?;
+        Some(sha(&bytes))
+    };
+    held.append(Phase::Prepared, None, runtime_sha256)?;
     workdir
         .verify_private_parent()
         .map_err(|_| Error::Storage)?;
@@ -526,9 +504,14 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(Error::Cancelled);
     }
-    if held
-        .root
-        .entry_exists(OsStr::new("outputs"))
+    let output_path = config.output_path();
+    let output_parent = Directory::open(output_path.parent().ok_or(Error::Configuration)?, false)
+        .map_err(|_| Error::Storage)?;
+    output_parent
+        .verify_private_parent()
+        .map_err(|_| Error::Storage)?;
+    if output_parent
+        .entry_exists(output_path.file_name().ok_or(Error::Configuration)?)
         .map_err(|_| Error::Storage)?
         || held
             .root
@@ -542,13 +525,24 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         .verify_private_parent()
         .map_err(|_| Error::Storage)?;
     let bytes = private_bytes(&held.root, OsStr::new(MANIFEST), launch::MAX_BYTES as u64)?;
-    let (target, manifest, environment) = verified(config, &bytes)?;
+    let (target, manifest, mut environment) = verified(config, &bytes)?;
+    environment.extend(held.runtime(config)?);
+    if !ml_exp_core::managed::environment(&environment) {
+        return Err(Error::Configuration);
+    }
     // This fsync completes before any spawn attempt. Any later error leaves a
     // non-replayable STARTED record, including setup errors with no known child.
-    held.append(Phase::Started, None)?;
+    held.append(
+        Phase::Started,
+        None,
+        initial.runtime_environment_sha256.clone(),
+    )?;
+    output_parent
+        .verify_private_parent()
+        .map_err(|_| Error::Uncertain)?;
     let execution = crate::process::execute_explicit(
         &config.workdir,
-        &config.attempt_root.join("outputs"),
+        &output_path,
         &manifest.argv,
         Duration::from_secs(manifest.timeout_seconds),
         cancelled,
@@ -556,8 +550,10 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
     )
     .map_err(|_| Error::Uncertain)?;
     held.validate().map_err(|_| Error::Uncertain)?;
-    held.root
-        .child(OsStr::new("outputs"), false)
+    output_parent
+        .verify_private_parent()
+        .map_err(|_| Error::Uncertain)?;
+    Directory::open(&output_path, false)
         .and_then(|outputs| outputs.verify_private_parent())
         .map_err(|_| Error::Uncertain)?;
     workdir
@@ -572,13 +568,18 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         process,
         publication: Publication::NotImplemented,
         download_available: false,
+        runtime_environment_sha256: initial.runtime_environment_sha256.clone(),
     };
     let bytes = serde_json::to_vec(&receipt).map_err(|_| Error::Uncertain)?;
     held.root
         .publish_new(OsStr::new(RECEIPT), &bytes)
         .map_err(|_| Error::Uncertain)?;
-    held.append(Phase::Finished, Some(sha(&bytes)))
-        .map_err(|_| Error::Uncertain)?;
+    held.append(
+        Phase::Finished,
+        Some(sha(&bytes)),
+        initial.runtime_environment_sha256,
+    )
+    .map_err(|_| Error::Uncertain)?;
     held.observe(config)
 }
 

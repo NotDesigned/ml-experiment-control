@@ -72,6 +72,7 @@ impl Fixture {
         )
         .unwrap();
         let runtime = Runtime {
+            worker: None,
             runtime_id: format!("runtime.{}", "2".repeat(64)),
             source_id: source_id.clone(),
             image_id: image.clone(),
@@ -891,6 +892,28 @@ async fn native_http_preparation_restart_execute_and_reconcile_keep_one_submissi
         "24827"
     );
     assert_eq!(view["evidence"]["scheduler"]["stale"], true);
+    for path in [
+        "/api/runs/demo/train/attempts/attempt-001/collection",
+        "/api/attempts/demo/train::attempt-001/show",
+    ] {
+        let (status, exact) = http_request(app.clone(), "GET", path, "").await;
+        assert_eq!(status, 200, "{exact}");
+        assert_eq!(
+            exact["evidence"]["scheduler"]["state"], "RUNNING",
+            "{exact}"
+        );
+        assert_eq!(
+            exact["evidence"]["scheduler"]["detail"]["backend_job_id"],
+            "24827"
+        );
+        assert_eq!(exact["evidence"]["scheduler"]["stale"], true);
+        if path.ends_with("collection") {
+            assert_eq!(exact["training"]["status"], "UNKNOWN");
+            assert_eq!(exact["download_available"], false);
+        } else {
+            assert_eq!(exact["attempt"]["state"], "RUNNING");
+        }
+    }
     let terminal =
         json!({"project":"demo","run_id":"train","attempt_id":"attempt-001","state":"SUCCEEDED"});
     write(
@@ -1290,4 +1313,49 @@ fn competing_run_creators_and_deletion_fence_cannot_replace_an_identity() {
             .next()
             .is_none()
     );
+}
+
+#[test]
+fn trusted_image_worker_changes_only_launch_entry_and_keeps_scientific_command_frozen() {
+    let mut f = Fixture::new();
+    assert!(
+        serde_json::to_value(&f.runtime)
+            .unwrap()
+            .get("worker")
+            .is_none()
+    );
+    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
+        program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
+        base_environment: BTreeMap::from([("PATH".into(), "/opt/venv/bin:/usr/bin:/bin".into())]),
+        runtime_environment: vec!["CUDA_VISIBLE_DEVICES".into()],
+    });
+    let service = f.service("ledger", true);
+    service
+        .prepare("demo", "train", approval(), context(1))
+        .unwrap();
+    let prepared = f.prepared();
+    let (manifest, script) = prepared.request.prepared_content().unwrap();
+    let original: Value = serde_json::from_str(manifest).unwrap();
+    assert_eq!(
+        original["command"],
+        json!(["python", "-u", "/workspace/train.py"])
+    );
+    let package = ml_exp_core::slurm::staging::plan(prepared.request.intent(), manifest.as_bytes())
+        .unwrap()
+        .unwrap()
+        .managed
+        .unwrap();
+    assert_eq!(
+        package.manifest.argv,
+        vec!["python", "-u", "/workspace/train.py"]
+    );
+    assert!(script.contains("/opt/ml-expd/bin/ml-exp-worker-rs managed-launch --config"));
+    assert!(script.contains("--initialize-and-run"));
+    assert!(script.contains(&helper::sha256_bytes(&package.config_bytes().unwrap())[7..]));
+    assert!(package.config.endpoint.is_empty());
+    assert_eq!(
+        package.config.local_binding.unwrap().identity.attempt_id,
+        "attempt-001"
+    );
+    assert!(!f.root.path().join("sbatch-calls").exists());
 }
