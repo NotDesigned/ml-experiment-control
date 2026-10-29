@@ -115,7 +115,7 @@ pub fn project_run(mut run: Value, submission: &Value) -> Result<Value> {
         "native-action-commit"
     };
     run["evidence"]["scheduler"] = json!({"state":state,"attempt_id":submission["attempt_id"],"detail":detail,"as_of":at,
-        "source":source,"stale":true,"freshness":if at.is_null(){"UNKNOWN"}else{"STALE"},
+        "source":source,"stale":if at.is_null(){Value::Null}else{json!(true)},"freshness":if at.is_null(){"UNKNOWN"}else{"STALE"},
         "stale_reason":if source=="native-action-commit"{"committed observation; no provider refresh on GET"}else{"cached observation; no provider refresh on GET"},"evidence_availability":{"availability":"PRESENT","source":source,"submission_id":id}});
     Ok(run)
 }

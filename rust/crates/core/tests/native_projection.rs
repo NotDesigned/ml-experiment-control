@@ -19,6 +19,9 @@ fn exact_attempt_views_project_only_their_own_committed_scheduler_evidence() {
     let projected =
         native::project_attempt(collection.clone(), &submission(), &scope("attempt-001")).unwrap();
     assert_eq!(projected["evidence"]["scheduler"]["state"], "UNKNOWN");
+    assert!(projected["evidence"]["scheduler"]["as_of"].is_null());
+    assert!(projected["evidence"]["scheduler"]["stale"].is_null());
+    assert_eq!(projected["evidence"]["scheduler"]["freshness"], "UNKNOWN");
     assert_eq!(projected["training"], collection["training"]);
     assert_eq!(projected["download_available"], false);
     assert!(

@@ -8,7 +8,7 @@ fn scheduler_evidence(observation: &Value, backend: &str, attempt: &str) -> Valu
     detail["backend_job_id"] = observation["job_id"].clone();
     detail["raw_state"] = observation["provider_state"].clone();
     json!({"state":observation["state"],"attempt_id":attempt,"detail":detail,
-        "source":"native-cloud-outbox","as_of":null,"stale":true,"freshness":"UNKNOWN"})
+        "source":"native-cloud-outbox","as_of":null,"stale":null,"freshness":"UNKNOWN"})
 }
 
 impl Service {
@@ -145,7 +145,7 @@ impl Service {
             submission["status"].as_str(),
             Some("EXECUTING" | "RECONCILE_REQUIRED")
         ) {
-            value["evidence"]["scheduler"] = json!({"state":"UNKNOWN","attempt_id":selected,"diagnostic":"SUBMISSION_UNCERTAIN","source":"native-cloud-action","as_of":null,"stale":true,"freshness":"UNKNOWN"});
+            value["evidence"]["scheduler"] = json!({"state":"UNKNOWN","attempt_id":selected,"diagnostic":"SUBMISSION_UNCERTAIN","source":"native-cloud-action","as_of":null,"stale":null,"freshness":"UNKNOWN"});
         }
         Ok(value)
     }
@@ -166,6 +166,7 @@ mod tests {
         assert_eq!(layer["detail"]["raw_state"], "EnvPreparing");
         assert_eq!(layer["detail"]["queue"], observation["queue"]);
         assert!(layer["as_of"].is_null());
+        assert!(layer["stale"].is_null());
         assert_eq!(layer["freshness"], "UNKNOWN");
         assert!(layer.get("worker").is_none());
         assert!(layer.get("process").is_none());
