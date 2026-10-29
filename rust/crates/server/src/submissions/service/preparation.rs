@@ -45,7 +45,7 @@ impl Service {
         lock.validate()?;
         Ok(lock)
     }
-    fn slot_name(project: &str, run: &str, attempt: &str) -> Result<String> {
+    pub(super) fn slot_name(project: &str, run: &str, attempt: &str) -> Result<String> {
         Ok(format!(
             "{}.json",
             native::attempt_slot(project, run, attempt)?
