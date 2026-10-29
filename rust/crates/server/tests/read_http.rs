@@ -268,7 +268,7 @@ fn headers() -> String {
 
 #[test]
 fn actual_http_reads_historical_checkpoints_without_a_native_submission_service() {
-    for historical in [false, true] {
+    for mode in ["native-reader", "historical-reader", "unified"] {
         use ml_exp_core::checkpoints::{self, Context};
         let f = Fixture::new();
         let source_id = format!("source.{}", "a".repeat(64));
@@ -310,11 +310,29 @@ fn actual_http_reads_historical_checkpoints_without_a_native_submission_service(
         // A different current Attempt must never redirect the explicit historical
         // query. No submission/source/backend service is configured in this app.
         f.current("attempt-002");
-        let server = if historical {
+        let native = Fixture::new();
+        let server = if mode == "historical-reader" {
             let settings = f.historical_settings(false);
             Server::start(
                 Auth::load(&f.token).unwrap(),
                 ml_exp_server::history::open(settings).unwrap(),
+            )
+        } else if mode == "unified" {
+            let settings = f.historical_settings(false);
+            let native_settings = rename_fixture_run(&native, "fresh-checkpoint-reader");
+            let bridge = ml_exp_server::history::Bridge::open(settings).unwrap();
+            let reference = ml_exp_core::checkpoints::Reference {
+                run_id: "train".into(),
+                attempt_id: "attempt-001".into(),
+                checkpoint_id: id.into(),
+            };
+            assert!(bridge.claims("demo", &reference.run_id).unwrap());
+            Server::start(
+                Auth::load(&native.token).unwrap(),
+                Api::open(native_settings)
+                    .unwrap()
+                    .with_history(bridge)
+                    .unwrap(),
             )
         } else {
             f.server()
@@ -901,6 +919,133 @@ fn file_inventory(path: &Path) -> Vec<(PathBuf, String)> {
     }
     values.sort();
     values
+}
+
+fn rename_fixture_run(fixture: &Fixture, name: &str) -> read_config::Settings {
+    let mut settings = fixture.settings();
+    let target = fixture.project.join("runs").join(name);
+    fs::rename(fixture.run(), &target).unwrap();
+    for relative in [
+        "manifest.yaml",
+        "status.json",
+        "attempts/attempt-001/attempt.yaml",
+        "attempts/attempt-001/status.json",
+        "attempts/attempt-001/collection.json",
+        "attempts/attempt-002/attempt.yaml",
+        "attempts/attempt-002/status.json",
+        "attempts/attempt-002/collection.json",
+    ] {
+        let path = target.join(relative);
+        let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        value["run_id"] = json!(name);
+        write_json(&path, &value);
+    }
+    settings.projects[0].runs[0].run_id = name.into();
+    settings.projects[0].runs[0].relative_components = vec![name.into()];
+    settings
+}
+
+#[test]
+fn unified_api_reads_both_namespaces_and_reserves_historical_identities() {
+    let old = Fixture::new();
+    old.journal_matching();
+    let history = ml_exp_server::history::Bridge::open(old.historical_settings(true)).unwrap();
+    let before = file_inventory(old._temp.path());
+    let native = Fixture::new();
+    let settings = rename_fixture_run(&native, "new-trial");
+    for _ in 0..2 {
+        let api = Api::open(settings.clone())
+            .unwrap()
+            .with_history(history.clone())
+            .unwrap();
+        let server = Server::start(Auth::load(&native.token).unwrap(), api);
+        let client = server.client();
+        let health = client.negotiate().unwrap();
+        assert_eq!(health["historical_read_only"], false);
+        assert_eq!(health["historical_records_attached"], true);
+        assert_eq!(
+            client.get("/api/runs/demo/train").unwrap()["run_id"],
+            "train"
+        );
+        assert_eq!(
+            client.get("/api/runs/demo/new-trial").unwrap()["run_id"],
+            "new-trial"
+        );
+        let metrics = client
+            .get("/api/attempts/demo/train::attempt-001/metrics?format=records")
+            .unwrap();
+        assert_eq!(metrics["records"].as_array().unwrap().len(), 2);
+        let tracking = client.get("/api/runs/demo/train/tracking").unwrap();
+        assert_eq!(tracking["read_only"], true);
+        assert_eq!(tracking["scopes"].as_array().unwrap().len(), 2);
+        assert_eq!(tracking["scopes"][0]["pending"], 2);
+        let plan =
+            ml_exp_client::submissions::plan(ml_exp_client::submissions::Command::Tracking {
+                project: "demo",
+                run: "train",
+            })
+            .unwrap();
+        assert_eq!(
+            ml_exp_client::submissions::execute(&client, &plan, &health).unwrap(),
+            tracking
+        );
+        let projects = client.get("/api/projects").unwrap();
+        assert_eq!(projects.as_array().unwrap().len(), 1);
+        assert_eq!(projects[0]["run_counts"]["SUCCEEDED"], 2);
+        assert_eq!(server.raw("/api/runs/demo/missing", &headers()).0, 404);
+        assert_eq!(
+            history.require_available("demo", "train").unwrap_err().code,
+            "RUN_ID_RESERVED_BY_HISTORY"
+        );
+        history.require_available("demo", "fresh").unwrap();
+        assert_eq!(file_inventory(old._temp.path()), before);
+    }
+    // Deletion remains reserved after the original payload has disappeared.
+    let fence = ml_exp_server::deletion::RunFence::new(&old.registry);
+    fence
+        .exclusive_existing(true)
+        .unwrap()
+        .mark(
+            "demo",
+            "train",
+            &serde_json::Map::new(),
+            "2026-10-29T00:00:00Z",
+        )
+        .unwrap();
+    fs::remove_dir_all(old.run()).unwrap();
+    assert!(history.require_available("demo", "train").is_err());
+    let api = Api::open(settings).unwrap().with_history(history).unwrap();
+    let server = Server::start(Auth::load(&native.token).unwrap(), api);
+    assert_eq!(server.raw("/api/runs/demo/train", &headers()).0, 409);
+}
+
+#[test]
+fn unified_api_refuses_duplicate_runs_and_overlapping_storage() {
+    let old = Fixture::new();
+    let history = ml_exp_server::history::Bridge::open(old.historical_settings(false)).unwrap();
+    let native = Fixture::new();
+    let mut overlapping = native.settings();
+    overlapping.projects[0].run_roots = vec![old.project.join("runs")];
+    assert!(
+        Api::open(overlapping)
+            .unwrap()
+            .with_history(history.clone())
+            .is_err()
+    );
+    let api = Api::open(native.settings())
+        .unwrap()
+        .with_history(history)
+        .unwrap();
+    let server = Server::start(Auth::load(&native.token).unwrap(), api);
+    for path in [
+        "/api/runs/demo/train",
+        "/api/projects",
+        "/api/runs/demo/train/attempts/attempt-001/checkpoints",
+    ] {
+        let response = server.raw(path, &headers());
+        assert_eq!(response.0, 409, "{path}: {}", response.1);
+        assert_eq!(response.1["code"], "RUN_ID_RESERVED_BY_HISTORY");
+    }
 }
 
 #[test]

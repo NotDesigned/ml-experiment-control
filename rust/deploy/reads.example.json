@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "registry_root": "/var/lib/ml-expd-native/registry",
+  "projects": [
+    {
+      "project": "demo",
+      "project_file": "/srv/ml-expd-native/demo/project.json",
+      "run_roots": ["/srv/ml-expd-native/demo/runs"]
+    }
+  ],
+  "source_policy": {
+    "max_archive_bytes": 67108864,
+    "max_source_bytes": 268435456,
+    "max_source_files": 20000
+  }
+}

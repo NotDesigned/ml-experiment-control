@@ -17,6 +17,8 @@ use std::{
 };
 
 mod checkpoint_reads;
+mod composition;
+mod tracking_reads;
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("{code}")]
@@ -276,6 +278,8 @@ pub struct Api {
     cloud: Option<Arc<crate::cloud_runs::Service>>,
     administration: Option<Arc<crate::administration::Service>>,
     historical: Option<crate::history::Identity>,
+    legacy: Option<Arc<crate::history::Bridge>>,
+    approved_roots: Vec<PathBuf>,
 }
 impl Api {
     pub fn open(settings: read_config::Settings) -> Result<Self, read_config::Error> {
@@ -335,6 +339,12 @@ impl Api {
             None
         };
         Ok(Self {
+            approved_roots: settings
+                .projects
+                .iter()
+                .flat_map(|p| p.run_roots.clone())
+                .chain(std::iter::once(settings.registry_root.clone()))
+                .collect(),
             store,
             registry_root: settings.registry_root,
             registry,
@@ -352,6 +362,7 @@ impl Api {
             cloud: None,
             administration: None,
             historical,
+            legacy: None,
         })
     }
     pub fn is_historical(&self) -> bool {
@@ -429,6 +440,7 @@ impl Api {
         service: Arc<crate::submissions::Service>,
     ) -> Result<Self, read_config::Error> {
         if self.is_historical()
+            || !service.history_matches(self.legacy.as_ref())
             || !service.matches_configuration(
                 &self.registry_root,
                 &self.project_files,
@@ -451,6 +463,7 @@ impl Api {
         service: Arc<crate::cloud_runs::Service>,
     ) -> Result<Self, read_config::Error> {
         if self.is_historical()
+            || !service.history_matches(self.legacy.as_ref())
             || !service.matches(
                 &self.registry_root,
                 &self.read_scope_sha256,
@@ -466,7 +479,24 @@ impl Api {
         self.cloud.clone()
     }
     pub fn active_project_count(&self) -> Result<usize, Error> {
+        if let Some(history) = &self.legacy {
+            let mut projects = self.active_project_names()?;
+            projects.extend(history.api().active_project_names()?);
+            return Ok(projects.len());
+        }
         self.observe(Self::active_project_count_observed)
+    }
+    fn active_project_names(&self) -> Result<BTreeSet<String>, Error> {
+        self.observe(|api| {
+            api.validate_registry()?;
+            if let Some(history) = &api.historical {
+                return history.active().map_err(Into::into);
+            }
+            match &api.lifecycle {
+                Some(service) => service.active_projects().map_err(Into::into),
+                None => Ok(api.projects.iter().cloned().collect()),
+            }
+        })
     }
     fn active_project_count_observed(&self) -> Result<usize, Error> {
         self.validate_registry()?;
@@ -714,7 +744,8 @@ impl Api {
         Ok(())
     }
     pub fn projects(&self, now_unix: f64) -> Result<Value, Error> {
-        self.observe(move |api| api.projects_observed(now_unix))
+        let native = self.observe(move |api| api.projects_observed(now_unix))?;
+        self.combined_projects(native, now_unix)
     }
     fn projects_observed(&self, now_unix: f64) -> Result<Value, Error> {
         self.validate_registry()?;
@@ -1004,6 +1035,9 @@ impl Api {
         })
     }
     pub fn query(&self, query: Query, now_unix: f64) -> Result<Value, Error> {
+        if let Some(history) = self.history_for(&query.project, &query.run)? {
+            return history.query(query, now_unix);
+        }
         self.observe(move |api| api.query_observed(query, now_unix))
     }
     fn query_observed(&self, query: Query, now_unix: f64) -> Result<Value, Error> {

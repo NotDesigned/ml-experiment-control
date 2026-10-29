@@ -3,11 +3,104 @@
 use crate::{deletion::RunFence, projects, read_api::Api, read_config};
 use ml_exp_io::directory::Directory;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
     path::{Path, PathBuf},
+    sync::Arc,
 };
+
+pub(crate) fn identity_conflict() -> crate::read_api::Error {
+    crate::read_api::Error {
+        status: 409,
+        code: "RUN_ID_RESERVED_BY_HISTORY",
+        detail: "Run identity is already reserved in historical storage; choose a new Run ID",
+    }
+}
+
+/// A read-only historical source shared by both request routing and every
+/// authorship path (including asynchronous preparations). Never a write adapter.
+pub struct Bridge {
+    api: Api,
+    settings: Settings,
+}
+impl Bridge {
+    pub fn open(settings: Settings) -> Result<Arc<Self>, read_config::Error> {
+        let api = open(settings.clone())?;
+        Ok(Arc::new(Self { api, settings }))
+    }
+    pub(crate) fn api(&self) -> &Api {
+        &self.api
+    }
+    pub(crate) fn validate_separation(&self, native: &[PathBuf]) -> Result<(), read_config::Error> {
+        let old = self
+            .settings
+            .reads
+            .projects
+            .iter()
+            .flat_map(|p| p.run_roots.iter())
+            .chain(std::iter::once(&self.settings.reads.registry_root));
+        for path in old {
+            if native
+                .iter()
+                .any(|p| p.starts_with(path) || path.starts_with(p))
+            {
+                return Err(read_config::Error);
+            }
+        }
+        if self
+            .settings
+            .reads
+            .projects
+            .iter()
+            .any(|p| native.iter().any(|r| p.project_file.starts_with(r)))
+        {
+            return Err(read_config::Error);
+        }
+        Ok(())
+    }
+    pub(crate) fn validate_native(
+        &self,
+        settings: &read_config::Settings,
+    ) -> Result<(), read_config::Error> {
+        let roots = settings
+            .projects
+            .iter()
+            .flat_map(|p| p.run_roots.clone())
+            .chain(std::iter::once(settings.registry_root.clone()))
+            .collect::<Vec<_>>();
+        self.validate_separation(&roots)
+    }
+    pub fn claims(&self, project: &str, run: &str) -> Result<bool, crate::read_api::Error> {
+        self.api.claims(project, run)
+    }
+    pub fn require_available(
+        &self,
+        project: &str,
+        run: &str,
+    ) -> Result<(), crate::read_api::Error> {
+        if self.claims(project, run)? {
+            Err(identity_conflict())
+        } else {
+            Ok(())
+        }
+    }
+    pub(crate) fn checkpoint(
+        &self,
+        project: &str,
+        reference: &ml_exp_core::checkpoints::Reference,
+    ) -> Result<Value, crate::read_api::Error> {
+        self.api
+            .historical_checkpoints(
+                project,
+                &reference.run_id,
+                &reference.attempt_id,
+                Some(&reference.checkpoint_id),
+            )?
+            .ok_or_else(identity_conflict)
+    }
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -118,7 +211,7 @@ impl Identity {
             .map(|p| p.project)
             .collect())
     }
-    fn validate_journal(&self, path: &Path) -> Result<(), projects::Error> {
+    pub(crate) fn validate_journal(&self, path: &Path) -> Result<(), projects::Error> {
         let registry = Directory::open(path, false)?;
         let tracking = if registry.entry_exists(OsStr::new("tracking"))? {
             Some(registry.child(OsStr::new("tracking"), false)?)

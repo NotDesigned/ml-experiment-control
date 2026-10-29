@@ -65,6 +65,9 @@ async fn tracking(
         return read_http::failure(error);
     }
     read_http::execute(state, Access::Read, move |api, _| {
+        if let Some(value) = api.historical_tracking(&project, &run)? {
+            return Ok(value);
+        }
         if let Some(cloud) = api.cloud() {
             if cloud
                 .handles_run(&project, &run)

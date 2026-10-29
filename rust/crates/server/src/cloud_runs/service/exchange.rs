@@ -176,6 +176,20 @@ impl Service {
         reference: &ml_exp_core::checkpoints::Reference,
     ) -> cloud::Result<Value> {
         reference.validate().map_err(|_| cloud::Error::evidence())?;
+        if let Some(history) = &self.history {
+            if history
+                .claims(project, &reference.run_id)
+                .map_err(|_| cloud::Error::evidence())?
+            {
+                return history
+                    .checkpoint(project, reference)
+                    .map_err(|error| cloud::Error {
+                        code: error.code.into(),
+                        http_status: Some(error.status),
+                        uncertain: false,
+                    });
+            }
+        }
         let prepared = self
             .saved_attempt(project, &reference.run_id, &reference.attempt_id)?
             .ok_or_else(missing)?;

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # No provider configuration, production workspace, Python or real user token.
-preview_bins="$(cd "${CARGO_TARGET_DIR:-rust/target}/debug" && pwd)"
+preview_bins="$(cd "${CARGO_TARGET_DIR:-rust/target}/${NATIVE_PROFILE:-debug}" && pwd)"
 preview_root="$(mktemp -d)"
 preview_pid=
 cleanup() {
@@ -61,7 +61,10 @@ cat > "$preview_root/reads.json" <<JSON
 JSON
 
 # port 0 is assigned by the OS, avoiding collisions with another checkout.
-"$preview_bins/ml-expd-rs" --bind 127.0.0.1:0 --token-file "$preview_root/token" --read-config "$preview_root/reads.json" > "$preview_root/server.log" 2>&1 &
+cat > "$preview_root/server.json" <<JSON
+{"schema_version":1,"bind":"127.0.0.1:0","token_file":"$preview_root/token","read_config":"$preview_root/reads.json"}
+JSON
+"$preview_bins/ml-expd-rs" --config "$preview_root/server.json" > "$preview_root/server.log" 2>&1 &
 preview_pid=$!
 for _ in {1..100}; do
   if [[ -s "$preview_root/server.log" ]]; then break; fi

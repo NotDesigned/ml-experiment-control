@@ -68,7 +68,7 @@ Research code may use Python/PyTorch or another image language.
 | Backend catalogue/cached capacity | `core/capacity.rs`, `service/capacity.rs`, `capacity_http.rs` | Local GET is effect-free; actual provider capacity query pending |
 | Optional W&B publication | `core/tracking`, `server/tracking` | Fake SDK and durable history/display ACK tests; official-cloud acceptance pending |
 | Scoped administrative maintenance and record retirement | `core/maintenance.rs`, `server/administration.rs`, `worker/maintenance.rs` | Confined plans and worker receipts; actual provider cleanup pending |
-| Standalone verified client update | `core/distribution.rs`, `client/update.rs` | Manifest/version/hash logic; native release assets not yet published |
+| Standalone verified client update | `core/distribution.rs`, `client/update.rs` | Manifest/version/hash logic; packager/installer and tag workflow connected; assets not yet published |
 
 Paths in the table are relative to `rust/crates`, except the two image bridge
 paths under `server/src/ml_exp_server`. See [the native usage guide](../rust/README.md)
@@ -102,6 +102,16 @@ variant are identity fields. Required metrics come from each Run's schema. Step
 series and final summaries have distinct W&B projections. Scientific aggregation
 and model selection remain research-code responsibilities.
 
+## Deployment and release implementation
+
+`ml-expd-rs --config /private/server.json` selects independent backend, tracking
+and optional historical-reader files. All paths are absolute; initialization
+remains explicit. Native bundles contain four standalone executables, exact
+byte/SHA metadata, the client installer and service/configuration examples.
+The release workflow tests the exact binaries before packaging. A manual run
+produces artifacts only; a stable native tag enables public publication.
+The native 0.1.0 tag and production cutover have not happened.
+
 ## Deliberate limits and remaining acceptance
 
 The native registry uses a separate marker. Normal startup and GET never
@@ -131,8 +141,14 @@ without initializing the original namespace. Offline configuration inspection
 pins the original metric journal identity. Project lifecycle and deletion
 records remain authoritative. Historical HTTP observations have mandatory
 kernel write denial, no effect services, and all mutation/worker-ingress routes
-are rejected. This is a separate reader; a combined native-write/historical-read
-namespace and historical restore remain migration work.
+are rejected. The same pinned reader can now attach to a writable native service. One address
+routes reads by exact Run ownership, combines Project counters and reserves
+all historical IDs against new authorship. Both Slurm and cloud creation paths,
+including asynchronous preparations, share this reservation. Writable/native
+and original roots must be disjoint. A new frozen Run can reference a historical
+checkpoint only when the native storage scope and path convention match; old
+Actions never become native execution authority. Historical W&B status reads
+retain original routes and cursors without publishing.
 
 Registered checkpoint GETs can also read historical Run/Attempt receipts without
 a native Submission. They validate the original source/image and issued storage

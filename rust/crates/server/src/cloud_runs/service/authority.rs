@@ -80,6 +80,15 @@ impl Service {
         ml_exp_core::identity::validate_id(project)
             .and_then(|_| ml_exp_core::identity::validate_id(run))
             .map_err(|_| cloud::Error::configuration())?;
+        if let Some(history) = &self.history {
+            history
+                .require_available(project, run)
+                .map_err(|error| cloud::Error {
+                    code: error.code.into(),
+                    http_status: Some(error.status),
+                    uncertain: false,
+                })?;
+        }
         let (_, workspace) = read_config::workspace(&self.settings.registry_root)
             .map_err(|_| cloud::Error::evidence())?;
         if workspace != self.workspace {

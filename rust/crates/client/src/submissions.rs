@@ -574,7 +574,14 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
     session::validate_health(health)?;
     let creates = matches!(plan.expected, Expected::Creation { .. });
     let capability = if matches!(plan.expected, Expected::Tracking { .. }) {
-        "native-tracking-status.v1"
+        if health["capabilities"]
+            .as_array()
+            .is_some_and(|caps| caps.iter().any(|v| v == "tracking-status-read.v1"))
+        {
+            "tracking-status-read.v1"
+        } else {
+            "native-tracking-status.v1"
+        }
     } else if plan.path.ends_with("/sync") {
         "native-cloud-sync.v1"
     } else if plan.path.ends_with("/history") {

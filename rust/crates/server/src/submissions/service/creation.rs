@@ -38,6 +38,11 @@ impl Service {
         let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
             .map_err(|_| Error::Authority)?;
         request.validate(project)?;
+        if let Some(history) = &self.history {
+            history
+                .require_available(project, &request.run_id)
+                .map_err(|_| Error::Conflict)?;
+        }
         let root = self
             .creation_roots
             .get(project)
@@ -68,6 +73,16 @@ impl Service {
             .resume_from
             .as_ref()
             .map(|reference| {
+                if let Some(history) = &self.history {
+                    if history
+                        .claims(project, &reference.run_id)
+                        .map_err(|_| Error::CheckpointConflict)?
+                    {
+                        return history
+                            .checkpoint(project, reference)
+                            .map_err(|_| Error::CheckpointConflict);
+                    }
+                }
                 self.checkpoints(
                     project,
                     &reference.run_id,

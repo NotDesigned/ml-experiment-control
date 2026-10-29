@@ -3,6 +3,11 @@ use super::*;
 
 impl Service {
     pub(super) fn validate_workspace(&self, project: &str, run: &str) -> Result<()> {
+        if let Some(history) = &self.history {
+            history
+                .require_available(project, run)
+                .map_err(|_| Error::Conflict)?;
+        }
         let (_, workspace) =
             read_config::workspace(&self.settings.registry_root).map_err(|_| Error::Authority)?;
         if workspace != self.workspace {

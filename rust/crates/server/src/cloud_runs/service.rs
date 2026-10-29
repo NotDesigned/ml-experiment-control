@@ -66,6 +66,7 @@ pub struct Service {
     builds: Option<builds::Settings>,
     debug: Option<debug::Runtime>,
     pub(super) polling: ml_exp_core::polling::Policy,
+    history: Option<Arc<crate::history::Bridge>>,
 }
 struct Lock<'a> {
     service: &'a Service,
@@ -127,6 +128,25 @@ fn missing() -> cloud::Error {
     }
 }
 impl Service {
+    pub fn with_history(
+        mut self,
+        history: Option<Arc<crate::history::Bridge>>,
+    ) -> cloud::Result<Self> {
+        if let Some(bridge) = &history {
+            bridge
+                .validate_native(&self.settings)
+                .map_err(|_| cloud::Error::configuration())?;
+        }
+        self.history = history;
+        Ok(self)
+    }
+    pub(crate) fn history_matches(&self, history: Option<&Arc<crate::history::Bridge>>) -> bool {
+        match (&self.history, history) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
     pub fn initialize(settings: &read_config::Settings) -> cloud::Result<()> {
         settings
             .validate()
@@ -277,6 +297,7 @@ impl Service {
             builds: config.builds,
             debug: config.debug.map(debug::Runtime::open).transpose()?,
             polling: config.polling,
+            history: None,
         })
     }
     pub fn matches(

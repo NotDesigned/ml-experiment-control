@@ -232,6 +232,51 @@ Training sync is optional, normally enabled only when configured credentials and
 a usable destination exist; preparation tracking is controlled independently.
 Real official-cloud W&B acceptance is still pending for this native implementation.
 
+## Deploying a native service
+
+Linux x86_64 binaries (including WSL2) are packaged independently of Python.
+The initial release target requires glibc 2.35 or newer. The installer requires
+Bash, curl and GNU coreutils; it checks exact release hashes and binary version
+before replacing the client. It installs no service and reads no API key.
+
+```sh
+bash install-native.sh --version 0.1.0 --prefix "$HOME/.local/bin"
+ml-exp-rs update --version 0.1.0 --check
+```
+
+These commands require the future `native-v0.1.0` release; development commits
+do not publish that version. Existing Python release assets are separate.
+
+Server bundles contain the server, client, worker and metadata-audit executables,
+a hash manifest and [deployment examples](deploy/server.example.json). Put private
+configuration under `/etc/ml-expd/native/`; token and provider credentials stay
+in separate files. A single deployment file refers to approved read, Slurm,
+cloud and optional tracking configurations. Omitted backends stay disabled.
+
+```sh
+ml-expd-rs --config /etc/ml-expd/native/server.json
+```
+
+Create fresh native registry/lifecycle/source/backend stores explicitly using
+the initialization commands in `--help`, as the service account that will own
+them. Create the configured Project definition and Run roots first. Normal
+startup never initializes missing stores. Enable only the required backend
+configuration and keep its provider limits and credentials independent.
+
+The [systemd example](deploy/ml-expd-native.service) installs no unit by itself.
+Adjust its approved writable and read-only paths to the actual configuration.
+When attaching history, expose original paths read-only; allow writes only to
+the new native roots. Do not initialize a native marker over an original registry.
+Image building may use the separately configured Python effect adapter; its
+interpreter/dependencies are outside this native bundle. W&B similarly uses the
+optional official SDK process. Neither is required for basic API/client reads.
+
+The tag workflow builds/checks native executables and creates `SHA256SUMS`,
+`native-release.json`, individual binaries and a server bundle. A manual workflow
+run only packages; publishing requires an exact stable `native-vX.Y.Z` tag.
+Neither path restarts production. Production cutover still needs provider and
+historical-state acceptance plus the existing idle and identity checks.
+
 ## Existing-state audit
 
 The daemon also has an explicit historical reader. It serves the existing
@@ -253,9 +298,23 @@ absence. The original flat Project lifecycle ledger and deletion fences must
 already exist. Each historical observation runs in a dedicated thread with
 kernel-enforced write denial; an unsupported kernel is an error. Paused or
 archived Projects stay hidden, and a different journal or native marker is
-refused. No historical SQLite file is copied or migrated. This separate reader
-does not yet combine new native Run creation and historical records into one
-writable service, or authorize recovery from an old checkpoint.
+refused. No historical SQLite file is copied or migrated.
+
+A writable native service can attach that same pinned reader with
+`--history-config /private/historical-reader.json` and its ordinary
+`--read-config /private/native-reads.json`. The registry and Run roots must be
+disjoint. Queries, metrics, tracking cursors and checkpoint GETs then use one
+address. Project counters combine both sources. Existing or deleted historical
+Run IDs remain reserved, including in asynchronous preparations; duplicate or
+corrupt native identities cannot fall back to history. Old Actions are never
+converted into native execution authority.
+
+A new Run may explicitly reference a historical checkpoint. The native planner
+still checks the exact Project, complete checkpoint, storage scope and configured
+backend path convention; incompatible storage is rejected. The worker validates
+the checkpoint files before training. This is a new frozen Run, not a replay or
+an automatic restart of the old task. Historical W&B routes and cursors are read
+without republishing or resetting them.
 
 The offline audit accepts an explicit private read configuration without a native
 workspace marker. Run it as the account that owns the original metadata:

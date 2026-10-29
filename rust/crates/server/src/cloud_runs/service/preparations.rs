@@ -35,6 +35,15 @@ impl Service {
         let run = request
             .resolve(project, worker)
             .map_err(|_| cloud::Error::configuration())?;
+        if let Some(history) = &self.history {
+            history
+                .require_available(project, &run.run_id)
+                .map_err(|error| cloud::Error {
+                    code: error.code.into(),
+                    http_status: Some(error.status),
+                    uncertain: false,
+                })?;
+        }
         if let Some(backend) = self.backends.get(&run.executor) {
             if matches!(
                 backend.adapter.profile,
@@ -262,6 +271,12 @@ impl Service {
             .request
             .resolve(project, &saved.worker_sha256)
             .map_err(|_| cloud::Error::evidence())?;
+        self.setup_preflight(
+            project,
+            &saved.request,
+            &saved.worker_sha256,
+            slurm.as_deref(),
+        )?;
         if saved.request.runtime.is_some() {
             let runtime = self.runtime_status(project, &run.runtime_id)?;
             if runtime["status"] != "READY" {

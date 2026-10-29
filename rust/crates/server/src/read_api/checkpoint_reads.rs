@@ -18,6 +18,9 @@ impl Api {
         attempt: &str,
         id: Option<&str>,
     ) -> Result<Option<Value>, Error> {
+        if let Some(history) = self.history_for(project, run)? {
+            return history.historical_checkpoints(project, run, attempt, id);
+        }
         self.observe(move |api| api.historical_checkpoints_observed(project, run, attempt, id))
     }
     fn historical_checkpoints_observed(

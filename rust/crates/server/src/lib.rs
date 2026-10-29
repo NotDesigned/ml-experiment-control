@@ -8,6 +8,7 @@ pub mod checkpoints;
 pub mod cloud_runs;
 mod data_delivery_http;
 pub mod deletion;
+pub mod deployment;
 pub mod experiments;
 pub mod history;
 pub mod index;
@@ -233,6 +234,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
             api.submissions().as_deref(),
         );
         document["historical_read_only"] = json!(api.is_historical());
+        document["historical_records_attached"] = json!(api.history().is_some());
         if api.is_historical() {
             for field in ["capabilities", "supported_capabilities"] {
                 document[field]
@@ -241,7 +243,16 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
                     .extend([
                         json!("historical-records-read.v1"),
                         json!("project-lifecycle-read.v1"),
+                        json!("tracking-status-read.v1"),
                     ]);
+            }
+        }
+        if api.history().is_some() {
+            for field in ["capabilities", "supported_capabilities"] {
+                document[field]
+                    .as_array_mut()
+                    .expect("capabilities")
+                    .push(json!("tracking-status-read.v1"));
             }
         }
         for field in ["capabilities", "supported_capabilities"] {
