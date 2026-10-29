@@ -21,6 +21,40 @@ from ml_exp_server.data import registry_transport
 
 
 class NativeBridge(unittest.TestCase):
+    def test_data_publication_mirrors_exact_digest_and_reuses_receipt_without_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worker = root / "worker"
+            worker.write_bytes(b"owned worker fixture; must never execute")
+            raw = json.dumps({"mediaType": registry_transport.MANIFEST, "layers": []}).encode()
+            digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+            source = "registry.example/team/build"
+            target = "mirror.example/team/runtime"
+            key = "1" * 64
+            recipe = {"project": "demo", "executor": "sensecore-test", "definition": {"archive_bytes": 17},
+                      "base_image": "registry.example/base@sha256:" + "2" * 64,
+                      "worker_sha256": "sha256:" + hashlib.sha256(worker.read_bytes()).hexdigest()}
+            value = {"operation": "native-data-get", "data_image_id": "data-image." + key,
+                     "recipe": recipe, "download": {"project": "demo", "definition": recipe["definition"],
+                        "target": {"backend_id": "sensecore-test"}, "source": {"kind": "dataset_parts"}}}
+            builder = SimpleNamespace(root=root, config={"repository": source, "native_worker_bin": str(worker),
+                "sensecore_mirror": {"source_repository": source, "target_repository": target}})
+            (root / (key + ".native-data-definition.json")).write_text(json.dumps(recipe))
+            calls = []
+            def observed(method, path, **kwargs):
+                calls.append((method, path))
+                return 200, {}, raw
+            registry = SimpleNamespace(prefix="/v2/team/runtime", request=observed)
+            with patch.object(native_image, "published_image", return_value=source + "@" + digest) as published, \
+                    patch.object(registry_transport.Registry, "from_config", return_value=registry), \
+                    patch.object(subprocess, "run", side_effect=AssertionError("verified mirror must not copy or create a job")):
+                result = native_data.request(builder, value)
+                self.assertEqual(result["image"], target + "@" + digest)
+                self.assertEqual(result["recipe"], recipe)
+                self.assertEqual(native_data.request(builder, value), result)
+                published.assert_called_once()
+            self.assertEqual(calls, [("GET", "/v2/team/runtime/manifests/data-" + key)])
+
     def test_progress_requires_a_live_lock_and_never_creates_one(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
