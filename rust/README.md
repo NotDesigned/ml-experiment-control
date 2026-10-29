@@ -528,8 +528,18 @@ transfer identity, source, receipt and retention without restoring a cache,
 reading payloads or sending an ACK. Released and expired archives retain their
 file identities and training completion evidence. This inventory covers the
 published archive only (`local_files_included=false`); it is not a backend-file
-recovery or download endpoint. Native-created Runs use their Submission result
-interfaces and never fall back to original transfer records.
+recovery endpoint. An optional hash-pinned original S3 profile enables the
+historical `GET .../artifacts/download` endpoint to issue a short-lived GET URL.
+It returns 410 for released/expired archives and does not read payloads, restore
+caches, acknowledge downloads or authorize deletion. Native-created Runs use
+their Submission result interfaces and never fall back to original transfers.
+
+To enable historical tickets, add `artifact_store` to the private historical
+reader configuration, with `profile_file` and its lowercase `profile_sha256`.
+The owner-only profile uses the existing `public_endpoint`, `bucket`, `region`,
+`access_key`, `secret_key` and optional `download_url_seconds` fields. Only HTTPS
+GET signing is supported. A changed profile hash is refused; configure a reviewed
+replacement explicitly when migrating or rotating its credentials.
 
 The offline audit accepts an explicit private read configuration without a native
 workspace marker. Run it as the account that owns the original metadata:

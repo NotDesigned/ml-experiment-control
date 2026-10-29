@@ -25,6 +25,10 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
             get(historical_files),
         )
         .route(
+            "/api/runs/{project}/{run}/attempts/{attempt}/artifacts/download",
+            get(historical_download),
+        )
+        .route(
             "/api/runs/{project}/{run}/attempts/{attempt}/collection",
             get(collection),
         )
@@ -209,6 +213,32 @@ async fn historical_files(
             })
     })
     .await
+}
+async fn historical_download(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<(String, String, String)>, PathRejection>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let Ok(Path((project, run, attempt))) = path else {
+        return bad_path();
+    };
+    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+        return failure(error);
+    }
+    let mut response = execute(state, Access::Read, move |api, now| {
+        api.historical_artifact_ticket(&project, &run, &attempt, now as i64)?
+            .ok_or(read_api::Error {
+                status: 409,
+                code: "NATIVE_ARTIFACTS_REQUIRE_SUBMISSION",
+                detail: "native results must be downloaded through their exact Submission identity",
+            })
+    })
+    .await;
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
 }
 async fn submission(
     State(state): State<Arc<AppState>>,

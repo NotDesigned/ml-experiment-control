@@ -22,6 +22,27 @@ pub enum Error {
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// W&B flattens config dictionaries and omits empty mappings, including parents
+/// whose only children were empty mappings. Accept only that observed encoding;
+/// nonempty values, nulls, arrays and unexpected keys retain exact identity.
+pub fn config_matches(expected: &serde_json::Value, observed: &serde_json::Value) -> bool {
+    fn empty_mapping(value: &serde_json::Value) -> bool {
+        value
+            .as_object()
+            .is_some_and(|m| m.values().all(empty_mapping))
+    }
+    match (expected.as_object(), observed.as_object()) {
+        (Some(expected), Some(observed)) => {
+            observed.keys().all(|key| expected.contains_key(key))
+                && expected.iter().all(|(key, value)| match observed.get(key) {
+                    Some(observed) => config_matches(value, observed),
+                    None => empty_mapping(value),
+                })
+        }
+        _ => expected == observed,
+    }
+}
+
 /// One accepted journal event that may be sent to W&B history.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryEvent {
@@ -357,6 +378,25 @@ pub fn plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_config_accepts_only_wandb_empty_mapping_elision() {
+        use serde_json::json;
+        let expected = json!({"run_id":"train","parameters":{},"protocol":{"definitions":{},"id":"p1"},"null":null,"list":[{}]});
+        let visible = json!({"run_id":"train","protocol":{"id":"p1"},"null":null,"list":[{}]});
+        assert!(config_matches(&expected, &expected));
+        assert!(config_matches(&expected, &visible));
+        for different in [
+            json!({"run_id":"other","protocol":{"id":"p1"},"null":null,"list":[{}]}),
+            json!({"run_id":"train","protocol":{},"null":null,"list":[{}]}),
+            json!({"run_id":"train","protocol":{"id":"p1"},"list":[{}]}),
+            json!({"run_id":"train","protocol":{"id":"p1"},"null":null,"list":[]}),
+            json!({"run_id":"train","protocol":{"id":"p1"},"null":null,"list":[{}],"foreign":{}}),
+        ] {
+            assert!(!config_matches(&expected, &different));
+        }
+        assert!(config_matches(&json!({"nested":{"empty":{}}}), &json!({})));
+    }
 
     fn event(sequence: i64, event_id: &str) -> HistoryEvent {
         HistoryEvent {

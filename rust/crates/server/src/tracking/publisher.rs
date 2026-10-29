@@ -317,7 +317,10 @@ fn publish_bound(
         .ok_or(Error::Transport)?
         .call(&job, cancelled)?;
     validate()?;
-    if remote["wandb_id"] != status["wandb_id"] || remote["route"] != binding["route"] {
+    if remote["wandb_id"] != status["wandb_id"]
+        || remote["route"] != binding["route"]
+        || !publication::config_matches(&binding["config"]["ml_expd"], &remote["config"])
+    {
         return Err(Error::Identity);
     }
     let evidence: RemoteEvidence =

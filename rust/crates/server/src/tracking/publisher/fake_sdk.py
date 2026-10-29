@@ -115,8 +115,13 @@ def init(**kwargs):
     if kwargs["resume"] == "must":
         assert identity in data["runs"]
     data["inits"] += 1
+    def visible(value):
+        if not isinstance(value, dict):
+            return value
+        return {key: item for key, value in value.items()
+                if (item := visible(value)) != {}}
     data["runs"].setdefault(identity, {"entity": kwargs["entity"],
-        "project": kwargs["project"], "config": kwargs["config"],
+        "project": kwargs["project"], "config": visible(kwargs["config"]),
         "history": [], "pending": [], "definitions": {}, "summary": {}})
     data["runs"][identity]["state"] = "running"
     write(data)

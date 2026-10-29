@@ -452,6 +452,7 @@ fn schema_document() -> serde_json::Value {
         "/api/runs/{project}/{run}/attempts":operation("Verified Attempt manifests; no latest-attempt guessing",run()),
         "/api/runs/{project}/{run}/attempts/{attempt}/collection":operation("Read process completion separately from unobserved artifact publication; never starts collection",collection),
         "/api/runs/{project}/{run}/attempts/{attempt}/files":operation("Read an original published result inventory; no payload restoration, ACK or native Submission fallback",vec![parameter("protocol"),parameter("project"),parameter("run"),parameter("attempt"),json!({"name":"checksums","in":"query","schema":{"type":"boolean","default":false}})]),
+        "/api/runs/{project}/{run}/attempts/{attempt}/artifacts/download":operation("Obtain a short-lived GET URL for an available historical archive; no payload access, ACK or release",vec![parameter("protocol"),parameter("project"),parameter("run"),parameter("attempt")]),
         "/api/attempts/{project}/{identity}/show":operation("Exact Attempt metadata and evidence provenance",exact()),
         "/api/attempts/{project}/{identity}/logs":operation("Exact Attempt bounded captured log tails with source diagnostics",logs),
         "/api/attempts/{project}/{identity}/metrics":operation("Exact Attempt scientific metrics; truncated raw history is PARTIAL, oversized canonical journal is refused",metrics)

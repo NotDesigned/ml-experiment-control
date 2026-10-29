@@ -10,6 +10,8 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+mod artifact_tickets;
+pub use artifact_tickets::ObjectConfig;
 
 pub(crate) fn identity_conflict() -> crate::read_api::Error {
     crate::read_api::Error {
@@ -110,10 +112,16 @@ pub struct Settings {
     /// Original records.meta workspace identity, not a new native seed. None
     /// explicitly means no canonical metric journal may be read in this scope.
     pub journal_workspace_id: Option<String>,
+    /// Explicit, hash-pinned original S3 profile. Only GET presigning is allowed.
+    #[serde(default)]
+    pub artifact_store: Option<ObjectConfig>,
 }
 impl Settings {
     pub fn validate(&self) -> Result<(), read_config::Error> {
         self.reads.validate()?;
+        if let Some(profile) = &self.artifact_store {
+            profile.validate()?;
+        }
         if self.schema_version != 1
             || self.reads.source_policy.is_some()
             || self.journal_workspace_id.as_ref().is_some_and(|s| {
@@ -140,6 +148,7 @@ impl Settings {
 
 pub(crate) struct Identity {
     pub journal_workspace_id: Option<String>,
+    pub artifact_store: Option<ObjectConfig>,
     lifecycle: projects::Store,
     approved: BTreeMap<String, PathBuf>,
 }
@@ -160,6 +169,7 @@ impl Identity {
         guard.validate().map_err(|_| read_config::Error)?;
         let identity = Self {
             journal_workspace_id: settings.journal_workspace_id.clone(),
+            artifact_store: settings.artifact_store.clone(),
             lifecycle: projects::Store::open(&settings.reads.registry_root)
                 .map_err(|_| read_config::Error)?,
             approved: settings
@@ -275,6 +285,7 @@ pub fn inspect(reads: read_config::Settings) -> Result<Settings, read_config::Er
             schema_version: 1,
             reads,
             journal_workspace_id,
+            artifact_store: None,
         };
         Identity::open(&settings)?;
         Ok(settings)

@@ -46,6 +46,63 @@ fn transfer(
 }
 
 impl Api {
+    pub fn historical_artifact_ticket(
+        &self,
+        project: &str,
+        run: &str,
+        attempt: &str,
+        now: i64,
+    ) -> Result<Option<Value>, Error> {
+        validate_id(project).map_err(|_| invalid_query())?;
+        validate_observation_id(run).map_err(|_| invalid_query())?;
+        validate_attempt(attempt).map_err(|_| invalid_query())?;
+        if let Some(history) = self.history_for(project, run)? {
+            return history.historical_artifact_ticket(project, run, attempt, now);
+        }
+        self.observe(|api| {
+            let Some(history) = &api.historical else {
+                return Ok(None);
+            };
+            let guard = api
+                .fence
+                .existing_observation_guard(project, run)
+                .map_err(|_| unavailable())?;
+            let inventory = api
+                .historical_artifacts(project, run, attempt)?
+                .ok_or_else(unavailable)?;
+            match inventory["storage_status"].as_str() {
+                Some("RELEASED" | "EXPIRED") => {
+                    return Err(error(
+                        410,
+                        "ARTIFACT_RELEASED",
+                        "the published archive has been released or expired",
+                    ));
+                }
+                Some("AVAILABLE") => {}
+                _ => {
+                    return Err(error(
+                        404,
+                        "ARTIFACT_UNAVAILABLE",
+                        "this Attempt has no published archive",
+                    ));
+                }
+            }
+            let profile = history.artifact_store.as_ref().ok_or(error(
+                503,
+                "HISTORICAL_OBJECT_STORE_NOT_CONFIGURED",
+                "the original object store profile is not configured for read-only download",
+            ))?;
+            let ticket = profile.ticket(&inventory, now).map_err(|_| unavailable())?;
+            if api.historical_artifacts(project, run, attempt)?.as_ref() != Some(&inventory) {
+                return Err(unavailable());
+            }
+            guard
+                .require_observed_live(project, run)
+                .map_err(|_| unavailable())?;
+            Ok(Some(ticket))
+        })
+    }
+
     pub fn historical_artifacts(
         &self,
         project: &str,

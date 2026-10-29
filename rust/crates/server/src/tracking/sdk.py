@@ -71,8 +71,6 @@ def dispatch(job):
         if (remote.id, remote.entity, remote.project) != (
                 identity, route["entity"], route["project"]):
             raise ValueError("remote identity differs")
-        if remote.config.get("ml_expd") != job["config"]["ml_expd"]:
-            raise ValueError("remote config differs")
         history = []
         for row in remote.scan_history(
                 keys=["ml_expd/sequence", "ml_expd/event_id"],
@@ -89,6 +87,7 @@ def dispatch(job):
         if len(summary_keys) > 8192:
             raise ValueError("summary bound")
         return {"wandb_id": identity, "route": route, "state": remote.state,
+                "config": remote.config.get("ml_expd"),
                 "summary_keys": summary_keys, "evidence": {
                     "history": history,
                     "last_history_step": remote.lastHistoryStep,

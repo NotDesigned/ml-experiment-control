@@ -270,6 +270,17 @@ hash: absent per-file hashes remain `null`, with `checksums_complete=false` and
 new native publication and download acknowledgements still require complete
 file hashes. The inventory covers the published archive, not uncollected files
 on a backend.
+An explicitly configured, hash-pinned original S3 profile also allows a
+short-lived historical archive GET URL. Released archives return 410; ticket
+issuance does not read a payload or authorize an ACK, cache restore or deletion.
+Direct recovery of uncollected backend files remains separate work.
+
+The W&B publisher compares its frozen config in Rust. W&B omits empty mapping
+fields when storing configs, so the comparison permits that specific encoding
+change while rejecting changed nonempty values, nulls, arrays and extra keys.
+The official SDK effect shell returns observed config rather than deciding its
+identity. A failed comparison retains unconfirmed events and never replays
+training.
 
 Next testing sequence: deterministic regressions → isolated client/server on CPU
 DSW → actual storage/build/debug lifecycle → bounded training/restore/collection

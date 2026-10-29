@@ -168,6 +168,7 @@ impl Fixture {
             reads: self.settings(),
             journal_workspace_id: journal
                 .then(|| self.workspace.strip_prefix("rust-preview-").unwrap().into()),
+            artifact_store: None,
         }
     }
 }
@@ -1333,6 +1334,66 @@ fn historical_result_inventory_is_read_only_exact_and_preserves_release_evidence
     write_json(&path, &transfer);
     fs::remove_file(&path).unwrap();
     symlink("/private/forbidden", &path).unwrap();
+    assert_eq!(
+        http_failure(server.client().get(route).unwrap_err(), 409).error_code,
+        "ARTIFACT_EVIDENCE_UNAVAILABLE"
+    );
+}
+
+#[test]
+fn historical_download_signs_only_exact_available_receipts_with_a_pinned_profile() {
+    let fixture = Fixture::new();
+    let mut settings = fixture.historical_settings(false);
+    let profile = fixture._temp.path().join("original-s3.json");
+    write_json(
+        &profile,
+        &json!({"public_endpoint":"https://example.com","bucket":"results","region":"garage","access_key":"fixture-key","secret_key":"fixture-secret"}),
+    );
+    settings.artifact_store = Some(ml_exp_server::history::ObjectConfig {
+        profile_file: profile.clone(),
+        profile_sha256: ml_exp_io::sha256_file(&profile).unwrap(),
+    });
+    let directory = fixture.registry.join("artifact-transfers/demo/train");
+    private_directory(&directory);
+    let path = directory.join("attempt-001.json");
+    let sha = "a".repeat(64);
+    let mut transfer = json!({"project":"demo","run_id":"train","attempt_id":"attempt-001",
+        "receipt":{"sha256":sha,"bytes":10240,"object_key":format!("demo/train/attempt-001/{sha}.tar"),
+            "files":[{"path":"final.pt","bytes":128}]}});
+    write_json(&path, &transfer);
+    let before = file_inventory(fixture._temp.path());
+    let server = Server::start(
+        Auth::load(&fixture.token).unwrap(),
+        ml_exp_server::history::open(settings).unwrap(),
+    );
+    let route = "/api/runs/demo/train/attempts/attempt-001/artifacts/download";
+    let result = server.client().get(route).unwrap();
+    assert_eq!(result["transport"], "s3-presigned-get");
+    assert_eq!(result["sha256"], sha);
+    assert_eq!(result["files"][0]["sha256"], Value::Null);
+    assert_eq!(result["acknowledgement_supported"], false);
+    assert!(!result.to_string().contains("fixture-secret"));
+    assert_eq!(file_inventory(fixture._temp.path()), before);
+    assert_eq!(
+        http_failure(
+            server
+                .client()
+                .get("/api/runs/demo/train/attempts/attempt-002/artifacts/download")
+                .unwrap_err(),
+            404
+        )
+        .error_code,
+        "ARTIFACT_UNAVAILABLE"
+    );
+    transfer["retention"] = json!({"status":"RELEASED","sha256":sha});
+    write_json(&path, &transfer);
+    assert_eq!(
+        http_failure(server.client().get(route).unwrap_err(), 410).error_code,
+        "ARTIFACT_RELEASED"
+    );
+    transfer.as_object_mut().unwrap().remove("retention");
+    write_json(&path, &transfer);
+    fs::write(&profile, b"{}").unwrap();
     assert_eq!(
         http_failure(server.client().get(route).unwrap_err(), 409).error_code,
         "ARTIFACT_EVIDENCE_UNAVAILABLE"
