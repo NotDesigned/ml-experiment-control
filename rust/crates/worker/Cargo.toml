@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 ml-exp-core.workspace = true
 ml-exp-io.workspace = true
+experiment-redact.workspace = true
 fs2.workspace = true
 getrandom.workspace = true
 thiserror.workspace = true

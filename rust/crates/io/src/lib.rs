@@ -7,7 +7,11 @@ pub mod directory;
 #[cfg(unix)]
 pub mod framing;
 #[cfg(unix)]
+pub mod observations;
+#[cfg(unix)]
 pub mod process;
+#[cfg(target_os = "linux")]
+pub mod unix_http;
 
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};

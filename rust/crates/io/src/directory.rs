@@ -405,6 +405,23 @@ impl Directory {
         self.verify_private_parent()
     }
 
+    /// No-replace publication of an operation-owned completed regular file.
+    pub fn publish_regular_as(
+        &self,
+        source: &OsStr,
+        target: &OsStr,
+        file: &File,
+    ) -> io::Result<()> {
+        leaf(source)?;
+        leaf(target)?;
+        self.verify_private_parent()?;
+        self.validate_regular_entry(source, file)?;
+        rename_between_new(&self.inner.file, source, &self.inner.file, target)?;
+        rfs::fsync(&self.inner.file)?;
+        self.validate_regular_entry(target, file)?;
+        self.verify_private_parent()
+    }
+
     /// Remove one retained empty child of this exact parent. The caller owns
     /// the unpublished staging namespace; populated/published trees are refused.
     pub fn remove_staged_empty_child(&self, child: &Directory) -> io::Result<()> {

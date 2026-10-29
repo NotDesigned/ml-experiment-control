@@ -14,6 +14,9 @@ struct Args {
     package_json: String,
     #[arg(long)]
     inspect: bool,
+    /// Retry only retained metadata delivery; never start or initialize training.
+    #[arg(long, conflicts_with = "inspect")]
+    sync: bool,
 }
 pub(crate) fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let args = match Args::try_parse_from(args) {
@@ -44,6 +47,13 @@ pub(crate) fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
             signal_hook::flag::register(signal, Arc::clone(&cancelled))
                 .map_err(|_| ml_exp_worker::managed::Error::Configuration)?;
+        }
+        if args.sync {
+            if !ml_exp_worker::cloud_exchange::drain(&package, &cancelled)? {
+                return Err(ml_exp_worker::managed::Error::Uncertain);
+            }
+            ml_exp_worker::cloud_artifacts::publish(&package)?;
+            return ml_exp_worker::managed::sample(&package.config);
         }
         let runtime = package
             .config

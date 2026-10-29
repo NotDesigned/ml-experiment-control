@@ -52,6 +52,11 @@ pub struct Authority<'a> {
     pub source_receipt_sha256: &'a str,
     pub profile_sha256: &'a str,
     pub tracking_route: &'a Value,
+    pub target: &'a helper::Target,
+    pub run_root: &'a str,
+    pub data_root: &'a str,
+    pub datasets: &'a [crate::datasets::Receipt],
+    pub checkpoint: Option<&'a Value>,
 }
 pub fn documents(
     project: &str,
@@ -67,8 +72,6 @@ pub fn documents(
     time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
         .map_err(|_| Error("Run time"))?;
     if request.runtime_id != runtime.runtime_id
-        || request.resume_from.is_some()
-        || !request.data.is_empty()
         || [
             authority.project_sha256,
             authority.source_receipt_sha256,
@@ -79,8 +82,39 @@ pub fn documents(
     {
         return Err(Error("cloud Run authority or unsupported input"));
     }
-    let protocol = json!({"source_id":runtime.source_id,"image":runtime.image,"runtime_id":runtime.runtime_id,
+    let datasets = crate::datasets::select(
+        &request.data,
+        authority.datasets,
+        project,
+        authority.target,
+        authority.data_root,
+    )
+    .map_err(|_| Error("cloud dataset scope"))?;
+    match (&request.resume_from, authority.checkpoint) {
+        (None, None) => {}
+        (Some(reference), Some(value)) => {
+            crate::checkpoints::selected_at(
+                reference,
+                value,
+                project,
+                &authority.target.storage_scope,
+                &format!(
+                    "{}/{}/{}/{}/state",
+                    authority.run_root, project, reference.run_id, reference.attempt_id
+                ),
+            )
+            .map_err(|_| Error("cloud checkpoint scope"))?;
+        }
+        _ => return Err(Error("cloud restore evidence")),
+    }
+    let mut protocol = json!({"source_id":runtime.source_id,"image":runtime.image,"runtime_id":runtime.runtime_id,
         "command":request.command,"parameters":request.parameters,"seed":request.seed,"evaluation":request.evaluation,"metrics_schema":request.metrics_schema});
+    if !request.data.is_empty() {
+        protocol["data"] = json!(request.data);
+    }
+    if let Some(reference) = &request.resume_from {
+        protocol["resume_from"] = json!(reference);
+    }
     let protocol_id = digest(&protocol)?;
     // Validate arbitrary project schemas without inventing scientific metrics.
     crate::metrics::MetricSchema::from_value(&request.metrics_schema.to_value())
@@ -93,11 +127,23 @@ pub fn documents(
         "native_creation":{"format":"native-cloud-run.v1","request_sha256":request.identity(project).map_err(|_|Error("Run request hash"))?,
             "project_sha256":authority.project_sha256,"source_receipt_sha256":authority.source_receipt_sha256,"backend_config_sha256":authority.profile_sha256,
             "runtime_sha256":digest(&json!(runtime))?}});
+    if !datasets.is_empty() {
+        run["native_datasets"] = json!(datasets);
+    }
+    if let Some(checkpoint) = authority.checkpoint {
+        run["resume_from"] = json!(request.resume_from);
+        run["native_checkpoint"] = checkpoint.clone();
+    }
+    run["native_cloud"]["data_root"] = json!(authority.data_root);
+    run["native_cloud"]["target"] = json!(authority.target);
     if let Some(wandb) = &request.wandb {
         run["wandb"] = wandb.to_value();
     }
     if let Some(policy) = &request.artifacts {
         run["artifacts"] = json!(policy);
+    }
+    if let Some(policy) = &request.scheduling {
+        run["native_cloud"]["scheduling"] = json!(policy);
     }
     let mut attempt = run.clone();
     attempt["attempt_id"] = json!("attempt-001");
@@ -137,7 +183,7 @@ pub fn execution(
         ) != binding.attempt_sha256
         || run["native_creation"]["project_sha256"] != binding.project_sha256
         || run["native_creation"]["source_receipt_sha256"] != binding.source_receipt_sha256
-        || parent != *run
+        || (attempt_id == "attempt-001" && parent != *run)
         || run["source_id"] != runtime.source_id
         || run["image_id"] != runtime.image
         || run["container"]["runtime_id"] != runtime.runtime_id
@@ -146,8 +192,11 @@ pub fn execution(
     {
         return Err(Error("frozen cloud Run"));
     }
+    if attempt_id != "attempt-001" {
+        super::retry::validate_attempt(run, attempt, &binding)?;
+    }
     let request:Request=serde_json::from_value(json!({"run_id":run_id,"runtime_id":runtime.runtime_id,"executor":run["backend"]["executor"],"command":run["command"],"resources":run["resources"],"walltime_seconds":run["native_cloud"]["walltime_seconds"],"seed":run["seed"]})).map_err(|_|Error("cloud Run resources"))?;
-    let package = super::launch::compile(super::launch::Input {
+    let mut package = super::launch::compile(super::launch::Input {
         root,
         project,
         run: run_id,
@@ -157,6 +206,52 @@ pub fn execution(
         timeout_seconds: request.walltime_seconds,
         worker_sha256: &runtime.worker_sha256,
     })?;
+    package.checkpoint_context = Some(crate::checkpoints::Context {
+        project: project.clone(),
+        run_id: run_id.clone(),
+        attempt_id: attempt_id.clone(),
+        source_id: runtime.source_id.clone(),
+        image_id: runtime.image.clone(),
+        storage_scope: format!(
+            "sha256:{}",
+            crate::canonical::digest(
+                &json!({"profile":binding.backend_config_sha256,"run_root":root})
+            )
+            .map_err(|_| Error("checkpoint storage"))?
+        ),
+        state_root: package
+            .config
+            .attempt_root
+            .join("state")
+            .to_str()
+            .ok_or(Error("checkpoint state path"))?
+            .into(),
+    });
+    package.artifacts = run
+        .get("artifacts")
+        .map(|p| serde_json::from_value(p.clone()).map_err(|_| Error("artifact policy")))
+        .transpose()?;
+    let datasets = match run.get("native_datasets") {
+        None => Vec::new(),
+        Some(v) => serde_json::from_value(v.clone()).map_err(|_| Error("frozen cloud datasets"))?,
+    };
+    package.attach(
+        run["native_cloud"]["data_root"]
+            .as_str()
+            .ok_or(Error("frozen data root"))?,
+        datasets,
+        attempt.get("native_checkpoint").cloned(),
+    )?;
+    let policy: Option<crate::first_submission::native::creation::Scheduling> = run["native_cloud"]
+        .get("scheduling")
+        .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error("frozen scheduling policy")))
+        .transpose()?;
+    if policy
+        .as_ref()
+        .is_some_and(|p| !(1..=9).contains(&p.priority))
+    {
+        return Err(Error("frozen scheduling priority"));
+    }
     let job = Job {
         project: project.clone(),
         run_id: run_id.clone(),
@@ -169,14 +264,14 @@ pub fn execution(
         cpus: request.resources.cpus,
         memory_gb: request.resources.memory_gb.ok_or(Error("memory"))?,
         max_time_seconds: request.walltime_seconds,
-        priority: 5,
+        priority: policy.as_ref().map(|p| p.priority).unwrap_or(5),
     };
     let result = action::Execution {
         backend_id: request.executor,
         profile_sha256: binding.backend_config_sha256.clone(),
         binding,
         job,
-        allocation,
+        allocation: policy.map(|p| p.allocation).unwrap_or(allocation),
     };
     result.validate()?;
     Ok(result)

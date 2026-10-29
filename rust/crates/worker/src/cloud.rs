@@ -109,7 +109,70 @@ pub fn run(
     cancelled: &AtomicBool,
 ) -> managed::Result<Observation> {
     prepare(package, runtime)?;
-    managed::run(&package.config, cancelled)
+    let original = managed::inspect(&package.config)?;
+    if original.phase == managed::Phase::Finished {
+        if package.channel.is_some() {
+            let _ = crate::cloud_exchange::drain(package, cancelled);
+        }
+        if package.result_upload && crate::cloud_artifacts::publish(package).is_err() {
+            eprintln!("ML_EXPD_RESULTS=DEFERRED; retained on backend storage");
+        }
+        return Ok(original);
+    }
+    if package.channel.is_none() {
+        crate::cloud_data::materialize(package, cancelled)?;
+        return managed::run(&package.config, cancelled);
+    }
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let wake = (std::sync::Mutex::new(()), std::sync::Condvar::new());
+    let result = std::thread::scope(|scope| {
+        let stop_ref = &stop;
+        let wake_ref = &wake;
+        let sender = scope.spawn(move || {
+            let Ok(transport) = crate::cloud_exchange::Https::new() else {
+                return;
+            };
+            while !stop_ref.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = crate::cloud_exchange::once(package, &transport);
+                let Ok(guard) = wake_ref.0.lock() else {
+                    break;
+                };
+                if stop_ref.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                let _ = wake_ref
+                    .1
+                    .wait_timeout(guard, std::time::Duration::from_secs(5));
+            }
+        });
+        let result = crate::cloud_data::materialize(package, cancelled)
+            .and_then(|_| managed::run(&package.config, cancelled));
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(_guard) = wake.0.lock() {
+            wake.1.notify_all();
+        }
+        if sender.join().is_err() {
+            return Err(managed::Error::Uncertain);
+        }
+        result
+    });
+    // Upload failure never rewrites the training exit status or relaunches it.
+    // A later CPU-only sync drains this same durable stream on shared storage.
+    let delivered = if result.is_ok() {
+        crate::cloud_exchange::drain(package, cancelled).unwrap_or(false)
+    } else {
+        crate::cloud_exchange::Https::new()
+            .and_then(|transport| crate::cloud_exchange::once(package, &transport))
+            .is_ok()
+    };
+    if !delivered {
+        eprintln!("ML_EXPD_EXCHANGE=DEFERRED; retained on backend storage");
+    }
+    if result.is_ok() && package.result_upload && crate::cloud_artifacts::publish(package).is_err()
+    {
+        eprintln!("ML_EXPD_RESULTS=DEFERRED; retained on backend storage");
+    }
+    result
 }
 pub fn package_sha(package: &Package) -> managed::Result<String> {
     package

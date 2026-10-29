@@ -121,9 +121,7 @@ impl Service {
             .as_str()
             .ok_or(Error::Authority)?
             .to_owned();
-        if !self.backends[&backend].runtimes.contains_key(&runtime) {
-            return Err(Error::Authority);
-        }
+        self.runtime(project, &backend, &runtime)?;
         let source = run_value["source_id"].as_str().ok_or(Error::Authority)?;
         let source_receipt = self
             .sources
@@ -180,7 +178,7 @@ impl Service {
                 &facts.attempt,
                 &facts.binding,
                 &backend.profile,
-                &backend.runtimes[&facts.runtime],
+                &self.runtime(&facts.binding.project, &facts.backend, &facts.runtime)?,
                 &prepared.approval,
             )? != prepared.definition_sha256
         {

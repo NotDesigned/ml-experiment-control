@@ -10,8 +10,13 @@ use std::{net::SocketAddr, path::PathBuf};
 struct Args {
     #[arg(long, default_value = "127.0.0.1:18765")]
     bind: SocketAddr,
+    /// Enable explicit administrative deletion plans in an initialized namespace.
+    #[arg(long,requires_all=["read_config","source_archives"])]
+    administration: bool,
+    #[arg(long,requires="read_config",conflicts_with_all=["token_file","administration"])]
+    initialize_administration: bool,
     #[arg(long)]
-    #[arg(required_unless_present_any = ["initialize_registry", "initialize_project_lifecycle", "initialize_source_archives", "initialize_submissions", "initialize_cloud_submissions"])]
+    #[arg(required_unless_present_any = ["initialize_registry", "initialize_project_lifecycle", "initialize_source_archives", "initialize_submissions", "initialize_cloud_submissions", "initialize_administration"])]
     token_file: Option<PathBuf>,
     /// Private approved source configuration for an isolated Rust preview.
     #[arg(long, conflicts_with = "initialize_registry")]
@@ -44,7 +49,7 @@ struct Args {
     #[arg(long,requires_all=["read_config","source_archives"],conflicts_with="initialize_registry")]
     cloud_config: Option<PathBuf>,
     /// Optional private official-cloud W&B credentials and SDK interpreter.
-    #[arg(long, requires = "submission_config")]
+    #[arg(long, requires = "read_config")]
     tracking_config: Option<PathBuf>,
 }
 #[tokio::main]
@@ -54,6 +59,25 @@ async fn main() -> std::process::ExitCode {
         return match ml_exp_server::read_config::initialize(path) {
             Ok(workspace) => {
                 println!("{workspace}");
+                std::process::ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
+    if args.initialize_administration {
+        let result =
+            ml_exp_server::read_config::load(args.read_config.as_deref().expect("required config"))
+                .map_err(|_| "invalid read configuration".to_string())
+                .and_then(|settings| {
+                    ml_exp_server::administration::Service::initialize(&settings)
+                        .map_err(|e| e.to_string())
+                });
+        return match result {
+            Ok(()) => {
+                println!("administration namespace initialized; no payload removed");
                 std::process::ExitCode::SUCCESS
             }
             Err(error) => {
@@ -164,6 +188,7 @@ async fn main() -> std::process::ExitCode {
             let archives = args.source_archives;
             let submission = args.submission_config.clone();
             let cloud = args.cloud_config.clone();
+            let administration = args.administration;
             let routing = tracking.as_ref().map(|runtime| runtime.routing().clone());
             let opened = tokio::task::spawn_blocking(move || {
                 open_api(
@@ -174,6 +199,19 @@ async fn main() -> std::process::ExitCode {
                     cloud.as_deref(),
                     routing,
                 )
+                .and_then(|(api, polling)| {
+                    if !administration {
+                        return Ok((api, polling));
+                    }
+                    let settings = ml_exp_server::read_config::load(&path)?;
+                    let service =
+                        std::sync::Arc::new(ml_exp_server::administration::Service::open(
+                            settings,
+                            api.submissions(),
+                            api.cloud(),
+                        )?);
+                    Ok((api.with_administration(service)?, polling))
+                })
                 .map_err(|e| e.to_string())
             })
             .await
@@ -214,12 +252,26 @@ async fn main() -> std::process::ExitCode {
         },
         None => None,
     };
+    let _cloud_observer = match reads
+        .as_ref()
+        .and_then(|api| api.cloud())
+        .filter(|s| s.polling_enabled())
+    {
+        Some(service) => match ml_exp_server::cloud_runs::Observer::start(service) {
+            Ok(observer) => Some(observer),
+            Err(_) => {
+                eprintln!("cloud scheduler observer unavailable");
+                return std::process::ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
     let _publisher = match tracking.filter(|runtime| runtime.routing().enabled) {
         Some(runtime) => match ml_exp_server::tracking::Publisher::start(
             reads
                 .as_ref()
-                .and_then(|api| api.submissions())
-                .expect("tracking requires native submissions"),
+                .cloned()
+                .expect("tracking requires configured native services"),
             runtime,
         ) {
             Ok(publisher) => Some(publisher),
@@ -314,6 +366,7 @@ fn open_api(
                     config.backends,
                     config.enabled,
                 )?
+                .with_runtime_builder(api.cloud())
                 .with_run_creation(config.creation)?
                 .with_tracking(tracking.unwrap_or_default()),
             );

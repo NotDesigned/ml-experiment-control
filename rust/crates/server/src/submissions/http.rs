@@ -65,6 +65,16 @@ async fn tracking(
         return read_http::failure(error);
     }
     read_http::execute(state, Access::Read, move |api, _| {
+        if let Some(cloud) = api.cloud() {
+            if cloud
+                .handles_run(&project, &run)
+                .map_err(crate::cloud_runs::failure)?
+            {
+                return cloud
+                    .tracking_status(&project, &run)
+                    .map_err(crate::cloud_runs::failure);
+            }
+        }
         service(api)?
             .tracking_status(&project, &run)
             .map_err(failure)
@@ -123,6 +133,16 @@ async fn checkpoint_get(
         return read_http::failure(invalid());
     }
     read_http::execute(state, Access::Read, move |api, _| {
+        if let Some(cloud) = api.cloud() {
+            if cloud
+                .handles_run(&project, &run)
+                .map_err(crate::cloud_runs::failure)?
+            {
+                return cloud
+                    .checkpoints(&project, &run, &attempt, id.as_deref())
+                    .map_err(crate::cloud_runs::failure);
+            }
+        }
         service(api)?
             .checkpoints(&project, &run, &attempt, id.as_deref())
             .map_err(failure)
@@ -424,11 +444,18 @@ struct Execute {
 struct Empty {}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Part {
+    part: u64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Acknowledge {
     proof: ml_exp_core::artifacts::DownloadProof,
     release: bool,
 }
 enum Operation {
+    DownloadTicket(u64),
+    Sync(ml_exp_core::cloud::exchange::Sync),
     Authorize(String),
     Execute(String),
     Cancel(String),
@@ -456,6 +483,11 @@ async fn change(
         return read_http::failure(error);
     }
     let operation = match operation.as_str() {
+        "download-ticket" => decode::<Part>(body).map(|r| Operation::DownloadTicket(r.part)),
+        "sync" => decode::<ml_exp_core::cloud::exchange::Sync>(body).and_then(|r| {
+            r.validate(&identity).map_err(|_| invalid())?;
+            Ok(Operation::Sync(r))
+        }),
         "retry" => {
             decode::<ml_exp_core::first_submission::native::retry::Request>(body).and_then(|r| {
                 r.validate(&identity).map_err(|_| invalid())?;
@@ -499,6 +531,7 @@ async fn change(
     let access = if matches!(
         &operation,
         Operation::History
+            | Operation::DownloadTicket(_)
             | Operation::Refresh
             | Operation::Checkpoint
             | Operation::Collect
@@ -529,12 +562,20 @@ async fn change(
                     Operation::Reconcile=>cloud.reconcile(&identity,&now,&transition,&cancelled),
                     Operation::Refresh=>cloud.refresh(&identity,&now,&cancelled),
                     Operation::Cancel(confirmation)=>cloud.cancel(&identity,&confirmation,&now,&cancelled),
-                    _=>return Err(read_api::Error{status:501,code:"CLOUD_OPERATION_NOT_IMPLEMENTED",detail:"cloud checkpoint, history, artifact and retry composition is not yet implemented; no provider mutation issued"}),
+                    Operation::Sync(request)=>cloud.synchronize(&identity,&request,&now,&cancelled),
+                    Operation::History=>cloud.history(&identity),
+                    Operation::Checkpoint=>cloud.latest_registered_checkpoint(&identity),
+                    Operation::Retry(request)=>cloud.retry(&identity,request,&now,&cancelled),
+                    Operation::Collect=>cloud.collect_artifacts(&identity,&now,&cancelled),
+                    Operation::Acknowledge(request)=>cloud.acknowledge_artifacts(&identity,request.proof,request.release,&now),
+                    Operation::DownloadTicket(part)=>cloud.download_ticket(&identity,part,&now),
                 }.map_err(crate::cloud_runs::failure);
             }}
             let service = service(api)?;
             let refreshing = matches!(&operation,Operation::History | Operation::Refresh | Operation::Checkpoint | Operation::Collect | Operation::Acknowledge(_));
             match operation {
+                Operation::DownloadTicket(_)=>return Err(read_api::Error{status:422,code:"DIRECT_DOWNLOAD_UNAVAILABLE",detail:"this backend streams downloads through its gateway"}),
+                Operation::Sync(_)=>return Err(read_api::Error{status:501,code:"CLOUD_SYNC_NOT_CONFIGURED",detail:"CPU cloud synchronization is not configured for this submission"}),
                 Operation::Retry(request)=>service.retry(&identity,request,&now,&AtomicBool::new(false)),
                 Operation::Cancel(confirmation)=>service.cancel(&identity,&confirmation,&now,&AtomicBool::new(false)),
                 Operation::Authorize(reason) => {
@@ -575,6 +616,16 @@ async fn artifact_metadata(
         return read_http::failure(e);
     }
     read_http::execute(state, Access::Read, move |api, _| {
+        if let Some(cloud) = api.cloud() {
+            if cloud
+                .handles_action(&identity)
+                .map_err(crate::cloud_runs::failure)?
+            {
+                return cloud
+                    .artifacts(&identity)
+                    .map_err(crate::cloud_runs::failure);
+            }
+        }
         service(api)?.artifacts(&identity).map_err(failure)
     })
     .await

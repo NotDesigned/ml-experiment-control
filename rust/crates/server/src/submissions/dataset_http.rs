@@ -64,6 +64,11 @@ async fn status(
         return read_http::failure(e);
     }
     read_http::execute(state, Access::Read, move |api, _| {
+        if let Some(cloud) = api.cloud().filter(|c| c.accepts(&executor)) {
+            return cloud
+                .dataset_state(&project, &executor, &asset)
+                .map_err(crate::cloud_runs::failure);
+        }
         let result = super::http::service(api)?
             .dataset_state(&project, &executor, &asset)
             .map_err(super::http::failure)?;
@@ -116,6 +121,11 @@ async fn transfer(
         Duration::from_secs(1230),
         move |api, _| {
             let _permit = permit;
+            if let Some(cloud) = api.cloud().filter(|c| c.accepts(&executor)) {
+                return cloud
+                    .dataset_transfer(&project, &executor, command, &payload)
+                    .map_err(crate::cloud_runs::failure);
+            }
             let value = super::http::service(api)?
                 .dataset_transfer(
                     &project,

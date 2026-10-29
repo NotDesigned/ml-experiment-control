@@ -18,6 +18,8 @@ struct Args {
     config: PathBuf,
     #[arg(long)]
     initialize: bool,
+    #[arg(long, conflicts_with = "initialize")]
+    bundle_output: Option<PathBuf>,
 }
 struct Timer {
     stop: std::sync::mpsc::Sender<()>,
@@ -70,6 +72,9 @@ fn run(args: Args) -> Result<(), data_import::Error> {
             errno: None,
         }
     })?;
+    if let Some(path) = args.bundle_output {
+        return data_import::bundle(&config, &path, &flag);
+    }
     let start = Instant::now();
     let mut baseline = None;
     let mut output = io::stdout().lock();

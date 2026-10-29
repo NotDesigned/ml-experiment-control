@@ -35,6 +35,8 @@ impl Service {
         Ok(self)
     }
     pub fn create_run(&self, project: &str, request: Request, now: &str) -> Result<Value> {
+        let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
+            .map_err(|_| Error::Authority)?;
         request.validate(project)?;
         let root = self
             .creation_roots
@@ -55,10 +57,7 @@ impl Service {
             .backends
             .get(&request.executor)
             .ok_or(Error::Authority)?;
-        let runtime = backend
-            .runtimes
-            .get(&request.runtime_id)
-            .ok_or(Error::Authority)?;
+        let runtime = self.runtime(project, &request.executor, &request.runtime_id)?;
         let source = self
             .sources
             .read(project, &runtime.source_id)
@@ -108,7 +107,7 @@ impl Service {
             project,
             &request,
             &backend.profile,
-            runtime,
+            &runtime,
             creation::Authority {
                 project_sha256: &project_document.raw_sha256,
                 source_receipt_sha256: &source_sha,

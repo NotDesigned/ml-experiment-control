@@ -1,9 +1,15 @@
 //! Provider request compilers. No credentials, clocks, network or persistence.
 //! A compiled request is an effect description, never authority to execute it.
 pub mod action;
+pub mod build;
+pub mod data;
+pub mod debug;
+pub mod exchange;
 pub mod launch;
+pub mod materialize;
 mod observation;
 pub mod pai;
+pub mod retry;
 pub mod run;
 pub mod sensecore;
 use crate::{canonical, identity, slurm::helper, submission};
@@ -78,18 +84,27 @@ impl Endpoint {
                 Ok(format!("{}.{}.aliyuncs.com", product.endpoint(), region))
             }
             Self::Sensecore { service, region } => {
-                if !matches!(service.as_str(), "aec2" | "management" | "iam" | "monitor") {
+                if !matches!(
+                    service.as_str(),
+                    "aec2" | "cci" | "network" | "management" | "iam" | "monitor"
+                ) {
                     return Err(Error("service"));
                 }
                 match region {
                     Some(region) => {
                         sense_region(region)?;
-                        if service != "aec2" {
+                        if !matches!(service.as_str(), "aec2" | "cci" | "network") {
                             return Err(Error("regional service"));
                         }
-                        Ok(format!("{service}.{region}.sensecoreapi.cn"))
+                        Ok(if service == "cci" {
+                            format!("cci.{region}.sensecore.cn")
+                        } else {
+                            format!("{service}.{region}.sensecoreapi.cn")
+                        })
                     }
-                    None if service != "aec2" => Ok(format!("{service}.sensecoreapi.cn")),
+                    None if !matches!(service.as_str(), "aec2" | "cci" | "network") => {
+                        Ok(format!("{service}.sensecoreapi.cn"))
+                    }
                     _ => Err(Error("service region")),
                 }
             }

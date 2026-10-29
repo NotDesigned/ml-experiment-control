@@ -130,8 +130,10 @@ pub fn historical_binding(manifest: &Value) -> Result<Value> {
 /// Native local ingestion freezes the entire Run document identity. It cannot
 /// turn an absent W&B configuration into cloud publication authorization.
 pub fn native_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
-    if run["native_creation"]["format"] != "native-run-creation.v1"
-        || !crate::slurm::helper::valid_digest(raw_sha256)
+    if !matches!(
+        run["native_creation"]["format"].as_str(),
+        Some("native-run-creation.v1" | "native-cloud-run.v1")
+    ) || !crate::slurm::helper::valid_digest(raw_sha256)
     {
         return Err(Error::Invalid("native journal Run authority"));
     }
@@ -147,7 +149,10 @@ pub fn native_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
 /// Previously authored managed Runs can be collected into a local journal.
 /// Their lack of a native creation record never authorizes a cloud route.
 pub fn observed_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
-    if run["native_creation"]["format"] == "native-run-creation.v1" {
+    if matches!(
+        run["native_creation"]["format"].as_str(),
+        Some("native-run-creation.v1" | "native-cloud-run.v1")
+    ) {
         return native_binding(run, raw_sha256);
     }
     let mut definition = run

@@ -43,7 +43,10 @@ pub fn plan(action: &str, operation: &str, body: Option<Value>) -> Result<Plan, 
     validate_submission_id(action).map_err(|_| invalid())?;
     if !matches!(
         (operation, body.is_some()),
-        ("artifacts", false) | ("collect", true) | ("acknowledge", true)
+        ("artifacts", false)
+            | ("collect", true)
+            | ("acknowledge", true)
+            | ("download-ticket", true)
     ) {
         return Err(invalid());
     }
@@ -84,6 +87,15 @@ pub fn observe(
         if collect { Some(json!({})) } else { None },
     )?;
     let result = client.send_artifact(&plan)?;
+    if collect
+        && result["submission_id"] == action
+        && result["status"] == "COLLECTING"
+        && result["download_available"] == false
+        && result["training_replayed"] == false
+        && result["synchronization"]["resources"]["gpus"] == 0
+    {
+        return Ok(result);
+    }
     Ok(validate(&plan, result)?.0)
 }
 pub struct DownloadPlan {
@@ -128,7 +140,8 @@ pub fn download(
     let output = destination(output)?;
     let metadata = observe(client, action, false, health)?;
     let metadata_plan = plan(action, "artifacts", None)?;
-    let (_, state) = validate(&metadata_plan, metadata)?;
+    let direct = metadata["download"]["kind"] == "oss-parts";
+    let (_, state) = validate(&metadata_plan, metadata.clone())?;
     let receipt = &state.bundle.archive;
     let reused = match std::fs::symlink_metadata(&output) {
         Ok(m) => {
@@ -159,7 +172,34 @@ pub fn download(
             path: format!("/api/submissions/{action}/artifacts/{}", receipt.sha256),
             bytes: receipt.bytes,
         };
-        client.download_artifact(&plan, temporary.as_file_mut())?;
+        if direct {
+            let part_bytes = 16 * 1024 * 1024u64;
+            let count = receipt.bytes.div_ceil(part_bytes);
+            if metadata["download"]["part_bytes"] != part_bytes
+                || metadata["download"]["part_count"] != count
+                || count > 65536
+            {
+                return Err(Error::Response);
+            }
+            for part in 0..count {
+                let request = self::plan(action, "download-ticket", Some(json!({"part":part})))?;
+                let ticket = client.send_artifact(&request)?;
+                let bytes = (receipt.bytes - part * part_bytes).min(part_bytes);
+                if ticket["part"] != part
+                    || ticket["bytes"] != bytes
+                    || ticket["headers"] != json!({})
+                {
+                    return Err(Error::Response);
+                }
+                client.download_object(
+                    ticket["url"].as_str().ok_or(Error::Response)?,
+                    bytes,
+                    temporary.as_file_mut(),
+                )?;
+            }
+        } else {
+            client.download_artifact(&plan, temporary.as_file_mut())?;
+        }
         temporary.as_file().sync_all().map_err(|_| invalid())?;
         let proof =
             ml_exp_io::artifacts::verify(temporary.as_file_mut(), receipt).map_err(|_| {
@@ -180,11 +220,29 @@ pub fn download(
         Some(json!({"proof":proof,"release":release})),
     )?;
     let reply=client.send_artifact(&ack).map_err(|_|Error::Observation("archive saved and verified locally; acknowledgement response unavailable; repeat this command to verify the same file and reconcile ACK without redownload"))?;
-    let (_, after) = validate(&ack, reply)?;
+    let (_, mut after) = validate(&ack, reply)?;
     if after.bundle != state.bundle
         || after.acknowledgement.as_ref().map(|a| &a.proof) != Some(&proof)
     {
         return Err(Error::Response);
+    }
+    if direct && release {
+        for _ in 0..1024 {
+            if after.retention.status == artifacts::RetentionStatus::Released {
+                break;
+            }
+            let reply=client.send_artifact(&ack).map_err(|_|Error::Observation("archive saved and verified; object release is incomplete; repeat the same download command to continue"))?;
+            let (_, next) = validate(&ack, reply)?;
+            after
+                .validate_successor(&next)
+                .map_err(|_| Error::Response)?;
+            after = next;
+        }
+        if after.retention.status != artifacts::RetentionStatus::Released {
+            return Err(Error::Observation(
+                "archive verified locally; release remains pending",
+            ));
+        }
     }
     Ok(
         json!({"submission_id":action,"local_archive":output,"local_archive_verified":true,"reused_existing_archive":reused,"release_requested":release,"retention":after.retention,"scheduler_mutation_performed":false}),

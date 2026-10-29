@@ -1,8 +1,5 @@
 use super::{Error, Result, Runtime, transport::Sdk};
-use crate::{
-    records::{RecordGuard, RemoteHistoryEvidence, RemoteObservation, Store},
-    submissions::Service,
-};
+use crate::records::{RecordGuard, RemoteHistoryEvidence, RemoteObservation, Store};
 use ml_exp_core::{
     records::Scope,
     tracking::{
@@ -38,8 +35,74 @@ pub struct Publisher {
     wake: Arc<(Mutex<()>, Condvar)>,
     thread: Option<JoinHandle<()>>,
 }
+/// Publication depends on frozen Run authority and a local journal, never on
+/// a particular scheduler or a worker's ability to reach W&B directly.
+pub trait Source: Send + Sync {
+    fn publisher_leader(&self) -> Result<std::fs::File>;
+    fn validate_publisher_leader(&self, file: &std::fs::File) -> Result<()>;
+    fn publisher_store(&self) -> Result<Store>;
+    fn tracking_journal(&self, project: &str, run: &str) -> Result<Store>;
+}
+impl Source for crate::submissions::Service {
+    fn publisher_leader(&self) -> Result<std::fs::File> {
+        self.publisher_leader().map_err(|_| Error::Storage)
+    }
+    fn validate_publisher_leader(&self, file: &std::fs::File) -> Result<()> {
+        self.validate_publisher_leader(file)
+            .map_err(|_| Error::Storage)
+    }
+    fn publisher_store(&self) -> Result<Store> {
+        self.publisher_store().map_err(|_| Error::Storage)
+    }
+    fn tracking_journal(&self, project: &str, run: &str) -> Result<Store> {
+        self.tracking_journal(project, run)
+            .map_err(|_| Error::Identity)
+    }
+}
+impl Source for crate::read_api::Api {
+    fn publisher_leader(&self) -> Result<std::fs::File> {
+        if let Some(service) = self.submissions() {
+            Source::publisher_leader(&*service)
+        } else if let Some(service) = self.cloud() {
+            Source::publisher_leader(&*service)
+        } else {
+            Err(Error::Configuration)
+        }
+    }
+    fn validate_publisher_leader(&self, file: &std::fs::File) -> Result<()> {
+        if let Some(service) = self.submissions() {
+            Source::validate_publisher_leader(&*service, file)
+        } else if let Some(service) = self.cloud() {
+            Source::validate_publisher_leader(&*service, file)
+        } else {
+            Err(Error::Configuration)
+        }
+    }
+    fn publisher_store(&self) -> Result<Store> {
+        if let Some(service) = self.submissions() {
+            Source::publisher_store(&*service)
+        } else if let Some(service) = self.cloud() {
+            Source::publisher_store(&*service)
+        } else {
+            Err(Error::Configuration)
+        }
+    }
+    fn tracking_journal(&self, project: &str, run: &str) -> Result<Store> {
+        if let Some(service) = self.cloud() {
+            if service
+                .handles_run(project, run)
+                .map_err(|_| Error::Identity)?
+            {
+                return Source::tracking_journal(&*service, project, run);
+            }
+        }
+        self.submissions()
+            .ok_or(Error::Configuration)
+            .and_then(|s| Source::tracking_journal(&*s, project, run))
+    }
+}
 impl Publisher {
-    pub fn start(service: Arc<Service>, runtime: Runtime) -> Result<Self> {
+    pub fn start(service: Arc<dyn Source>, runtime: Runtime) -> Result<Self> {
         if !runtime.config.enabled {
             return Err(Error::Configuration);
         }
@@ -76,7 +139,7 @@ impl Publisher {
                     schedule = next;
                     if let Some((scope, _)) = selected {
                         let outcome = publish_scope(
-                            &service, &store, &runtime, &mut sdk, &scope, &flag, &leader,
+                            &*service, &store, &runtime, &mut sdk, &scope, &flag, &leader,
                         );
                         schedule = schedule.outcome(
                             &scope,
@@ -156,7 +219,7 @@ fn failure(store: &Store, scope: &str, error: &Error) -> Result<()> {
         .map_err(|_| Error::Storage)
 }
 fn publish_scope(
-    service: &Service,
+    service: &dyn Source,
     store: &Store,
     runtime: &Runtime,
     sdk: &mut Option<Sdk>,

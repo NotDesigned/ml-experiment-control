@@ -27,6 +27,35 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Read scheduler allocation evidence, or explicitly refresh the cache.
+    Backend {
+        executor: Option<String>,
+        #[arg(long, requires = "executor")]
+        refresh: bool,
+    },
+    /// Plan and execute administrative payload removal or Run retirement.
+    Admin {
+        #[command(subcommand)]
+        command: ml_exp_client::administration::Command,
+    },
+    /// Create, inspect and stop an explicitly leased SSH debug machine.
+    Debug {
+        #[command(subcommand)]
+        command: ml_exp_client::debug::Command,
+    },
+    /// Build, inspect and reconcile a reusable Dockerfile environment.
+    #[command(name = "env", alias = "runtime")]
+    Environment {
+        #[command(subcommand)]
+        command: ml_exp_client::runtime::Command,
+    },
+    /// Install a checksum-verified standalone native release.
+    Update {
+        #[arg(long, default_value = "0.1.0")]
+        version: String,
+        #[arg(long)]
+        check: bool,
+    },
     /// Upload or inspect immutable datasets on a configured backend.
     Data {
         #[command(subcommand)]
@@ -64,6 +93,29 @@ enum Command {
 }
 #[derive(Subcommand)]
 enum Data {
+    Download {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        executor: String,
+        #[arg(long)]
+        asset: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Build the same immutable data image and advance its zero-GPU NAS copy.
+    Publish {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        executor: String,
+        #[arg(long)]
+        asset: String,
+        #[arg(long)]
+        request_id: String,
+        #[arg(long)]
+        confirmation: String,
+    },
     Upload {
         #[arg(long)]
         project: String,
@@ -239,6 +291,61 @@ impl Target {
 }
 #[derive(Subcommand)]
 enum Run {
+    /// Prepare a bounded parameter/seed matrix; saves every recovery identity.
+    Batch {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        state_dir: PathBuf,
+    },
+    /// Read one status row per saved experiment without submitting any work.
+    BatchStatus {
+        #[arg(long)]
+        state_dir: PathBuf,
+    },
+    /// Advance environment and data preparation for every saved experiment.
+    BatchContinue {
+        #[arg(long)]
+        state_dir: PathBuf,
+        #[arg(long)]
+        confirmation: String,
+    },
+    /// Submit prepared children once, within this batch's concurrency cap.
+    BatchSubmit {
+        #[arg(long)]
+        state_dir: PathBuf,
+        #[arg(long)]
+        max_active: usize,
+        #[arg(long)]
+        confirmation: String,
+    },
+    /// Freeze one experiment configuration; save its recovery identity before sending.
+    Start {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        state: PathBuf,
+    },
+    /// Advance the same environment/Run preparation; never authorize or submit training.
+    Continue {
+        #[arg(long)]
+        project: String,
+        preparation: String,
+        #[arg(long)]
+        confirmation: String,
+    },
+    /// Deliver retained cloud metadata with an explicit zero-GPU CPU job.
+    Sync {
+        submission: String,
+        #[arg(long)]
+        request_id: String,
+        #[arg(long)]
+        confirmation: String,
+    },
     /// Show the frozen W&B route and local publication cursors/errors; no cloud request.
     Tracking {
         #[arg(long)]
@@ -383,6 +490,15 @@ impl Run {
     }
     fn submission_plan(&self) -> Result<Option<submissions::Plan>, ml_exp_client::Error> {
         let command = match self {
+            Self::Sync {
+                submission,
+                request_id,
+                confirmation,
+            } => submissions::Command::Sync {
+                submission,
+                request_id,
+                confirmation,
+            },
             Self::Tracking { project, run } => submissions::Command::Tracking { project, run },
             Self::History { submission } => submissions::Command::History { submission },
             Self::Cancel {
@@ -440,8 +556,68 @@ enum Output {
     Text(String),
 }
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    if let Command::Backend {
+        executor: Some(executor),
+        ..
+    } = &args.command
+    {
+        ml_exp_core::identity::validate_id(executor)?;
+    }
+    let batch = match &args.command {
+        Command::Run {
+            command: Run::Batch { project, file, .. },
+        } => Some(ml_exp_client::batch::load(project, file)?),
+        _ => None,
+    };
+    let experiment = match &args.command {
+        Command::Run {
+            command: Run::Start { project, file, .. },
+        } => Some(ml_exp_client::preparations::load(project, file)?),
+        _ => None,
+    };
+    if let Command::Update { version, check } = &args.command {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ml_exp_client::update::run(version, *check)?)?
+        );
+        return Ok(());
+    }
+    let admin_plan = if let Command::Admin { command } = &args.command {
+        Some(command.plan()?)
+    } else {
+        None
+    };
+    let debug_plan = if let Command::Debug { command } = &args.command {
+        Some(command.plan()?)
+    } else {
+        None
+    };
+    let runtime_plan = if let Command::Environment { command } = &args.command {
+        Some(command.plan()?)
+    } else {
+        None
+    };
     if let Command::Data { command } = &args.command {
         match command {
+            Data::Download {
+                project,
+                executor,
+                asset,
+                ..
+            } => datasets::validate(project, executor, Some(asset))?,
+            Data::Publish {
+                project,
+                executor,
+                asset,
+                request_id,
+                confirmation,
+            } => {
+                datasets::validate(project, executor, Some(asset))?;
+                ml_exp_core::submission::validate_submission_token(request_id)?;
+                if confirmation != &format!("PUBLISH {asset}") {
+                    return Err("invalid exact data publication confirmation".into());
+                }
+            }
             Data::Upload {
                 project, executor, ..
             } => datasets::validate(project, executor, None)?,
@@ -622,9 +798,48 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             let token = credentials::load_token(plan.token_source)?;
             let client = Client::new(&plan.base_url, token)?;
             match command {
+                Command::Backend { executor, refresh } => {
+                    client.negotiate()?;
+                    Output::Json(if let Some(executor) = executor {
+                        let path = format!("/api/backends/{executor}/capacity");
+                        if refresh {
+                            client.post(&format!("{path}/refresh"), &serde_json::json!({}))?
+                        } else {
+                            client.get(&path)?
+                        }
+                    } else {
+                        client.get("/api/executors")?
+                    })
+                }
+                Command::Admin { .. } => {
+                    let health = client.negotiate()?;
+                    Output::Json(ml_exp_client::administration::execute(
+                        &client,
+                        admin_plan.ok_or("admin plan unavailable")?,
+                        &health,
+                    )?)
+                }
+                Command::Debug { .. } => {
+                    let health = client.negotiate()?;
+                    Output::Json(ml_exp_client::debug::execute(
+                        &client,
+                        debug_plan.ok_or("debug plan unavailable")?,
+                        &health,
+                    )?)
+                }
+                Command::Environment { .. } => {
+                    let health = client.negotiate()?;
+                    Output::Json(ml_exp_client::runtime::execute(
+                        &client,
+                        runtime_plan.ok_or("runtime plan unavailable")?,
+                        &health,
+                    )?)
+                }
                 Command::Data { command } => {
                     let health = client.negotiate()?;
                     Output::Json(match command {
+                        Data::Download{project,executor,asset,output}=>datasets::download(&client,&project,&executor,&asset,&output,&health)?,
+                        Data::Publish{project,executor,asset,request_id,confirmation}=>client.post(&format!("/api/projects/{project}/datasets/{executor}/{asset}/publish"),&serde_json::json!({"request_id":request_id,"confirmation":confirmation}))?,
                         Data::Upload {
                             project,
                             executor,
@@ -664,6 +879,56 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Command::Run { command } => {
                     let health = client.negotiate()?;
                     match command {
+                        Run::Batch {
+                            project, state_dir, ..
+                        } => Output::Json(ml_exp_client::batch::prepare(
+                            &client,
+                            &project,
+                            batch.as_ref().ok_or("batch unavailable")?,
+                            &state_dir,
+                            &health,
+                        )?),
+                        Run::BatchStatus { state_dir } => {
+                            Output::Json(ml_exp_client::batch::status(&client, &state_dir)?)
+                        }
+                        Run::BatchContinue {
+                            state_dir,
+                            confirmation,
+                        } => Output::Json(ml_exp_client::batch::advance(
+                            &client,
+                            &state_dir,
+                            &confirmation,
+                        )?),
+                        Run::BatchSubmit {
+                            state_dir,
+                            max_active,
+                            confirmation,
+                        } => Output::Json(ml_exp_client::batch::dispatch(
+                            &client,
+                            &state_dir,
+                            max_active,
+                            &confirmation,
+                            &health,
+                        )?),
+                        Run::Start { project, state, .. } => {
+                            Output::Json(ml_exp_client::preparations::prepare(
+                                &client,
+                                &project,
+                                experiment.as_ref().ok_or("experiment unavailable")?,
+                                &state,
+                                &health,
+                            )?)
+                        }
+                        Run::Continue {
+                            project,
+                            preparation,
+                            confirmation,
+                        } => Output::Json(ml_exp_client::preparations::advance(
+                            &client,
+                            &project,
+                            &preparation,
+                            &confirmation,
+                        )?),
                         Run::Collect { submission } => {
                             Output::Json(artifacts::observe(&client, &submission, true, &health)?)
                         }
@@ -682,6 +947,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             &health,
                         )?),
                         Run::Tracking { .. }
+                        | Run::Sync { .. }
                         | Run::History { .. }
                         | Run::Retry { .. }
                         | Run::Create { .. }

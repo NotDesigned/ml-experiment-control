@@ -9,6 +9,7 @@ pub mod checkpoints;
 pub mod cloud;
 pub mod datasets;
 pub mod diagnostic;
+pub mod distribution;
 pub mod durable;
 pub mod failures;
 pub mod first_submission;
@@ -38,3 +39,7 @@ pub mod transfers;
 
 pub const API_PROTOCOL_VERSION: u32 = 2;
 pub const CLIENT_PROTOCOL_HEADER: &str = "X-ML-Expd-Client-Protocol";
+
+pub mod capacity;
+pub mod maintenance;
+pub mod preparation;

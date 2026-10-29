@@ -14,6 +14,8 @@ impl Service {
         now: &str,
         cancelled: &AtomicBool,
     ) -> Result<Value> {
+        let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
+            .map_err(|_| Error::Authority)?;
         request.validate(action)?;
         let lock = self.lock()?;
         let parent = self.load(action)?;
@@ -136,7 +138,7 @@ impl Service {
                 &attempt,
                 &binding,
                 &backend.profile,
-                &backend.runtimes[&current.runtime],
+                &self.runtime(&current.binding.project, &current.backend, &current.runtime)?,
                 &Approval {
                     max_gpu_hours: request.max_gpu_hours,
                     reason: request.reason.clone(),

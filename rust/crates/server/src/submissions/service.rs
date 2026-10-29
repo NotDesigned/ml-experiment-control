@@ -107,6 +107,7 @@ pub struct Service {
     enabled: bool,
     creation_roots: BTreeMap<String, Directory>,
     tracking: ml_exp_core::tracking::RoutingSettings,
+    runtime_builder: Option<Arc<crate::cloud_runs::Service>>,
 }
 struct Facts {
     reference: RunRef,
@@ -129,7 +130,6 @@ impl Backend {
         }
         if self.profile.target != self.ssh.target
             || self.profile.ssh_alias != self.ssh.target_alias
-            || self.runtimes.is_empty()
             || self.runtimes.len() > 4096
             || self
                 .runtimes
@@ -323,6 +323,7 @@ impl Service {
             enabled,
             creation_roots: BTreeMap::new(),
             tracking: ml_exp_core::tracking::RoutingSettings::default(),
+            runtime_builder: None,
         })
     }
     fn public(&self, snapshot: Value, now: &str) -> Result<Value> {
@@ -490,3 +491,27 @@ impl Service {
         self.public(self.actions.observe(action)?, now)
     }
 }
+
+impl Service {
+    pub fn with_runtime_builder(
+        mut self,
+        builder: Option<Arc<crate::cloud_runs::Service>>,
+    ) -> Self {
+        self.runtime_builder = builder;
+        self
+    }
+    fn runtime(&self, project: &str, executor: &str, id: &str) -> Result<Runtime> {
+        let backend = self.backends.get(executor).ok_or(Error::Authority)?;
+        if let Some(runtime) = backend.runtimes.get(id) {
+            return Ok(runtime.clone());
+        }
+        self.runtime_builder
+            .as_ref()
+            .ok_or(Error::Authority)?
+            .slurm_runtime(project, executor, id)
+            .map_err(|_| Error::Authority)
+    }
+}
+
+mod capacity;
+mod maintenance;

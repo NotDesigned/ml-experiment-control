@@ -17,6 +17,52 @@ pub struct Client {
 }
 
 impl Client {
+    /// A signed object URL gets no API bearer, cookies, proxy credentials or
+    /// redirect following. The caller verifies the concatenated archive SHA.
+    pub(crate) fn download_object(
+        &self,
+        url: &str,
+        expected: u64,
+        file: &mut std::fs::File,
+    ) -> Result<(), Error> {
+        use std::io::Write;
+        let uri = url::Url::parse(url).map_err(|_| Error::Response)?;
+        if uri.scheme() != "https"
+            || !uri.host_str().is_some_and(|h| h.ends_with(".aliyuncs.com"))
+            || !uri.username().is_empty()
+            || uri.password().is_some()
+            || uri.fragment().is_some()
+            || expected > 16 * 1024 * 1024
+        {
+            return Err(Error::Response);
+        }
+        let mut response = self
+            .http
+            .get(uri)
+            .timeout(Duration::from_secs(300))
+            .send()
+            .map_err(|_| Error::Transport)?;
+        if response.status() != 200 || response.content_length() != Some(expected) {
+            return Err(Error::Response);
+        }
+        let mut total = 0u64;
+        let mut buffer = [0u8; 65536];
+        loop {
+            let n = response.read(&mut buffer).map_err(|_| Error::Transport)?;
+            if n == 0 {
+                break;
+            }
+            total = total.checked_add(n as u64).ok_or(Error::Response)?;
+            if total > expected {
+                return Err(Error::Response);
+            }
+            file.write_all(&buffer[..n]).map_err(|_| Error::Response)?;
+        }
+        if total != expected {
+            return Err(Error::Response);
+        }
+        Ok(())
+    }
     pub(crate) fn send_dataset(
         &self,
         plan: &crate::datasets::Plan,
@@ -70,6 +116,23 @@ impl Client {
                 ml_exp_core::CLIENT_PROTOCOL_HEADER,
                 ml_exp_core::API_PROTOCOL_VERSION.to_string(),
             )
+            .send()
+            .map_err(|_| Error::Transport)?;
+        self.decode(response)
+    }
+    pub fn post(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value, Error> {
+        let endpoint = api_url(&self.base, path)?;
+        let bytes = serde_json::to_vec(body).map_err(|_| Error::Response)?;
+        if bytes.len() > 8 * 1024 * 1024 {
+            return Err(Error::Response);
+        }
+        let response = self
+            .http
+            .post(endpoint)
+            .bearer_auth(&self.token)
+            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
+            .header("content-type", "application/json")
+            .body(bytes)
             .send()
             .map_err(|_| Error::Transport)?;
         self.decode(response)

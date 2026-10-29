@@ -17,6 +17,11 @@ impl Transport for Client {
         self.call(request, cancelled)
     }
 }
+impl<T: Transport> Transport for &T {
+    fn request(&self, request: &Request, cancelled: &AtomicBool) -> Result<Value> {
+        (**self).request(request, cancelled)
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Profile {
@@ -87,6 +92,9 @@ pub struct Adapter<T = Client> {
     transport: T,
 }
 impl<T: Transport> Adapter<T> {
+    pub fn with_profile(&self, profile: Profile) -> Result<Adapter<&T>> {
+        Adapter::new(profile, &self.transport)
+    }
     pub fn new(profile: Profile, transport: T) -> Result<Self> {
         profile.validate()?;
         Ok(Self { profile, transport })

@@ -9,7 +9,8 @@
   "status_definitions": {
     "not_started": "No equivalent native domain accepted. Target is a design assignment, not an implemented module.",
     "partial_foundation": "A limited Rust foundation exists; full Python behavior, persistent/wire identity parity and integration acceptance remain incomplete.",
-    "user_payload_outside_platform_rewrite": "An example scientific payload may remain Python; platform implementation language does not constrain user experiments."
+    "user_payload_outside_platform_rewrite": "An example scientific payload may remain Python; platform implementation language does not constrain user experiments.",
+    "connected_workflow": "CLI/API/service/worker implementation is connected. Compatibility, real provider acceptance and production migration are tracked separately; this is not full Python-module parity."
   },
   "summary": {
     "platform_python_modules": 220,
@@ -44,7 +45,8 @@
     "fully_migrated_modules": 0,
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
-    "all_tracked_python_files": 458
+    "all_tracked_python_files": 458,
+    "connected_native_workflows": 15
   },
   "architecture": {
     "application_crates": [
@@ -65,8 +67,13 @@
     "io_boundary": "ml-exp-io owns shared file/process/transport primitives; application executors own effect lifecycles and feed explicit evidence back to reducers.",
     "provider_io_owner": "server",
     "scientific_computation_owner": "user code, any supported image language",
-    "read_preview_boundary": "Fresh marker-bearing isolated registry; trusted approved Project/Run roots, bounded canonical-layout discovery with ambiguity/alias/budget rejection, existing-only deletion guards and authenticated local reads. Optional Project lifecycle mutates tracking metadata only via approved manifests and durable CAS; no providers, automatic repair on reads, ArtifactStore download claims or production bootstrap.",
-    "execution_preview_boundary": "Native sealed managed-launch requires private operator config and pre-staged local code/environment. Existing-only exact Attempt ledger records STARTED before spawn; unknown outcomes are not replayed. Local process/training receipts do not establish dataset, checkpoint, object publication or provider acceptance. Separately configured native Slurm first submission binds authored Run/source/OCI/SIF evidence to one immutable preparation slot and durable Action, uses pinned SSH/helper transport, and reconciles original identity after response loss. Current acceptance uses a synthetic scheduler, not real Slurm/GPU allocation. Explicit standalone Run creation freezes the original request, source/runtime authority, command/resources and metric/evaluation protocol, publishes Run/Attempt/states atomically, reuses the original identity across restart, and never submits a job. Full read scope is bound at API composition. New native first submissions freeze a shared-storage requirement; a separately configured helper pins its shared root and publishes exact Attempt metadata plus log/input/output directories before sbatch. Partial/replaced evidence blocks dispatch; changes after dispatch preserve the known job identity. Explicit native Slurm collection now creates a backend-only deterministic tar, relays it over pinned SSH/HTTP without API payload spooling, and accepts a verified download ACK before durable archive release. Original outputs/checkpoints and all scientific identities remain. CPU process/HTTP/SSH flow accepted with synthetic scheduler/container tools; no actual Slurm/GPU allocation or complete research-workflow claim. Native Slurm data now joins deterministic client packing, bounded API-to-gateway parts, immutable READY receipts, named Run inputs, gateway and worker verification, and read-only bind rendering. The API does not spool dataset payloads. Exact-job cancellation HTTP/client wiring persists intent before delegating to the helper cancel outbox; explicit same-Run/new-Attempt checkpoint retry is implemented; cloud-provider data/dispatch remain incomplete. Optional background scheduler/worker/history sampling and canonical lifecycle integration are implemented, with bounded effects and local-only GETs. Optional W&B publication uses native durable reservations and remote history/display/finish proof with a narrow official-SDK subprocess; real cloud acceptance remains pending. Native cloud HTTP now composes published runtimes and immutable Run/Attempt authorship with existing authorization/execute/reconcile/refresh/cancel commands. Cloud worker bootstrap verifies the executable and uses persistent at-most-once managed state. Cloud dataset/restore attachment, full metrics/checkpoint/result transport, background cloud observation, build composition and live acceptance remain pending."
+    "read_preview_boundary": "Fresh marker-bearing isolated registry and approved Project roots. Authenticated GET reads retained local evidence only; explicit refresh queries providers. Read does not create locks, repair state or mutate providers.",
+    "execution_preview_boundary": "Isolated native Run/Attempt workflows now connect Slurm gateway, PAI DLC/DSW and SenseCore ACP/CCI, durable submission/outbox state, scoped worker exchange, explicit checkpoint retry, cloud datasets/results, CPU collection, image effect bridge, administration, preparation/batches and capacity. Local synthetic/HTTP evidence is distinct from provider acceptance; production migration remains forbidden until historical-state acceptance.",
+    "retained_python_effects": [
+      "Optional Dockerfile/image build and data-image bridge",
+      "Optional official W&B SDK process",
+      "User research code is outside platform language migration"
+    ]
   },
   "modules": [
     {
@@ -2368,7 +2375,7 @@
       "target_domain": "builds",
       "proposed_consolidation": "One image build state machine with backend publishers and explicit immutable recipe/worker identities.",
       "migration_status": "not_started",
-      "python_baseline_unchanged": true
+      "python_baseline_unchanged": false
     },
     {
       "path": "server/src/ml_exp_server/ingest/__init__.py",
@@ -7138,5 +7145,152 @@
       "rewriting user training code",
       "rewriting provider-specific SDK calls before a stable pure contract exists"
     ]
-  }
+  },
+  "native_workflows": {
+    "preparation": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/core/src/preparation.rs",
+        "rust/crates/client/src/preparations.rs",
+        "rust/crates/server/src/cloud_runs/service/preparations.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "batch": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/client/src/batch.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "cloud_submission": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/server/src/cloud_runs/service/actions.rs",
+        "rust/crates/server/src/backends/cloud/adapter.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "checkpoint_retry": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/core/src/cloud/retry.rs",
+        "rust/crates/server/src/cloud_runs/service/retry.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "worker_exchange": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/worker/src/cloud_exchange.rs",
+        "rust/crates/server/src/cloud_runs/service/exchange.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "cloud_datasets": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/server/src/objects.rs",
+        "rust/crates/server/src/cloud_runs/service/datasets.rs",
+        "rust/crates/client/src/datasets.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "pretraining_data_copy": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/server/src/cloud_runs/service/data_delivery.rs",
+        "server/src/ml_exp_server/builds/native_data.py"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "cloud_artifacts": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/worker/src/cloud_artifacts.rs",
+        "rust/crates/server/src/cloud_runs/service/artifacts.rs",
+        "rust/crates/client/src/artifacts.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "runtime_build": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/server/src/cloud_runs/service/builds.rs",
+        "server/src/ml_exp_server/builds/native_image.py"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "slurm_materialization": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/worker/src/materialize.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "debug": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/server/src/cloud_runs/service/debug.rs",
+        "rust/crates/client/src/debug.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "capacity": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/core/src/capacity.rs",
+        "rust/crates/server/src/capacity_http.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "administration": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/server/src/administration.rs",
+        "rust/crates/worker/src/maintenance.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "update": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/core/src/distribution.rs",
+        "rust/crates/client/src/update.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "wandb": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/server/src/tracking/publisher.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    }
+  },
+  "known_limits": [
+    "No native production-state migration accepted",
+    "No native provider/GPU workflow accepted by this implementation pass",
+    "Expired authorization gate renewal not implemented",
+    "Batch dispatch uses explicit passes, not unattended scheduling",
+    "No automatic checkpoint selection/unbounded restart",
+    "Native OSS filesystem mount remains disabled",
+    "CCI create/stop only",
+    "Campaign authoring intentionally omitted"
+  ]
 }

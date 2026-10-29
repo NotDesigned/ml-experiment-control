@@ -5,6 +5,11 @@ use std::{io, path::Path, sync::atomic::AtomicBool, time::Duration};
 
 #[cfg(unix)]
 pub mod cloud;
+pub mod cloud_artifacts;
+#[cfg(unix)]
+pub mod cloud_data;
+#[cfg(unix)]
+pub mod cloud_exchange;
 #[cfg(unix)]
 pub mod data_import;
 #[cfg(unix)]
@@ -91,3 +96,9 @@ pub fn execute_with_cancel(
 
 #[cfg(all(test, unix))]
 mod tests;
+
+#[cfg(unix)]
+pub mod materialize;
+
+#[cfg(unix)]
+pub mod maintenance;

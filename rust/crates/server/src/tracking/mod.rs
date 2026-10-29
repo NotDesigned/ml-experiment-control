@@ -4,6 +4,7 @@ mod publisher;
 mod transport;
 use ml_exp_core::tracking::{RoutingSettings, WandbOptions, WandbSettings};
 pub use publisher::Publisher;
+pub use publisher::Source;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{

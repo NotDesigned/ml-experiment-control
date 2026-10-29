@@ -212,7 +212,21 @@ pub fn execution_environment(
             .collect();
         let expected = serde_json::to_string(&mapping).map_err(|_| AdmissionError::Binding)?;
         if values.get("DATASETS_JSON") != Some(&expected) {
-            return Err(AdmissionError::Binding);
+            let direct: BTreeMap<_, _> = config
+                .datasets
+                .iter()
+                .map(|v| (v.name.clone(), v.receipt.root.clone()))
+                .collect();
+            if !crate::datasets::root_path(inputs)
+                || config
+                    .datasets
+                    .iter()
+                    .any(|v| !v.receipt.root.starts_with(&format!("{inputs}/")))
+                || values.get("DATASETS_JSON")
+                    != Some(&serde_json::to_string(&direct).map_err(|_| AdmissionError::Binding)?)
+            {
+                return Err(AdmissionError::Binding);
+            }
         }
     } else if values.contains_key("DATASETS_JSON") {
         return Err(AdmissionError::Binding);

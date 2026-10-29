@@ -545,7 +545,7 @@ pub fn cluster(profile: &Profile, row: &Value, specs: &[Value]) -> Result<Cluste
         if spec_name == profile.worker_spec
             && gpus == u64::from(profile.worker_gpus)
             && cpus >= u64::from(profile.worker_cpus)
-            && memory > 0
+            && memory >= u64::from(profile.worker_memory_gb) * 1024 * 1024 * 1024
         {
             compatible = true;
         }

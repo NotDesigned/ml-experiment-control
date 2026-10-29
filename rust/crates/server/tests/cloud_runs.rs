@@ -89,7 +89,14 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         }),
         vpc: None,
     };
-    let config = json!({"schema_version":1,"enabled":false,"allow_run_creation":true,"backends":[{"executor":"pai-h200","profile":{"provider":"pai","region":profile.region,"workspace_id":profile.workspace_id,"quota_id":profile.quota_id,"max_gpus":8,"max_cpus":200,"max_memory_gb":1600,"storage":profile.storage},"run_root":"/mnt/workspace/ml-expd/runs","credentials_file":credentials,"registry_auth_file":null,"runtimes":{runtime.runtime_id.clone():runtime}}]});
+    let signing_key = temp.path().join("worker-signing-key");
+    ml_exp_io::write_atomic(
+        &signing_key,
+        b"synthetic-exchange-key-0000000000000000000000",
+        true,
+    )
+    .unwrap();
+    let config = json!({"schema_version":1,"enabled":false,"allow_run_creation":true,"exchange":{"public_url":"https://api.example/ml-expd","signing_key_file":signing_key},"backends":[{"executor":"pai-h200","profile":{"provider":"pai","region":profile.region,"workspace_id":profile.workspace_id,"quota_id":profile.quota_id,"max_gpus":8,"max_cpus":200,"max_memory_gb":1600,"storage":profile.storage},"run_root":"/mnt/workspace/ml-expd/runs","credentials_file":credentials,"registry_auth_file":null,"runtimes":{runtime.runtime_id.clone():runtime}}]});
     Service::initialize(&settings).unwrap();
     assert!(Service::initialize(&settings).is_err());
     let open = || {
@@ -104,6 +111,52 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     };
     let service = open();
     let request:Request=serde_json::from_value(json!({"run_id":"train","runtime_id":runtime.runtime_id,"executor":"pai-h200","command":["python","train.py"],"resources":{"gpus":1,"cpus":8,"memory_gb":64},"walltime_seconds":300,"seed":42})).unwrap();
+    // One recovery slot owns the exact request. Preparing or reading it cannot
+    // allocate a provider job, silently accept a changed payload or create a Run.
+    let setup: ml_exp_core::preparation::Request = serde_json::from_value(json!({
+        "request_id":"a".repeat(32), "run": {"run_id":"setup-only", "runtime_id":runtime.runtime_id,
+        "executor":"pai-h200", "command":["python","train.py"], "resources":{"gpus":1,"cpus":8,"memory_gb":64},
+        "walltime_seconds":300,"seed":42}, "approval":{"max_gpu_hours":1.0}
+    })).unwrap();
+    let setup_view = service
+        .experiment_prepare("demo", setup.clone(), None)
+        .unwrap();
+    let setup_id = setup_view["preparation_id"].as_str().unwrap();
+    assert_eq!(setup_view["status"], "PREPARED");
+    assert_eq!(setup_view["scheduler_submitted"], false);
+    assert_eq!(
+        service
+            .experiment_prepare("demo", setup.clone(), None)
+            .unwrap(),
+        setup_view
+    );
+    assert_eq!(
+        service.experiment_status("demo", setup_id).unwrap(),
+        setup_view
+    );
+    let mut changed_setup = setup.clone();
+    changed_setup.run.insert("seed".into(), json!(43));
+    assert!(
+        service
+            .experiment_prepare("demo", changed_setup, None)
+            .is_err()
+    );
+    let mut oversized = setup.clone();
+    oversized.request_id = "b".repeat(32);
+    oversized.run.insert(
+        "resources".into(),
+        json!({"gpus":9,"cpus":8,"memory_gb":64}),
+    );
+    let error = service
+        .experiment_prepare("demo", oversized.clone(), None)
+        .unwrap_err();
+    assert_eq!(error.http_status, Some(422));
+    assert!(
+        service
+            .experiment_status("demo", &oversized.id("demo").unwrap())
+            .is_err()
+    );
+    assert!(!runs.join("setup-only").exists());
     let first = service
         .create_run("demo", request.clone(), "2026-10-29T00:00:00Z")
         .unwrap();
@@ -203,6 +256,23 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         .expect("native cloud startup");
     let client = ml_exp_client::Client::new(&format!("http://{address}"), token.into()).unwrap();
     let health = client.negotiate().unwrap();
+    let slots = registry.join("cloud-submissions/slots");
+    let listing = || {
+        let mut names = fs::read_dir(&slots)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let before = listing();
+    let capacity = client.get("/api/backends/pai-h200/capacity").unwrap();
+    assert_eq!(capacity["status"], "UNKNOWN");
+    assert_eq!(listing(), before); // no lock, cache or provider work on GET
+    assert_eq!(
+        client.get("/api/executors").unwrap()["executors"][0]["executor_id"],
+        "pai-h200"
+    );
     assert!(
         health["capabilities"]
             .as_array()
@@ -226,6 +296,107 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     assert_eq!(
         client.get("/api/runs/demo/train").unwrap()["native_submission"]["status"],
         "AUTHORIZED"
+    );
+    // A synthetic Action receipt exercises ingress without calling any cloud
+    // provider. This is a state-machine/HTTP fixture, not GPU acceptance.
+    let actions =
+        ml_exp_server::operations::Store::open_existing(registry.join("actions")).unwrap();
+    let execution = actions.cloud_request(action).unwrap();
+    let package = execution.package().unwrap();
+    let binding = package.config.binding().unwrap();
+    let sha = ml_exp_core::slurm::helper::sha256_bytes;
+    let bytes=b"{\"name\":\"loss\",\"unit\":\"nats/token\",\"step\":10,\"value\":1.2,\"variant_id\":\"one\"}\n{\"name\":\"loss\",\"unit\":\"nats/token\",\"step\":10,\"value\":1.7,\"variant_id\":\"two\"}\n".to_vec();
+    let config_sha256 = sha(&serde_json::to_vec(&package.config).unwrap());
+    let packet:ml_exp_core::cloud::exchange::Packet=serde_json::from_value(json!({"contract":ml_exp_core::cloud::exchange::CONTRACT,"sequence":1,"previous_sha256":null,"package_sha256":sha(&serde_json::to_vec(&package).unwrap()),
+        "evidence":{"contract":ml_exp_core::managed::remote::OBSERVATION_CONTRACT,"config_sha256":config_sha256,"job_id":binding.sha256,
+            "worker":{"contract":ml_exp_core::managed::evidence::CONTRACT,"identity":binding.identity,"manifest_sha256":binding.sha256,"phase":"STARTED","safe_to_retry":false,"receipt":null,"runtime_environment_sha256":"a".repeat(64)},
+            "stdout":{"text":"native worker fixture\n","offset_bytes":0,"total_bytes":22,"problem":null},
+            "stderr":{"text":"","offset_bytes":0,"total_bytes":0,"problem":null},
+            "metrics":{"text":String::from_utf8(bytes.clone()).unwrap(),"offset_bytes":0,"total_bytes":bytes.len(),"problem":null}},
+        "history":{"contract":ml_exp_core::managed::history::CONTRACT,"config_sha256":config_sha256,"start":null,"next":{"device":1,"inode":2,"offset_bytes":bytes.len(),"prefix_sha256":sha(&bytes)},"bytes":bytes,"total_bytes":bytes.len(),"process_finished":false},"checkpoint":null})).unwrap();
+    let payload = serde_json::to_vec(&packet).unwrap();
+    let http = reqwest::blocking::Client::new();
+    let channel = package.channel.as_ref().unwrap();
+    let post = |token: &str, path: &str, body: Vec<u8>| {
+        http.post(format!("http://{address}{path}"))
+            .bearer_auth(token)
+            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .unwrap()
+    };
+    let path = "/api/worker-exchange/demo/train/attempt-001";
+    assert_eq!(
+        post("wrong-worker-token", path, payload.clone())
+            .status()
+            .as_u16(),
+        401
+    );
+    assert!(!registry.join("tracking").exists());
+    assert_eq!(
+        post(&channel.token, path, payload.clone())
+            .status()
+            .as_u16(),
+        409
+    );
+    let mut current = actions.observe(action).unwrap()["execution"].clone();
+    current["status"] = json!("VERIFIED");
+    actions
+        .commit(
+            action,
+            &ml_exp_core::operations::Transition {
+                execution: current,
+                event: json!({"event":"SYNTHETIC_TEST_RECEIPT"}),
+                expected_status: Some("AUTHORIZED".into()),
+            },
+            &"4".repeat(32),
+            "2026-10-29T00:04:01Z",
+        )
+        .unwrap();
+    for _ in 0..2 {
+        let response = post(&channel.token, path, payload.clone());
+        let status = response.status().as_u16();
+        let ack: Value = serde_json::from_slice(&response.bytes().unwrap()).unwrap();
+        assert_eq!(status, 200, "{ack}");
+        assert_eq!(ack["packet_sha256"], packet.sha256().unwrap());
+    }
+    assert!(
+        ml_exp_client::Client::new(&format!("http://{address}"), channel.token.clone())
+            .unwrap()
+            .negotiate()
+            .is_err()
+    );
+    let records = client
+        .get("/api/attempts/demo/train::attempt-001/metrics?format=records")
+        .unwrap();
+    assert_eq!(records["records"].as_array().unwrap().len(), 2, "{records}");
+    let logs = client
+        .get("/api/attempts/demo/train::attempt-001/logs")
+        .unwrap();
+    assert!(logs.to_string().contains("native worker fixture"));
+    let mut skipped = packet.clone();
+    skipped.sequence = 3;
+    skipped.previous_sha256 = Some(packet.sha256().unwrap());
+    assert_eq!(
+        post(&channel.token, path, serde_json::to_vec(&skipped).unwrap())
+            .status()
+            .as_u16(),
+        409
+    );
+    assert_eq!(
+        post(
+            &channel.token,
+            "/api/worker-exchange/demo/train/attempt-002",
+            payload
+        )
+        .status()
+        .as_u16(),
+        401
+    );
+    assert_eq!(
+        client.get("/api/runs/demo/train/tracking").unwrap()["scopes"][0]["total"],
+        3
     );
     drop(server);
     let mut changed = request;

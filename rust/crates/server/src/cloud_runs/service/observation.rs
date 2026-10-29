@@ -1,5 +1,40 @@
 use super::*;
 impl Service {
+    pub fn apply_observation(
+        &self,
+        snapshot: &mut crate::experiments::Snapshot,
+    ) -> cloud::Result<()> {
+        if !self.handles_run(&snapshot.project, &snapshot.run_id)? {
+            return Ok(());
+        }
+        let attempts = snapshot
+            .attempts
+            .iter()
+            .map(|a| a.attempt_id.clone())
+            .collect::<Vec<_>>();
+        for attempt in attempts {
+            let Some(prepared) =
+                self.saved_attempt(&snapshot.project, &snapshot.run_id, &attempt)?
+            else {
+                continue;
+            };
+            self.check(&prepared)?;
+            if let Some(saved) = self.exchange_saved(&prepared)? {
+                crate::read_model::project_worker(
+                    snapshot,
+                    &prepared.execution.binding,
+                    &saved.evidence,
+                    prepared.plan["action_id"]
+                        .as_str()
+                        .ok_or_else(cloud::Error::evidence)?,
+                    &saved.observed_at,
+                )
+                .map_err(|_| cloud::Error::evidence())?;
+            }
+        }
+        self.apply_artifacts(snapshot)?;
+        Ok(())
+    }
     pub fn handles_run(&self, project: &str, run: &str) -> cloud::Result<bool> {
         let root = self.authority(project, run)?;
         if !root.entry_exists(OsStr::new(run)).map_err(io)? {
@@ -61,10 +96,10 @@ impl Service {
         attempt: Option<&str>,
         now: &str,
     ) -> cloud::Result<Value> {
-        if attempt.is_some_and(|a| a != "attempt-001") {
-            return Ok(value);
-        }
-        let Some(prepared) = self.saved(project, run)? else {
+        let selected = attempt
+            .map(str::to_owned)
+            .unwrap_or(self.current_attempt(project, run)?);
+        let Some(prepared) = self.saved_attempt(project, run, &selected)? else {
             return Ok(value);
         };
         let submission = self.get(
@@ -74,9 +109,13 @@ impl Service {
             now,
         )?;
         value["native_submission"] = json!({"submission_id":submission["submission_id"],"status":submission["status"],"source":"native-cloud-action","next_action":submission["next_action"]});
+        if let Some(saved) = self.exchange_saved(&prepared)? {
+            value["worker_observation"] = json!({"status":"OBSERVED","phase":saved.evidence.worker.phase,"received_at":saved.observed_at,"source":"native-cloud-exchange","sequence":saved.sequence,"metrics_complete":saved.complete,"checkpoint_diagnostic":saved.checkpoint_error});
+            value["input_delivery"] = json!(saved.inputs);
+        }
         let observation = &submission["cloud_observation"]["observation"];
         if observation.is_object() {
-            value["evidence"]["scheduler"] = json!({"state":observation["state"],"attempt_id":"attempt-001","detail":observation,"source":"native-cloud-outbox","as_of":null,"stale":true,"freshness":"UNKNOWN"});
+            value["evidence"]["scheduler"] = json!({"state":observation["state"],"attempt_id":selected,"detail":observation,"source":"native-cloud-outbox","as_of":null,"stale":true,"freshness":"UNKNOWN"});
             if attempt.is_none() {
                 value["scheduler_state"] = observation["state"].clone();
                 value["is_terminal"] = json!(
@@ -93,7 +132,7 @@ impl Service {
             submission["status"].as_str(),
             Some("EXECUTING" | "RECONCILE_REQUIRED")
         ) {
-            value["evidence"]["scheduler"] = json!({"state":"UNKNOWN","attempt_id":"attempt-001","diagnostic":"SUBMISSION_UNCERTAIN","source":"native-cloud-action","as_of":null,"stale":true,"freshness":"UNKNOWN"});
+            value["evidence"]["scheduler"] = json!({"state":"UNKNOWN","attempt_id":selected,"diagnostic":"SUBMISSION_UNCERTAIN","source":"native-cloud-action","as_of":null,"stale":true,"freshness":"UNKNOWN"});
         }
         Ok(value)
     }

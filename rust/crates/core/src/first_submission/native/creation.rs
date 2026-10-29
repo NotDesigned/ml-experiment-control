@@ -10,6 +10,17 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Scheduling {
+    #[serde(default)]
+    pub allocation: crate::cloud::pai::Allocation,
+    #[serde(default = "default_priority")]
+    pub priority: u8,
+}
+fn default_priority() -> u8 {
+    5
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Request {
     pub run_id: String,
     pub runtime_id: String,
@@ -32,6 +43,8 @@ pub struct Request {
     pub data: Vec<crate::datasets::Input>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wandb: Option<crate::tracking::WandbOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduling: Option<Scheduling>,
 }
 impl Request {
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
@@ -42,6 +55,13 @@ impl Request {
         serde_json::from_value(Value::Object(value)).map_err(|_| Error("Run request schema"))
     }
     pub fn validate(&self, project: &str) -> Result<()> {
+        if self
+            .scheduling
+            .as_ref()
+            .is_some_and(|s| !(1..=9).contains(&s.priority))
+        {
+            return Err(Error("scheduling priority"));
+        }
         crate::datasets::inputs(&self.data).map_err(|_| Error("dataset inputs"))?;
         if let Some(policy) = &self.artifacts {
             policy.validate().map_err(|_| Error("artifact policy"))?;
@@ -111,6 +131,9 @@ pub fn plan(
     now: &str,
 ) -> Result<Documents> {
     request.validate(project)?;
+    if request.scheduling.is_some() {
+        return Err(Error("cloud scheduling requires a cloud executor"));
+    }
     OffsetDateTime::parse(now, &Rfc3339).map_err(|_| Error("creation time"))?;
     if request.executor != profile.target.backend_id || request.runtime_id != runtime.runtime_id {
         return Err(Error("Run runtime or executor"));
@@ -326,5 +349,38 @@ mod tests {
         assert_ne!(one.identity("demo").unwrap(), two.identity("demo").unwrap());
         alternate["metrics_schema"]["definitions"]["loss"]["unit"] = json!("");
         assert!(Request::from_slice(&serde_json::to_vec(&alternate).unwrap()).is_err());
+    }
+    #[test]
+    fn optional_cloud_policy_is_identity_bound_and_omission_preserves_original_bytes() {
+        let base = request();
+        let original: Request = serde_json::from_value(base.clone()).unwrap();
+        assert!(
+            serde_json::to_value(&original)
+                .unwrap()
+                .get("scheduling")
+                .is_none()
+        );
+        let mut changed = base;
+        changed["scheduling"] = json!({"allocation":"allow_idle"});
+        let idle: Request = serde_json::from_value(changed.clone()).unwrap();
+        assert_eq!(idle.scheduling.as_ref().unwrap().priority, 5);
+        assert_ne!(
+            idle.identity("demo").unwrap(),
+            original.identity("demo").unwrap()
+        );
+        changed["scheduling"]["priority"] = json!(0);
+        assert!(
+            serde_json::from_value::<Request>(changed.clone())
+                .unwrap()
+                .validate("demo")
+                .is_err()
+        );
+        changed["scheduling"]["priority"] = json!(10);
+        assert!(
+            serde_json::from_value::<Request>(changed)
+                .unwrap()
+                .validate("demo")
+                .is_err()
+        );
     }
 }

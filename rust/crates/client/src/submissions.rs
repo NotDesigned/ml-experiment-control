@@ -7,6 +7,11 @@ use ml_exp_core::{
 use serde_json::{Value, json};
 
 pub enum Command<'a> {
+    Sync {
+        submission: &'a str,
+        request_id: &'a str,
+        confirmation: &'a str,
+    },
     Tracking {
         project: &'a str,
         run: &'a str,
@@ -228,6 +233,18 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
         Command::Existing { project, run } => (project, run, None),
         command => {
             let (id, suffix, body, executes) = match command {
+                Command::Sync {
+                    submission,
+                    request_id,
+                    confirmation,
+                } => {
+                    let request = ml_exp_core::cloud::exchange::Sync {
+                        request_id: request_id.into(),
+                        confirmation: confirmation.into(),
+                    };
+                    request.validate(submission).map_err(|_| invalid())?;
+                    (submission, "/sync", Some(json!(request)), true)
+                }
                 Command::Cancel {
                     submission,
                     confirmation,
@@ -494,6 +511,18 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
             return Err(Error::Response);
         }
     }
+    if plan.path.ends_with("/sync") {
+        let request: ml_exp_core::cloud::exchange::Sync =
+            serde_json::from_slice(plan.body.as_deref().ok_or(Error::Response)?)
+                .map_err(|_| Error::Response)?;
+        if value["synchronization"]["request_id"] != request.request_id
+            || value["synchronization"]["resources"] != json!({"gpus":0,"cpus":2,"memory_gb":4})
+            || value["synchronization"]["max_time_seconds"] != 600
+            || value["synchronization"]["training_replayed"] != false
+        {
+            return Err(Error::Response);
+        }
+    }
     Ok(value)
 }
 pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Error> {
@@ -501,6 +530,8 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
     let creates = matches!(plan.expected, Expected::Creation { .. });
     let capability = if matches!(plan.expected, Expected::Tracking { .. }) {
         "native-tracking-status.v1"
+    } else if plan.path.ends_with("/sync") {
+        "native-cloud-sync.v1"
     } else if plan.path.ends_with("/history") {
         "native-metric-history.v1"
     } else if matches!(plan.expected, Expected::Retry { .. }) {

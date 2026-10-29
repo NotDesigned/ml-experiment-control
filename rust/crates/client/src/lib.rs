@@ -1,18 +1,22 @@
 //! Native client: pure connection and business request planning, private credential I/O,
 //! and HTTP transport are separate boundaries. No mutation replay.
 
+pub mod batch;
 pub mod config;
 pub mod credentials;
 pub mod datasets;
 pub mod observation;
+pub mod preparations;
 pub mod presentation;
 pub mod projects;
 pub mod read;
+pub mod runtime;
 pub mod session;
 pub mod sources;
 pub mod status;
 pub mod submissions;
 pub mod transport;
+pub mod update;
 pub mod watch;
 
 pub use config::{ConnectionPlan, Settings, TokenSource, normalize_url};
@@ -63,3 +67,7 @@ pub enum Error {
 }
 
 pub mod artifacts;
+
+pub mod debug;
+
+pub mod administration;

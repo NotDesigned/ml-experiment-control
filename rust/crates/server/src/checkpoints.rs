@@ -126,7 +126,9 @@ impl Store {
         if let Some(checkpoint_id) = checkpoint_id {
             checkpoints::validate_checkpoint_id(checkpoint_id).map_err(|_| Error::Document)?;
             let name = OsString::from(format!("{checkpoint_id}.json"));
-            if !directory.entry_exists(&name)? {
+            if !directory.entry_exists(&name)?
+                || directory.entry_exists(OsStr::new(&format!("withdrawn.{checkpoint_id}.json")))?
+            {
                 return Ok(Vec::new());
             }
             let value = Self::read_value(&directory, &name)?;
@@ -134,19 +136,23 @@ impl Store {
                 .map_err(|_| Error::Document)?;
             return Ok(vec![value]);
         }
-        Self::names(&directory)?
-            .into_iter()
-            .map(|name| {
-                let value = Self::read_value(&directory, &name)?;
-                checkpoints::validate_document(
-                    &value,
-                    Some(context),
-                    name.to_str().and_then(|name| name.strip_suffix(".json")),
-                )
-                .map_err(|_| Error::Document)?;
-                Ok(value)
-            })
-            .collect()
+        let mut values = Vec::new();
+        for name in Self::names(&directory)? {
+            if directory
+                .entry_exists(OsStr::new(&format!("withdrawn.{}", name.to_string_lossy())))?
+            {
+                continue;
+            }
+            let value = Self::read_value(&directory, &name)?;
+            checkpoints::validate_document(
+                &value,
+                Some(context),
+                name.to_str().and_then(|name| name.strip_suffix(".json")),
+            )
+            .map_err(|_| Error::Document)?;
+            values.push(value);
+        }
+        Ok(values)
     }
 
     pub fn list(&self, context: &Context) -> Result<Vec<Value>> {
@@ -169,6 +175,12 @@ impl Store {
         if let Some(existing) = self.read_locked(context, Some(&checkpoint_id))?.pop() {
             return Ok(existing);
         }
+        if self.attempt_directory(context, false)?.is_some_and(|d| {
+            d.entry_exists(OsStr::new(&format!("withdrawn.{checkpoint_id}.json")))
+                .unwrap_or(true)
+        }) {
+            return Err(Error::Document);
+        }
         let existing = self.read_locked(context, None)?;
         checkpoints::ensure_generation_compatible(&existing, &candidate).map_err(|error| {
             match error {
@@ -190,6 +202,35 @@ impl Store {
 }
 
 use std::ffi::OsString;
+
+impl Store {
+    pub fn withdraw(&self, context: &Context, id: &str, plan_id: &str) -> Result<()> {
+        checkpoints::validate_checkpoint_id(id).map_err(|_| Error::Document)?;
+        ml_exp_core::sources::validate_archive_digest(plan_id).map_err(|_| Error::Document)?;
+        let _guard = self.lock()?;
+        let directory = self
+            .attempt_directory(context, false)?
+            .ok_or(Error::Document)?;
+        let original = Self::read_value(&directory, OsStr::new(&format!("{id}.json")))?;
+        checkpoints::validate_document(&original, Some(context), Some(id))
+            .map_err(|_| Error::Document)?;
+        let name = format!("withdrawn.{id}.json");
+        let value =
+            serde_json::json!({"checkpoint_id":id,"plan_id":plan_id,"status":"REMOVAL_REQUESTED"});
+        if directory.entry_exists(OsStr::new(&name))? {
+            if directory.read_regular(OsStr::new(&name), MAX_DOCUMENT_BYTES)?
+                != Self::encode(&value)?
+            {
+                return Err(Error::Document);
+            }
+        } else {
+            directory.publish_new(OsStr::new(&name), &Self::encode(&value)?)?;
+        }
+        let file = directory.open_regular_read(OsStr::new(&name))?;
+        directory.seal_regular(OsStr::new(&name), &file, false)?;
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {

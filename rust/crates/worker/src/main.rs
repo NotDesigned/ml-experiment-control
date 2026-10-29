@@ -7,9 +7,15 @@ mod cloud_cli;
 #[cfg(unix)]
 mod data_cli;
 #[cfg(unix)]
+mod data_copy_cli;
+#[cfg(unix)]
 mod import_cli;
 #[cfg(unix)]
+mod maintenance_cli;
+#[cfg(unix)]
 mod managed_cli;
+#[cfg(unix)]
+mod materialize_cli;
 
 #[derive(Parser)]
 #[command(
@@ -56,6 +62,15 @@ fn main() -> ExitCode {
             .as_deref()
             .and_then(std::ffi::OsStr::to_str)
         {
+            Some("data-copy") => {
+                return data_copy_cli::main_from(std::iter::once(binary).chain(arguments));
+            }
+            Some("storage-maintain") => {
+                return maintenance_cli::main_from(std::iter::once(binary).chain(arguments));
+            }
+            Some("image-materialize") => {
+                return materialize_cli::main_from(std::iter::once(binary).chain(arguments));
+            }
             Some("cloud-launch") => {
                 return cloud_cli::main_from(std::iter::once(binary).chain(arguments));
             }

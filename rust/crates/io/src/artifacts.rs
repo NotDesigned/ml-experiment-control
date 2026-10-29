@@ -290,6 +290,83 @@ pub fn verify(
     Ok(proof)
 }
 
+/// Verify a remote archive without spooling it to the API disk. The reader is
+/// bounded by the frozen byte count, including tar padding and trailing bytes.
+pub fn verify_stream(
+    reader: &mut impl Read,
+    receipt: &artifacts::ArchiveReceipt,
+) -> io::Result<artifacts::DownloadProof> {
+    artifacts::validate_receipt(receipt).map_err(|_| invalid())?;
+    let proofs = verify_members(
+        reader,
+        &receipt.sha256,
+        receipt.bytes,
+        &receipt.files,
+        "outputs/",
+    )?;
+    let proof = artifacts::DownloadProof {
+        archive_sha256: receipt.sha256.clone(),
+        archive_bytes: receipt.bytes,
+        files: proofs,
+    };
+    artifacts::proof_matches(receipt, &proof).map_err(|_| invalid())?;
+    Ok(proof)
+}
+pub fn verify_data_stream(
+    reader: &mut impl Read,
+    definition: &ml_exp_core::datasets::Definition,
+) -> io::Result<()> {
+    definition.validate().map_err(|_| invalid())?;
+    verify_members(
+        reader,
+        &definition.sha256,
+        definition.archive_bytes,
+        &definition.files,
+        "",
+    )?;
+    Ok(())
+}
+fn verify_members(
+    reader: &mut impl Read,
+    sha256: &str,
+    bytes: u64,
+    files: &[FileReceipt],
+    prefix: &str,
+) -> io::Result<std::collections::BTreeMap<String, FileReceipt>> {
+    let mut reader = HashReader {
+        inner: reader.take(bytes.checked_add(1).ok_or_else(invalid)?),
+        hash: Sha256::new(),
+        bytes: 0,
+    };
+    let mut proofs = std::collections::BTreeMap::new();
+    {
+        let mut archive = tar::Archive::new(&mut reader);
+        for row in archive.entries()? {
+            let mut row = row?;
+            if !row.header().entry_type().is_file() {
+                return Err(invalid());
+            }
+            let path = row.path()?.to_str().ok_or_else(invalid)?.to_owned();
+            let local = path.strip_prefix(prefix).ok_or_else(invalid)?;
+            let expected = files.iter().find(|f| f.path == local).ok_or_else(invalid)?;
+            if proofs.contains_key(&path) || row.size() != expected.bytes {
+                return Err(invalid());
+            }
+            let (digest, bytes) = hash(&mut row)?;
+            if digest != expected.sha256 || bytes != expected.bytes {
+                return Err(invalid());
+            }
+            proofs.insert(path, expected.clone());
+        }
+    }
+    io::copy(&mut reader, &mut io::sink())?;
+    let digest = format!("{:x}", reader.hash.finalize());
+    if digest != sha256 || reader.bytes != bytes || proofs.len() != files.len() {
+        return Err(invalid());
+    }
+    Ok(proofs)
+}
+
 pub fn estimate(root: &Directory) -> io::Result<u64> {
     let mut paths = Vec::new();
     walk(root, "", &mut paths, &mut 0, Kind::Results)?;

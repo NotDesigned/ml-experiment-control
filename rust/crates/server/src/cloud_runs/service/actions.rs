@@ -10,7 +10,8 @@ impl Service {
         transition: &str,
     ) -> cloud::Result<Value> {
         let lock = self.lock()?;
-        let saved = self.saved(project, run)?;
+        let attempt_id = self.current_attempt(project, run)?;
+        let saved = self.saved_attempt(project, run, &attempt_id)?;
         let reused = saved.is_some();
         let prepared = if let Some(saved) = saved {
             if saved.approval != approval {
@@ -29,7 +30,7 @@ impl Service {
                 scope_type: ml_exp_core::operations::ScopeType::Run,
                 object_id: run.into(),
             };
-            if self.actions.has_scope_history(&scope).map_err(op)? {
+            if attempt_id == "attempt-001" && self.actions.has_scope_history(&scope).map_err(op)? {
                 return Err(cloud::Error::evidence());
             }
             let mut token = [0u8; 16];
@@ -37,11 +38,30 @@ impl Service {
             let execution = self.current_execution(
                 project,
                 run,
+                &attempt_id,
                 &format!("{:032x}", u128::from_be_bytes(token)),
             )?;
+            if attempt_id != "attempt-001" {
+                let run_dir = root.child(OsStr::new(run), false).map_err(io)?;
+                let attempt = read(
+                    &run_dir
+                        .child(OsStr::new("attempts"), false)
+                        .map_err(io)?
+                        .child(OsStr::new(&attempt_id), false)
+                        .map_err(io)?,
+                    "attempt.json",
+                )?;
+                if approval.max_gpu_hours
+                    != attempt["native_cloud_retry"]["request"]["max_gpu_hours"]
+                        .as_f64()
+                        .ok_or_else(cloud::Error::evidence)?
+                {
+                    return Err(cloud::Error::evidence());
+                }
+            }
             // Compile provider resource limits before publishing any Action.
-            let backend = &self.backends[&execution.backend_id];
-            match &backend.adapter.profile {
+            let adapter = self.execution_adapter(&execution)?;
+            match &adapter.profile {
                 cloud::adapter::Profile::Pai(p) => p.create(&execution.job, execution.allocation),
                 cloud::adapter::Profile::Sensecore(p) => p.create(&execution.job),
             }
@@ -53,7 +73,11 @@ impl Service {
                 plan,
                 approval,
             };
-            write(&self.slots, &Self::slot(project, run)?, &prepared)?;
+            write(
+                &self.slots,
+                &Self::attempt_slot(project, run, &attempt_id)?,
+                &prepared,
+            )?;
             prepared
         };
         lock.validate()?;
@@ -109,7 +133,7 @@ impl Service {
         let lock = self.lock()?;
         let prepared = self.load(action)?;
         let execution = &prepared.execution;
-        let backend = &self.backends[&execution.backend_id];
+        let adapter = self.execution_adapter(execution)?;
         if self.actions.observe(action).map_err(op)?["execution"]["status"] == "AUTHORIZED" {
             let root = self.authority(&execution.job.project, &execution.job.run_id)?;
             let run = root
@@ -158,7 +182,7 @@ impl Service {
         };
         let snapshot = Runner {
             actions: &self.actions,
-            adapter: &backend.adapter,
+            adapter: &adapter,
             outbox: &self.outbox,
         }
         .execute(
@@ -197,14 +221,14 @@ impl Service {
                 .commit(action, &transition_value, transition, now)
                 .map_err(op)?;
         }
-        let backend = &self.backends[&prepared.execution.backend_id];
+        let adapter = self.execution_adapter(&prepared.execution)?;
         let check = || {
             lock.validate()?;
             self.check(&prepared)
         };
         let snapshot = Runner {
             actions: &self.actions,
-            adapter: &backend.adapter,
+            adapter: &adapter,
             outbox: &self.outbox,
         }
         .reconcile(action, &check, cancelled)?;
@@ -218,7 +242,7 @@ impl Service {
             return Err(cloud::Error::evidence());
         }
         self.outbox.reconcile(
-            &self.backends[&execution.backend_id].adapter,
+            &self.execution_adapter(execution)?,
             &execution.job,
             execution.allocation,
             &|| {
@@ -252,7 +276,7 @@ impl Service {
         let current = self.outbox.status(&execution.job)?;
         if current["cancellation_started"] == true {
             self.outbox.reconcile(
-                &self.backends[&execution.backend_id].adapter,
+                &self.execution_adapter(execution)?,
                 &execution.job,
                 execution.allocation,
                 &check,
@@ -260,7 +284,7 @@ impl Service {
             )?;
         } else {
             self.outbox.stop(
-                &self.backends[&execution.backend_id].adapter,
+                &self.execution_adapter(execution)?,
                 &execution.job,
                 execution.allocation,
                 &format!("STOP {}", Outbox::slot(&execution.job)?),

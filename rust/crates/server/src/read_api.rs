@@ -272,6 +272,7 @@ pub struct Api {
     actions: Option<crate::operations::Store>,
     submissions: Option<Arc<crate::submissions::Service>>,
     cloud: Option<Arc<crate::cloud_runs::Service>>,
+    administration: Option<Arc<crate::administration::Service>>,
 }
 impl Api {
     pub fn open(settings: read_config::Settings) -> Result<Self, read_config::Error> {
@@ -331,6 +332,7 @@ impl Api {
             actions,
             submissions: None,
             cloud: None,
+            administration: None,
         })
     }
     pub fn with_lifecycle(
@@ -914,6 +916,11 @@ impl Api {
                 .apply_artifacts(&mut snapshot)
                 .map_err(crate::submissions::http::failure)?;
         }
+        if let Some(cloud) = &self.cloud {
+            cloud
+                .apply_observation(&mut snapshot)
+                .map_err(crate::cloud_runs::failure)?;
+        }
         let value = match query.view {
             View::Run => {
                 let attempt = snapshot.current_attempt_id.as_deref();
@@ -1086,6 +1093,22 @@ pub fn journal_binding_matches(snapshot: &Snapshot, binding: Option<&Value>) -> 
     same(runtime, ml.get("runtime_id"))
         && same(backend, ml.get("backend"))
         && same(&Value::Array(inputs), ml.get("inputs"))
+}
+
+impl Api {
+    pub fn with_administration(
+        mut self,
+        service: Arc<crate::administration::Service>,
+    ) -> Result<Self, read_config::Error> {
+        if !service.matches(&self.registry_root) {
+            return Err(read_config::Error);
+        }
+        self.administration = Some(service);
+        Ok(self)
+    }
+    pub fn administration(&self) -> Option<Arc<crate::administration::Service>> {
+        self.administration.clone()
+    }
 }
 
 #[cfg(test)]

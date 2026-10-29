@@ -83,6 +83,21 @@ fn cloud_run_authorship_launch_and_approval_preserve_science_and_exact_attempt()
             source_receipt_sha256: &s,
             profile_sha256: &profile,
             tracking_route: &json!({"enabled":false}),
+            target: &helper::Target {
+                backend_id: "pai-h200".into(),
+                profile_sha256: profile.clone(),
+                storage_scope: format!(
+                    "sha256:{}",
+                    canonical::digest(
+                        &json!({"profile":profile,"run_root":"/mnt/workspace/ml-expd/runs"})
+                    )
+                    .unwrap()
+                ),
+            },
+            run_root: "/mnt/workspace/ml-expd/runs",
+            data_root: "/mnt/workspace/ml-expd/datasets",
+            datasets: &[],
+            checkpoint: None,
         },
         "2026-10-29T00:00:00Z",
     )

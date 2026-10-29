@@ -1,0 +1,578 @@
+//! Durable debug lifecycle. Every non-idempotent effect has a saved claim;
+//! refresh observes that claim after response loss instead of creating again.
+use super::*;
+use ml_exp_core::cloud::debug as domain;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Definition {
+    pub profile: domain::Profile,
+    pub credentials_file: PathBuf,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Settings {
+    #[serde(default)]
+    pub enabled: bool,
+    pub max_active: usize,
+    pub profiles: BTreeMap<String, Definition>,
+}
+pub struct Runtime {
+    pub enabled: bool,
+    max_active: usize,
+    profiles: BTreeMap<String, (domain::Profile, Client)>,
+}
+impl Runtime {
+    pub fn open(settings: Settings) -> cloud::Result<Self> {
+        if settings.max_active == 0
+            || settings.max_active > 16
+            || settings.profiles.is_empty()
+            || settings.profiles.len() > 64
+        {
+            return Err(cloud::Error::configuration());
+        }
+        let profiles = settings
+            .profiles
+            .into_iter()
+            .map(|(name, d)| {
+                ml_exp_core::identity::validate_id(&name)
+                    .map_err(|_| cloud::Error::configuration())?;
+                d.profile
+                    .validate()
+                    .map_err(|_| cloud::Error::configuration())?;
+                Ok((
+                    name,
+                    (
+                        d.profile,
+                        Client::new(
+                            Credentials::load(&d.credentials_file)?,
+                            Duration::from_secs(30),
+                        )?,
+                    ),
+                ))
+            })
+            .collect::<cloud::Result<_>>()?;
+        Ok(Self {
+            enabled: settings.enabled,
+            max_active: settings.max_active,
+            profiles,
+        })
+    }
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Saved {
+    recipe: domain::Recipe,
+    provider_id: Option<String>,
+    claims: BTreeSet<String>,
+    stop_requested: bool,
+    delete_requested: bool,
+    terminal: bool,
+    #[serde(default)]
+    network_clean: bool,
+    deleted: bool,
+    connection: Option<Value>,
+    diagnostic: Option<String>,
+    observed_at: Option<String>,
+}
+fn name(id: &str) -> cloud::Result<String> {
+    if id
+        .strip_prefix("debug.")
+        .is_none_or(|s| ml_exp_core::sources::validate_archive_digest(s).is_err())
+    {
+        return Err(cloud::Error::configuration());
+    }
+    Ok(format!("{id}.debug.json"))
+}
+impl Service {
+    pub fn has_debug(&self) -> bool {
+        self.debug.as_ref().is_some_and(|d| d.enabled)
+    }
+    fn debug_save(&self, record: &Saved) -> cloud::Result<()> {
+        self.slots
+            .replace_regular(
+                OsStr::new(&name(&record.recipe.identity)?),
+                &encode(record)?,
+            )
+            .map_err(io)
+    }
+    fn debug_load(&self, id: &str) -> cloud::Result<Saved> {
+        let saved: Saved = serde_json::from_value(read(&self.slots, &name(id)?)?)
+            .map_err(|_| cloud::Error::evidence())?;
+        let runtime = self
+            .debug
+            .as_ref()
+            .ok_or_else(cloud::Error::configuration)?;
+        let (profile, _) = runtime
+            .profiles
+            .get(&saved.recipe.request.profile)
+            .ok_or_else(cloud::Error::configuration)?;
+        if saved.recipe.identity != id
+            || profile
+                .recipe(saved.recipe.request.clone(), &saved.recipe.created_at)
+                .map_err(|_| cloud::Error::evidence())?
+                != saved.recipe
+        {
+            return Err(cloud::Error::evidence());
+        }
+        Ok(saved)
+    }
+    fn debug_records(&self) -> cloud::Result<Vec<Saved>> {
+        let mut records = Vec::new();
+        for n in self.slots.entry_names_limited(32768).map_err(io)? {
+            if let Some(id) = n.to_str().and_then(|s| s.strip_suffix(".debug.json")) {
+                records.push(self.debug_load(id)?);
+            }
+            if records.len() > 4096 {
+                return Err(cloud::Error::evidence());
+            }
+        }
+        Ok(records)
+    }
+    fn debug_view(record: &Saved) -> Value {
+        json!({"debug_id":record.recipe.identity,"profile":record.recipe.request.profile,"name":record.recipe.name,"provider_id":record.provider_id,
+            "state":if record.deleted{"DELETED"}else if record.terminal&&record.network_clean{"STOPPED"}else if record.stop_requested||record.terminal{"STOPPING"}else if record.connection.is_some(){"RUNNING"}else if record.provider_id.is_some(){"STARTING"}else{"RECONCILE_REQUIRED"},
+            "resources":{"gpus":record.recipe.request.gpus,"cpus":record.recipe.request.cpus,"memory_gb":record.recipe.request.memory_gb},"expires_at":record.recipe.expires_at,
+            "connection":record.connection,"diagnostic":record.diagnostic,"observed_at":record.observed_at,"confirmation":format!("STOP {}",record.recipe.identity),"retry_safe":false})
+    }
+    pub fn debug_list(&self) -> cloud::Result<Value> {
+        let runtime = self
+            .debug
+            .as_ref()
+            .ok_or_else(cloud::Error::configuration)?;
+        let profiles=runtime.profiles.iter().map(|(name,(profile,_))|json!({"name":name,"provider":if matches!(profile,domain::Profile::PaiDsw{..}){"pai_dsw"}else{"sensecore_cci"},"delete_supported":matches!(profile,domain::Profile::PaiDsw{..})})).collect::<Vec<_>>();
+        Ok(
+            json!({"enabled":runtime.enabled,"profiles":profiles,"machines":self.debug_records()?.iter().map(Self::debug_view).collect::<Vec<_>>()}),
+        )
+    }
+    pub fn debug_status(&self, id: &str) -> cloud::Result<Value> {
+        Ok(Self::debug_view(&self.debug_load(id)?))
+    }
+    pub fn debug_create(&self, request: domain::Create, now: &str) -> cloud::Result<Value> {
+        let lock = self.lock()?;
+        let runtime = self
+            .debug
+            .as_ref()
+            .filter(|d| d.enabled)
+            .ok_or_else(cloud::Error::configuration)?;
+        let (profile, _) = runtime
+            .profiles
+            .get(&request.profile)
+            .ok_or_else(cloud::Error::configuration)?;
+        let recipe = profile
+            .recipe(request.clone(), now)
+            .map_err(|_| cloud::Error::configuration())?;
+        let records = self.debug_records()?;
+        if let Some(existing) = records
+            .iter()
+            .find(|r| r.recipe.request.request_id == request.request_id)
+        {
+            if existing.recipe.request != request
+                || existing.recipe.profile_sha256 != recipe.profile_sha256
+            {
+                return Err(cloud::Error::evidence());
+            }
+            return Ok(Self::debug_view(existing));
+        }
+        if records
+            .iter()
+            .filter(|r| !(r.terminal && r.network_clean || r.deleted))
+            .count()
+            >= runtime.max_active
+            || matches!(profile, domain::Profile::SensecoreCci { .. })
+                && records.iter().any(|r| {
+                    r.recipe.request.profile == request.profile
+                        && !(r.terminal && r.network_clean || r.deleted)
+                })
+        {
+            return Err(cloud::Error {
+                code: "DEBUG_MACHINE_LIMIT".into(),
+                http_status: Some(409),
+                uncertain: false,
+            });
+        }
+        let record = Saved {
+            recipe,
+            provider_id: None,
+            claims: BTreeSet::new(),
+            stop_requested: false,
+            delete_requested: false,
+            terminal: false,
+            network_clean: matches!(profile, domain::Profile::PaiDsw { .. }),
+            deleted: false,
+            connection: None,
+            diagnostic: None,
+            observed_at: None,
+        };
+        lock.validate()?;
+        self.debug_save(&record)?;
+        drop(lock);
+        self.debug_refresh(&record.recipe.identity, now)
+    }
+    fn debug_lookup(
+        profile: &domain::Profile,
+        client: &Client,
+        saved: &Saved,
+    ) -> cloud::Result<Option<Value>> {
+        let request = profile
+            .get(&saved.recipe, saved.provider_id.as_deref())
+            .map_err(|_| cloud::Error::configuration())?;
+        let result = client.call(&request, &AtomicBool::new(false));
+        let value = match result {
+            Ok(v) => v,
+            Err(e) if e.http_status == Some(404) || e.code == "InstanceNotExistError" => {
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        };
+        if matches!(profile, domain::Profile::PaiDsw { .. }) && saved.provider_id.is_none() {
+            let rows = value["Instances"]
+                .as_array()
+                .ok_or_else(cloud::Error::evidence)?;
+            let total = value["TotalCount"]
+                .as_u64()
+                .ok_or_else(cloud::Error::evidence)?;
+            if total != rows.len() as u64 || total > 100 {
+                return Err(cloud::Error::evidence());
+            }
+            let matching = rows
+                .iter()
+                .filter(|r| r["InstanceName"] == saved.recipe.name)
+                .collect::<Vec<_>>();
+            if matching.len() > 1 {
+                return Err(cloud::Error::evidence());
+            }
+            let Some(row) = matching.first() else {
+                return Ok(None);
+            };
+            let id = row["InstanceId"]
+                .as_str()
+                .ok_or_else(cloud::Error::evidence)?;
+            let value = client.call(
+                &profile
+                    .get(&saved.recipe, Some(id))
+                    .map_err(|_| cloud::Error::configuration())?,
+                &AtomicBool::new(false),
+            )?;
+            profile
+                .checked(&saved.recipe, None, &value)
+                .map_err(|_| cloud::Error::evidence())?;
+            return Ok(Some(value));
+        }
+        profile
+            .checked(&saved.recipe, saved.provider_id.as_deref(), &value)
+            .map_err(|_| cloud::Error::evidence())?;
+        Ok(Some(value))
+    }
+    fn debug_effect(
+        &self,
+        saved: &mut Saved,
+        label: &str,
+        client: &Client,
+        request: ml_exp_core::cloud::Request,
+    ) -> cloud::Result<Option<Value>> {
+        if saved.claims.contains(label) {
+            return Ok(None);
+        }
+        saved.claims.insert(label.into());
+        self.debug_save(saved)?;
+        client.call(&request, &AtomicBool::new(false)).map(Some)
+    }
+    pub fn debug_refresh(&self, id: &str, now: &str) -> cloud::Result<Value> {
+        let lock = self.lock()?;
+        let mut saved = self.debug_load(id)?;
+        if saved.deleted {
+            return Ok(Self::debug_view(&saved));
+        }
+        let runtime = self
+            .debug
+            .as_ref()
+            .ok_or_else(cloud::Error::configuration)?;
+        let (profile, client) = &runtime.profiles[&saved.recipe.request.profile];
+        let timestamp =
+            time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
+                .map_err(|_| cloud::Error::configuration())?
+                .unix_timestamp();
+        if timestamp >= saved.recipe.expires_at {
+            saved.stop_requested = true;
+            self.debug_save(&saved)?;
+        }
+        let result = (|| {
+            let mut value = Self::debug_lookup(profile, client, &saved)?;
+            if value.is_none() {
+                if saved.delete_requested
+                    && saved.claims.contains("delete")
+                    && saved.provider_id.is_some()
+                {
+                    saved.deleted = true;
+                    saved.network_clean = true;
+                    saved.connection = None;
+                    return Ok(());
+                }
+                if saved.provider_id.is_some() || saved.claims.contains("create") {
+                    return Err(cloud::Error {
+                        code: "DEBUG_CREATE_UNCERTAIN".into(),
+                        http_status: None,
+                        uncertain: true,
+                    });
+                }
+                if saved.stop_requested {
+                    saved.terminal = true;
+                    saved.network_clean = true;
+                    return Ok(());
+                }
+                let create = profile
+                    .create(&saved.recipe)
+                    .map_err(|_| cloud::Error::configuration())?;
+                let response = self.debug_effect(&mut saved, "create", client, create)?;
+                if matches!(profile, domain::Profile::PaiDsw { .. }) {
+                    if let Some(id) = response.as_ref().and_then(|v| v["InstanceId"].as_str()) {
+                        ml_exp_core::identity::validate_id(id)
+                            .map_err(|_| cloud::Error::evidence())?;
+                        saved.provider_id = Some(id.into());
+                        self.debug_save(&saved)?;
+                    }
+                }
+                value = Self::debug_lookup(profile, client, &saved)?;
+            }
+            let Some(value) = value else {
+                return Err(cloud::Error {
+                    code: "DEBUG_CREATE_UNCERTAIN".into(),
+                    http_status: None,
+                    uncertain: true,
+                });
+            };
+            saved.provider_id = Some(
+                profile
+                    .checked(&saved.recipe, saved.provider_id.as_deref(), &value)
+                    .map_err(|_| cloud::Error::evidence())?,
+            );
+            self.debug_save(&saved)?;
+            let provider_id = saved
+                .provider_id
+                .clone()
+                .ok_or_else(cloud::Error::evidence)?;
+            saved.terminal = profile.terminal(&value);
+            if saved.stop_requested || saved.terminal {
+                saved.connection = None;
+                if !saved.terminal {
+                    // Stop is idempotent and always rechecks this exact instance.
+                    client.call(
+                        &profile
+                            .stop(&saved.recipe, &provider_id, false)
+                            .map_err(|_| cloud::Error::configuration())?,
+                        &AtomicBool::new(false),
+                    )?;
+                } else if matches!(profile, domain::Profile::SensecoreCci { .. }) {
+                    saved.network_clean =
+                        self.debug_network_stop(&saved, profile, client, &provider_id)?;
+                }
+                if saved.delete_requested
+                    && saved.terminal
+                    && matches!(profile, domain::Profile::PaiDsw { .. })
+                {
+                    saved.claims.insert("delete".into());
+                    self.debug_save(&saved)?;
+                    client.call(
+                        &profile
+                            .stop(&saved.recipe, &provider_id, true)
+                            .map_err(|_| cloud::Error::configuration())?,
+                        &AtomicBool::new(false),
+                    )?;
+                    if Self::debug_lookup(profile, client, &saved)?.is_none() {
+                        saved.deleted = true;
+                    }
+                }
+            } else {
+                match profile {
+                    domain::Profile::PaiDsw { .. } => {
+                        client.call(
+                            &profile
+                                .timer(&saved.recipe, &provider_id, timestamp)
+                                .map_err(|_| cloud::Error::configuration())?,
+                            &AtomicBool::new(false),
+                        )?;
+                        let mut timer = profile
+                            .get(&saved.recipe, Some(&provider_id))
+                            .map_err(|_| cloud::Error::configuration())?;
+                        timer.path.push_str("/shutdowntimer");
+                        timer.action = "GetInstanceShutdownTimer".into();
+                        let response = client.call(&timer, &AtomicBool::new(false))?;
+                        if response["InstanceId"] != provider_id
+                            || response["Success"] != true
+                            || !response["RemainingTimeInMs"].as_i64().is_some_and(|n| {
+                                n > 0 && n <= (saved.recipe.expires_at - timestamp).max(1) * 1000
+                            })
+                        {
+                            return Err(cloud::Error::evidence());
+                        }
+                        saved.connection = profile.connection(&value);
+                    }
+                    domain::Profile::SensecoreCci { network, .. } => {
+                        let request = profile
+                            .service(&saved.recipe, false)
+                            .map_err(|_| cloud::Error::configuration())?;
+                        let value = match client.call(&request, &AtomicBool::new(false)) {
+                            Ok(v) => Some(v),
+                            Err(e) if e.http_status == Some(404) => None,
+                            Err(e) => return Err(e),
+                        };
+                        if let Some(service) = value {
+                            if service["name"] != saved.recipe.name
+                                || service["selector"] != json!({"app":saved.recipe.name})
+                                || !domain::subset(
+                                    &json!([{"port":22,"target_port":22}]),
+                                    &service["ports"],
+                                )
+                            {
+                                return Err(cloud::Error::evidence());
+                            }
+                            let request = profile
+                                .network(&saved.recipe, "get", &provider_id)
+                                .map_err(|_| cloud::Error::configuration())?;
+                            let row = match client.call(&request, &AtomicBool::new(false)) {
+                                Ok(v) => Some(v),
+                                Err(e) if e.http_status == Some(404) => None,
+                                Err(e) => return Err(e),
+                            };
+                            if let Some(row) = row {
+                                if profile
+                                    .check_network(&saved.recipe, &provider_id, &row)
+                                    .map_err(|_| cloud::Error::evidence())?
+                                {
+                                    saved.connection = Some(
+                                        json!({"host":network.external_ip,"port":network.external_port,"user":"root","access":"internet"}),
+                                    );
+                                } else if row["state"] == "CREATED"
+                                    && row["properties"]["internal_instance_name"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .is_empty()
+                                {
+                                    let mut request = profile
+                                        .network(&saved.recipe, "bind", &provider_id)
+                                        .map_err(|_| cloud::Error::configuration())?;
+                                    let mut body = row.clone();
+                                    body["properties"]["internal_instance_name"] =
+                                        json!(provider_id);
+                                    body["properties"]["internal_instance_type"] =
+                                        json!("CCI_DEPLOYMENT_SERVICE");
+                                    request.body = Some(body);
+                                    self.debug_effect(&mut saved, "dnat-bind", client, request)?;
+                                }
+                            } else {
+                                let request = profile
+                                    .network(&saved.recipe, "create", &provider_id)
+                                    .map_err(|_| cloud::Error::configuration())?;
+                                self.debug_effect(&mut saved, "dnat-create", client, request)?;
+                            }
+                        } else {
+                            let request = profile
+                                .service(&saved.recipe, true)
+                                .map_err(|_| cloud::Error::configuration())?;
+                            self.debug_effect(&mut saved, "service", client, request)?;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })();
+        saved.observed_at = Some(now.into());
+        saved.diagnostic = result.err().map(|e| e.code);
+        lock.validate()?;
+        self.debug_save(&saved)?;
+        Ok(Self::debug_view(&saved))
+    }
+    fn debug_network_stop(
+        &self,
+        saved: &Saved,
+        profile: &domain::Profile,
+        client: &Client,
+        id: &str,
+    ) -> cloud::Result<bool> {
+        if !saved.claims.contains("dnat-create") {
+            return Ok(true);
+        }
+        let request = profile
+            .network(&saved.recipe, "get", id)
+            .map_err(|_| cloud::Error::configuration())?;
+        let row = match client.call(&request, &AtomicBool::new(false)) {
+            Ok(v) => v,
+            Err(e) if e.http_status == Some(404) => return Ok(true),
+            Err(e) => return Err(e),
+        };
+        profile
+            .check_network(&saved.recipe, id, &row)
+            .map_err(|_| cloud::Error::evidence())?;
+        let operation = if row["properties"]["internal_instance_name"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+        {
+            "unbind"
+        } else {
+            "delete"
+        };
+        client.call(
+            &profile
+                .network(&saved.recipe, operation, id)
+                .map_err(|_| cloud::Error::configuration())?,
+            &AtomicBool::new(false),
+        )?;
+        Ok(false)
+    }
+    pub fn debug_stop(
+        &self,
+        id: &str,
+        confirmation: &str,
+        delete: bool,
+        now: &str,
+    ) -> cloud::Result<Value> {
+        if confirmation != format!("{} {id}", if delete { "DELETE" } else { "STOP" }) {
+            return Err(cloud::Error::configuration());
+        }
+        let lock = self.lock()?;
+        let mut saved = self.debug_load(id)?;
+        if delete
+            && matches!(
+                self.debug
+                    .as_ref()
+                    .ok_or_else(cloud::Error::configuration)?
+                    .profiles[&saved.recipe.request.profile]
+                    .0,
+                domain::Profile::SensecoreCci { .. }
+            )
+        {
+            return Err(cloud::Error::configuration());
+        }
+        saved.stop_requested = true;
+        saved.delete_requested |= delete;
+        lock.validate()?;
+        self.debug_save(&saved)?;
+        drop(lock);
+        self.debug_refresh(id, now)
+    }
+    pub fn debug_expire(&self, now: &str) -> cloud::Result<()> {
+        if !self.has_debug() {
+            return Ok(());
+        }
+        let timestamp =
+            time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
+                .map_err(|_| cloud::Error::configuration())?
+                .unix_timestamp();
+        for saved in self
+            .debug_records()?
+            .into_iter()
+            .filter(|r| {
+                !(r.deleted || r.terminal && r.network_clean)
+                    && (r.recipe.expires_at <= timestamp || r.stop_requested || r.terminal)
+            })
+            .take(16)
+        {
+            self.debug_refresh(&saved.recipe.identity, now)?;
+        }
+        Ok(())
+    }
+}

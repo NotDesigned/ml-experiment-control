@@ -6,6 +6,8 @@ impl Service {
         request: run::Create,
         now: &str,
     ) -> cloud::Result<Value> {
+        let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
+            .map_err(|_| cloud::Error::evidence())?;
         if !self.creation {
             return Err(cloud::Error {
                 code: "CLOUD_RUN_CREATION_DISABLED".into(),
@@ -25,7 +27,29 @@ impl Service {
         } else {
             ml_exp_core::tracking::resolve(request.wandb.as_ref(), &self.tracking, project)
         };
-        let docs = self.documents(project, &request, &route, now)?;
+        let selected = if !exists {
+            let backend = self
+                .backends
+                .get(&request.executor)
+                .ok_or_else(cloud::Error::configuration)?;
+            if let Some(allowed) = &backend.definition.spot_clusters {
+                let cluster = backend
+                    .adapter
+                    .highest_spot(Some(allowed), &AtomicBool::new(false))?;
+                let cloud::adapter::Profile::Sensecore(mut profile) =
+                    backend.adapter.profile.clone()
+                else {
+                    return Err(cloud::Error::configuration());
+                };
+                profile.cluster = cluster.name;
+                Some(cloud::adapter::Profile::Sensecore(profile))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let docs = self.documents(project, &request, &route, now, selected.as_ref())?;
         let checked = |directory: &Directory, reused: bool| -> cloud::Result<Value> {
             let run = read(directory, "manifest.json")?;
             let original = read(directory, "request.json")?;
@@ -66,7 +90,7 @@ impl Service {
         write(&attempt, "status.json", &docs.status)?;
         self.authority(project, &request.run_id)?;
         lock.validate()?;
-        let current = self.documents(project, &request, &route, now)?;
+        let current = self.documents(project, &request, &route, now, selected.as_ref())?;
         if current.run != docs.run || current.attempt != docs.attempt {
             return Err(cloud::Error::evidence());
         }

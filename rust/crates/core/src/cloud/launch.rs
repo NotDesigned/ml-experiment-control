@@ -11,9 +11,79 @@ pub struct Package {
     pub manifest: launch::Manifest,
     pub config: managed::Config,
     pub worker_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<super::exchange::Channel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_context: Option<crate::checkpoints::Context>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<crate::datasets::import::Config>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<crate::artifacts::publication::Policy>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub result_upload: bool,
 }
 impl Package {
+    /// Attach only exact trusted receipts. Dataset paths point directly at
+    /// immutable shared-storage trees, with no symlink or API-host copy.
+    pub fn attach(
+        &mut self,
+        data_root: &str,
+        datasets: Vec<crate::datasets::Mount>,
+        checkpoint: Option<Value>,
+    ) -> Result<()> {
+        if !crate::datasets::root_path(data_root) {
+            return Err(Error("cloud data root"));
+        }
+        crate::datasets::mounts(&datasets).map_err(|_| Error("cloud input receipts"))?;
+        let project = &self.manifest.identity.project;
+        let input_root = format!("{data_root}/{project}");
+        self.manifest
+            .environment
+            .insert("DATA_DIR".into(), input_root.clone());
+        self.manifest
+            .environment
+            .insert("INPUT_DIR".into(), input_root);
+        if !datasets.is_empty() {
+            let mapping: BTreeMap<_, _> = datasets
+                .iter()
+                .map(|m| (m.name.clone(), m.receipt.root.clone()))
+                .collect();
+            self.manifest.environment.insert(
+                "DATASETS_JSON".into(),
+                serde_json::to_string(&mapping).map_err(|_| Error("dataset mapping"))?,
+            );
+        }
+        if let Some(value) = &checkpoint {
+            let plan = crate::checkpoints::restore_plan(value, None)
+                .map_err(|_| Error("cloud restore plan"))?;
+            self.manifest.environment.extend([
+                (
+                    "RESUME_DIR".into(),
+                    format!("{}/checkpoints/{}", plan.state_root, plan.generation),
+                ),
+                ("RESUME_CHECKPOINT_ID".into(), plan.checkpoint_id),
+                ("RESUME_STEP".into(), plan.step.to_string()),
+            ]);
+        }
+        self.config.datasets = datasets;
+        self.config.checkpoint_restore = checkpoint;
+        self.config
+            .local_binding
+            .as_mut()
+            .ok_or(Error("local binding"))?
+            .sha256 = helper::sha256_bytes(
+            &self
+                .manifest
+                .encode()
+                .map_err(|_| Error("launch manifest"))?,
+        )[7..]
+            .into();
+        self.validate()
+    }
     pub fn validate(&self) -> Result<()> {
+        if let Some(policy) = &self.artifacts {
+            policy.validate().map_err(|_| Error("artifact policy"))?;
+        }
         self.config
             .validate()
             .map_err(|_| Error("cloud worker config"))?;
@@ -22,6 +92,52 @@ impl Package {
             .binding()
             .map_err(|_| Error("cloud worker binding"))?;
         let identity = &binding.identity;
+        if self.imports.len() > self.config.datasets.len() {
+            return Err(Error("cloud imports"));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for import in &self.imports {
+            import.validate().map_err(|_| Error("cloud import"))?;
+            if let crate::datasets::import::Source::ExchangeParts { channel } = &import.source {
+                if self.channel.as_ref() != Some(channel) {
+                    return Err(Error("dataset exchange scope"));
+                }
+            }
+            let asset = import.definition.asset_id();
+            let receipt = self
+                .config
+                .datasets
+                .iter()
+                .find(|m| m.receipt.asset_id == asset)
+                .ok_or(Error("unbound import"))?;
+            receipt
+                .receipt
+                .bind(&identity.project, &import.target, &import.root)
+                .map_err(|_| Error("cloud import binding"))?;
+            if import.project != identity.project
+                || import.definition != receipt.receipt.definition
+                || !seen.insert(asset)
+            {
+                return Err(Error("cloud import scope"));
+            }
+        }
+        if let Some(channel) = &self.channel {
+            channel.validate(identity)?;
+        }
+        if let Some(context) = &self.checkpoint_context {
+            crate::checkpoints::context(
+                &serde_json::to_value(context).map_err(|_| Error("checkpoint context"))?,
+            )
+            .map_err(|_| Error("checkpoint context"))?;
+            if context.project != identity.project
+                || context.run_id != identity.run_id
+                || context.attempt_id != identity.attempt_id
+                || std::path::Path::new(&context.state_root)
+                    != self.config.attempt_root.join("state")
+            {
+                return Err(Error("checkpoint context scope"));
+            }
+        }
         let parent = self.root.join(&identity.project).join(&identity.run_id);
         if !managed::absolute(&self.root)
             || self.root.parent().is_none()
@@ -146,6 +262,11 @@ pub fn compile(input: Input<'_>) -> Result<Package> {
         manifest,
         config,
         worker_sha256: input.worker_sha256.into(),
+        channel: None,
+        checkpoint_context: None,
+        imports: Vec::new(),
+        artifacts: None,
+        result_upload: false,
     };
     package.validate()?;
     Ok(package)

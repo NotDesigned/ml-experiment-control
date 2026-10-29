@@ -23,5 +23,6 @@ tar.workspace = true
 flate2.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
+fs2.workspace = true
 
 [dev-dependencies]

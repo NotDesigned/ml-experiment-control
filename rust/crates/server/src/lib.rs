@@ -1,12 +1,19 @@
 //! Isolated HTTP boundary preview. No production workspace or provider access.
+pub mod administration;
+mod administration_http;
 pub mod backends;
 pub mod background;
+mod capacity_http;
 pub mod checkpoints;
 pub mod cloud_runs;
+mod data_delivery_http;
 pub mod deletion;
 pub mod experiments;
 pub mod index;
+mod native_contract;
+pub mod objects;
 pub mod operations;
+mod preparation_http;
 pub mod projects;
 pub mod read_api;
 pub mod read_config;
@@ -84,6 +91,26 @@ pub(crate) struct AppState {
 }
 
 async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
+    // This route has separate, Attempt-scoped authentication in its handler.
+    // A worker credential is never accepted by any ordinary API route.
+    if request.method() == Method::POST
+        && (request.uri().path().starts_with("/api/worker-exchange/")
+            || request.uri().path().starts_with("/api/dataset-exchange/"))
+    {
+        let protocols: Vec<_> = request
+            .headers()
+            .get_all(CLIENT_PROTOCOL_HEADER)
+            .iter()
+            .collect();
+        if protocols.len() == 1 && protocols[0] == "2" {
+            return next.run(request).await;
+        }
+        return (
+            StatusCode::UPGRADE_REQUIRED,
+            Json(json!({"detail":"client protocol 2 required"})),
+        )
+            .into_response();
+    }
     if let Err(status) = access_policy(
         &state.auth.token,
         request.headers(),
@@ -173,7 +200,33 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
             api.sources().as_deref(),
             api.submissions().as_deref(),
         );
+        for field in ["capabilities", "supported_capabilities"] {
+            document[field]
+                .as_array_mut()
+                .expect("capabilities")
+                .push(json!("backend-catalogue.v1"));
+            if api.submissions().is_some() || api.cloud().is_some() {
+                document[field]
+                    .as_array_mut()
+                    .expect("capabilities")
+                    .push(json!("backend-capacity.v1"));
+            }
+        }
+        if api.administration().is_some() {
+            for field in ["capabilities", "supported_capabilities"] {
+                document[field]
+                    .as_array_mut()
+                    .expect("capabilities")
+                    .push(json!("native-administration.v1"));
+            }
+        }
         if let Some(cloud) = api.cloud() {
+            for field in ["capabilities", "supported_capabilities"] {
+                document[field]
+                    .as_array_mut()
+                    .expect("capabilities")
+                    .push(json!("native-experiment-preparations.v1"));
+            }
             for field in ["capabilities", "supported_capabilities"] {
                 let values = document[field].as_array_mut().expect("capabilities array");
                 for capability in [
@@ -191,8 +244,67 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
                     values.push(json!("native-run-creation.v1"));
                 }
             }
+            if cloud.has_debug() {
+                for field in ["capabilities", "supported_capabilities"] {
+                    document[field]
+                        .as_array_mut()
+                        .expect("capabilities")
+                        .push(json!("native-debug-machines.v1"));
+                }
+            }
+            if cloud.has_builds() {
+                for field in ["capabilities", "supported_capabilities"] {
+                    document[field]
+                        .as_array_mut()
+                        .expect("capabilities")
+                        .push(json!("native-runtime-builds.v1"));
+                }
+            }
+            if cloud.has_datasets() {
+                for field in ["capabilities", "supported_capabilities"] {
+                    let values = document[field].as_array_mut().expect("capabilities");
+                    if !values.iter().any(|v| v == "native-datasets.v1") {
+                        values.push(json!("native-datasets.v1"));
+                    }
+                    values.push(json!("native-object-datasets.v1"));
+                }
+            }
             document["cloud_scheduler_mutations"] = json!(cloud.enabled());
             document["cloud_run_creation"] = json!(cloud.can_create_runs());
+            if cloud.has_exchange() {
+                for field in ["capabilities", "supported_capabilities"] {
+                    for capability in [
+                        "native-worker-observation.v1",
+                        "native-metric-history.v1",
+                        "native-checkpoints.v1",
+                        "native-tracking-status.v1",
+                    ] {
+                        let values = document[field].as_array_mut().expect("capabilities");
+                        if !values.iter().any(|v| v == capability) {
+                            values.push(json!(capability));
+                        }
+                    }
+                }
+            }
+            if cloud.has_collectors() {
+                for field in ["capabilities", "supported_capabilities"] {
+                    document[field]
+                        .as_array_mut()
+                        .expect("capabilities")
+                        .push(json!("native-cloud-sync.v1"));
+                }
+            }
+            for field in ["capabilities", "supported_capabilities"] {
+                let values = document[field].as_array_mut().expect("capabilities");
+                for (supported, capability) in [
+                    (cloud.can_create_runs(), "native-attempt-retry.v1"),
+                    (cloud.has_artifacts(), "native-artifacts.v1"),
+                ] {
+                    if supported && !values.iter().any(|v| v == capability) {
+                        values.push(json!(capability));
+                    }
+                }
+            }
             document["scheduler_mutations"] =
                 json!(cloud.enabled() || document["scheduler_mutations"] == true);
             document["run_writes"] =
@@ -505,6 +617,7 @@ fn schema_document() -> serde_json::Value {
         }
         paths.insert(format!("/api/submissions/{{identity}}/{name}"), operation);
     }
+    native_contract::extend(&mut document);
     document
 }
 async fn schema() -> Json<serde_json::Value> {
@@ -534,6 +647,13 @@ pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
         .merge(sources::http::routes())
         .merge(submissions::http::routes())
         .merge(submissions::dataset_http::routes())
+        .merge(cloud_runs::routes())
+        .merge(cloud_runs::build_routes())
+        .merge(cloud_runs::debug_routes())
+        .merge(administration_http::routes())
+        .merge(preparation_http::routes())
+        .merge(capacity_http::routes())
+        .merge(data_delivery_http::routes())
         .method_not_allowed_fallback(|| async {
             (StatusCode::METHOD_NOT_ALLOWED,Json(json!({"code":"METHOD_NOT_ALLOWED","detail":"HTTP method is unavailable for this endpoint"})))
         })
@@ -657,12 +777,32 @@ mod schema_tests {
     fn native_contract_declares_narrow_lifecycle_posts_and_exact_read_identity() {
         let schema = super::schema_document();
         let paths = schema["paths"].as_object().unwrap();
-        assert_eq!(paths.len(), 42);
         for (path, operations) in paths {
-            assert_eq!(operations.as_object().unwrap().len(), 1);
-            if path.contains("/datasets/") && path.contains("/parts/") {
+            if matches!(
+                path.as_str(),
+                "/api/debug" | "/api/projects/{project}/runtimes"
+            ) {
+                assert_eq!(operations.as_object().unwrap().len(), 2);
+                assert!(operations.get("get").is_some());
+                assert!(operations.get("post").is_some());
+            } else if path.contains("/datasets/") && path.contains("/parts/") {
+                assert_eq!(operations.as_object().unwrap().len(), 1);
                 assert!(operations.get("put").is_some());
             } else if path.starts_with("/api/project-lifecycle/")
+                || path.starts_with("/api/admin/") && !path.ends_with("/maintenance/{identity}")
+                || path.starts_with("/api/worker-exchange/")
+                || path.starts_with("/api/dataset-exchange/")
+                || path.ends_with("/refresh")
+                || path == "/api/debug/{identity}/stop"
+                || path == "/api/debug/{identity}/delete"
+                || path.ends_with("/experiment-preparations")
+                || path.ends_with("/continue")
+                || path.ends_with("/publish")
+                || path.ends_with("/download-ticket")
+                || path.contains("/runtimes/")
+                    && (path.ends_with("/execute")
+                        || path.ends_with("/reconcile")
+                        || path.ends_with("/materialize"))
                 || path.ends_with("/submissions")
                 || path == "/api/projects/{project}/datasets/{executor}"
                 || path.ends_with("/datasets/{executor}/{asset}/complete")
@@ -671,10 +811,34 @@ mod schema_tests {
                     && path != "/api/submissions/{identity}"
                     && !path.contains("/artifacts")
             {
+                assert_eq!(operations.as_object().unwrap().len(), 1);
                 assert!(operations.get("post").is_some());
             } else {
+                assert_eq!(operations.as_object().unwrap().len(), 1);
                 assert!(operations.get("get").is_some());
             }
+            if path.starts_with("/api/worker-exchange/") {
+                assert_eq!(
+                    operations["post"]["security"],
+                    serde_json::json!([{"attemptCapability":[]}])
+                );
+            } else if path.starts_with("/api/dataset-exchange/") {
+                assert_eq!(
+                    operations["post"]["security"],
+                    serde_json::json!([{"datasetCapability":[]}])
+                );
+            }
+        }
+        for path in [
+            "/api/executors",
+            "/api/backends/{executor}/capacity",
+            "/api/projects/{project}/experiment-preparations",
+            "/api/projects/{project}/runtimes",
+            "/api/debug",
+            "/api/admin/maintenance/{identity}",
+            "/api/worker-exchange/{project}/{run}/{attempt}",
+        ] {
+            assert!(paths.contains_key(path), "missing native contract: {path}");
         }
         assert!(paths.contains_key("/api/attempts/{project}/{identity}/metrics"));
         assert!(paths.contains_key("/api/runs/{project}/{run}/attempts/{attempt}/collection"));

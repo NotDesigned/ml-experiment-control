@@ -94,16 +94,32 @@ pub fn selected(
     storage_scope: &str,
     runs_root: &str,
 ) -> Result<RestorePlan> {
+    selected_at(
+        reference,
+        value,
+        project,
+        storage_scope,
+        &format!(
+            "{runs_root}/{project}/{}/attempts/{}/outputs/payload",
+            reference.run_id, reference.attempt_id
+        ),
+    )
+}
+/// Same immutable checks for a backend with a different approved directory
+/// convention. `state_root` is constructed by the operator-side compiler.
+pub fn selected_at(
+    reference: &Reference,
+    value: &Value,
+    project: &str,
+    storage_scope: &str,
+    state_root: &str,
+) -> Result<RestorePlan> {
     reference.validate()?;
     let (context, _) = validate_document(value, None, Some(&reference.checkpoint_id))?;
     if context.project != project
         || context.run_id != reference.run_id
         || context.attempt_id != reference.attempt_id
-        || context.state_root
-            != format!(
-                "{runs_root}/{project}/{}/attempts/{}/outputs/payload",
-                reference.run_id, reference.attempt_id
-            )
+        || context.state_root != state_root
         || value["status"] != "REGISTERED"
         || value["verification"] != "worker-sha256"
         || value["registered_at"]

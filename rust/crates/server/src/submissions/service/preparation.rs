@@ -127,7 +127,7 @@ impl Service {
             &facts.attempt,
             &facts.binding,
             &backend.profile,
-            &backend.runtimes[&facts.runtime],
+            &self.runtime(&facts.binding.project, &facts.backend, &facts.runtime)?,
             &approval,
         )?;
         let reused;
@@ -160,7 +160,7 @@ impl Service {
                 &facts.attempt,
                 facts.binding.clone(),
                 &backend.profile,
-                &backend.runtimes[&facts.runtime],
+                &self.runtime(&facts.binding.project, &facts.backend, &facts.runtime)?,
                 approval,
                 &token,
                 context.now,

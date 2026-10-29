@@ -19,6 +19,66 @@ impl Allocation {
         }
     }
 }
+pub fn quota_view(profile: &Profile, quota: &Value) -> Result<Value> {
+    profile.validate()?;
+    if quota["QuotaId"] != profile.quota_id
+        || !quota["Workspaces"].as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|r| text(&r["WorkspaceId"]).is_ok_and(|id| id == profile.workspace_id))
+        })
+    {
+        return Err(Error("quota workspace scope"));
+    }
+    fn count(value: &Value) -> Result<u64> {
+        let raw = match value {
+            Value::String(v) => v.clone(),
+            Value::Number(n) => n.to_string(),
+            _ => return Err(Error("quota count")),
+        };
+        if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(Error("quota count"));
+        }
+        raw.parse().map_err(|_| Error("quota overflow"))
+    }
+    fn memory(value: &Value) -> Result<u64> {
+        let value = value.as_str().ok_or(Error("quota memory"))?;
+        for (unit, power) in [("Ki", 1), ("Mi", 2), ("Gi", 3), ("Ti", 4)] {
+            if let Some(number) = value.strip_suffix(unit) {
+                return count(&json!(number))?
+                    .checked_mul(1024u64.pow(power))
+                    .ok_or(Error("quota overflow"));
+            }
+        }
+        Err(Error("quota memory unit"))
+    }
+    let total = &quota["QuotaDetails"]["ActualMinQuota"];
+    let used = &quota["QuotaDetails"]["AllocatedQuota"];
+    let mut resources = serde_json::Map::new();
+    for (name, a, b) in [
+        ("gpus", count(&total["GPU"])?, count(&used["GPU"])?),
+        ("cpus", count(&total["CPU"])?, count(&used["CPU"])?),
+        (
+            "memory_bytes",
+            memory(&total["Memory"])?,
+            memory(&used["Memory"])?,
+        ),
+    ] {
+        let free = a
+            .checked_sub(b)
+            .ok_or(Error("quota allocation exceeds total"))?;
+        resources.insert(
+            name.into(),
+            json!({"total":a,"allocated":b,"unallocated":free}),
+        );
+    }
+    let status = quota["Status"]
+        .as_str()
+        .filter(|v| v.len() <= 128 && !v.chars().any(char::is_control))
+        .ok_or(Error("quota status"))?;
+    Ok(
+        json!({"source":"pai-quota","scope":"quota","quota_id":profile.quota_id,"resources":resources,"quota_state":status,"pending_queue_entries":null}),
+    )
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Vpc {

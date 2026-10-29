@@ -17,6 +17,28 @@ pub struct Execution {
     pub allocation: pai::Allocation,
 }
 impl Execution {
+    pub fn package(&self) -> Result<super::launch::Package> {
+        if self.job.command.len() != 4
+            || self.job.command[1] != "cloud-launch"
+            || self.job.command[2] != "--package-json"
+        {
+            return Err(Error("sealed cloud worker command"));
+        }
+        let package: super::launch::Package = serde_json::from_str(&self.job.command[3])
+            .map_err(|_| Error("cloud worker package"))?;
+        package.validate()?;
+        let b = package
+            .config
+            .binding()
+            .map_err(|_| Error("cloud worker binding"))?;
+        if b.identity.project != self.job.project
+            || b.identity.run_id != self.job.run_id
+            || b.identity.attempt_id != self.job.attempt_id
+        {
+            return Err(Error("cloud worker scope"));
+        }
+        Ok(package)
+    }
     pub fn validate(&self) -> Result<()> {
         self.job.validate()?;
         identity::validate_id(&self.backend_id).map_err(|_| Error("backend ID"))?;

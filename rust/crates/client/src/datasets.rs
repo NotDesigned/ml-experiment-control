@@ -37,7 +37,18 @@ fn capability(health: &Value) -> Result<(), Error> {
     }
     Ok(())
 }
-fn state(value: Value, project: &str, executor: &str, asset: &str) -> Result<State, Error> {
+fn state(mut value: Value, project: &str, executor: &str, asset: &str) -> Result<State, Error> {
+    if let Some(m) = value.as_object_mut() {
+        for field in [
+            "archive_verified",
+            "materialization",
+            "data_image",
+            "copy_job",
+            "diagnostic",
+        ] {
+            m.remove(field);
+        }
+    }
     let state: State = serde_json::from_value(value).map_err(|_| Error::Response)?;
     state.validate().map_err(|_| Error::Response)?;
     if state.project != project || state.target.backend_id != executor || state.asset_id != asset {
@@ -71,7 +82,8 @@ pub fn show(
     let value = client.get(&format!(
         "/api/projects/{project}/datasets/{executor}/{asset}"
     ))?;
-    serde_json::to_value(state(value, project, executor, asset)?).map_err(|_| Error::Response)
+    state(value.clone(), project, executor, asset)?;
+    Ok(value)
 }
 #[cfg(unix)]
 pub fn upload(
@@ -165,14 +177,15 @@ pub fn upload(
             Vec::new(),
             true,
         )?;
-        let ready = state(value, project, executor, &asset)?;
+        let archived = value["archive_verified"] == true;
+        let ready = state(value.clone(), project, executor, &asset)?;
         current
             .validate_successor(&ready)
             .map_err(|_| Error::Response)?;
-        if ready.ready.is_none() {
+        if ready.ready.is_none() && !archived {
             return Err(Error::Response);
         }
-        serde_json::to_value(ready).map_err(|_| Error::Response)
+        Ok(value)
     })();
     transfer.map_err(|source| Error::DatasetOutcomeUnknown {
         asset,
@@ -184,4 +197,80 @@ pub fn upload(_: &Client, _: &str, _: &str, _: &Path, _: &Value) -> Result<Value
     Err(Error::Observation(
         "native dataset packing currently requires Unix",
     ))
+}
+/// Immutable object parts go directly to the client. Verify the archive and
+/// each member before no-clobber publication. Downloading datasets sends no ACK.
+pub fn download(
+    client: &Client,
+    project: &str,
+    executor: &str,
+    asset: &str,
+    output: &Path,
+    health: &Value,
+) -> Result<Value, Error> {
+    let value = show(client, project, executor, asset, health)?;
+    if value["archive_verified"] != true {
+        return Err(Error::Observation(
+            "dataset object download is unavailable for this backend",
+        ));
+    }
+    let metadata = state(value, project, executor, asset)?;
+    let output = if output.is_absolute() {
+        output.to_owned()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| Error::Response)?
+            .join(output)
+    };
+    let parent = output.parent().ok_or(Error::Path)?;
+    ml_exp_io::directory::Directory::open(parent, false).map_err(|_| Error::Path)?;
+    if output.exists() {
+        return Err(Error::Observation(
+            "dataset output already exists; choose a new output path",
+        ));
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|_| Error::Response)?;
+    for part in 0..metadata
+        .definition
+        .part_count()
+        .map_err(|_| Error::Response)?
+    {
+        let ticket = client.post(
+            &format!("/api/projects/{project}/datasets/{executor}/{asset}/download-ticket"),
+            &serde_json::json!({"part":part}),
+        )?;
+        let expected = metadata
+            .definition
+            .part_size(part)
+            .map_err(|_| Error::Response)?;
+        if ticket["part"] != part || ticket["bytes"] != expected {
+            return Err(Error::Response);
+        }
+        client.download_object(
+            ticket["url"].as_str().ok_or(Error::Response)?,
+            expected,
+            temporary.as_file_mut(),
+        )?;
+    }
+    temporary
+        .as_file_mut()
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| Error::Response)?;
+    ml_exp_io::artifacts::verify_data_stream(temporary.as_file_mut(), &metadata.definition)
+        .map_err(|_| {
+            Error::Observation("dataset archive or member hash differs; output was not published")
+        })?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|_| Error::Response)?;
+    temporary.persist_noclobber(&output).map_err(|_| {
+        Error::Observation("verified dataset could not be published without replacing a file")
+    })?;
+    std::fs::File::open(parent)
+        .and_then(|f| f.sync_all())
+        .map_err(|_| Error::Observation("dataset saved; directory sync could not be confirmed"))?;
+    Ok(
+        serde_json::json!({"asset_id":asset,"sha256":metadata.definition.sha256,"bytes":metadata.definition.archive_bytes,"output":output,"verified":true,"acknowledged":false}),
+    )
 }

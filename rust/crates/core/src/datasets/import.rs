@@ -1,9 +1,15 @@
 //! Direct backend dataset materialization. Transport locations are temporary
 //! private inputs; only the immutable archive/file identity enters a receipt.
 use super::*;
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Source {
+    DatasetParts {
+        channel: DataChannel,
+    },
+    ExchangeParts {
+        channel: crate::cloud::exchange::Channel,
+    },
     File {
         path: String,
     },
@@ -12,7 +18,34 @@ pub enum Source {
         allowed_hosts: BTreeSet<String>,
     },
 }
-#[derive(Clone, Serialize, Deserialize)]
+/// A data-only capability. It cannot register metrics, checkpoints or results,
+/// and is never an API credential or a credential sent to object storage.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataChannel {
+    pub url: String,
+    pub token: String,
+}
+impl DataChannel {
+    pub fn validate(&self, project: &str, executor: &str, asset: &str) -> Result<()> {
+        let uri = url::Url::parse(&self.url).map_err(|_| Error)?;
+        if uri.scheme() != "https"
+            || uri.host_str().is_none()
+            || !uri.username().is_empty()
+            || uri.password().is_some()
+            || uri.query().is_some()
+            || uri.fragment().is_some()
+            || !uri.path().ends_with(&format!(
+                "/api/dataset-exchange/{project}/{executor}/{asset}"
+            ))
+            || !crate::slurm::helper::valid_digest(&format!("sha256:{}", self.token))
+        {
+            return Err(Error);
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub root: String,
@@ -31,6 +64,25 @@ impl Config {
             return Err(Error);
         }
         match &self.source {
+            Source::DatasetParts { channel } => channel.validate(
+                &self.project,
+                &self.target.backend_id,
+                &self.definition.asset_id(),
+            )?,
+            Source::ExchangeParts { channel } => {
+                let url = url::Url::parse(&channel.url).map_err(|_| Error)?;
+                let parts = url.path().rsplitn(4, '/').collect::<Vec<_>>();
+                if parts.len() != 4 || parts[2] != self.project {
+                    return Err(Error);
+                }
+                channel
+                    .validate(&crate::launch::Identity {
+                        project: self.project.clone(),
+                        run_id: parts[1].into(),
+                        attempt_id: parts[0].into(),
+                    })
+                    .map_err(|_| Error)?;
+            }
             Source::File { path } => {
                 if !crate::slurm::absolute_path(path)
                     || path.ends_with('/')
