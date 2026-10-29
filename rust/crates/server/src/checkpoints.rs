@@ -13,6 +13,8 @@ const NAMESPACE: &str = "persistent-checkpoints";
 const LOCK: &str = ".checkpoints.lock";
 const MAX_DOCUMENT_BYTES: u64 = checkpoints::MANIFEST_LIMIT as u64 * 2;
 
+pub(crate) mod historical;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("checkpoint registry filesystem operation failed")]

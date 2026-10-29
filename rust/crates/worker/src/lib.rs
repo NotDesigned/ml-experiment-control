@@ -1,4 +1,4 @@
-//! Native local process supervision slice, not yet the managed-worker protocol.
+//! Native process supervision, managed execution and backend worker protocols.
 use ml_exp_io::write_atomic;
 use serde::Serialize;
 use std::{io, path::Path, sync::atomic::AtomicBool, time::Duration};

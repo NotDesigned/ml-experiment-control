@@ -232,6 +232,54 @@ Training sync is optional, normally enabled only when configured credentials and
 a usable destination exist; preparation tracking is controlled independently.
 Real official-cloud W&B acceptance is still pending for this native implementation.
 
+## Existing-state audit
+
+The offline audit accepts an explicit private read configuration without a native
+workspace marker. Run it as the account that owns the original metadata:
+
+```sh
+umask 077
+ml-expd-state-audit --config /private/original-reads.json --action-root /original/actions > /private/baseline.json
+ml-expd-state-audit --config /private/candidate-reads.json --action-root /candidate/actions --compare /private/baseline.json
+```
+
+It reads Run/Attempt manifests, checkpoint receipts, result-transfer metadata,
+source/runtime/preparation control receipts, deletion tombstones, lifecycle records and journal rows, including event IDs and
+W&B publication cursors. Metrics retain their receive order and full scientific
+context. It opens no logs, checkpoint payloads, source trees or result archives,
+creates no workspace or database, and makes no provider request. Two complete
+observations must agree; changing or over-budget evidence fails the audit.
+
+Exit 0 means the requested observation has no reported issues (and a comparison
+is equal); exit 2 means a mismatch or explicit issue; exit 1 means a complete
+observation could not be obtained. Output contains identities and fingerprints,
+not raw manifests, credentials or metric values. Equality covers this metadata
+scope only; it does not authorize production replacement or scheduler execution.
+This tool does not perform historical-state migration.
+
+Database scans are bounded to 2,000,000 rows and 1 GiB of typed cell bytes;
+control catalogues to 64 MiB, with at most 100,000 report entries. These are
+streaming scan limits, not database copies or disk reservations. An inactive WAL
+database without its required shared-memory index returns
+`AUDIT_DATABASE_READ_ONLY_UNAVAILABLE`; the audit does not create auxiliary files
+or switch journal mode. Schema, binding, busy and byte/row limits have separate
+safe error codes. Historical missing fields are fingerprinted as absent; the
+tool does not invent them or promote observations to execution authority.
+
+The audit runs in a dedicated thread with kernel-enforced read-only filesystem
+access (Linux Landlock ABI 3, normally Linux 6.2+). The caller retains its normal
+permissions. If the restriction cannot be fully applied, it returns
+`AUDIT_READ_ONLY_ISOLATION_UNAVAILABLE` before opening the state; there is no
+weaker fallback. This also prevents a read-only SQLite connection from creating
+an empty WAL file on a cold database.
+
+The ordinary checkpoint GET routes support historical registered receipts even
+when no native submission exists. `checkpoint-record-read.v1` advertises this
+read capability separately from provider refresh/registration. The original
+Run/Attempt source, image and issued storage context must match. Withdrawn or
+deleted records stay unavailable. Neither GET nor this audit enables old
+submission replay or rewrites checkpoint receipts.
+
 ## Build and verification
 
 Use Rust 1.85 or newer. Build on an isolated machine when the API disk is small.

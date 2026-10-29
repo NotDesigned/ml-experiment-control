@@ -1,4 +1,4 @@
-//! Isolated HTTP boundary preview. No production workspace or provider access.
+//! Native HTTP boundary with isolated storage and explicitly configured effects.
 pub mod administration;
 mod administration_http;
 pub mod backends;
@@ -22,6 +22,7 @@ pub mod read_model;
 pub mod records;
 mod renewal;
 pub mod sources;
+pub mod state_audit;
 pub mod storage;
 pub mod submissions;
 pub mod tracking;
@@ -138,7 +139,11 @@ fn health_document(
 ) -> serde_json::Value {
     let mut capabilities = vec!["bearer-auth.v1", "deployment-readiness.v1"];
     if reads {
-        capabilities.extend(["metric-records.v1", "result-collection-read.v1"]);
+        capabilities.extend([
+            "metric-records.v1",
+            "result-collection-read.v1",
+            "checkpoint-record-read.v1",
+        ]);
     }
     if lifecycle {
         capabilities.push("project-lifecycle.v1");

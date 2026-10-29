@@ -5,7 +5,7 @@ use std::{net::SocketAddr, path::PathBuf};
 #[command(
     name = "ml-expd-rs",
     version,
-    about = "Isolated Rust HTTP preview; provider mutations and production state are unavailable"
+    about = "Native experiment API in an isolated registry with explicitly approved backend execution"
 )]
 struct Args {
     #[arg(long, default_value = "127.0.0.1:18765")]

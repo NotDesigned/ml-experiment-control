@@ -246,6 +246,90 @@ fn headers() -> String {
 }
 
 #[test]
+fn actual_http_reads_historical_checkpoints_without_a_native_submission_service() {
+    use ml_exp_core::checkpoints::{self, Context};
+    let f = Fixture::new();
+    let source_id = format!("source.{}", "a".repeat(64));
+    let mut manifest = f.manifest.clone();
+    manifest["source_id"] = json!(source_id);
+    write_json(&f.run().join("manifest.yaml"), &manifest);
+    for attempt in ["attempt-001", "attempt-002"] {
+        let mut value = manifest.clone();
+        value["attempt_id"] = json!(attempt);
+        write_json(
+            &f.run().join("attempts").join(attempt).join("attempt.yaml"),
+            &value,
+        );
+    }
+    let context = Context {
+        project: "demo".into(),
+        run_id: "train".into(),
+        attempt_id: "attempt-001".into(),
+        source_id,
+        image_id: "sha256:fixture".into(),
+        storage_scope: "storage.original".into(),
+        state_root: "/approved/original/train/state".into(),
+    };
+    let document = checkpoints::register(&checkpoints::document(&context,
+        &json!({"step":100,"files":[{"path":"checkpoints/s100/model.bin","bytes":4,"sha256":"b".repeat(64)}]})
+    ).unwrap(),"2026-10-29T00:00:00Z").unwrap();
+    let id = document["checkpoint_id"].as_str().unwrap();
+    let transfer = f.registry.join("artifact-transfers/demo/train");
+    private_directory(&transfer);
+    write_json(
+        &transfer.join("attempt-001.json"),
+        &json!({"project":"demo","run_id":"train","attempt_id":"attempt-001","checkpoint_state":context,"token":"not-an-api-credential"}),
+    );
+    let checkpoints = f
+        .registry
+        .join("persistent-checkpoints/demo/train/attempt-001");
+    private_directory(&checkpoints);
+    write_json(&checkpoints.join(format!("{id}.json")), &document);
+    // A different current Attempt must never redirect the explicit historical
+    // query. No submission/source/backend service is configured in this app.
+    f.current("attempt-002");
+    let server = f.server();
+    let path = "/api/runs/demo/train/attempts/attempt-001/checkpoints";
+    let (status, listed) = server.raw(path, &headers());
+    assert_eq!(status, 200);
+    assert_eq!(listed["checkpoints"], json!([document]));
+    let (status, found) = server.raw(&format!("{path}/{id}"), &headers());
+    assert_eq!(status, 200);
+    assert_eq!(found, document);
+    assert!(
+        !serde_json::to_string(&found)
+            .unwrap()
+            .contains("not-an-api-credential")
+    );
+    assert!(
+        !f.registry
+            .join("persistent-checkpoints/.checkpoints.lock")
+            .exists()
+    );
+    assert_eq!(server.raw(path, "X-ML-Expd-Client-Protocol: 2\r\n").0, 401);
+    let client = server.client();
+    let health = client.negotiate().unwrap();
+    let plan = ml_exp_client::submissions::plan(ml_exp_client::submissions::Command::Checkpoints {
+        project: "demo",
+        run: "train",
+        attempt: "attempt-001",
+        checkpoint: Some(id),
+    })
+    .unwrap();
+    assert_eq!(
+        ml_exp_client::submissions::execute(&client, &plan, &health).unwrap(),
+        document
+    );
+    // Read capability does not permit provider checkpoint refresh/registration.
+    let refresh =
+        ml_exp_client::submissions::plan(ml_exp_client::submissions::Command::Checkpoint {
+            submission: "action-0123456789abcdef",
+        })
+        .unwrap();
+    assert!(ml_exp_client::submissions::execute(&client, &refresh, &health).is_err());
+}
+
+#[test]
 fn saved_submission_reads_committed_identity_without_bootstrap_or_latest_guess() {
     use ml_exp_server::operations;
     let fixture = Fixture::new();

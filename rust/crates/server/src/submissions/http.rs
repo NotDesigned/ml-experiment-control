@@ -133,6 +133,9 @@ async fn checkpoint_get(
         return read_http::failure(invalid());
     }
     read_http::execute(state, Access::Read, move |api, _| {
+        if let Some(value) = api.historical_checkpoints(&project, &run, &attempt, id.as_deref())? {
+            return Ok(value);
+        }
         if let Some(cloud) = api.cloud() {
             if cloud
                 .handles_run(&project, &run)

@@ -16,6 +16,8 @@ use std::{
     sync::Arc,
 };
 
+mod checkpoint_reads;
+
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("{code}")]
 pub struct Error {

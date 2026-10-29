@@ -33,6 +33,7 @@ pub mod result_collection;
 pub mod slurm;
 pub mod sources;
 pub mod state;
+pub mod state_audit;
 pub mod submission;
 pub mod tracking;
 pub mod transfers;

@@ -599,11 +599,16 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
         && health["capabilities"]
             .as_array()
             .is_some_and(|caps| caps.iter().any(|v| v == "native-scheduler-observation.v1"));
+    let checkpoint_read = matches!(plan.expected, Expected::Checkpoints { .. })
+        && health["capabilities"]
+            .as_array()
+            .is_some_and(|caps| caps.iter().any(|v| v == "checkpoint-record-read.v1"));
     if !(health["capabilities"]
         .as_array()
         .is_some_and(|caps| caps.iter().any(|v| v == capability))
         || capability == "native-slurm-submissions.v1" && neutral
-        || scheduler_refresh)
+        || scheduler_refresh
+        || checkpoint_read)
         || plan.executes && health["scheduler_mutations"] != true
     {
         return Err(Error::Observation(

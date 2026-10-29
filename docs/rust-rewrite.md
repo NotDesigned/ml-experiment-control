@@ -118,6 +118,21 @@ and budget, and refuses any possible prior execution. No automatic checkpoint se
 Native debug supports CCI create/stop and DSW create/stop/delete. Slurm dataset
 export is outside the OSS-specific dataset download command.
 
+An offline `ml-expd-state-audit` now fingerprints existing manifests, checkpoint
+and result receipts, source/runtime/preparation control receipts, tombstones,
+lifecycle records, Action plans and SQLite rows.
+It compares metadata without initializing a native marker, making a database
+copy or reading scientific payloads. It preserves metric receive order and
+includes event IDs and W&B cursors; equality is not production cutover authority.
+Historical-state transformation and provider acceptance remain separate work.
+
+Registered checkpoint GETs can also read historical Run/Attempt receipts without
+a native Submission. They validate the original source/image and issued storage
+context, preserve withdrawn/deleted scopes, and create no locks or seals. A
+native-created Run never falls back to this reader if its native authority is
+missing or corrupt. Reading a historical checkpoint does not authorize replaying
+its old Action or automatically restarting a job.
+
 Next testing sequence: deterministic regressions → isolated client/server on CPU
 DSW → actual storage/build/debug lifecycle → bounded training/restore/collection
 on each enabled backend → historical-state migration and guarded production

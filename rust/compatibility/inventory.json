@@ -46,7 +46,7 @@
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
     "all_tracked_python_files": 458,
-    "connected_native_workflows": 16
+    "connected_native_workflows": 18
   },
   "architecture": {
     "application_crates": [
@@ -7289,6 +7289,28 @@
         "rust/crates/server/src/renewal.rs",
         "rust/crates/server/src/submissions/service/renewal.rs",
         "rust/crates/server/src/cloud_runs/service/renewal.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "state_audit": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/core/src/state_audit.rs",
+        "rust/crates/server/src/state_audit.rs",
+        "rust/crates/server/src/state_audit/main.rs",
+        "rust/crates/server/src/state_audit/catalog.rs",
+        "rust/crates/server/src/state_audit/database.rs",
+        "rust/crates/server/src/checkpoints/historical.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "historical_checkpoint_reads": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/server/src/checkpoints/historical.rs",
+        "rust/crates/server/src/read_api/checkpoint_reads.rs"
       ],
       "provider_acceptance": false,
       "production_deployed": false

@@ -9,6 +9,10 @@ license.workspace = true
 name = "ml-expd-rs"
 path = "src/main.rs"
 
+[[bin]]
+name = "ml-expd-state-audit"
+path = "src/state_audit/main.rs"
+
 [dependencies]
 ml-exp-core.workspace = true
 ml-exp-io.workspace = true
@@ -46,3 +50,6 @@ sha1 = "0.10"
 ml-exp-client = { path = "../client" }
 ml-exp-worker = { path = "../worker" }
 tower = { version = "0.5", features = ["util"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "=0.4.7"
