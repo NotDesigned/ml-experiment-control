@@ -64,6 +64,9 @@ impl Scope {
             &self.workspace,
         )
     }
+    fn workspace_zone(&self) -> &str {
+        self.workspace_zone.as_deref().unwrap_or(&self.zone)
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -237,7 +240,7 @@ impl Profile {
     }
     pub fn stop(&self, name: &str) -> Result<Request> {
         component(name)?;
-        self.request(Method::Post,"StopTrainingJob",format!("{}:batchStop",self.jobs_path()?),BTreeMap::new(),Some(json!({"subscription_name":self.scope.subscription,"resource_group_name":self.scope.resource_group,"zone":self.scope.zone,"workspace_name":self.scope.workspace,"training_job_names":[name]})),false)
+        self.request(Method::Post,"StopTrainingJob",format!("{}:batchStop",self.jobs_path()?),BTreeMap::new(),Some(json!({"subscription_name":self.scope.subscription,"resource_group_name":self.scope.resource_group,"zone":self.scope.workspace_zone(),"workspace_name":self.scope.workspace,"training_job_names":[name]})),false)
     }
     pub fn workers(&self, name: &str, token: &str) -> Result<Request> {
         component(name)?;
@@ -368,8 +371,7 @@ impl Profile {
         }
         // Optional provider resource ID, when present, must agree with scope.
         if let Some(id) = row.get("id") {
-            let expected =
-                self.scope.path("workspaces", &self.scope.workspace)? + "/trainingJobs/" + &name;
+            let expected = self.scope.workspace_path()? + "/trainingJobs/" + &name;
             if id != &json!(expected) {
                 return Err(Error("job scope"));
             }

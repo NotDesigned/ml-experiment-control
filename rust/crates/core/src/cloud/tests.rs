@@ -304,6 +304,19 @@ fn sensecore_workspace_zone_does_not_change_pool_or_mount_zone_and_legacy_hashes
         p.create(&job()).unwrap().body.unwrap()["mount"][0]["zone"],
         "cn-east-1a"
     );
+    let job = job();
+    let mut row = json!({"name":job.name().unwrap(),"uid":"uid1","ownership":{"user_id":p.scope.user_id},"state":"STARTING","id":format!("{}/trainingJobs/{}",p.scope.workspace_path().unwrap(),job.name().unwrap())});
+    assert!(p.validate_job(&row, &job, Some("uid1")).is_ok());
+    row["id"] = json!(format!(
+        "{}/trainingJobs/{}",
+        p.scope.path("workspaces", &p.scope.workspace).unwrap(),
+        job.name().unwrap()
+    ));
+    assert!(p.validate_job(&row, &job, Some("uid1")).is_err());
+    assert_eq!(
+        p.stop(&job.name().unwrap()).unwrap().body.unwrap()["zone"],
+        "cn-east-1z"
+    );
     assert_ne!(restored.digest().unwrap(), p.digest().unwrap());
     p.scope.workspace_zone = Some("cn-other-1z".into());
     assert!(p.validate().is_err());
