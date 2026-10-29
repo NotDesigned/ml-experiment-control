@@ -7085,7 +7085,7 @@
     "Generic metrics/protocol/variant identity, curves vs summaries and optional native W&B",
     "Reviewed deletion/live-run fences and bounded debug-session leases",
     "CLI saved-state recovery, private credentials, updates, native packaging and offline installs",
-    "No platform Python runtime invocation in accepted native artifacts"
+    "Correctness-critical platform state machines run natively; simple image build effects and the official W&B SDK may retain Python under the user-approved migration policy"
   ],
   "baseline_contract_documents": [
     "docs/README.md",
@@ -7155,7 +7155,12 @@
         "rust/crates/server/src/cloud_runs/service/preparations.rs"
       ],
       "provider_acceptance": false,
-      "production_deployed": false
+      "production_deployed": false,
+      "isolated_tokyo_acceptance": {
+        "version": "0.1.0",
+        "scope": "PAI stdlib CPU",
+        "evidence": ".ops/tokyo-native-20261029/REPORT.md"
+      }
     },
     "batch": {
       "implementation": "connected_workflow",
@@ -7172,7 +7177,12 @@
         "rust/crates/server/src/backends/cloud/adapter.rs"
       ],
       "provider_acceptance": false,
-      "production_deployed": false
+      "production_deployed": false,
+      "isolated_tokyo_acceptance": {
+        "version": "0.1.0",
+        "scope": "PAI stdlib CPU",
+        "evidence": ".ops/tokyo-native-20261029/REPORT.md"
+      }
     },
     "checkpoint_retry": {
       "implementation": "connected_workflow",
@@ -7181,7 +7191,12 @@
         "rust/crates/server/src/cloud_runs/service/retry.rs"
       ],
       "provider_acceptance": false,
-      "production_deployed": false
+      "production_deployed": false,
+      "isolated_tokyo_acceptance": {
+        "version": "0.1.0",
+        "scope": "PAI stdlib CPU",
+        "evidence": ".ops/tokyo-native-20261029/REPORT.md"
+      }
     },
     "worker_exchange": {
       "implementation": "connected_workflow",
@@ -7190,7 +7205,12 @@
         "rust/crates/server/src/cloud_runs/service/exchange.rs"
       ],
       "provider_acceptance": false,
-      "production_deployed": false
+      "production_deployed": false,
+      "isolated_tokyo_acceptance": {
+        "version": "0.1.0",
+        "scope": "PAI stdlib CPU",
+        "evidence": ".ops/tokyo-native-20261029/REPORT.md"
+      }
     },
     "cloud_datasets": {
       "implementation": "connected_workflow",
@@ -7200,7 +7220,12 @@
         "rust/crates/client/src/datasets.rs"
       ],
       "provider_acceptance": false,
-      "production_deployed": false
+      "production_deployed": false,
+      "isolated_tokyo_acceptance": {
+        "version": "0.1.0",
+        "scope": "PAI stdlib CPU",
+        "evidence": ".ops/tokyo-native-20261029/REPORT.md"
+      }
     },
     "pretraining_data_copy": {
       "implementation": "connected_workflow",
@@ -7219,7 +7244,12 @@
         "rust/crates/client/src/artifacts.rs"
       ],
       "provider_acceptance": false,
-      "production_deployed": false
+      "production_deployed": false,
+      "isolated_tokyo_acceptance": {
+        "version": "0.1.0",
+        "scope": "PAI stdlib CPU",
+        "evidence": ".ops/tokyo-native-20261029/REPORT.md"
+      }
     },
     "runtime_build": {
       "implementation": "connected_workflow",
@@ -7231,8 +7261,14 @@
       "production_deployed": false,
       "observed_effects": {
         "pai_dsw_to_tokyo": true,
-        "native_dlc_execution": false,
-        "evidence": ".ops/rust-e2e-20261029/"
+        "native_dlc_execution": true,
+        "evidence": ".ops/tokyo-native-20261029/",
+        "native_dlc_gpu_execution": false
+      },
+      "isolated_tokyo_acceptance": {
+        "version": "0.1.0",
+        "scope": "PAI stdlib CPU",
+        "evidence": ".ops/tokyo-native-20261029/REPORT.md"
       }
     },
     "slurm_materialization": {
@@ -7282,7 +7318,12 @@
         "rust/crates/client/src/update.rs"
       ],
       "provider_acceptance": false,
-      "production_deployed": false
+      "production_deployed": false,
+      "isolated_tokyo_acceptance": {
+        "version": "0.1.0",
+        "scope": "public binaries and isolated API deployment",
+        "evidence": ".ops/tokyo-native-20261029/REPORT.md"
+      }
     },
     "wandb": {
       "implementation": "connected_workflow",
@@ -7340,7 +7381,12 @@
         "no-effect-configuration-check",
         "existing-state-refusal",
         "static-worker-ELF-validation"
-      ]
+      ],
+      "isolated_tokyo_acceptance": {
+        "version": "0.1.0",
+        "scope": "public binaries and isolated API deployment",
+        "evidence": ".ops/tokyo-native-20261029/REPORT.md"
+      }
     },
     "run_environment": {
       "implementation": "connected_workflow",
@@ -7392,6 +7438,11 @@
         "direct_signed_download": true,
         "gpu_jobs_submitted": 0,
         "evidence": ".ops/tokyo-native-20261029/"
+      },
+      "isolated_tokyo_acceptance": {
+        "version": "0.1.0",
+        "scope": "PAI stdlib CPU",
+        "evidence": ".ops/tokyo-native-20261029/REPORT.md"
       }
     },
     "result_archive_file_selection": {
@@ -7401,12 +7452,17 @@
         "rust/crates/io/src/artifacts.rs"
       ],
       "provider_acceptance": false,
-      "production_deployed": false
+      "production_deployed": false,
+      "isolated_tokyo_acceptance": {
+        "version": "0.1.0",
+        "scope": "PAI stdlib CPU",
+        "evidence": ".ops/tokyo-native-20261029/REPORT.md"
+      }
     }
   },
   "known_limits": [
     "No native production-state migration accepted",
-    "No native provider/GPU workflow accepted by this implementation pass",
+    "Bounded PAI CPU execution/restore/results accepted; complete three-backend GPU acceptance remains pending",
     "Batch dispatch uses explicit passes, not unattended scheduling",
     "No automatic checkpoint selection/unbounded restart",
     "Native OSS filesystem mount remains disabled",
@@ -7415,5 +7471,25 @@
     "Existing OSS import accepts plain regular-file tar archives only",
     "Selected result files currently require an available verified archive and transfer its full stream",
     "Direct original backend-file recovery without an archive remains unported"
-  ]
+  ],
+  "isolated_deployment": {
+    "version": "0.1.0",
+    "host": "server-tokyo.adscn.dev",
+    "port": 2087,
+    "path": "/ml-expd",
+    "public_release": "native-v0.1.0",
+    "source_commit": "eb1e9d71c6f4a5cbb77b40634c5e03ac71c13b0b",
+    "replaces_seoul_production": false,
+    "observed_effects": {
+      "public_installer": true,
+      "verified_standalone_update": true,
+      "pai_cpu_execution": true,
+      "explicit_cpu_checkpoint_restore": true,
+      "exact_rng_and_cursor_restore": true,
+      "full_download_and_ack_release": true,
+      "static_release_worker_execution": true
+    },
+    "acceptance_scope": "isolated stdlib CPU acceptance, not all-backend GPU or historical-state migration",
+    "evidence": ".ops/tokyo-native-20261029/REPORT.md"
+  }
 }

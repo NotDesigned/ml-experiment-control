@@ -36,6 +36,8 @@ jobs:
             ~/.cargo/git
             .ops/native-release-target
           key: native-release-v1-${{ runner.os }}-${{ runner.arch }}-1.85-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            native-release-v1-${{ runner.os }}-${{ runner.arch }}-1.85-
       - name: Select and validate exact version
         env:
           REQUESTED_VERSION: ${{ inputs.version }}

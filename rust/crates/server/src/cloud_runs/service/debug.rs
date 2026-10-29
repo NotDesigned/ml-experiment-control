@@ -86,6 +86,24 @@ struct Saved {
     connection: Option<Value>,
     diagnostic: Option<String>,
     observed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    create_rejection: Option<CreateRejection>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateRejection {
+    code: String,
+    http_status: u16,
+}
+impl CreateRejection {
+    fn from_error(error: &cloud::Error) -> Option<Self> {
+        // This is a positive DSW validation rejection, not a transport failure
+        // or an absent lookup after a possibly accepted create.
+        (error.http_status == Some(400) && error.code == "ValidationError").then(|| Self {
+            code: error.code.clone(),
+            http_status: 400,
+        })
+    }
 }
 fn name(id: &str) -> cloud::Result<String> {
     if id
@@ -119,13 +137,20 @@ impl Service {
             .profiles
             .get(&saved.recipe.request.profile)
             .ok_or_else(cloud::Error::configuration)?;
-        if saved.recipe.identity != id
-            || profile
-                .recipe(saved.recipe.request.clone(), &saved.recipe.created_at)
-                .map_err(|_| cloud::Error::evidence())?
-                != saved.recipe
-        {
+        if saved.recipe.identity != id || profile.check_recipe(&saved.recipe).is_err() {
             return Err(cloud::Error::evidence());
+        }
+        if let Some(rejection) = &saved.create_rejection {
+            if rejection.http_status != 400
+                || rejection.code != "ValidationError"
+                || saved.provider_id.is_some()
+                || !saved.claims.contains("create")
+                || !saved.terminal
+                || !saved.network_clean
+                || !matches!(profile, domain::Profile::PaiDsw { .. })
+            {
+                return Err(cloud::Error::evidence());
+            }
         }
         Ok(saved)
     }
@@ -143,9 +168,9 @@ impl Service {
     }
     fn debug_view(record: &Saved) -> Value {
         json!({"debug_id":record.recipe.identity,"profile":record.recipe.request.profile,"name":record.recipe.name,"provider_id":record.provider_id,
-            "state":if record.deleted{"DELETED"}else if record.terminal&&record.network_clean{"STOPPED"}else if record.stop_requested||record.terminal{"STOPPING"}else if record.connection.is_some(){"RUNNING"}else if record.provider_id.is_some(){"STARTING"}else{"RECONCILE_REQUIRED"},
+            "state":if record.deleted{"DELETED"}else if record.create_rejection.is_some(){"FAILED"}else if record.terminal&&record.network_clean{"STOPPED"}else if record.stop_requested||record.terminal{"STOPPING"}else if record.connection.is_some(){"RUNNING"}else if record.provider_id.is_some(){"STARTING"}else{"RECONCILE_REQUIRED"},
             "resources":{"gpus":record.recipe.request.gpus,"cpus":record.recipe.request.cpus,"memory_gb":record.recipe.request.memory_gb},"expires_at":record.recipe.expires_at,
-            "connection":record.connection,"diagnostic":record.diagnostic,"observed_at":record.observed_at,"confirmation":format!("STOP {}",record.recipe.identity),"retry_safe":false})
+            "connection":record.connection,"diagnostic":record.diagnostic,"create_rejection":record.create_rejection,"observed_at":record.observed_at,"confirmation":format!("STOP {}",record.recipe.identity),"retry_safe":false})
     }
     pub fn debug_list(&self) -> cloud::Result<Value> {
         let runtime = self
@@ -215,6 +240,7 @@ impl Service {
             connection: None,
             diagnostic: None,
             observed_at: None,
+            create_rejection: None,
         };
         lock.validate()?;
         self.debug_save(&record)?;
@@ -288,12 +314,38 @@ impl Service {
         }
         saved.claims.insert(label.into());
         self.debug_save(saved)?;
-        client.call(&request, &AtomicBool::new(false)).map(Some)
+        let result = client.call(&request, &AtomicBool::new(false));
+        if label == "create"
+            && matches!(
+                request.endpoint,
+                ml_exp_core::cloud::Endpoint::Pai {
+                    product: ml_exp_core::cloud::Product::PaiDsw,
+                    ..
+                }
+            )
+        {
+            if let Err(error) = &result {
+                if let Some(rejection) = CreateRejection::from_error(error) {
+                    saved.create_rejection = Some(rejection);
+                    saved.terminal = true;
+                    saved.network_clean = true;
+                    self.debug_save(saved)?;
+                }
+            }
+        }
+        result.map(Some)
     }
     pub fn debug_refresh(&self, id: &str, now: &str) -> cloud::Result<Value> {
         let lock = self.lock()?;
         let mut saved = self.debug_load(id)?;
         if saved.deleted {
+            return Ok(Self::debug_view(&saved));
+        }
+        if saved.create_rejection.is_some() {
+            if saved.delete_requested {
+                saved.deleted = true;
+                self.debug_save(&saved)?;
+            }
             return Ok(Self::debug_view(&saved));
         }
         let runtime = self
@@ -583,5 +635,28 @@ impl Service {
             self.debug_refresh(&saved.recipe.identity, now)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn only_positive_dsw_validation_rejection_is_terminal_without_a_provider_handle() {
+        for (status, code, expected) in [
+            (Some(400), "ValidationError", true),
+            (None, "ValidationError", false),
+            (Some(503), "ValidationError", false),
+            (Some(400), "CLOUD_RESPONSE_INVALID", false),
+            (Some(409), "AlreadyExists", false),
+            (Some(429), "Throttling", false),
+        ] {
+            let error = cloud::Error {
+                http_status: status,
+                code: code.into(),
+                uncertain: true,
+            };
+            assert_eq!(CreateRejection::from_error(&error).is_some(), expected);
+        }
     }
 }

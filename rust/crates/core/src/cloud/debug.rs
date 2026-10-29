@@ -202,6 +202,29 @@ impl Profile {
         digest(&json!(self))
     }
     pub fn recipe(&self, request: Create, now: &str) -> Result<Recipe> {
+        let contract = if matches!(self, Self::PaiDsw { .. }) {
+            "native-debug-machine.v2"
+        } else {
+            "native-debug-machine.v1"
+        };
+        self.recipe_version(request, now, contract)
+    }
+    /// Old issued recipes retain their original name and identity. In
+    /// particular, observing an uncertain v1 create must search its old name.
+    pub fn check_recipe(&self, recipe: &Recipe) -> Result<()> {
+        if self.recipe_version(recipe.request.clone(), &recipe.created_at, &recipe.contract)?
+            != *recipe
+        {
+            return Err(Error("debug frozen recipe"));
+        }
+        Ok(())
+    }
+    fn recipe_version(&self, request: Create, now: &str, contract: &str) -> Result<Recipe> {
+        if contract != "native-debug-machine.v1"
+            && !(contract == "native-debug-machine.v2" && matches!(self, Self::PaiDsw { .. }))
+        {
+            return Err(Error("debug recipe contract"));
+        }
         self.validate()?;
         request.validate()?;
         let profile_sha256 = self.digest()?;
@@ -222,12 +245,17 @@ impl Profile {
                     && request.lease_seconds <= 7200 => {}
             _ => return Err(Error("debug resource policy")),
         }
-        let identity =
-            canonical::digest(&json!(["native-debug-machine.v1", profile_sha256, request]))
-                .map_err(|_| Error("debug identity"))?;
+        let identity = canonical::digest(&json!([contract, profile_sha256, request]))
+            .map_err(|_| Error("debug identity"))?;
         Ok(Recipe {
-            contract: "native-debug-machine.v1".into(),
-            name: format!("ml-expd-debug-{}", &identity[..32]),
+            contract: contract.into(),
+            // PAI's InstanceName is at most 27 ASCII letters/digits/underscores.
+            // Ownership additionally binds the complete digest label and quota.
+            name: if contract == "native-debug-machine.v2" {
+                format!("ml_exp_{}", &identity[..20])
+            } else {
+                format!("ml-expd-debug-{}", &identity[..32])
+            },
             identity: format!("debug.{identity}"),
             profile_sha256,
             expires_at: time
@@ -306,9 +334,7 @@ impl Profile {
         }
     }
     pub fn create(&self, recipe: &Recipe) -> Result<Request> {
-        if self.recipe(recipe.request.clone(), &recipe.created_at)? != *recipe {
-            return Err(Error("debug recipe identity"));
-        }
+        self.check_recipe(recipe)?;
         let r = &recipe.request;
         let body = match self {
             Self::PaiDsw {
@@ -362,9 +388,7 @@ impl Profile {
         Ok(request)
     }
     pub fn checked(&self, recipe: &Recipe, id: Option<&str>, row: &Value) -> Result<String> {
-        if self.recipe(recipe.request.clone(), &recipe.created_at)? != *recipe {
-            return Err(Error("debug frozen recipe"));
-        }
+        self.check_recipe(recipe)?;
         let identifier = match self {
             Self::PaiDsw { profile, .. } => {
                 if row["InstanceName"] != recipe.name
