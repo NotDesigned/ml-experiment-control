@@ -73,6 +73,7 @@ impl Fixture {
         .unwrap();
         let runtime = Runtime {
             worker: None,
+            source_dir: None,
             runtime_id: format!("runtime.{}", "2".repeat(64)),
             source_id: source_id.clone(),
             image_id: image.clone(),
@@ -1127,6 +1128,55 @@ fn immutable_run_creation_reuses_exact_metadata_and_admits_first_submission_afte
         Err(ServiceError::Conflict)
     ));
     assert_eq!(fs::read(directory.join("manifest.json")).unwrap(), manifest);
+}
+#[test]
+fn newly_materialized_image_keeps_its_source_directory_through_the_launch_package() {
+    let mut f = Fixture::new();
+    let original = serde_json::to_value(&f.runtime).unwrap();
+    assert!(original.get("source_dir").is_none());
+    assert_eq!(
+        serde_json::to_value(serde_json::from_value::<Runtime>(original.clone()).unwrap()).unwrap(),
+        original
+    );
+    f.runtime.source_dir = Some("/ml-expd/source".into());
+    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
+        program: "/usr/local/bin/ml-exp-worker-rs".into(),
+        base_environment: BTreeMap::new(),
+        runtime_environment: Vec::new(),
+    });
+    let mut request = creation_request(&f);
+    request.command = vec!["/usr/local/bin/python".into(), "train.py".into()];
+    let service = f.service("ledger", true).with_run_creation(true).unwrap();
+    service.create_run("demo", request, NOW).unwrap();
+    let directory = f.root.path().join("project/runs/created");
+    let manifest = fs::read(directory.join("manifest.json")).unwrap();
+    let run: Value = serde_json::from_slice(&manifest).unwrap();
+    assert_eq!(run["execution"]["workdir"], "/ml-expd/source");
+    let prepared = service
+        .prepare("demo", "created", approval(), context(1))
+        .unwrap();
+    let id = prepared["submission_id"].as_str().unwrap();
+    let saved = service.get(id, NOW).unwrap();
+    assert_eq!(saved["status"], "PREPARED");
+    // The durable helper request must carry the same directory into the
+    // managed worker; an image build alone cannot establish launch readiness.
+    let path = f
+        .settings
+        .registry_root
+        .join("submissions/slots")
+        .join(format!("{}.json", native::slot("demo", "created").unwrap()));
+    let value: Prepared = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    let request = value.request;
+    let (manifest, script) = request.prepared_content().unwrap();
+    let package = ml_exp_core::slurm::staging::plan(request.intent(), manifest.as_bytes())
+        .unwrap()
+        .unwrap()
+        .managed
+        .unwrap();
+    assert_eq!(package.manifest.workdir, "/ml-expd/source");
+    assert_eq!(package.config.workdir, Path::new("/ml-expd/source"));
+    assert!(script.contains("--pwd /ml-expd/source"));
+    assert!(!f.root.path().join("sbatch-calls").exists());
 }
 #[test]
 fn creation_refuses_partial_corrupt_and_replaced_authority_without_repair() {

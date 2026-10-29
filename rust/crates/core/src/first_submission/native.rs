@@ -190,6 +190,10 @@ pub struct Runtime {
     pub oci_image: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<slurm::managed::Runtime>,
+    /// Source directory inside the immutable image. Older receipts retain the
+    /// original /workspace convention and unchanged serialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_dir: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -459,6 +463,9 @@ pub fn definition(
         || runtime.sif_path != spec.backend.sif_path
         || !helper::valid_digest(&runtime.sif_sha256)
         || spec.backend.oci_image.as_deref() != Some(&runtime.oci_image)
+        || runtime.source_dir.as_deref().is_some_and(|directory| {
+            !slurm::absolute_path(directory) || spec.execution.workdir != directory
+        })
         || field(&run["container"], "runtime_id")? != runtime.runtime_id
         || !runtime
             .runtime_id

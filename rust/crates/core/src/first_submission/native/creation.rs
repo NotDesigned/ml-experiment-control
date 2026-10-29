@@ -193,8 +193,8 @@ pub fn plan(
         },
         resources: request.resources.clone(),
         execution: slurm::ExecutionConfig {
-            source_mount: "/workspace".into(),
-            workdir: "/workspace".into(),
+            source_mount: runtime.source_dir.as_deref().unwrap_or("/workspace").into(),
+            workdir: runtime.source_dir.as_deref().unwrap_or("/workspace").into(),
             managed_io: true,
             env: request.env.clone(),
         },

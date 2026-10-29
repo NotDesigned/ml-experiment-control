@@ -180,6 +180,7 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
         sif_path: image.to_str().ok_or_else(invalid)?.into(),
         sif_sha256: format!("sha256:{sha}"),
         oci_image: request.runtime.image.clone(),
+        source_dir: Some(request.runtime.source_dir.clone()),
         worker: Some(managed::Runtime {
             program: request.runtime.worker_path.clone(),
             base_environment: BTreeMap::new(),
@@ -238,6 +239,7 @@ mod tests {
         assert!(run(config(1), request("get", "1")).is_err());
         assert_eq!(fs::read_dir(&root).unwrap().count(), 1); // exclusive lock only
         let first = run(config(1), request("build", "1")).unwrap();
+        assert_eq!(first["runtime"]["source_dir"], "/code");
         assert_eq!(run(config(1), request("get", "1")).unwrap(), first);
         assert_eq!(run(config(1), request("build", "1")).unwrap(), first);
         let directory = root.join(format!("runtime.{}", "1".repeat(64)));
