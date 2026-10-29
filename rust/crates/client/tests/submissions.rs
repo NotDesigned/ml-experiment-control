@@ -18,6 +18,46 @@ fn response() -> Value {
     json!({"submission_id":ID,"project":"demo","run_id":"train","attempt_id":"attempt-001","operation":"SUBMIT_RUN","status":"PREPARED","confirmation":format!("EXECUTE {ID}"),"execution":{"status":"PREPARED","revision":0}})
 }
 #[test]
+fn cpu_checkpoint_continuation_accepts_zero_gpu_reservation_and_still_checks_authority() {
+    let request = ml_exp_core::first_submission::native::retry::Request {
+        confirmation: format!("RETRY {ID}"),
+        resume_from: ml_exp_core::checkpoints::Reference {
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+            checkpoint_id: format!("checkpoint.{}", "a".repeat(64)),
+        },
+        max_gpu_hours: 1.,
+        reason: "CPU-only checkpoint restore".into(),
+    };
+    let plan = submissions::plan(Command::Retry {
+        submission: ID,
+        request: &request,
+    })
+    .unwrap();
+    let value = json!({"parent_submission_id":ID,"project":"demo","run_id":"train",
+        "attempt_id":"attempt-002","request_sha256":request.identity(ID).unwrap(),
+        "resume_from":request.resume_from,"max_gpu_hours":1.,"retry_state":"CREATED",
+        "scheduler_mutation_performed":false,"next_action":"PREPARE_NEW_ACTION","reused":true,
+        "reserved_gpu_seconds":0,"run_sha256":format!("sha256:{}","b".repeat(64)),
+        "attempt_sha256":format!("sha256:{}","c".repeat(64))});
+    assert!(submissions::response(&plan, value.clone()).is_ok());
+    for (field, bad) in [
+        ("reserved_gpu_seconds", json!(3601)),
+        ("reserved_gpu_seconds", json!(-1)),
+        ("reserved_gpu_seconds", Value::Null),
+        ("attempt_id", json!("attempt-003")),
+        (
+            "request_sha256",
+            json!(format!("sha256:{}", "f".repeat(64))),
+        ),
+        ("scheduler_mutation_performed", json!(true)),
+    ] {
+        let mut changed = value.clone();
+        changed[field] = bad;
+        assert!(submissions::response(&plan, changed).is_err(), "{field}");
+    }
+}
+#[test]
 fn cpu_input_preparation_is_scoped_progress_and_cannot_impersonate_a_training_action() {
     let plan = submissions::plan(Command::Prepare {
         project: "demo",

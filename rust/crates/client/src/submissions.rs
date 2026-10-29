@@ -410,7 +410,7 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
                 .is_none_or(|v| identity::validate_id(v).is_err())
             || value["reserved_gpu_seconds"]
                 .as_u64()
-                .is_none_or(|v| v == 0 || v as f64 > request.max_gpu_hours * 3600.)
+                .is_none_or(|v| v as f64 > request.max_gpu_hours * 3600.)
             || ["run_sha256", "attempt_sha256"].iter().any(|k| {
                 value[k]
                     .as_str()
