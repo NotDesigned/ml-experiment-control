@@ -167,6 +167,13 @@ variant are identity fields. Required metrics come from each Run's schema. Step
 series and final summaries have distinct W&B projections. Scientific aggregation
 and model selection remain research-code responsibilities.
 
+Cloud status normalizes the retained provider job ID, backend, native state and
+queue reason into the shared client summary. Missing observation times remain
+unknown. A new native Attempt manifest is not a local GPU process receipt;
+unobserved native results are reported as not observed. Scheduler refresh releases
+the global authorship lock before provider reads while retaining the Run fence
+and serialized outbox commit, so a slow query does not block worker ingress.
+
 ## Deployment and release implementation
 
 `ml-expd-rs --config /private/server.json` selects independent backend, tracking

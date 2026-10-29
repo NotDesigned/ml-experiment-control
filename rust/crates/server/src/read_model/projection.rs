@@ -251,12 +251,16 @@ fn checked(snapshot: &Snapshot) -> Result<()> {
     }
     Ok(())
 }
+fn legacy_process_record(attempt: &AttemptSnapshot) -> bool {
+    attempt.manifest.source == ManifestSource::AttemptJson
+        && !attempt.manifest.metadata.contains_key("native_creation")
+}
 fn effective_collection(snapshot: &Snapshot, attempt: &AttemptSnapshot) -> Value {
     let document = collection(snapshot, attempt);
     let value = map(document);
     if !value.as_object().is_some_and(Map::is_empty)
         || matches!(document, EvidenceDocument::Unavailable { .. })
-        || attempt.manifest.source != ManifestSource::AttemptJson
+        || !legacy_process_record(attempt)
     {
         return value;
     }
@@ -269,7 +273,7 @@ fn collection_provenance(snapshot: &Snapshot, attempt: &AttemptSnapshot) -> Valu
     let document = collection(snapshot, attempt);
     if !matches!(document, EvidenceDocument::Unavailable { .. })
         && document.metadata().is_none_or(Map::is_empty)
-        && attempt.manifest.source == ManifestSource::AttemptJson
+        && legacy_process_record(attempt)
     {
         json!({"availability":"PRESENT","source":format!("attempts/{}/attempt.json",attempt.attempt_id),
             "raw_sha256":attempt.manifest.raw_sha256,"kind":"legacy_process_record"})
@@ -1064,7 +1068,8 @@ pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) 
         "status":"NOT_OBSERVED","phase":"NOT_OBSERVED","training":{"status":training,"exit_code":exit_code,
             "process_state":process_state,"diagnostic":if conflicting{json!("PROCESS_STATE_EXIT_CODE_CONFLICT")}else{Value::Null},
             "evidence":if collected_doc.metadata().is_some(){json!("exact_attempt_process_evidence")}else{Value::Null}},
-        "verification":"PENDING","download_available":false,"publication":null,"diagnostic":"ARTIFACT_PUBLICATION_NOT_MIGRATED",
+        "verification":"PENDING","download_available":false,"publication":null,
+        "diagnostic":if snapshot.run.metadata.contains_key("native_creation"){"ARTIFACT_PUBLICATION_NOT_OBSERVED"}else{"ARTIFACT_PUBLICATION_NOT_MIGRATED"},
         "evidence_availability":collection_provenance(snapshot,attempt),"evidence":evidence,
         "process":process,"diagnostics":snapshot.diagnostics}),
     );

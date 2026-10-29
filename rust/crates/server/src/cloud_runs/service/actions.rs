@@ -238,18 +238,29 @@ impl Service {
         self.view(&prepared, snapshot, now)
     }
     pub fn refresh(&self, action: &str, now: &str, cancelled: &AtomicBool) -> cloud::Result<Value> {
-        let lock = self.lock()?;
         let prepared = self.load(action)?;
         let execution = &prepared.execution;
+        let guard = self
+            .fence
+            .existing_observation_guard(&execution.job.project, &execution.job.run_id)
+            .map_err(|_| cloud::Error::evidence())?;
+        let lock = self.lock()?;
         if self.actions.observe(action).map_err(op)?["execution"]["status"] != "VERIFIED" {
             return Err(cloud::Error::evidence());
         }
+        lock.validate()?;
+        // The outbox serializes its own observation commits and the Run fence
+        // prevents deletion. A slow provider GET must not hold the global
+        // authorship/worker-ingress lock across every other Run.
+        drop(lock);
         self.outbox.reconcile(
             &self.execution_adapter(execution)?,
             &execution.job,
             execution.allocation,
             &|| {
-                lock.validate()?;
+                guard
+                    .require_observed_live(&execution.job.project, &execution.job.run_id)
+                    .map_err(|_| cloud::Error::evidence())?;
                 self.check(&prepared)
             },
             cancelled,

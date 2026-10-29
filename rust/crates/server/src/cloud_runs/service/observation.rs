@@ -1,4 +1,16 @@
 use super::*;
+
+/// Normalize retained provider evidence to the shared status contract. A read
+/// cannot infer an observation time or worker/process completion from it.
+fn scheduler_evidence(observation: &Value, backend: &str, attempt: &str) -> Value {
+    let mut detail = observation.clone();
+    detail["backend"] = json!(backend);
+    detail["backend_job_id"] = observation["job_id"].clone();
+    detail["raw_state"] = observation["provider_state"].clone();
+    json!({"state":observation["state"],"attempt_id":attempt,"detail":detail,
+        "source":"native-cloud-outbox","as_of":null,"stale":true,"freshness":"UNKNOWN"})
+}
+
 impl Service {
     pub fn apply_observation(
         &self,
@@ -115,7 +127,8 @@ impl Service {
         }
         let observation = &submission["cloud_observation"]["observation"];
         if observation.is_object() {
-            value["evidence"]["scheduler"] = json!({"state":observation["state"],"attempt_id":selected,"detail":observation,"source":"native-cloud-outbox","as_of":null,"stale":true,"freshness":"UNKNOWN"});
+            value["evidence"]["scheduler"] =
+                scheduler_evidence(observation, &prepared.execution.backend_id, &selected);
             if attempt.is_none() {
                 value["scheduler_state"] = observation["state"].clone();
                 value["is_terminal"] = json!(
@@ -135,5 +148,26 @@ impl Service {
             value["evidence"]["scheduler"] = json!({"state":"UNKNOWN","attempt_id":selected,"diagnostic":"SUBMISSION_UNCERTAIN","source":"native-cloud-action","as_of":null,"stale":true,"freshness":"UNKNOWN"});
         }
         Ok(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cloud_scheduler_summary_retains_job_native_state_and_queue_without_worker_claims() {
+        let observation = json!({"job_id":"dlc123","provider_state":"EnvPreparing","state":"STARTING",
+            "queue":{"code":"roleMaximumResource","reason":"GPU allowance exhausted"}});
+        let layer = scheduler_evidence(&observation, "pai-cpu", "attempt-002");
+        assert_eq!(layer["attempt_id"], "attempt-002");
+        assert_eq!(layer["detail"]["backend"], "pai-cpu");
+        assert_eq!(layer["detail"]["backend_job_id"], "dlc123");
+        assert_eq!(layer["detail"]["raw_state"], "EnvPreparing");
+        assert_eq!(layer["detail"]["queue"], observation["queue"]);
+        assert!(layer["as_of"].is_null());
+        assert_eq!(layer["freshness"], "UNKNOWN");
+        assert!(layer.get("worker").is_none());
+        assert!(layer.get("process").is_none());
     }
 }

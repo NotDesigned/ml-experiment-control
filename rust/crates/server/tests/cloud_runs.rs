@@ -391,6 +391,25 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         client.get("/api/runs/demo/train").unwrap()["native_submission"]["status"],
         "AUTHORIZED"
     );
+    let initial_status = ml_exp_client::status::observe(
+        &client,
+        &health,
+        None,
+        ml_exp_client::observation::Selection {
+            project: Some("demo"),
+            run: Some("train"),
+            attempt: Some("attempt-001"),
+        },
+        true,
+    )
+    .unwrap();
+    assert!(initial_status["worker"]["state"].is_null());
+    assert!(initial_status["training"]["process_state"].is_null());
+    assert_eq!(initial_status["training"]["status"], "UNKNOWN");
+    assert_eq!(
+        initial_status["publication"]["diagnostic"],
+        "ARTIFACT_PUBLICATION_NOT_OBSERVED"
+    );
     // A synthetic Action receipt exercises ingress without calling any cloud
     // provider. This is a state-machine/HTTP fixture, not GPU acceptance.
     let actions =

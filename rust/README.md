@@ -328,6 +328,12 @@ configuration under `/etc/ml-expd/native/`; token and provider credentials stay
 in separate files. A single deployment file refers to approved read, Slurm,
 cloud and optional tracking configurations. Omitted backends stay disabled.
 
+For private DLC images, set `registry_auth_file` on the PAI backend itself,
+as shown in the PAI example. A builder's registry login authorizes its pushes;
+the training transport needs its own reference to the approved pull credentials.
+These credentials are injected only into the provider request and never frozen
+in a Run, image build context or public status response.
+
 ```sh
 ml-expd-rs --config /etc/ml-expd/native/server.json
 ```
