@@ -9,6 +9,7 @@
       "scope": {
         "subscription": "example-subscription", "resource_group": "example-group",
         "region": "cn-sh-01", "zone": "cn-sh-01e", "workspace": "example-workspace",
+        "workspace_zone": "cn-sh-01z",
         "user_id": "00000000-0000-0000-0000-000000000000"
       },
       "cluster": "training-cluster", "vpc_id": "example-vpc",

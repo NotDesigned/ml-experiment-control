@@ -43,6 +43,7 @@ fn sense() -> sensecore::Profile {
             resource_group: "group".into(),
             region: "cn-east-1".into(),
             zone: "cn-east-1a".into(),
+            workspace_zone: None,
             workspace: "work".into(),
             user_id: "12345678-1234-1234-1234-123456789abc".into(),
         },
@@ -230,7 +231,7 @@ fn sensecore_training_copy_and_quota_selection_preserve_boundaries() {
     cpu.cpus = 2;
     cpu.memory_gb = 4;
     assert!(debug.create(&cpu).is_ok());
-    let spec = json!({"name":p.worker_spec,"cpu":{"vcpu_allocatable":8},"memory":{"allocatable":68719476736u64},"device":{"number":1},"zones":[p.scope.zone]});
+    let spec = json!({"name":p.worker_spec,"cpu":{"vcpu_allocatable":8},"memory":{"allocatable":64},"device":{"number":1},"zones":[p.scope.zone]});
     let make = |name: &str, quota: &str| {
         let row = json!({"name":name,"id":p.scope.path("aec2s",name).unwrap(),"state":"ACTIVE","vpc_id":p.vpc_id,"spot_status":[{"spot_quota":{"device":quota}}]});
         sensecore::cluster(&p, &row, std::slice::from_ref(&spec)).unwrap()
@@ -256,9 +257,56 @@ fn sensecore_training_copy_and_quota_selection_preserve_boundaries() {
     let mut duplicate = clusters.clone();
     duplicate.push(clusters[0].clone());
     assert!(sensecore::highest_spot(&p, &duplicate, None).is_err());
+    let mut reserved = json!({"name":"debug","id":p.scope.path("aec2s","debug").unwrap(),"state":"ACTIVE","vpc_id":p.vpc_id,"spot_status":[]});
+    let zero = sensecore::cluster(&p, &reserved, std::slice::from_ref(&spec)).unwrap();
+    assert_eq!(zero.spot_devices_nano, 0);
+    assert!(sensecore::highest_spot(&p, &[zero], None).is_err());
+    reserved["spot_status"] = Value::Null;
+    assert!(sensecore::cluster(&p, &reserved, std::slice::from_ref(&spec)).is_err());
+    let row = json!({"name":"training","id":p.scope.path("aec2s","training").unwrap(),"state":"ACTIVE","vpc_id":p.vpc_id,"spot_status":[{"spot_quota":{"device":"1"}}]});
+    let mut too_small = spec.clone();
+    too_small["memory"]["allocatable"] = json!(63);
+    assert!(
+        !sensecore::cluster(&p, &row, &[too_small])
+            .unwrap()
+            .compatible
+    );
     let row = json!({"name":job.name().unwrap(),"uid":"uid1","ownership":{"user_id":p.scope.user_id},"state":"RUNNING"});
     p.validate_job(&row, &job, Some("uid1")).unwrap();
     assert!(p.validate_job(&row, &job, Some("uid2")).is_err());
+}
+#[test]
+fn sensecore_workspace_zone_does_not_change_pool_or_mount_zone_and_legacy_hashes_remain() {
+    let mut p = sense();
+    let legacy = serde_json::to_value(&p).unwrap();
+    assert!(legacy["scope"].get("workspace_zone").is_none());
+    let restored: sensecore::Profile = serde_json::from_value(legacy).unwrap();
+    assert_eq!(restored.digest().unwrap(), p.digest().unwrap());
+    p.scope.workspace_zone = Some("cn-east-1z".into());
+    assert!(
+        p.jobs_path()
+            .unwrap()
+            .contains("/zones/cn-east-1z/workspaces/work/")
+    );
+    assert!(
+        p.pools("1")
+            .unwrap()
+            .path
+            .contains("/zones/cn-east-1z/workspaces/work/")
+    );
+    assert!(
+        p.specs("training", "1")
+            .unwrap()
+            .path
+            .contains("/zones/cn-east-1a/aec2s/training/")
+    );
+    assert_eq!(
+        p.create(&job()).unwrap().body.unwrap()["mount"][0]["zone"],
+        "cn-east-1a"
+    );
+    assert_ne!(restored.digest().unwrap(), p.digest().unwrap());
+    p.scope.workspace_zone = Some("cn-other-1z".into());
+    assert!(p.validate().is_err());
 }
 #[test]
 fn offline_logs_and_pagination_refuse_foreign_hits_truncation_and_ambiguous_absence() {

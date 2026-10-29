@@ -10,6 +10,10 @@ pub struct Scope {
     pub resource_group: String,
     pub region: String,
     pub zone: String,
+    /// Workspaces can live in a different zone from their bound compute pools.
+    /// Absence preserves the original profile encoding and address semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_zone: Option<String>,
     pub workspace: String,
     pub user_id: String,
 }
@@ -25,15 +29,13 @@ impl Scope {
             component(s)?;
         }
         sense_region(&self.region)?;
-        if self.zone.len() != self.region.len() + 1
-            || !self.zone.starts_with(&self.region)
-            || !self
-                .zone
-                .as_bytes()
-                .last()
-                .is_some_and(u8::is_ascii_lowercase)
-        {
-            return Err(Error("zone"));
+        for zone in std::iter::once(self.zone.as_str()).chain(self.workspace_zone.as_deref()) {
+            if zone.len() != self.region.len() + 1
+                || !zone.starts_with(&self.region)
+                || !zone.as_bytes().last().is_some_and(u8::is_ascii_lowercase)
+            {
+                return Err(Error("zone"));
+            }
         }
         if !regex::Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
             .expect("UUID regex")
@@ -44,16 +46,23 @@ impl Scope {
         Ok(())
     }
     pub fn path(&self, collection: &str, name: &str) -> Result<String> {
+        self.path_in_zone(&self.zone, collection, name)
+    }
+    fn path_in_zone(&self, zone: &str, collection: &str, name: &str) -> Result<String> {
         self.validate()?;
         component(collection)?;
         component(name)?;
         Ok(format!(
             "/subscriptions/{}/resourceGroups/{}/zones/{}/{collection}/{name}",
-            self.subscription, self.resource_group, self.zone
+            self.subscription, self.resource_group, zone
         ))
     }
     pub fn workspace_path(&self) -> Result<String> {
-        self.path("workspaces", &self.workspace)
+        self.path_in_zone(
+            self.workspace_zone.as_deref().unwrap_or(&self.zone),
+            "workspaces",
+            &self.workspace,
+        )
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -511,7 +520,7 @@ pub fn cluster(profile: &Profile, row: &Value, specs: &[Value]) -> Result<Cluste
     }
     let shares = row["spot_status"]
         .as_array()
-        .filter(|s| !s.is_empty() && s.len() <= 1024)
+        .filter(|s| s.len() <= 1024)
         .ok_or(Error("spot quota"))?;
     let mut quota = 0u128;
     for share in shares {
@@ -545,7 +554,9 @@ pub fn cluster(profile: &Profile, row: &Value, specs: &[Value]) -> Result<Cluste
         if spec_name == profile.worker_spec
             && gpus == u64::from(profile.worker_gpus)
             && cpus >= u64::from(profile.worker_cpus)
-            && memory >= u64::from(profile.worker_memory_gb) * 1024 * 1024 * 1024
+            // resourceSpecs reports allocatable memory in GiB, matching the
+            // platform's fixed worker shape (not a byte count).
+            && memory >= u64::from(profile.worker_memory_gb)
         {
             compatible = true;
         }

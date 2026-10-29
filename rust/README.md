@@ -630,3 +630,10 @@ to a different status row. Set the optional trusted helper scheduler field
 from the controller when accounting lacks the marker and the queue no longer
 contains the job. Missing, foreign or duplicate evidence still blocks mutation;
 controller eviction does not prove cancellation or permit resubmission.
+
+For SenseCore, `scope.zone` addresses the compute pool and NAS mount. Set
+`scope.workspace_zone` separately when the workspace lives in another zone of
+the same region; omission retains the original single-zone behavior and profile
+identity. Resource-spec `memory.allocatable` is GiB. A pool with an empty
+`spot_status` has zero SPOT allowance; it does not invalidate the other pools.
+Reported allowance still does not establish idle GPU capacity.
