@@ -1,10 +1,10 @@
 # Native ML-Expd
 
 Development lives on `rewrite/rust`. Production remains the Python 1.5.1 service.
-The workspace version is `0.1.0-dev.1`; `native-v0.1.0` has not been released.
+The workspace version is `0.1.0`, the first native release candidate.
 Code implementation, automated verification, provider acceptance and production
 cutover are separate milestones. See [the migration status](../docs/rust-rewrite.md).
-Do not initialize this development binary over the production registry.
+Do not initialize this binary over the production registry.
 
 ## Structure
 

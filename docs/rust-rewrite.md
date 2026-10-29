@@ -2,8 +2,9 @@
 
 Development branch: `rewrite/rust`. Python reference baseline:
 `e725faec689fb8395e692e27d00a8896fa7fe5a5` (1.5.1). Production still uses Python
-1.5.1; the Rust workspace is `0.1.0-dev.1`. The planned native release is 0.1.0.
-There is no production replacement or provider acceptance claim in this document.
+1.5.1; the Rust workspace is the `0.1.0` release candidate. It has an independent
+Tokyo test installation and bounded PAI CPU acceptance. It has not replaced
+production or established GPU acceptance on all backends.
 
 The implementation pass connects the main research workflows before the next
 round of debugging and provider tests. “Connected” means the CLI/API/service/
@@ -55,17 +56,17 @@ Research code may use Python/PyTorch or another image language.
 | Register approved Project; upload immutable source | `server/{projects,sources}`, `client/{projects,sources}.rs` | Private temporary stores and HTTP |
 | Dockerfile prepare/build/reconcile/log/progress | `core/cloud/build.rs`, `server/cloud_runs/service/builds.rs`, `builds/native_image.py` | Frozen recipe and late-publication bridge tests; isolated DSW-to-Tokyo build passed |
 | OCI-to-SIF on Slurm gateway | `worker/materialize.rs` | Fake apptainer; exact reuse/capacity/tampering checks |
-| Upload/download cloud datasets | `server/objects.rs`, `service/datasets.rs`, `client/datasets.rs` | Bounded parts and immutable receipts; isolated two-part OSS upload passed; full training consumption pending |
-| Import existing approved OSS datasets | `core/datasets/oss.rs`, `service/oss_import.rs`, `client/datasets.rs` | Scope-bound plain-tar inspection, immutable part reuse, no API-host spool; provider acceptance pending |
-| Download into CPFS / NAS input cache | `worker/{data_import,cloud_data}.rs` | Import/hash/cache tests; provider storage pending |
+| Upload/download cloud datasets | `server/objects.rs`, `service/datasets.rs`, `client/datasets.rs` | Bounded parts and immutable receipts; two-part OSS transfer and PAI CPU consumption passed |
+| Import existing approved OSS datasets | `core/datasets/oss.rs`, `service/oss_import.rs`, `client/datasets.rs` | Scope-bound plain-tar inspection, immutable part reuse, no API-host spool; real OSS import and PAI CPU consumption passed |
+| Download into CPFS / NAS input cache | `worker/{data_import,cloud_data}.rs` | Import/hash/cache tests; personal CPFS consumption passed; NAS provider acceptance pending |
 | Frozen download script and verified persistent input cache | `core/data_preparation.rs`, `worker/data_preparation.rs`, `service/script_preparation.rs` | CPFS script execution and verified reuse passed; three-backend dispatch acceptance pending |
 | CCR data image and CPU ACP copy before training | `service/data_delivery.rs`, `builds/native_data.py`, `worker/data_copy_cli.rs` | Stage control/hash/capability tests; actual copy pending |
 | One experiment configuration | `core/preparation.rs`, `client/preparations.rs`, `service/preparations.rs` | Recovery slot, conflict, early preflight and HTTP tests |
 | Matrix preparation and bounded dispatch | `core/preparation.rs`, `client/batch.rs` | Stable identities, exact terminal slot accounting; actual batch pending |
-| Slurm / DLC / ACP submit, reconcile, refresh and cancel | `server/submissions`, `server/backends`, `server/cloud_runs` | Local scheduler/HTTP fixtures; actual provider run pending |
+| Slurm / DLC / ACP submit, reconcile, refresh and cancel | `server/submissions`, `server/backends`, `server/cloud_runs` | Real bounded DLC CPU execution passed; Slurm/ACP acceptance pending |
 | Logs/history/checkpoints over gateway or scoped HTTPS | `io/observations.rs`, `worker/cloud_exchange.rs`, `service/exchange.rs` | Lost ACK, sequence, variant and frozen identity tests |
-| Explicit new Attempt from selected persistent checkpoint | `core/cloud/retry.rs`, `service/retry.rs` | Immutable restore and cumulative budget checks; actual restore pending |
-| CPU result collection, direct download, verified ACK/release | `worker/cloud_artifacts.rs`, `service/artifacts.rs`, `client/artifacts.rs` | Archive/member integrity and durable cursor tests; provider collection pending |
+| Explicit new Attempt from selected persistent checkpoint | `core/cloud/retry.rs`, `service/retry.rs` | Immutable restore and budget checks; real PAI CPU split/continuous states matched exactly |
+| CPU result collection, direct download, verified ACK/release | `worker/cloud_artifacts.rs`, `service/artifacts.rs`, `client/artifacts.rs` | Real PAI zero-GPU synchronization, verified downloads, release and exact repeat passed |
 | List and select result archive files | `client/artifacts/files.rs`, `io/artifacts.rs` | Selected-file persistence only after full archive verification; no partial ACK; direct original-file recovery still pending |
 | DSW / CCI debug lifecycle | `core/cloud/debug.rs`, `service/debug.rs`, `client/debug.rs` | Native compile/identity checks; actual machine lifecycle pending |
 | Backend catalogue/cached capacity | `core/capacity.rs`, `service/capacity.rs`, `capacity_http.rs` | Local GET is effect-free; real PAI quota refresh and retained timestamp accepted; Slurm/SenseCore pending |
@@ -255,28 +256,40 @@ Local/DSW logs live in ignored `.ops` directories and are not release artifacts.
 format, lint, workspace-test, binary-smoke and bridge-test commands. Passing these
 checks establishes development evidence, not real GPU or production acceptance.
 
-## Independent Tokyo deployment (2026-10-29)
+## Independent Tokyo acceptance (2026-10-29)
 
-The native server and client now run independently on the authorized Tokyo host,
-under `/opt/ml-expd-native-test`. The API binds loopback port 18765 and uses its
-own private token, registry, Project and systemd unit. It does not use the
-production registry or replace Python 1.5.1. This is a development installation,
-not the native 0.1.0 release. Cloud scheduling and Run creation are disabled in
-this test configuration.
+The native server and client run under `/opt/ml-expd-native-test`, with a distinct
+token, registry, Project and service. HTTPS uses the separately approved
+`https://server-tokyo.adscn.dev:2087/ml-expd` entry; the existing VPN and CCR relay
+are unchanged. Production Python 1.5.1 and its scientific state are untouched.
 
-Commit `f2d282790c6756a2c01035a5d31352553d3cf7e3` passed 614 Rust tests,
-all-target clippy, formatting, binary smoke and six optional image-effect tests
-in CI. Tokyo also passed the 614 tests and real CLI/API smoke after installing
-its missing compiler, `jq` and `cmp` dependencies. Initial environment failures
-and the test runner's incorrect source-hash field are retained as evidence.
+The test executor permits zero GPUs only. Real acceptance covers:
 
-Through the installed native client, a synthetic 17,838,080-byte plain tar was
-imported from an approved personal OSS dataset key into two immutable parts.
-Import took 18.647 seconds; repeating the exact request took 0.036 seconds. Signed
-part download took 5.066 seconds and verified the archive and file hashes.
-Wrong hashes and another user's prefix returned distinct 422 errors. Source
-upload/show/lookup and unauthenticated 401 behavior passed. API memory peaked at
-43,921,408 bytes; dataset payloads were not spooled to its disk. No provider job
-or GPU was submitted. This evidence does not establish training, recovery,
-W&B, native OSS mounting or all-backend acceptance. Small private evidence lives
-in `.ops/tokyo-native-20261029/` and is not included in the release.
+- Source publication through the installed client and a DSW image build pushed
+  to Tokyo ACR. Training pull credentials are configured separately from build
+  push credentials.
+- Import, repeat and download of a 17,838,080-byte OSS fixture in two immutable
+  parts. A DLC worker verified and consumed its 17 MiB data file on personal CPFS.
+- Continuous steps 1–8, a separate steps 1–4 execution, and an explicit new
+  Attempt restoring steps 5–8. All three jobs succeeded with process exit code 0.
+  The restored state, RNG and cursor matched the continuous execution byte for
+  byte: SHA256 `ac780ffb06902ddcdbfc2c7b161a6c447d9fcebe3c23ba34116e7daec3527d61`.
+- Eight continuous metrics and four metrics per split Attempt, logs and complete
+  checkpoint receipts. Selected-file download sends no ACK. Full verified
+  download releases only its generated object parts; repeating it reuses the
+  local archive and reconciles the same ACK.
+- A separate zero-GPU CPU synchronization job succeeded without repeating the
+  training command.
+
+Initial jobs without training registry credentials were stopped and positively
+confirmed terminal. A real client defect rejecting zero GPU reservation in a
+CPU retry reply was fixed, then the same metadata-only retry was reconciled.
+An acknowledgement collision with another operation retained the local archive;
+its exact retry succeeded. The client now retains the sanitized server cause.
+These failures and test-runner errors remain in small private evidence under
+`.ops/tokyo-native-20261029/`.
+
+This is deterministic standard-library CPU validation. PyTorch/GPU training,
+Slurm and SenseCore execution, W&B cloud activity, historical-state cutover and
+direct original backend-file recovery remain outside this acceptance. No
+dataset or weight payload is retained on the API disk.
