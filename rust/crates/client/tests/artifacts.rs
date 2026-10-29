@@ -79,6 +79,63 @@ fn fixture() -> (Vec<u8>, State) {
     (body, state)
 }
 #[test]
+fn selected_file_is_durable_only_after_whole_archive_verification_and_never_acks() {
+    for corrupt in [false, true] {
+        let (mut body, state) = fixture();
+        if corrupt {
+            *body.last_mut().unwrap() = 42;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let expected = state.clone();
+        let worker = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            assert!(
+                read(&mut socket)
+                    .0
+                    .starts_with(&format!("get /api/submissions/{ACTION}/artifacts "))
+            );
+            reply(&mut socket, &expected);
+            let (mut socket, _) = listener.accept().unwrap();
+            assert!(read(&mut socket).0.starts_with(&format!(
+                "get /api/submissions/{ACTION}/artifacts/{} ",
+                expected.bundle.archive.sha256
+            )));
+            write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/x-tar\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();
+            socket.write_all(&body).unwrap();
+            drop(socket);
+            if !corrupt {
+                let (mut socket, _) = listener.accept().unwrap();
+                assert!(read(&mut socket).0.starts_with("get "));
+                reply(&mut socket, &expected);
+            }
+            listener.set_nonblocking(true).unwrap();
+            assert!(
+                listener.accept().is_err(),
+                "partial file download must never ACK or release"
+            );
+        });
+        let client = Client::new(&format!("http://{addr}"), "synthetic-token".into()).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("model.bin");
+        let result = artifacts::download_file(&client, ACTION, "weights.bin", &target, &health());
+        if corrupt {
+            assert!(result.is_err());
+            assert!(!target.exists());
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        } else {
+            assert_eq!(result.unwrap()["acknowledgement_sent"], false);
+            assert_eq!(std::fs::read(&target).unwrap(), b"weights");
+            assert_eq!(
+                artifacts::download_file(&client, ACTION, "weights.bin", &target, &health())
+                    .unwrap()["reused_existing_file"],
+                true
+            );
+        }
+        worker.join().unwrap();
+    }
+}
+#[test]
 fn streamed_download_verifies_then_acknowledges_once_and_reuses_saved_bytes_after_lost_ack() {
     let (body, state) = fixture();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

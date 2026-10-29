@@ -21,6 +21,10 @@ use std::{
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route(
+            "/api/projects/{project}/datasets/{executor}/import-oss",
+            post(import_oss),
+        )
+        .route(
             "/api/projects/{project}/datasets/{executor}",
             get(list).post(begin),
         )
@@ -36,6 +40,46 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             "/api/projects/{project}/datasets/{executor}/{asset}/complete",
             post(complete),
         )
+}
+async fn import_oss(
+    State(state): State<Arc<AppState>>,
+    Path((project, executor)): Path<(String, String)>,
+    RawQuery(raw): RawQuery,
+    request: Request,
+) -> Response {
+    if let Err(e) = scope(&project, &executor, None, raw.as_deref()) {
+        return read_http::failure(e);
+    }
+    let (body, permit) = match ingress(&state, request, 8192).await {
+        Ok(value) => value,
+        Err(e) => return read_http::failure(e),
+    };
+    let source = ml_exp_core::json::mapping(&body)
+        .ok()
+        .and_then(|v| serde_json::from_value::<datasets::oss::Import>(Value::Object(v)).ok());
+    let Some(source) = source.filter(|v| v.validate().is_ok()) else {
+        return read_http::failure(invalid());
+    };
+    read_http::execute_timeout(
+        state,
+        Access::Write,
+        Duration::from_secs(1230),
+        move |api, _| {
+            let _permit = permit;
+            let cloud = api
+                .cloud()
+                .filter(|c| c.accepts(&executor))
+                .ok_or(read_api::Error {
+                    status: 422,
+                    code: "OSS_DATASET_IMPORT_UNSUPPORTED",
+                    detail: "this executor does not support configured object-store imports",
+                })?;
+            cloud
+                .import_oss_dataset(&project, &executor, source)
+                .map_err(crate::cloud_runs::failure)
+        },
+    )
+    .await
 }
 fn invalid() -> read_api::Error {
     read_api::Error {

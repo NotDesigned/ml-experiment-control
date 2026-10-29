@@ -45,6 +45,7 @@ fn state(mut value: Value, project: &str, executor: &str, asset: &str) -> Result
             "data_image",
             "copy_job",
             "diagnostic",
+            "import_source",
         ] {
             m.remove(field);
         }
@@ -55,6 +56,47 @@ fn state(mut value: Value, project: &str, executor: &str, asset: &str) -> Result
         return Err(Error::Response);
     }
     Ok(state)
+}
+pub fn import_oss(
+    client: &Client,
+    project: &str,
+    executor: &str,
+    source: datasets::oss::Import,
+    health: &Value,
+) -> Result<Value, Error> {
+    validate(project, executor, None)?;
+    source.validate().map_err(|_| Error::Path)?;
+    capability(health)?;
+    if !health["capabilities"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|v| v == "native-oss-dataset-import.v1"))
+    {
+        return Err(Error::Observation(
+            "server has not enabled OSS dataset import",
+        ));
+    }
+    let asset = source.asset_id();
+    let outcome = (|| {
+        let value = send(
+            client,
+            format!("/api/projects/{project}/datasets/{executor}/import-oss"),
+            reqwest::Method::POST,
+            serde_json::to_vec(&source).map_err(|_| Error::Response)?,
+            true,
+        )?;
+        let saved = state(value.clone(), project, executor, &asset)?;
+        source
+            .matches(&saved.definition)
+            .map_err(|_| Error::Response)?;
+        if value["archive_verified"] != true {
+            return Err(Error::Response);
+        }
+        Ok(value)
+    })();
+    outcome.map_err(|source| Error::DatasetOutcomeUnknown {
+        asset,
+        source: Box::new(source),
+    })
 }
 fn send(
     client: &Client,

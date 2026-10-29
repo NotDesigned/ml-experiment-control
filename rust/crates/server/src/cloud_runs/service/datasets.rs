@@ -21,6 +21,8 @@ pub(super) struct Saved {
     pub(super) copy_status: Option<Value>,
     #[serde(default)]
     pub(super) diagnostic: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) import_source: Option<datasets::oss::Import>,
 }
 impl Service {
     pub fn dataset_list(&self, project: &str, executor: &str) -> cloud::Result<Value> {
@@ -129,6 +131,16 @@ impl Service {
         {
             return Err(cloud::Error::evidence());
         }
+        if let Some(source) = &saved.import_source {
+            source
+                .matches(&saved.state.definition)
+                .map_err(|_| cloud::Error::evidence())?;
+            self.objects
+                .as_ref()
+                .ok_or_else(cloud::Error::configuration)?
+                .validate_import(source)
+                .map_err(io)?;
+        }
         Ok(Some(saved))
     }
     pub(super) fn data_view(saved: Saved) -> Value {
@@ -144,6 +156,7 @@ impl Service {
         value["data_image"] = json!(saved.image);
         value["copy_job"] = json!(saved.copy_status);
         value["diagnostic"] = json!(saved.diagnostic);
+        value["import_source"] = json!(saved.import_source);
         value
     }
     pub fn dataset_state(
@@ -221,6 +234,7 @@ impl Service {
                     copy_storage: None,
                     copy_status: None,
                     diagnostic: None,
+                    import_source: None,
                 });
             }
         }

@@ -25,7 +25,7 @@ pub use transport::Client;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
-        "dataset {asset} transfer is unconfirmed; repeat upload with the same directory to reconcile durable parts: {source}"
+        "dataset {asset} transfer is unconfirmed; inspect this asset and repeat the same dataset operation to reconcile durable parts: {source}"
     )]
     DatasetOutcomeUnknown { asset: String, source: Box<Error> },
     #[error("invalid API URL; use HTTPS or loopback HTTP without userinfo, query or fragment")]

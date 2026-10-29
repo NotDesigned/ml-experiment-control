@@ -303,6 +303,7 @@ pub fn verify_stream(
         receipt.bytes,
         &receipt.files,
         "outputs/",
+        None,
     )?;
     let proof = artifacts::DownloadProof {
         archive_sha256: receipt.sha256.clone(),
@@ -323,6 +324,7 @@ pub fn verify_data_stream(
         definition.archive_bytes,
         &definition.files,
         "",
+        None,
     )?;
     Ok(())
 }
@@ -332,6 +334,7 @@ fn verify_members(
     bytes: u64,
     files: &[FileReceipt],
     prefix: &str,
+    mut selected: Option<(&str, &mut dyn Write)>,
 ) -> io::Result<std::collections::BTreeMap<String, FileReceipt>> {
     let mut reader = HashReader {
         inner: reader.take(bytes.checked_add(1).ok_or_else(invalid)?),
@@ -352,7 +355,18 @@ fn verify_members(
             if proofs.contains_key(&path) || row.size() != expected.bytes {
                 return Err(invalid());
             }
-            let (digest, bytes) = hash(&mut row)?;
+            let (digest, bytes) =
+                if let Some((_, writer)) = selected.as_mut().filter(|(path, _)| *path == local) {
+                    let mut reader = HashReader {
+                        inner: &mut row,
+                        hash: Sha256::new(),
+                        bytes: 0,
+                    };
+                    io::copy(&mut reader, writer)?;
+                    (format!("{:x}", reader.hash.finalize()), reader.bytes)
+                } else {
+                    hash(&mut row)?
+                };
             if digest != expected.sha256 || bytes != expected.bytes {
                 return Err(invalid());
             }
@@ -365,6 +379,34 @@ fn verify_members(
         return Err(invalid());
     }
     Ok(proofs)
+}
+
+/// Retain just one file locally, but verify all archive bytes and member hashes
+/// before the caller publishes that file. Partial download grants no ACK.
+pub fn copy_result_file(
+    reader: &mut impl Read,
+    receipt: &artifacts::ArchiveReceipt,
+    path: &str,
+    output: &mut impl Write,
+) -> io::Result<FileReceipt> {
+    artifacts::validate_receipt(receipt).map_err(|_| invalid())?;
+    let record = receipt
+        .files
+        .iter()
+        .find(|f| f.path == path)
+        .ok_or_else(invalid)?;
+    if !export_path(path) {
+        return Err(invalid());
+    }
+    verify_members(
+        reader,
+        &receipt.sha256,
+        receipt.bytes,
+        &receipt.files,
+        "outputs/",
+        Some((path, output)),
+    )?;
+    Ok(record.clone())
 }
 
 pub fn estimate(root: &Directory) -> io::Result<u64> {
@@ -381,10 +423,99 @@ pub fn estimate(root: &Directory) -> io::Result<u64> {
     Ok(bytes)
 }
 
+/// Discover a bounded regular-file dataset inventory while verifying the entire
+/// tar object. No extraction or local payload file is needed. Compressed input
+/// is deliberately refused: native dataset definitions describe plain tar.
+pub fn inspect_data_stream(
+    reader: &mut impl Read,
+    sha256: &str,
+    bytes: u64,
+) -> io::Result<ml_exp_core::datasets::Definition> {
+    ml_exp_core::sources::validate_archive_digest(sha256).map_err(|_| invalid())?;
+    ml_exp_core::multipart::part_count(bytes, ml_exp_core::multipart::Policy::default())
+        .map_err(|_| invalid())?;
+    let mut reader = HashReader {
+        inner: reader.take(bytes.checked_add(1).ok_or_else(invalid)?),
+        hash: Sha256::new(),
+        bytes: 0,
+    };
+    let mut files = std::collections::BTreeMap::new();
+    let mut members = 0usize;
+    let mut expanded = 0u64;
+    {
+        let mut archive = tar::Archive::new(&mut reader);
+        for entry in archive.entries()? {
+            members += 1;
+            if members > artifacts::MAX_FILES * 2 {
+                return Err(invalid());
+            }
+            let mut entry = entry?;
+            let path = entry.path()?.to_str().ok_or_else(invalid)?.to_owned();
+            if !ml_exp_core::datasets::path(&path) {
+                return Err(invalid());
+            }
+            if !entry.header().entry_type().is_file()
+                || files.len() >= artifacts::MAX_FILES
+                || files.contains_key(&path)
+            {
+                return Err(invalid());
+            }
+            expanded = expanded.checked_add(entry.size()).ok_or_else(invalid)?;
+            if expanded > bytes {
+                return Err(invalid());
+            }
+            let (sha256, size) = hash(&mut entry)?;
+            if size != entry.size() {
+                return Err(invalid());
+            }
+            files.insert(
+                path.clone(),
+                FileReceipt {
+                    path,
+                    bytes: size,
+                    sha256,
+                },
+            );
+        }
+    }
+    io::copy(&mut reader, &mut io::sink())?;
+    if reader.bytes != bytes || format!("{:x}", reader.hash.finalize()) != sha256 {
+        return Err(invalid());
+    }
+    let definition = ml_exp_core::datasets::Definition {
+        sha256: sha256.into(),
+        archive_bytes: bytes,
+        files: files.into_values().collect(),
+    };
+    definition.validate().map_err(|_| invalid())?;
+    Ok(definition)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+    #[test]
+    fn imported_data_discovers_files_and_rejects_wrong_or_truncated_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = Directory::open(root.path(), false).unwrap();
+        std::fs::create_dir(root.path().join("nested")).unwrap();
+        std::fs::write(root.path().join("nested/train.bin"), b"training bytes").unwrap();
+        std::fs::write(root.path().join("empty"), []).unwrap();
+        let mut file = tempfile::tempfile().unwrap();
+        let (sha, bytes, files) = pack_data(&directory, &mut file).unwrap();
+        file.rewind().unwrap();
+        let definition = inspect_data_stream(&mut file, &sha, bytes).unwrap();
+        assert_eq!(definition.files, files);
+        file.rewind().unwrap();
+        verify_data_stream(&mut file, &definition).unwrap();
+        file.rewind().unwrap();
+        assert!(inspect_data_stream(&mut file, &"0".repeat(64), bytes).is_err());
+        file.rewind().unwrap();
+        assert!(inspect_data_stream(&mut file, &sha, bytes - 1).is_err());
+        file.rewind().unwrap();
+        assert!(inspect_data_stream(&mut file, &sha, bytes + 1).is_err());
+    }
     fn receipt(sha256: String, bytes: u64, files: Vec<FileReceipt>) -> artifacts::ArchiveReceipt {
         artifacts::ArchiveReceipt {
             project: "demo".into(),

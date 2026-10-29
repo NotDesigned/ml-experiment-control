@@ -7374,6 +7374,25 @@
       ],
       "provider_acceptance": false,
       "production_deployed": false
+    },
+    "oss_dataset_import": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/core/src/datasets/oss.rs",
+        "rust/crates/server/src/cloud_runs/service/oss_import.rs",
+        "rust/crates/client/src/datasets.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "result_archive_file_selection": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/client/src/artifacts/files.rs",
+        "rust/crates/io/src/artifacts.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
     }
   },
   "known_limits": [
@@ -7383,6 +7402,9 @@
     "No automatic checkpoint selection/unbounded restart",
     "Native OSS filesystem mount remains disabled",
     "CCI create/stop only",
-    "Campaign authoring intentionally omitted"
+    "Campaign authoring intentionally omitted",
+    "Existing OSS import accepts plain regular-file tar archives only",
+    "Selected result files currently require an available verified archive and transfer its full stream",
+    "Direct original backend-file recovery without an archive remains unported"
   ]
 }

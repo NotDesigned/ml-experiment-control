@@ -256,6 +256,32 @@ the concatenated archive and every member and never overwrites an existing path.
 A dataset download sends no result ACK and never deletes the dataset. Slurm
 asset export is not provided by this object-only download command.
 
+`data import-oss` can import an existing **plain tar with regular-file entries**
+from the configured bucket. Input keys are restricted to the configured user's
+`users/<user>/datasets/` prefix or `public/datasets/`. The request supplies
+`--object-key`, `--sha256` and `--archive-bytes`; no bucket URL or credentials
+come from the client. The server discovers and verifies the complete inventory,
+then copies through fixed 16 MiB buffers into its immutable dataset parts.
+Original objects are never modified or deleted. Repeat the same request after
+a lost reply; a changed object cannot overwrite previously acknowledged parts.
+This command requires a cloud executor with configured object storage. It does
+not directly mount OSS and does not materialize a backend cache by itself.
+
+```sh
+ml-exp-rs data import-oss --project demo --executor pai-h200 \
+  --object-key users/alice/datasets/train.tar \
+  --sha256 REPLACE_WITH_64_HEX --archive-bytes 17827328
+ml-exp-rs run files action-REPLACE_WITH_16_HEX
+ml-exp-rs run file action-REPLACE_WITH_16_HEX --path summary.json --output ./summary.json
+```
+
+`run files` lists a verified result archive's inventory. `run file` reads and
+verifies the archive but retains only the selected file locally. It sends no ACK
+and authorizes no release. Repeating it verifies an existing destination instead
+of overwriting it. This implementation still transfers the entire archive; it
+does not yet replace direct recovery of original backend files when archive
+publication failed. That recovery path remains a separate migration requirement.
+
 A result download verifies archive and member hashes, fsyncs the local file, then
 sends an ACK. Repeating the same command can reconcile a lost ACK without another
 download. Release removes generated transfer copies; it does not remove original

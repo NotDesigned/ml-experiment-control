@@ -26,25 +26,7 @@ impl Client {
         file: &mut std::fs::File,
     ) -> Result<(), Error> {
         use std::io::Write;
-        let uri = url::Url::parse(url).map_err(|_| Error::Response)?;
-        if uri.scheme() != "https"
-            || !uri.host_str().is_some_and(|h| h.ends_with(".aliyuncs.com"))
-            || !uri.username().is_empty()
-            || uri.password().is_some()
-            || uri.fragment().is_some()
-            || expected > 16 * 1024 * 1024
-        {
-            return Err(Error::Response);
-        }
-        let mut response = self
-            .http
-            .get(uri)
-            .timeout(Duration::from_secs(300))
-            .send()
-            .map_err(|_| Error::Transport)?;
-        if response.status() != 200 || response.content_length() != Some(expected) {
-            return Err(Error::Response);
-        }
+        let mut response = self.object_reader(url, expected)?;
         let mut total = 0u64;
         let mut buffer = [0u8; 65536];
         loop {
@@ -62,6 +44,32 @@ impl Client {
             return Err(Error::Response);
         }
         Ok(())
+    }
+    pub(crate) fn object_reader(
+        &self,
+        url: &str,
+        expected: u64,
+    ) -> Result<reqwest::blocking::Response, Error> {
+        let uri = url::Url::parse(url).map_err(|_| Error::Response)?;
+        if uri.scheme() != "https"
+            || !uri.host_str().is_some_and(|h| h.ends_with(".aliyuncs.com"))
+            || !uri.username().is_empty()
+            || uri.password().is_some()
+            || uri.fragment().is_some()
+            || expected > 16 * 1024 * 1024
+        {
+            return Err(Error::Response);
+        }
+        let response = self
+            .http
+            .get(uri)
+            .timeout(Duration::from_secs(300))
+            .send()
+            .map_err(|_| Error::Transport)?;
+        if response.status() != 200 || response.content_length() != Some(expected) {
+            return Err(Error::Response);
+        }
+        Ok(response)
     }
     pub(crate) fn send_dataset(
         &self,
@@ -244,8 +252,31 @@ impl Client {
         file: &mut std::fs::File,
     ) -> Result<(), Error> {
         use std::io::Write;
+        let mut response = self.artifact_reader(plan)?;
+        let mut bytes = 0u64;
+        let mut buffer = [0u8; 65536];
+        loop {
+            let n = response.read(&mut buffer).map_err(|_| Error::Transport)?;
+            if n == 0 {
+                break;
+            }
+            bytes = bytes.checked_add(n as u64).ok_or(Error::Response)?;
+            if bytes > plan.bytes() {
+                return Err(Error::Response);
+            }
+            file.write_all(&buffer[..n]).map_err(|_| Error::Transport)?;
+        }
+        if bytes != plan.bytes() {
+            return Err(Error::Response);
+        }
+        Ok(())
+    }
+    pub(crate) fn artifact_reader(
+        &self,
+        plan: &crate::artifacts::DownloadPlan,
+    ) -> Result<reqwest::blocking::Response, Error> {
         let endpoint = api_url(&self.base, plan.path())?;
-        let mut response = self
+        let response = self
             .http
             .get(endpoint)
             .bearer_auth(&self.token)
@@ -271,23 +302,7 @@ impl Client {
         {
             return Err(Error::Response);
         }
-        let mut bytes = 0u64;
-        let mut buffer = [0u8; 65536];
-        loop {
-            let n = response.read(&mut buffer).map_err(|_| Error::Transport)?;
-            if n == 0 {
-                break;
-            }
-            bytes = bytes.checked_add(n as u64).ok_or(Error::Response)?;
-            if bytes > plan.bytes() {
-                return Err(Error::Response);
-            }
-            file.write_all(&buffer[..n]).map_err(|_| Error::Transport)?;
-        }
-        if bytes != plan.bytes() {
-            return Err(Error::Response);
-        }
-        Ok(())
+        Ok(response)
     }
 
     fn decode(&self, response: reqwest::blocking::Response) -> Result<serde_json::Value, Error> {

@@ -192,8 +192,8 @@ impl Service {
             .map_err(|_| Error::EffectUncertain)?;
         self.validate().map_err(|_| Error::EffectUncertain)?;
         Ok(experiment_redact::redact_json(json!({"project":result,
-            "initial_index":{"status":"NOT_IMPLEMENTED","runs":null,"error":null,"unavailable_run_roots":[]},
-            "effect":"Project registration is durable; native collection and indexing are not enabled"})))
+            "discovery":{"mode":"ON_DEMAND","source":"approved_run_roots"},
+            "effect":"Project registration is durable; Run queries discover authoritative metadata in approved roots"})))
     }
     pub fn execute(
         &self,

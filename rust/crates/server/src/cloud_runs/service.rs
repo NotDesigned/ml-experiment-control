@@ -481,6 +481,21 @@ pub(crate) fn failure(error: cloud::Error) -> read_api::Error {
         )
     } else {
         match (error.code.as_str(), error.http_status) {
+            ("OSS_DATASET_SCOPE_DENIED", _) => (
+                422,
+                "OSS_DATASET_SCOPE_DENIED",
+                "dataset object is outside the configured personal or public dataset prefixes",
+            ),
+            ("OSS_DATASET_READ_FAILED", _) => (
+                503,
+                "OSS_DATASET_READ_FAILED",
+                "the configured OSS dataset object could not be read; no dataset was published",
+            ),
+            ("OSS_DATASET_VERIFICATION_FAILED", _) => (
+                422,
+                "OSS_DATASET_VERIFICATION_FAILED",
+                "OSS dataset tar, archive SHA256, byte count or member inventory is invalid",
+            ),
             ("INPUT_NOT_READY", _) => (
                 409,
                 "INPUT_NOT_READY",
@@ -555,6 +570,7 @@ mod observation;
 mod retry;
 
 mod datasets;
+mod oss_import;
 
 pub(super) mod debug;
 
@@ -575,6 +591,9 @@ mod failure_tests {
             ("LAUNCH_METADATA_TOO_LARGE", 422),
             ("DEBUG_MACHINE_LIMIT", 409),
             ("ARTIFACTS_ADMINISTRATIVELY_REMOVED", 410),
+            ("OSS_DATASET_SCOPE_DENIED", 422),
+            ("OSS_DATASET_READ_FAILED", 503),
+            ("OSS_DATASET_VERIFICATION_FAILED", 422),
         ] {
             let public = failure(cloud::Error {
                 code: code.into(),

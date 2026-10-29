@@ -10,6 +10,8 @@ use std::{
     fs::File,
     path::{Path, PathBuf},
 };
+mod files;
+pub use files::{download as download_file, list as files};
 #[derive(Clone)]
 pub struct Plan {
     path: String,

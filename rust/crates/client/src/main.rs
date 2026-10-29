@@ -93,6 +93,19 @@ enum Command {
 }
 #[derive(Subcommand)]
 enum Data {
+    /// Import a complete plain tar already in an approved OSS dataset prefix.
+    ImportOss {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        executor: String,
+        #[arg(long)]
+        object_key: String,
+        #[arg(long)]
+        sha256: String,
+        #[arg(long)]
+        archive_bytes: u64,
+    },
     /// List retained dataset identities and delivery readiness; no backend query.
     List {
         #[arg(long)]
@@ -439,6 +452,16 @@ enum Run {
     Collect { submission: String },
     /// Read the original backend result bundle and retention.
     Artifacts { submission: String },
+    /// List files in the verified result archive; reads metadata only.
+    Files { submission: String },
+    /// Download one file while verifying the archive; never ACK or release it.
+    File {
+        submission: String,
+        #[arg(long)]
+        path: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Download, verify every file, then acknowledge (use --keep to retain the generated archive).
     Download {
         submission: String,
@@ -623,6 +646,21 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     };
     if let Command::Data { command } = &args.command {
         match command {
+            Data::ImportOss {
+                project,
+                executor,
+                object_key,
+                sha256,
+                archive_bytes,
+            } => {
+                datasets::validate(project, executor, None)?;
+                ml_exp_core::datasets::oss::Import {
+                    object_key: object_key.clone(),
+                    sha256: sha256.clone(),
+                    archive_bytes: *archive_bytes,
+                }
+                .validate()?;
+            }
             Data::Download {
                 project,
                 executor,
@@ -658,6 +696,8 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         command:
             Run::Collect { submission }
             | Run::Artifacts { submission }
+            | Run::Files { submission }
+            | Run::File { submission, .. }
             | Run::Download { submission, .. },
     } = &args.command
     {
@@ -863,6 +903,8 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Command::Data { command } => {
                     let health = client.negotiate()?;
                     Output::Json(match command {
+                        Data::ImportOss { project, executor, object_key, sha256, archive_bytes } => datasets::import_oss(&client, &project, &executor,
+                            ml_exp_core::datasets::oss::Import { object_key, sha256, archive_bytes }, &health)?,
                         Data::List{project,executor}=>datasets::list(&client,&project,&executor,&health)?,
                         Data::Download{project,executor,asset,output}=>datasets::download(&client,&project,&executor,&asset,&output,&health)?,
                         Data::Publish{project,executor,asset,request_id,confirmation}=>client.post(&format!("/api/projects/{project}/datasets/{executor}/{asset}/publish"),&serde_json::json!({"request_id":request_id,"confirmation":confirmation}))?,
@@ -961,6 +1003,20 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         Run::Artifacts { submission } => {
                             Output::Json(artifacts::observe(&client, &submission, false, &health)?)
                         }
+                        Run::Files { submission } => {
+                            Output::Json(artifacts::files(&client, &submission, &health)?)
+                        }
+                        Run::File {
+                            submission,
+                            path,
+                            output,
+                        } => Output::Json(artifacts::download_file(
+                            &client,
+                            &submission,
+                            &path,
+                            &output,
+                            &health,
+                        )?),
                         Run::Download {
                             submission,
                             output,

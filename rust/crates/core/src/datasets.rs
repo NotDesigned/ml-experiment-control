@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 pub const CONTRACT: &str = "native-dataset.v1";
 pub mod import;
+pub mod oss;
 pub const MAX_METADATA: usize = 8 * 1024 * 1024;
 pub const PART_BYTES: u64 = multipart::DEFAULT_PART_BYTES;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
