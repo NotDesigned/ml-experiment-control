@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from ml_exp_server.builds import native_data, native_image
+from ml_exp_server.builds import native_data, native_image, native_worker
 from ml_exp_server.data import registry_transport
 
 
@@ -47,6 +47,39 @@ class NativeBridge(unittest.TestCase):
                         self.assertEqual(result["runtime"]["image"], builder.config["repository"] + "@sha256:" + hashlib.sha256(raw).hexdigest())
                         self.assertEqual(native_image.request(builder, value), result)
                         self.assertEqual(result["request"], frozen)
+
+    def test_worker_features_are_frozen_against_exact_binary_and_never_reprobed_on_read(self):
+        for supported in [False, True]:
+            with self.subTest(supported=supported), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                binary = root / "worker"
+                response = {"contract": "native-worker-capabilities.v1", "features": ["storage-layout.v1"]}
+                binary.write_text("#!/bin/sh\n" + ("printf '%s' '" + json.dumps(response) + "'\n" if supported else "exit 2\n"))
+                binary.chmod(0o500)
+                expected = "sha256:" + hashlib.sha256(binary.read_bytes()).hexdigest()
+                marker = root / "features.json"
+                features = native_worker.freeze_features(binary, expected, marker)
+                self.assertEqual(features, response["features"] if supported else [])
+                binary.unlink()
+                with patch.object(subprocess, "run", side_effect=AssertionError("read must not execute worker")):
+                    self.assertEqual(native_worker.freeze_features(binary, expected, marker), features)
+                    self.assertEqual(native_worker.load_features(marker, expected), features)
+                    with self.assertRaisesRegex(ValueError, "binding differs"):
+                        native_worker.load_features(marker, "sha256:" + "0" * 64)
+                self.assertEqual(native_worker.load_features(root / "old-missing.json", expected), [])
+
+    def test_late_publication_carries_only_original_worker_features(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            builder = SimpleNamespace(root=root, config={"repository": "registry.example/team/build"})
+            value = {"runtime_id": "runtime." + "1" * 64, "project": "demo",
+                     "source_id": "source." + "2" * 64, "worker_sha256": "sha256:" + "3" * 64, "mirror": False}
+            (root / ("1" * 64 + ".native-worker.json")).write_text(json.dumps({
+                "worker_sha256": value["worker_sha256"], "features": ["storage-layout.v1"]}))
+            with patch.object(subprocess, "run", side_effect=AssertionError("reconciliation must not probe replacement")):
+                result = native_image._finish(builder, value, "registry.example/team/build@sha256:" + "4" * 64,
+                                              value, root / "receipt.json")
+            self.assertEqual(result["runtime"]["worker_features"], ["storage-layout.v1"])
 
     def test_absent_publication_never_dispatches_a_replacement(self):
         builder = SimpleNamespace(config={"repository": "registry.example/team/build"})

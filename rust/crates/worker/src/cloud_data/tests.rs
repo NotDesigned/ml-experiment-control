@@ -10,10 +10,10 @@ use ml_exp_core::{
 #[test]
 fn a_cloud_input_is_imported_once_into_shared_storage_and_reused_without_the_source_archive() {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("runs");
+    let root = temp.path().join("native/runs");
     let work = temp.path().join("code");
     let tree = temp.path().join("source");
-    for path in [&root, &work, &tree] {
+    for path in [&work, &tree] {
         std::fs::create_dir(path).unwrap();
     }
     std::fs::write(tree.join("data.bin"), b"immutable cloud input").unwrap();
@@ -27,7 +27,7 @@ fn a_cloud_input_is_imported_once_into_shared_storage_and_reused_without_the_sou
         archive_bytes,
         files,
     };
-    let data_root = temp.path().join("datasets");
+    let data_root = temp.path().join("native/inputs/datasets");
     let target = Target {
         backend_id: "pai-h200".into(),
         profile_sha256: format!("sha256:{}", "a".repeat(64)),
@@ -82,6 +82,17 @@ fn a_cloud_input_is_imported_once_into_shared_storage_and_reused_without_the_sou
         },
         timeout_seconds: 30,
     }];
+    package.storage = Some(launch::StorageLayout {
+        mount: temp.path().into(),
+        runs: root,
+        datasets: data_root.clone(),
+    });
+    let mut bad_storage = package.storage.clone().unwrap();
+    bad_storage.datasets = temp.path().join("wrong/cache");
+    assert!(scoped_cache(&package.imports[0], Some(&bad_storage)).is_err());
+    assert!(!temp.path().join("wrong").exists());
+    scoped_cache(&package.imports[0], package.storage.as_ref()).unwrap();
+    assert!(!package.root.exists()); // A copy never initializes a training Run.
     crate::cloud::prepare(&package, &BTreeMap::new()).unwrap();
     materialize(&package, &AtomicBool::new(false)).unwrap();
     assert_eq!(read(&package).unwrap()[0].phase, Phase::Ready);

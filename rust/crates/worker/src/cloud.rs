@@ -63,6 +63,7 @@ pub fn prepare(package: &Package, runtime: &BTreeMap<String, String>) -> managed
     package
         .validate()
         .map_err(|_| managed::Error::Configuration)?;
+    crate::cloud_storage::prepare(package)?;
     let binding = package.config.binding()?;
     let root = Directory::open(&package.root, false).map_err(|_| managed::Error::Storage)?;
     root.verify_private_parent()

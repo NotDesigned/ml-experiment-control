@@ -181,7 +181,7 @@ fn invalid_private_dependencies_block_bootstrap_before_creating_any_namespace() 
         let result = fixture.command(mode);
         assert!(!result.status.success());
         let error = String::from_utf8_lossy(&result.stderr);
-        assert!(error.contains("cloud_dependencies"));
+        assert!(error.contains("cloud_provider_credentials"));
         assert!(!error.contains("synthetic-sensitive-value"));
         assert!(!fixture.registry.exists());
         assert_eq!(before, tree(root));

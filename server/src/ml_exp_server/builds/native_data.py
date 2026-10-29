@@ -120,6 +120,9 @@ def request(builder, value):
                 raise BuildReceiptMissingError("native data build already has a dispatch intent; reconcile it")
             if builder.config.get("publisher") != "pai-dsw":
                 raise ValueError("native data image requires the isolated CPU DSW publisher")
+            from .native_worker import freeze_features
+            freeze_features(binary, recipe["worker_sha256"],
+                            builder.root / (key + ".native-data-worker.json"))
             atomic_json(definition, recipe)
             from .pai_dsw import DswPublisher
 
@@ -205,5 +208,9 @@ def request(builder, value):
         target = builder.config["sensecore_mirror"]["target_repository"] + ":data-" + key
         image = mirror(builder, {"source_image": image, "target_tag": target})["image"]
         result = {"data_image_id": identifier, "recipe": recipe, "image": image}
+        from .native_worker import load_features
+        features = load_features(builder.root / (key + ".native-data-worker.json"), recipe["worker_sha256"])
+        if features:
+            result["worker_features"] = features
         atomic_json(receipt, result)
         return result

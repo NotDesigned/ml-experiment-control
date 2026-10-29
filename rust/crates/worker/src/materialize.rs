@@ -232,6 +232,7 @@ mod tests {
                 source_dir: "/code".into(),
                 worker_path: "/bin/ml-exp-worker-rs".into(),
                 worker_sha256: format!("sha256:{}", "c".repeat(64)),
+                worker_features: Default::default(),
             },
         };
         assert!(run(config(1), request("get", "1")).is_err());

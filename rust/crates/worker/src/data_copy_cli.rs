@@ -9,6 +9,9 @@ struct Args {
     config_json: String,
     #[arg(long)]
     channel_json: String,
+    /// Frozen backend mount and cache path; absent for older copy jobs.
+    #[arg(long)]
+    storage_json: Option<String>,
 }
 pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let args = match Args::try_parse_from(args) {
@@ -37,7 +40,23 @@ pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         if !matches!(&config.source,Source::File{path} if path=="/ml-expd/data/archive.tar") {
             return Err("data copy requires the fixed image archive".into());
         }
-        ml_exp_worker::cloud_data::cache(&config)?;
+        let storage: Option<ml_exp_core::cloud::launch::StorageLayout> = args
+            .storage_json
+            .as_deref()
+            .map(
+                |raw| -> Result<
+                    ml_exp_core::cloud::launch::StorageLayout,
+                    Box<dyn std::error::Error>,
+                > {
+                    if raw.len() > 16384 {
+                        return Err("data storage plan too large".into());
+                    }
+                    let value = ml_exp_core::json::mapping(raw.as_bytes())?;
+                    Ok(serde_json::from_value(serde_json::Value::Object(value))?)
+                },
+            )
+            .transpose()?;
+        ml_exp_worker::cloud_data::scoped_cache(&config, storage.as_ref())?;
         let receipt = ml_exp_worker::data_import::materialize(
             &config,
             &AtomicBool::new(false),

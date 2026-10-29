@@ -16,9 +16,18 @@ pub struct Runtime {
     pub source_dir: String,
     pub worker_path: String,
     pub worker_sha256: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub worker_features: std::collections::BTreeSet<String>,
 }
 impl Runtime {
     pub fn validate(&self) -> Result<()> {
+        if self
+            .worker_features
+            .iter()
+            .any(|f| f != "storage-layout.v1")
+        {
+            return Err(Error("unsupported worker feature"));
+        }
         crate::sources::validate_source_id(&self.source_id).map_err(|_| Error("source ID"))?;
         if !self
             .runtime_id

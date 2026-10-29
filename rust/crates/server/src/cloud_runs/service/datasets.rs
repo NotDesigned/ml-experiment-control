@@ -15,6 +15,8 @@ pub(super) struct Saved {
     pub(super) image: Option<String>,
     #[serde(default)]
     pub(super) copy_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) copy_storage: Option<ml_exp_core::cloud::launch::StorageLayout>,
     #[serde(default)]
     pub(super) copy_status: Option<Value>,
     #[serde(default)]
@@ -68,6 +70,13 @@ impl Service {
                         .definition
                         .part_count()
                         .map_err(|_| cloud::Error::evidence())?
+        {
+            return Err(cloud::Error::evidence());
+        }
+        if saved
+            .copy_storage
+            .as_ref()
+            .is_some_and(|s| backend.definition.storage_layout().as_ref().ok() != Some(s))
         {
             return Err(cloud::Error::evidence());
         }
@@ -160,6 +169,7 @@ impl Service {
                     image_started: false,
                     image: None,
                     copy_request_id: None,
+                    copy_storage: None,
                     copy_status: None,
                     diagnostic: None,
                 });

@@ -99,7 +99,7 @@ impl Request {
             return Err(Error("Run request bounds"));
         }
         self.resources
-            .validate()
+            .validate_compute()
             .map_err(|_| Error("Run resources"))
     }
     pub fn identity(&self, project: &str) -> Result<String> {
@@ -334,12 +334,21 @@ mod tests {
             .to_string()
             .replacen("{", "{\"parameters\":{\"lr\":1,\"lr\":2},", 1);
         assert!(Request::from_slice(nested.as_bytes()).is_err());
-        for field in ["gpus", "cpus", "memory_gb"] {
+        for field in ["cpus", "memory_gb"] {
             let mut bad = base.clone();
             bad["resources"][field] = json!(0);
             let bad: Request = serde_json::from_value(bad).unwrap();
             assert!(bad.validate("demo").is_err());
         }
+        let mut cpu = parsed.clone();
+        cpu.resources.gpus = 0;
+        assert!(cpu.validate("demo").is_ok());
+        // The Slurm GPU backend retains its separate positive-GPU constraint.
+        assert!(cpu.resources.validate().is_err());
+        assert_ne!(
+            cpu.identity("demo").unwrap(),
+            parsed.identity("demo").unwrap()
+        );
         let mut alternate = base.clone();
         alternate["metrics_schema"] = json!({"definitions":{"loss":{"unit":"nats/token"}}});
         alternate["evaluation"] = json!({"variant_id":"v1","D_FT":0,"loss_mask":"prefix"});

@@ -13,6 +13,21 @@ use std::{collections::BTreeMap, ffi::OsStr, sync::atomic::AtomicBool, time::Ins
 const NAME: &str = ".cloud-input-progress.json";
 #[cfg(test)]
 mod tests;
+/// Copy jobs may initialize only their frozen dataset cache's parent beneath
+/// an existing mount. Old jobs omit the plan and retain their original behavior.
+pub fn scoped_cache(
+    config: &ml_exp_core::datasets::import::Config,
+    storage: Option<&ml_exp_core::cloud::launch::StorageLayout>,
+) -> Result<()> {
+    config.validate().map_err(|_| Error::Configuration)?;
+    if let Some(storage) = storage {
+        if std::path::Path::new(&config.root) != storage.datasets {
+            return Err(Error::Binding);
+        }
+        crate::cloud_storage::prepare_data(storage)?;
+    }
+    cache(config)
+}
 pub fn cache(config: &ml_exp_core::datasets::import::Config) -> Result<()> {
     let path = std::path::Path::new(&config.root);
     let parent = Directory::open(path.parent().ok_or(Error::Configuration)?, false)

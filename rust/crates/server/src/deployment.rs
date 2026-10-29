@@ -157,9 +157,17 @@ impl Settings {
                     return Err(at("duplicate_executor"));
                 }
             }
-            cloud
-                .check_references()
-                .map_err(|_| at("cloud_dependencies"))?;
+            cloud.check_references().map_err(|error| {
+                at(match error.code.as_str() {
+                    "CLOUD_PROVIDER_CREDENTIALS_INVALID" => "cloud_provider_credentials",
+                    "CLOUD_REGISTRY_AUTH_INVALID" => "cloud_registry_auth",
+                    "CLOUD_EXCHANGE_CONFIGURATION_INVALID" => "cloud_exchange_configuration",
+                    "CLOUD_OBJECTS_CONFIGURATION_INVALID" => "cloud_object_storage",
+                    "CLOUD_BUILDER_CONFIGURATION_INVALID" => "cloud_builder_configuration",
+                    "CLOUD_DEBUG_CONFIGURATION_INVALID" => "cloud_debug_configuration",
+                    _ => "cloud_dependencies",
+                })
+            })?;
         }
         if let Some(path) = &self.tracking_config {
             crate::tracking::Config::load(path)

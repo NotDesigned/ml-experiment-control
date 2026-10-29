@@ -307,11 +307,27 @@ SenseCore uses `"provider":"sensecore"`. PAI may additionally specify
 `access_key_id`, `access_key_secret` and optional `security_token`, without
 `provider`. The exchange signing key is a separate private file of at least
 32 random bytes. Its public URL must reach this API over HTTPS from workers.
-Configuration and credential files must have private owner/group permissions.
+Native credential files must be owned by the service account with mode `0600`
+(or `0400`). Group-readable credentials from an existing Python deployment need
+a separate private native copy; do not change the live deployment's originals.
+Configuration preflight identifies provider credentials, registry auth, exchange,
+object storage, debug and builder configuration failures separately.
 
 Image builds use their own explicitly configured builder socket, native worker
 SHA256 and source namespace. Slurm may also use an existing trusted Runtime
 receipt, or the cloud builder's `slurm` materializer map to produce its SIF.
+PAI also accepts `resources.gpus: 0` for bounded CPU Runs through the same
+preparation, authorization, metric, checkpoint and result flow. Slurm GPU profiles
+retain their positive-GPU rule. CPU Runs still require a finite positive approval
+ceiling and walltime; their GPU reservation is zero.
+
+New images freeze the exact worker's declared features in their Runtime receipt.
+A worker declaring `storage-layout.v1` can create its own private Run directories
+and dataset-cache parents beneath the already mounted personal CPFS/NAS root.
+It never creates the mount, changes its permissions or adopts an unmarked cache.
+CPU data-copy jobs use the same plan. Old Runs and images keep their original
+requirements; they never gain new command parameters implicitly.
+
 The worker executable must run on the chosen image's Linux/libc version.
 Slurm gateway helper configuration must use exactly the same `target` as its
 server profile; initialize the helper/data stores once on the gateway. Neither

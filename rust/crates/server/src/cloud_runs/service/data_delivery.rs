@@ -187,6 +187,19 @@ impl Service {
             {
                 return Err(cloud::Error::evidence());
             }
+            let features: std::collections::BTreeSet<String> = value
+                .get("worker_features")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| cloud::Error::evidence())?
+                .unwrap_or_default();
+            if features.iter().any(|f| f != "storage-layout.v1") {
+                return Err(cloud::Error::evidence());
+            }
+            if saved.copy_request_id.is_none() && features.contains("storage-layout.v1") {
+                saved.copy_storage = Some(self.backends[executor].definition.storage_layout()?);
+            }
             saved.image = Some(image.into());
             saved.diagnostic = None;
         } else {
@@ -335,6 +348,20 @@ impl Service {
                 .as_ref()
                 .ok_or_else(cloud::Error::configuration)?
                 .dataset_channel(&self.workspace, project, executor, asset, "ready")?;
+            let mut command = vec![
+                "/usr/local/bin/ml-exp-worker-rs".into(),
+                "data-copy".into(),
+                "--config-json".into(),
+                String::from_utf8(encode(&config)?).map_err(|_| cloud::Error::evidence())?,
+                "--channel-json".into(),
+                String::from_utf8(encode(&channel)?).map_err(|_| cloud::Error::evidence())?,
+            ];
+            if let Some(storage) = &saved.copy_storage {
+                command.extend([
+                    "--storage-json".into(),
+                    String::from_utf8(encode(storage)?).map_err(|_| cloud::Error::evidence())?,
+                ]);
+            }
             Ok(Job {
                 project: project.into(),
                 run_id: format!("data-{}", &identity[..32]),
@@ -342,14 +369,7 @@ impl Service {
                 submission_token: identity[..32].into(),
                 source_id: format!("source.{}", saved.state.definition.sha256),
                 image: saved.image.clone().ok_or_else(cloud::Error::evidence)?,
-                command: vec![
-                    "/usr/local/bin/ml-exp-worker-rs".into(),
-                    "data-copy".into(),
-                    "--config-json".into(),
-                    String::from_utf8(encode(&config)?).map_err(|_| cloud::Error::evidence())?,
-                    "--channel-json".into(),
-                    String::from_utf8(encode(&channel)?).map_err(|_| cloud::Error::evidence())?,
-                ],
+                command,
                 gpus: 0,
                 cpus: 2,
                 memory_gb: 4,

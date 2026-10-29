@@ -80,6 +80,26 @@ frozen. Reconcile, cancel and explicit retry never select a different pool.
 Training pools exclude debug; data-copy profiles explicitly use debug CPU pools.
 Quota observations do not establish the number of idle GPUs.
 
+## Latest implementation completion pass
+
+Fresh PAI/NAS workspaces no longer need manual creation of platform-owned Run
+and cache-parent directories when using a worker with `storage-layout.v1`.
+The mounted personal root must exist. A pure frozen layout bounds the worker's
+directory effects; links, escaping paths and shared-writable descendants are
+refused without repair. New data-copy jobs use the same layout. Runtime receipts
+freeze the exact worker's declared capabilities, so older images/Run identities
+retain their original package and command contract.
+
+PAI CPU Runs now pass the shared request shape instead of being rejected by a
+Slurm-only positive-GPU constraint. Slurm GPU validation remains unchanged.
+Private configuration failures identify the relevant credential or dependency
+stage without exposing values. Native credentials require service ownership and
+mode 0600/0400; original group-readable Python credentials remain unchanged.
+
+The isolated native client/API and actual DSW-to-Tokyo image build have run.
+Full native CPU execution/restore/result acceptance, three-backend training and
+production cutover remain separate pending checks.
+
 ## Storage and transfer contracts
 
 - Dataset/result parts are 16 MiB, numbered from zero. Part count, metadata and

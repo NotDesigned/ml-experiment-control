@@ -8,6 +8,10 @@ use std::path::PathBuf;
 #[serde(deny_unknown_fields)]
 pub struct Package {
     pub root: PathBuf,
+    /// New Runs may provision only descendants of this approved mounted root.
+    /// Absence retains the existing-root contract for older frozen packages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<StorageLayout>,
     pub manifest: launch::Manifest,
     pub config: managed::Config,
     pub worker_sha256: String,
@@ -21,6 +25,35 @@ pub struct Package {
     pub artifacts: Option<crate::artifacts::publication::Policy>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub result_upload: bool,
+}
+/// Pure storage plan. The mount itself must already exist; no provider or local
+/// filesystem operation is permitted by this value alone.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageLayout {
+    pub mount: PathBuf,
+    pub runs: PathBuf,
+    pub datasets: PathBuf,
+}
+impl StorageLayout {
+    pub fn validate(&self) -> Result<()> {
+        for path in [&self.mount, &self.runs, &self.datasets] {
+            if !managed::absolute(path) || path.components().count() > 128 {
+                return Err(Error("cloud storage path"));
+            }
+        }
+        if self.mount.parent().is_none()
+            || self.runs == self.mount
+            || self.datasets == self.mount
+            || !self.runs.starts_with(&self.mount)
+            || !self.datasets.starts_with(&self.mount)
+            || self.runs.starts_with(&self.datasets)
+            || self.datasets.starts_with(&self.runs)
+        {
+            return Err(Error("cloud storage scope"));
+        }
+        Ok(())
+    }
 }
 impl Package {
     /// Attach only exact trusted receipts. Dataset paths point directly at
@@ -81,6 +114,17 @@ impl Package {
         self.validate()
     }
     pub fn validate(&self) -> Result<()> {
+        if let Some(storage) = &self.storage {
+            storage.validate()?;
+            if storage.runs != self.root
+                || self
+                    .imports
+                    .iter()
+                    .any(|i| PathBuf::from(&i.root) != storage.datasets)
+            {
+                return Err(Error("cloud storage binding"));
+            }
+        }
         if let Some(policy) = &self.artifacts {
             policy.validate().map_err(|_| Error("artifact policy"))?;
         }
@@ -259,6 +303,7 @@ pub fn compile(input: Input<'_>) -> Result<Package> {
     };
     let package = Package {
         root,
+        storage: None,
         manifest,
         config,
         worker_sha256: input.worker_sha256.into(),

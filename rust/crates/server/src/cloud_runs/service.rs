@@ -430,31 +430,43 @@ impl Service {
 /// Read configuration dependencies only. Constructing an HTTP client sends no
 /// requests; no namespace, lock, provider effect or SDK process is opened here.
 pub(super) fn check_configuration(config: Settings) -> cloud::Result<()> {
+    let invalid = |code: &str| cloud::Error {
+        code: code.into(),
+        http_status: None,
+        uncertain: false,
+    };
     for definition in config.backends {
-        let credentials = Credentials::load(&definition.credentials_file)?;
+        let credentials = Credentials::load(&definition.credentials_file)
+            .map_err(|_| invalid("CLOUD_PROVIDER_CREDENTIALS_INVALID"))?;
         if !credentials.matches_profile(&definition.profile) {
-            return Err(cloud::Error::configuration());
+            return Err(invalid("CLOUD_PROVIDER_CREDENTIALS_INVALID"));
         }
         let mut client = Client::new(
             credentials,
             Duration::from_secs(definition.timeout_seconds.into()),
         )?;
         if let Some(path) = &definition.registry_auth_file {
-            client = client.with_registry_auth(path)?;
+            client = client
+                .with_registry_auth(path)
+                .map_err(|_| invalid("CLOUD_REGISTRY_AUTH_INVALID"))?;
         }
         drop(client);
     }
     if let Some(exchange) = config.exchange {
-        exchange::Authority::load(exchange)?;
+        exchange::Authority::load(exchange)
+            .map_err(|_| invalid("CLOUD_EXCHANGE_CONFIGURATION_INVALID"))?;
     }
     if let Some(objects) = config.artifacts {
-        crate::objects::Store::open(objects).map_err(io)?;
+        crate::objects::Store::open(objects)
+            .map_err(|_| invalid("CLOUD_OBJECTS_CONFIGURATION_INVALID"))?;
     }
     if let Some(builds) = config.builds {
-        builds.validate()?;
+        builds
+            .validate()
+            .map_err(|_| invalid("CLOUD_BUILDER_CONFIGURATION_INVALID"))?;
     }
     if let Some(debug) = config.debug {
-        debug::Runtime::open(debug)?;
+        debug::Runtime::open(debug).map_err(|_| invalid("CLOUD_DEBUG_CONFIGURATION_INVALID"))?;
     }
     Ok(())
 }

@@ -239,6 +239,30 @@ impl Service {
             now,
         )
         .map_err(|_| cloud::Error::evidence())?;
+        let storage = backend.definition.storage_layout()?;
+        let root = self.authority(project, &request.run_id)?;
+        // New authorship freezes this provisioning plan. Existing Runs retain
+        // their original absence, and a conflicting plan is never repaired.
+        let attach_storage = if root.entry_exists(OsStr::new(&request.run_id)).map_err(io)? {
+            let original = read(
+                &root.child(OsStr::new(&request.run_id), false).map_err(io)?,
+                "manifest.json",
+            )?;
+            match original["native_cloud"].get("storage") {
+                None => false,
+                Some(value) if *value == json!(storage) => true,
+                Some(_) => return Err(cloud::Error::evidence()),
+            }
+        } else {
+            runtime.worker_features.contains("storage-layout.v1")
+        };
+        if attach_storage && !runtime.worker_features.contains("storage-layout.v1") {
+            return Err(cloud::Error::evidence());
+        }
+        if attach_storage {
+            documents.run["native_cloud"]["storage"] = json!(storage);
+            documents.attempt["native_cloud"]["storage"] = json!(storage);
+        }
         if let Some(selected) = selected {
             documents.run["native_cloud"]["profile"] = json!(selected);
             documents.attempt["native_cloud"]["profile"] =
@@ -311,6 +335,12 @@ impl Service {
         )
         .map_err(|_| cloud::Error::evidence())?;
         let mut package = execution.package().map_err(|_| cloud::Error::evidence())?;
+        package.storage = run["native_cloud"]
+            .get("storage")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| cloud::Error::evidence())?;
         package.result_upload = self.objects.is_some();
         package.imports = backend
             .definition

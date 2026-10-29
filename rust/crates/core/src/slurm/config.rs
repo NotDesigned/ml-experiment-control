@@ -55,6 +55,11 @@ impl Resources {
         if self.gpus == 0 {
             return Err(Error::Configuration("resources.gpus"));
         }
+        self.validate_compute()
+    }
+    /// Backend-neutral single-node resource shape. CPU Runs are valid here;
+    /// Slurm GPU submission additionally calls `validate` above.
+    pub fn validate_compute(&self) -> Result<(), Error> {
         if self.cpus == 0 {
             return Err(Error::Configuration("resources.cpus"));
         }

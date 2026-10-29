@@ -68,6 +68,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         source_dir: "/workspace".into(),
         worker_path: "/opt/ml-expd/worker".into(),
         worker_sha256: format!("sha256:{}", "3".repeat(64)),
+        worker_features: ["storage-layout.v1".into()].into(),
     };
     let credentials = temp.path().join("credentials.json");
     private(
@@ -157,6 +158,54 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             .is_err()
     );
     assert!(!runs.join("setup-only").exists());
+    // CPU Runs use the same durable preparation path. Storage provisioning is
+    // frozen only for new authorship; legacy absence remains absent on replay.
+    let mut cpu = request.clone();
+    cpu.run_id = "cpu-only".into();
+    cpu.resources.gpus = 0;
+    service
+        .create_run("demo", cpu.clone(), "2026-10-29T00:00:00Z")
+        .unwrap();
+    let cpu_manifest = runs.join("cpu-only/manifest.json");
+    let mut frozen: Value = serde_json::from_slice(&fs::read(&cpu_manifest).unwrap()).unwrap();
+    assert_eq!(frozen["native_cloud"]["storage"]["mount"], "/mnt/workspace");
+    frozen["native_cloud"]
+        .as_object_mut()
+        .unwrap()
+        .remove("storage");
+    fs::write(&cpu_manifest, serde_json::to_vec(&frozen).unwrap()).unwrap();
+    let mut old_attempt = frozen.clone();
+    old_attempt["attempt_id"] = json!("attempt-001");
+    fs::write(
+        runs.join("cpu-only/attempts/attempt-001/attempt.json"),
+        serde_json::to_vec(&old_attempt).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        service
+            .create_run("demo", cpu.clone(), "2026-10-29T00:01:00Z")
+            .unwrap()["reused"],
+        true
+    );
+    let cpu_plan = service
+        .prepare(
+            "demo",
+            "cpu-only",
+            Approval {
+                max_gpu_hours: 1.,
+                reason: "CPU test".into(),
+            },
+            "2026-10-29T00:01:00Z",
+            "2026-10-29T01:01:00Z",
+            &"9".repeat(32),
+        )
+        .unwrap();
+    assert_eq!(cpu_plan["status"], "PREPARED");
+    assert!(
+        serde_json::from_slice::<Value>(&fs::read(&cpu_manifest).unwrap()).unwrap()["native_cloud"]
+            .get("storage")
+            .is_none()
+    );
     let first = service
         .create_run("demo", request.clone(), "2026-10-29T00:00:00Z")
         .unwrap();

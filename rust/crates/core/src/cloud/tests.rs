@@ -69,6 +69,7 @@ fn cloud_run_authorship_launch_and_approval_preserve_science_and_exact_attempt()
         source_dir: "/workspace".into(),
         worker_path: "/opt/ml-expd/worker".into(),
         worker_sha256: format!("sha256:{}", "d".repeat(64)),
+        worker_features: Default::default(),
     };
     let request:run::Create=serde_json::from_value(json!({"run_id":"train","runtime_id":runtime.runtime_id,"executor":"pai-h200","command":["python","train.py","'$(not-a-shell)'","中文"],"resources":{"gpus":1,"cpus":8,"memory_gb":64},"walltime_seconds":3600,"seed":42})).unwrap();
     let p = format!("sha256:{}", "a".repeat(64));

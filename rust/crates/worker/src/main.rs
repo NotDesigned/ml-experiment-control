@@ -62,6 +62,14 @@ fn main() -> ExitCode {
             .as_deref()
             .and_then(std::ffi::OsStr::to_str)
         {
+            Some("--capabilities") if arguments.next().is_none() => {
+                println!(
+                    "{}",
+                    serde_json::json!({"contract":"native-worker-capabilities.v1",
+                    "features":["storage-layout.v1"]})
+                );
+                return ExitCode::SUCCESS;
+            }
             Some("data-copy") => {
                 return data_copy_cli::main_from(std::iter::once(binary).chain(arguments));
             }

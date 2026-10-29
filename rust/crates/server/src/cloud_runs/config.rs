@@ -53,6 +53,21 @@ impl Definition {
         }
         Ok(value)
     }
+    pub fn storage_layout(&self) -> cloud::Result<domain::launch::StorageLayout> {
+        let mount = match &self.profile {
+            Profile::Pai(_) => "/mnt/workspace",
+            Profile::Sensecore(p) => &p.mount_path,
+        };
+        let storage = domain::launch::StorageLayout {
+            mount: mount.into(),
+            runs: self.run_root.clone().into(),
+            datasets: self.data_root()?.into(),
+        };
+        storage
+            .validate()
+            .map_err(|_| cloud::Error::configuration())?;
+        Ok(storage)
+    }
     pub fn target(&self) -> cloud::Result<ml_exp_core::slurm::helper::Target> {
         let profile_sha256 = self.profile.digest()?;
         let storage_scope = format!(

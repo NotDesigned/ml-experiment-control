@@ -120,6 +120,9 @@ def request(builder, value):
                 raise ValueError("native build receipt differs")
             return result
         retried = definition.exists()
+        from .native_worker import freeze_features
+        freeze_features(binary, value["worker_sha256"],
+                        builder.root / (identifier + ".native-worker.json"))
         atomic_json(definition, frozen)
         record_progress(progress, "PREPARING_CONTEXT", "Preparing the sealed native worker and source")
         with tempfile.TemporaryDirectory(prefix="native-build-", dir=builder.root) as directory:
@@ -167,5 +170,10 @@ def _finish(builder, value, image, frozen, receipt):
         image = mirror(builder, {"source_image": image, "target_tag": target})["image"]
     result = {"runtime_id": value["runtime_id"], "project": value["project"], "source_id": value["source_id"], "recipe": RECIPE, "request": frozen,
               "runtime": {"runtime_id": value["runtime_id"], "source_id": value["source_id"], "image": image, "source_dir": "/ml-expd/source", "worker_path": "/usr/local/bin/ml-exp-worker-rs", "worker_sha256": value["worker_sha256"]}}
+    from .native_worker import load_features
+    features = load_features(builder.root / (value["runtime_id"].removeprefix("runtime.") + ".native-worker.json"),
+                             value["worker_sha256"])
+    if features:
+        result["runtime"]["worker_features"] = features
     atomic_json(receipt, result)
     return result
