@@ -84,9 +84,10 @@ frozen. Reconcile, cancel and explicit retry never select a different pool.
 Training pools exclude debug; data-copy profiles explicitly use debug CPU pools.
 Quota observations do not establish the number of idle GPUs.
 
-New DSW debug recipes use the v3 contract: at most 27 ASCII letters,
-digits and underscores, and a working directory matching the mounted personal
-CPFS path (`/mnt/workspace`). Previously issued v1/v2 recipes retain
+New DSW debug recipes use the v4 contract: at most 27 ASCII letters,
+digits and underscores. The explicit personal CPFS mount uses
+`/mnt/ml-expd-personal`, which DSW also exposes as its managed `/mnt/workspace`.
+The DLC mount contract stays separate. Previously issued v1/v2/v3 recipes retain
 their exact original names, request bodies and lookup identities; an uncertain
 creation is never replayed under a corrected recipe. A positively rejected HTTP 400
 `ValidationError` on a new DSW create is retained as a failed creation and does
@@ -94,6 +95,10 @@ not permanently consume an active-machine slot. Transport failures and other
 uncertain outcomes still require reconciliation. New creation errors retain
 only bounded, redacted provider code, HTTP status, message and request ID;
 credentials and arbitrary response documents are excluded.
+Debug status preserves the native provider state. A failed instance reports
+`FAILED`, and the latest matching DSW lifecycle failure reason is retained when
+available. Missing old observations report an unknown terminal outcome rather
+than a successful stop. Queueing never advertises an SSH connection as ready.
 
 ## Latest implementation completion pass
 

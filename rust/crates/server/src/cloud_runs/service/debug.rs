@@ -90,6 +90,10 @@ struct Saved {
     create_rejection: Option<CreateRejection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     create_error: Option<cloud::FailureEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_message: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -169,10 +173,30 @@ impl Service {
         Ok(records)
     }
     fn debug_view(record: &Saved) -> Value {
+        let provider_status = domain::status(record.provider_state.as_deref(), record.terminal);
+        let state = if record.deleted {
+            "DELETED"
+        } else if record.create_rejection.is_some() {
+            "FAILED"
+        } else if record.terminal && record.network_clean {
+            provider_status
+        } else if record.stop_requested || record.terminal {
+            "STOPPING"
+        } else if record.connection.is_some() && provider_status == "RUNNING" {
+            "RUNNING"
+        } else if record.provider_id.is_some() {
+            if provider_status == "QUEUED" {
+                "QUEUED"
+            } else {
+                "STARTING"
+            }
+        } else {
+            "RECONCILE_REQUIRED"
+        };
         json!({"debug_id":record.recipe.identity,"profile":record.recipe.request.profile,"name":record.recipe.name,"provider_id":record.provider_id,
-            "state":if record.deleted{"DELETED"}else if record.create_rejection.is_some(){"FAILED"}else if record.terminal&&record.network_clean{"STOPPED"}else if record.stop_requested||record.terminal{"STOPPING"}else if record.connection.is_some(){"RUNNING"}else if record.provider_id.is_some(){"STARTING"}else{"RECONCILE_REQUIRED"},
+            "state":state,
             "resources":{"gpus":record.recipe.request.gpus,"cpus":record.recipe.request.cpus,"memory_gb":record.recipe.request.memory_gb},"expires_at":record.recipe.expires_at,
-            "connection":record.connection,"diagnostic":record.diagnostic,"create_rejection":record.create_rejection,"create_error":record.create_error,"observed_at":record.observed_at,"confirmation":format!("STOP {}",record.recipe.identity),"retry_safe":false})
+            "connection":record.connection.as_ref().filter(|_|state=="RUNNING"),"diagnostic":record.diagnostic,"provider_state":record.provider_state,"provider_message":record.provider_message,"create_rejection":record.create_rejection,"create_error":record.create_error,"observed_at":record.observed_at,"confirmation":format!("STOP {}",record.recipe.identity),"retry_safe":false})
     }
     pub fn debug_list(&self) -> cloud::Result<Value> {
         let runtime = self
@@ -244,6 +268,8 @@ impl Service {
             observed_at: None,
             create_rejection: None,
             create_error: None,
+            provider_state: None,
+            provider_message: None,
         };
         lock.validate()?;
         self.debug_save(&record)?;
@@ -432,6 +458,30 @@ impl Service {
                 .clone()
                 .ok_or_else(cloud::Error::evidence)?;
             saved.terminal = profile.terminal(&value);
+            saved.provider_state = Some(
+                profile
+                    .provider_state(&value)
+                    .map_err(|_| cloud::Error::evidence())?
+                    .into(),
+            );
+            if saved.terminal
+                && matches!(profile, domain::Profile::PaiDsw { .. })
+                && saved.provider_message.is_none()
+            {
+                // Diagnostic reads are advisory. Failure to read them must not
+                // turn a known provider outcome into an uncertain submission
+                // or prevent stopping/deleting this exact owned instance.
+                saved.provider_message = profile
+                    .lifecycle(&saved.recipe, &provider_id)
+                    .ok()
+                    .and_then(|r| client.call(&r, &AtomicBool::new(false)).ok())
+                    .and_then(|v| {
+                        domain::lifecycle_reason(&v, saved.provider_state.as_deref()?)
+                            .ok()
+                            .flatten()
+                            .and_then(|s| client.observation_message(s))
+                    });
+            }
             if saved.stop_requested || saved.terminal {
                 saved.connection = None;
                 if !saved.terminal {
@@ -656,6 +706,32 @@ impl Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn provider_failure_is_not_a_normal_stop_and_queued_connections_are_not_advertised() {
+        let mut saved: Saved = serde_json::from_value(json!({
+            "recipe":{"contract":"native-debug-machine.v4","identity":format!("debug.{}","0".repeat(64)),"name":"owned","profile_sha256":"0".repeat(64),
+                "request":{"profile":"cpu-debug","request_id":"0".repeat(32),"ssh_public_key":"unused public fixture","lease_seconds":60,"gpus":0,"cpus":2,"memory_gb":4},"created_at":"2026-10-30T00:00:00Z","expires_at":1793318460},
+            "provider_id":"dsw-owned","claims":["create"],"stop_requested":false,"delete_requested":false,"terminal":true,"network_clean":true,"deleted":false,
+            "connection":null,"diagnostic":null,"observed_at":null
+        })).unwrap();
+        // Old receipts without a native-state observation cannot prove a normal stop.
+        assert_eq!(Service::debug_view(&saved)["state"], "TERMINAL");
+        saved.provider_state = Some("Failed".into());
+        saved.provider_message = Some("mountPath must be unique".into());
+        let view = Service::debug_view(&saved);
+        assert_eq!(view["state"], "FAILED");
+        assert_eq!(view["provider_message"], "mountPath must be unique");
+        saved.provider_state = Some("Stopped".into());
+        assert_eq!(Service::debug_view(&saved)["state"], "STOPPED");
+        saved.terminal = false;
+        saved.connection = Some(json!({"host":"example.test","port":22}));
+        saved.provider_state = Some("Queuing".into());
+        let view = Service::debug_view(&saved);
+        assert_eq!(view["state"], "QUEUED");
+        assert!(view["connection"].is_null());
+        saved.provider_state = Some("Running".into());
+        assert_eq!(Service::debug_view(&saved)["state"], "RUNNING");
+    }
     #[test]
     fn only_positive_dsw_validation_rejection_is_terminal_without_a_provider_handle() {
         for (status, code, expected) in [

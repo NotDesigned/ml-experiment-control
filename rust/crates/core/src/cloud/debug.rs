@@ -203,7 +203,7 @@ impl Profile {
     }
     pub fn recipe(&self, request: Create, now: &str) -> Result<Recipe> {
         let contract = if matches!(self, Self::PaiDsw { .. }) {
-            "native-debug-machine.v3"
+            "native-debug-machine.v4"
         } else {
             "native-debug-machine.v1"
         };
@@ -223,7 +223,7 @@ impl Profile {
         if contract != "native-debug-machine.v1"
             && !(matches!(
                 contract,
-                "native-debug-machine.v2" | "native-debug-machine.v3"
+                "native-debug-machine.v2" | "native-debug-machine.v3" | "native-debug-machine.v4"
             ) && matches!(self, Self::PaiDsw { .. }))
         {
             return Err(Error("debug recipe contract"));
@@ -363,9 +363,16 @@ impl Profile {
                     .strip_prefix("acs:ram::")
                     .and_then(|s| s.split(':').next())
                     .ok_or(Error("debug role"))?;
+                let mut mounts = storage.mounts();
+                if recipe.contract == "native-debug-machine.v4" {
+                    // DSW also mounts WorkspaceSource at /mnt/workspace. Its
+                    // explicit dataset mount must have a different name; DLC
+                    // keeps the ordinary /mnt/workspace mount convention.
+                    mounts[0]["MountPath"] = json!("/mnt/ml-expd-personal");
+                }
                 json!({"WorkspaceId":profile.workspace_id,"ResourceId":profile.quota_id,"InstanceName":recipe.name,"ImageId":image_id,"Accessibility":"PRIVATE",
                     "RequestedResource":{"CPU":r.cpus.to_string(),"Memory":format!("{}Gi",r.memory_gb),"GPU":r.gpus.to_string()},"OversoldType":"ForbiddenQuotaOverSold",
-                    "Labels":[{"Key":"ml-expd.debug","Value":recipe.identity}],"Datasets":storage.mounts(),"WorkspaceSource":if recipe.contract=="native-debug-machine.v3"{"/mnt/workspace"}else{"/mnt/ml-expd-personal"},"UserVpc":vpc,
+                    "Labels":[{"Key":"ml-expd.debug","Value":recipe.identity}],"Datasets":mounts,"WorkspaceSource":if recipe.contract=="native-debug-machine.v3"{"/mnt/workspace"}else{"/mnt/ml-expd-personal"},"UserVpc":vpc,
                     "CredentialConfig":{"Enable":true,"AliyunEnvRoleKey":"0","Configs":[{"Key":"0","Type":"Role","Roles":[{"RoleArn":storage.role_arn,"RoleType":"service","AssumeRoleFor":account}]}]}})
             }
             Self::SensecoreCci { profile, image, .. } => {
@@ -455,6 +462,31 @@ impl Profile {
                 matches!(row["state"].as_str(), Some("SUSPENDED" | "FAILED"))
             }
         }
+    }
+    pub fn provider_state<'a>(&self, row: &'a Value) -> Result<&'a str> {
+        row[if matches!(self, Self::PaiDsw { .. }) {
+            "Status"
+        } else {
+            "state"
+        }]
+        .as_str()
+        .filter(|s| {
+            !s.is_empty()
+                && s.len() <= 100
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+        })
+        .ok_or(Error("debug provider state"))
+    }
+    pub fn lifecycle(&self, recipe: &Recipe, id: &str) -> Result<Request> {
+        if !matches!(self, Self::PaiDsw { .. }) {
+            return Err(Error("DSW lifecycle"));
+        }
+        let mut request = self.get(recipe, Some(id))?;
+        request.path.push_str("/lifecycle");
+        request.action = "GetLifecycle".into();
+        request.query.insert("Limit".into(), "1".into());
+        Ok(request)
     }
     pub fn connection(&self, row: &Value) -> Option<Value> {
         match self {
@@ -582,6 +614,43 @@ impl Profile {
             && row["properties"]["internal_port"] == "22"
             && row["properties"]["internal_instance_type"] == "CCI_DEPLOYMENT_SERVICE")
     }
+}
+
+/// A provider's terminal failure and a normal stop must remain distinct even
+/// after the instance has released its resources. An absent old observation
+/// cannot establish that its termination was successful.
+pub fn status(native: Option<&str>, terminal: bool) -> &'static str {
+    match native {
+        Some("Failed" | "FAILED") => "FAILED",
+        Some("Stopped" | "SUSPENDED") => "STOPPED",
+        _ if terminal => "TERMINAL",
+        Some("Queuing" | "QUEUED" | "PENDING") => "QUEUED",
+        Some("Running" | "RUNNING") => "RUNNING",
+        _ => "STARTING",
+    }
+}
+
+/// Select the most recent reason for the currently observed state, without
+/// mixing an earlier lifecycle state into the current diagnostic.
+pub fn lifecycle_reason<'a>(value: &'a Value, native: &str) -> Result<Option<&'a str>> {
+    let sessions = value["Lifecycle"]
+        .as_array()
+        .filter(|s| s.len() <= 100)
+        .ok_or(Error("DSW lifecycle sessions"))?;
+    for session in sessions.iter().rev() {
+        let rows = session
+            .as_array()
+            .filter(|r| r.len() <= 1000)
+            .ok_or(Error("DSW lifecycle entries"))?;
+        for row in rows.iter().rev() {
+            if row["Status"] == native {
+                return Ok(row["ReasonMessage"]
+                    .as_str()
+                    .filter(|s| !s.is_empty() && s.len() <= 16384));
+            }
+        }
+    }
+    Ok(None)
 }
 pub fn subset(expected: &Value, actual: &Value) -> bool {
     match expected {

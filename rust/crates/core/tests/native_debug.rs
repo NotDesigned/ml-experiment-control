@@ -40,7 +40,7 @@ const NOW: &str = "2026-10-29T00:00:00Z";
 fn dsw_name_meets_actual_api_constraints_and_full_ownership_is_still_required() {
     let profile = profile();
     let recipe = profile.recipe(request(), NOW).unwrap();
-    assert_eq!(recipe.contract, "native-debug-machine.v3");
+    assert_eq!(recipe.contract, "native-debug-machine.v4");
     assert!(recipe.name.len() <= 27);
     assert!(
         recipe
@@ -50,7 +50,7 @@ fn dsw_name_meets_actual_api_constraints_and_full_ownership_is_still_required() 
     );
     let body = profile.create(&recipe).unwrap().body.unwrap();
     assert_eq!(body["InstanceName"], recipe.name);
-    assert_eq!(body["WorkspaceSource"], "/mnt/workspace");
+    assert_eq!(body["WorkspaceSource"], "/mnt/ml-expd-personal");
     assert!(
         body["Datasets"]
             .as_array()
@@ -58,6 +58,13 @@ fn dsw_name_meets_actual_api_constraints_and_full_ownership_is_still_required() 
             .iter()
             .any(|mount| mount["MountPath"] == body["WorkspaceSource"]
                 && mount["MountAccess"] == "RW")
+    );
+    assert!(
+        body["Datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|mount| mount["MountPath"] != "/mnt/workspace")
     );
     assert_eq!(
         profile.get(&recipe, None).unwrap().query["InstanceName"],
@@ -118,7 +125,7 @@ fn legacy_uncertain_create_is_observed_by_its_original_name_without_identity_rew
     );
     legacy.name = "ml_exp_different".into();
     assert!(profile.check_recipe(&legacy).is_err());
-    legacy.contract = "native-debug-machine.v4".into();
+    legacy.contract = "native-debug-machine.v5".into();
     assert!(profile.check_recipe(&legacy).is_err());
 }
 
@@ -164,4 +171,44 @@ fn issued_v2_body_is_unchanged_and_workspace_integer_response_still_binds_exact_
         row["WorkspaceId"] = workspace;
         assert!(profile.checked(&legacy, Some("dsw-owned"), &row).is_err());
     }
+}
+
+#[test]
+fn issued_v3_mounts_remain_frozen_and_lifecycle_reason_matches_current_state() {
+    let profile = profile();
+    let request = request();
+    let profile_sha256 = profile.digest().unwrap();
+    let digest =
+        canonical::digest(&json!(["native-debug-machine.v3", profile_sha256, request])).unwrap();
+    let legacy = Recipe {
+        contract: "native-debug-machine.v3".into(),
+        identity: format!("debug.{digest}"),
+        name: format!("ml_exp_{}", &digest[..20]),
+        profile_sha256,
+        request,
+        created_at: NOW.into(),
+        expires_at: time::OffsetDateTime::parse(NOW, &Rfc3339)
+            .unwrap()
+            .unix_timestamp()
+            + 600,
+    };
+    profile.check_recipe(&legacy).unwrap();
+    let body = profile.create(&legacy).unwrap().body.unwrap();
+    assert_eq!(body["WorkspaceSource"], "/mnt/workspace");
+    assert_eq!(body["Datasets"][0]["MountPath"], "/mnt/workspace");
+    let request = profile.lifecycle(&legacy, "dsw-owned").unwrap();
+    assert_eq!(request.path, "/api/v2/instances/dsw-owned/lifecycle");
+    assert_eq!(request.query["Limit"], "1");
+    let rows = json!({"Lifecycle":[[{"Status":"Queuing","ReasonMessage":"quota wait"},{"Status":"Failed","ReasonMessage":"mountPath must be unique"}]]});
+    assert_eq!(
+        ml_exp_core::cloud::debug::lifecycle_reason(&rows, "Failed").unwrap(),
+        Some("mountPath must be unique")
+    );
+    assert_eq!(
+        ml_exp_core::cloud::debug::lifecycle_reason(&rows, "Running").unwrap(),
+        None
+    );
+    assert!(
+        ml_exp_core::cloud::debug::lifecycle_reason(&json!({"Lifecycle":[{}]}), "Failed").is_err()
+    );
 }

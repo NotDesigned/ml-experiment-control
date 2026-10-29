@@ -134,6 +134,16 @@ impl Client {
     pub fn call(&self, request: &Request, cancelled: &AtomicBool) -> Result<Value> {
         self.call_observed(request, cancelled, &mut |_| {})
     }
+    pub(crate) fn observation_message(&self, raw: &str) -> Option<String> {
+        evidence::failure_evidence(
+            &serde_json::json!({"Message":raw}),
+            "PROVIDER_OBSERVATION",
+            200,
+            &self.credentials,
+            None,
+        )
+        .message
+    }
     pub(crate) fn call_observed(
         &self,
         request: &Request,
