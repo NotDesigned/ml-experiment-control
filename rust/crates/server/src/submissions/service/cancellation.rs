@@ -94,7 +94,8 @@ impl Service {
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(|_| Error::Authority)?;
         self.check(&prepared)?;
-        let outcome = call(&backend.ssh, &request, cancelled).map_err(|_| Error::Uncertain)?;
+        let outcome =
+            call(&backend.control_ssh(), &request, cancelled).map_err(|_| Error::Uncertain)?;
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(|_| Error::Uncertain)?;

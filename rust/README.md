@@ -614,6 +614,14 @@ Optional backend configuration is independent and credentials stay server-side.
 The development registry has a distinct marker and cannot be initialized over
 existing state. Retire only test-owned machines and scratch directories.
 
+An operator can upgrade existing-job control without changing a frozen dispatch
+configuration. Optional backend `control_helper` supplies only `helper_path` and
+`helper_config_path`; it inherits the original SSH host, credentials, target and
+budgets. Reconciliation, observation and exact-job cancellation use this helper.
+Preparation and submission keep the original helper. The upgraded helper must
+open the same ledger and storage scope; no claim, receipt or manifest is reset.
+Changing the original `ssh` paths still invalidates frozen submission authority.
+
 Slurm clusters may omit `Comment` from accounting storage. The native helper
 accepts a queue observation only when that same row contains the exact Job ID,
 name, partition and submission marker. It never copies ownership from one query

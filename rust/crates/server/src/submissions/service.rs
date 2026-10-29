@@ -83,6 +83,7 @@ type Result<T> = std::result::Result<T, Error>;
 pub struct Backend {
     pub profile: Profile,
     pub ssh: SshConfig,
+    pub control_helper: Option<super::config::ControlHelper>,
     pub runtimes: BTreeMap<String, Runtime>,
     pub data_helper_config: Option<String>,
     pub script_preparation: bool,
@@ -125,6 +126,9 @@ impl Backend {
     pub(super) fn validate(&self) -> Result<()> {
         self.profile.validate()?;
         self.ssh.validate().map_err(|_| Error::Configuration)?;
+        self.control_ssh()
+            .validate()
+            .map_err(|_| Error::Configuration)?;
         if let Some(path) = &self.data_helper_config {
             let mut data = self.ssh.clone();
             data.helper_config_path = path.clone();
@@ -141,6 +145,18 @@ impl Backend {
             return Err(Error::Configuration);
         }
         Ok(())
+    }
+    /// Preserve the dispatch fingerprint while allowing a compatible helper
+    /// upgrade for existing-job control. Host, credentials, target and budgets
+    /// come exclusively from the original trusted SSH configuration.
+    fn control_ssh(&self) -> SshConfig {
+        let mut ssh = self.ssh.clone();
+        if let Some(helper) = &self.control_helper {
+            ssh.helper_path.clone_from(&helper.helper_path);
+            ssh.helper_config_path
+                .clone_from(&helper.helper_config_path);
+        }
+        ssh
     }
     fn fingerprint(&self) -> Result<String> {
         let ssh = &self.ssh;
@@ -483,9 +499,10 @@ impl Service {
             self.check(&prepared)
                 .map_err(|_| crate::backends::slurm::action::Error::Guard)
         };
+        let ssh = backend.control_ssh();
         let snapshot = Runner {
             actions: &self.actions,
-            ssh: &backend.ssh,
+            ssh: &ssh,
         }
         .reconcile(action, &check, cancelled)?;
         self.public(snapshot, now)

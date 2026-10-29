@@ -161,6 +161,14 @@ impl Fixture {
         }
     }
     fn service(&self, mode: &str, enabled: bool) -> Service {
+        self.service_with_control(mode, enabled, None)
+    }
+    fn service_with_control(
+        &self,
+        mode: &str,
+        enabled: bool,
+        control_helper: Option<crate::submissions::config::ControlHelper>,
+    ) -> Service {
         let ssh = config(self.root.path(), mode);
         for name in ["ssh-config", "known-hosts"] {
             fs::set_permissions(
@@ -176,6 +184,7 @@ impl Fixture {
             vec![Backend {
                 profile: self.profile.clone(),
                 ssh,
+                control_helper,
                 runtimes: BTreeMap::from([(self.runtime.runtime_id.clone(), self.runtime.clone())]),
                 data_helper_config: None,
                 script_preparation: false,
@@ -344,7 +353,14 @@ fn service_claims_only_reviewed_frozen_run_and_native_helper_submits_once() {
 #[test]
 fn lost_response_reopens_same_slot_and_reconciles_without_second_sbatch() {
     let f = Fixture::new();
-    let service = f.service("ledger-lost-submit", true);
+    let service = f.service_with_control(
+        "ledger-lost-submit",
+        true,
+        Some(crate::submissions::config::ControlHelper {
+            helper_path: "/opt/ml-expd/bin/previous-control-helper".into(),
+            helper_config_path: "/etc/ml-expd/previous-control.json".into(),
+        }),
+    );
     let p = service
         .prepare("demo", "train", approval(), context(1))
         .unwrap();
@@ -363,8 +379,18 @@ fn lost_response_reopens_same_slot_and_reconciles_without_second_sbatch() {
         .unwrap();
     assert_eq!(result["status"], "RECONCILE_REQUIRED");
     assert_eq!(result["execution"]["safe_to_retry"], false);
+    let frozen_slot = fs::read(f.slot()).unwrap();
+    let original_argv = fs::read_to_string(f.root.path().join("argv")).unwrap();
+    assert!(original_argv.contains("/opt/ml-expd/bin/ml-exp-worker-rs"));
     drop(service);
-    let reopened = f.service("ledger", true);
+    let reopened = f.service_with_control(
+        "ledger",
+        true,
+        Some(crate::submissions::config::ControlHelper {
+            helper_path: "/opt/ml-expd/bin/upgraded-control-helper".into(),
+            helper_config_path: "/etc/ml-expd/upgraded-control.json".into(),
+        }),
+    );
     assert_eq!(
         reopened
             .prepare("demo", "train", approval(), context(3))
@@ -375,6 +401,10 @@ fn lost_response_reopens_same_slot_and_reconciles_without_second_sbatch() {
         .reconcile(id, NOW, &AtomicBool::new(false))
         .unwrap();
     assert_eq!(done["status"], "VERIFIED");
+    assert_eq!(fs::read(f.slot()).unwrap(), frozen_slot);
+    let control_argv = fs::read_to_string(f.root.path().join("argv")).unwrap();
+    assert!(control_argv.contains("/opt/ml-expd/bin/upgraded-control-helper"));
+    assert!(control_argv.contains("/etc/ml-expd/upgraded-control.json"));
     assert_eq!(
         fs::read_to_string(f.root.path().join("sbatch-calls")).unwrap(),
         "call\n"
