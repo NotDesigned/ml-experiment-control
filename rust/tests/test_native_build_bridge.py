@@ -4,6 +4,7 @@ Run with the existing builder dependencies and candidate Python source on
 PYTHONPATH. All payloads and executable fixtures are test-owned temporary files.
 """
 import hashlib
+import fcntl
 import io
 import json
 from pathlib import Path
@@ -20,6 +21,24 @@ from ml_exp_server.data import registry_transport
 
 
 class NativeBridge(unittest.TestCase):
+    def test_progress_requires_a_live_lock_and_never_creates_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock = root / ("1" * 64 + ".lock")
+            self.assertFalse(native_image._active(lock))
+            self.assertEqual(list(root.iterdir()), [])
+            lock.write_bytes(b"original lock evidence")
+            with lock.open("rb") as holder:
+                self.assertFalse(native_image._active(lock))
+                fcntl.flock(holder, fcntl.LOCK_EX)
+                self.assertTrue(native_image._active(lock))
+                fcntl.flock(holder, fcntl.LOCK_UN)
+            self.assertFalse(native_image._active(lock))
+            self.assertEqual(lock.read_bytes(), b"original lock evidence")
+            link = root / "foreign-lock"
+            link.symlink_to(lock)
+            self.assertFalse(native_image._active(link))
+
     def test_late_primary_or_fallback_publication_reconciles_without_starting_builder(self):
         for labels_changed in [False, True]:
             with self.subTest(labels_changed=labels_changed), tempfile.TemporaryDirectory() as directory:

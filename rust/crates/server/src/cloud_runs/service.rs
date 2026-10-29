@@ -64,6 +64,7 @@ pub struct Service {
     exchange: Option<exchange::Authority>,
     objects: Option<crate::objects::Store>,
     builds: Option<builds::Settings>,
+    active_builds: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     debug: Option<debug::Runtime>,
     pub(super) polling: ml_exp_core::polling::Policy,
     history: Option<Arc<crate::history::Bridge>>,
@@ -299,6 +300,7 @@ impl Service {
             exchange,
             objects,
             builds: config.builds,
+            active_builds: Default::default(),
             debug: config.debug.map(debug::Runtime::open).transpose()?,
             polling: config.polling,
             history: None,
@@ -561,6 +563,7 @@ mod data_delivery;
 mod maintenance;
 mod preparations;
 mod renewal;
+mod script_preparation;
 
 #[cfg(test)]
 mod failure_tests {

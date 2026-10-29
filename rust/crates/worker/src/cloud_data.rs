@@ -45,24 +45,19 @@ pub fn cache(config: &ml_exp_core::datasets::import::Config) -> Result<()> {
     if parent.entry_exists(name).map_err(|_| Error::Storage)? {
         return store();
     }
-    let mut random = [0u8; 16];
-    getrandom::fill(&mut random).map_err(|_| Error::Storage)?;
-    let stage = parent
-        .create_new_child(OsStr::new(&format!(
-            ".cloud-dataset-{:032x}",
-            u128::from_be_bytes(random)
-        )))
-        .map_err(|_| Error::Storage)?;
+    // Reserve the final name exclusively. Completion is the store marker,
+    // not directory visibility; a crash leaves an unavailable, unadopted root.
+    // This requires no renameat2 support from the shared filesystem.
+    match parent.create_new_child(name) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return store(),
+        Err(_) => return Err(Error::Storage),
+    }
     crate::datasets::Store::initialize(crate::datasets::Config {
-        root: stage.path(),
+        root: path.into(),
         target: config.target.clone(),
     })
     .map_err(|_| Error::Storage)?;
-    // Publish an initialized directory atomically. A concurrent winner is
-    // accepted only through its complete original store marker, never adopted.
-    if stage.publish_directory(&parent, name).is_err() {
-        return store();
-    }
     store()
 }
 fn save(root: &Directory, records: &BTreeMap<String, Record>) -> std::io::Result<()> {

@@ -23,6 +23,7 @@
       "timeout_seconds": 30, "connect_timeout_seconds": 5
     },
     "data_helper_config": "/shared/researcher/ml-expd-native/data-helper.json",
+    "script_preparation": false,
     "runtimes": {}
   }],
   "polling": {"enabled": false, "interval_seconds": 10, "max_candidates": 4096, "rpc_timeout_seconds": 5}

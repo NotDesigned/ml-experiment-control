@@ -165,9 +165,50 @@ pub fn plan_with_inputs(
             })
             .transpose()?,
         datasets: datasets.to_vec(),
+        data_preparation: None,
     };
     managed::execution_environment(&config, &manifest).map_err(|_| helper::Error::Metadata)?;
     Ok(Package { config, manifest })
+}
+/// Shared by API authorship and gateway staging: both derive exactly the same
+/// managed configuration hash, including optional script preparation.
+pub fn plan_for_document(
+    scope: &helper::Scope,
+    spec: &JobSpec,
+    runtime: &Runtime,
+    document: &serde_json::Value,
+    datasets: &[crate::datasets::Mount],
+) -> helper::Result<Package> {
+    let mut package = plan_with_inputs(
+        scope,
+        spec,
+        runtime,
+        document.get("native_checkpoint"),
+        datasets,
+    )?;
+    if let Some(value) = document.get("data_preparation") {
+        let plan = crate::data_preparation::Plan {
+            contract: crate::data_preparation::CONTRACT.into(),
+            request: serde_json::from_value(value.clone()).map_err(|_| helper::Error::Metadata)?,
+            source_id: document["source_id"]
+                .as_str()
+                .ok_or(helper::Error::Metadata)?
+                .into(),
+            image: spec
+                .backend
+                .oci_image
+                .clone()
+                .ok_or(helper::Error::Metadata)?,
+            mounted_root: spec.backend.mount_root.clone(),
+            cache_root: spec.storage.project_data_root.clone(),
+            workdir: spec.execution.workdir.clone(),
+            env: spec.execution.env.clone(),
+            require_cached: true,
+        };
+        managed::attach_preparation(&mut package.config, &mut package.manifest, plan)
+            .map_err(|_| helper::Error::Metadata)?;
+    }
+    Ok(package)
 }
 pub fn command(package: &Package, runtime: &Runtime) -> helper::Result<Vec<String>> {
     let bytes = package.config_bytes()?;

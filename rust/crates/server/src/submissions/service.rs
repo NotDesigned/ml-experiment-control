@@ -85,6 +85,7 @@ pub struct Backend {
     pub ssh: SshConfig,
     pub runtimes: BTreeMap<String, Runtime>,
     pub data_helper_config: Option<String>,
+    pub script_preparation: bool,
 }
 #[derive(Clone, Copy)]
 pub struct Context<'a> {

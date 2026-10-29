@@ -16,6 +16,8 @@ mod maintenance_cli;
 mod managed_cli;
 #[cfg(unix)]
 mod materialize_cli;
+#[cfg(unix)]
+mod preparation_cli;
 
 #[derive(Parser)]
 #[command(
@@ -66,12 +68,15 @@ fn main() -> ExitCode {
                 println!(
                     "{}",
                     serde_json::json!({"contract":"native-worker-capabilities.v1",
-                    "features":["storage-layout.v1"]})
+                    "features":["storage-layout.v1","script-preparation.v1"]})
                 );
                 return ExitCode::SUCCESS;
             }
             Some("data-copy") => {
                 return data_copy_cli::main_from(std::iter::once(binary).chain(arguments));
+            }
+            Some("script-prepare") => {
+                return preparation_cli::main_from(std::iter::once(binary).chain(arguments));
             }
             Some("storage-maintain") => {
                 return maintenance_cli::main_from(std::iter::once(binary).chain(arguments));

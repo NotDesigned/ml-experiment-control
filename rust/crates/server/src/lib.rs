@@ -835,7 +835,9 @@ mod schema_tests {
         for (path, operations) in paths {
             if matches!(
                 path.as_str(),
-                "/api/debug" | "/api/projects/{project}/runtimes"
+                "/api/debug"
+                    | "/api/projects/{project}/runtimes"
+                    | "/api/projects/{project}/datasets/{executor}"
             ) {
                 assert_eq!(operations.as_object().unwrap().len(), 2);
                 assert!(operations.get("get").is_some());
@@ -859,7 +861,6 @@ mod schema_tests {
                         || path.ends_with("/reconcile")
                         || path.ends_with("/materialize"))
                 || path.ends_with("/submissions")
-                || path == "/api/projects/{project}/datasets/{executor}"
                 || path.ends_with("/datasets/{executor}/{asset}/complete")
                 || path == "/api/projects/{project}/runs"
                 || path.starts_with("/api/submissions/")

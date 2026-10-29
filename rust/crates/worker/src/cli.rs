@@ -43,6 +43,8 @@ struct Config {
     stdio_timeout_seconds: u64,
     #[serde(default)]
     scheduler: Option<SchedulerTools>,
+    #[serde(default)]
+    data_preparer: Option<PathBuf>,
 }
 impl Config {
     fn load(path: &std::path::Path) -> io::Result<Self> {
@@ -68,6 +70,7 @@ impl Config {
                 lock_timeout: Duration::from_secs(self.lock_timeout_seconds),
                 execution_timeout: Duration::from_secs(self.execution_timeout_seconds),
                 scheduler: self.scheduler,
+                data_preparer: self.data_preparer,
             },
             Duration::from_secs(self.stdio_timeout_seconds),
         )

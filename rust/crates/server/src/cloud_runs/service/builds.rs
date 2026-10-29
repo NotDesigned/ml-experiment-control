@@ -76,6 +76,17 @@ struct Record {
     runtime: Option<Runtime>,
     diagnostic: Option<Value>,
 }
+struct Activity {
+    active: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    id: String,
+}
+impl Drop for Activity {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active.lock() {
+            active.remove(&self.id);
+        }
+    }
+}
 fn name(id: &str) -> cloud::Result<String> {
     if !id
         .strip_prefix("runtime.")
@@ -140,9 +151,13 @@ impl Service {
         Ok(record)
     }
     fn build_view(&self, record: &Record) -> Value {
+        let active = self
+            .active_builds
+            .lock()
+            .is_ok_and(|s| s.contains(&record.runtime_id));
         json!({"project":record.project,"runtime_id":record.runtime_id,"source_id":record.definition.source_id,"executor":record.definition.executor,
-        "status":if record.runtime.is_some()&&(!self.builds.as_ref().is_some_and(|s|s.slurm.contains_key(&record.definition.executor))||record.slurm_runtime.is_some()){"READY"}else if record.started{"RECONCILE_REQUIRED"}else{"PREPARED"},"runtime":record.runtime,"slurm_runtime":record.slurm_runtime,"build_error":record.diagnostic,
-        "retry_safe":!record.started,"scheduler_submitted":false,"confirmation":format!("BUILD {}",record.runtime_id)})
+        "status":if record.runtime.is_some()&&(!self.builds.as_ref().is_some_and(|s|s.slurm.contains_key(&record.definition.executor))||record.slurm_runtime.is_some()){"READY"}else if active{"EXECUTING"}else if record.started{"RECONCILE_REQUIRED"}else{"PREPARED"},"runtime":record.runtime,"slurm_runtime":record.slurm_runtime,"build_error":record.diagnostic,
+        "retry_safe":!record.started&&!active,"scheduler_submitted":false,"confirmation":format!("BUILD {}",record.runtime_id)})
     }
     pub fn runtime(&self, project: &str, executor: &str, id: &str) -> cloud::Result<Runtime> {
         if let Some(runtime) = self
@@ -283,7 +298,7 @@ impl Service {
         if !self.enabled || confirmation != format!("BUILD {id}") {
             return Err(cloud::Error::configuration());
         }
-        if record.started {
+        if record.started || self.active_builds.lock().is_ok_and(|s| s.contains(id)) {
             return Ok(self.build_view(&record));
         }
         record.started = true;
@@ -297,9 +312,18 @@ impl Service {
         let service = Arc::clone(self);
         let project = project.to_owned();
         let id = id.to_owned();
+        self.active_builds
+            .lock()
+            .map_err(|_| cloud::Error::evidence())?
+            .insert(id.clone());
+        let activity = Activity {
+            active: Arc::clone(&self.active_builds),
+            id: id.clone(),
+        };
         std::thread::Builder::new()
             .name("native-image-build".into())
             .spawn(move || {
+                let _activity = activity;
                 let result = service.builder_call(&record, "build");
                 // A busy metadata lock cannot erase an uncertain effect. The saved
                 // intent remains reconcilable if receipt publication cannot commit.
@@ -350,6 +374,9 @@ impl Service {
     }
     pub fn reconcile_runtime(&self, project: &str, id: &str) -> cloud::Result<Value> {
         let mut record = self.build_record(project, id)?;
+        if self.active_builds.lock().is_ok_and(|s| s.contains(id)) {
+            return Ok(self.build_view(&record));
+        }
         if record.runtime.is_none() && record.started {
             let (status, value) = self.builder_call(&record, "get")?;
             let lock = self.lock()?;

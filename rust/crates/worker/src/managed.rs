@@ -45,6 +45,21 @@ pub enum Error {
     Uncertain,
     #[error("managed launch was cancelled before execution")]
     Cancelled,
+    #[error(
+        "startup storage failed at {stage} (errno={errno:?}); inspect retained state before retry"
+    )]
+    Startup {
+        stage: &'static str,
+        errno: Option<i32>,
+    },
+    #[error(
+        "data preparation failed: {code} (exit_code={exit_code:?}, errno={errno:?}); training was not started"
+    )]
+    DataPreparation {
+        code: &'static str,
+        exit_code: Option<i32>,
+        errno: Option<i32>,
+    },
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -462,6 +477,12 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         .map_err(|_| Error::Storage)?;
     let bytes = private_bytes(&held.root, OsStr::new(MANIFEST), launch::MAX_BYTES as u64)?;
     let (target, manifest, mut environment) = verified(config, &bytes)?;
+    if let Some(plan) = &config.data_preparation {
+        let location = crate::data_preparation::prepare(plan, false, cancelled)?;
+        if environment.get("DATA_DIR") != Some(&location) {
+            return Err(Error::Binding);
+        }
+    }
     environment.extend(held.runtime(config)?);
     if !ml_exp_core::managed::environment(&environment) {
         return Err(Error::Configuration);

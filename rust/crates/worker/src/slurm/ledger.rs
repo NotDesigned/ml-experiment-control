@@ -47,6 +47,7 @@ pub struct HelperConfig {
     pub lock_timeout: Duration,
     pub execution_timeout: Duration,
     pub scheduler: Option<SchedulerTools>,
+    pub data_preparer: Option<PathBuf>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,6 +86,13 @@ impl HelperConfig {
     /// Pure trusted-configuration checks. This does not open paths, inspect
     /// process environment, read a clock, or initialize/repair helper state.
     pub fn validate(&self) -> Result<()> {
+        if self
+            .data_preparer
+            .as_ref()
+            .is_some_and(|p| !ml_exp_core::managed::absolute(p))
+        {
+            return Err(Error::Configuration);
+        }
         self.target.validate()?;
         if let Some(root) = &self.shared_run_root {
             let root = root.to_str().ok_or(Error::Configuration)?;
@@ -637,7 +645,7 @@ impl Helper {
         directory.publish_new(OsStr::new(INTENT), &json(request.intent())?)?;
         directory.publish_new(OsStr::new(MANIFEST), manifest.as_bytes())?;
         directory.publish_new(OsStr::new(SCRIPT), script.as_bytes())?;
-        self.prepare_shared(request.intent(), manifest.as_bytes())?;
+        self.prepare_shared(request.intent(), manifest.as_bytes(), &directory)?;
         directory.publish_new(
             OsStr::new(STATE),
             &json(&LedgerRecord::prepared(request.intent().clone())?)?,

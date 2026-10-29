@@ -240,6 +240,24 @@ impl Service {
         )
         .map_err(|_| cloud::Error::evidence())?;
         let storage = backend.definition.storage_layout()?;
+        if request.data_preparation.is_some() {
+            if !runtime.worker_features.contains("script-preparation.v1") {
+                return Err(cloud::Error {
+                    code: "WORKER_SCRIPT_PREPARATION_UNSUPPORTED".into(),
+                    http_status: Some(422),
+                    uncertain: false,
+                });
+            }
+            let before_job = matches!(
+                backend.adapter.profile,
+                cloud::adapter::Profile::Sensecore(_)
+            );
+            if before_job && backend.data_copier.is_none() {
+                return Err(cloud::Error::configuration());
+            }
+            documents.run["native_cloud"]["data_preparation_before_job"] = json!(before_job);
+            documents.attempt["native_cloud"]["data_preparation_before_job"] = json!(before_job);
+        }
         let root = self.authority(project, &request.run_id)?;
         // New authorship freezes this provisioning plan. Existing Runs retain
         // their original absence, and a conflicting plan is never repaired.

@@ -4,8 +4,8 @@
 //! Newly created directory entries and files are fsynced before success. Parent
 //! attachment checks detect a renamed/replaced ancestor and fail closed. The
 //! actual operation still uses retained descriptors, even if a rename races a
-//! check. Atomic no-replace publication requires Linux/Android or Apple rename
-//! support; an unsupported platform fails rather than emulating it unsafely.
+//! check. Regular files can use atomic hard-link publication on filesystems
+//! without no-replace rename. Directory moves require native no-replace rename.
 #![forbid(unsafe_code)]
 
 use rustix::fs::{self as rfs, AtFlags, FileType, Mode, OFlags};
@@ -416,7 +416,7 @@ impl Directory {
         leaf(target)?;
         self.verify_private_parent()?;
         self.validate_regular_entry(source, file)?;
-        rename_between_new(&self.inner.file, source, &self.inner.file, target)?;
+        rename_regular_new(&self.inner.file, source, target)?;
         rfs::fsync(&self.inner.file)?;
         self.validate_regular_entry(target, file)?;
         self.verify_private_parent()
@@ -639,7 +639,7 @@ impl Directory {
     }
 
     /// Publish immutable bytes with a same-directory unpredictable temporary,
-    /// retained file identity, fsync, atomic RENAME_NOREPLACE and directory fsync.
+    /// retained file identity, fsync, atomic no-replace publication and directory fsync.
     /// There is no check-then-replace fallback and no path traversal during I/O.
     pub fn publish_new(&self, name: &OsStr, bytes: &[u8]) -> io::Result<()> {
         leaf(name)?;
@@ -649,7 +649,7 @@ impl Directory {
             file.write_all(bytes)?;
             file.sync_all()?;
             self.validate_regular_entry(&temporary, &file)?;
-            rename_new(&self.inner.file, &temporary, name)?;
+            rename_regular_new(&self.inner.file, &temporary, name)?;
             rfs::fsync(&self.inner.file)?;
             self.verify_attached()?;
             Ok(())
@@ -717,6 +717,32 @@ impl Directory {
             io::ErrorKind::AlreadyExists,
             "cannot allocate a unique temporary entry",
         ))
+    }
+}
+
+/// linkat is an atomic no-clobber operation, including on CPFS. A failed
+/// unlink leaves ambiguous publication, never permission to overwrite a target.
+/// Interrupted two-name files fail ordinary single-link validation.
+fn link_regular_new(directory: &File, from: &OsStr, to: &OsStr) -> io::Result<()> {
+    let stat = rfs::statat(directory, from, AtFlags::SYMLINK_NOFOLLOW)?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile || stat.st_nlink != 1 {
+        return Err(invalid("single-link regular publication source required"));
+    }
+    rfs::linkat(directory, from, directory, to, AtFlags::empty())?;
+    rfs::fsync(directory)?;
+    rfs::unlinkat(directory, from, AtFlags::empty())?;
+    Ok(())
+}
+
+fn rename_regular_new(directory: &File, from: &OsStr, to: &OsStr) -> io::Result<()> {
+    match rename_new(directory, from, to) {
+        Err(error)
+            if matches!(error.raw_os_error(), Some(22 | 38 | 95))
+                || error.kind() == io::ErrorKind::Unsupported =>
+        {
+            link_regular_new(directory, from, to)
+        }
+        result => result,
     }
 }
 
@@ -788,6 +814,54 @@ mod tests {
         fs,
         os::unix::fs::{PermissionsExt, symlink},
     };
+
+    #[test]
+    fn hard_link_publication_is_no_clobber_and_restores_single_link() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = Directory::open(temp.path(), false).unwrap();
+        let mut first = directory.create_new_regular(OsStr::new("first")).unwrap();
+        first.write_all(b"original").unwrap();
+        first.sync_all().unwrap();
+        link_regular_new(
+            &directory.inner.file,
+            OsStr::new("first"),
+            OsStr::new("target"),
+        )
+        .unwrap();
+        directory
+            .validate_regular_entry(OsStr::new("target"), &first)
+            .unwrap();
+        assert!(!directory.entry_exists(OsStr::new("first")).unwrap());
+        let mut second = directory.create_new_regular(OsStr::new("second")).unwrap();
+        second.write_all(b"different").unwrap();
+        assert_eq!(
+            link_regular_new(
+                &directory.inner.file,
+                OsStr::new("second"),
+                OsStr::new("target")
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            directory.read_regular(OsStr::new("target"), 100).unwrap(),
+            b"original"
+        );
+        directory
+            .validate_regular_entry(OsStr::new("second"), &second)
+            .unwrap();
+        symlink("target", temp.path().join("alias")).unwrap();
+        assert!(
+            link_regular_new(
+                &directory.inner.file,
+                OsStr::new("alias"),
+                OsStr::new("unsafe")
+            )
+            .is_err()
+        );
+        assert!(!directory.entry_exists(OsStr::new("unsafe")).unwrap());
+    }
 
     #[test]
     fn bounded_names_and_read_handle_do_not_create_or_follow_entries() {

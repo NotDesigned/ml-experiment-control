@@ -46,7 +46,7 @@
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
     "all_tracked_python_files": 458,
-    "connected_native_workflows": 21
+    "connected_native_workflows": 22
   },
   "architecture": {
     "application_crates": [
@@ -7360,6 +7360,17 @@
         "rust/crates/server/src/submissions/dataset_http.rs",
         "rust/crates/server/src/submissions/service/datasets.rs",
         "rust/crates/server/src/cloud_runs/service/datasets.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "script_data_preparation": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/core/src/data_preparation.rs",
+        "rust/crates/worker/src/data_preparation.rs",
+        "rust/crates/worker/src/preparation_cli.rs",
+        "rust/crates/server/src/cloud_runs/service/script_preparation.rs"
       ],
       "provider_acceptance": false,
       "production_deployed": false

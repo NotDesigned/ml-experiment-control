@@ -9,6 +9,9 @@ impl Service {
         expires: &str,
         transition: &str,
     ) -> cloud::Result<Value> {
+        if let Some(status) = self.prepare_script(project, run)? {
+            return Ok(status);
+        }
         let lock = self.lock()?;
         let attempt_id = self.current_attempt(project, run)?;
         let saved = self.saved_attempt(project, run, &attempt_id)?;

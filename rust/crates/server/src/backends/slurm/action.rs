@@ -70,7 +70,21 @@ impl Runner<'_> {
         }
         let snapshot = claimed.snapshot;
         action::validate(&snapshot, prepare).map_err(|_| Error::Binding)?;
-        let deadline = Instant::now() + self.ssh.budget.timeout;
+        // Preparing immutable inputs runs on the networked gateway before
+        // sbatch. Its explicit frozen timeout is additional CPU time, never
+        // GPU allocation or permission to repeat an uncertain execution.
+        let preparation_seconds = prepare
+            .prepared_content()
+            .and_then(|(manifest, _)| serde_json::from_str::<Value>(manifest).ok())
+            .and_then(|doc| doc.get("data_preparation").cloned())
+            .map(serde_json::from_value::<ml_exp_core::data_preparation::Request>)
+            .transpose()
+            .map_err(|_| Error::Binding)?
+            .map(|p| p.timeout_seconds + 30)
+            .unwrap_or(0);
+        let deadline = Instant::now()
+            + self.ssh.budget.timeout
+            + std::time::Duration::from_secs(preparation_seconds);
         let outcome = if guard().is_err() {
             Outcome::Uncertain {
                 job_id: None,

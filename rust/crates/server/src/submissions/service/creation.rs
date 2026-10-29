@@ -11,6 +11,11 @@ impl Service {
     pub fn can_create_runs(&self) -> bool {
         !self.creation_roots.is_empty()
     }
+    pub fn supports_script_preparation(&self, executor: &str) -> bool {
+        self.backends
+            .get(executor)
+            .is_some_and(|backend| backend.script_preparation)
+    }
     /// Explicit operator opt-in. Existing read locators do not imply write
     /// permission; only a single canonical discoverable root is accepted.
     pub fn with_run_creation(mut self, enabled: bool) -> Result<Self> {
@@ -63,6 +68,9 @@ impl Service {
             .get(&request.executor)
             .ok_or(Error::Authority)?;
         let runtime = self.runtime(project, &request.executor, &request.runtime_id)?;
+        if request.data_preparation.is_some() && !backend.script_preparation {
+            return Err(Error::Configuration);
+        }
         let source = self
             .sources
             .read(project, &runtime.source_id)

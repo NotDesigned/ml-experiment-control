@@ -139,6 +139,16 @@ impl Service {
         } else if !slurm.is_some_and(|s| s.accepts(&run.executor)) || run.scheduling.is_some() {
             return Err(cloud::Error::configuration());
         }
+        if !self.backends.contains_key(&run.executor)
+            && run.data_preparation.is_some()
+            && !slurm.is_some_and(|s| s.supports_script_preparation(&run.executor))
+        {
+            return Err(cloud::Error {
+                code: "SCRIPT_PREPARATION_NOT_CONFIGURED".into(),
+                http_status: Some(422),
+                uncertain: false,
+            });
+        }
         Ok(())
     }
     fn setup_load(&self, project: &str, id: &str) -> cloud::Result<Saved> {
@@ -319,6 +329,12 @@ impl Service {
                 }
             }
             self.create_run(project, run.clone(), now)?;
+            if let Some(status) = self.prepare_script(project, &run.run_id)? {
+                let mut view = self.setup_view(&saved)?;
+                view["phase"] = json!("DATA_PREPARATION");
+                view["data_preparation"] = status["data_preparation"].clone();
+                return Ok(view);
+            }
             self.prepare(
                 project,
                 &run.run_id,

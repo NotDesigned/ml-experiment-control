@@ -175,7 +175,7 @@ impl SshConfig {
             return Err(ValidationError::Configuration("agent_socket"));
         }
         if self.budget.timeout.is_zero()
-            || self.budget.timeout > Duration::from_secs(3600)
+            || self.budget.timeout > Duration::from_secs(86400 + 3600)
             || !(1..=300).contains(&self.budget.connect_timeout_seconds)
             || self.budget.termination_grace > Duration::from_secs(30)
             || self.budget.drain_grace > Duration::from_secs(30)

@@ -11,6 +11,13 @@ import subprocess
 from ..storage import atomic_json
 
 
+def _valid_features(features):
+    return (isinstance(features, list)
+            and all(isinstance(item, str) for item in features)
+            and len(features) == len(set(features))
+            and set(features) <= {"storage-layout.v1", "script-preparation.v1"})
+
+
 def load_features(path, expected):
     if not path.exists():
         return []
@@ -18,8 +25,7 @@ def load_features(path, expected):
     features = value.get("features")
     if (set(value) != {"worker_sha256", "features"}
             or value["worker_sha256"] != expected
-            or not isinstance(features, list)
-            or features not in ([], ["storage-layout.v1"])):
+            or not _valid_features(features)):
         raise ValueError("native worker capability binding differs")
     return features
 
@@ -43,7 +49,7 @@ def freeze_features(binary, expected, path):
         if set(value) != {"contract", "features"} or value["contract"] != "native-worker-capabilities.v1":
             raise ValueError("native worker capability contract differs")
         features = value["features"]
-        if features not in ([], ["storage-layout.v1"]):
+        if not _valid_features(features):
             raise ValueError("native worker capabilities are unsupported")
     if not matches():
         raise ValueError("native worker changed during capability inspection")

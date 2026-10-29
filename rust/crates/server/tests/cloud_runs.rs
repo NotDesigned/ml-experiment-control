@@ -588,7 +588,7 @@ fn check_builder_dispatch_evidence(
         Service::open(
             settings.clone(),
             Settings::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap(),
-            sources,
+            sources.clone(),
             None,
             Default::default(),
         )
@@ -633,6 +633,8 @@ fn check_builder_dispatch_evidence(
     );
     fs::remove_file(&socket).unwrap();
     let listener = UnixListener::bind(&socket).unwrap();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (finish_tx, finish_rx) = std::sync::mpsc::channel();
     let builder = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let mut reader = std::io::BufReader::new(stream);
@@ -652,6 +654,8 @@ fn check_builder_dispatch_evidence(
         reader.read_exact(&mut body).unwrap();
         let request: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(request["operation"], "native-build");
+        entered_tx.send(()).unwrap();
+        finish_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         let reply = json!({"project":request["project"],"runtime_id":request["runtime_id"],
             "source_id":request["source_id"],"recipe":ml_exp_core::cloud::build::CONTRACT,
             "runtime":{"runtime_id":request["runtime_id"],"source_id":request["source_id"],
@@ -669,6 +673,28 @@ fn check_builder_dispatch_evidence(
     service
         .execute_runtime("demo", id, &format!("BUILD {id}"))
         .unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        service.runtime_status("demo", id).unwrap()["status"],
+        "EXECUTING"
+    );
+    assert_eq!(
+        service.reconcile_runtime("demo", id).unwrap()["status"],
+        "EXECUTING"
+    );
+    let reopened = Service::open(
+        settings.clone(),
+        Settings::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap(),
+        sources.clone(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        reopened.runtime_status("demo", id).unwrap()["status"],
+        "RECONCILE_REQUIRED"
+    );
+    finish_tx.send(()).unwrap();
     assert_eq!(wait(id, "READY")["retry_safe"], false);
     builder.join().unwrap();
     fs::remove_file(&socket).unwrap();
@@ -686,7 +712,7 @@ fn check_builder_dispatch_evidence(
         .execute_runtime("demo", lost_id, &format!("BUILD {lost_id}"))
         .unwrap();
     ambiguous.join().unwrap();
-    // RECONCILE_REQUIRED is also the initial in-flight view; wait for its error.
+    // The in-flight view is EXECUTING; a lost reply must settle as uncertain.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let value = service.runtime_status("demo", lost_id).unwrap();

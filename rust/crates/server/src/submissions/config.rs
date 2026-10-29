@@ -30,6 +30,8 @@ pub struct Definition {
     pub runtimes: BTreeMap<String, Runtime>,
     #[serde(default)]
     pub data_helper_config: Option<String>,
+    #[serde(default)]
+    pub script_preparation: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -94,6 +96,7 @@ impl Settings {
                     profile: definition.profile,
                     runtimes: definition.runtimes,
                     data_helper_config: definition.data_helper_config,
+                    script_preparation: definition.script_preparation,
                 };
                 backend.validate()?;
                 Ok(backend)

@@ -177,6 +177,7 @@ impl Fixture {
                 ssh,
                 runtimes: BTreeMap::from([(self.runtime.runtime_id.clone(), self.runtime.clone())]),
                 data_helper_config: None,
+                script_preparation: false,
             }],
             enabled,
         )

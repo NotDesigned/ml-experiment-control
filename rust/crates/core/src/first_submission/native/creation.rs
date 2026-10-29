@@ -31,6 +31,8 @@ pub struct Request {
     pub seed: i64,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_preparation: Option<crate::data_preparation::Request>,
     #[serde(default)]
     pub parameters: Map<String, Value>,
     #[serde(default)]
@@ -58,6 +60,11 @@ impl Request {
     }
     pub fn validate(&self, project: &str) -> Result<()> {
         crate::environment::validate(&self.env).map_err(|_| Error("Run environment"))?;
+        if let Some(preparation) = &self.data_preparation {
+            preparation
+                .validate()
+                .map_err(|_| Error("data preparation"))?;
+        }
         if self
             .scheduling
             .as_ref()
@@ -202,6 +209,9 @@ pub fn plan(
     if !request.env.is_empty() {
         protocol["env"] = json!(request.env);
     }
+    if let Some(preparation) = &request.data_preparation {
+        protocol["data_preparation"] = json!(preparation);
+    }
     match (&request.resume_from, authority.checkpoint) {
         (Some(reference), Some(value)) => {
             crate::checkpoints::selected(
@@ -237,6 +247,12 @@ pub fn plan(
     }
     if let Some(policy) = &request.artifacts {
         run["artifacts"] = json!(policy);
+    }
+    if let Some(preparation) = &request.data_preparation {
+        if runtime.worker.is_none() {
+            return Err(Error("data preparation requires a managed worker"));
+        }
+        run["data_preparation"] = json!(preparation);
     }
     if !datasets.is_empty() {
         run["native_datasets"] = json!(datasets);

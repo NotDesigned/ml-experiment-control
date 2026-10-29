@@ -16,7 +16,18 @@ pub fn decode(bytes: &[u8]) -> managed::Result<Package> {
         .map_err(|_| managed::Error::Configuration)?;
     Ok(package)
 }
-fn same_or_new(directory: &Directory, name: &OsStr, bytes: &[u8]) -> managed::Result<()> {
+fn startup(stage: &'static str, error: std::io::Error) -> managed::Error {
+    managed::Error::Startup {
+        stage,
+        errno: error.raw_os_error(),
+    }
+}
+fn same_or_new(
+    directory: &Directory,
+    name: &OsStr,
+    bytes: &[u8],
+    stage: &'static str,
+) -> managed::Result<()> {
     if directory
         .entry_exists(name)
         .map_err(|_| managed::Error::Storage)?
@@ -30,7 +41,7 @@ fn same_or_new(directory: &Directory, name: &OsStr, bytes: &[u8]) -> managed::Re
     } else {
         directory
             .publish_new(name, bytes)
-            .map_err(|_| managed::Error::Uncertain)?;
+            .map_err(|error| startup(stage, error))?;
     }
     directory
         .verify_private_parent()
@@ -75,6 +86,7 @@ pub fn prepare(package: &Package, runtime: &BTreeMap<String, String>) -> managed
         &run,
         OsStr::new(&package_name),
         &serde_json::to_vec(package).map_err(|_| managed::Error::Configuration)?,
+        "package_publication",
     )?;
     same_or_new(
         &run,
@@ -87,6 +99,7 @@ pub fn prepare(package: &Package, runtime: &BTreeMap<String, String>) -> managed
             .manifest
             .encode()
             .map_err(|_| managed::Error::Manifest)?,
+        "manifest_publication",
     )?;
     if run
         .entry_exists(OsStr::new(&binding.identity.attempt_id))

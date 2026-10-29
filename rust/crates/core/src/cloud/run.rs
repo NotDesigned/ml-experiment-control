@@ -24,7 +24,7 @@ impl Runtime {
         if self
             .worker_features
             .iter()
-            .any(|f| f != "storage-layout.v1")
+            .any(|f| !matches!(f.as_str(), "storage-layout.v1" | "script-preparation.v1"))
         {
             return Err(Error("unsupported worker feature"));
         }
@@ -124,6 +124,9 @@ pub fn documents(
     if !request.env.is_empty() {
         protocol["env"] = json!(request.env);
     }
+    if let Some(preparation) = &request.data_preparation {
+        protocol["data_preparation"] = json!(preparation);
+    }
     if let Some(reference) = &request.resume_from {
         protocol["resume_from"] = json!(reference);
     }
@@ -156,6 +159,9 @@ pub fn documents(
     }
     if !request.env.is_empty() {
         run["env"] = json!(request.env);
+    }
+    if let Some(preparation) = &request.data_preparation {
+        run["data_preparation"] = json!(preparation);
     }
     if let Some(policy) = &request.scheduling {
         run["native_cloud"]["scheduling"] = json!(policy);
@@ -260,6 +266,31 @@ pub fn execution(
         datasets,
         attempt.get("native_checkpoint").cloned(),
     )?;
+    if let Some(value) = run.get("data_preparation") {
+        let plan = crate::data_preparation::Plan {
+            contract: crate::data_preparation::CONTRACT.into(),
+            request: serde_json::from_value(value.clone())
+                .map_err(|_| Error("frozen data preparation"))?,
+            source_id: runtime.source_id.clone(),
+            image: runtime.image.clone(),
+            cache_root: format!(
+                "{}/{}",
+                run["native_cloud"]["data_root"]
+                    .as_str()
+                    .ok_or(Error("frozen data root"))?,
+                project
+            ),
+            mounted_root: run["native_cloud"]["storage"]["mount"]
+                .as_str()
+                .ok_or(Error("data preparation mount"))?
+                .into(),
+            workdir: runtime.source_dir.clone(),
+            env: crate::environment::from_document(run).map_err(|_| Error("frozen environment"))?,
+            require_cached: run["native_cloud"]["data_preparation_before_job"] == true,
+        };
+        crate::managed::attach_preparation(&mut package.config, &mut package.manifest, plan)
+            .map_err(|_| Error("data preparation launch"))?;
+    }
     let policy: Option<crate::first_submission::native::creation::Scheduling> = run["native_cloud"]
         .get("scheduling")
         .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error("frozen scheduling policy")))

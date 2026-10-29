@@ -173,7 +173,11 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
                 if directory.identity()? != inode {
                     return Err(invalid());
                 }
-                directory.publish_directory(&root, OsStr::new(&temporary))?
+                // The reviewed plan and worker lock already fence execution.
+                // Delete through this retained exact inode, keeping its
+                // original pathname attached; CPFS needs no directory rename.
+                // Old quarantined operations above remain resumable.
+                directory
             };
             if directory.identity()? != inode {
                 return Err(invalid());

@@ -126,6 +126,7 @@ fn ledger_config(root: &Path) -> ml_exp_worker::slurm::HelperConfig {
         ]),
         lock_timeout: Duration::from_secs(2),
         execution_timeout: Duration::from_secs(1),
+        data_preparer: None,
         scheduler: Some(ml_exp_worker::slurm::SchedulerTools {
             sacct_program: root.join("sacct"),
             squeue_program: root.join("squeue"),

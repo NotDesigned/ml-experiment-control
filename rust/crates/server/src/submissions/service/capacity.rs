@@ -5,7 +5,7 @@ use ml_exp_core::capacity::{self, Observation};
 impl Service {
     pub fn catalogue(&self) -> Vec<Value> {
         self.backends.iter().map(|(id,b)|json!({"executor_id":id,"kind":"slurm","enabled":self.enabled,"run_creation":self.can_create_runs(),"limits":{"gpus":b.profile.max_gpus,"cpus":b.profile.max_cpus,"memory_gb":b.profile.max_memory_gb,"walltime_seconds":b.profile.max_walltime_seconds},"partition":b.profile.partition,
-            "capabilities":{"oci_to_sif":true,"persistent_checkpoints":true,"dataset_upload":b.data_helper_config.is_some(),"metrics":true,"backend_result_stream":true,"capacity_query":true},"live_availability_checked":false})).collect()
+            "capabilities":{"oci_to_sif":true,"persistent_checkpoints":true,"dataset_upload":b.data_helper_config.is_some(),"data_preparation":if b.script_preparation{serde_json::json!("before_job")}else{serde_json::Value::Null},"metrics":true,"backend_result_stream":true,"capacity_query":true},"live_availability_checked":false})).collect()
     }
     pub fn accepts(&self, executor: &str) -> bool {
         self.backends.contains_key(executor)

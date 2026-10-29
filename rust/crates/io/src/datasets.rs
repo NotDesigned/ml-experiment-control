@@ -4,7 +4,7 @@ use crate::{
     artifacts::{self, Kind},
     directory::Directory,
 };
-use ml_exp_core::datasets::Definition;
+use ml_exp_core::{artifacts::FileReceipt, datasets::Definition};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
@@ -17,22 +17,20 @@ fn invalid() -> io::Error {
 }
 pub fn verify(root: &Directory, definition: &Definition, sealed: bool) -> io::Result<()> {
     definition.validate().map_err(|_| invalid())?;
+    verify_inventory(root, &definition.files, sealed)
+}
+pub fn verify_inventory(root: &Directory, files: &[FileReceipt], sealed: bool) -> io::Result<()> {
+    ml_exp_core::data_preparation::content_hash(files).map_err(|_| invalid())?;
     if sealed {
         verify_sealed_directories(root, 0, &mut 0)?;
     }
     let mut paths = Vec::new();
     artifacts::walk(root, "", &mut paths, &mut 0, Kind::Data)?;
     paths.sort();
-    if paths
-        != definition
-            .files
-            .iter()
-            .map(|f| f.path.clone())
-            .collect::<Vec<_>>()
-    {
+    if paths != files.iter().map(|f| f.path.clone()).collect::<Vec<_>>() {
         return Err(invalid());
     }
-    for record in &definition.files {
+    for record in files {
         let (parent, mut file) = artifacts::open(root, &record.path, Kind::Data)?;
         let name = OsStr::new(record.path.rsplit('/').next().ok_or_else(invalid)?);
         if sealed {
@@ -131,7 +129,20 @@ pub fn extract(file: &mut File, root: &Directory, definition: &Definition) -> io
     verify(root, definition, false)
 }
 pub fn seal(root: &Directory) -> io::Result<()> {
-    fn visit(directory: &Directory, depth: usize, budget: &mut usize) -> io::Result<()> {
+    seal_tree(root, false)
+}
+/// Seal a completed script's newly generated files before publishing its
+/// receipt. Ordinary archive sealing still requires presealed files.
+pub fn seal_generated(root: &Directory) -> io::Result<()> {
+    seal_tree(root, true)
+}
+fn seal_tree(root: &Directory, generated: bool) -> io::Result<()> {
+    fn visit(
+        directory: &Directory,
+        depth: usize,
+        budget: &mut usize,
+        generated: bool,
+    ) -> io::Result<()> {
         if depth > 128 {
             return Err(invalid());
         }
@@ -141,15 +152,19 @@ pub fn seal(root: &Directory) -> io::Result<()> {
                 return Err(invalid());
             }
             if let Ok(child) = directory.child(&name, false) {
-                visit(&child, depth + 1, budget)?;
+                visit(&child, depth + 1, budget, generated)?;
             } else {
                 let file = directory.open_regular_read(&name)?;
-                directory.validate_immutable_regular_entry(&name, &file)?;
+                if generated {
+                    directory.seal_regular(&name, &file, false)?;
+                } else {
+                    directory.validate_immutable_regular_entry(&name, &file)?;
+                }
             }
         }
         directory.source_mode(true)
     }
-    visit(root, 0, &mut 0)
+    visit(root, 0, &mut 0, generated)
 }
 /// Cleanup is permitted only for the caller's own unpublished staging tree.
 /// Traversal never follows a link; any unexpected type stops cleanup.
@@ -180,6 +195,44 @@ pub fn remove_staging(parent: &Directory, tree: &Directory) -> io::Result<()> {
     }
     visit(parent, tree, 0, &mut 0)
 }
+/// Record all bounded regular files through retained directory descriptors.
+pub fn inventory(tree: &Directory) -> std::io::Result<Vec<FileReceipt>> {
+    let mut paths = Vec::new();
+    artifacts::walk(tree, "", &mut paths, &mut 0, artifacts::Kind::Data)?;
+    paths.sort();
+    if paths.is_empty() {
+        return Err(std::io::Error::other("empty prepared dataset"));
+    }
+    let mut files = Vec::new();
+    for path in paths {
+        let (parent, mut file) = artifacts::open(tree, &path, artifacts::Kind::Data)?;
+        let before = file.metadata()?;
+        let (sha256, bytes) = artifacts::hash(&mut file)?;
+        let after = file.metadata()?;
+        if before.len() != after.len()
+            || before.modified()? != after.modified()?
+            || before.ctime() != after.ctime()
+            || before.ctime_nsec() != after.ctime_nsec()
+        {
+            return Err(std::io::Error::other("prepared data changed"));
+        }
+        parent.validate_regular_entry(
+            OsStr::new(
+                path.rsplit('/')
+                    .next()
+                    .ok_or_else(|| std::io::Error::other("data path"))?,
+            ),
+            &file,
+        )?;
+        files.push(FileReceipt {
+            path,
+            bytes,
+            sha256,
+        });
+    }
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

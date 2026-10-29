@@ -134,6 +134,36 @@ configuration, not in this mapping. Omitting it preserves the original encoding.
 means the uploaded bytes are verified, and `READY` means a backend cache receipt
 exists. Workers still verify input files before training.
 
+An optional download script can replace uploading a dataset:
+
+```json
+{
+  "data_preparation": {
+    "script": "remote/fetch_data.py",
+    "interpreter": "python3",
+    "arguments": ["--split", "train"],
+    "timeout_seconds": 1200
+  }
+}
+```
+
+Put this field inside `run`; the script must be part of its source image.
+It writes into `DATA_DIR` and must exit successfully before training starts.
+The platform records the actual script hash, parameters and all produced file
+hashes. `expected_content_sha256` can pin the canonical digest of the sorted
+`[{"path": ..., "bytes": ..., "sha256": ...}]` inventory. Cache reuse verifies
+every file. A failed/incomplete script is retained for diagnosis and is not
+automatically rerun. Change the explicit source/arguments to request a new cache.
+
+On Slurm the operator enables `script_preparation` for the backend and configures
+the gateway helper's absolute `data_preparer` path to Apptainer. The gateway
+executes this CPU preparation before `sbatch`, so training nodes need no Internet.
+SenseCore uses its configured debug CPU ACP data copier. PAI executes preparation
+inside the allocated DLC job and counts this time toward the job's time limit.
+It uses the approved persistent mount; an absent mount is never created locally.
+New script-enabled cloud Runs require an image worker declaring
+`script-preparation.v1`; old frozen images keep their original capabilities.
+
 Preparation saves client recovery state before requesting any effect. Continue
 using the returned preparation ID and confirmation:
 

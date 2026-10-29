@@ -36,6 +36,8 @@ pub struct Config {
     pub checkpoint_restore: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub datasets: Vec<crate::datasets::Mount>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_preparation: Option<crate::data_preparation::Plan>,
 }
 pub fn absolute(path: &Path) -> bool {
     path.is_absolute()
@@ -115,6 +117,12 @@ impl Config {
             .unwrap_or_else(|| self.attempt_root.join("outputs"))
     }
     pub fn validate(&self) -> Result<()> {
+        if let Some(plan) = &self.data_preparation {
+            plan.validate().map_err(|_| Error)?;
+            if self.workdir.to_str() != Some(plan.workdir.as_str()) {
+                return Err(Error);
+            }
+        }
         crate::datasets::mounts(&self.datasets).map_err(|_| Error)?;
         let project = self.binding()?.identity.project;
         if self.datasets.iter().any(|v| v.receipt.project != project) {
@@ -149,6 +157,22 @@ impl Config {
     pub fn digest(&self) -> Result<String> {
         canonical::digest(&serde_json::to_value(self).map_err(|_| Error)?).map_err(|_| Error)
     }
+}
+
+/// Attach a trusted, frozen download plan and reseal the launch manifest.
+pub fn attach_preparation(
+    config: &mut Config,
+    manifest: &mut launch::Manifest,
+    plan: crate::data_preparation::Plan,
+) -> Result<()> {
+    plan.validate().map_err(|_| Error)?;
+    manifest
+        .environment
+        .insert("DATA_DIR".into(), plan.tree().map_err(|_| Error)?);
+    config.data_preparation = Some(plan);
+    config.local_binding.as_mut().ok_or(Error)?.sha256 =
+        crate::slurm::helper::sha256_bytes(&manifest.encode().map_err(|_| Error)?)[7..].into();
+    config.validate()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -203,6 +227,12 @@ pub fn execution_environment(
     }
     let mut values = config.base_environment.clone();
     values.extend(manifest.environment.clone());
+    if let Some(preparation) = &config.data_preparation {
+        if values.get("DATA_DIR") != Some(&preparation.tree().map_err(|_| AdmissionError::Binding)?)
+        {
+            return Err(AdmissionError::Binding);
+        }
+    }
     if !config.datasets.is_empty() {
         let inputs = values.get("INPUT_DIR").ok_or(AdmissionError::Binding)?;
         let mapping: BTreeMap<_, _> = config

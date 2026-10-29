@@ -136,13 +136,7 @@ pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Op
             .worker
             .as_ref()
             .map(|runtime| {
-                super::managed::plan_with_inputs(
-                    &intent.scope,
-                    &spec,
-                    runtime,
-                    doc.get("native_checkpoint"),
-                    &datasets,
-                )
+                super::managed::plan_for_document(&intent.scope, &spec, runtime, &doc, &datasets)
             })
             .transpose()?,
     }))

@@ -513,14 +513,8 @@ pub fn prepare(
     };
     let mut launch_spec = spec.clone();
     if let Some(worker) = &runtime.worker {
-        let package = slurm::managed::plan_with_inputs(
-            &scope,
-            &spec,
-            worker,
-            attempt.get("native_checkpoint"),
-            &datasets,
-        )
-        .map_err(|_| Error("managed launch"))?;
+        let package = slurm::managed::plan_for_document(&scope, &spec, worker, attempt, &datasets)
+            .map_err(|_| Error("managed launch"))?;
         launch_spec.command = slurm::managed::command(&package, worker)
             .map_err(|_| Error("managed launch command"))?;
     }

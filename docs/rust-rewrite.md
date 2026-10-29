@@ -57,6 +57,7 @@ Research code may use Python/PyTorch or another image language.
 | OCI-to-SIF on Slurm gateway | `worker/materialize.rs` | Fake apptainer; exact reuse/capacity/tampering checks |
 | Upload/download cloud datasets | `server/objects.rs`, `service/datasets.rs`, `client/datasets.rs` | Bounded parts and immutable receipts; actual OSS transfer pending |
 | Download into CPFS / NAS input cache | `worker/{data_import,cloud_data}.rs` | Import/hash/cache tests; provider storage pending |
+| Frozen download script and verified persistent input cache | `core/data_preparation.rs`, `worker/data_preparation.rs`, `service/script_preparation.rs` | Connected; provider acceptance pending |
 | CCR data image and CPU ACP copy before training | `service/data_delivery.rs`, `builds/native_data.py`, `worker/data_copy_cli.rs` | Stage control/hash/capability tests; actual copy pending |
 | One experiment configuration | `core/preparation.rs`, `client/preparations.rs`, `service/preparations.rs` | Recovery slot, conflict, early preflight and HTTP tests |
 | Matrix preparation and bounded dispatch | `core/preparation.rs`, `client/batch.rs` | Stable identities, exact terminal slot accounting; actual batch pending |
@@ -111,6 +112,27 @@ shared read-only `data list` path. Environment values are frozen with the protoc
 reserved platform variables are refused before effects. Dataset discovery reads
 bounded local metadata only and separates uploaded archives from ready caches.
 Neither addition changes the encoding of old requests that omit the new fields.
+
+Optional `data_preparation` now freezes the script path, interpreter, arguments,
+timeout and optional expected content hash. The source/image and user environment
+bind its cache identity; the receipt records the actual script and every output
+file's SHA256. Slurm prepares on the networked gateway before scheduler submission;
+SenseCore uses the configured debug CPU ACP adapter; PAI prepares inside the DLC
+job before training. Only complete verified caches are reused. Failed/incomplete
+executions retain bounded logs and diagnostics and are not silently replayed.
+The training `DATA_DIR` points to this cache; result packaging remains separate.
+
+CPFS does not accept `renameat2(RENAME_NOREPLACE)` on the tested personal mount
+(errno 22). Regular-file publication now has an atomic hard-link fallback that
+still refuses existing targets. Dataset slots use exclusive directory allocation
+and publish the final verified receipt last. They never use check-then-rename or
+accept an incomplete directory as READY. General directory moves still require
+native no-replace support and can remain unavailable on such a filesystem.
+Startup publication failures identify the stage and errno without package tokens.
+
+Build progress distinguishes a live build thread/held worker lock from a saved
+start marker left by an interrupted process. The latter requires reconciliation;
+it does not remain falsely EXECUTING and cannot be dispatched twice.
 
 ## Storage and transfer contracts
 

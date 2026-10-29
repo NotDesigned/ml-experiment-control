@@ -15,6 +15,8 @@ mod cloud_storage;
 #[cfg(unix)]
 pub mod data_import;
 #[cfg(unix)]
+pub mod data_preparation;
+#[cfg(unix)]
 pub mod datasets;
 #[cfg(unix)]
 pub mod managed;

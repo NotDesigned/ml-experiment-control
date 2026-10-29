@@ -81,11 +81,101 @@ impl Helper {
         directories.extend(named);
         Ok(directories)
     }
-    pub(super) fn prepare_shared(&self, intent: &FrozenIntent, manifest: &[u8]) -> Result<()> {
+    pub(super) fn prepare_shared(
+        &self,
+        intent: &FrozenIntent,
+        manifest: &[u8],
+        diagnostics: &Directory,
+    ) -> Result<()> {
         let Some(plan) = self.shared_plan(intent, manifest)? else {
             return Ok(());
         };
         if let Some(package) = &plan.managed {
+            if let Some(preparation) = &package.config.data_preparation {
+                let program = self
+                    .config
+                    .data_preparer
+                    .as_ref()
+                    .ok_or(Error::Configuration)?;
+                let document: serde_json::Value = serde_json::from_slice(manifest)?;
+                let backend: &serde_json::Value = &document["backend"];
+                let mut argv = vec![
+                    program.to_str().ok_or(Error::Configuration)?.into(),
+                    "exec".into(),
+                    "--cleanenv".into(),
+                ];
+                let mount = backend["mount_root"].as_str().ok_or(Error::Configuration)?;
+                let cache = Directory::open(std::path::Path::new(&preparation.cache_root), true)?;
+                cache.verify_private_parent()?;
+                argv.extend([
+                    "--bind".into(),
+                    format!("{mount}:{mount}"),
+                    "--bind".into(),
+                    format!("{}:{}", preparation.cache_root, preparation.cache_root),
+                ]);
+                if backend["oci_image"].is_null() {
+                    argv.extend([
+                        "--bind".into(),
+                        format!(
+                            "{}:{}:ro",
+                            backend["source_dir"].as_str().ok_or(Error::Configuration)?,
+                            document["execution"]["source_mount"]
+                                .as_str()
+                                .ok_or(Error::Configuration)?
+                        ),
+                    ]);
+                }
+                let worker = intent
+                    .staging
+                    .as_ref()
+                    .and_then(|s| s.worker.as_ref())
+                    .ok_or(Error::Configuration)?;
+                argv.extend([
+                    "--pwd".into(),
+                    preparation.workdir.clone(),
+                    backend["sif_path"]
+                        .as_str()
+                        .ok_or(Error::Configuration)?
+                        .into(),
+                    worker.program.clone(),
+                    "script-prepare".into(),
+                    "--plan-json".into(),
+                    serde_json::to_string(preparation)?,
+                ]);
+                let mut stdout =
+                    diagnostics.create_new_regular(OsStr::new("data-preparation.stdout"))?;
+                let mut stderr =
+                    diagnostics.create_new_regular(OsStr::new("data-preparation.stderr"))?;
+                let result = process::execute(process::Request {
+                    argv: &argv,
+                    cwd: &self.config.root,
+                    environment: process::Environment::Replace(&self.config.environment),
+                    stdin: process::Input::Null,
+                    stdout: process::Capture::File {
+                        file: &mut stdout,
+                        limit: 1024 * 1024,
+                    },
+                    stderr: process::Capture::File {
+                        file: &mut stderr,
+                        limit: 1024 * 1024,
+                    },
+                    deadline: Instant::now()
+                        + Duration::from_secs(preparation.request.timeout_seconds + 30),
+                    termination_grace: Duration::from_secs(3),
+                    drain_grace: Duration::from_secs(3),
+                    cancelled: &AtomicBool::new(false),
+                })?;
+                stdout.sync_all()?;
+                stderr.sync_all()?;
+                diagnostics.publish_new(OsStr::new("data-preparation.json"),&serde_json::to_vec(&serde_json::json!({"phase":"DATA_PREPARATION","exit_code":result.exit_code,"timed_out":result.timed_out,"cancelled":result.cancelled,"scheduler_submitted":false}))?)?;
+                if result.exit_code != Some(0)
+                    || result.failure.is_some()
+                    || result.timed_out
+                    || result.cancelled
+                {
+                    return Err(Error::Bootstrap);
+                }
+            }
             for dataset in &package.config.datasets {
                 let root = Directory::open(std::path::Path::new(&dataset.receipt.root), false)?;
                 ml_exp_io::datasets::verify(&root, &dataset.receipt.definition, true)?;

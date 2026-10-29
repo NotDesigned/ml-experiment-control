@@ -61,10 +61,10 @@ impl Store {
         if !store.root.entry_names_limited(1)?.is_empty() {
             return Err(invalid());
         }
+        store.root.open_lock(OsStr::new(LOCK))?;
         store
             .root
             .publish_new(OsStr::new(MARKER), &json(&store.marker()?)?)?;
-        store.root.open_lock(OsStr::new(LOCK))?;
         Ok(())
     }
     pub fn open(config: Config) -> io::Result<Self> {
@@ -114,28 +114,18 @@ impl Store {
             }
             return Ok(());
         }
-        let mut random = [0u8; 16];
-        getrandom::fill(&mut random).map_err(|_| invalid())?;
-        let stage = project.create_new_child(OsStr::new(&format!(
-            ".dataset-{:032x}",
-            u128::from_be_bytes(random)
-        )))?;
         let state = State::new(
             request.project.clone(),
             request.target.clone(),
             definition.clone(),
         )
         .map_err(|_| invalid())?;
-        let result = (|| {
-            stage.publish_new(OsStr::new(STATE), &json(&state)?)?;
-            stage.create_new_child(OsStr::new("parts"))?;
-            stage.publish_directory(&project, OsStr::new(&state.asset_id))?;
-            Ok(())
-        })();
-        if stage.verify_attached().is_ok() {
-            tree::remove_staging(&project, &stage)?;
-        }
-        result
+        // The root lock excludes another uploader. Allocate the final slot
+        // with mkdir(EXCL), then publish its control receipt last. Readers
+        // reject incomplete reservations instead of repairing/adopting them.
+        let slot = project.create_new_child(OsStr::new(&state.asset_id))?;
+        slot.create_new_child(OsStr::new("parts"))?;
+        slot.publish_new(OsStr::new(STATE), &json(&state)?)
     }
     fn part(
         &self,
@@ -270,13 +260,23 @@ impl Store {
             if cancelled.load(Ordering::Relaxed) {
                 return Err(invalid());
             }
-            let tree = directory.create_new_child(OsStr::new("unpacked"))?;
-            tree::extract(&mut archive, &tree, &state.definition)?;
-            tree::seal(&tree)?;
-            if cancelled.load(Ordering::Relaxed) {
-                return Err(invalid());
+            // Only a complete verified tree plus the READY state is usable.
+            // Exclusive final-name allocation works on CPFS without a
+            // check-then-rename fallback or an additional payload copy.
+            let tree = directory.create_new_child(OsStr::new("tree"))?;
+            let prepared = (|| {
+                tree::extract(&mut archive, &tree, &state.definition)?;
+                tree::seal(&tree)?;
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err(invalid());
+                }
+                Ok(())
+            })();
+            if let Err(error) = prepared {
+                // Only this invocation's exclusively allocated, unready tree.
+                tree::remove_staging(directory, &tree)?;
+                return Err(error);
             }
-            tree.publish_directory(directory, OsStr::new("tree"))?;
         }
         Self::save(directory, &next)?;
         Self::cleanup(directory)?;

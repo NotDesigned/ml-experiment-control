@@ -6,10 +6,12 @@ and source namespace. It never imports a training environment on the API host.
 """
 import fcntl
 import hashlib
+import os
 import json
 from pathlib import Path
 import re
 import shutil
+import stat
 import tempfile
 
 from .builder_client import IMAGE, PROJECT, BuildReceiptMissingError
@@ -49,6 +51,25 @@ def recipe_labels(value):
             "org.ml-expd.worker": value["worker_sha256"]}
 
 
+def _active(lock):
+    """Observe an existing build lock without creating or changing a file."""
+    try:
+        descriptor = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return False
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(descriptor)
+
+
 def request(builder, value):
     if value.get("operation") in {"native-data-build", "native-data-get"}:
         from .native_data import request as data_request
@@ -78,7 +99,9 @@ def request(builder, value):
                 text = stream.read(8192).decode("utf-8", errors="replace")
         result = {"runtime_id": value["runtime_id"], "lines": text.splitlines(), "truncated": log.exists() and log.stat().st_size > 8192}
         if value["operation"] == "native-progress":
-            result["progress"] = progress_view(progress, "READY" if receipt.exists() else "EXECUTING", active=not receipt.exists())
+            active = _active(builder.root / (identifier + ".lock"))
+            status = "READY" if receipt.exists() else "EXECUTING" if active else "RECONCILE_REQUIRED"
+            result["progress"] = progress_view(progress, status, active=active and not receipt.exists())
         return result
     if receipt.exists():
         result = json.loads(receipt.read_text())

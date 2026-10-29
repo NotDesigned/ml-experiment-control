@@ -60,6 +60,7 @@ fn config(root: &Path) -> HelperConfig {
         lock_timeout: Duration::from_secs(2),
         execution_timeout: Duration::from_secs(1),
         scheduler: None,
+        data_preparer: None,
     }
 }
 fn fixture(body: &str) -> (tempfile::TempDir, Helper) {
