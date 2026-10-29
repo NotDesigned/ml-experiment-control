@@ -2,7 +2,7 @@
 
 Development branch: `rewrite/rust`. Python reference baseline:
 `e725faec689fb8395e692e27d00a8896fa7fe5a5` (1.5.1). Production still uses Python
-1.5.1; the Rust workspace has a separate `native-v0.1.0` release. It has an independent
+1.5.1; the Rust workspace has a separate `native-v0.1.3` release. It has an independent
 Tokyo test installation and bounded PAI CPU acceptance. It has not replaced
 production or established GPU acceptance on all backends.
 
@@ -68,7 +68,7 @@ Research code may use Python/PyTorch or another image language.
 | Explicit new Attempt from selected persistent checkpoint | `core/cloud/retry.rs`, `service/retry.rs` | Immutable restore and budget checks; real PAI CPU split/continuous states matched exactly |
 | CPU result collection, direct download, verified ACK/release | `worker/cloud_artifacts.rs`, `service/artifacts.rs`, `client/artifacts.rs` | Real PAI zero-GPU synchronization, verified downloads, release and exact repeat passed |
 | List and select result archive files | `client/artifacts/files.rs`, `io/artifacts.rs` | Selected-file persistence only after full archive verification; no partial ACK; direct original-file recovery still pending |
-| DSW / CCI debug lifecycle | `core/cloud/debug.rs`, `service/debug.rs`, `client/debug.rs` | Native compile/identity checks; actual machine lifecycle pending |
+| DSW / CCI debug lifecycle | `core/cloud/debug.rs`, `service/debug.rs`, `client/debug.rs` | Actual zero-GPU DSW create/SSH/CPFS/stop/delete passed; CCI acceptance pending |
 | Backend catalogue/cached capacity | `core/capacity.rs`, `service/capacity.rs`, `capacity_http.rs` | Local GET is effect-free; real PAI quota refresh and retained timestamp accepted; Slurm/SenseCore pending |
 | Optional W&B publication | `core/tracking`, `server/tracking` | Fake SDK and durable history/display ACK tests; official-cloud acceptance pending |
 | Scoped administrative maintenance and record retirement | `core/maintenance.rs`, `server/administration.rs`, `worker/maintenance.rs` | Confined plans and worker receipts; actual provider cleanup pending |
@@ -102,6 +102,9 @@ than a successful stop. Queueing never advertises an SSH connection as ready.
 DSW stop sends an explicit empty JSON object; its REST endpoint rejects an empty
 request body with `Bad request: EOF`. Debug mutation failures also retain the
 operation and bounded provider response in `last_error`.
+Asynchronous deletion reports `DELETING` and remains eligible for background
+observation until provider absence is confirmed. A retained `last_error` is
+historical evidence, not a replacement for the latest established state.
 
 ## Latest implementation completion pass
 
@@ -309,6 +312,12 @@ The test executor permits zero GPUs only. Real acceptance covers:
   valid. Both temporary builder instances were confirmed deleted.
 - The public client installer, update check and actual client update passed.
   The isolated API, image effects and HTTPS service are enabled for boot.
+- The exact 0.1.3 candidate passed an actual zero-GPU DSW lifecycle in 74.186
+  seconds: create, SSH key login, personal CPFS write/read/remove, native stop,
+  native delete and background-confirmed disappearance through read-only status
+  polling. The correct provider API separately confirmed absence. No manual
+  provider mutation was used. Initial naming, workspace mount and empty stop-body
+  failures remain in the evidence; their original requests were never replayed.
 
 Initial jobs without training registry credentials were stopped and positively
 confirmed terminal. A real client defect rejecting zero GPU reservation in a

@@ -1,7 +1,7 @@
 # Native ML-Expd
 
 Development lives on `rewrite/rust`. Production remains the Python 1.5.1 service.
-The workspace version is `0.1.0`, the first separately published native release.
+The workspace version is `0.1.3`, published separately from the Python service.
 Code implementation, automated verification, provider acceptance and production
 cutover are separate milestones. See [the migration status](../docs/rust-rewrite.md).
 Do not initialize this binary over the production registry.
@@ -80,6 +80,46 @@ cannot silently reuse credentials belonging to another server. `backend` lists
 configured executors; capacity GETs read the cache only. An explicit refresh
 queries the provider and retains the original time of the latest accepted data.
 UNKNOWN and STALE observations do not promise availability or a start time.
+
+## Temporary SSH machines
+
+`ml-exp-rs debug list` shows the configured DSW or CCI profiles. Create a request
+file using a profile from that list, a new 32-character hexadecimal request ID
+and your actual SSH public key. The private key stays on your machine.
+
+```json
+{
+  "profile": "pai-debug",
+  "request_id": "REPLACE_WITH_32_HEX_CHARACTERS",
+  "ssh_public_key": "ssh-ed25519 REPLACE_WITH_REAL_PUBLIC_KEY",
+  "lease_seconds": 900,
+  "gpus": 0,
+  "cpus": 2,
+  "memory_gb": 4
+}
+```
+
+```sh
+ml-exp-rs debug create --file ./debug.json
+debug_identity='debug.REPLACE_WITH_RETURNED_IDENTITY'
+ml-exp-rs debug refresh "$debug_identity"
+ml-exp-rs debug show "$debug_identity"
+ml-exp-rs debug stop "$debug_identity" --confirmation "STOP $debug_identity"
+ml-exp-rs debug delete "$debug_identity" --confirmation "DELETE $debug_identity"
+```
+
+Only DSW supports delete; CCI supports create and stop. Refresh checks the
+provider; show reads saved status. An SSH connection is returned only after the
+provider reports Running. Use the returned host, port and user with the private
+key corresponding to your submitted public key.
+
+With background polling enabled, pending stops and deletes are reconciled
+automatically. Asynchronous deletion stays `DELETING` until provider absence
+is confirmed. Otherwise, use refresh to continue observing. Failed instances
+report `FAILED`; a missing old observation cannot prove a successful stop.
+`last_error` retains the last provider mutation error even after recovery;
+`state` gives the latest established outcome. If a create reply is lost, inspect
+list/refresh using the saved request identity instead of creating another machine.
 
 ## One experiment configuration
 
@@ -308,19 +348,19 @@ Real official-cloud W&B acceptance is still pending for this native implementati
 ## Deploying a native service
 
 Linux x86_64 binaries (including WSL2) are packaged independently of Python.
-The server/client release target requires glibc 2.35 or newer. Release workers
+The server/client release target requires glibc 2.34 or newer. Release workers
 are statically linked with musl so a newer build machine does not make them
 depend on a newer glibc in the training image. The installer requires
 Bash, curl and GNU coreutils; it checks exact release hashes and binary version
 before replacing the client. It installs no service and reads no API key.
 
 ```sh
-bash install-native.sh --version 0.1.0 --prefix "$HOME/.local/bin"
-ml-exp-rs update --version 0.1.0 --check
+bash install-native.sh --version 0.1.3 --prefix "$HOME/.local/bin"
+ml-exp-rs update --version 0.1.3 --check
 ```
 
 These commands use the published
-[`native-v0.1.0` release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.0).
+[`native-v0.1.3` release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.3).
 Existing Python release assets are separate. Native backend and migration
 acceptance limits are described in the [implementation status](../docs/rust-rewrite.md).
 
