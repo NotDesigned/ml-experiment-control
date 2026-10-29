@@ -16,11 +16,19 @@ struct Args {
     #[arg(long,requires="read_config",conflicts_with_all=["token_file","administration"])]
     initialize_administration: bool,
     #[arg(long)]
-    #[arg(required_unless_present_any = ["initialize_registry", "initialize_project_lifecycle", "initialize_source_archives", "initialize_submissions", "initialize_cloud_submissions", "initialize_administration"])]
+    #[arg(required_unless_present_any = ["initialize_registry", "initialize_project_lifecycle", "initialize_source_archives", "initialize_submissions", "initialize_cloud_submissions", "initialize_administration", "inspect_historical_config"])]
     token_file: Option<PathBuf>,
     /// Private approved source configuration for an isolated Rust preview.
     #[arg(long, conflicts_with = "initialize_registry")]
     read_config: Option<PathBuf>,
+    /// Observe an original Python namespace with mandatory kernel-enforced
+    /// read-only access. No initialization, provider effects or SDK publication.
+    #[arg(long,conflicts_with_all=["read_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration","project_lifecycle","source_archives","submission_config","cloud_config","tracking_config","administration"])]
+    historical_read_config: Option<PathBuf>,
+    /// Observe existing state and print a pinned private historical reader
+    /// configuration; starts no server and writes no original metadata.
+    #[arg(long,conflicts_with_all=["token_file","read_config","historical_read_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration","project_lifecycle","source_archives","submission_config","cloud_config","tracking_config","administration"])]
+    inspect_historical_config: Option<PathBuf>,
     /// Explicitly initialize a fresh registry; existing targets are refused.
     #[arg(long, conflicts_with_all = ["token_file", "read_config"])]
     initialize_registry: Option<PathBuf>,
@@ -55,6 +63,26 @@ struct Args {
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let args = Args::parse();
+    if let Some(path) = &args.inspect_historical_config {
+        let result =
+            ml_exp_server::read_config::load(path).and_then(ml_exp_server::history::inspect);
+        return match result {
+            Ok(settings) => match serde_json::to_string_pretty(&settings) {
+                Ok(value) => {
+                    println!("{value}");
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(_) => {
+                    eprintln!("historical configuration could not be encoded");
+                    std::process::ExitCode::FAILURE
+                }
+            },
+            Err(_) => {
+                eprintln!("historical namespace or mandatory read-only isolation is unavailable");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     if let Some(path) = &args.initialize_registry {
         return match ml_exp_server::read_config::initialize(path) {
             Ok(workspace) => {
@@ -224,7 +252,26 @@ async fn main() -> std::process::ExitCode {
                 }
             }
         }
-        None => (None, None),
+        None => match args.historical_read_config.as_deref() {
+            Some(path) => {
+                let path = path.to_owned();
+                let result = tokio::task::spawn_blocking(move || {
+                    ml_exp_server::history::Settings::load(&path)
+                        .and_then(ml_exp_server::history::open)
+                })
+                .await;
+                match result {
+                    Ok(Ok(api)) => (Some(std::sync::Arc::new(api)), None),
+                    _ => {
+                        eprintln!(
+                            "historical namespace or mandatory read-only isolation is unavailable"
+                        );
+                        return std::process::ExitCode::FAILURE;
+                    }
+                }
+            }
+            None => (None, None),
+        },
     };
     let listener = match tokio::net::TcpListener::bind(args.bind).await {
         Ok(listener) => listener,

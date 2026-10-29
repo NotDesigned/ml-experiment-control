@@ -152,6 +152,24 @@ impl Fixture {
             Api::open(self.settings()).unwrap(),
         )
     }
+    fn historical_settings(&self, journal: bool) -> ml_exp_server::history::Settings {
+        fs::remove_file(self.registry.join(".rust-preview-workspace.json")).unwrap();
+        write_json(
+            &self.registry.join("registry.json"),
+            &json!({"schema_version":1,"projects":[{
+                "project":"demo","project_file":self.project.join("research_project.yaml"),"state":"ACTIVE","source":"MANUAL",
+                "registered_at":"2026-10-27T00:00:00Z","updated_at":"2026-10-27T00:00:00Z","state_reason":"original registration"
+            }]}),
+        );
+        fs::write(self.registry.join(".registry.lock"), b"").unwrap();
+        fs::write(self.registry.join("events.jsonl"), b"").unwrap();
+        ml_exp_server::history::Settings {
+            schema_version: 1,
+            reads: self.settings(),
+            journal_workspace_id: journal
+                .then(|| self.workspace.strip_prefix("rust-preview-").unwrap().into()),
+        }
+    }
 }
 
 struct Server {
@@ -191,6 +209,9 @@ impl Server {
         Client::new(&format!("http://{}/ml-expd", self.address), TOKEN.into()).unwrap()
     }
     fn raw(&self, path: &str, headers: &str) -> (u16, Value) {
+        self.request("GET", path, headers, "")
+    }
+    fn request(&self, method: &str, path: &str, headers: &str, body: &str) -> (u16, Value) {
         let mut connection = TcpStream::connect(self.address).unwrap();
         connection
             .set_read_timeout(Some(Duration::from_secs(10)))
@@ -200,8 +221,8 @@ impl Server {
             .unwrap();
         write!(
             connection,
-            "GET /ml-expd{path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n{headers}\r\n",
-            self.address
+            "{method} /ml-expd{path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n{headers}\r\n{body}",
+            self.address,body.len()
         )
         .unwrap();
         let mut bytes = Vec::new();
@@ -247,86 +268,97 @@ fn headers() -> String {
 
 #[test]
 fn actual_http_reads_historical_checkpoints_without_a_native_submission_service() {
-    use ml_exp_core::checkpoints::{self, Context};
-    let f = Fixture::new();
-    let source_id = format!("source.{}", "a".repeat(64));
-    let mut manifest = f.manifest.clone();
-    manifest["source_id"] = json!(source_id);
-    write_json(&f.run().join("manifest.yaml"), &manifest);
-    for attempt in ["attempt-001", "attempt-002"] {
-        let mut value = manifest.clone();
-        value["attempt_id"] = json!(attempt);
-        write_json(
-            &f.run().join("attempts").join(attempt).join("attempt.yaml"),
-            &value,
-        );
-    }
-    let context = Context {
-        project: "demo".into(),
-        run_id: "train".into(),
-        attempt_id: "attempt-001".into(),
-        source_id,
-        image_id: "sha256:fixture".into(),
-        storage_scope: "storage.original".into(),
-        state_root: "/approved/original/train/state".into(),
-    };
-    let document = checkpoints::register(&checkpoints::document(&context,
+    for historical in [false, true] {
+        use ml_exp_core::checkpoints::{self, Context};
+        let f = Fixture::new();
+        let source_id = format!("source.{}", "a".repeat(64));
+        let mut manifest = f.manifest.clone();
+        manifest["source_id"] = json!(source_id);
+        write_json(&f.run().join("manifest.yaml"), &manifest);
+        for attempt in ["attempt-001", "attempt-002"] {
+            let mut value = manifest.clone();
+            value["attempt_id"] = json!(attempt);
+            write_json(
+                &f.run().join("attempts").join(attempt).join("attempt.yaml"),
+                &value,
+            );
+        }
+        let context = Context {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+            source_id,
+            image_id: "sha256:fixture".into(),
+            storage_scope: "storage.original".into(),
+            state_root: "/approved/original/train/state".into(),
+        };
+        let document = checkpoints::register(&checkpoints::document(&context,
         &json!({"step":100,"files":[{"path":"checkpoints/s100/model.bin","bytes":4,"sha256":"b".repeat(64)}]})
     ).unwrap(),"2026-10-29T00:00:00Z").unwrap();
-    let id = document["checkpoint_id"].as_str().unwrap();
-    let transfer = f.registry.join("artifact-transfers/demo/train");
-    private_directory(&transfer);
-    write_json(
-        &transfer.join("attempt-001.json"),
-        &json!({"project":"demo","run_id":"train","attempt_id":"attempt-001","checkpoint_state":context,"token":"not-an-api-credential"}),
-    );
-    let checkpoints = f
-        .registry
-        .join("persistent-checkpoints/demo/train/attempt-001");
-    private_directory(&checkpoints);
-    write_json(&checkpoints.join(format!("{id}.json")), &document);
-    // A different current Attempt must never redirect the explicit historical
-    // query. No submission/source/backend service is configured in this app.
-    f.current("attempt-002");
-    let server = f.server();
-    let path = "/api/runs/demo/train/attempts/attempt-001/checkpoints";
-    let (status, listed) = server.raw(path, &headers());
-    assert_eq!(status, 200);
-    assert_eq!(listed["checkpoints"], json!([document]));
-    let (status, found) = server.raw(&format!("{path}/{id}"), &headers());
-    assert_eq!(status, 200);
-    assert_eq!(found, document);
-    assert!(
-        !serde_json::to_string(&found)
-            .unwrap()
-            .contains("not-an-api-credential")
-    );
-    assert!(
-        !f.registry
-            .join("persistent-checkpoints/.checkpoints.lock")
-            .exists()
-    );
-    assert_eq!(server.raw(path, "X-ML-Expd-Client-Protocol: 2\r\n").0, 401);
-    let client = server.client();
-    let health = client.negotiate().unwrap();
-    let plan = ml_exp_client::submissions::plan(ml_exp_client::submissions::Command::Checkpoints {
-        project: "demo",
-        run: "train",
-        attempt: "attempt-001",
-        checkpoint: Some(id),
-    })
-    .unwrap();
-    assert_eq!(
-        ml_exp_client::submissions::execute(&client, &plan, &health).unwrap(),
-        document
-    );
-    // Read capability does not permit provider checkpoint refresh/registration.
-    let refresh =
-        ml_exp_client::submissions::plan(ml_exp_client::submissions::Command::Checkpoint {
-            submission: "action-0123456789abcdef",
-        })
-        .unwrap();
-    assert!(ml_exp_client::submissions::execute(&client, &refresh, &health).is_err());
+        let id = document["checkpoint_id"].as_str().unwrap();
+        let transfer = f.registry.join("artifact-transfers/demo/train");
+        private_directory(&transfer);
+        write_json(
+            &transfer.join("attempt-001.json"),
+            &json!({"project":"demo","run_id":"train","attempt_id":"attempt-001","checkpoint_state":context,"token":"not-an-api-credential"}),
+        );
+        let checkpoints = f
+            .registry
+            .join("persistent-checkpoints/demo/train/attempt-001");
+        private_directory(&checkpoints);
+        write_json(&checkpoints.join(format!("{id}.json")), &document);
+        // A different current Attempt must never redirect the explicit historical
+        // query. No submission/source/backend service is configured in this app.
+        f.current("attempt-002");
+        let server = if historical {
+            let settings = f.historical_settings(false);
+            Server::start(
+                Auth::load(&f.token).unwrap(),
+                ml_exp_server::history::open(settings).unwrap(),
+            )
+        } else {
+            f.server()
+        };
+        let path = "/api/runs/demo/train/attempts/attempt-001/checkpoints";
+        let (status, listed) = server.raw(path, &headers());
+        assert_eq!(status, 200);
+        assert_eq!(listed["checkpoints"], json!([document]));
+        let (status, found) = server.raw(&format!("{path}/{id}"), &headers());
+        assert_eq!(status, 200);
+        assert_eq!(found, document);
+        assert!(
+            !serde_json::to_string(&found)
+                .unwrap()
+                .contains("not-an-api-credential")
+        );
+        assert!(
+            !f.registry
+                .join("persistent-checkpoints/.checkpoints.lock")
+                .exists()
+        );
+        assert_eq!(server.raw(path, "X-ML-Expd-Client-Protocol: 2\r\n").0, 401);
+        let client = server.client();
+        let health = client.negotiate().unwrap();
+        let plan =
+            ml_exp_client::submissions::plan(ml_exp_client::submissions::Command::Checkpoints {
+                project: "demo",
+                run: "train",
+                attempt: "attempt-001",
+                checkpoint: Some(id),
+            })
+            .unwrap();
+        assert_eq!(
+            ml_exp_client::submissions::execute(&client, &plan, &health).unwrap(),
+            document
+        );
+        // Read capability does not permit provider checkpoint refresh/registration.
+        let refresh =
+            ml_exp_client::submissions::plan(ml_exp_client::submissions::Command::Checkpoint {
+                submission: "action-0123456789abcdef",
+            })
+            .unwrap();
+        assert!(ml_exp_client::submissions::execute(&client, &refresh, &health).is_err());
+    }
 }
 
 #[test]
@@ -851,4 +883,240 @@ fn malformed_internal_journal_observations_never_become_complete_science() {
         }
         assert!(fixture.registry.join("tracking/outbox.sqlite").exists());
     }
+}
+
+fn file_inventory(path: &Path) -> Vec<(PathBuf, String)> {
+    let mut values = Vec::new();
+    for item in fs::read_dir(path).unwrap() {
+        let path = item.unwrap().path();
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        if metadata.is_dir() {
+            values.extend(file_inventory(&path));
+        } else if metadata.is_file() {
+            values.push((
+                path.clone(),
+                ml_exp_core::slurm::helper::sha256_bytes(&fs::read(&path).unwrap()),
+            ));
+        }
+    }
+    values.sort();
+    values
+}
+
+#[test]
+fn historical_namespace_reads_original_metrics_and_refuses_every_mutation_route() {
+    let fixture = Fixture::new();
+    fixture.journal_matching();
+    let settings = fixture.historical_settings(true);
+    let before = file_inventory(fixture._temp.path());
+    for _restart in 0..2 {
+        let api = ml_exp_server::history::open(settings.clone()).unwrap();
+        assert!(api.is_historical());
+        let server = Server::start(Auth::load(&fixture.token).unwrap(), api);
+        let health = server.client().negotiate().unwrap();
+        assert_eq!(health["historical_read_only"], true);
+        assert_eq!(health["scheduler_mutations"], false);
+        assert_eq!(health["run_writes"], false);
+        assert_eq!(health["source_imports"], false);
+        assert_eq!(health["projects"], 1);
+        assert!(
+            health["workspace_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("historical-")
+        );
+        let client = server.client();
+        assert_eq!(client.get("/api/projects").unwrap()[0]["project"], "demo");
+        let lifecycle = client.get("/api/project-lifecycle").unwrap();
+        assert_eq!(lifecycle["read_only"], true);
+        assert_eq!(lifecycle["projects"][0]["state"], "ACTIVE");
+        let list = ml_exp_client::projects::plan(ml_exp_client::projects::Command::List).unwrap();
+        assert_eq!(
+            ml_exp_client::projects::execute(&client, &list, &health).unwrap(),
+            lifecycle
+        );
+        let pause = ml_exp_client::projects::plan(ml_exp_client::projects::Command::Change {
+            project: "demo",
+            action: ml_exp_client::projects::Action::Pause,
+            reason: "not allowed in history",
+            expected_revision: None,
+        })
+        .unwrap();
+        assert!(ml_exp_client::projects::execute(&client, &pause, &health).is_err());
+        let metrics = client
+            .get("/api/attempts/demo/train::attempt-001/metrics?format=records")
+            .unwrap();
+        assert_eq!(metrics["records"].as_array().unwrap().len(), 2);
+        assert_eq!(metrics["records"][0]["variant_id"], "left");
+        assert_eq!(metrics["records"][0]["value"], 2.5);
+        assert_eq!(metrics["records"][1]["variant_id"], "right");
+        let logs = client
+            .get("/api/attempts/demo/train::attempt-001/logs")
+            .unwrap();
+        assert!(
+            serde_json::to_string(&logs)
+                .unwrap()
+                .contains("attempt-001 exact output")
+        );
+        for path in [
+            "/api/project-lifecycle/demo/pause",
+            "/api/projects/demo/runs",
+            "/api/projects/demo/runtimes",
+            "/api/submissions/action-0123456789abcdef/execute",
+            "/api/worker-exchange/not-a-capability",
+            "/api/dataset-exchange/not-a-capability",
+        ] {
+            let (status, value) = server.request("POST", path, &headers(), "{}");
+            assert_eq!(status, 405, "{path}");
+            assert_eq!(value["code"], "HISTORICAL_NAMESPACE_READ_ONLY");
+            assert_eq!(
+                server
+                    .request("POST", path, "X-ML-Expd-Client-Protocol: 2\r\n", "{}")
+                    .0,
+                401
+            );
+        }
+        assert_eq!(file_inventory(fixture._temp.path()), before);
+    }
+    assert_eq!(file_inventory(fixture._temp.path()), before);
+}
+
+#[test]
+fn historical_reader_pins_journal_and_lifecycle_without_native_marker_fallback() {
+    let fixture = Fixture::new();
+    fixture.journal_matching();
+    let settings = fixture.historical_settings(true);
+    let mut wrong = settings.clone();
+    wrong.journal_workspace_id = Some("0".repeat(32));
+    assert!(ml_exp_server::history::open(wrong).is_err());
+    let mut unexpected = settings.clone();
+    unexpected.journal_workspace_id = None;
+    assert!(ml_exp_server::history::open(unexpected).is_err());
+    assert!(Api::open(settings.reads.clone()).is_err());
+    let server = Server::start(
+        Auth::load(&fixture.token).unwrap(),
+        ml_exp_server::history::open(settings.clone()).unwrap(),
+    );
+    let registry = fixture.registry.join("registry.json");
+    let original = fs::read(&registry).unwrap();
+    let mut value: Value = serde_json::from_slice(&original).unwrap();
+    value["projects"][0]["state"] = json!("ARCHIVED");
+    write_json(&registry, &value);
+    assert_eq!(server.client().get("/api/projects").unwrap(), json!([]));
+    assert_eq!(server.client().negotiate().unwrap()["projects"], 0);
+    assert_eq!(
+        http_failure(
+            server.client().get("/api/runs/demo/train").unwrap_err(),
+            404
+        )
+        .error_code,
+        "PROJECT_INACTIVE"
+    );
+    fs::write(&registry, &original).unwrap();
+    value["projects"][0]["state"] = json!("ACTIVE");
+    value["projects"][0]["project_file"] = json!("/foreign/unapproved/project.yaml");
+    write_json(&registry, &value);
+    assert_eq!(
+        http_failure(server.client().get("/api/projects").unwrap_err(), 409).error_code,
+        "PROJECT_SOURCE_BINDING_MISMATCH"
+    );
+    fs::write(&registry, original).unwrap();
+    write_json(
+        &fixture.registry.join(".rust-preview-workspace.json"),
+        &json!({"contract":"wrong"}),
+    );
+    assert_eq!(
+        http_failure(server.client().get("/api/projects").unwrap_err(), 409).error_code,
+        "READ_WORKSPACE_CHANGED"
+    );
+    assert!(ml_exp_server::history::open(settings).is_err());
+}
+
+#[test]
+fn historical_reader_without_a_journal_does_not_create_or_accept_a_later_one() {
+    let fixture = Fixture::new();
+    let settings = fixture.historical_settings(false);
+    let before = file_inventory(fixture._temp.path());
+    let server = Server::start(
+        Auth::load(&fixture.token).unwrap(),
+        ml_exp_server::history::open(settings).unwrap(),
+    );
+    assert_eq!(
+        server
+            .client()
+            .get("/api/attempts/demo/train::attempt-001/metrics?format=records")
+            .unwrap()["records"],
+        json!([])
+    );
+    assert_eq!(file_inventory(fixture._temp.path()), before);
+    fixture.journal_matching();
+    assert_eq!(
+        http_failure(
+            server
+                .client()
+                .get("/api/attempts/demo/train::attempt-001/metrics?format=records")
+                .unwrap_err(),
+            409
+        )
+        .error_code,
+        "READ_WORKSPACE_CHANGED"
+    );
+}
+
+#[test]
+fn historical_config_inspection_uses_actual_binary_without_creating_files_or_new_identity() {
+    let fixture = Fixture::new();
+    fixture.journal_matching();
+    let settings = fixture.historical_settings(true);
+    let config = fixture._temp.path().join("original-reads.json");
+    write_json(&config, &serde_json::to_value(&settings.reads).unwrap());
+    let before = file_inventory(fixture._temp.path());
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ml-expd-rs"))
+        .arg("--inspect-historical-config")
+        .arg(&config)
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::to_value(&settings).unwrap()
+    );
+    assert_eq!(file_inventory(fixture._temp.path()), before);
+    for incompatible in [
+        "--source-archives",
+        "--project-lifecycle",
+        "--administration",
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ml-expd-rs"))
+            .arg("--historical-read-config")
+            .arg(&config)
+            .arg("--token-file")
+            .arg(&fixture.token)
+            .arg(incompatible)
+            .env_clear()
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+    }
+    assert_eq!(file_inventory(fixture._temp.path()), before);
+}
+
+#[test]
+fn historical_cold_wal_is_refused_without_auxiliary_creation_or_weaker_fallback() {
+    let fixture = Fixture::new();
+    fixture.journal_matching();
+    let settings = fixture.historical_settings(true);
+    let connection =
+        rusqlite::Connection::open(fixture.registry.join("tracking/outbox.sqlite")).unwrap();
+    connection.execute_batch("PRAGMA journal_mode=WAL").unwrap();
+    drop(connection);
+    let before = file_inventory(fixture._temp.path());
+    assert!(ml_exp_server::history::open(settings.clone()).is_err());
+    assert!(ml_exp_server::history::inspect(settings.reads).is_err());
+    assert_eq!(file_inventory(fixture._temp.path()), before);
 }

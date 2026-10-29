@@ -129,10 +129,7 @@ async fn list(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> 
     if let Err(error) = read_api::no_parameters(query.as_deref()) {
         return read_http::failure(error);
     }
-    read_http::execute(state, Access::Read, |api, _| {
-        service(api)?.list().map_err(Into::into)
-    })
-    .await
+    read_http::execute(state, Access::Read, |api, _| api.project_lifecycle_read()).await
 }
 async fn register(
     State(state): State<Arc<AppState>>,

@@ -12,7 +12,6 @@ use std::{ffi::OsStr, path::Path};
 
 mod catalog;
 mod database;
-mod isolation;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("AUDIT_READ_ONLY_ISOLATION_UNAVAILABLE")]
@@ -416,19 +415,10 @@ fn controls(root: &Directory, actions: Option<&Directory>, audit: &mut Audit) ->
 /// network, source-tree traversal, checkpoint payload or result download occurs.
 /// Two complete observations must agree; concurrent source changes fail closed.
 pub fn capture(settings: &read_config::Settings, action_root: Option<&Path>) -> Result<Snapshot> {
-    let settings = settings.clone();
-    let action_root = action_root.map(Path::to_path_buf);
     // Restriction is irreversible and thread-local. Keep the caller's normal
     // permissions and apply it before this thread opens any SQLite connection.
     // READ_ONLY SQLite alone can still try to create an empty WAL file.
-    std::thread::Builder::new()
-        .name("state-audit-read-only".into())
-        .spawn(move || {
-            isolation::restrict()?;
-            capture_isolated(&settings, action_root.as_deref())
-        })
-        .map_err(|_| Error::Isolation)?
-        .join()
+    crate::readonly::run(|| capture_isolated(settings, action_root))
         .map_err(|_| Error::Isolation)?
 }
 fn capture_isolated(

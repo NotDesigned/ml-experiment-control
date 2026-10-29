@@ -126,6 +126,14 @@ copy or reading scientific payloads. It preserves metric receive order and
 includes event IDs and W&B cursors; equality is not production cutover authority.
 Historical-state transformation and provider acceptance remain separate work.
 
+An explicit historical daemon mode now reuses the ordinary read projections
+without initializing the original namespace. Offline configuration inspection
+pins the original metric journal identity. Project lifecycle and deletion
+records remain authoritative. Historical HTTP observations have mandatory
+kernel write denial, no effect services, and all mutation/worker-ingress routes
+are rejected. This is a separate reader; a combined native-write/historical-read
+namespace and historical restore remain migration work.
+
 Registered checkpoint GETs can also read historical Run/Attempt receipts without
 a native Submission. They validate the original source/image and issued storage
 context, preserve withdrawn/deleted scopes, and create no locks or seals. A

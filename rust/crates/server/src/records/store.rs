@@ -124,6 +124,16 @@ impl Store {
         Ok(value)
     }
 
+    /// Inspect only existing workspace metadata, without inventing a Run or
+    /// creating its scope. Caller controls the historical read-only isolation.
+    pub(crate) fn existing_workspace_id(&self) -> Result<String> {
+        let guard = self.fence.shared_existing()?;
+        guard.validate()?;
+        let value = self.workspace()?;
+        guard.validate()?;
+        Ok(value)
+    }
+
     fn binding_raw(&self, project: &str, run: &str) -> Result<Option<Value>> {
         self.database.read_only(|connection| -> Result<_> {
             let row:Option<(String,String)>=connection.query_row("SELECT route,config FROM runs WHERE project=? AND run=?",params![project,run],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;

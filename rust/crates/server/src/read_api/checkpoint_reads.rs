@@ -18,6 +18,15 @@ impl Api {
         attempt: &str,
         id: Option<&str>,
     ) -> Result<Option<Value>, Error> {
+        self.observe(move |api| api.historical_checkpoints_observed(project, run, attempt, id))
+    }
+    fn historical_checkpoints_observed(
+        &self,
+        project: &str,
+        run: &str,
+        attempt: &str,
+        id: Option<&str>,
+    ) -> Result<Option<Value>, Error> {
         validate_id(project).map_err(|_| invalid_query())?;
         validate_id(run).map_err(|_| invalid_query())?;
         validate_attempt(attempt).map_err(|_| invalid_query())?;

@@ -15,6 +15,12 @@ use std::{
 
 const MARKER: &str = ".rust-preview-workspace.json";
 const FORMAT: &str = "ml-expd-rust-preview.v1";
+
+pub(crate) fn has_native_marker(directory: &Directory) -> Result<bool, Error> {
+    directory
+        .entry_exists(OsStr::new(MARKER))
+        .map_err(|_| Error)
+}
 #[derive(Debug, thiserror::Error)]
 #[error("invalid isolated experiment read configuration or workspace")]
 pub struct Error;

@@ -9,6 +9,7 @@ pub mod cloud_runs;
 mod data_delivery_http;
 pub mod deletion;
 pub mod experiments;
+pub mod history;
 pub mod index;
 mod native_contract;
 pub mod objects;
@@ -19,6 +20,7 @@ pub mod read_api;
 pub mod read_config;
 mod read_http;
 pub mod read_model;
+mod readonly;
 pub mod records;
 mod renewal;
 pub mod sources;
@@ -93,6 +95,30 @@ pub(crate) struct AppState {
 }
 
 async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
+    // Historical mode has no mutation routes, including worker-token ingress.
+    // Authenticate first; a token cannot convert this reader into native
+    // authority or activate a provider/SDK background process.
+    if state.reads.as_ref().is_some_and(|api| api.is_historical())
+        && request.method() != Method::GET
+    {
+        if let Err(status) = access_policy(
+            &state.auth.token,
+            request.headers(),
+            request.method(),
+            request.uri().path(),
+        ) {
+            return (
+                status,
+                Json(json!({"detail":"authentication and client protocol required"})),
+            )
+                .into_response();
+        }
+        return read_http::failure(read_api::Error {
+            status: 405,
+            code: "HISTORICAL_NAMESPACE_READ_ONLY",
+            detail: "historical records are read-only; no operation was dispatched",
+        });
+    }
     // This route has separate, Attempt-scoped authentication in its handler.
     // A worker credential is never accepted by any ordinary API route.
     if request.method() == Method::POST
@@ -206,6 +232,18 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
             api.sources().as_deref(),
             api.submissions().as_deref(),
         );
+        document["historical_read_only"] = json!(api.is_historical());
+        if api.is_historical() {
+            for field in ["capabilities", "supported_capabilities"] {
+                document[field]
+                    .as_array_mut()
+                    .expect("capabilities")
+                    .extend([
+                        json!("historical-records-read.v1"),
+                        json!("project-lifecycle-read.v1"),
+                    ]);
+            }
+        }
         for field in ["capabilities", "supported_capabilities"] {
             document[field]
                 .as_array_mut()

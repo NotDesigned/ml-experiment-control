@@ -234,6 +234,29 @@ Real official-cloud W&B acceptance is still pending for this native implementati
 
 ## Existing-state audit
 
+The daemon also has an explicit historical reader. It serves the existing
+Project, Run, Attempt, log, metric, collection-status and checkpoint GETs directly
+from the original namespace. It starts no provider observer, SDK publisher or
+initializer, and rejects all mutation routes, including worker ingress.
+
+Generate a pinned configuration from the same private original-read settings
+used by the audit, then run a separate loopback reader:
+
+```sh
+umask 077
+ml-expd-rs --inspect-historical-config /private/original-reads.json > /private/historical-reader.json
+ml-expd-rs --historical-read-config /private/historical-reader.json --token-file /private/reader-token --bind 127.0.0.1:18766
+```
+
+The generated configuration pins the original journal workspace ID or its
+absence. The original flat Project lifecycle ledger and deletion fences must
+already exist. Each historical observation runs in a dedicated thread with
+kernel-enforced write denial; an unsupported kernel is an error. Paused or
+archived Projects stay hidden, and a different journal or native marker is
+refused. No historical SQLite file is copied or migrated. This separate reader
+does not yet combine new native Run creation and historical records into one
+writable service, or authorize recovery from an old checkpoint.
+
 The offline audit accepts an explicit private read configuration without a native
 workspace marker. Run it as the account that owns the original metadata:
 

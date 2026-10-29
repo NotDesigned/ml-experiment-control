@@ -229,11 +229,11 @@ fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
 /// whether a new request is appropriate; this function never replays it.
 pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Error> {
     session::validate_health(health)?;
-    if !health
-        .get("capabilities")
-        .and_then(Value::as_array)
-        .is_some_and(|values| values.iter().any(|v| v == "project-lifecycle.v1"))
-    {
+    let capabilities = health.get("capabilities").and_then(Value::as_array);
+    if !capabilities.is_some_and(|values| {
+        values.iter().any(|v| v == "project-lifecycle.v1")
+            || !plan.is_mutation() && values.iter().any(|v| v == "project-lifecycle-read.v1")
+    }) {
         return Err(Error::Observation(
             "daemon has not enabled project-lifecycle.v1; no project request was sent",
         ));
