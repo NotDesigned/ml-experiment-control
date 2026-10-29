@@ -11,6 +11,54 @@ pub const PART_BYTES: u64 = multipart::DEFAULT_PART_BYTES;
 #[error("invalid dataset identity, delivery state or input binding")]
 pub struct Error;
 pub type Result<T> = std::result::Result<T, Error>;
+/// Payload-free discovery. Cache readiness and archive delivery stay distinct.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Summary {
+    pub asset_id: String,
+    pub archive_bytes: u64,
+    pub file_count: usize,
+    pub part_count: u64,
+    pub received_parts: u64,
+    pub status: String,
+}
+impl Summary {
+    pub fn from_state(state: &State, archive_verified: bool) -> Result<Self> {
+        state.validate()?;
+        let result = Self {
+            asset_id: state.asset_id.clone(),
+            archive_bytes: state.definition.archive_bytes,
+            file_count: state.definition.files.len(),
+            part_count: state.definition.part_count()?,
+            received_parts: state.parts.len() as u64,
+            status: if state.ready.is_some() {
+                "READY"
+            } else if archive_verified {
+                "ARCHIVED"
+            } else {
+                "UPLOADING"
+            }
+            .into(),
+        };
+        result.validate()?;
+        Ok(result)
+    }
+    pub fn validate(&self) -> Result<()> {
+        if !asset_id(&self.asset_id)
+            || self.file_count == 0
+            || self.file_count > crate::artifacts::MAX_FILES
+            || self.part_count
+                != multipart::part_count(self.archive_bytes, multipart::Policy::default())
+                    .map_err(|_| Error)?
+            || self.received_parts > self.part_count
+            || !matches!(self.status.as_str(), "READY" | "ARCHIVED" | "UPLOADING")
+            || self.status != "UPLOADING" && self.received_parts != self.part_count
+        {
+            return Err(Error);
+        }
+        Ok(())
+    }
+}
 fn digest(value: &impl Serialize) -> Result<String> {
     canonical::protocol_identity(&serde_json::to_value(value).map_err(|_| Error)?)
         .map_err(|_| Error)
@@ -578,5 +626,37 @@ mod tests {
         });
         assert!(d.validate().is_err());
         assert!(!root_path("/data:rw"));
+    }
+    #[test]
+    fn summaries_never_promote_an_incomplete_upload_to_a_ready_cache() {
+        let state = State::new("demo".into(), target(), definition()).unwrap();
+        let summary = Summary::from_state(&state, false).unwrap();
+        assert_eq!(summary.status, "UPLOADING");
+        assert_eq!(summary.archive_bytes, 5 * 1024 * 1024 * 1024);
+        assert!(Summary::from_state(&state, true).is_err());
+        let mut complete = state;
+        for number in 0..complete.definition.part_count().unwrap() {
+            complete.parts.insert(
+                number,
+                multipart::PartRecord {
+                    sha256: "3".repeat(64),
+                    bytes: complete.definition.part_size(number).unwrap(),
+                },
+            );
+        }
+        assert_eq!(
+            Summary::from_state(&complete, true).unwrap().status,
+            "ARCHIVED"
+        );
+        let receipt = Receipt {
+            contract: CONTRACT.into(),
+            project: complete.project.clone(),
+            target: complete.target.clone(),
+            asset_id: complete.asset_id.clone(),
+            definition: complete.definition.clone(),
+            root: format!("/data/demo/{}/tree", complete.asset_id),
+        };
+        let ready = complete.publish(receipt).unwrap();
+        assert_eq!(Summary::from_state(&ready, true).unwrap().status, "READY");
     }
 }

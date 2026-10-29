@@ -5,6 +5,55 @@ use ml_exp_io::process::{self, Capture, Environment, Input};
 use std::time::{Duration, Instant};
 
 impl Service {
+    pub fn dataset_list(&self, project: &str, executor: &str) -> Result<Value> {
+        let backend = self.dataset_backend(project, executor)?;
+        let mut rows = Vec::new();
+        let mut bytes = 0usize;
+        for name in self
+            .slots
+            .entry_names_limited(32768)
+            .map_err(|_| Error::DatasetUnavailable)?
+        {
+            let Some(name) = name
+                .to_str()
+                .filter(|s| s.starts_with("dataset-") && s.ends_with(".json"))
+            else {
+                continue;
+            };
+            let raw = self
+                .slots
+                .read_regular(OsStr::new(name), datasets::MAX_METADATA as u64)
+                .map_err(|_| Error::DatasetUnavailable)?;
+            bytes = bytes
+                .checked_add(raw.len())
+                .ok_or(Error::DatasetUnavailable)?;
+            if bytes > 64 * 1024 * 1024 {
+                return Err(Error::DatasetUnavailable);
+            }
+            let value = ml_exp_core::json::mapping(&raw).map_err(|_| Error::DatasetUnavailable)?;
+            if value["project"] != project || value["target"]["backend_id"] != executor {
+                continue;
+            }
+            let asset = value["asset_id"]
+                .as_str()
+                .ok_or(Error::DatasetUnavailable)?;
+            if name != Self::data_name(project, executor, asset)? {
+                return Err(Error::DatasetUnavailable);
+            }
+            let state = self
+                .data_read(project, backend, asset)?
+                .ok_or(Error::DatasetMissing)?;
+            rows.push(
+                datasets::Summary::from_state(&state, state.ready.is_some())
+                    .map_err(|_| Error::DatasetUnavailable)?,
+            );
+            if rows.len() > 1024 {
+                return Err(Error::DatasetUnavailable);
+            }
+        }
+        rows.sort_by(|a, b| a.asset_id.cmp(&b.asset_id));
+        Ok(json!({"project":project,"executor":executor,"datasets":rows}))
+    }
     pub fn has_datasets(&self) -> bool {
         self.backends
             .values()

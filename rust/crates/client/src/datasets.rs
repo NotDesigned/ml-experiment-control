@@ -85,6 +85,33 @@ pub fn show(
     state(value.clone(), project, executor, asset)?;
     Ok(value)
 }
+pub fn list(
+    client: &Client,
+    project: &str,
+    executor: &str,
+    health: &Value,
+) -> Result<Value, Error> {
+    validate(project, executor, None)?;
+    capability(health)?;
+    let value = client.get(&format!("/api/projects/{project}/datasets/{executor}"))?;
+    if value["project"] != project || value["executor"] != executor {
+        return Err(Error::Response);
+    }
+    let rows: Vec<datasets::Summary> =
+        serde_json::from_value(value["datasets"].clone()).map_err(|_| Error::Response)?;
+    if rows.len() > 1024 {
+        return Err(Error::Response);
+    }
+    let mut previous: Option<&str> = None;
+    for row in &rows {
+        row.validate().map_err(|_| Error::Response)?;
+        if previous.is_some_and(|s| s >= row.asset_id.as_str()) {
+            return Err(Error::Response);
+        }
+        previous = Some(&row.asset_id);
+    }
+    Ok(value)
+}
 #[cfg(unix)]
 pub fn upload(
     client: &Client,

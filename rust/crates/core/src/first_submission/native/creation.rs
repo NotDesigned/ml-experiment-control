@@ -29,6 +29,8 @@ pub struct Request {
     pub resources: slurm::Resources,
     pub walltime_seconds: u64,
     pub seed: i64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub parameters: Map<String, Value>,
     #[serde(default)]
@@ -55,6 +57,7 @@ impl Request {
         serde_json::from_value(Value::Object(value)).map_err(|_| Error("Run request schema"))
     }
     pub fn validate(&self, project: &str) -> Result<()> {
+        crate::environment::validate(&self.env).map_err(|_| Error("Run environment"))?;
         if self
             .scheduling
             .as_ref()
@@ -186,6 +189,7 @@ pub fn plan(
             source_mount: "/workspace".into(),
             workdir: "/workspace".into(),
             managed_io: true,
+            env: request.env.clone(),
         },
         command,
     };
@@ -194,6 +198,9 @@ pub fn plan(
         "evaluation":request.evaluation,"metrics_schema":request.metrics_schema});
     if !request.data.is_empty() {
         protocol["data"] = json!(request.data);
+    }
+    if !request.env.is_empty() {
+        protocol["env"] = json!(request.env);
     }
     match (&request.resume_from, authority.checkpoint) {
         (Some(reference), Some(value)) => {
@@ -323,7 +330,18 @@ mod tests {
         let base = request();
         let parsed: Request = serde_json::from_value(base.clone()).unwrap();
         assert!(parsed.validate("demo").is_ok());
-        for field in ["inputs", "resume_from", "env", "backend", "storage"] {
+        assert!(serde_json::to_value(&parsed).unwrap().get("env").is_none());
+        let mut configured = parsed.clone();
+        configured.env.insert("OMP_NUM_THREADS".into(), "4".into());
+        assert_ne!(
+            parsed.identity("demo").unwrap(),
+            configured.identity("demo").unwrap()
+        );
+        configured
+            .env
+            .insert("OUTPUT_DIR".into(), "/another/path".into());
+        assert!(configured.validate("demo").is_err());
+        for field in ["inputs", "resume_from", "backend", "storage"] {
             let mut bad = base.clone();
             bad[field] = json!({});
             assert!(Request::from_slice(&serde_json::to_vec(&bad).unwrap()).is_err());

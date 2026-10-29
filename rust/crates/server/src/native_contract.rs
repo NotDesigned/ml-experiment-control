@@ -41,6 +41,7 @@ pub(crate) fn extend(document: &mut Value) {
     );
     let mut run=document["paths"]["/api/projects/{project}/runs"]["post"]["requestBody"]["content"]["application/json"]["schema"].clone();
     run["properties"]["scheduling"] = scheduling;
+    run["properties"]["env"] = json!({"type":"object","maxProperties":128,"additionalProperties":{"type":"string","maxLength":8192},"description":"Frozen per-Run environment. Platform directory, identity, resume and ML_EXPD_ variables are reserved. Store credentials separately."});
     run["properties"]["resume_from"] = object(
         &["run_id", "attempt_id", "checkpoint_id"],
         json!({"run_id":{"type":"string"},"attempt_id":{"type":"string"},"checkpoint_id":{"type":"string"}}),
@@ -77,6 +78,12 @@ pub(crate) fn extend(document: &mut Value) {
             &["request_id", "confirmation"],
             json!({"request_id":{"type":"string"},"confirmation":{"type":"string"}}),
         )),
+    );
+    insert(
+        "/api/projects/{project}/datasets/{executor}",
+        "get",
+        "List retained immutable dataset identities and upload/cache readiness; no payload read or provider request. ARCHIVED means uploaded bytes are verified, not that the backend cache is READY.",
+        None,
     );
     insert(
         "/api/executors",

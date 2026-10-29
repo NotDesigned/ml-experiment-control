@@ -131,6 +131,7 @@ impl Fixture {
                 source_mount: "/workspace".into(),
                 workdir: "/workspace".into(),
                 managed_io: true,
+                env: Default::default(),
             },
             command: vec!["python".into(), "-u".into(), "/workspace/train.py".into()],
         };

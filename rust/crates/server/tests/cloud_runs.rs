@@ -163,11 +163,18 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     let mut cpu = request.clone();
     cpu.run_id = "cpu-only".into();
     cpu.resources.gpus = 0;
+    cpu.env
+        .insert("EXPERIMENT_LABEL".into(), "frozen literal $(text)".into());
     service
         .create_run("demo", cpu.clone(), "2026-10-29T00:00:00Z")
         .unwrap();
     let cpu_manifest = runs.join("cpu-only/manifest.json");
     let mut frozen: Value = serde_json::from_slice(&fs::read(&cpu_manifest).unwrap()).unwrap();
+    assert_eq!(frozen["env"]["EXPERIMENT_LABEL"], "frozen literal $(text)");
+    assert_eq!(
+        frozen["evaluation"]["protocol"]["env"],
+        serde_json::json!(cpu.env)
+    );
     assert_eq!(frozen["native_cloud"]["storage"]["mount"], "/mnt/workspace");
     frozen["native_cloud"]
         .as_object_mut()
@@ -201,6 +208,41 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         )
         .unwrap();
     assert_eq!(cpu_plan["status"], "PREPARED");
+    assert_eq!(
+        service.dataset_list("demo", "pai-h200").unwrap()["datasets"],
+        json!([])
+    );
+    let dataset = ml_exp_core::datasets::State::new(
+        "demo".into(),
+        serde_json::from_value(frozen["native_cloud"]["target"].clone()).unwrap(),
+        ml_exp_core::datasets::Definition {
+            sha256: "a".repeat(64),
+            archive_bytes: 4096,
+            files: vec![ml_exp_core::artifacts::FileReceipt {
+                path: "train.bin".into(),
+                bytes: 5,
+                sha256: "b".repeat(64),
+            }],
+        },
+    )
+    .unwrap();
+    let name = format!(
+        "dataset-{}.json",
+        ml_exp_core::canonical::digest(&json!(["demo", "pai-h200", dataset.asset_id])).unwrap()
+    );
+    let dataset_file = settings
+        .registry_root
+        .join("cloud-submissions/slots")
+        .join(name);
+    private(
+        &dataset_file,
+        &json!({"state":dataset,"archive_verified":false}),
+    );
+    let dataset_bytes = fs::read(&dataset_file).unwrap();
+    let catalog = service.dataset_list("demo", "pai-h200").unwrap();
+    assert_eq!(catalog["datasets"][0]["status"], "UPLOADING");
+    assert_eq!(catalog["datasets"][0]["received_parts"], 0);
+    assert_eq!(fs::read(&dataset_file).unwrap(), dataset_bytes);
     assert!(
         serde_json::from_slice::<Value>(&fs::read(&cpu_manifest).unwrap()).unwrap()["native_cloud"]
             .get("storage")
@@ -315,6 +357,9 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         names
     };
     let before = listing();
+    let datasets = client.get("/api/projects/demo/datasets/pai-h200").unwrap();
+    assert_eq!(datasets["datasets"][0]["asset_id"], dataset.asset_id);
+    assert_eq!(listing(), before);
     let capacity = client.get("/api/backends/pai-h200/capacity").unwrap();
     assert_eq!(capacity["status"], "UNKNOWN");
     assert_eq!(listing(), before); // no lock, cache or provider work on GET

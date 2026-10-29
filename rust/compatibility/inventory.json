@@ -46,7 +46,7 @@
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
     "all_tracked_python_files": 458,
-    "connected_native_workflows": 18
+    "connected_native_workflows": 21
   },
   "architecture": {
     "application_crates": [
@@ -7228,7 +7228,12 @@
         "server/src/ml_exp_server/builds/native_image.py"
       ],
       "provider_acceptance": false,
-      "production_deployed": false
+      "production_deployed": false,
+      "observed_effects": {
+        "pai_dsw_to_tokyo": true,
+        "native_dlc_execution": false,
+        "evidence": ".ops/rust-e2e-20261029/"
+      }
     },
     "slurm_materialization": {
       "implementation": "connected_workflow",
@@ -7336,6 +7341,28 @@
         "existing-state-refusal",
         "static-worker-ELF-validation"
       ]
+    },
+    "run_environment": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/core/src/environment.rs",
+        "rust/crates/core/src/first_submission/native/creation.rs",
+        "rust/crates/core/src/cloud/run.rs",
+        "rust/crates/core/src/slurm/managed.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
+    },
+    "dataset_catalog": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/client/src/datasets.rs",
+        "rust/crates/server/src/submissions/dataset_http.rs",
+        "rust/crates/server/src/submissions/service/datasets.rs",
+        "rust/crates/server/src/cloud_runs/service/datasets.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
     }
   },
   "known_limits": [

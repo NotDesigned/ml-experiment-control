@@ -93,6 +93,13 @@ enum Command {
 }
 #[derive(Subcommand)]
 enum Data {
+    /// List retained dataset identities and delivery readiness; no backend query.
+    List {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        executor: String,
+    },
     Download {
         #[arg(long)]
         project: String,
@@ -635,7 +642,8 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     return Err("invalid exact data publication confirmation".into());
                 }
             }
-            Data::Upload {
+            Data::List { project, executor }
+            | Data::Upload {
                 project, executor, ..
             } => datasets::validate(project, executor, None)?,
             Data::Show {
@@ -855,6 +863,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Command::Data { command } => {
                     let health = client.negotiate()?;
                     Output::Json(match command {
+                        Data::List{project,executor}=>datasets::list(&client,&project,&executor,&health)?,
                         Data::Download{project,executor,asset,output}=>datasets::download(&client,&project,&executor,&asset,&output,&health)?,
                         Data::Publish{project,executor,asset,request_id,confirmation}=>client.post(&format!("/api/projects/{project}/datasets/{executor}/{asset}/publish"),&serde_json::json!({"request_id":request_id,"confirmation":confirmation}))?,
                         Data::Upload {

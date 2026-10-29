@@ -11,6 +11,7 @@ pub mod datasets;
 pub mod diagnostic;
 pub mod distribution;
 pub mod durable;
+pub mod environment;
 pub mod failures;
 pub mod first_submission;
 pub mod identity;

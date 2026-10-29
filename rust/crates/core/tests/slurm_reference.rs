@@ -11,6 +11,47 @@ fn fixture() -> Value {
 fn sample() -> JobSpec {
     serde_json::from_value(fixture()["render_cases"][0]["spec"].clone()).unwrap()
 }
+#[test]
+fn user_environment_is_literal_and_bound_to_the_managed_launch() {
+    let mut spec = sample();
+    spec.execution.managed_io = true;
+    spec.execution
+        .env
+        .insert("LABEL".into(), "two words; $(literal)".into());
+    let scope = ml_exp_core::slurm::helper::Scope {
+        project: "demo".into(),
+        run_id: spec.run_id.clone(),
+        attempt_id: spec.attempt_id.clone(),
+    };
+    let runtime = ml_exp_core::slurm::managed::Runtime {
+        program: "/opt/ml-expd/worker".into(),
+        base_environment: std::collections::BTreeMap::from([(
+            "PATH".into(),
+            "/usr/bin:/bin".into(),
+        )]),
+        runtime_environment: vec![],
+    };
+    let package = ml_exp_core::slurm::managed::plan(&scope, &spec, &runtime).unwrap();
+    assert_eq!(
+        package.manifest.environment["LABEL"],
+        "two words; $(literal)"
+    );
+    assert!(
+        render_job(&spec, None)
+            .unwrap()
+            .contains("'LABEL=two words; $(literal)'")
+    );
+    let binding = package.config.binding().unwrap();
+    spec.execution
+        .env
+        .insert("LABEL".into(), "different".into());
+    let changed = ml_exp_core::slurm::managed::plan(&scope, &spec, &runtime).unwrap();
+    assert_ne!(binding.sha256, changed.config.binding().unwrap().sha256);
+    spec.execution
+        .env
+        .insert("STATE_DIR".into(), "/other".into());
+    assert!(render_job(&spec, None).is_err());
+}
 fn ssh() -> SshConnection {
     SshConnection {
         ssh_binary: "ssh".into(),

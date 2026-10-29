@@ -58,6 +58,8 @@ pub struct ExecutionConfig {
     pub workdir: String,
     #[serde(default)]
     pub managed_io: bool,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,6 +75,8 @@ pub struct JobSpec {
 }
 impl JobSpec {
     pub fn validate(&self) -> Result<(), Error> {
+        crate::environment::validate(&self.execution.env)
+            .map_err(|_| Error::Configuration("execution environment"))?;
         scheduler_job_name(&self.run_id, &self.attempt_id)?;
         self.backend
             .validate(&self.resources, &self.storage, &self.image_id)?;
@@ -135,7 +139,14 @@ pub fn render_job_with_datasets(
         .apptainer_tmp_dir
         .clone()
         .unwrap_or_else(|| format!("{}/apptainer/tmp", spec.storage.project_data_root));
-    let command = shell_join(&spec.command)?;
+    let command = if spec.execution.env.is_empty() {
+        shell_join(&spec.command)?
+    } else {
+        let mut argv = vec!["env".to_owned()];
+        argv.extend(spec.execution.env.iter().map(|(k, v)| format!("{k}={v}")));
+        argv.extend(spec.command.clone());
+        shell_join(&argv)?
+    };
     let source_check = if backend.oci_image.is_some() {
         String::new()
     } else {

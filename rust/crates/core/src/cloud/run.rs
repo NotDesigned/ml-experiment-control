@@ -121,6 +121,9 @@ pub fn documents(
     if !request.data.is_empty() {
         protocol["data"] = json!(request.data);
     }
+    if !request.env.is_empty() {
+        protocol["env"] = json!(request.env);
+    }
     if let Some(reference) = &request.resume_from {
         protocol["resume_from"] = json!(reference);
     }
@@ -150,6 +153,9 @@ pub fn documents(
     }
     if let Some(policy) = &request.artifacts {
         run["artifacts"] = json!(policy);
+    }
+    if !request.env.is_empty() {
+        run["env"] = json!(request.env);
     }
     if let Some(policy) = &request.scheduling {
         run["native_cloud"]["scheduling"] = json!(policy);
@@ -215,6 +221,9 @@ pub fn execution(
         timeout_seconds: request.walltime_seconds,
         worker_sha256: &runtime.worker_sha256,
     })?;
+    package.manifest.environment.extend(
+        crate::environment::from_document(run).map_err(|_| Error("frozen Run environment"))?,
+    );
     package.checkpoint_context = Some(crate::checkpoints::Context {
         project: project.clone(),
         run_id: run_id.clone(),

@@ -20,7 +20,10 @@ use std::{
 
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/api/projects/{project}/datasets/{executor}", post(begin))
+        .route(
+            "/api/projects/{project}/datasets/{executor}",
+            get(list).post(begin),
+        )
         .route(
             "/api/projects/{project}/datasets/{executor}/{asset}",
             get(status),
@@ -40,6 +43,26 @@ fn invalid() -> read_api::Error {
         code: "INVALID_DATASET_REQUEST",
         detail: "invalid dataset scope, archive definition or part",
     }
+}
+async fn list(
+    State(state): State<Arc<AppState>>,
+    Path((project, executor)): Path<(String, String)>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    if let Err(e) = scope(&project, &executor, None, raw.as_deref()) {
+        return read_http::failure(e);
+    }
+    read_http::execute(state, Access::Read, move |api, _| {
+        if let Some(cloud) = api.cloud().filter(|c| c.accepts(&executor)) {
+            return cloud
+                .dataset_list(&project, &executor)
+                .map_err(crate::cloud_runs::failure);
+        }
+        super::http::service(api)?
+            .dataset_list(&project, &executor)
+            .map_err(super::http::failure)
+    })
+    .await
 }
 fn scope(
     project: &str,

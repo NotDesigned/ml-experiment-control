@@ -111,6 +111,7 @@ pub fn plan_with_inputs(
         workdir: spec.execution.workdir.clone(),
         timeout_seconds: timeout,
     };
+    manifest.environment.extend(spec.execution.env.clone());
     if let Some(value) = restore {
         let plan =
             crate::checkpoints::restore_plan(value, None).map_err(|_| helper::Error::Metadata)?;

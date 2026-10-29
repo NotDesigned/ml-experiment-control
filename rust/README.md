@@ -88,6 +88,7 @@ Register an approved Project, upload source, and upload or reference data first:
 ```sh
 ml-exp-rs source import --help
 ml-exp-rs data upload --project demo --executor pai-h200 --directory ./data
+ml-exp-rs data list --project demo --executor pai-h200
 ml-exp-rs env list --project demo
 ml-exp-rs run start --project demo --file experiment.json --state ./private-state.json
 ```
@@ -110,6 +111,7 @@ ml-exp-rs run start --project demo --file experiment.json --state ./private-stat
     "resources": {"gpus": 1, "cpus": 8, "memory_gb": 64},
     "walltime_seconds": 300,
     "seed": 42,
+    "env": {"OMP_NUM_THREADS": "4"},
     "scheduling": {"allocation": "guaranteed", "priority": 5},
     "wandb": {"enabled": false},
     "artifacts": {"required_files": ["summary.json", "model.bin"]}
@@ -123,6 +125,14 @@ Runtime and explicit runtime_id are mutually exclusive. `scheduling` is a cloud
 option; Slurm rejects it. SenseCore uses its own SPOT profile rather than PAI
 idle allocation choices. Each request ID is a durable recovery slot; changing its
 payload is a conflict. Budget and known provider limits are checked before build.
+
+`run.env` contains per-experiment string values and participates in the frozen
+Run and protocol identity. Platform directory, identity, GPU-runtime, resume and
+`ML_EXPD_` variables are reserved. Credentials belong in private server/provider
+configuration, not in this mapping. Omitting it preserves the original encoding.
+`data list` is a metadata read: `UPLOADING` means incomplete transfer, `ARCHIVED`
+means the uploaded bytes are verified, and `READY` means a backend cache receipt
+exists. Workers still verify input files before training.
 
 Preparation saves client recovery state before requesting any effect. Continue
 using the returned preparation ID and confirmation:

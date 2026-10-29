@@ -106,6 +106,12 @@ refusal are exercised without provider effects.
 Full native CPU execution/restore/result acceptance, three-backend training and
 production cutover remain separate pending checks.
 
+The completion pass also connects per-Run `env` across Slurm/DLC/ACP and a
+shared read-only `data list` path. Environment values are frozen with the protocol;
+reserved platform variables are refused before effects. Dataset discovery reads
+bounded local metadata only and separates uploaded archives from ready caches.
+Neither addition changes the encoding of old requests that omit the new fields.
+
 ## Storage and transfer contracts
 
 - Dataset/result parts are 16 MiB, numbered from zero. Part count, metadata and

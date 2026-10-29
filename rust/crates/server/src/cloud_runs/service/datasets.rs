@@ -23,6 +23,55 @@ pub(super) struct Saved {
     pub(super) diagnostic: Option<Value>,
 }
 impl Service {
+    pub fn dataset_list(&self, project: &str, executor: &str) -> cloud::Result<Value> {
+        self.project_hash(project)?;
+        if !self.backends.contains_key(executor) {
+            return Err(cloud::Error::configuration());
+        }
+        let mut rows = Vec::new();
+        let mut bytes = 0usize;
+        for name in self.slots.entry_names_limited(32768).map_err(io)? {
+            let Some(name) = name
+                .to_str()
+                .filter(|s| s.starts_with("dataset-") && s.ends_with(".json"))
+            else {
+                continue;
+            };
+            let raw = self
+                .slots
+                .read_regular(OsStr::new(name), datasets::MAX_METADATA as u64)
+                .map_err(io)?;
+            bytes = bytes
+                .checked_add(raw.len())
+                .ok_or_else(cloud::Error::evidence)?;
+            if bytes > 64 * 1024 * 1024 {
+                return Err(cloud::Error::evidence());
+            }
+            let value = ml_exp_core::json::mapping(&raw).map_err(|_| cloud::Error::evidence())?;
+            let state = &value["state"];
+            if state["project"] != project || state["target"]["backend_id"] != executor {
+                continue;
+            }
+            let asset = state["asset_id"]
+                .as_str()
+                .ok_or_else(cloud::Error::evidence)?;
+            if name != Self::data_name(project, executor, asset)? {
+                return Err(cloud::Error::evidence());
+            }
+            let saved = self
+                .data_saved(project, executor, asset)?
+                .ok_or_else(missing)?;
+            rows.push(
+                datasets::Summary::from_state(&saved.state, saved.archive_verified)
+                    .map_err(|_| cloud::Error::evidence())?,
+            );
+            if rows.len() > 1024 {
+                return Err(cloud::Error::evidence());
+            }
+        }
+        rows.sort_by(|a, b| a.asset_id.cmp(&b.asset_id));
+        Ok(json!({"project":project,"executor":executor,"datasets":rows}))
+    }
     pub fn has_datasets(&self) -> bool {
         self.objects.is_some() && self.exchange.is_some()
     }
