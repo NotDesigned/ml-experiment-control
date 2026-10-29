@@ -522,6 +522,12 @@ fn cancelling_before_dispatch_creates_no_attempt_and_lock_wait_is_bounded() {
 }
 
 fn job_fixture(cancel_body: &str) -> (tempfile::TempDir, Helper) {
+    job_fixture_configured(cancel_body, |_, _| {})
+}
+fn job_fixture_configured(
+    cancel_body: &str,
+    configure: impl FnOnce(&Path, &mut HelperConfig),
+) -> (tempfile::TempDir, Helper) {
     let root = tempfile::tempdir().unwrap();
     fake_program(root.path(), "printf '12345\\n'");
     for (name, body) in [
@@ -554,6 +560,7 @@ fn job_fixture(cancel_body: &str) -> (tempfile::TempDir, Helper) {
         cfg.environment
             .insert(key.into(), root.path().join(file).display().to_string());
     }
+    configure(root.path(), &mut cfg);
     let helper = Helper::initialize(cfg).unwrap();
     let prepare = request();
     handle(&helper, &prepare);
@@ -763,15 +770,16 @@ fn commentless_accounting_uses_owned_queue_then_controller_for_cancel_confirmati
         "{CANCEL}; printf '%s' '{}' > \"$CONTROL\"",
         controller("CANCELLED")
     );
-    let (root, mut helper) = job_fixture(&cancel);
-    let program = root.path().join("scontrol");
-    fs::write(&program, "#!/bin/sh\n[ \"$#\" -eq 4 ] && [ \"$1\" = show ] && [ \"$2\" = job ] && [ \"$3\" = 12345 ] && [ \"$4\" = --oneliner ] || exit 99\ncat \"$CONTROL\"\n").unwrap();
-    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-    helper.config.scheduler.as_mut().unwrap().scontrol_program = Some(program);
-    helper.config.environment.insert(
-        "CONTROL".into(),
-        root.path().join("controller").display().to_string(),
-    );
+    let (root, helper) = job_fixture_configured(&cancel, |root, cfg| {
+        let program = root.join("scontrol");
+        fs::write(&program, "#!/bin/sh\n[ \"$#\" -eq 4 ] && [ \"$1\" = show ] && [ \"$2\" = job ] && [ \"$3\" = 12345 ] && [ \"$4\" = --oneliner ] || exit 99\ncat \"$CONTROL\"\n").unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        cfg.scheduler.as_mut().unwrap().scontrol_program = Some(program);
+        cfg.environment.insert(
+            "CONTROL".into(),
+            root.join("controller").display().to_string(),
+        );
+    });
     fs::write(
         root.path().join("evidence"),
         "12345|train--attempt-001||h100|PENDING|00:00|0:0\n",
