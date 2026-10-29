@@ -1252,6 +1252,94 @@ fn historical_config_inspection_uses_actual_binary_without_creating_files_or_new
 }
 
 #[test]
+fn historical_result_inventory_is_read_only_exact_and_preserves_release_evidence() {
+    let fixture = Fixture::new();
+    let settings = fixture.historical_settings(false);
+    let directory = fixture.registry.join("artifact-transfers/demo/train");
+    private_directory(&directory);
+    let path = directory.join("attempt-001.json");
+    let sha = "a".repeat(64);
+    let mut transfer = json!({"project":"demo","run_id":"train","attempt_id":"attempt-001",
+        "token":"private-transfer-capability","run_dir":"/private/old-service",
+        "receipt":{"sha256":sha,"bytes":10240,"object_key":format!("demo/train/attempt-001/{sha}.tar"),
+            "files":[{"path":"final.pt","sha256":"b".repeat(64),"bytes":128}]},
+        "results_ready":{"project":"demo","run_id":"train","attempt_id":"attempt-001","exit_code":0}});
+    write_json(&path, &transfer);
+    let before = file_inventory(fixture._temp.path());
+    let server = Server::start(
+        Auth::load(&fixture.token).unwrap(),
+        ml_exp_server::history::open(settings).unwrap(),
+    );
+    let route = "/api/runs/demo/train/attempts/attempt-001/files";
+    let result = server.client().get(route).unwrap();
+    assert_eq!(result["files"][0]["path"], "outputs/final.pt");
+    assert_eq!(result["available"], true);
+    assert_eq!(result["training"]["exit_code"], 0);
+    assert!(!result.to_string().contains("private-transfer-capability"));
+    assert!(!result.to_string().contains("/private/old-service"));
+    assert_eq!(
+        server
+            .client()
+            .get(&format!("{route}?checksums=true"))
+            .unwrap(),
+        result
+    );
+    assert_eq!(file_inventory(fixture._temp.path()), before);
+    assert_eq!(
+        server
+            .client()
+            .get("/api/runs/demo/train/attempts/attempt-002/files")
+            .unwrap()["collection_required"],
+        true
+    );
+    assert_eq!(
+        http_failure(
+            server
+                .client()
+                .get("/api/runs/demo/train/attempts/attempt-003/files")
+                .unwrap_err(),
+            404
+        )
+        .error_code,
+        "ATTEMPT_NOT_FOUND"
+    );
+    assert_eq!(
+        http_failure(
+            server
+                .client()
+                .get(&format!("{route}?checksums=yes"))
+                .unwrap_err(),
+            422
+        )
+        .error_code,
+        "INVALID_READ_QUERY"
+    );
+    transfer["retention"] = json!({"status":"RELEASED","sha256":sha});
+    write_json(&path, &transfer);
+    let released_before = file_inventory(fixture._temp.path());
+    let released = server.client().get(route).unwrap();
+    assert_eq!(released["available"], false);
+    assert_eq!(released["collection_required"], false);
+    assert_eq!(released["storage_status"], "RELEASED");
+    assert_eq!(released["files"], result["files"]);
+    assert_eq!(file_inventory(fixture._temp.path()), released_before);
+    transfer["attempt_id"] = json!("attempt-002");
+    write_json(&path, &transfer);
+    assert_eq!(
+        http_failure(server.client().get(route).unwrap_err(), 409).error_code,
+        "ARTIFACT_EVIDENCE_UNAVAILABLE"
+    );
+    transfer["attempt_id"] = json!("attempt-001");
+    write_json(&path, &transfer);
+    fs::remove_file(&path).unwrap();
+    symlink("/private/forbidden", &path).unwrap();
+    assert_eq!(
+        http_failure(server.client().get(route).unwrap_err(), 409).error_code,
+        "ARTIFACT_EVIDENCE_UNAVAILABLE"
+    );
+}
+
+#[test]
 fn historical_cold_wal_is_refused_without_auxiliary_creation_or_weaker_fallback() {
     let fixture = Fixture::new();
     fixture.journal_matching();

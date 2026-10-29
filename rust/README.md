@@ -516,6 +516,15 @@ the checkpoint files before training. This is a new frozen Run, not a replay or
 an automatic restart of the old task. Historical W&B routes and cursors are read
 without republishing or resetting them.
 
+The original `GET /api/runs/{project}/{run}/attempts/{attempt}/files` also
+projects the published archive inventory. It validates the exact Attempt,
+transfer identity, source, receipt and retention without restoring a cache,
+reading payloads or sending an ACK. Released and expired archives retain their
+file identities and training completion evidence. This inventory covers the
+published archive only (`local_files_included=false`); it is not a backend-file
+recovery or download endpoint. Native-created Runs use their Submission result
+interfaces and never fall back to original transfer records.
+
 The offline audit accepts an explicit private read configuration without a native
 workspace marker. Run it as the account that owns the original metadata:
 

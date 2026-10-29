@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
+pub mod historical;
+
 pub const MAX_FILES: usize = 20_000;
 pub const MAX_PATH: usize = 4096;
 const MAX_RECEIPT_BYTES: usize = 8 * 1024 * 1024;
