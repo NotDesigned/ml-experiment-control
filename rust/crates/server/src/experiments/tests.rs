@@ -2,6 +2,7 @@ use super::*;
 use crate::deletion::RunFence;
 use ml_exp_io::directory::Directory;
 use serde_json::{Map, Value, json};
+use sha2::Digest;
 use std::{
     ffi::OsStr,
     fs,
@@ -172,6 +173,74 @@ fn yaml_policy_rejects_ambiguous_or_expansive_input_and_json_requires_json_synta
         parse_mapping(wide.as_bytes(), Format::Yaml),
         Err(DocumentError::Complexity)
     ));
+}
+
+#[test]
+fn frozen_yaml_references_preserve_values_and_hash_while_authored_input_stays_strict() {
+    let raw = b"source: &source {id: 'source.fixture', argv: ['python', '-u'], enabled: true}\ncopy: *source\nscalar: &number 42\nnumber: *number\n";
+    let document = Document::decode(raw, ManifestSource::RunYaml).unwrap();
+    assert_eq!(document.metadata["source"], document.metadata["copy"]);
+    assert_eq!(document.metadata["number"], 42);
+    assert_eq!(
+        document.raw_sha256,
+        format!("sha256:{:x}", sha2::Sha256::digest(raw))
+    );
+    assert_eq!(
+        parse_mapping(raw, Format::Yaml),
+        Err(DocumentError::UnsupportedYaml)
+    );
+}
+
+#[test]
+fn frozen_yaml_references_reject_cycles_redefinitions_merges_and_unsafe_values() {
+    for text in [
+        "x: &a [*a]\n",
+        "x: *later\ny: &later 1\n",
+        "x: &a 1\ny: &a 2\n",
+        "x: &a {one: 1}\ny: {<<: *a}\n",
+        "x: &a {one: 1, one: 2}\ny: *a\n",
+        "x: &a {one: yes}\ny: *a\n",
+        "x: &a !!str 1\ny: *a\n",
+        "x: &a 1\n---\ny: *a\n",
+    ] {
+        assert!(
+            Document::decode(text.as_bytes(), ManifestSource::RunYaml).is_err(),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn frozen_yaml_reference_expansion_is_bounded_before_cloning() {
+    let mut exponential = String::from("x0: &a0 [1, 2]\n");
+    for number in 1..20 {
+        exponential.push_str(&format!(
+            "x{number}: &a{number} [*a{}, *a{}]\n",
+            number - 1,
+            number - 1
+        ));
+    }
+    assert_eq!(
+        Document::decode(exponential.as_bytes(), ManifestSource::RunYaml).err(),
+        Some(DocumentError::Complexity)
+    );
+    let mut bytes = format!("text: &large '{}'\n", "x".repeat(512 * 1024));
+    for number in 0..9 {
+        bytes.push_str(&format!("copy{number}: *large\n"));
+    }
+    assert_eq!(
+        Document::decode(bytes.as_bytes(), ManifestSource::RunYaml).err(),
+        Some(DocumentError::Complexity)
+    );
+    let nesting = format!(
+        "leaf: &leaf 1\nroot: {}*leaf{}\n",
+        "[".repeat(64),
+        "]".repeat(64)
+    );
+    assert_eq!(
+        Document::decode(nesting.as_bytes(), ManifestSource::RunYaml).err(),
+        Some(DocumentError::Complexity)
+    );
 }
 
 #[test]

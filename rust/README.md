@@ -500,6 +500,12 @@ kernel-enforced write denial; an unsupported kernel is an error. Paused or
 archived Projects stay hidden, and a different journal or native marker is
 refused. No historical SQLite file is copied or migrated.
 
+Frozen YAML observations can resolve finite, previously defined anchors without
+rewriting the original bytes or hash. Cached values and reference expansion
+have separate byte and node budgets; cycles, forward references, duplicate
+anchors, merge keys, tags and ambiguous scalars are rejected. New authored
+inputs keep the stricter parser that refuses anchors and aliases.
+
 A writable native service can attach that same pinned reader with
 `--history-config /private/historical-reader.json` and its ordinary
 `--read-config /private/native-reads.json`. The registry and Run roots must be

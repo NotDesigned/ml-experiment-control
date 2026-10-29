@@ -9,6 +9,8 @@ use yaml_rust2::{
     scanner::TScalarStyle,
 };
 
+mod aliases;
+
 pub const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_DEPTH: usize = 64;
 const MAX_NODES: usize = 100_000;
@@ -62,7 +64,10 @@ pub struct Document {
 }
 impl Document {
     pub(super) fn decode(bytes: &[u8], source: ManifestSource) -> Result<Self, DocumentError> {
-        let metadata = parse_mapping(bytes, source.format())?;
+        let metadata = match source.format() {
+            Format::Yaml => parse_yaml(bytes, true)?,
+            Format::Json => parse_mapping(bytes, Format::Json)?,
+        };
         let legacy_observation_only = matches!(
             source,
             ManifestSource::LegacyRunYaml | ManifestSource::LegacyAttemptYaml
@@ -83,7 +88,7 @@ pub enum DocumentError {
     TooLarge,
     #[error("metadata is malformed or not one mapping document")]
     Malformed,
-    #[error("metadata uses unsupported YAML aliases, anchors, tags or ambiguous plain scalars")]
+    #[error("metadata uses unsupported YAML references, tags or ambiguous plain scalars")]
     UnsupportedYaml,
     #[error("metadata exceeds the nesting or node limit")]
     Complexity,
@@ -199,20 +204,35 @@ pub fn parse_mapping(bytes: &[u8], format: Format) -> Result<Map<String, Value>,
             ml_exp_core::json::Error::Number => DocumentError::Number,
         });
     }
+    parse_yaml(bytes, false)
+}
+
+// Authored inputs keep the strict policy above. Observation of frozen original
+// bytes accepts finite references, with separate cached and expanded budgets.
+fn parse_yaml(
+    bytes: &[u8],
+    historical_references: bool,
+) -> Result<Map<String, Value>, DocumentError> {
+    if bytes.len() > MAX_BYTES {
+        return Err(DocumentError::TooLarge);
+    }
     let text = std::str::from_utf8(bytes).map_err(|_| DocumentError::Malformed)?;
     // YAML 1.1 treats these raw characters as line breaks, while YAML 1.2
     // treats them as string characters. Escaped literals remain supported.
     if text.contains(['\u{85}', '\u{2028}', '\u{2029}']) {
         return Err(DocumentError::UnsupportedYaml);
     }
+    if historical_references {
+        aliases::unique_names(text)?;
+    }
     let mut parser = Parser::new_from_str(text);
     let mut stack = Vec::new();
+    let mut frame_anchors = Vec::new();
+    let mut references = aliases::References::default();
     let mut root = None;
     let mut documents = 0;
     for count in 0..=MAX_NODES {
-        if count == MAX_NODES {
-            return Err(DocumentError::Complexity);
-        }
+        references.events(count)?;
         let (event, _) = parser.next_token().map_err(|_| DocumentError::Malformed)?;
         match event {
             Event::StreamStart | Event::DocumentEnd => {}
@@ -223,20 +243,31 @@ pub fn parse_mapping(bytes: &[u8], format: Format) -> Result<Map<String, Value>,
                 }
             }
             Event::StreamEnd => break,
-            Event::Alias(_) => return Err(DocumentError::UnsupportedYaml),
-            Event::Scalar(value, style, anchor, tag) => {
-                if anchor != 0 || tag.is_some() {
+            Event::Alias(id) => {
+                if !historical_references {
                     return Err(DocumentError::UnsupportedYaml);
                 }
-                append(&mut stack, &mut root, scalar(value, style)?)?;
+                let value = references.expand(id, stack.len())?;
+                append(&mut stack, &mut root, value)?;
+            }
+            Event::Scalar(value, style, anchor, tag) => {
+                if anchor != 0 && !historical_references || tag.is_some() {
+                    return Err(DocumentError::UnsupportedYaml);
+                }
+                let value = scalar(value, style)?;
+                references.reserve(anchor)?;
+                references.complete(anchor, &value)?;
+                append(&mut stack, &mut root, value)?;
             }
             Event::SequenceStart(anchor, ref tag) | Event::MappingStart(anchor, ref tag) => {
-                if anchor != 0 || tag.is_some() {
+                if anchor != 0 && !historical_references || tag.is_some() {
                     return Err(DocumentError::UnsupportedYaml);
                 }
                 if stack.len() >= MAX_DEPTH {
                     return Err(DocumentError::Complexity);
                 }
+                references.reserve(anchor)?;
+                frame_anchors.push(anchor);
                 stack.push(if matches!(event, Event::SequenceStart(..)) {
                     Frame::Sequence(Vec::new())
                 } else {
@@ -247,13 +278,19 @@ pub fn parse_mapping(bytes: &[u8], format: Format) -> Result<Map<String, Value>,
                 let Some(Frame::Sequence(items)) = stack.pop() else {
                     return Err(DocumentError::Malformed);
                 };
-                append(&mut stack, &mut root, Value::Array(items))?;
+                let value = Value::Array(items);
+                references
+                    .complete(frame_anchors.pop().ok_or(DocumentError::Malformed)?, &value)?;
+                append(&mut stack, &mut root, value)?;
             }
             Event::MappingEnd => {
                 let Some(Frame::Mapping(items, None)) = stack.pop() else {
                     return Err(DocumentError::Malformed);
                 };
-                append(&mut stack, &mut root, Value::Object(items))?;
+                let value = Value::Object(items);
+                references
+                    .complete(frame_anchors.pop().ok_or(DocumentError::Malformed)?, &value)?;
+                append(&mut stack, &mut root, value)?;
             }
             Event::Nothing => return Err(DocumentError::Malformed),
         }
