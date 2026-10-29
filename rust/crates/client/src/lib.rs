@@ -42,7 +42,7 @@ pub enum Error {
     Transport,
     #[error("{0}")]
     Http(Box<ml_exp_core::diagnostic::HttpFailure>),
-    #[error("API response is too large or is not JSON")]
+    #[error("API response failed size, format or identity validation")]
     Response,
     #[error("daemon did not provide a supported protocol-2 handshake")]
     Protocol,
@@ -58,6 +58,10 @@ pub enum Error {
         "submission outcome is unknown; query the original Run preparation or Submission, then reconcile; no automatic replay was attempted: {0}"
     )]
     SubmissionOutcomeUnknown(Box<Error>),
+    #[error(
+        "archive saved and verified locally; acknowledgement or release is unconfirmed; repeat the same download command without redownloading: {0}"
+    )]
+    ArtifactAcknowledgementUnconfirmed(Box<Error>),
     #[error(
         "Run creation outcome is unknown; query the same Project/Run before retrying; no automatic replay was attempted: {0}"
     )]

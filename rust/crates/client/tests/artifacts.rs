@@ -11,6 +11,44 @@ use std::{
     time::Duration,
 };
 const ACTION: &str = "action-0123456789abcdef";
+#[test]
+fn acknowledgement_failure_keeps_verified_bytes_and_exposes_sanitized_server_diagnostic() {
+    let (body, state) = fixture();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let worker = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        assert!(read(&mut socket).0.starts_with("get "));
+        reply(&mut socket, &state);
+        let (mut socket, _) = listener.accept().unwrap();
+        assert!(
+            read(&mut socket)
+                .0
+                .starts_with(&format!("post /api/submissions/{ACTION}/acknowledge "))
+        );
+        let body = br#"{"code":"CLOUD_RUN_BUSY","detail":"operation lock is held"}"#;
+        write!(socket,"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nX-ML-Expd-Error-Code: CLOUD_RUN_BUSY\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();
+        socket.write_all(body).unwrap();
+        drop(socket);
+        listener.set_nonblocking(true).unwrap();
+        assert!(
+            listener.accept().is_err(),
+            "no automatic acknowledgement retry"
+        );
+    });
+    let client = Client::new(&format!("http://{addr}"), "synthetic-token".into()).unwrap();
+    let output = tempfile::tempdir().unwrap();
+    let target = output.path().join("results.tar");
+    std::fs::write(&target, &body).unwrap();
+    let error = artifacts::download(&client, ACTION, &target, true, &health()).unwrap_err();
+    assert!(error.to_string().contains("CLOUD_RUN_BUSY"));
+    assert!(
+        matches!(error, ml_exp_client::Error::ArtifactAcknowledgementUnconfirmed(cause)
+        if matches!(*cause, ml_exp_client::Error::Http(ref value) if value.status == 503))
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), body);
+    worker.join().unwrap();
+}
 fn health() -> Value {
     json!({"api_protocol_version":2,"min_client_protocol_version":2,"capabilities":["native-artifacts.v1"]})
 }

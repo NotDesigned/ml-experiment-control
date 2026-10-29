@@ -221,7 +221,9 @@ pub fn download(
         "acknowledge",
         Some(json!({"proof":proof,"release":release})),
     )?;
-    let reply=client.send_artifact(&ack).map_err(|_|Error::Observation("archive saved and verified locally; acknowledgement response unavailable; repeat this command to verify the same file and reconcile ACK without redownload"))?;
+    let reply = client
+        .send_artifact(&ack)
+        .map_err(|error| Error::ArtifactAcknowledgementUnconfirmed(Box::new(error)))?;
     let (_, mut after) = validate(&ack, reply)?;
     if after.bundle != state.bundle
         || after.acknowledgement.as_ref().map(|a| &a.proof) != Some(&proof)
@@ -233,7 +235,9 @@ pub fn download(
             if after.retention.status == artifacts::RetentionStatus::Released {
                 break;
             }
-            let reply=client.send_artifact(&ack).map_err(|_|Error::Observation("archive saved and verified; object release is incomplete; repeat the same download command to continue"))?;
+            let reply = client
+                .send_artifact(&ack)
+                .map_err(|error| Error::ArtifactAcknowledgementUnconfirmed(Box::new(error)))?;
             let (_, next) = validate(&ack, reply)?;
             after
                 .validate_successor(&next)
