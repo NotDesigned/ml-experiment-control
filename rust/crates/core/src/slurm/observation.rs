@@ -94,6 +94,7 @@ impl JobScope {
 pub enum StatusSource {
     Sacct,
     Squeue,
+    Scontrol,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -144,8 +145,8 @@ impl JobStatus {
             self.elapsed.as_deref().unwrap_or(""),
             self.exit_code.as_deref().unwrap_or(""),
         ];
-        if source == StatusSource::Squeue {
-            if self.exit_code.is_some() {
+        if source != StatusSource::Sacct {
+            if source == StatusSource::Squeue && self.exit_code.is_some() {
                 return Err(Error::Evidence("unobserved queue exit code"));
             }
             row.push(self.reason.as_deref().unwrap_or(""));
@@ -267,7 +268,7 @@ pub fn parse_job_status(
     // %R changes from reason to node list after allocation. Only pending or
     // configuring states supply a scheduler blocker. '0:0' in the squeue format
     // is a formatting placeholder, NOT observed process exit evidence.
-    let reason = if source == StatusSource::Squeue
+    let reason = if source != StatusSource::Sacct
         && matches!(raw, "PENDING" | "CONFIGURING")
         && !row[6].trim().is_empty()
     {
@@ -279,7 +280,7 @@ pub fn parse_job_status(
         None
     };
     let observed_exit =
-        (source == StatusSource::Sacct && !row[5].is_empty()).then(|| row[5].to_owned());
+        (source != StatusSource::Squeue && !row[5].is_empty()).then(|| row[5].to_owned());
     Ok(Some(JobStatus {
         ssh_alias: scope.ssh_alias.clone(),
         job_id: scope.job_id.clone(),
@@ -343,6 +344,7 @@ pub enum Query<'a> {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Diagnostic {
     NoEvidence,
+    OwnershipNotRecorded,
     QueryUnavailable,
     MalformedOrForeignEvidence,
     QueueNotObserved,
@@ -388,6 +390,27 @@ pub fn observe_owned_status(
     observed_at: Option<&str>,
 ) -> Result<StatusObservation, Error> {
     submission_marker(token).map_err(|_| Error::Ownership)?;
+    // Some clusters disable accounting Comment retention. A structurally exact
+    // row with an empty Comment is not ownership proof. In that one case the
+    // queue must independently prove BOTH ownership and state in its own row;
+    // no accounting field is spliced into that observation.
+    let accounting = match accounting {
+        Query::Success(text) if accounting_omits_ownership(text, scope) => {
+            let mut value = observe_with(
+                scope,
+                previous,
+                Query::NotRequested,
+                queue,
+                observed_at,
+                &|text, scope, source, at| parse_owned_job_status(text, scope, token, source, at),
+            )?;
+            if value.diagnostic == Some(Diagnostic::NoEvidence) {
+                value.diagnostic = Some(Diagnostic::OwnershipNotRecorded);
+            }
+            return Ok(value);
+        }
+        other => other,
+    };
     observe_with(
         scope,
         previous,
@@ -395,6 +418,97 @@ pub fn observe_owned_status(
         queue,
         observed_at,
         &|text, scope, source, at| parse_owned_job_status(text, scope, token, source, at),
+    )
+}
+
+fn accounting_omits_ownership(text: &str, scope: &JobScope) -> bool {
+    if text.len() > MAX_OUTPUT {
+        return false;
+    }
+    let rows: Vec<_> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let [line] = rows.as_slice() else {
+        return false;
+    };
+    let Ok(row) = fields(line, 7) else {
+        return false;
+    };
+    row[2].is_empty()
+        && parse_job_status(
+            &row[..2]
+                .iter()
+                .chain(row[3..].iter())
+                .copied()
+                .collect::<Vec<_>>()
+                .join("|"),
+            scope,
+            StatusSource::Sacct,
+            None,
+        )
+        .is_ok_and(|value| value.is_some())
+}
+
+/// Controller observations are useful when accounting does not retain Comment,
+/// including just-ended jobs no longer visible in squeue. Every required field
+/// comes from one exact controller row; a separate identity lookup is forbidden.
+pub fn parse_owned_control_status(
+    output: &str,
+    scope: &JobScope,
+    token: &str,
+    observed_at: Option<&str>,
+) -> Result<Option<JobStatus>, Error> {
+    if output.len() > MAX_OUTPUT {
+        return Err(Error::Evidence("controller size"));
+    }
+    let rows: Vec<_> = output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let [line] = rows.as_slice() else {
+        return if rows.is_empty() {
+            Ok(None)
+        } else {
+            Err(Error::Ambiguous)
+        };
+    };
+    let required = [
+        "JobId",
+        "JobName",
+        "Comment",
+        "Partition",
+        "JobState",
+        "RunTime",
+        "ExitCode",
+        "Reason",
+    ];
+    let mut values = BTreeMap::new();
+    for item in line.split_whitespace() {
+        if let Some((key, value)) = item.split_once('=') {
+            if required.contains(&key) && values.insert(key, value).is_some() {
+                return Err(Error::Ambiguous);
+            }
+        }
+    }
+    let row = required
+        .iter()
+        .map(|key| {
+            values
+                .get(key)
+                .copied()
+                .ok_or(Error::Evidence("controller field"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if row.iter().any(|value| value.contains('|')) {
+        return Err(Error::Evidence("controller field"));
+    }
+    parse_owned_job_status(
+        &row.join("|"),
+        scope,
+        token,
+        StatusSource::Scontrol,
+        observed_at,
     )
 }
 

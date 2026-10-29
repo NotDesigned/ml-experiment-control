@@ -543,6 +543,7 @@ fn job_fixture(cancel_body: &str) -> (tempfile::TempDir, Helper) {
         sacct_program: root.path().join("sacct"),
         squeue_program: root.path().join("squeue"),
         scancel_program: root.path().join("scancel"),
+        scontrol_program: None,
         partition: "h100".into(),
     });
     for (key, file) in [
@@ -610,6 +611,7 @@ fn owned_job_progress_and_durable_cancel_never_reissue_after_lost_response() {
         sacct_program: root.path().join("sacct"),
         squeue_program: root.path().join("squeue"),
         scancel_program: root.path().join("scancel"),
+        scontrol_program: None,
         partition: "h100".into(),
     });
     for (key, file) in [
@@ -743,6 +745,74 @@ fn immediate_cancel_success_requires_terminal_observation_and_stores_it() {
         matches!(&result.outcome,ReplyOutcome::JobObserved {observation} if observation.status.state==ml_exp_core::state::RunState::Cancelled)
     );
     assert_eq!(handle(&helper, &cancel).outcome, result.outcome);
+    assert_eq!(
+        fs::read_to_string(root.path().join("cancel-calls")).unwrap(),
+        "call\n"
+    );
+}
+
+#[test]
+fn commentless_accounting_uses_owned_queue_then_controller_for_cancel_confirmation() {
+    let controller = |state| {
+        format!(
+            "JobId=12345 JobName=train--attempt-001 Comment=ml-exp-{} Partition=h100 JobState={state} RunTime=00:00:01 ExitCode=0:15 Reason=None",
+            "a".repeat(32)
+        )
+    };
+    let cancel = format!(
+        "{CANCEL}; printf '%s' '{}' > \"$CONTROL\"",
+        controller("CANCELLED")
+    );
+    let (root, mut helper) = job_fixture(&cancel);
+    let program = root.path().join("scontrol");
+    fs::write(&program, "#!/bin/sh\n[ \"$#\" -eq 4 ] && [ \"$1\" = show ] && [ \"$2\" = job ] && [ \"$3\" = 12345 ] && [ \"$4\" = --oneliner ] || exit 99\ncat \"$CONTROL\"\n").unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+    helper.config.scheduler.as_mut().unwrap().scontrol_program = Some(program);
+    helper.config.environment.insert(
+        "CONTROL".into(),
+        root.path().join("controller").display().to_string(),
+    );
+    fs::write(
+        root.path().join("evidence"),
+        "12345|train--attempt-001||h100|PENDING|00:00|0:0\n",
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("queue"),
+        format!(
+            "12345|train--attempt-001|ml-exp-{}|h100|PENDING|0:00|0:0|Priority\n",
+            "a".repeat(32)
+        ),
+    )
+    .unwrap();
+    let ReplyOutcome::JobObserved { observation } = handle(&helper, &job_request(false)).outcome
+    else {
+        panic!("missing exact queue proof");
+    };
+    assert_eq!(observation.status.reason.as_deref(), Some("Priority"));
+    assert_eq!(
+        observation.status.observation_source,
+        Some(ml_exp_core::slurm::StatusSource::Squeue)
+    );
+    fs::write(root.path().join("queue"), "").unwrap();
+    for bad in [
+        controller("RUNNING").replace(&"a".repeat(32), &"b".repeat(32)),
+        controller("RUNNING").replace("12345", "54321"),
+        "".into(),
+    ] {
+        fs::write(root.path().join("controller"), bad).unwrap();
+        assert!(matches!(
+            handle(&helper, &job_request(true)).outcome,
+            ReplyOutcome::Unknown { .. }
+        ));
+        assert!(!root.path().join("cancel-calls").exists());
+    }
+    fs::write(root.path().join("controller"), controller("RUNNING")).unwrap();
+    let result = handle(&helper, &job_request(true));
+    assert!(
+        matches!(&result.outcome, ReplyOutcome::JobObserved { observation } if observation.status.state==ml_exp_core::state::RunState::Cancelled && observation.status.observation_source==Some(ml_exp_core::slurm::StatusSource::Scontrol))
+    );
+    assert_eq!(handle(&helper, &job_request(true)).outcome, result.outcome);
     assert_eq!(
         fs::read_to_string(root.path().join("cancel-calls")).unwrap(),
         "call\n"

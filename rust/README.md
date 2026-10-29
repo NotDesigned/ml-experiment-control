@@ -343,7 +343,7 @@ checkpoint and variant remain part of metric identity. Publication uses a durabl
 cursor separate from canonical ingestion, so W&B failure cannot erase metrics.
 Training sync is optional, normally enabled only when configured credentials and
 a usable destination exist; preparation tracking is controlled independently.
-Real official-cloud W&B acceptance is still pending for this native implementation.
+Native 0.1.6 passed an official-cloud test using one zero-GPU DLC Run: ten event identities and sequences, eight loss observations and their steps, the final summary and finished state matched the durable journal. This does not verify handoff of the original Python publisher backlog.
 
 ## Deploying a native service
 
@@ -613,3 +613,12 @@ TLS terminates at an operator reverse proxy; the native daemon binds loopback.
 Optional backend configuration is independent and credentials stay server-side.
 The development registry has a distinct marker and cannot be initialized over
 existing state. Retire only test-owned machines and scratch directories.
+
+Slurm clusters may omit `Comment` from accounting storage. The native helper
+accepts a queue observation only when that same row contains the exact Job ID,
+name, partition and submission marker. It never copies ownership from one query
+to a different status row. Set the optional trusted helper scheduler field
+`"scontrol_program": "/usr/bin/scontrol"` to observe just-ended jobs directly
+from the controller when accounting lacks the marker and the queue no longer
+contains the job. Missing, foreign or duplicate evidence still blocks mutation;
+controller eviction does not prove cancellation or permit resubmission.

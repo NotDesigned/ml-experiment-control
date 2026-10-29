@@ -131,6 +131,7 @@ fn ledger_config(root: &Path) -> ml_exp_worker::slurm::HelperConfig {
             sacct_program: root.join("sacct"),
             squeue_program: root.join("squeue"),
             scancel_program: root.join("scancel"),
+            scontrol_program: None,
             partition: "h100".into(),
         }),
     }

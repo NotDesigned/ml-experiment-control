@@ -55,6 +55,8 @@ pub struct SchedulerTools {
     pub sacct_program: PathBuf,
     pub squeue_program: PathBuf,
     pub scancel_program: PathBuf,
+    #[serde(default)]
+    pub scontrol_program: Option<PathBuf>,
     pub partition: String,
 }
 impl SchedulerTools {
@@ -64,7 +66,8 @@ impl SchedulerTools {
             &self.squeue_program,
             &self.scancel_program,
         ]
-        .iter()
+        .into_iter()
+        .chain(self.scontrol_program.iter())
         .any(|path| {
             !path.is_absolute()
                 || path

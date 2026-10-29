@@ -286,8 +286,10 @@ impl Helper {
             Some(&at),
         )
         .map_err(|_| Error::Metadata)?;
-        let queue = if matches!(first.diagnostic, Some(Diagnostic::NoEvidence))
-            || first.status.state == ml_exp_core::state::RunState::Queued
+        let queue = if matches!(
+            first.diagnostic,
+            Some(Diagnostic::NoEvidence | Diagnostic::OwnershipNotRecorded)
+        ) || first.status.state == ml_exp_core::state::RunState::Queued
         {
             Some(self.scheduler_command(
                 request,
@@ -308,7 +310,7 @@ impl Helper {
             None
         };
         let at = utc_now()?;
-        let observation = observe_owned_status(
+        let mut observation = observe_owned_status(
             &scope,
             &request.intent().submission_token,
             None,
@@ -317,6 +319,55 @@ impl Helper {
             Some(&at),
         )
         .map_err(|_| Error::Metadata)?;
+        if observation.status.observation_source.is_none()
+            && matches!(
+                observation.diagnostic,
+                Some(
+                    Diagnostic::NoEvidence
+                        | Diagnostic::OwnershipNotRecorded
+                        | Diagnostic::QueryUnavailable
+                )
+            )
+        {
+            if let Some(program) = &tools.scontrol_program {
+                let control = self.scheduler_command(
+                    request,
+                    snapshot,
+                    lock,
+                    &[
+                        program.display().to_string(),
+                        "show".into(),
+                        "job".into(),
+                        scope.job_id.as_str().into(),
+                        "--oneliner".into(),
+                    ],
+                    deadline,
+                    cancelled,
+                )?;
+                let at = utc_now()?;
+                if let Some(text) = control {
+                    match ml_exp_core::slurm::parse_owned_control_status(
+                        &text,
+                        &scope,
+                        &request.intent().submission_token,
+                        Some(&at),
+                    ) {
+                        Ok(Some(status)) => {
+                            observation = StatusObservation {
+                                status,
+                                checked_at: Some(at),
+                                diagnostic: None,
+                                retained_previous: false,
+                            }
+                        }
+                        Err(_) => {
+                            observation.diagnostic = Some(Diagnostic::MalformedOrForeignEvidence)
+                        }
+                        Ok(None) => {}
+                    }
+                }
+            }
+        }
         if observation.status.observation_source.is_none() {
             return Ok(ReplyOutcome::Unknown {
                 reason: match observation.diagnostic {

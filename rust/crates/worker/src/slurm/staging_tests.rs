@@ -226,6 +226,7 @@ fn missing_outputs_after_dispatch_still_allow_owned_observation_and_single_cance
         sacct_program: root.path().join("sacct"),
         squeue_program: root.path().join("squeue"),
         scancel_program: root.path().join("scancel"),
+        scontrol_program: None,
         partition: "h100".into(),
     });
     config.environment.insert(

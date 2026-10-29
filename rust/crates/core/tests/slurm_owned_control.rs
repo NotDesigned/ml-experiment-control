@@ -171,3 +171,112 @@ fn protocol_binds_job_operation_and_refuses_known_token_echoes() {
         .is_err()
     );
 }
+
+#[test]
+fn accounting_without_comment_needs_an_independently_owned_queue_row() {
+    let acct = row("PENDING").replace(&format!("ml-exp-{}", "a".repeat(32)), "");
+    let queue = format!("{}|Priority", row("PENDING"));
+    let observed = slurm::observe_owned_status(
+        &scope(),
+        &"a".repeat(32),
+        None,
+        Query::Success(&acct),
+        Query::Success(&queue),
+        None,
+    )
+    .unwrap();
+    observed.status.validate().unwrap();
+    assert_eq!(
+        observed.status.observation_source,
+        Some(StatusSource::Squeue)
+    );
+    assert_eq!(observed.status.reason.as_deref(), Some("Priority"));
+    assert!(observed.status.exit_code.is_none());
+    assert_eq!(observed.diagnostic, None);
+    let missing = slurm::observe_owned_status(
+        &scope(),
+        &"a".repeat(32),
+        None,
+        Query::Success(&acct),
+        Query::NotRequested,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        missing.diagnostic,
+        Some(slurm::Diagnostic::OwnershipNotRecorded)
+    );
+    assert_eq!(missing.status.observation_source, None);
+    for bad in [
+        acct.replace("12345|", "98765|"),
+        format!("{acct}\n{acct}"),
+        acct.replace("|h100|", "|h200|"),
+        row("PENDING").replace(&"a".repeat(32), &"b".repeat(32)),
+    ] {
+        let refused = slurm::observe_owned_status(
+            &scope(),
+            &"a".repeat(32),
+            None,
+            Query::Success(&bad),
+            Query::Success(&queue),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            refused.diagnostic,
+            Some(slurm::Diagnostic::MalformedOrForeignEvidence)
+        );
+        assert_eq!(refused.status.observation_source, None);
+    }
+    let bad_queue = queue.replace(&"a".repeat(32), &"b".repeat(32));
+    let refused = slurm::observe_owned_status(
+        &scope(),
+        &"a".repeat(32),
+        Some(&observed.status),
+        Query::Success(&acct),
+        Query::Success(&bad_queue),
+        None,
+    )
+    .unwrap();
+    assert!(refused.retained_previous);
+    assert_eq!(refused.status, observed.status);
+}
+
+#[test]
+fn controller_status_keeps_identity_state_and_exit_in_one_exact_row() {
+    let text = format!(
+        "JobId=12345 JobName=train--attempt-001 UserId=test(1000) Comment=ml-exp-{}\n",
+        "a".repeat(32)
+    );
+    let text = text.trim_end().to_string()
+        + " Partition=h100 JobState=CANCELLED RunTime=00:00:03 ExitCode=0:15 Reason=None";
+    let status = slurm::parse_owned_control_status(
+        &text,
+        &scope(),
+        &"a".repeat(32),
+        Some("2026-10-30T00:00:00Z"),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(status.state, RunState::Cancelled);
+    assert_eq!(status.observation_source, Some(StatusSource::Scontrol));
+    assert_eq!(status.exit_code.as_deref(), Some("0:15"));
+    status.validate().unwrap();
+    for bad in [
+        text.replace("12345", "67890"),
+        text.replace("Partition=h100", "Partition=h200"),
+        text.replace(&"a".repeat(32), &"b".repeat(32)),
+        format!("{text} JobId=12345"),
+        format!("{text}\n{text}"),
+        text.replace("ExitCode=0:15", ""),
+        text.replace("Reason=None", "Reason=a|b"),
+        text.replace("JobName=train--attempt-001", "JobName=foreign"),
+    ] {
+        assert!(slurm::parse_owned_control_status(&bad, &scope(), &"a".repeat(32), None).is_err());
+    }
+    assert!(
+        slurm::parse_owned_control_status("", &scope(), &"a".repeat(32), None)
+            .unwrap()
+            .is_none()
+    );
+}
