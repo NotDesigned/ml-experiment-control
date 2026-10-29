@@ -2,7 +2,7 @@
 
 Development branch: `rewrite/rust`. Python reference baseline:
 `e725faec689fb8395e692e27d00a8896fa7fe5a5` (1.5.1). Production still uses Python
-1.5.1; the Rust workspace is the `0.1.0` release candidate. It has an independent
+1.5.1; the Rust workspace has a separate `native-v0.1.0` release. It has an independent
 Tokyo test installation and bounded PAI CPU acceptance. It has not replaced
 production or established GPU acceptance on all backends.
 
@@ -72,7 +72,7 @@ Research code may use Python/PyTorch or another image language.
 | Backend catalogue/cached capacity | `core/capacity.rs`, `service/capacity.rs`, `capacity_http.rs` | Local GET is effect-free; real PAI quota refresh and retained timestamp accepted; Slurm/SenseCore pending |
 | Optional W&B publication | `core/tracking`, `server/tracking` | Fake SDK and durable history/display ACK tests; official-cloud acceptance pending |
 | Scoped administrative maintenance and record retirement | `core/maintenance.rs`, `server/administration.rs`, `worker/maintenance.rs` | Confined plans and worker receipts; actual provider cleanup pending |
-| Standalone verified client update | `core/distribution.rs`, `client/update.rs` | Manifest/version/hash logic; packager/installer and tag workflow connected; assets not yet published |
+| Standalone verified client update | `core/distribution.rs`, `client/update.rs` | Public 0.1.0 assets verified; public installer and update check passed on Tokyo |
 
 Paths in the table are relative to `rust/crates`, except the two image bridge
 paths under `server/src/ml_exp_server`. See [the native usage guide](../rust/README.md)
@@ -107,8 +107,8 @@ a partial write, lost reply or older generic error stays uncertain and requires
 reconciliation. Missing and stale sockets, same-identity recovery and lost-reply
 refusal are exercised without provider effects.
 
-Full native CPU execution/restore/result acceptance, three-backend training and
-production cutover remain separate pending checks.
+Bounded native PAI CPU execution, restore and results passed on Tokyo.
+Three-backend training and production cutover remain separate pending checks.
 
 The completion pass also connects per-Run `env` across Slurm/DLC/ACP and a
 shared read-only `data list` path. Environment values are frozen with the protocol;
@@ -190,7 +190,9 @@ The release worker is built with static musl linkage for training images;
 server and client binaries retain the documented glibc baseline.
 The release workflow tests the exact binaries before packaging. A manual run
 produces artifacts only; a stable native tag enables public publication.
-The native 0.1.0 tag and production cutover have not happened.
+The [native 0.1.0 release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.0)
+is published and installed on the isolated Tokyo instance. Production cutover
+has not happened.
 
 ## Deliberate limits and remaining acceptance
 
@@ -280,6 +282,14 @@ The test executor permits zero GPUs only. Real acceptance covers:
   local archive and reconciles the same ACK.
 - A separate zero-GPU CPU synchronization job succeeded without repeating the
   training command.
+- The exact public 0.1.0 binaries were downloaded, hash-checked and installed.
+  The published static worker then built a fresh image and completed another
+  eight-step DLC CPU Run with exit code 0. Its final state matched the earlier
+  continuous/restored state. Selected download, full download, release and
+  repeat download passed again, and the earlier checkpoint/metric reads remained
+  valid. Both temporary builder instances were confirmed deleted.
+- The public client installer, update check and actual client update passed.
+  The isolated API, image effects and HTTPS service are enabled for boot.
 
 Initial jobs without training registry credentials were stopped and positively
 confirmed terminal. A real client defect rejecting zero GPU reservation in a

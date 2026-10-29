@@ -1,7 +1,7 @@
 # Native ML-Expd
 
 Development lives on `rewrite/rust`. Production remains the Python 1.5.1 service.
-The workspace version is `0.1.0`, the first native release candidate.
+The workspace version is `0.1.0`, the first separately published native release.
 Code implementation, automated verification, provider acceptance and production
 cutover are separate milestones. See [the migration status](../docs/rust-rewrite.md).
 Do not initialize this binary over the production registry.
@@ -319,8 +319,10 @@ bash install-native.sh --version 0.1.0 --prefix "$HOME/.local/bin"
 ml-exp-rs update --version 0.1.0 --check
 ```
 
-These commands require the future `native-v0.1.0` release; development commits
-do not publish that version. Existing Python release assets are separate.
+These commands use the published
+[`native-v0.1.0` release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.0).
+Existing Python release assets are separate. Native backend and migration
+acceptance limits are described in the [implementation status](../docs/rust-rewrite.md).
 
 Server bundles contain the server, client, worker and metadata-audit executables,
 a hash manifest and [deployment examples](deploy/server.example.json). Put private
