@@ -395,7 +395,7 @@ impl Profile {
         QueueDiagnostic::pai(row).map(Some)
     }
 }
-fn text(v: &Value) -> Result<String> {
+pub(super) fn text(v: &Value) -> Result<String> {
     match v {
         Value::String(s) => Ok(s.clone()),
         Value::Number(n) if n.is_u64() => Ok(n.to_string()),

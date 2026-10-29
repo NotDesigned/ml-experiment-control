@@ -6,6 +6,7 @@ use ml_exp_core::{
     cloud::debug::{Create, Profile, Recipe},
 };
 use serde_json::json;
+use time::format_description::well_known::Rfc3339;
 
 fn profile() -> Profile {
     serde_json::from_value(json!({"provider":"pai_dsw","image_id":"image-approved","access":{"kind":"intranet"},
@@ -39,7 +40,7 @@ const NOW: &str = "2026-10-29T00:00:00Z";
 fn dsw_name_meets_actual_api_constraints_and_full_ownership_is_still_required() {
     let profile = profile();
     let recipe = profile.recipe(request(), NOW).unwrap();
-    assert_eq!(recipe.contract, "native-debug-machine.v2");
+    assert_eq!(recipe.contract, "native-debug-machine.v3");
     assert!(recipe.name.len() <= 27);
     assert!(
         recipe
@@ -49,6 +50,15 @@ fn dsw_name_meets_actual_api_constraints_and_full_ownership_is_still_required() 
     );
     let body = profile.create(&recipe).unwrap().body.unwrap();
     assert_eq!(body["InstanceName"], recipe.name);
+    assert_eq!(body["WorkspaceSource"], "/mnt/workspace");
+    assert!(
+        body["Datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|mount| mount["MountPath"] == body["WorkspaceSource"]
+                && mount["MountAccess"] == "RW")
+    );
     assert_eq!(
         profile.get(&recipe, None).unwrap().query["InstanceName"],
         recipe.name
@@ -108,6 +118,50 @@ fn legacy_uncertain_create_is_observed_by_its_original_name_without_identity_rew
     );
     legacy.name = "ml_exp_different".into();
     assert!(profile.check_recipe(&legacy).is_err());
-    legacy.contract = "native-debug-machine.v3".into();
+    legacy.contract = "native-debug-machine.v4".into();
     assert!(profile.check_recipe(&legacy).is_err());
+}
+
+#[test]
+fn issued_v2_body_is_unchanged_and_workspace_integer_response_still_binds_exact_scope() {
+    let mut profile = profile();
+    if let Profile::PaiDsw { profile, .. } = &mut profile {
+        profile.workspace_id = "253".into();
+    }
+    let request = request();
+    let profile_sha256 = profile.digest().unwrap();
+    let digest =
+        canonical::digest(&json!(["native-debug-machine.v2", profile_sha256, request])).unwrap();
+    let legacy = Recipe {
+        contract: "native-debug-machine.v2".into(),
+        identity: format!("debug.{digest}"),
+        name: format!("ml_exp_{}", &digest[..20]),
+        profile_sha256,
+        request,
+        created_at: NOW.into(),
+        expires_at: time::OffsetDateTime::parse(NOW, &Rfc3339)
+            .unwrap()
+            .unix_timestamp()
+            + 600,
+    };
+    profile.check_recipe(&legacy).unwrap();
+    let body = profile.create(&legacy).unwrap().body.unwrap();
+    assert_eq!(body["WorkspaceSource"], "/mnt/ml-expd-personal");
+    let mut row = body.clone();
+    row["InstanceId"] = json!("dsw-owned");
+    row["WorkspaceId"] = json!(253);
+    assert_eq!(
+        profile.checked(&legacy, Some("dsw-owned"), &row).unwrap(),
+        "dsw-owned"
+    );
+    for workspace in [
+        json!(254),
+        json!(253.0),
+        json!("0253"),
+        json!(null),
+        json!(false),
+    ] {
+        row["WorkspaceId"] = workspace;
+        assert!(profile.checked(&legacy, Some("dsw-owned"), &row).is_err());
+    }
 }

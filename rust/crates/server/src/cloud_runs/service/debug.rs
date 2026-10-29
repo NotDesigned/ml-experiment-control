@@ -88,6 +88,8 @@ struct Saved {
     observed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     create_rejection: Option<CreateRejection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    create_error: Option<cloud::FailureEvidence>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -170,7 +172,7 @@ impl Service {
         json!({"debug_id":record.recipe.identity,"profile":record.recipe.request.profile,"name":record.recipe.name,"provider_id":record.provider_id,
             "state":if record.deleted{"DELETED"}else if record.create_rejection.is_some(){"FAILED"}else if record.terminal&&record.network_clean{"STOPPED"}else if record.stop_requested||record.terminal{"STOPPING"}else if record.connection.is_some(){"RUNNING"}else if record.provider_id.is_some(){"STARTING"}else{"RECONCILE_REQUIRED"},
             "resources":{"gpus":record.recipe.request.gpus,"cpus":record.recipe.request.cpus,"memory_gb":record.recipe.request.memory_gb},"expires_at":record.recipe.expires_at,
-            "connection":record.connection,"diagnostic":record.diagnostic,"create_rejection":record.create_rejection,"observed_at":record.observed_at,"confirmation":format!("STOP {}",record.recipe.identity),"retry_safe":false})
+            "connection":record.connection,"diagnostic":record.diagnostic,"create_rejection":record.create_rejection,"create_error":record.create_error,"observed_at":record.observed_at,"confirmation":format!("STOP {}",record.recipe.identity),"retry_safe":false})
     }
     pub fn debug_list(&self) -> cloud::Result<Value> {
         let runtime = self
@@ -241,6 +243,7 @@ impl Service {
             diagnostic: None,
             observed_at: None,
             create_rejection: None,
+            create_error: None,
         };
         lock.validate()?;
         self.debug_save(&record)?;
@@ -314,7 +317,19 @@ impl Service {
         }
         saved.claims.insert(label.into());
         self.debug_save(saved)?;
-        let result = client.call(&request, &AtomicBool::new(false));
+        let result = if label == "create" {
+            let mut evidence = None;
+            let result = client.call_observed(&request, &AtomicBool::new(false), &mut |v| {
+                evidence = Some(v);
+            });
+            if let Some(evidence) = evidence {
+                saved.create_error = Some(evidence);
+                self.debug_save(saved)?;
+            }
+            result
+        } else {
+            client.call(&request, &AtomicBool::new(false))
+        };
         if label == "create"
             && matches!(
                 request.endpoint,

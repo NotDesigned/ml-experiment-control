@@ -203,7 +203,7 @@ impl Profile {
     }
     pub fn recipe(&self, request: Create, now: &str) -> Result<Recipe> {
         let contract = if matches!(self, Self::PaiDsw { .. }) {
-            "native-debug-machine.v2"
+            "native-debug-machine.v3"
         } else {
             "native-debug-machine.v1"
         };
@@ -221,7 +221,10 @@ impl Profile {
     }
     fn recipe_version(&self, request: Create, now: &str, contract: &str) -> Result<Recipe> {
         if contract != "native-debug-machine.v1"
-            && !(contract == "native-debug-machine.v2" && matches!(self, Self::PaiDsw { .. }))
+            && !(matches!(
+                contract,
+                "native-debug-machine.v2" | "native-debug-machine.v3"
+            ) && matches!(self, Self::PaiDsw { .. }))
         {
             return Err(Error("debug recipe contract"));
         }
@@ -251,7 +254,7 @@ impl Profile {
             contract: contract.into(),
             // PAI's InstanceName is at most 27 ASCII letters/digits/underscores.
             // Ownership additionally binds the complete digest label and quota.
-            name: if contract == "native-debug-machine.v2" {
+            name: if contract != "native-debug-machine.v1" {
                 format!("ml_exp_{}", &identity[..20])
             } else {
                 format!("ml-expd-debug-{}", &identity[..32])
@@ -362,7 +365,7 @@ impl Profile {
                     .ok_or(Error("debug role"))?;
                 json!({"WorkspaceId":profile.workspace_id,"ResourceId":profile.quota_id,"InstanceName":recipe.name,"ImageId":image_id,"Accessibility":"PRIVATE",
                     "RequestedResource":{"CPU":r.cpus.to_string(),"Memory":format!("{}Gi",r.memory_gb),"GPU":r.gpus.to_string()},"OversoldType":"ForbiddenQuotaOverSold",
-                    "Labels":[{"Key":"ml-expd.debug","Value":recipe.identity}],"Datasets":storage.mounts(),"WorkspaceSource":"/mnt/ml-expd-personal","UserVpc":vpc,
+                    "Labels":[{"Key":"ml-expd.debug","Value":recipe.identity}],"Datasets":storage.mounts(),"WorkspaceSource":if recipe.contract=="native-debug-machine.v3"{"/mnt/workspace"}else{"/mnt/ml-expd-personal"},"UserVpc":vpc,
                     "CredentialConfig":{"Enable":true,"AliyunEnvRoleKey":"0","Configs":[{"Key":"0","Type":"Role","Roles":[{"RoleArn":storage.role_arn,"RoleType":"service","AssumeRoleFor":account}]}]}})
             }
             Self::SensecoreCci { profile, image, .. } => {
@@ -392,7 +395,7 @@ impl Profile {
         let identifier = match self {
             Self::PaiDsw { profile, .. } => {
                 if row["InstanceName"] != recipe.name
-                    || row["WorkspaceId"].as_str() != Some(&profile.workspace_id)
+                    || pai::text(&row["WorkspaceId"])? != profile.workspace_id
                     || row["ResourceId"] != profile.quota_id
                     || !row["Labels"].as_array().is_some_and(|a| {
                         a.iter()

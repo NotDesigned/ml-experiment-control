@@ -2,9 +2,11 @@
 //! proxy, credential logging, implicit mutation retry or provider CLI.
 pub mod action;
 pub mod adapter;
+mod evidence;
 pub mod outbox;
 mod registry;
 mod signing;
+pub use evidence::FailureEvidence;
 use ml_exp_core::cloud::{Endpoint, Method, Request};
 use serde::Deserialize;
 use serde_json::Value;
@@ -130,6 +132,14 @@ impl Client {
         Ok(self)
     }
     pub fn call(&self, request: &Request, cancelled: &AtomicBool) -> Result<Value> {
+        self.call_observed(request, cancelled, &mut |_| {})
+    }
+    pub(crate) fn call_observed(
+        &self,
+        request: &Request,
+        cancelled: &AtomicBool,
+        on_failure: &mut dyn FnMut(FailureEvidence),
+    ) -> Result<Value> {
         request.validate().map_err(|_| Error::configuration())?;
         let mut private = request.clone();
         if let Some(registry) = &self.registry {
@@ -240,6 +250,13 @@ impl Client {
                             .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
                 })
                 .unwrap_or("CLOUD_REQUEST_FAILED");
+            on_failure(evidence::failure_evidence(
+                &value,
+                code,
+                status.as_u16(),
+                &self.credentials,
+                request.body.as_ref(),
+            ));
             return Err(Error {
                 code: code.into(),
                 http_status: Some(status.as_u16()),

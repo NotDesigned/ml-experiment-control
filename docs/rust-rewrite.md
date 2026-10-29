@@ -84,13 +84,16 @@ frozen. Reconcile, cancel and explicit retry never select a different pool.
 Training pools exclude debug; data-copy profiles explicitly use debug CPU pools.
 Quota observations do not establish the number of idle GPUs.
 
-New DSW debug recipes use the v2 name convention: at most 27 ASCII letters,
-digits and underscores, as required by PAI. Previously issued v1 recipes retain
-their exact original names and lookup identities; an uncertain creation is
-never replayed under a corrected name. A positively rejected HTTP 400
+New DSW debug recipes use the v3 contract: at most 27 ASCII letters,
+digits and underscores, and a working directory matching the mounted personal
+CPFS path (`/mnt/workspace`). Previously issued v1/v2 recipes retain
+their exact original names, request bodies and lookup identities; an uncertain
+creation is never replayed under a corrected recipe. A positively rejected HTTP 400
 `ValidationError` on a new DSW create is retained as a failed creation and does
 not permanently consume an active-machine slot. Transport failures and other
-uncertain outcomes still require reconciliation.
+uncertain outcomes still require reconciliation. New creation errors retain
+only bounded, redacted provider code, HTTP status, message and request ID;
+credentials and arbitrary response documents are excluded.
 
 ## Latest implementation completion pass
 
