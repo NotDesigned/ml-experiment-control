@@ -18,6 +18,53 @@ fn response() -> Value {
     json!({"submission_id":ID,"project":"demo","run_id":"train","attempt_id":"attempt-001","operation":"SUBMIT_RUN","status":"PREPARED","confirmation":format!("EXECUTE {ID}"),"execution":{"status":"PREPARED","revision":0}})
 }
 #[test]
+fn cpu_input_preparation_is_scoped_progress_and_cannot_impersonate_a_training_action() {
+    let plan = submissions::plan(Command::Prepare {
+        project: "demo",
+        run: "train",
+        max_gpu_hours: 1.,
+        reason: "test",
+    })
+    .unwrap();
+    let progress = json!({"project":"demo","run_id":"train","attempt_id":"attempt-001","operation":"PREPARE_INPUT",
+        "phase":"DATA_PREPARATION","status":"PREPARING","scheduler_submitted":false,"training_authorized":false});
+    for status in ["PREPARED", "PREPARING", "FAILED", "RECONCILE_REQUIRED"] {
+        let mut value = progress.clone();
+        value["status"] = json!(status);
+        assert!(submissions::response(&plan, value).is_ok());
+    }
+    for (field, invalid) in [
+        ("project", json!("other")),
+        ("run_id", json!("other")),
+        ("attempt_id", json!("attempt-002")),
+        ("status", json!("READY")),
+        ("scheduler_submitted", json!(true)),
+        ("training_authorized", json!(true)),
+        ("submission_id", json!(ID)),
+    ] {
+        let mut value = progress.clone();
+        value[field] = invalid;
+        assert!(submissions::response(&plan, value).is_err(), "{field}");
+    }
+    for command in [
+        Command::Existing {
+            project: "demo",
+            run: "train",
+        },
+        Command::Authorize {
+            submission: ID,
+            reason: "test",
+        },
+        Command::Execute {
+            submission: ID,
+            confirmation: "EXECUTE action-0123456789abcdef",
+        },
+    ] {
+        let plan = submissions::plan(command).unwrap();
+        assert!(submissions::response(&plan, progress.clone()).is_err());
+    }
+}
+#[test]
 fn plans_reject_invalid_identity_budget_reason_and_confirmation_without_io() {
     for cap in [0., -1., f64::NAN, f64::INFINITY] {
         assert!(

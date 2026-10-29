@@ -4,6 +4,34 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const CONTRACT: &str = "native-script-preparation.v1";
+
+/// Classify retained preparation-job evidence without contacting a provider.
+/// A failed CPU job never authorizes training or silently starts another copy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Status {
+    Prepared,
+    Preparing,
+    Ready,
+    Failed,
+    ReconcileRequired,
+}
+pub fn job_status(
+    observed: Option<crate::state::RunState>,
+    dispatch_started: bool,
+    has_handle: bool,
+) -> Status {
+    use crate::state::RunState;
+    match observed {
+        Some(RunState::Succeeded) => Status::Ready,
+        Some(state) if state.is_terminal() => Status::Failed,
+        Some(RunState::Unknown) => Status::ReconcileRequired,
+        Some(_) => Status::Preparing,
+        None if has_handle => Status::Preparing,
+        None if dispatch_started => Status::ReconcileRequired,
+        None => Status::Prepared,
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -133,6 +161,28 @@ impl Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preparation_completion_and_unknown_dispatch_are_not_reported_as_waiting() {
+        use crate::state::RunState;
+        for state in [RunState::Failed, RunState::Preempted, RunState::Cancelled] {
+            assert_eq!(job_status(Some(state), true, true), Status::Failed);
+        }
+        assert_eq!(
+            job_status(Some(RunState::Succeeded), true, true),
+            Status::Ready
+        );
+        assert_eq!(
+            job_status(Some(RunState::Running), true, true),
+            Status::Preparing
+        );
+        assert_eq!(
+            job_status(Some(RunState::Unknown), true, true),
+            Status::ReconcileRequired
+        );
+        assert_eq!(job_status(None, true, false), Status::ReconcileRequired);
+        assert_eq!(job_status(None, true, true), Status::Preparing);
+        assert_eq!(job_status(None, false, false), Status::Prepared);
+    }
     #[test]
     fn validation_and_identity_separate_data_from_execution_policy() {
         let mut plan = Plan {

@@ -498,6 +498,30 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
         }
         return Ok(value);
     }
+    // Input preparation can need a CPU job before a training Action exists.
+    // This response is valid only for the explicit Run prepare request and
+    // cannot be used as authorize/execute evidence for a Submission.
+    if value["operation"] == "PREPARE_INPUT" {
+        let Expected::Run { project, run } = &plan.expected else {
+            return Err(Error::Response);
+        };
+        if plan.body.is_none()
+            || value["project"] != *project
+            || value["run_id"] != *run
+            || value["attempt_id"] != "attempt-001"
+            || value["phase"] != "DATA_PREPARATION"
+            || !value["submission_id"].is_null()
+            || value["scheduler_submitted"] != false
+            || value["training_authorized"] != false
+            || !matches!(
+                value["status"].as_str(),
+                Some("PREPARED" | "PREPARING" | "FAILED" | "RECONCILE_REQUIRED")
+            )
+        {
+            return Err(Error::Response);
+        }
+        return Ok(value);
+    }
     let id = value["submission_id"].as_str().ok_or(Error::Response)?;
     validate_submission_id(id).map_err(|_| Error::Response)?;
     let project = value["project"].as_str().ok_or(Error::Response)?;

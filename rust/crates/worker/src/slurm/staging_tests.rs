@@ -325,6 +325,73 @@ fn managed_request(request: &Request) -> Request {
     let (manifest, script) = request.prepared_content().unwrap();
     Request::prepare(intent, manifest.into(), script.into()).unwrap()
 }
+
+#[test]
+fn long_preparation_releases_metadata_lock_and_honors_cancellation_without_dispatch() {
+    let (root, helper, request) = staged_fixture();
+    drop(helper);
+    let request = managed_request(&request);
+    let mut doc: Value = serde_json::from_str(request.prepared_content().unwrap().0).unwrap();
+    doc["source_id"] = json!(format!("source.{}", "2".repeat(64)));
+    doc["image_id"] = json!(format!("sha256:{}", "3".repeat(64)));
+    doc["backend"]["oci_image"] =
+        json!(format!("registry.example/image@sha256:{}", "3".repeat(64)));
+    doc["data_preparation"] = json!({"script":"fetch.py","timeout_seconds":5});
+    let manifest = doc.to_string();
+    let mut intent = request.intent().clone();
+    intent.manifest_sha256 = helper::sha256_bytes(manifest.as_bytes());
+    let request = Request::prepare(
+        intent,
+        manifest,
+        request.prepared_content().unwrap().1.into(),
+    )
+    .unwrap();
+    let program = root.path().join("apptainer");
+    fs::write(
+        &program,
+        "#!/bin/sh\nprintf started > \"$PROBE_STARTED\"\nwhile :; do sleep .02; done\n",
+    )
+    .unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+    let marker = root.path().join("download-started");
+    let mut config = config(root.path());
+    config.shared_run_root = Some(root.path().join("shared-runs"));
+    config.data_preparer = Some(program);
+    config
+        .environment
+        .insert("PROBE_STARTED".into(), marker.display().to_string());
+    let helper = Helper::open(config).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let job = std::thread::spawn(move || helper.handle(&request, &flag));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !marker.exists() && !job.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let started = marker.exists();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.path().join("helper/.slurm-helper.lock"))
+        .unwrap();
+    let available = fs2::FileExt::try_lock_exclusive(&lock).is_ok();
+    if available {
+        fs2::FileExt::unlock(&lock).unwrap();
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(job.join().unwrap().is_err());
+    assert!(started, "download was not started");
+    assert!(available, "a download held the global helper metadata lock");
+    let diagnostic: Value = serde_json::from_slice(
+        &fs::read(claim(root.path()).join("data-preparation.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(diagnostic["cancelled"], true);
+    assert_eq!(diagnostic["scheduler_submitted"], false);
+    assert!(!claim(root.path()).join("state.json").exists());
+    assert!(!claim(root.path()).join("submit.started.json").exists());
+    assert_eq!(calls(root.path()), 0);
+}
 #[test]
 fn managed_launch_is_staged_with_exact_local_binding_and_keeps_control_outputs_fresh() {
     let (root, helper, request) = staged_fixture();

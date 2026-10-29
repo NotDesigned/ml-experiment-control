@@ -536,15 +536,13 @@ impl Helper {
         let ledger = self.read_ledger(request.intent())?;
         // Keep the exact directory used by this operation, rather than only
         // reopening its pathname after a scheduler call may have changed it.
-        let mut retained = match &ledger {
+        let retained = match &ledger {
             ReadLedger::Found(snapshot) => Some(snapshot.directory.clone()),
             _ => None,
         };
         let outcome = match request.operation() {
             OperationTag::PrepareSubmission if matches!(ledger, ReadLedger::Missing) => {
-                let (outcome, directory) = self.prepare(request, &lock)?;
-                retained = directory;
-                outcome
+                return self.prepare(request, lock, cancelled);
             }
             OperationTag::Submit => match ledger {
                 ReadLedger::Found(snapshot) => self.submit(request, snapshot, &lock, cancelled)?,
@@ -603,27 +601,27 @@ impl Helper {
         lock.validate()?;
         Ok(Reply::for_request(request, outcome)?)
     }
-    fn prepare(&self, request: &Request, lock: &Lock) -> Result<(ReplyOutcome, Option<Directory>)> {
+    fn prepare(&self, request: &Request, lock: Lock<'_>, cancelled: &AtomicBool) -> Result<Reply> {
         let (manifest, script) = request.prepared_content().ok_or(Error::Configuration)?;
         let mut registry = self.registry()?;
         let scope = request.intent().scope.digest()?;
         if registry.claims.contains_key(&scope) {
-            return Ok((
+            return Ok(Reply::for_request(
+                request,
                 ReplyOutcome::Unknown {
                     reason: UnknownReason::MissingLedger,
                 },
-                None,
-            ));
+            )?);
         }
         registry.claims.insert(scope, request.intent().digest()?);
         let registry_bytes = json(&registry)?;
         if registry_bytes.len() > helper::MAX_METADATA_BYTES {
-            return Ok((
+            return Ok(Reply::for_request(
+                request,
                 ReplyOutcome::Rejected {
                     code: Rejection::CapacityFull,
                 },
-                None,
-            ));
+            )?);
         }
         lock.validate()?;
         self.root
@@ -633,26 +631,55 @@ impl Helper {
         let name = Self::claim_name(request.intent());
         // Never repair an empty old claim or race another marker's creator.
         if run.entry_exists(OsStr::new(&name))? {
-            return Ok((
+            return Ok(Reply::for_request(
+                request,
                 ReplyOutcome::Unknown {
                     reason: UnknownReason::LegacyClaim,
                 },
-                None,
-            ));
+            )?);
         }
         let directory = run.child(OsStr::new(&name), true)?;
         lock.validate()?;
         directory.publish_new(OsStr::new(INTENT), &json(request.intent())?)?;
         directory.publish_new(OsStr::new(MANIFEST), manifest.as_bytes())?;
         directory.publish_new(OsStr::new(SCRIPT), script.as_bytes())?;
-        self.prepare_shared(request.intent(), manifest.as_bytes(), &directory)?;
+        // The durable claim prevents replay while a download is running. Do
+        // not hold the global metadata lock across that potentially long job:
+        // observations and cancellation of other Runs must remain available.
+        lock.validate()?;
+        drop(lock);
+        self.prepare_shared(request.intent(), manifest.as_bytes(), &directory, cancelled)?;
+        let lock = self.lock(cancelled)?;
+        self.verify_issued(request.intent(), &directory)?;
+        for (name, expected) in [
+            (INTENT, json(request.intent())?),
+            (MANIFEST, manifest.as_bytes().to_vec()),
+            (SCRIPT, script.as_bytes().to_vec()),
+        ] {
+            if directory.read_regular(OsStr::new(name), helper::MAX_METADATA_BYTES as u64)?
+                != expected
+            {
+                return Err(Error::Bootstrap);
+            }
+        }
+        if cancelled.load(Ordering::Relaxed)
+            || [STATE, START, RECEIPT]
+                .into_iter()
+                .any(|name| directory.entry_exists(OsStr::new(name)).unwrap_or(true))
+        {
+            return Err(Error::Bootstrap);
+        }
         directory.publish_new(
             OsStr::new(STATE),
             &json(&LedgerRecord::prepared(request.intent().clone())?)?,
         )?;
         directory.verify_attached()?;
+        if Self::observed(&self.read_ledger(request.intent())?) != ReplyOutcome::Prepared {
+            return Err(Error::Bootstrap);
+        }
+        self.verify_issued(request.intent(), &directory)?;
         lock.validate()?;
-        Ok((ReplyOutcome::Prepared, Some(directory)))
+        Ok(Reply::for_request(request, ReplyOutcome::Prepared)?)
     }
     fn submit(
         &self,

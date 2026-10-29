@@ -86,6 +86,7 @@ impl Helper {
         intent: &FrozenIntent,
         manifest: &[u8],
         diagnostics: &Directory,
+        cancelled: &AtomicBool,
     ) -> Result<()> {
         let Some(plan) = self.shared_plan(intent, manifest)? else {
             return Ok(());
@@ -163,7 +164,7 @@ impl Helper {
                         + Duration::from_secs(preparation.request.timeout_seconds + 30),
                     termination_grace: Duration::from_secs(3),
                     drain_grace: Duration::from_secs(3),
-                    cancelled: &AtomicBool::new(false),
+                    cancelled,
                 })?;
                 stdout.sync_all()?;
                 stderr.sync_all()?;

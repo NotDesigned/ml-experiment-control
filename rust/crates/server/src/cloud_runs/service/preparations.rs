@@ -179,11 +179,26 @@ impl Service {
         } else {
             json!({"runtime_id":run.runtime_id,"status":"EXISTING"})
         };
-        Ok(
-            json!({"project":saved.project,"preparation_id":id,"run_id":run.run_id,"attempt_id":if saved.submission.is_some(){Some("attempt-001")}else{None},"runtime":runtime,
+        let mut value = json!({"project":saved.project,"preparation_id":id,"run_id":run.run_id,"attempt_id":if saved.submission.is_some(){Some("attempt-001")}else{None},"runtime":runtime,
             "status":if saved.submission.is_some(){"READY"}else if saved.started{"PREPARING"}else{"PREPARED"},"phase":if saved.submission.is_some(){"SUBMISSION_PREPARED"}else{"ENVIRONMENT_PREPARATION"},
-            "confirmation":format!("PREPARE {id}"),"submission":saved.submission,"training_authorized":false,"scheduler_submitted":false}),
-        )
+            "confirmation":format!("PREPARE {id}"),"submission":saved.submission,"training_authorized":false,"scheduler_submitted":false});
+        if saved.submission.is_none() && saved.started && self.accepts(&run.executor) {
+            if let Some(progress) = self.script_status(&saved.project, &run.run_id)? {
+                value["phase"] = json!(if progress["status"] == "READY" {
+                    "DATA_PREPARED"
+                } else {
+                    "DATA_PREPARATION"
+                });
+                value["status"] = if progress["status"] == "READY" {
+                    json!("PREPARING")
+                } else {
+                    progress["status"].clone()
+                };
+                value["data_preparation"] = progress["data_preparation"].clone();
+                value["error_code"] = progress["error_code"].clone();
+            }
+        }
+        Ok(value)
     }
     pub fn experiment_prepare(
         &self,
@@ -329,11 +344,8 @@ impl Service {
                 }
             }
             self.create_run(project, run.clone(), now)?;
-            if let Some(status) = self.prepare_script(project, &run.run_id)? {
-                let mut view = self.setup_view(&saved)?;
-                view["phase"] = json!("DATA_PREPARATION");
-                view["data_preparation"] = status["data_preparation"].clone();
-                return Ok(view);
+            if self.prepare_script(project, &run.run_id)?.is_some() {
+                return self.setup_view(&saved);
             }
             self.prepare(
                 project,

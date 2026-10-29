@@ -53,11 +53,11 @@ Research code may use Python/PyTorch or another image language.
 | --- | --- | --- |
 | Configure client, inspect status/logs/metrics, watch exact Attempt | `client/{config,session,watch,main}.rs` | Local HTTP and binary tests |
 | Register approved Project; upload immutable source | `server/{projects,sources}`, `client/{projects,sources}.rs` | Private temporary stores and HTTP |
-| Dockerfile prepare/build/reconcile/log/progress | `core/cloud/build.rs`, `server/cloud_runs/service/builds.rs`, `builds/native_image.py` | Frozen recipe and late-publication bridge tests; actual build pending |
+| Dockerfile prepare/build/reconcile/log/progress | `core/cloud/build.rs`, `server/cloud_runs/service/builds.rs`, `builds/native_image.py` | Frozen recipe and late-publication bridge tests; isolated DSW-to-Tokyo build passed |
 | OCI-to-SIF on Slurm gateway | `worker/materialize.rs` | Fake apptainer; exact reuse/capacity/tampering checks |
-| Upload/download cloud datasets | `server/objects.rs`, `service/datasets.rs`, `client/datasets.rs` | Bounded parts and immutable receipts; actual OSS transfer pending |
+| Upload/download cloud datasets | `server/objects.rs`, `service/datasets.rs`, `client/datasets.rs` | Bounded parts and immutable receipts; isolated two-part OSS upload passed; full training consumption pending |
 | Download into CPFS / NAS input cache | `worker/{data_import,cloud_data}.rs` | Import/hash/cache tests; provider storage pending |
-| Frozen download script and verified persistent input cache | `core/data_preparation.rs`, `worker/data_preparation.rs`, `service/script_preparation.rs` | Connected; provider acceptance pending |
+| Frozen download script and verified persistent input cache | `core/data_preparation.rs`, `worker/data_preparation.rs`, `service/script_preparation.rs` | CPFS script execution and verified reuse passed; three-backend dispatch acceptance pending |
 | CCR data image and CPU ACP copy before training | `service/data_delivery.rs`, `builds/native_data.py`, `worker/data_copy_cli.rs` | Stage control/hash/capability tests; actual copy pending |
 | One experiment configuration | `core/preparation.rs`, `client/preparations.rs`, `service/preparations.rs` | Recovery slot, conflict, early preflight and HTTP tests |
 | Matrix preparation and bounded dispatch | `core/preparation.rs`, `client/batch.rs` | Stable identities, exact terminal slot accounting; actual batch pending |
@@ -133,6 +133,15 @@ Startup publication failures identify the stage and errno without package tokens
 Build progress distinguishes a live build thread/held worker lock from a saved
 start marker left by an interrupted process. The latter requires reconciliation;
 it does not remain falsely EXECUTING and cannot be dispatched twice.
+
+SenseCore preparation now distinguishes a running CPU copy, a terminal failure,
+a completed copy and an uncertain submission. Preparation GET reads that retained
+outbox evidence without contacting the provider or creating a copy. Failed CPU
+preparation returns `DATA_PREPARATION_FAILED`; it never authorizes GPU training.
+Slurm releases its global helper metadata lock after reserving the exact intent
+and before running a download script. The original cancellation signal reaches
+that script; cancellation/failure retains diagnostics without publishing a
+PREPARED submission or replaying the script.
 
 ## Storage and transfer contracts
 

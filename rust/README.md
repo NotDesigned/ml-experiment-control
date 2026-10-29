@@ -163,6 +163,13 @@ inside the allocated DLC job and counts this time toward the job's time limit.
 It uses the approved persistent mount; an absent mount is never created locally.
 New script-enabled cloud Runs require an image worker declaring
 `script-preparation.v1`; old frozen images keep their original capabilities.
+For SenseCore, preparation status retains the CPU job's identity and distinguishes
+failure from uncertainty and ordinary waiting. A failed copy reports
+`DATA_PREPARATION_FAILED` without creating a training Submission. Direct
+`run prepare` can return `operation=PREPARE_INPUT` while the CPU job is pending;
+that response cannot be used with `authorize` or `execute`.
+Slurm download scripts receive cancellation and run without holding the helper's
+global metadata lock; a failed/cancelled preparation leaves no dispatchable plan.
 
 Preparation saves client recovery state before requesting any effect. Continue
 using the returned preparation ID and confirmation:
