@@ -97,6 +97,16 @@ struct Saved {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_error: Option<OperationError>,
 }
+impl Saved {
+    fn needs_refresh(&self, timestamp: i64) -> bool {
+        !self.deleted
+            && (self.delete_requested || !(self.terminal && self.network_clean))
+            && (self.recipe.expires_at <= timestamp
+                || self.stop_requested
+                || self.delete_requested
+                || self.terminal)
+    }
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OperationError {
@@ -184,6 +194,8 @@ impl Service {
         let provider_status = domain::status(record.provider_state.as_deref(), record.terminal);
         let state = if record.deleted {
             "DELETED"
+        } else if record.delete_requested {
+            "DELETING"
         } else if record.create_rejection.is_some() {
             "FAILED"
         } else if record.terminal && record.network_clean {
@@ -706,10 +718,7 @@ impl Service {
         for saved in self
             .debug_records()?
             .into_iter()
-            .filter(|r| {
-                !(r.deleted || r.terminal && r.network_clean)
-                    && (r.recipe.expires_at <= timestamp || r.stop_requested || r.terminal)
-            })
+            .filter(|r| r.needs_refresh(timestamp))
             .take(16)
         {
             self.debug_refresh(&saved.recipe.identity, now)?;
@@ -721,14 +730,17 @@ impl Service {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn provider_failure_is_not_a_normal_stop_and_queued_connections_are_not_advertised() {
-        let mut saved: Saved = serde_json::from_value(json!({
+    fn stopped_receipt() -> Saved {
+        serde_json::from_value(json!({
             "recipe":{"contract":"native-debug-machine.v4","identity":format!("debug.{}","0".repeat(64)),"name":"owned","profile_sha256":"0".repeat(64),
                 "request":{"profile":"cpu-debug","request_id":"0".repeat(32),"ssh_public_key":"unused public fixture","lease_seconds":60,"gpus":0,"cpus":2,"memory_gb":4},"created_at":"2026-10-30T00:00:00Z","expires_at":1793318460},
             "provider_id":"dsw-owned","claims":["create"],"stop_requested":false,"delete_requested":false,"terminal":true,"network_clean":true,"deleted":false,
             "connection":null,"diagnostic":null,"observed_at":null
-        })).unwrap();
+        })).unwrap()
+    }
+    #[test]
+    fn provider_failure_is_not_a_normal_stop_and_queued_connections_are_not_advertised() {
+        let mut saved = stopped_receipt();
         // Old receipts without a native-state observation cannot prove a normal stop.
         assert_eq!(Service::debug_view(&saved)["state"], "TERMINAL");
         saved.provider_state = Some("Failed".into());
@@ -746,6 +758,27 @@ mod tests {
         assert!(view["connection"].is_null());
         saved.provider_state = Some("Running".into());
         assert_eq!(Service::debug_view(&saved)["state"], "RUNNING");
+    }
+    #[test]
+    fn asynchronous_delete_stays_visible_and_observed_until_absence_is_confirmed() {
+        let mut saved = stopped_receipt();
+        let now = saved.recipe.expires_at - 1;
+        saved.provider_state = Some("Stopped".into());
+        assert_eq!(Service::debug_view(&saved)["state"], "STOPPED");
+        assert!(!saved.needs_refresh(now));
+        saved.stop_requested = true;
+        saved.delete_requested = true;
+        saved.claims.insert("delete".into());
+        // A successful DeleteInstance reply may precede actual disappearance.
+        // Read-only show must report the pending work while the observer polls.
+        assert_eq!(Service::debug_view(&saved)["state"], "DELETING");
+        assert!(saved.needs_refresh(now));
+        saved.diagnostic = Some("CLOUD_EVIDENCE_INVALID".into());
+        assert_eq!(Service::debug_view(&saved)["state"], "DELETING");
+        assert!(saved.needs_refresh(now));
+        saved.deleted = true;
+        assert_eq!(Service::debug_view(&saved)["state"], "DELETED");
+        assert!(!saved.needs_refresh(now));
     }
     #[test]
     fn only_positive_dsw_validation_rejection_is_terminal_without_a_provider_handle() {
