@@ -146,9 +146,7 @@ impl Store {
             return Ok(next);
         }
         let capacity = directory.capacity()?;
-        if capacity.available_bytes < record.bytes + 16 * 1024 * 1024
-            || capacity.available_inodes < 2
-        {
+        if capacity.insufficient(record.bytes + 16 * 1024 * 1024, 2) {
             return Err(io::Error::other("dataset part capacity is insufficient"));
         }
         let parts = directory.child(OsStr::new("parts"), false)?;
@@ -223,9 +221,7 @@ impl Store {
                 .and_then(|v| v.checked_add(16 * 1024 * 1024))
                 .ok_or_else(invalid)?;
             let capacity = directory.capacity()?;
-            if capacity.available_bytes < required
-                || capacity.available_inodes < (state.definition.files.len() as u64) * 2 + 4
-            {
+            if capacity.insufficient(required, (state.definition.files.len() as u64) * 2 + 4) {
                 return Err(io::Error::other(
                     "dataset publication capacity is insufficient",
                 ));

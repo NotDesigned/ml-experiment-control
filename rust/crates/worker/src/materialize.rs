@@ -104,7 +104,7 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
         return Err(invalid());
     }
     let capacity = directory.capacity()?;
-    if capacity.available_bytes < config.min_free_bytes || capacity.available_inodes < 1024 {
+    if capacity.insufficient(config.min_free_bytes, 1024) {
         return Err(std::io::Error::other("BUILD_STORAGE_INSUFFICIENT"));
     }
     let mut environment = BTreeMap::from([

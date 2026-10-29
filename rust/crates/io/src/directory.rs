@@ -44,7 +44,22 @@ pub struct RegularIdentity {
 #[derive(Clone, Copy, Debug)]
 pub struct Capacity {
     pub available_bytes: u64,
-    pub available_inodes: u64,
+    /// None when the filesystem does not report an inode pool (e.g. CephFS).
+    /// This is unknown capacity, never an invented zero or reservation.
+    pub available_inodes: Option<u64>,
+}
+impl Capacity {
+    fn reported(available_bytes: u64, total_inodes: u64, available_inodes: u64) -> Self {
+        Self {
+            available_bytes,
+            available_inodes: (total_inodes != 0).then_some(available_inodes),
+        }
+    }
+    /// Reject a known shortage. Unsupported inode counts cannot establish a
+    /// shortage or guarantee a write; ordinary filesystem errors still apply.
+    pub fn insufficient(self, bytes: u64, inodes: u64) -> bool {
+        self.available_bytes < bytes || self.available_inodes.is_some_and(|n| n < inodes)
+    }
 }
 
 pub fn effective_uid() -> u32 {
@@ -450,10 +465,7 @@ impl Directory {
             .f_bavail
             .checked_mul(stat.f_frsize)
             .ok_or_else(|| invalid("filesystem capacity overflow"))?;
-        let result = Capacity {
-            available_bytes,
-            available_inodes: stat.f_favail,
-        };
+        let result = Capacity::reported(available_bytes, stat.f_files, stat.f_favail);
         self.verify_attached()?;
         Ok(result)
     }
@@ -810,6 +822,22 @@ fn rename_between_new(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unsupported_inode_pool_differs_from_known_exhaustion_and_keeps_byte_guard() {
+        // The real shared CephFS reports f_files=f_favail=0 with ample bytes.
+        let unknown = Capacity::reported(32, 0, 0);
+        assert_eq!(unknown.available_inodes, None);
+        assert!(!unknown.insufficient(16, 1024));
+        assert!(unknown.insufficient(33, 1));
+        // A filesystem that reports an inode pool can genuinely be exhausted.
+        let exhausted = Capacity::reported(32, 100, 0);
+        assert_eq!(exhausted.available_inodes, Some(0));
+        assert!(exhausted.insufficient(16, 1));
+        let known = Capacity::reported(32, 100, 2);
+        assert!(!known.insufficient(32, 2));
+        assert!(known.insufficient(32, 3));
+        assert!(known.insufficient(33, 1));
+    }
     use std::{
         fs,
         os::unix::fs::{PermissionsExt, symlink},

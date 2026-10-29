@@ -105,7 +105,7 @@ impl Helper {
                 };
                 let required = ml_exp_io::artifacts::estimate(&payload)?;
                 let capacity = directory.capacity()?;
-                if capacity.available_bytes < required || capacity.available_inodes < 2 {
+                if capacity.insufficient(required, 2) {
                     return Err(Error::Storage(std::io::Error::other(
                         "result archive storage is insufficient",
                     )));
