@@ -1,4 +1,38 @@
 use super::*;
+
+#[test]
+fn diagnostics_keep_exit_and_capture_evidence_without_credentials() {
+    let raw = b"denied password=private-canary\nBearer bearer-canary https://user:pass@example.test/?signature=signed-canary";
+    let result = Outcome {
+        spawned: true,
+        exit_code: Some(255),
+        stderr: Captured {
+            bytes: raw.to_vec(),
+            received_bytes: 90000,
+            retained_bytes: raw.len() as u64,
+            truncated: true,
+            complete: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let value = result.diagnostic();
+    assert_eq!(value["exit_code"], 255);
+    assert_eq!(value["stderr"]["received_bytes"], 90000);
+    assert_eq!(value["stderr"]["truncated"], true);
+    assert_eq!(value["stderr"]["complete"], false);
+    let text = value["stderr"]["text"].as_str().unwrap();
+    assert!(text.contains("denied") && text.contains("[REDACTED]"));
+    for secret in [
+        "private-canary",
+        "bearer-canary",
+        "user:pass",
+        "signed-canary",
+    ] {
+        assert!(!text.contains(secret));
+    }
+    assert!(!text.contains('\n'));
+}
 use std::{
     fs,
     io::{Seek, SeekFrom},

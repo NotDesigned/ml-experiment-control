@@ -107,7 +107,7 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
     if capacity.insufficient(config.min_free_bytes, 1024) {
         return Err(std::io::Error::other("BUILD_STORAGE_INSUFFICIENT"));
     }
-    let mut environment = BTreeMap::from([
+    let environment = BTreeMap::from([
         ("PATH".into(), "/usr/bin:/bin".into()),
         (
             "HOME".into(),
@@ -118,18 +118,20 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
             directory.path().to_string_lossy().into_owned(),
         ),
     ]);
-    if let Some(path) = config.registry_auth_file {
-        let value = ml_exp_io::read_private(&path, 1024 * 1024, true)?;
-        let _: serde_json::Value = serde_json::from_slice(&value)?;
-        environment.insert(
-            "APPTAINER_AUTHFILE".into(),
-            path.to_string_lossy().into_owned(),
-        );
-    }
-    let argv = vec![
+    let mut argv = vec![
         config.apptainer.to_str().ok_or_else(invalid)?.to_owned(),
         "build".into(),
         "--disable-cache".into(),
+    ];
+    if let Some(path) = config.registry_auth_file {
+        let value = ml_exp_io::read_private(&path, 1024 * 1024, true)?;
+        let _: serde_json::Value = serde_json::from_slice(&value)?;
+        argv.extend([
+            "--authfile".into(),
+            path.to_str().ok_or_else(invalid)?.into(),
+        ]);
+    }
+    argv.extend([
         directory
             .path()
             .join("image.partial.sif")
@@ -137,7 +139,7 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
             .ok_or_else(invalid)?
             .to_owned(),
         format!("docker://{}", request.runtime.image),
-    ];
+    ]);
     let result = process::execute(process::Request {
         argv: &argv,
         cwd: &directory.path(),
@@ -155,7 +157,10 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
         || result.cancelled
         || result.failure.is_some()
     {
-        return Err(std::io::Error::other("OCI_TO_SIF_FAILED"));
+        return Err(std::io::Error::other(format!(
+            "OCI_TO_SIF_FAILED {}",
+            result.diagnostic()
+        )));
     }
     let file = directory.open_regular_read(OsStr::new("image.partial.sif"))?;
     let (sha, _) = ml_exp_io::artifacts::hash(&mut &file)?;
@@ -211,7 +216,7 @@ mod tests {
         let binary = temp.path().join("apptainer");
         fs::write(
             &binary,
-            b"#!/bin/sh\nprintf 'native fake SIF' > \"$3\"\nprintf x >> calls\n",
+            b"#!/bin/sh\nif [ \"$3\" = --authfile ]; then printf '%s' \"$4\" > auth-argument; shift 2; fi\nprintf 'native fake SIF' > \"$3\"\nprintf x >> calls\n",
         )
         .unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
@@ -258,5 +263,36 @@ mod tests {
                 .exists()
         );
         assert!(run(config(1), request("get", "2")).is_err());
+
+        let auth = temp.path().join("private auth.json");
+        fs::write(&auth, br#"{"auths":{}}"#).unwrap();
+        fs::set_permissions(&auth, fs::Permissions::from_mode(0o600)).unwrap();
+        let authenticated = Config {
+            registry_auth_file: Some(auth.clone()),
+            ..config(1)
+        };
+        run(authenticated, request("build", "3")).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join(format!("runtime.{}/auth-argument", "3".repeat(64))))
+                .unwrap(),
+            auth.to_str().unwrap()
+        );
+
+        fs::write(
+            &binary,
+            b"#!/bin/sh\nprintf 'denied password=private-canary' >&2\nexit 255\n",
+        )
+        .unwrap();
+        let error = run(config(1), request("build", "4"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("OCI_TO_SIF_FAILED"));
+        assert!(error.contains("255") && error.contains("denied"));
+        assert!(!error.contains("private-canary"));
+        assert!(
+            !root
+                .join(format!("runtime.{}/receipt.json", "4".repeat(64)))
+                .exists()
+        );
     }
 }

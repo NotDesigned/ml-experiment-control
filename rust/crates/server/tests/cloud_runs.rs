@@ -716,6 +716,7 @@ fn check_builder_dispatch_evidence(
     finish_tx.send(()).unwrap();
     assert_eq!(wait(id, "READY")["retry_safe"], false);
     builder.join().unwrap();
+    check_materializer_diagnostics(settings, &config, sources.clone(), id, original, root);
     fs::remove_file(&socket).unwrap();
     let listener = UnixListener::bind(&socket).unwrap();
     let ambiguous = std::thread::spawn(move || {
@@ -746,4 +747,69 @@ fn check_builder_dispatch_evidence(
         .unwrap();
     assert_eq!(value["status"], "RECONCILE_REQUIRED");
     assert_eq!(value["retry_safe"], false);
+}
+
+fn check_materializer_diagnostics(
+    settings: &read_config::Settings,
+    base: &Value,
+    sources: Arc<sources::Service>,
+    id: &str,
+    original: &Runtime,
+    root: &std::path::Path,
+) {
+    let binary = root.join("materializer-ssh");
+    fs::write(&binary, b"#!/bin/sh\ncat >/dev/null\nprintf 'access denied password=materializer-canary' >&2\nexit 255\n").unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut config = base.clone();
+    config["builds"]["slurm"] = json!({"pai-h200":{
+        "target":{"backend_id":"pai-h200","profile_sha256":ml_exp_core::slurm::helper::sha256_bytes(b"profile"),"storage_scope":ml_exp_core::slurm::helper::sha256_bytes(b"scope")},
+        "ssh_alias":"fixture-gateway",
+        "ssh":{"binary":binary,"config_file":root.join("ssh-config"),"known_hosts_file":root.join("known-hosts"),
+            "helper_path":"/bin/worker","helper_config_path":"/config/materializer.json","local_cwd":root,
+            "agent_socket":null,"timeout_seconds":30,"connect_timeout_seconds":5}
+    }});
+    let open = || {
+        Service::open(
+            settings.clone(),
+            Settings::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap(),
+            sources.clone(),
+            None,
+            Default::default(),
+        )
+        .unwrap()
+    };
+    let service = open();
+    assert_eq!(
+        service
+            .materialize_runtime("demo", id, true)
+            .unwrap_err()
+            .code,
+        "OCI_TO_SIF_UNCONFIRMED"
+    );
+    let failed = open().runtime_status("demo", id).unwrap();
+    assert_eq!(failed["status"], "RECONCILE_REQUIRED");
+    assert_eq!(failed["scheduler_submitted"], false);
+    assert_eq!(failed["build_error"]["phase"], "OCI_TO_SIF");
+    assert_eq!(failed["build_error"]["process"]["exit_code"], 255);
+    assert!(
+        failed["build_error"]["process"]["stderr"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("access denied")
+    );
+    assert!(!failed.to_string().contains("materializer-canary"));
+
+    let reply = json!({"runtime":{"runtime_id":id,"source_id":original.source_id,
+        "image_id":original.image.rsplit_once('@').unwrap().1,"sif_path":"/shared/test.sif",
+        "sif_sha256":ml_exp_core::slurm::helper::sha256_bytes(b"SIF"),"oci_image":original.image,
+        "source_dir":"/workspace","worker":{"program":"/worker","base_environment":{},"runtime_environment":[]}}});
+    private(&root.join("materializer-reply.json"), &reply);
+    fs::write(
+        &binary,
+        b"#!/bin/sh\ncat >/dev/null\ncat materializer-reply.json\n",
+    )
+    .unwrap();
+    let ready = service.materialize_runtime("demo", id, true).unwrap();
+    assert_eq!(ready["status"], "READY");
+    assert!(ready["build_error"].is_null());
 }

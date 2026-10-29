@@ -477,6 +477,17 @@ impl Service {
             || !result.stdout.complete
             || result.stdout.truncated
         {
+            let lock = self.lock()?;
+            let mut current = self.build_record(project, id)?;
+            if current.slurm_runtime.is_none() {
+                current.diagnostic = Some(json!({"code":"OCI_TO_SIF_UNCONFIRMED",
+                    "phase":"OCI_TO_SIF","scheduler_submitted":false,
+                    "process":result.diagnostic()}));
+                lock.validate()?;
+                self.slots
+                    .replace_regular(OsStr::new(&name(id)?), &encode(&current)?)
+                    .map_err(io)?;
+            }
             return Err(cloud::Error {
                 code: "OCI_TO_SIF_UNCONFIRMED".into(),
                 http_status: Some(503),
@@ -516,6 +527,7 @@ impl Service {
             return Err(cloud::Error::evidence());
         }
         current.slurm_runtime = Some(runtime);
+        current.diagnostic = None;
         lock.validate()?;
         self.slots
             .replace_regular(OsStr::new(&name(id)?), &encode(&current)?)

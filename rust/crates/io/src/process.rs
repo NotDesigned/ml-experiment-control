@@ -105,6 +105,31 @@ pub struct Outcome {
     pub failure: Option<Failure>,
 }
 impl Outcome {
+    /// Bounded, sanitized evidence only; it does not establish a remote outcome
+    /// or authorize a retry. The original exit and capture flags stay separate.
+    pub fn diagnostic(&self) -> serde_json::Value {
+        let captured = |value: &Captured| {
+            serde_json::json!({
+                "text": ml_exp_core::diagnostic::text(&String::from_utf8_lossy(&value.bytes), ""),
+                "received_bytes": value.received_bytes,
+                "retained_bytes": value.retained_bytes,
+                "truncated": value.truncated,
+                "complete": value.complete,
+            })
+        };
+        serde_json::json!({
+            "spawned": self.spawned,
+            "exit_code": self.exit_code,
+            "termination_signal": self.termination_signal,
+            "timed_out": self.timed_out,
+            "cancelled": self.cancelled,
+            "stdin_complete": self.stdin_complete,
+            "failure": self.failure.as_ref().map(|f| serde_json::json!({"stage": f.stage, "code": f.code})),
+            "stdout": captured(&self.stdout),
+            "stderr": captured(&self.stderr),
+        })
+    }
+
     fn fail(&mut self, stage: &'static str, error: &io::Error) {
         if self.failure.is_none() {
             self.failure = Some(Failure {
