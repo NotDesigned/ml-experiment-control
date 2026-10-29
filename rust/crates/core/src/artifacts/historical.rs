@@ -1,7 +1,56 @@
 //! Published historical results are evidence, never submission or deletion
 //! authority. Project only explicitly allowed fields from private transfers.
-use super::{ArchiveReceipt, Error, Result, validate_receipt};
+use super::{Error, MAX_FILES, Result, bounded, receipt_path, sha256};
+use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoricalFile {
+    path: String,
+    bytes: u64,
+    #[serde(default)]
+    sha256: Option<String>,
+}
+
+struct HistoricalArchive {
+    sha256: String,
+    bytes: u64,
+    files: Vec<HistoricalFile>,
+}
+
+fn published_receipt(
+    value: &Value,
+    project: &str,
+    run: &str,
+    attempt: &str,
+) -> Result<HistoricalArchive> {
+    bounded(value)?;
+    let archive = HistoricalArchive {
+        sha256: value["sha256"].as_str().ok_or(Error::Receipt)?.into(),
+        bytes: value["bytes"].as_u64().ok_or(Error::Receipt)?,
+        files: serde_json::from_value(value["files"].clone()).map_err(|_| Error::Receipt)?,
+    };
+    if archive.bytes == 0
+        || !sha256(&archive.sha256)
+        || archive.files.is_empty()
+        || archive.files.len() > MAX_FILES
+        || value["object_key"] != format!("{project}/{run}/{attempt}/{}.tar", archive.sha256)
+    {
+        return Err(Error::Receipt);
+    }
+    let mut paths = BTreeSet::new();
+    for file in &archive.files {
+        if !receipt_path(&file.path)
+            || file.sha256.as_deref().is_some_and(|hash| !sha256(hash))
+            || !paths.insert(file.path.as_str())
+        {
+            return Err(Error::Receipt);
+        }
+    }
+    Ok(archive)
+}
 
 pub fn inventory(
     transfer: Option<&Value>,
@@ -48,17 +97,7 @@ pub fn inventory(
             );
         }
         if let Some(receipt) = value.get("receipt").filter(|v| !v.is_null()) {
-            let receipt = ArchiveReceipt {
-                project: project.into(),
-                run_id: run.into(),
-                attempt_id: attempt.into(),
-                sha256: receipt["sha256"].as_str().ok_or(Error::Receipt)?.into(),
-                bytes: receipt["bytes"].as_u64().ok_or(Error::Receipt)?,
-                files: serde_json::from_value(receipt["files"].clone())
-                    .map_err(|_| Error::Receipt)?,
-                object_key: receipt["object_key"].as_str().ok_or(Error::Receipt)?.into(),
-            };
-            validate_receipt(&receipt)?;
+            let receipt = published_receipt(receipt, project, run, attempt)?;
             retention = "AVAILABLE";
             if let Some(kept) = value.get("retention").filter(|v| !v.is_null()) {
                 if kept["sha256"] != receipt.sha256 {
@@ -86,6 +125,9 @@ pub fn inventory(
         })
         .unwrap_or_default();
     files.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    let checksums_complete = archive
+        .as_ref()
+        .is_some_and(|a| a.files.iter().all(|file| file.sha256.is_some()));
     Ok(json!({"project":project,"run_id":run,"attempt_id":attempt,
         "files":files,"truncated":false,"available":retention=="AVAILABLE",
         "collection_required":archive.is_none(),"storage_status":retention,
@@ -95,6 +137,7 @@ pub fn inventory(
         "source":"historical-published-receipt","read_only":true,
         "inventory_scope":"published_archive","local_files_included":false,
         "checksums_source":"published-receipt","payload_verified":false,
+        "checksums_complete":checksums_complete,
         "acknowledgement_sent":false}))
 }
 
@@ -127,6 +170,7 @@ mod tests {
         assert_eq!(value["training"]["exit_code"], 0);
         assert_eq!(value["available"], true);
         assert_eq!(value["payload_verified"], false);
+        assert_eq!(value["checksums_complete"], true);
         let text = value.to_string();
         for secret in [
             "private-transfer-token",
@@ -136,6 +180,44 @@ mod tests {
         ] {
             assert!(!text.contains(secret));
         }
+    }
+
+    #[test]
+    fn historical_missing_file_hash_is_unknown_without_weakening_native_receipts() {
+        let mut value = transfer();
+        value["receipt"]["files"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("sha256");
+        let result = inventory(
+            Some(&value),
+            "demo",
+            "train",
+            "attempt-001",
+            "source.fixture",
+        )
+        .unwrap();
+        assert_eq!(result["files"][0]["sha256"], Value::Null);
+        assert_eq!(result["checksums_complete"], false);
+        assert_eq!(result["payload_verified"], false);
+        assert_eq!(result["archive"]["sha256"], "a".repeat(64));
+        assert!(
+            serde_json::from_value::<super::super::FileReceipt>(
+                value["receipt"]["files"][0].clone()
+            )
+            .is_err()
+        );
+        value["receipt"]["files"][0]["sha256"] = json!("invalid");
+        assert!(
+            inventory(
+                Some(&value),
+                "demo",
+                "train",
+                "attempt-001",
+                "source.fixture"
+            )
+            .is_err()
+        );
     }
 
     #[test]

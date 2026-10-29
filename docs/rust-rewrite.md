@@ -262,6 +262,15 @@ native-created Run never falls back to this reader if its native authority is
 missing or corrupt. Reading a historical checkpoint does not authorize replaying
 its old Action or automatically restarting a job.
 
+Historical result inventory GETs validate published receipts without reading
+payloads or restoring a cache. Released and expired archives retain their file
+lists and training-exit evidence. Some early receipts contain only an archive
+hash: absent per-file hashes remain `null`, with `checksums_complete=false` and
+`payload_verified=false`. This compatibility applies only to historical reads;
+new native publication and download acknowledgements still require complete
+file hashes. The inventory covers the published archive, not uncollected files
+on a backend.
+
 Next testing sequence: deterministic regressions → isolated client/server on CPU
 DSW → actual storage/build/debug lifecycle → bounded training/restore/collection
 on each enabled backend → historical-state migration and guarded production
