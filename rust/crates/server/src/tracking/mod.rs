@@ -48,6 +48,20 @@ pub struct Runtime {
     diagnostic: Option<&'static str>,
 }
 impl Config {
+    /// Local validation only: never start the SDK or resolve a default entity.
+    pub fn check_references(&self) -> Result<()> {
+        let bytes = ml_exp_io::read_private(&self.api_key_file, 4096, true)
+            .map_err(|_| Error::Configuration)?;
+        let key = std::str::from_utf8(&bytes)
+            .map_err(|_| Error::Configuration)?
+            .trim();
+        WandbSettings::from_value(&json!({"api_key":key})).map_err(|_| Error::Configuration)?;
+        let metadata = std::fs::metadata(&self.python).map_err(|_| Error::Configuration)?;
+        if !metadata.is_file() {
+            return Err(Error::Configuration);
+        }
+        Ok(())
+    }
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = ml_exp_io::read_private(path, 16384, true).map_err(|_| Error::Configuration)?;
         let config: Self = serde_json::from_value(Value::Object(

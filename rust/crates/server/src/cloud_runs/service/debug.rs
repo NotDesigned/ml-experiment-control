@@ -43,14 +43,23 @@ impl Runtime {
                 d.profile
                     .validate()
                     .map_err(|_| cloud::Error::configuration())?;
+                let credentials = Credentials::load(&d.credentials_file)?;
+                let provider_matches = matches!(
+                    (&credentials, &d.profile),
+                    (Credentials::Pai { .. }, domain::Profile::PaiDsw { .. })
+                        | (
+                            Credentials::Sensecore { .. },
+                            domain::Profile::SensecoreCci { .. }
+                        )
+                );
+                if !provider_matches {
+                    return Err(cloud::Error::configuration());
+                }
                 Ok((
                     name,
                     (
                         d.profile,
-                        Client::new(
-                            Credentials::load(&d.credentials_file)?,
-                            Duration::from_secs(30),
-                        )?,
+                        Client::new(credentials, Duration::from_secs(30))?,
                     ),
                 ))
             })

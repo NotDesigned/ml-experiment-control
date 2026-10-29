@@ -208,8 +208,12 @@ impl Service {
         let mut backends = BTreeMap::new();
         for definition in config.backends {
             definition.validate()?;
+            let credentials = Credentials::load(&definition.credentials_file)?;
+            if !credentials.matches_profile(&definition.profile) {
+                return Err(cloud::Error::configuration());
+            }
             let mut client = Client::new(
-                Credentials::load(&definition.credentials_file)?,
+                credentials,
                 Duration::from_secs(definition.timeout_seconds.into()),
             )?;
             if let Some(path) = &definition.registry_auth_file {
@@ -421,6 +425,38 @@ impl Service {
         self.check(&prepared)?;
         Ok(prepared)
     }
+}
+
+/// Read configuration dependencies only. Constructing an HTTP client sends no
+/// requests; no namespace, lock, provider effect or SDK process is opened here.
+pub(super) fn check_configuration(config: Settings) -> cloud::Result<()> {
+    for definition in config.backends {
+        let credentials = Credentials::load(&definition.credentials_file)?;
+        if !credentials.matches_profile(&definition.profile) {
+            return Err(cloud::Error::configuration());
+        }
+        let mut client = Client::new(
+            credentials,
+            Duration::from_secs(definition.timeout_seconds.into()),
+        )?;
+        if let Some(path) = &definition.registry_auth_file {
+            client = client.with_registry_auth(path)?;
+        }
+        drop(client);
+    }
+    if let Some(exchange) = config.exchange {
+        exchange::Authority::load(exchange)?;
+    }
+    if let Some(objects) = config.artifacts {
+        crate::objects::Store::open(objects).map_err(io)?;
+    }
+    if let Some(builds) = config.builds {
+        builds.validate()?;
+    }
+    if let Some(debug) = config.debug {
+        debug::Runtime::open(debug)?;
+    }
+    Ok(())
 }
 pub(crate) fn failure(error: cloud::Error) -> read_api::Error {
     let (status, code, detail) = if error.uncertain {

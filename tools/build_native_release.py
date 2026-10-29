@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import tarfile
 import tomllib
@@ -19,6 +20,21 @@ BINARIES = ("ml-exp-rs", "ml-expd-rs", "ml-exp-worker-rs", "ml-expd-state-audit"
 def digest(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def static_worker(path):
+    """Require an x86_64 ELF worker with no dynamic-loader dependency."""
+    with path.open("rb") as stream:
+        header = stream.read(64)
+        if len(header) != 64 or header[:6] != b"\x7fELF\x02\x01" or struct.unpack_from("<H", header, 18)[0] != 62:
+            return False
+        offset = struct.unpack_from("<Q", header, 32)[0]
+        size, count = struct.unpack_from("<HH", header, 54)
+        if size != 56 or not 1 <= count <= 128 or offset + size * count > path.stat().st_size:
+            return False
+        stream.seek(offset)
+        types = [struct.unpack("<I", stream.read(size)[:4])[0] for _ in range(count)]
+        return 1 in types and 3 not in types  # PT_LOAD present, PT_INTERP absent.
 
 
 def build(binary_dir, output, version):
@@ -35,6 +51,8 @@ def build(binary_dir, output, version):
                                 capture_output=True, timeout=5, env={"LANG": "C"})
         if result.stdout.decode().strip() != f"{name} {version}":
             raise ValueError("native executable version differs")
+    if not static_worker(binary_dir / "ml-exp-worker-rs"):
+        raise ValueError("release worker must be a static Linux x86_64 ELF executable")
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     assets = []
     for name in BINARIES:

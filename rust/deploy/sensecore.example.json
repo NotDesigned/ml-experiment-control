@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "enabled": false,
+  "allow_run_creation": false,
+  "backends": [{
+    "executor": "sensecore-gpu",
+    "profile": {
+      "provider": "sensecore",
+      "scope": {
+        "subscription": "example-subscription", "resource_group": "example-group",
+        "region": "cn-sh-01", "zone": "cn-sh-01e", "workspace": "example-workspace",
+        "user_id": "00000000-0000-0000-0000-000000000000"
+      },
+      "cluster": "training-cluster", "vpc_id": "example-vpc",
+      "worker_spec": "N6lS.Iu.I10.1.8c128g",
+      "worker_gpus": 1, "worker_cpus": 8, "worker_memory_gb": 128, "worker_nodes": 1,
+      "storage_volume": "example-personal-nas", "storage_subdir": "/researcher", "mount_path": "/data",
+      "purpose": "training", "quota": "SPOT"
+    },
+    "run_root": "/data/ml-expd-native/runs",
+    "data_root": "/data/ml-expd-native/datasets",
+    "credentials_file": "/etc/ml-expd/native/sensecore-credentials.json",
+    "runtimes": {},
+    "data_copier": {
+      "provider": "sensecore",
+      "scope": {
+        "subscription": "example-subscription", "resource_group": "example-group",
+        "region": "cn-sh-01", "zone": "cn-sh-01e", "workspace": "example-workspace",
+        "user_id": "00000000-0000-0000-0000-000000000000"
+      },
+      "cluster": "debug-cluster", "vpc_id": "example-vpc", "worker_spec": "N6lS.Iu.I10.2c4g",
+      "worker_gpus": 0, "worker_cpus": 2, "worker_memory_gb": 4, "worker_nodes": 1,
+      "storage_volume": "example-personal-nas", "storage_subdir": "/researcher", "mount_path": "/data",
+      "purpose": "data_copy", "quota": "RESERVED"
+    },
+    "collector": {
+      "provider": "sensecore",
+      "scope": {
+        "subscription": "example-subscription", "resource_group": "example-group",
+        "region": "cn-sh-01", "zone": "cn-sh-01e", "workspace": "example-workspace",
+        "user_id": "00000000-0000-0000-0000-000000000000"
+      },
+      "cluster": "debug-cluster", "vpc_id": "example-vpc", "worker_spec": "N6lS.Iu.I10.2c4g",
+      "worker_gpus": 0, "worker_cpus": 2, "worker_memory_gb": 4, "worker_nodes": 1,
+      "storage_volume": "example-personal-nas", "storage_subdir": "/researcher", "mount_path": "/data",
+      "purpose": "result_collection", "quota": "RESERVED"
+    }
+  }],
+  "exchange": {"public_url": "https://api.example/ml-expd", "signing_key_file": "/etc/ml-expd/native/exchange-key"},
+  "artifacts": {
+    "endpoint": "oss-cn-hangzhou.aliyuncs.com", "bucket": "example-private-bucket",
+    "prefix": "users/researcher/ml-expd-native/", "credentials_file": "/etc/ml-expd/native/oss-credentials.json"
+  },
+  "builds": {
+    "socket": "/run/ml-expd-native-builder/worker.sock", "peer_uid": 0,
+    "worker_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "data_base_image": "registry.example/base@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "polling": {"enabled": false, "interval_seconds": 10, "max_candidates": 4096, "rpc_timeout_seconds": 5}
+}

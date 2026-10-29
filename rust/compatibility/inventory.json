@@ -7254,7 +7254,12 @@
         "rust/crates/server/src/capacity_http.rs"
       ],
       "provider_acceptance": false,
-      "production_deployed": false
+      "production_deployed": false,
+      "provider_acceptance_by_backend": {
+        "pai": true,
+        "slurm": false,
+        "sensecore": false
+      }
     },
     "administration": {
       "implementation": "connected_workflow",
@@ -7314,6 +7319,23 @@
       ],
       "provider_acceptance": false,
       "production_deployed": false
+    },
+    "deployment": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/server/src/deployment.rs",
+        "rust/deploy",
+        "tools/build_native_release.py",
+        ".github/workflows/native-release.yml"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false,
+      "local_acceptance": [
+        "explicit-single-config-initialization",
+        "no-effect-configuration-check",
+        "existing-state-refusal",
+        "static-worker-ELF-validation"
+      ]
     }
   },
   "known_limits": [

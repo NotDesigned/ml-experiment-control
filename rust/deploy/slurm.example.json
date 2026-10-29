@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "enabled": false,
+  "allow_run_creation": false,
+  "backends": [{
+    "profile": {
+      "target": {
+        "backend_id": "slurm-gpu",
+        "profile_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "storage_scope": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "ssh_alias": "slurm-gateway", "partition": "gpu", "account": "research", "qos": "normal", "gpu_type": "h100",
+      "mount_root": "/shared/researcher", "run_root": "/shared/researcher/ml-expd-native/runs",
+      "data_root": "/shared/researcher/ml-expd-native/datasets",
+      "max_gpus": 8, "max_cpus": 64, "max_memory_gb": 512, "max_walltime_seconds": 86400
+    },
+    "ssh": {
+      "binary": "/usr/bin/ssh", "config_file": "/etc/ml-expd/native/ssh/config",
+      "known_hosts_file": "/etc/ml-expd/native/ssh/known_hosts",
+      "helper_path": "/opt/ml-expd/bin/ml-exp-worker-rs",
+      "helper_config_path": "/shared/researcher/ml-expd-native/helper.json",
+      "local_cwd": "/var/lib/ml-expd-native", "agent_socket": null,
+      "timeout_seconds": 30, "connect_timeout_seconds": 5
+    },
+    "data_helper_config": "/shared/researcher/ml-expd-native/data-helper.json",
+    "runtimes": {}
+  }],
+  "polling": {"enabled": false, "interval_seconds": 10, "max_candidates": 4096, "rpc_timeout_seconds": 5}
+}

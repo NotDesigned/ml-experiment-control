@@ -235,7 +235,9 @@ Real official-cloud W&B acceptance is still pending for this native implementati
 ## Deploying a native service
 
 Linux x86_64 binaries (including WSL2) are packaged independently of Python.
-The initial release target requires glibc 2.35 or newer. The installer requires
+The server/client release target requires glibc 2.35 or newer. Release workers
+are statically linked with musl so a newer build machine does not make them
+depend on a newer glibc in the training image. The installer requires
 Bash, curl and GNU coreutils; it checks exact release hashes and binary version
 before replacing the client. It installs no service and reads no API key.
 
@@ -257,11 +259,63 @@ cloud and optional tracking configurations. Omitted backends stay disabled.
 ml-expd-rs --config /etc/ml-expd/native/server.json
 ```
 
-Create fresh native registry/lifecycle/source/backend stores explicitly using
-the initialization commands in `--help`, as the service account that will own
-them. Create the configured Project definition and Run roots first. Normal
-startup never initializes missing stores. Enable only the required backend
-configuration and keep its provider limits and credentials independent.
+Copy [the Project example](deploy/project.example.json) to the configured
+Project path and create its empty Run directory. Run these commands as the
+service account that will own the stores:
+
+```sh
+ml-expd-rs --config /etc/ml-expd/native/server.json --check
+ml-expd-rs --config /etc/ml-expd/native/server.json --initialize
+ml-expd-rs --config /etc/ml-expd/native/server.json
+```
+
+`--check` reads local configuration, credentials and approved Project definitions.
+It sends no provider request, starts no SDK and initializes no store. Its
+`provider_connectivity_checked=false` is deliberate: passing configuration
+validation does not establish a working remote connection. `--initialize`
+creates all stores selected by this one configuration, with no provider jobs.
+It refuses an existing or partially initialized registry. It never repairs,
+resets or deletes one. The granular initialization commands in `--help` remain
+available for an operator to inspect and finish partial setup. Ordinary startup
+does not initialize missing stores.
+
+Select only the backends needed for this installation:
+
+| Backend | Deployment reference | Credentials and storage |
+| --- | --- | --- |
+| SSH Slurm | `submission_config`: [Slurm example](deploy/slurm.example.json) | Pinned SSH config/known_hosts; helper and data helper on the networked gateway; shared Run/data roots |
+| PAI DLC | `cloud_config`: [PAI example](deploy/pai.example.json) | Private PAI access key file, approved quota/CPFS/user role, exact private registry auth, personal OSS prefix |
+| SenseCore ACP | `cloud_config`: [SenseCore example](deploy/sensecore.example.json) | Private SenseCore access key file, training pool and personal NAS; separate debug CPU copier/collector |
+
+All IDs, hashes, resource limits, storage paths and accounts in these examples
+are placeholders. Replace them with approved values. Backend `enabled`,
+`allow_run_creation` and polling start disabled. The examples must not be used
+as proof of available resources. To configure PAI and SenseCore together, put
+both definitions in the same cloud file's `backends` list; its exchange and
+object store are shared. Executor IDs must be unique across Slurm and cloud.
+PAI/SenseCore profiles also require matching credential `provider` values.
+
+Credential files have these shapes; enter actual values privately, never in a
+Project, source archive, experiment file or command argument:
+
+```json
+{"provider":"pai","access_key_id":"REPLACE","access_key_secret":"REPLACE"}
+```
+
+SenseCore uses `"provider":"sensecore"`. PAI may additionally specify
+`security_token` for temporary credentials. The OSS file uses
+`access_key_id`, `access_key_secret` and optional `security_token`, without
+`provider`. The exchange signing key is a separate private file of at least
+32 random bytes. Its public URL must reach this API over HTTPS from workers.
+Configuration and credential files must have private owner/group permissions.
+
+Image builds use their own explicitly configured builder socket, native worker
+SHA256 and source namespace. Slurm may also use an existing trusted Runtime
+receipt, or the cloud builder's `slurm` materializer map to produce its SIF.
+The worker executable must run on the chosen image's Linux/libc version.
+Slurm gateway helper configuration must use exactly the same `target` as its
+server profile; initialize the helper/data stores once on the gateway. Neither
+copying these examples nor enabling an executor installs remote helpers.
 
 The [systemd example](deploy/ml-expd-native.service) installs no unit by itself.
 Adjust its approved writable and read-only paths to the actual configuration.

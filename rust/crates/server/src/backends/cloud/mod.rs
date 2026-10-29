@@ -65,10 +65,36 @@ impl Credentials {
     pub fn load(path: &Path) -> Result<Self> {
         let bytes =
             ml_exp_io::read_private(path, 32768, true).map_err(|_| Error::configuration())?;
-        serde_json::from_value(Value::Object(
+        let value: Self = serde_json::from_value(Value::Object(
             ml_exp_core::json::mapping(&bytes).map_err(|_| Error::configuration())?,
         ))
-        .map_err(|_| Error::configuration())
+        .map_err(|_| Error::configuration())?;
+        let (id, secret, token) = match &value {
+            Self::Pai {
+                access_key_id,
+                access_key_secret,
+                security_token,
+            } => (access_key_id, access_key_secret, security_token.as_deref()),
+            Self::Sensecore {
+                access_key_id,
+                access_key_secret,
+            } => (access_key_id, access_key_secret, None),
+        };
+        if std::iter::once(id.as_str())
+            .chain(std::iter::once(secret.as_str()))
+            .chain(token)
+            .any(|s| s.is_empty() || s.len() > 16384 || s.chars().any(char::is_control))
+        {
+            return Err(Error::configuration());
+        }
+        Ok(value)
+    }
+    pub(crate) fn matches_profile(&self, profile: &adapter::Profile) -> bool {
+        matches!(
+            (self, profile),
+            (Self::Pai { .. }, adapter::Profile::Pai(_))
+                | (Self::Sensecore { .. }, adapter::Profile::Sensecore(_))
+        )
     }
 }
 pub struct Client {

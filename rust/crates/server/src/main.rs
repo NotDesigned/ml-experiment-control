@@ -11,6 +11,14 @@ struct Args {
     /// One private deployment file; initialization remains a separate command.
     #[arg(long,conflicts_with_all=["bind","token_file","read_config","historical_read_config","history_config","inspect_historical_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration","project_lifecycle","source_archives","submission_config","cloud_config","tracking_config","administration"])]
     config: Option<PathBuf>,
+    /// Validate local configuration and private dependencies without a listener,
+    /// SDK process, store initialization or provider request.
+    #[arg(long, requires = "config", conflicts_with = "initialize")]
+    check: bool,
+    /// Initialize all configured stores in a completely new native registry.
+    /// Existing/partial registries are refused; no provider job is created.
+    #[arg(long, requires = "config", conflicts_with = "check")]
+    initialize: bool,
     #[arg(long, default_value = "127.0.0.1:18765")]
     bind: SocketAddr,
     /// Enable explicit administrative deletion plans in an initialized namespace.
@@ -78,6 +86,45 @@ async fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::FAILURE;
             }
         };
+        if args.initialize || args.check {
+            let initialize = args.initialize;
+            let result = tokio::task::spawn_blocking(move || {
+                if initialize {
+                    settings.initialize()
+                } else {
+                    settings.check().and_then(|value| {
+                        serde_json::to_value(value)
+                            .map_err(|_| ml_exp_server::deployment::Error { stage: "report" })
+                    })
+                }
+            })
+            .await
+            .unwrap_or(Err(ml_exp_server::deployment::Error {
+                stage: "configuration_worker",
+            }));
+            return match result {
+                Ok(value) => {
+                    println!("{value}");
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::ExitCode::FAILURE
+                }
+            };
+        }
+        let settings =
+            match tokio::task::spawn_blocking(move || settings.check().map(|_| settings)).await {
+                Ok(Ok(settings)) => settings,
+                Ok(Err(error)) => {
+                    eprintln!("{error}");
+                    return std::process::ExitCode::FAILURE;
+                }
+                Err(_) => {
+                    eprintln!("native configuration worker unavailable");
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
         args.bind = settings.bind;
         args.token_file = Some(settings.token_file);
         args.read_config = Some(settings.read_config);

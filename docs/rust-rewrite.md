@@ -65,7 +65,7 @@ Research code may use Python/PyTorch or another image language.
 | Explicit new Attempt from selected persistent checkpoint | `core/cloud/retry.rs`, `service/retry.rs` | Immutable restore and cumulative budget checks; actual restore pending |
 | CPU result collection, direct download, verified ACK/release | `worker/cloud_artifacts.rs`, `service/artifacts.rs`, `client/artifacts.rs` | Archive/member integrity and durable cursor tests; provider collection pending |
 | DSW / CCI debug lifecycle | `core/cloud/debug.rs`, `service/debug.rs`, `client/debug.rs` | Native compile/identity checks; actual machine lifecycle pending |
-| Backend catalogue/cached capacity | `core/capacity.rs`, `service/capacity.rs`, `capacity_http.rs` | Local GET is effect-free; actual provider capacity query pending |
+| Backend catalogue/cached capacity | `core/capacity.rs`, `service/capacity.rs`, `capacity_http.rs` | Local GET is effect-free; real PAI quota refresh and retained timestamp accepted; Slurm/SenseCore pending |
 | Optional W&B publication | `core/tracking`, `server/tracking` | Fake SDK and durable history/display ACK tests; official-cloud acceptance pending |
 | Scoped administrative maintenance and record retirement | `core/maintenance.rs`, `server/administration.rs`, `worker/maintenance.rs` | Confined plans and worker receipts; actual provider cleanup pending |
 | Standalone verified client update | `core/distribution.rs`, `client/update.rs` | Manifest/version/hash logic; packager/installer and tag workflow connected; assets not yet published |
@@ -106,8 +106,15 @@ and model selection remain research-code responsibilities.
 
 `ml-expd-rs --config /private/server.json` selects independent backend, tracking
 and optional historical-reader files. All paths are absolute; initialization
-remains explicit. Native bundles contain four standalone executables, exact
+remains explicit. The same file now supports local `--check` and fresh
+`--initialize`: all selected stores are created together only after dependency
+validation, existing/partial registries are refused, and neither command submits
+provider jobs. Local checks never start the W&B SDK or infer network readiness.
+Independent Slurm/PAI/SenseCore templates document private credentials and storage.
+Native bundles contain four standalone executables, exact
 byte/SHA metadata, the client installer and service/configuration examples.
+The release worker is built with static musl linkage for training images;
+server and client binaries retain the documented glibc baseline.
 The release workflow tests the exact binaries before packaging. A manual run
 produces artifacts only; a stable native tag enables public publication.
 The native 0.1.0 tag and production cutover have not happened.

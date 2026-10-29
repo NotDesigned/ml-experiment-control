@@ -200,6 +200,11 @@ pub struct ExchangeSettings {
     pub signing_key_file: PathBuf,
 }
 impl Settings {
+    /// Validate private dependencies without opening any durable store or
+    /// sending a provider request. This does not establish network readiness.
+    pub fn check_references(self) -> cloud::Result<()> {
+        super::service::check_configuration(self)
+    }
     pub fn load(path: &Path) -> cloud::Result<Self> {
         let bytes = ml_exp_io::read_private(path, 4 * 1024 * 1024, true)
             .map_err(|_| cloud::Error::configuration())?;
