@@ -1,7 +1,7 @@
 # Native ML-Expd
 
 Development lives on `rewrite/rust`. Production remains the Python 1.5.1 service.
-The workspace version is `0.1.3`, published separately from the Python service.
+The workspace version is `0.1.4`, published separately from the Python service.
 Code implementation, automated verification, provider acceptance and production
 cutover are separate milestones. See [the migration status](../docs/rust-rewrite.md).
 Do not initialize this binary over the production registry.
@@ -355,12 +355,12 @@ Bash, curl and GNU coreutils; it checks exact release hashes and binary version
 before replacing the client. It installs no service and reads no API key.
 
 ```sh
-bash install-native.sh --version 0.1.3 --prefix "$HOME/.local/bin"
-ml-exp-rs update --version 0.1.3 --check
+bash install-native.sh --version 0.1.4 --prefix "$HOME/.local/bin"
+ml-exp-rs update --version 0.1.4 --check
 ```
 
 These commands use the published
-[`native-v0.1.3` release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.3).
+[`native-v0.1.4` release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.4).
 Existing Python release assets are separate. Native backend and migration
 acceptance limits are described in the [implementation status](../docs/rust-rewrite.md).
 
@@ -437,6 +437,12 @@ object storage, debug and builder configuration failures separately.
 Image builds use their own explicitly configured builder socket, native worker
 SHA256 and source namespace. Slurm may also use an existing trusted Runtime
 receipt, or the cloud builder's `slurm` materializer map to produce its SIF.
+New materialization receipts retain the image's source directory; launch plans
+use that directory rather than assuming `/workspace`. Private pulls pass the
+configured Docker authentication file explicitly to Apptainer. A failed
+conversion retains bounded, sanitized process evidence in `build_error`.
+Unreported inode counts remain unknown; known byte or inode shortages still
+block the operation. A successful preflight does not reserve disk space.
 PAI also accepts `resources.gpus: 0` for bounded CPU Runs through the same
 preparation, authorization, metric, checkpoint and result flow. Slurm GPU profiles
 retain their positive-GPU rule. CPU Runs still require a finite positive approval
@@ -453,6 +459,9 @@ The worker executable must run on the chosen image's Linux/libc version.
 Slurm gateway helper configuration must use exactly the same `target` as its
 server profile; initialize the helper/data stores once on the gateway. Neither
 copying these examples nor enabling an executor installs remote helpers.
+Choose a partition accepting `sbatch`; some debug partitions allow only direct
+`srun`/`salloc`. A later parameter check cannot retroactively prove the outcome
+of an earlier uncertain submission, which must retain its original identity.
 
 The [systemd example](deploy/ml-expd-native.service) installs no unit by itself.
 Adjust its approved writable and read-only paths to the actual configuration.

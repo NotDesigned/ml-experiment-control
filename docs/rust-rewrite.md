@@ -2,8 +2,9 @@
 
 Development branch: `rewrite/rust`. Python reference baseline:
 `e725faec689fb8395e692e27d00a8896fa7fe5a5` (1.5.1). Production still uses Python
-1.5.1; the Rust workspace has a separate `native-v0.1.3` release. It has an independent
-Tokyo test installation and bounded PAI CPU acceptance. It has not replaced
+1.5.1; the Rust workspace has a separate `native-v0.1.4` release. It has an independent
+Tokyo test installation, bounded PAI CPU/H200 acceptance, and actual Slurm
+image conversion and two-part data delivery. It has not replaced
 production or established GPU acceptance on all backends.
 
 The implementation pass connects the main research workflows before the next
@@ -55,24 +56,24 @@ Research code may use Python/PyTorch or another image language.
 | Configure client, inspect status/logs/metrics, watch exact Attempt | `client/{config,session,watch,main}.rs` | Local HTTP and binary tests |
 | Register approved Project; upload immutable source | `server/{projects,sources}`, `client/{projects,sources}.rs` | Private temporary stores and HTTP |
 | Dockerfile prepare/build/reconcile/log/progress | `core/cloud/build.rs`, `server/cloud_runs/service/builds.rs`, `builds/native_image.py` | Frozen recipe and late-publication bridge tests; isolated DSW-to-Tokyo build passed |
-| OCI-to-SIF on Slurm gateway | `worker/materialize.rs` | Fake apptainer; exact reuse/capacity/tampering checks |
-| Upload/download cloud datasets | `server/objects.rs`, `service/datasets.rs`, `client/datasets.rs` | Bounded parts and immutable receipts; two-part OSS transfer and PAI CPU consumption passed |
+| OCI-to-SIF on Slurm gateway | `worker/materialize.rs` | Exact reuse/capacity/tampering checks; real private ACR-to-SIF conversion passed |
+| Upload/download cloud datasets | `server/objects.rs`, `service/datasets.rs`, `client/datasets.rs` | Bounded parts and immutable receipts; two-part OSS transfer/PAI CPU consumption and Slurm shared-storage upload/reuse passed |
 | Import existing approved OSS datasets | `core/datasets/oss.rs`, `service/oss_import.rs`, `client/datasets.rs` | Scope-bound plain-tar inspection, immutable part reuse, no API-host spool; real OSS import and PAI CPU consumption passed |
 | Download into CPFS / NAS input cache | `worker/{data_import,cloud_data}.rs` | Import/hash/cache tests; personal CPFS consumption passed; NAS provider acceptance pending |
 | Frozen download script and verified persistent input cache | `core/data_preparation.rs`, `worker/data_preparation.rs`, `service/script_preparation.rs` | CPFS script execution and verified reuse passed; three-backend dispatch acceptance pending |
 | CCR data image and CPU ACP copy before training | `service/data_delivery.rs`, `builds/native_data.py`, `worker/data_copy_cli.rs` | Stage control/hash/capability tests; actual copy pending |
 | One experiment configuration | `core/preparation.rs`, `client/preparations.rs`, `service/preparations.rs` | Recovery slot, conflict, early preflight and HTTP tests |
 | Matrix preparation and bounded dispatch | `core/preparation.rs`, `client/batch.rs` | Stable identities, exact terminal slot accounting; actual batch pending |
-| Slurm / DLC / ACP submit, reconcile, refresh and cancel | `server/submissions`, `server/backends`, `server/cloud_runs` | Real bounded DLC CPU execution passed; Slurm/ACP acceptance pending |
+| Slurm / DLC / ACP submit, reconcile, refresh and cancel | `server/submissions`, `server/backends`, `server/cloud_runs` | Real bounded DLC CPU/H200 execution passed; Slurm GPU/ACP acceptance pending |
 | Logs/history/checkpoints over gateway or scoped HTTPS | `io/observations.rs`, `worker/cloud_exchange.rs`, `service/exchange.rs` | Lost ACK, sequence, variant and frozen identity tests |
-| Explicit new Attempt from selected persistent checkpoint | `core/cloud/retry.rs`, `service/retry.rs` | Immutable restore and budget checks; real PAI CPU split/continuous states matched exactly |
+| Explicit new Attempt from selected persistent checkpoint | `core/cloud/retry.rs`, `service/retry.rs` | Immutable restore and budget checks; real PAI CPU and H200 split/continuous states matched independent oracles exactly |
 | CPU result collection, direct download, verified ACK/release | `worker/cloud_artifacts.rs`, `service/artifacts.rs`, `client/artifacts.rs` | Real PAI zero-GPU synchronization, verified downloads, release and exact repeat passed |
 | List and select result archive files | `client/artifacts/files.rs`, `io/artifacts.rs` | Selected-file persistence only after full archive verification; no partial ACK; direct original-file recovery still pending |
 | DSW / CCI debug lifecycle | `core/cloud/debug.rs`, `service/debug.rs`, `client/debug.rs` | Actual zero-GPU DSW create/SSH/CPFS/stop/delete passed; CCI acceptance pending |
-| Backend catalogue/cached capacity | `core/capacity.rs`, `service/capacity.rs`, `capacity_http.rs` | Local GET is effect-free; real PAI quota refresh and retained timestamp accepted; Slurm/SenseCore pending |
+| Backend catalogue/cached capacity | `core/capacity.rs`, `service/capacity.rs`, `capacity_http.rs` | Local GET is effect-free; real PAI quota refresh and retained timestamp accepted; Slurm cached capacity refresh passed; SenseCore pending |
 | Optional W&B publication | `core/tracking`, `server/tracking` | Fake SDK and durable history/display ACK tests; official-cloud acceptance pending |
 | Scoped administrative maintenance and record retirement | `core/maintenance.rs`, `server/administration.rs`, `worker/maintenance.rs` | Confined plans and worker receipts; actual provider cleanup pending |
-| Standalone verified client update | `core/distribution.rs`, `client/update.rs` | Public 0.1.0 assets verified; public installer and update check passed on Tokyo |
+| Standalone verified client update | `core/distribution.rs`, `client/update.rs` | Public assets verified; public installer and update check passed on Tokyo |
 
 Paths in the table are relative to `rust/crates`, except the two image bridge
 paths under `server/src/ml_exp_server`. See [the native usage guide](../rust/README.md)
@@ -212,7 +213,7 @@ The release worker is built with static musl linkage for training images;
 server and client binaries retain the documented glibc baseline.
 The release workflow tests the exact binaries before packaging. A manual run
 produces artifacts only; a stable native tag enables public publication.
-The [native 0.1.0 release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.0)
+The [native 0.1.4 release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.4)
 is published and installed on the isolated Tokyo instance. Production cutover
 has not happened.
 
@@ -280,14 +281,15 @@ Local/DSW logs live in ignored `.ops` directories and are not release artifacts.
 format, lint, workspace-test, binary-smoke and bridge-test commands. Passing these
 checks establishes development evidence, not real GPU or production acceptance.
 
-## Independent Tokyo acceptance (2026-10-29)
+## Independent Tokyo acceptance (2026-10-29 to 2026-10-30)
 
 The native server and client run under `/opt/ml-expd-native-test`, with a distinct
 token, registry, Project and service. HTTPS uses the separately approved
 `https://server-tokyo.adscn.dev:2087/ml-expd` entry; the existing VPN and CCR relay
 are unchanged. Production Python 1.5.1 and its scientific state are untouched.
 
-The test executor permits zero GPUs only. Real acceptance covers:
+The original CPU executor permits zero GPUs only. A later, separate H200
+executor permits at most one GPU. The original CPU acceptance covers:
 
 - Source publication through the installed client and a DSW image build pushed
   to Tokyo ACR. Training pull credentials are configured separately from build
@@ -327,7 +329,53 @@ its exact retry succeeded. The client now retains the sanitized server cause.
 These failures and test-runner errors remain in small private evidence under
 `.ops/tokyo-native-20261029/`.
 
-This is deterministic standard-library CPU validation. PyTorch/GPU training,
-Slurm and SenseCore execution, W&B cloud activity, historical-state cutover and
-direct original backend-file recovery remain outside this acceptance. No
-dataset or weight payload is retained on the API disk.
+### H200 CUDA and checkpoint acceptance
+
+Three sequential PAI DLC jobs each requested at most one H200, four CPUs,
+eight GiB and 300 seconds. All succeeded with process exit code zero. The
+training image used the published native 0.1.3 static worker; native 0.1.4 also
+passed read/verification regression against these original results.
+
+- Continuous steps 1–8, partial steps 1–4, then explicit checkpoint restore 5–8.
+- Actual NVIDIA H200 execution through CUDA driver/PTX. Final weights, RNG and
+  data cursor match an independent CPU oracle exactly: SHA256
+  `70e63aa69b4abd44173a1710d108a3c9cee2f9058b853b083943d85f73d5db87`.
+- Both metric variants survive API ingestion: 16 continuous records and 8 per
+  split Attempt. All records are valid and metric validation is complete.
+- Verified result downloads, exact local reuse and ACK/release passed.
+  Checkpoint steps 8/4/8 remain readable after archive release. A concurrent ACK
+  initially returned CLOUD_RUN_BUSY; repeating the same verified local download
+  reconciled it without downloading or training again.
+- The temporary builder DSW was independently confirmed absent. Original frozen
+  files and credentials remained unchanged; new Runs/Attempts were appended.
+
+This is a tiny deterministic CUDA fixture, not PyTorch or large-model acceptance.
+
+### Slurm gateway acceptance and remaining execution gap
+
+A networked gateway received and verified a 17 MiB fixture through two parts.
+Exact repeat reused the same asset. It pulled the private Tokyo ACR image by
+its frozen digest, converted it into a 48,115,712-byte SIF, and published a
+hash-verified receipt retaining `/ml-expd/source` as the source directory.
+Compute nodes need no internet for these prepared files.
+
+Actual shared-storage `statvfs` reported no inode pool, initially misread as
+exhaustion. Native0.1.4 preserves that count as unknown and retains byte and
+known-inode guards. Private conversion also needed explicit `--authfile`;
+conversion failures now retain bounded, sanitized process evidence across
+server reopen. Success clears the previous error.
+
+The first Slurm training probe used a debug partition restricted to direct
+`srun`/`salloc`, which rejected an independent `sbatch --test-only` diagnosis.
+The original dispatch did not publish a job receipt and remains uncertain;
+subsequent exact queue/accounting queries found no matching job. It was never
+replayed or retroactively marked a confirmed rejection. A test-only check of
+the ordinary H200 partition passed, but all eight GPUs were allocated at observation. Its
+predicted job number/start time is not an actual allocation or reliable ETA.
+Slurm GPU training, queue/cancel and checkpoint execution acceptance remain
+pending; successful conversion/data delivery do not establish them.
+
+SenseCore execution, official W&B cloud activity, PyTorch/large training,
+historical-state cutover and direct original backend-file recovery remain
+outside this acceptance. Dataset and weight payloads are not retained on the
+API disk.
