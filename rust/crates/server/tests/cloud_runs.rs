@@ -507,6 +507,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             .authorize(old, "expired", context().now, &"0".repeat(32))
             .is_err()
     );
+    check_builder_dispatch_evidence(&settings, &config, sources.clone(), &runtime, temp.path());
     let mut changed = request;
     changed.seed = 43;
     assert!(
@@ -519,4 +520,140 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     manifest["seed"] = json!(123);
     fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     assert!(service.get(action, "2026-10-29T00:06:00Z").is_err());
+}
+
+fn check_builder_dispatch_evidence(
+    settings: &read_config::Settings,
+    base: &Value,
+    sources: Arc<sources::Service>,
+    original: &Runtime,
+    root: &std::path::Path,
+) {
+    use std::{
+        io::{BufRead, Read, Write},
+        os::unix::net::UnixListener,
+        time::{Duration, Instant},
+    };
+    let socket = root.join("owned-builder.sock");
+    let mut config = base.clone();
+    config["enabled"] = json!(true);
+    config["builds"] = json!({"socket":socket,"peer_uid":ml_exp_io::directory::effective_uid(),
+        "worker_sha256":original.worker_sha256});
+    let service = Arc::new(
+        Service::open(
+            settings.clone(),
+            Settings::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap(),
+            sources,
+            None,
+            Default::default(),
+        )
+        .unwrap(),
+    );
+    let definition = ml_exp_core::cloud::build::Definition {
+        source_id: original.source_id.clone(),
+        executor: "pai-h200".into(),
+        base_image: original.image.clone(),
+        dockerfile: "Dockerfile".into(),
+    };
+    let prepared = service.prepare_runtime("demo", definition.clone()).unwrap();
+    let id = prepared["runtime_id"].as_str().unwrap();
+    let wait = |id: &str, expected: &str| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let value = service.runtime_status("demo", id).unwrap();
+            if value["status"] == expected {
+                break value;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "builder state did not settle: {value}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    service
+        .execute_runtime("demo", id, &format!("BUILD {id}"))
+        .unwrap();
+    let failed = wait(id, "PREPARED");
+    assert_eq!(failed["retry_safe"], true);
+    assert_eq!(failed["build_error"]["code"], "NATIVE_BUILD_NOT_DISPATCHED");
+    // A stale socket has the same proven pre-send boundary as a missing one.
+    drop(UnixListener::bind(&socket).unwrap());
+    service
+        .execute_runtime("demo", id, &format!("BUILD {id}"))
+        .unwrap();
+    assert_eq!(
+        wait(id, "PREPARED")["build_error"]["code"],
+        "NATIVE_BUILD_NOT_DISPATCHED"
+    );
+    fs::remove_file(&socket).unwrap();
+    let listener = UnixListener::bind(&socket).unwrap();
+    let builder = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = std::io::BufReader::new(stream);
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.strip_prefix("Content-Length: ") {
+                length = value.trim().parse::<usize>().unwrap();
+            }
+        }
+        assert!(length > 0 && length < 65536);
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        let request: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(request["operation"], "native-build");
+        let reply = json!({"project":request["project"],"runtime_id":request["runtime_id"],
+            "source_id":request["source_id"],"recipe":ml_exp_core::cloud::build::CONTRACT,
+            "runtime":{"runtime_id":request["runtime_id"],"source_id":request["source_id"],
+                "image":request["base_image"],"source_dir":"/workspace","worker_path":"/worker",
+                "worker_sha256":request["worker_sha256"]}})
+        .to_string();
+        write!(
+            reader.get_mut(),
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            reply.len(),
+            reply
+        )
+        .unwrap();
+    });
+    service
+        .execute_runtime("demo", id, &format!("BUILD {id}"))
+        .unwrap();
+    assert_eq!(wait(id, "READY")["retry_safe"], false);
+    builder.join().unwrap();
+    fs::remove_file(&socket).unwrap();
+    let listener = UnixListener::bind(&socket).unwrap();
+    let ambiguous = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = [0; 1];
+        stream.read_exact(&mut bytes).unwrap(); // A partial send is already uncertain.
+    });
+    let mut lost = definition;
+    lost.dockerfile = "Lost.Dockerfile".into();
+    let lost = service.prepare_runtime("demo", lost).unwrap();
+    let lost_id = lost["runtime_id"].as_str().unwrap();
+    service
+        .execute_runtime("demo", lost_id, &format!("BUILD {lost_id}"))
+        .unwrap();
+    ambiguous.join().unwrap();
+    // RECONCILE_REQUIRED is also the initial in-flight view; wait for its error.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let value = service.runtime_status("demo", lost_id).unwrap();
+        if value["build_error"]["code"] == "NATIVE_BUILD_RPC_UNCERTAIN" {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let value = service
+        .execute_runtime("demo", lost_id, &format!("BUILD {lost_id}"))
+        .unwrap();
+    assert_eq!(value["status"], "RECONCILE_REQUIRED");
+    assert_eq!(value["retry_safe"], false);
 }

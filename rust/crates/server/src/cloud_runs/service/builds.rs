@@ -220,16 +220,21 @@ impl Service {
         let payload = json!({"operation":format!("native-{operation}"),"runtime_id":record.runtime_id,"project":record.project,"source_id":record.definition.source_id,
             "base_image":record.definition.base_image,"dockerfile":record.definition.dockerfile,"worker_sha256":record.worker_sha256,"mirror":mirror});
         let timeout = if operation == "build" { 7200 } else { 30 };
-        let (status, bytes) = ml_exp_io::unix_http::request(
+        let (status, bytes) = ml_exp_io::unix_http::request_observed(
             &settings.socket,
             settings.peer_uid,
             &encode(&payload)?,
             Duration::from_secs(timeout),
         )
-        .map_err(|_| cloud::Error {
-            code: "NATIVE_BUILD_RPC_UNCERTAIN".into(),
+        .map_err(|error| cloud::Error {
+            code: if error.may_have_sent {
+                "NATIVE_BUILD_RPC_UNCERTAIN"
+            } else {
+                "NATIVE_BUILD_NOT_DISPATCHED"
+            }
+            .into(),
             http_status: None,
-            uncertain: true,
+            uncertain: error.may_have_sent,
         })?;
         let value = Value::Object(
             ml_exp_core::json::mapping(&bytes).map_err(|_| cloud::Error::evidence())?,
@@ -303,6 +308,20 @@ impl Service {
                         match result {
                             Ok((status, value)) => {
                                 let _ = service.accept_build(&mut current, status, value);
+                            }
+                            Err(error)
+                                if error.code == "NATIVE_BUILD_NOT_DISPATCHED"
+                                    && !error.uncertain
+                                    && current.runtime.is_none() =>
+                            {
+                                current.started = false;
+                                current.diagnostic =
+                                    Some(json!({"code":"NATIVE_BUILD_NOT_DISPATCHED",
+                                    "retry_safe":true,"scheduler_submitted":false}));
+                                if let (Ok(name), Ok(bytes)) = (name(&id), encode(&current)) {
+                                    let _ =
+                                        service.slots.replace_regular(OsStr::new(&name), &bytes);
+                                }
                             }
                             Err(_) => {
                                 let _ = service.accept_build(

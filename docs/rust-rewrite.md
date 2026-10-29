@@ -97,6 +97,12 @@ stage without exposing values. Native credentials require service ownership and
 mode 0600/0400; original group-readable Python credentials remain unchanged.
 
 The isolated native client/API and actual DSW-to-Tokyo image build have run.
+Builder transport now records whether any request bytes may have been sent.
+A proven pre-send failure permits another explicit execute of the same Runtime;
+a partial write, lost reply or older generic error stays uncertain and requires
+reconciliation. Missing and stale sockets, same-identity recovery and lost-reply
+refusal are exercised without provider effects.
+
 Full native CPU execution/restore/result acceptance, three-backend training and
 production cutover remain separate pending checks.
 

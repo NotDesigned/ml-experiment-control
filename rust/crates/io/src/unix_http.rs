@@ -15,12 +15,38 @@ use std::{
 fn invalid() -> io::Error {
     io::Error::other("private builder RPC identity or response is invalid")
 }
+/// Whether any request bytes may have reached the authenticated peer. A
+/// connection/peer-validation failure cannot dispatch an RPC; a write or read
+/// failure remains uncertain, even when the OS reports zero bytes written.
+#[derive(Debug)]
+pub struct Failure {
+    pub may_have_sent: bool,
+    pub source: io::Error,
+}
 pub fn request(
     path: &Path,
     uid: u32,
     body: &[u8],
     timeout: Duration,
 ) -> io::Result<(u16, Vec<u8>)> {
+    request_observed(path, uid, body, timeout).map_err(|e| e.source)
+}
+pub fn request_observed(
+    path: &Path,
+    uid: u32,
+    body: &[u8],
+    timeout: Duration,
+) -> Result<(u16, Vec<u8>), Failure> {
+    let stream = connect(path, uid, body, timeout).map_err(|source| Failure {
+        may_have_sent: false,
+        source,
+    })?;
+    exchange(stream, body).map_err(|source| Failure {
+        may_have_sent: true,
+        source,
+    })
+}
+fn connect(path: &Path, uid: u32, body: &[u8], timeout: Duration) -> io::Result<UnixStream> {
     let before = std::fs::symlink_metadata(path)?;
     if !path.is_absolute()
         || !before.file_type().is_socket()
@@ -31,7 +57,7 @@ pub fn request(
     {
         return Err(invalid());
     }
-    let mut stream = UnixStream::connect(path)?;
+    let stream = UnixStream::connect(path)?;
     let mut credentials = libc::ucred {
         pid: 0,
         uid: 0,
@@ -60,6 +86,9 @@ pub fn request(
     }
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    Ok(stream)
+}
+fn exchange(mut stream: UnixStream, body: &[u8]) -> io::Result<(u16, Vec<u8>)> {
     write!(
         stream,
         "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
