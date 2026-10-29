@@ -99,6 +99,9 @@ Debug status preserves the native provider state. A failed instance reports
 `FAILED`, and the latest matching DSW lifecycle failure reason is retained when
 available. Missing old observations report an unknown terminal outcome rather
 than a successful stop. Queueing never advertises an SSH connection as ready.
+DSW stop sends an explicit empty JSON object; its REST endpoint rejects an empty
+request body with `Bad request: EOF`. Debug mutation failures also retain the
+operation and bounded provider response in `last_error`.
 
 ## Latest implementation completion pass
 

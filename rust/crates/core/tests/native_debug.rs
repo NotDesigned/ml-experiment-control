@@ -50,6 +50,10 @@ fn dsw_name_meets_actual_api_constraints_and_full_ownership_is_still_required() 
     );
     let body = profile.create(&recipe).unwrap().body.unwrap();
     assert_eq!(body["InstanceName"], recipe.name);
+    assert_eq!(
+        profile.stop(&recipe, "dsw-owned", false).unwrap().body,
+        Some(json!({}))
+    );
     assert_eq!(body["WorkspaceSource"], "/mnt/ml-expd-personal");
     assert!(
         body["Datasets"]

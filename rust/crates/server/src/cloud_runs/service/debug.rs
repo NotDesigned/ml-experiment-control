@@ -94,6 +94,14 @@ struct Saved {
     provider_state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_error: Option<OperationError>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperationError {
+    operation: String,
+    response: cloud::FailureEvidence,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -196,7 +204,7 @@ impl Service {
         json!({"debug_id":record.recipe.identity,"profile":record.recipe.request.profile,"name":record.recipe.name,"provider_id":record.provider_id,
             "state":state,
             "resources":{"gpus":record.recipe.request.gpus,"cpus":record.recipe.request.cpus,"memory_gb":record.recipe.request.memory_gb},"expires_at":record.recipe.expires_at,
-            "connection":record.connection.as_ref().filter(|_|state=="RUNNING"),"diagnostic":record.diagnostic,"provider_state":record.provider_state,"provider_message":record.provider_message,"create_rejection":record.create_rejection,"create_error":record.create_error,"observed_at":record.observed_at,"confirmation":format!("STOP {}",record.recipe.identity),"retry_safe":false})
+            "connection":record.connection.as_ref().filter(|_|state=="RUNNING"),"diagnostic":record.diagnostic,"provider_state":record.provider_state,"provider_message":record.provider_message,"create_rejection":record.create_rejection,"create_error":record.create_error,"last_error":record.last_error,"observed_at":record.observed_at,"confirmation":format!("STOP {}",record.recipe.identity),"retry_safe":false})
     }
     pub fn debug_list(&self) -> cloud::Result<Value> {
         let runtime = self
@@ -270,6 +278,7 @@ impl Service {
             create_error: None,
             provider_state: None,
             provider_message: None,
+            last_error: None,
         };
         lock.validate()?;
         self.debug_save(&record)?;
@@ -331,6 +340,28 @@ impl Service {
             .map_err(|_| cloud::Error::evidence())?;
         Ok(Some(value))
     }
+    fn debug_call(
+        &self,
+        saved: &mut Saved,
+        client: &Client,
+        request: &ml_exp_core::cloud::Request,
+    ) -> cloud::Result<Value> {
+        let mut evidence = None;
+        let result = client.call_observed(request, &AtomicBool::new(false), &mut |v| {
+            evidence = Some(v);
+        });
+        if let Some(evidence) = evidence {
+            if request.action == "CreateInstance" {
+                saved.create_error = Some(evidence.clone());
+            }
+            saved.last_error = Some(OperationError {
+                operation: request.action.clone(),
+                response: evidence,
+            });
+            self.debug_save(saved)?;
+        }
+        result
+    }
     fn debug_effect(
         &self,
         saved: &mut Saved,
@@ -343,19 +374,7 @@ impl Service {
         }
         saved.claims.insert(label.into());
         self.debug_save(saved)?;
-        let result = if label == "create" {
-            let mut evidence = None;
-            let result = client.call_observed(&request, &AtomicBool::new(false), &mut |v| {
-                evidence = Some(v);
-            });
-            if let Some(evidence) = evidence {
-                saved.create_error = Some(evidence);
-                self.debug_save(saved)?;
-            }
-            result
-        } else {
-            client.call(&request, &AtomicBool::new(false))
-        };
+        let result = self.debug_call(saved, client, &request);
         if label == "create"
             && matches!(
                 request.endpoint,
@@ -486,12 +505,10 @@ impl Service {
                 saved.connection = None;
                 if !saved.terminal {
                     // Stop is idempotent and always rechecks this exact instance.
-                    client.call(
-                        &profile
-                            .stop(&saved.recipe, &provider_id, false)
-                            .map_err(|_| cloud::Error::configuration())?,
-                        &AtomicBool::new(false),
-                    )?;
+                    let request = profile
+                        .stop(&saved.recipe, &provider_id, false)
+                        .map_err(|_| cloud::Error::configuration())?;
+                    self.debug_call(&mut saved, client, &request)?;
                 } else if matches!(profile, domain::Profile::SensecoreCci { .. }) {
                     saved.network_clean =
                         self.debug_network_stop(&saved, profile, client, &provider_id)?;
@@ -502,12 +519,10 @@ impl Service {
                 {
                     saved.claims.insert("delete".into());
                     self.debug_save(&saved)?;
-                    client.call(
-                        &profile
-                            .stop(&saved.recipe, &provider_id, true)
-                            .map_err(|_| cloud::Error::configuration())?,
-                        &AtomicBool::new(false),
-                    )?;
+                    let request = profile
+                        .stop(&saved.recipe, &provider_id, true)
+                        .map_err(|_| cloud::Error::configuration())?;
+                    self.debug_call(&mut saved, client, &request)?;
                     if Self::debug_lookup(profile, client, &saved)?.is_none() {
                         saved.deleted = true;
                     }

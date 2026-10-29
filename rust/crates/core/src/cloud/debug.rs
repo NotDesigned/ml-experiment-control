@@ -443,9 +443,12 @@ impl Profile {
             self.req(Method::Delete, "DeleteInstance", path, None)
         } else {
             match self {
-                Self::PaiDsw { .. } => {
-                    self.req(Method::Put, "StopInstance", format!("{path}/stop"), None)
-                }
+                Self::PaiDsw { .. } => self.req(
+                    Method::Put,
+                    "StopInstance",
+                    format!("{path}/stop"),
+                    Some(json!({})),
+                ),
                 Self::SensecoreCci { .. } => self.req(
                     Method::Post,
                     "StopInstance",
