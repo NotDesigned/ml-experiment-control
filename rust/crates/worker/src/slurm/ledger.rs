@@ -601,7 +601,7 @@ impl Helper {
         lock.validate()?;
         Ok(Reply::for_request(request, outcome)?)
     }
-    fn prepare(&self, request: &Request, lock: Lock<'_>, cancelled: &AtomicBool) -> Result<Reply> {
+    fn prepare(&self, request: &Request, lock: Lock, cancelled: &AtomicBool) -> Result<Reply> {
         let (manifest, script) = request.prepared_content().ok_or(Error::Configuration)?;
         let mut registry = self.registry()?;
         let scope = request.intent().scope.digest()?;
