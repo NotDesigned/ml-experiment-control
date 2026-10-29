@@ -374,3 +374,40 @@ fn checkpoint_queries_and_registration_replies_preserve_exact_source_identity() 
         .is_err()
     );
 }
+
+#[test]
+fn gate_replacement_requires_exact_original_and_request_identity() {
+    let request = "a".repeat(32);
+    let confirmation = format!("RENEW {ID}");
+    let plan = submissions::plan(Command::Renew {
+        submission: ID,
+        request_id: &request,
+        confirmation: &confirmation,
+    })
+    .unwrap();
+    let mut value = response();
+    let replacement = "action-1123456789abcdef";
+    value["submission_id"] = json!(replacement);
+    value["confirmation"] = json!(format!("EXECUTE {replacement}"));
+    value["renewed_from"] = json!(ID);
+    value["renewal_request_id"] = json!(request);
+    value["scheduler_mutation_performed"] = json!(false);
+    assert!(submissions::response(&plan, value.clone()).is_ok());
+    for key in [
+        "renewed_from",
+        "renewal_request_id",
+        "scheduler_mutation_performed",
+    ] {
+        let mut bad = value.clone();
+        bad[key] = json!("foreign");
+        assert!(submissions::response(&plan, bad).is_err());
+    }
+    assert!(
+        submissions::plan(Command::Renew {
+            submission: ID,
+            request_id: &request,
+            confirmation: "wrong"
+        })
+        .is_err()
+    );
+}

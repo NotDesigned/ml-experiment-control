@@ -79,9 +79,10 @@ pub fn status(client: &Client, directory: &Path) -> Result<Value, Error> {
         let path = format!("/api/projects/{project}/experiment-preparations/{id}");
         match client.get(&path){
             Ok(mut value)=>{if value["project"]!=project||value["preparation_id"]!=id||value["run_id"]!=request.run["run_id"]{return Err(Error::Response);}
-                if let Some(action)=value["submission"]["submission_id"].as_str().map(str::to_owned){
-                    let plan=submissions::plan(submissions::Command::Show{submission:&action})?;
-                    let current=submissions::response(&plan,client.get(&format!("/api/submissions/{action}"))?)?;
+                if value["submission"]["submission_id"].is_string(){
+                    let run=request.run["run_id"].as_str().ok_or_else(invalid)?;
+                    let plan=submissions::plan(submissions::Command::Existing{project,run})?;
+                    let current=submissions::response(&plan,client.get(&format!("/api/runs/{project}/{run}/submission"))?)?;
                     if current["project"]!=project||current["run_id"]!=request.run["run_id"]||current["attempt_id"]!="attempt-001"{return Err(Error::Response);}
                     value["submission"]=current;
                 }

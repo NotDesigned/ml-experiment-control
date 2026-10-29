@@ -38,7 +38,7 @@ struct Backend {
     collector: Option<Adapter>,
     data_copier: Option<Adapter>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Prepared {
     pub(super) execution: Execution,
@@ -386,9 +386,14 @@ impl Service {
         let attempt = snapshot["attempt_id"]
             .as_str()
             .ok_or_else(cloud::Error::evidence)?;
-        let prepared = self
-            .saved_attempt(project, run, attempt)?
-            .ok_or_else(missing)?;
+        let archived =
+            ml_exp_core::renewal::archive(action).map_err(|_| cloud::Error::evidence())?;
+        let prepared = match crate::renewal::read(&self.slots, &archived).map_err(io)? {
+            Some(value) => value,
+            None => self
+                .saved_attempt(project, run, attempt)?
+                .ok_or_else(missing)?,
+        };
         if prepared.plan["action_id"] != action {
             return Err(cloud::Error::evidence());
         }
@@ -486,6 +491,7 @@ mod capacity;
 mod data_delivery;
 mod maintenance;
 mod preparations;
+mod renewal;
 
 #[cfg(test)]
 mod failure_tests {

@@ -70,6 +70,15 @@ pub(crate) fn extend(document: &mut Value) {
         row[method] = operation(path, description, body);
     };
     insert(
+        "/api/submissions/{identity}/renew",
+        "post",
+        "Explicitly replace an expired never-started gate under one durable request ID. Preserve Run/Attempt, resources, budget and scheduler token; return a PREPARED replacement requiring fresh authorization. Possible prior effects block renewal.",
+        Some(object(
+            &["request_id", "confirmation"],
+            json!({"request_id":{"type":"string"},"confirmation":{"type":"string"}}),
+        )),
+    );
+    insert(
         "/api/executors",
         "get",
         "Configured backend capabilities; no credentials, private paths or implicit provider query",

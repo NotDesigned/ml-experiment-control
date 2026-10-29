@@ -112,8 +112,9 @@ The old working environment remains the sole production environment meanwhile.
 
 Campaign authoring is intentionally absent; a Run does not need a research
 question or Campaign. Batch commands perform explicit passes, not an unattended
-queue. An expired authorization gate blocks dispatch; gate renewal is not yet
-implemented. No automatic checkpoint selection or unbounded restart exists.
+queue. An expired authorization gate blocks dispatch until an explicit `run renew`
+creates a fresh PREPARED plan. Renewal is idempotent, preserves the Run/Attempt
+and budget, and refuses any possible prior execution. No automatic checkpoint selection or unbounded restart exists.
 Native debug supports CCI create/stop and DSW create/stop/delete. Slurm dataset
 export is outside the OSS-specific dataset download command.
 

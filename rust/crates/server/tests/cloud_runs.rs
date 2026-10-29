@@ -399,6 +399,65 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         3
     );
     drop(server);
+    let mut renew_run = request.clone();
+    renew_run.run_id = "renew-only".into();
+    service
+        .create_run("demo", renew_run, "2026-10-29T00:00:00Z")
+        .unwrap();
+    let prior = service
+        .prepare(
+            "demo",
+            "renew-only",
+            Approval {
+                max_gpu_hours: 1.,
+                reason: String::new(),
+            },
+            "2026-10-29T00:00:00Z",
+            "2026-10-29T00:30:00Z",
+            &"7".repeat(32),
+        )
+        .unwrap();
+    let old = prior["submission_id"].as_str().unwrap();
+    service
+        .authorize(
+            old,
+            "owned fixture",
+            "2026-10-29T00:01:00Z",
+            &"8".repeat(32),
+        )
+        .unwrap();
+    let renewal = ml_exp_core::renewal::Request {
+        request_id: "c".repeat(32),
+        confirmation: format!("RENEW {old}"),
+    };
+    let context = || ml_exp_server::submissions::Context {
+        now: "2026-10-29T01:00:00Z",
+        expires: "2026-10-29T01:30:00Z",
+        transition_id: "99999999999999999999999999999999",
+    };
+    let next = service.renew(old, renewal.clone(), context()).unwrap();
+    assert_ne!(next["submission_id"], old);
+    assert_eq!(next["status"], "PREPARED");
+    assert_eq!(next["attempt_id"], "attempt-001");
+    assert_eq!(
+        service.renew(old, renewal, context()).unwrap()["submission_id"],
+        next["submission_id"]
+    );
+    assert_eq!(
+        service.get(old, context().now).unwrap()["status"],
+        "AUTHORIZED"
+    );
+    assert_eq!(
+        service
+            .for_run("demo", "renew-only", context().now)
+            .unwrap()["submission_id"],
+        next["submission_id"]
+    );
+    assert!(
+        service
+            .authorize(old, "expired", context().now, &"0".repeat(32))
+            .is_err()
+    );
     let mut changed = request;
     changed.seed = 43;
     assert!(

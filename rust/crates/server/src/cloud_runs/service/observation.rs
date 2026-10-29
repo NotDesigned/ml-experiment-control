@@ -70,7 +70,7 @@ impl Service {
         if let Some(state) = self.outbox.optional_status(&prepared.execution.job)? {
             result["cloud_observation"] = state;
         }
-        Ok(result)
+        crate::renewal::decorate(&self.slots, result).map_err(io)
     }
     pub fn get(&self, action: &str, now: &str) -> cloud::Result<Value> {
         let prepared = self.load(action)?;

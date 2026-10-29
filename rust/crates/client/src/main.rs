@@ -404,6 +404,14 @@ enum Run {
     },
     /// Read the exact original Submission.
     Submission { submission: String },
+    /// Replace an expired, never-started gate; the replacement needs fresh authorization.
+    Renew {
+        submission: String,
+        #[arg(long)]
+        request_id: String,
+        #[arg(long)]
+        confirmation: String,
+    },
     /// Authorize a reviewed preparation; does not submit it.
     Authorize {
         submission: String,
@@ -521,6 +529,15 @@ impl Run {
             },
             Self::Preparation { project, run } => submissions::Command::Existing { project, run },
             Self::Submission { submission } => submissions::Command::Show { submission },
+            Self::Renew {
+                submission,
+                request_id,
+                confirmation,
+            } => submissions::Command::Renew {
+                submission,
+                request_id,
+                confirmation,
+            },
             Self::Authorize { submission, reason } => {
                 submissions::Command::Authorize { submission, reason }
             }
@@ -955,6 +972,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         | Run::Preparation { .. }
                         | Run::Submission { .. }
                         | Run::Authorize { .. }
+                        | Run::Renew { .. }
                         | Run::Execute { .. }
                         | Run::Cancel { .. }
                         | Run::Reconcile { .. }

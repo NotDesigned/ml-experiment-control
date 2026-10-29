@@ -457,6 +457,7 @@ enum Operation {
     DownloadTicket(u64),
     Sync(ml_exp_core::cloud::exchange::Sync),
     Authorize(String),
+    Renew(ml_exp_core::renewal::Request),
     Execute(String),
     Cancel(String),
     Retry(ml_exp_core::first_submission::native::retry::Request),
@@ -516,6 +517,10 @@ async fn change(
                 Err(invalid())
             }
         }),
+        "renew" => decode::<ml_exp_core::renewal::Request>(body).and_then(|request| {
+            request.validate(&identity).map_err(|_| invalid())?;
+            Ok(Operation::Renew(request))
+        }),
         "reconcile" => decode::<Empty>(body).map(|_| Operation::Reconcile),
         "refresh" => decode::<Empty>(body).map(|_| Operation::Refresh),
         "history" => decode::<Empty>(body).map(|_| Operation::History),
@@ -549,14 +554,16 @@ async fn change(
             let now = clock(now)?;
             let (_, transition) =
                 crate::projects::transition_context().map_err(read_api::Error::from)?;
+            let expires=crate::renewal::expiry(&now)?;
             let context = Context {
                 now: &now,
-                expires: &now,
+                expires: &expires,
                 transition_id: &transition,
             };
             if let Some(cloud)=api.cloud(){if cloud.handles_action(&identity).map_err(crate::cloud_runs::failure)?{
                 let cancelled=AtomicBool::new(false);
                 return match operation {
+                    Operation::Renew(request)=>cloud.renew(&identity,request,context),
                     Operation::Authorize(reason)=>cloud.authorize(&identity,&reason,&now,&transition),
                     Operation::Execute(confirmation)=>cloud.execute(&identity,&confirmation,&now,&transition,&cancelled),
                     Operation::Reconcile=>cloud.reconcile(&identity,&now,&transition,&cancelled),
@@ -576,6 +583,7 @@ async fn change(
             match operation {
                 Operation::DownloadTicket(_)=>return Err(read_api::Error{status:422,code:"DIRECT_DOWNLOAD_UNAVAILABLE",detail:"this backend streams downloads through its gateway"}),
                 Operation::Sync(_)=>return Err(read_api::Error{status:501,code:"CLOUD_SYNC_NOT_CONFIGURED",detail:"CPU cloud synchronization is not configured for this submission"}),
+                Operation::Renew(request)=>service.renew(&identity,request,context),
                 Operation::Retry(request)=>service.retry(&identity,request,&now,&AtomicBool::new(false)),
                 Operation::Cancel(confirmation)=>service.cancel(&identity,&confirmation,&now,&AtomicBool::new(false)),
                 Operation::Authorize(reason) => {

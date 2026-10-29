@@ -164,8 +164,17 @@ Continue and submit are explicit passes. Repeating a pass queries the saved
 identities. Batch-submit authorizes only ready children and records a durable
 claim before dispatch. Unknown submissions consume a slot and are never replayed.
 The cap covers this batch, not other clients or the provider's entire quota.
-An expired authorization gate requires an explicit renewed plan; it is not
-silently extended by batch dispatch. The client does not run an unattended queue.
+An expired authorization gate can be replaced explicitly:
+
+```sh
+ml-exp-rs run renew action-0123456789abcdef --request-id 33333333333333333333333333333333 --confirmation 'RENEW action-0123456789abcdef'
+```
+
+The replacement remains PREPARED and needs fresh authorization. It retains the
+Run, Attempt, scheduler token and budget; the old plan stays queryable. A possible
+prior execution blocks renewal. Repeat the same request ID after a lost response.
+Batch status follows the reviewed replacement; dispatch does not renew it
+silently. The client does not run an unattended queue.
 
 ## Data, checkpoint and results
 

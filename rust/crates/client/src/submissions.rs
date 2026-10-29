@@ -7,6 +7,11 @@ use ml_exp_core::{
 use serde_json::{Value, json};
 
 pub enum Command<'a> {
+    Renew {
+        submission: &'a str,
+        request_id: &'a str,
+        confirmation: &'a str,
+    },
     Sync {
         submission: &'a str,
         request_id: &'a str,
@@ -69,6 +74,10 @@ pub enum Command<'a> {
     },
 }
 enum Expected {
+    Renewal {
+        original: String,
+        request_id: String,
+    },
     Tracking {
         project: String,
         run: String,
@@ -128,6 +137,29 @@ fn reason(value: &str) -> Result<(), Error> {
     }
 }
 pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
+    if let Command::Renew {
+        submission,
+        request_id,
+        confirmation,
+    } = &command
+    {
+        let request = ml_exp_core::renewal::Request {
+            request_id: (*request_id).into(),
+            confirmation: (*confirmation).into(),
+        };
+        request.validate(submission).map_err(|_| invalid())?;
+        return Ok(Plan {
+            path: format!("/api/submissions/{submission}/renew"),
+            body: Some(serde_json::to_vec(&request).map_err(|_| invalid())?),
+            expected: Expected::Renewal {
+                original: (*submission).into(),
+                request_id: (*request_id).into(),
+            },
+            executes: false,
+            refreshes: false,
+            checkpoint: false,
+        });
+    }
     if let Command::Tracking { project, run } = &command {
         identity::validate_id(project).map_err(|_| invalid())?;
         identity::validate_id(run).map_err(|_| invalid())?;
@@ -494,6 +526,19 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
             .is_none_or(|revision| revision < 0)
     {
         return Err(Error::Response);
+    }
+    if let Expected::Renewal {
+        original,
+        request_id,
+    } = &plan.expected
+    {
+        if id == original
+            || value["renewed_from"] != *original
+            || value["renewal_request_id"] != *request_id
+            || value["scheduler_mutation_performed"] != false
+        {
+            return Err(Error::Response);
+        }
     }
     match &plan.expected {
         Expected::Run {

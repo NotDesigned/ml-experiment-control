@@ -1709,3 +1709,66 @@ fn exact_worker_refresh_survives_restart_and_never_changes_submission_or_retrain
         "call\n"
     );
 }
+
+#[test]
+fn expired_unsubmitted_gate_renewal_preserves_identity_and_survives_response_loss() {
+    let f = Fixture::new();
+    let service = f.service("ledger", false);
+    let first = service
+        .prepare("demo", "train", approval(), context(1))
+        .unwrap();
+    let original = first["submission_id"].as_str().unwrap();
+    service
+        .authorize(original, "fixture", "owned", context(2))
+        .unwrap();
+    let request = ml_exp_core::renewal::Request {
+        request_id: "a".repeat(32),
+        confirmation: format!("RENEW {original}"),
+    };
+    assert!(
+        service
+            .renew(original, request.clone(), context(3))
+            .is_err()
+    );
+    let later = || Context {
+        now: "2026-10-28T02:00:00Z",
+        expires: "2026-10-28T02:30:00Z",
+        transition_id: "00000000000000000000000000000004",
+    };
+    let before = f.prepared();
+    let renewed = service.renew(original, request.clone(), later()).unwrap();
+    let id = renewed["submission_id"].as_str().unwrap().to_owned();
+    assert_ne!(id, original);
+    assert_eq!(renewed["status"], "PREPARED");
+    assert_eq!(renewed["scheduler_mutation_performed"], false);
+    let after = f.prepared();
+    assert!(before.binding == after.binding);
+    assert!(before.request == after.request);
+    assert_eq!(before.definition_sha256, after.definition_sha256);
+    let old = service.get(original, later().now).unwrap();
+    assert_eq!(old["status"], "AUTHORIZED");
+    assert_eq!(old["replacement_submission_id"], id);
+    assert_eq!(
+        service.get(&id, later().now).unwrap()["renewed_from"],
+        original
+    );
+    assert!(
+        service
+            .authorize(original, "fixture", "expired", later())
+            .is_err()
+    );
+    drop(service);
+    let service = f.service("ledger", false);
+    assert_eq!(
+        service.renew(original, request.clone(), later()).unwrap()["submission_id"],
+        id
+    );
+    assert_eq!(
+        service.for_run("demo", "train", later().now).unwrap()["submission_id"],
+        id
+    );
+    let mut another = request;
+    another.request_id = "b".repeat(32);
+    assert!(service.renew(original, another, later()).is_err());
+    assert!(!f.root.path().join("calls").exists());
+}

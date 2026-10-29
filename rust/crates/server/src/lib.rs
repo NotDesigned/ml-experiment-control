@@ -20,6 +20,7 @@ pub mod read_config;
 mod read_http;
 pub mod read_model;
 pub mod records;
+mod renewal;
 pub mod sources;
 pub mod storage;
 pub mod submissions;

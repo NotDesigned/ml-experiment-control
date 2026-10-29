@@ -46,7 +46,7 @@
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
     "all_tracked_python_files": 458,
-    "connected_native_workflows": 15
+    "connected_native_workflows": 16
   },
   "architecture": {
     "application_crates": [
@@ -7281,12 +7281,22 @@
       ],
       "provider_acceptance": false,
       "production_deployed": false
+    },
+    "gate_renewal": {
+      "implementation": "connected_workflow",
+      "paths": [
+        "rust/crates/core/src/renewal.rs",
+        "rust/crates/server/src/renewal.rs",
+        "rust/crates/server/src/submissions/service/renewal.rs",
+        "rust/crates/server/src/cloud_runs/service/renewal.rs"
+      ],
+      "provider_acceptance": false,
+      "production_deployed": false
     }
   },
   "known_limits": [
     "No native production-state migration accepted",
     "No native provider/GPU workflow accepted by this implementation pass",
-    "Expired authorization gate renewal not implemented",
     "Batch dispatch uses explicit passes, not unattended scheduling",
     "No automatic checkpoint selection/unbounded restart",
     "Native OSS filesystem mount remains disabled",

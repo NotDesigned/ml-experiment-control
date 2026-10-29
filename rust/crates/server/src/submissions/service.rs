@@ -327,8 +327,9 @@ impl Service {
         })
     }
     fn public(&self, snapshot: Value, now: &str) -> Result<Value> {
-        Ok(ml_exp_core::operations::submission_view(&snapshot, now)
-            .map_err(operations::Error::from)?)
+        let view = ml_exp_core::operations::submission_view(&snapshot, now)
+            .map_err(operations::Error::from)?;
+        crate::renewal::decorate(&self.slots, view).map_err(|_| Error::Authority)
     }
     pub fn get(&self, action: &str, now: &str) -> Result<Value> {
         let prepared = self.load(action)?;
@@ -515,3 +516,5 @@ impl Service {
 
 mod capacity;
 mod maintenance;
+
+mod renewal;

@@ -192,7 +192,20 @@ impl Service {
             )?
             .ok_or(Error::Authority)?;
         if saved.plan != prepared.plan || saved.request != prepared.request {
-            return Err(Error::Authority);
+            let action = prepared.plan["action_id"]
+                .as_str()
+                .ok_or(Error::Authority)?;
+            let name = ml_exp_core::renewal::archive(action).map_err(|_| Error::Authority)?;
+            let archived: Prepared = crate::renewal::read(&self.slots, &name)
+                .map_err(|_| Error::Authority)?
+                .ok_or(Error::Authority)?;
+            if archived.plan != prepared.plan
+                || archived.request != prepared.request
+                || archived.binding != prepared.binding
+                || saved.request != prepared.request
+            {
+                return Err(Error::Authority);
+            }
         }
         if prepared.binding.attempt_id != "attempt-001" {
             let receipt =
@@ -225,9 +238,14 @@ impl Service {
             .ok_or(Error::Authority)?;
         let run = snapshot["run_id"].as_str().ok_or(Error::Authority)?;
         let attempt = snapshot["attempt_id"].as_str().ok_or(Error::Authority)?;
-        let prepared = self
-            .saved_attempt(project, run, attempt)?
-            .ok_or(Error::Authority)?;
+        let name = ml_exp_core::renewal::archive(action).map_err(|_| Error::Authority)?;
+        let prepared =
+            match crate::renewal::read(&self.slots, &name).map_err(|_| Error::Authority)? {
+                Some(value) => value,
+                None => self
+                    .saved_attempt(project, run, attempt)?
+                    .ok_or(Error::Authority)?,
+            };
         if prepared.plan["action_id"] != action {
             return Err(Error::Authority);
         }

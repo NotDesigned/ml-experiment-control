@@ -43,3 +43,5 @@ pub const CLIENT_PROTOCOL_HEADER: &str = "X-ML-Expd-Client-Protocol";
 pub mod capacity;
 pub mod maintenance;
 pub mod preparation;
+
+pub mod renewal;
