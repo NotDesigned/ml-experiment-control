@@ -23,7 +23,6 @@
     "data_root": "/mnt/workspace/ml-expd-native/datasets",
     "credentials_file": "/etc/ml-expd/native/pai-credentials.json",
     "registry_auth_file": "/etc/ml-expd/native/registry-auth.json",
-    "registry_auth_file": "/etc/ml-expd/native/registry-auth.json",
     "runtimes": {},
     "allocation": "guaranteed"
   }],
