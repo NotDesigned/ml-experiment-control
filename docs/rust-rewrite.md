@@ -247,3 +247,29 @@ Local/DSW logs live in ignored `.ops` directories and are not release artifacts.
 [The usage guide](../rust/README.md#build-and-verification) lists reproducible
 format, lint, workspace-test, binary-smoke and bridge-test commands. Passing these
 checks establishes development evidence, not real GPU or production acceptance.
+
+## Independent Tokyo deployment (2026-10-29)
+
+The native server and client now run independently on the authorized Tokyo host,
+under `/opt/ml-expd-native-test`. The API binds loopback port 18765 and uses its
+own private token, registry, Project and systemd unit. It does not use the
+production registry or replace Python 1.5.1. This is a development installation,
+not the native 0.1.0 release. Cloud scheduling and Run creation are disabled in
+this test configuration.
+
+Commit `f2d282790c6756a2c01035a5d31352553d3cf7e3` passed 614 Rust tests,
+all-target clippy, formatting, binary smoke and six optional image-effect tests
+in CI. Tokyo also passed the 614 tests and real CLI/API smoke after installing
+its missing compiler, `jq` and `cmp` dependencies. Initial environment failures
+and the test runner's incorrect source-hash field are retained as evidence.
+
+Through the installed native client, a synthetic 17,838,080-byte plain tar was
+imported from an approved personal OSS dataset key into two immutable parts.
+Import took 18.647 seconds; repeating the exact request took 0.036 seconds. Signed
+part download took 5.066 seconds and verified the archive and file hashes.
+Wrong hashes and another user's prefix returned distinct 422 errors. Source
+upload/show/lookup and unauthenticated 401 behavior passed. API memory peaked at
+43,921,408 bytes; dataset payloads were not spooled to its disk. No provider job
+or GPU was submitted. This evidence does not establish training, recovery,
+W&B, native OSS mounting or all-backend acceptance. Small private evidence lives
+in `.ops/tokyo-native-20261029/` and is not included in the release.

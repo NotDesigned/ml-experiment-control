@@ -46,7 +46,7 @@
     "supporting_python_files": 238,
     "supporting_python_lines": 53659,
     "all_tracked_python_files": 458,
-    "connected_native_workflows": 22
+    "connected_native_workflows": 24
   },
   "architecture": {
     "application_crates": [
@@ -7383,7 +7383,16 @@
         "rust/crates/client/src/datasets.rs"
       ],
       "provider_acceptance": false,
-      "production_deployed": false
+      "production_deployed": false,
+      "observed_effects": {
+        "isolated_tokyo_api": true,
+        "verified_archive_bytes": 17838080,
+        "parts": 2,
+        "idempotent_reuse": true,
+        "direct_signed_download": true,
+        "gpu_jobs_submitted": 0,
+        "evidence": ".ops/tokyo-native-20261029/"
+      }
     },
     "result_archive_file_selection": {
       "implementation": "connected_workflow",
