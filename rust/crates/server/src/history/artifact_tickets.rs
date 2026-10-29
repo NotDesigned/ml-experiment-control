@@ -77,10 +77,10 @@ impl ObjectConfig {
 fn encoded(value: &str) -> String {
     utf8_percent_encode(value, ENCODE).to_string()
 }
-fn mac(key: &[u8], value: &str) -> Result<Vec<u8>, read_config::Error> {
+fn mac(key: &[u8], value: &str) -> Result<hmac::digest::Output<Hmac<Sha256>>, read_config::Error> {
     let mut h = Hmac::<Sha256>::new_from_slice(key).map_err(|_| read_config::Error)?;
     h.update(value.as_bytes());
-    Ok(h.finalize().into_bytes().to_vec())
+    Ok(h.finalize().into_bytes())
 }
 fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, read_config::Error> {
     value[key].as_str().ok_or(read_config::Error)
@@ -194,10 +194,7 @@ fn sign(profile: &Value, inventory: &Value, now: i64) -> Result<Value, read_conf
         )?,
         "aws4_request",
     )?;
-    let signature = mac(&signing_key, &to_sign)?
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+    let signature = format!("{:x}", mac(&signing_key, &to_sign)?);
     query.insert("X-Amz-Signature", signature);
     let query = query
         .iter()
