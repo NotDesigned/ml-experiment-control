@@ -1,5 +1,6 @@
 //! Optional W&B shell. Credentials and SDK effects stay outside pure reducers;
 //! canonical record acceptance never depends on cloud publication success.
+pub mod handoff;
 mod publisher;
 mod transport;
 use ml_exp_core::tracking::{RoutingSettings, WandbOptions, WandbSettings};
@@ -25,7 +26,7 @@ pub enum Error {
     #[error("W&B journal or private publication store unavailable")]
     Storage,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub schema_version: u32,
@@ -37,10 +38,15 @@ pub struct Config {
     pub project: Option<String>,
     #[serde(default = "enabled")]
     pub enabled: bool,
+    /// Explicit cutover receipt for a separate historical journal. Never
+    /// enables ordinary native authorship in that namespace.
+    #[serde(default)]
+    pub historical_handoff: Option<PathBuf>,
 }
 fn enabled() -> bool {
     true
 }
+#[derive(Clone)]
 pub struct Runtime {
     config: Config,
     key: String,
@@ -50,6 +56,9 @@ pub struct Runtime {
 impl Config {
     /// Local validation only: never start the SDK or resolve a default entity.
     pub fn check_references(&self) -> Result<()> {
+        if let Some(path) = &self.historical_handoff {
+            handoff::Config::load(path)?.check()?;
+        }
         let bytes = ml_exp_io::read_private(&self.api_key_file, 4096, true)
             .map_err(|_| Error::Configuration)?;
         let key = std::str::from_utf8(&bytes)
@@ -134,5 +143,8 @@ impl Runtime {
     }
     pub fn diagnostic(&self) -> Option<&'static str> {
         self.diagnostic
+    }
+    pub fn historical_handoff(&self) -> Option<&Path> {
+        self.config.historical_handoff.as_deref()
     }
 }

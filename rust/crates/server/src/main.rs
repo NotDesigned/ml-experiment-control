@@ -388,6 +388,42 @@ async fn main() -> std::process::ExitCode {
         },
         None => None,
     };
+    let _historical_publisher = match tracking
+        .as_ref()
+        .filter(|runtime| runtime.routing().enabled)
+        .and_then(|runtime| runtime.historical_handoff().map(|path| (runtime, path)))
+    {
+        Some((runtime, path)) => {
+            let open = || -> Result<_, ml_exp_server::tracking::Error> {
+                let historical = ml_exp_server::history::Settings::load(
+                    args.history_config
+                        .as_deref()
+                        .ok_or(ml_exp_server::tracking::Error::Configuration)?,
+                )
+                .map_err(|_| ml_exp_server::tracking::Error::Configuration)?;
+                let native = ml_exp_server::read_config::load(
+                    args.read_config
+                        .as_deref()
+                        .ok_or(ml_exp_server::tracking::Error::Configuration)?,
+                )
+                .map_err(|_| ml_exp_server::tracking::Error::Configuration)?;
+                let source = ml_exp_server::tracking::handoff::Handoff::open(
+                    ml_exp_server::tracking::handoff::Config::load(path)?,
+                    historical,
+                    &native.registry_root,
+                )?;
+                ml_exp_server::tracking::Publisher::start(source, runtime.clone())
+            };
+            match open() {
+                Ok(publisher) => Some(publisher),
+                Err(error) => {
+                    eprintln!("historical W&B handoff: {error}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            }
+        }
+        None => None,
+    };
     let _publisher = match tracking.filter(|runtime| runtime.routing().enabled) {
         Some(runtime) => match ml_exp_server::tracking::Publisher::start(
             reads

@@ -4,6 +4,19 @@ use serde_json::Value;
 use std::{fs, os::unix::fs::PermissionsExt};
 
 #[test]
+fn historical_terminal_uses_original_outcomes_without_claiming_a_running_run_completed() {
+    for value in [
+        json!({"state":"CANCELLED"}),
+        json!({"phase":"RESULTS_UPLOADED","exit_code":0}),
+        json!({"phase":"RESULTS_UPLOAD_FAILED"}),
+    ] {
+        assert!(historical_terminal(&value));
+    }
+    assert!(!historical_terminal(&json!({"state":"RUNNING"})));
+    assert!(!historical_terminal(&json!({})));
+}
+
+#[test]
 fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursors() {
     let root = tempfile::tempdir().unwrap();
     let cloud = root.path().join("cloud.json");
@@ -25,6 +38,7 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
             entity: Some("fixture".into()),
             project: None,
             enabled: true,
+            historical_handoff: None,
         },
         key: "test-key-never-stored".into(),
         routing: Default::default(),
@@ -57,8 +71,9 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
         .unwrap();
     let flag = AtomicBool::new(false);
     let mut sdk = None;
-    let cycle =
-        |sdk: &mut Option<Sdk>| publish_bound(&store, &runtime, sdk, &scope, &flag, &|| Ok(()));
+    let cycle = |sdk: &mut Option<Sdk>| {
+        publish_bound(&store, &runtime, sdk, &scope, &flag, false, &|| Ok(()))
+    };
     let read_cloud = || serde_json::from_slice::<Value>(&fs::read(&cloud).unwrap()).unwrap();
     cycle(&mut sdk).unwrap();
     assert_eq!(
