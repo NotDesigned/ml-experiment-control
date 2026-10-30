@@ -23,8 +23,9 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// W&B flattens config dictionaries and omits empty mappings, including parents
-/// whose only children were empty mappings. Accept only that observed encoding;
-/// nonempty values, nulls, arrays and unexpected keys retain exact identity.
+/// whose only children were empty mappings. It also encodes integral floats as
+/// integers. Accept exact numeric equality without float-rounding large integer
+/// identities; booleans, nonempty values and unexpected keys remain distinct.
 pub fn config_matches(expected: &serde_json::Value, observed: &serde_json::Value) -> bool {
     fn empty_mapping(value: &serde_json::Value) -> bool {
         value
@@ -38,6 +39,18 @@ pub fn config_matches(expected: &serde_json::Value, observed: &serde_json::Value
                     Some(observed) => config_matches(value, observed),
                     None => empty_mapping(value),
                 })
+        }
+        _ if expected.is_number() && observed.is_number() => {
+            crate::metrics::numeric_equal(expected, observed)
+        }
+        _ if expected.is_array() && observed.is_array() => {
+            let expected = expected.as_array().expect("array checked");
+            let observed = observed.as_array().expect("array checked");
+            expected.len() == observed.len()
+                && expected
+                    .iter()
+                    .zip(observed)
+                    .all(|(a, b)| config_matches(a, b))
         }
         _ => expected == observed,
     }
@@ -396,6 +409,23 @@ mod tests {
             assert!(!config_matches(&expected, &different));
         }
         assert!(config_matches(&json!({"nested":{"empty":{}}}), &json!({})));
+    }
+
+    #[test]
+    fn remote_config_accepts_integral_float_encoding_without_losing_identity() {
+        use serde_json::json;
+        let frozen = json!({"parameters":{"recipe":{"true_path_gamma":1.0,"fast_weight":0.0},"list":[2.0,3]},"enabled":true});
+        let remote = json!({"parameters":{"recipe":{"true_path_gamma":1,"fast_weight":0},"list":[2,3.0]},"enabled":true});
+        assert!(config_matches(&frozen, &remote));
+        for (a, b) in [
+            (json!(1.0), json!(true)),
+            (json!(0), json!(false)),
+            (json!(1.00000001), json!(1)),
+            (json!(9007199254740993u64), json!(9007199254740992.0)),
+            (json!([1.0]), json!([1, 2])),
+        ] {
+            assert!(!config_matches(&a, &b));
+        }
     }
 
     fn event(sequence: i64, event_id: &str) -> HistoryEvent {
