@@ -155,8 +155,7 @@ impl Publisher {
                             false,
                         );
                         if let Err(error) = outcome {
-                            sdk = None;
-                            let _ = failure(&store, &scope, &error);
+                            record_failure(&store, &scope, &mut sdk, &error);
                         }
                     }
                     let Ok(guard) = sleep.0.lock() else {
@@ -208,6 +207,15 @@ fn candidate_scopes(store: &Store) -> Result<BTreeSet<String>> {
         }
     }
     Ok(scopes)
+}
+fn record_failure(store: &Store, scope: &str, sdk: &mut Option<Sdk>, error: &Error) {
+    // A complete per-Run error frame leaves the pipe usable. Killing the shared
+    // SDK here can discard other Runs' buffered history, which is already
+    // durably reserved and therefore cannot safely be sent again.
+    if matches!(error, Error::Transport | Error::SdkMissing) {
+        *sdk = None;
+    }
+    let _ = failure(store, scope, error);
 }
 fn failure(store: &Store, scope: &str, error: &Error) -> Result<()> {
     let parsed = Scope::parse(scope).map_err(|_| Error::Identity)?;

@@ -114,6 +114,35 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
         0
     );
     assert_eq!(read_cloud()["logs"], 4);
+    let other = store.guard("demo", "missing").unwrap();
+    store
+        .bind(
+            &other,
+            &json!({"enabled":true,"entity":"fixture","project":"science"}),
+            &json!({}),
+        )
+        .unwrap();
+    let other_scope = store.scope(&other, "attempt-001").unwrap();
+    let error = sdk
+        .as_mut()
+        .unwrap()
+        .call(
+            &json!({"operation":"observe","api_key":"test-key-never-stored",
+        "route":{"entity":"fixture","project":"science"},"wandb_id":"absent",
+        "scope":{"project":"demo","run":"missing","attempt":"attempt-001"},
+        "config":{},"confirmed":0,"through":0,"open_session":true,"resume":"must"}),
+            &flag,
+        )
+        .unwrap_err();
+    record_failure(&store, &other_scope, &mut sdk, &error);
+    assert!(
+        sdk.is_some(),
+        "a missing remote Run must not kill another Run's buffered SDK session"
+    );
+    assert_eq!(
+        store.scope_status(&other, &other_scope).unwrap().unwrap()["error"],
+        "WANDB_REMOTE_RUN_MISSING"
+    );
     cycle(&mut sdk).unwrap();
     assert_eq!(
         store.scope_status(&guard, &scope).unwrap().unwrap()["status"],
