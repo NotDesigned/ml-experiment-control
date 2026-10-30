@@ -352,7 +352,10 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     assert_eq!(policy["allow_scheduler_mutations"], false);
     assert_eq!(policy["allow_resource_deletions"], false);
     assert_eq!(policy["historical_records_read_only"], true);
-    assert_eq!(client.get("/api/readiness").unwrap()["training"], "INCOMPLETE");
+    assert_eq!(
+        client.get("/api/readiness").unwrap()["training"],
+        "INCOMPLETE"
+    );
     let slots = registry.join("cloud-submissions/slots");
     let listing = || {
         let mut names = fs::read_dir(&slots)

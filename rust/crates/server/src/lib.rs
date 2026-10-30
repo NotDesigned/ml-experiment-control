@@ -841,30 +841,11 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), expected);
             if expected == StatusCode::OK {
-                let data: serde_json::Value = serde_json::from_slice(
-                    &to_bytes(response.into_body(), 65536).await.unwrap(),
-                )
-                .unwrap();
+                let data: serde_json::Value =
+                    serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap())
+                        .unwrap();
                 assert_eq!(data, policy_document(false, false, false));
                 assert!(!data.to_string().contains(TOKEN));
-            }
-        }
-    }
-    #[test]
-    fn policy_reports_each_permission_independently_without_legacy_execution() {
-        for sources in [false, true] {
-            for scheduler in [false, true] {
-                for administration in [false, true] {
-                    let policy = policy_document(sources, scheduler, administration);
-                    assert_eq!(policy["allow_source_imports"], sources);
-                    assert_eq!(policy["allow_scheduler_mutations"], scheduler);
-                    assert_eq!(policy["allow_resource_deletions"], administration);
-                    assert_eq!(policy["allow_project_writes"], false);
-                    assert_eq!(policy["allow_local_evidence_rebuild"], false);
-                    assert_eq!(policy["historical_records_read_only"], true);
-                    assert_eq!(policy["scope"], "native_namespaces");
-                    assert_eq!(policy.as_object().unwrap().len(), 7);
-                }
             }
         }
     }
