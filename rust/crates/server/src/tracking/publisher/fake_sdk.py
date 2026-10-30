@@ -119,6 +119,8 @@ def init(**kwargs):
     identity = kwargs["id"]
     if kwargs["resume"] == "must":
         assert identity in data["runs"]
+    if kwargs["resume"] == "never":
+        assert identity not in data["runs"]
     data["inits"] += 1
     def visible(value):
         if not isinstance(value, dict):

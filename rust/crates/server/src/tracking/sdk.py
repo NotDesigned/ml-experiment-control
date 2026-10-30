@@ -22,6 +22,8 @@ class RequestFailed(Exception):
 def request(stage, operation):
     try:
         return operation()
+    except (RequestFailed, ImportError):
+        raise
     except Exception as exc:
         # Never transport provider messages, URLs, credentials or tracebacks.
         status = getattr(getattr(exc, 'response', None), 'status_code', None)
@@ -85,12 +87,18 @@ def dispatch(job):
     if operation == "default_entity":
         return {"entity": request('DEFAULT_ENTITY', lambda: api.default_entity)}
     if operation == "observe":
-        # Session creation is explicitly selected by the Rust publisher. A
-        # finish verification must not reopen a completed remote Run.
-        if job["open_session"] and job['resume'] == 'allow':
-            session(sdk, job)
         route, identity = job["route"], job["wandb_id"]
-        remote = request('REMOTE_READ', lambda: api.run(f'{route["entity"]}/{route["project"]}/{identity}'))
+        def observe_remote():
+            return request('REMOTE_READ', lambda: api.run(f'{route["entity"]}/{route["project"]}/{identity}'))
+        try:
+            remote = observe_remote()
+        except RequestFailed as exc:
+            if exc.code != 'WANDB_REMOTE_RUN_MISSING' or not job['open_session'] or job['resume'] != 'allow':
+                raise
+            # Atomic create-if-absent for a new unreserved scope. Existing or
+            # uncertain scopes are read first and never recreated implicitly.
+            session(sdk, {**job, 'resume': 'never'})
+            remote = observe_remote()
         if (remote.id, remote.entity, remote.project) != (
                 identity, route["entity"], route["project"]):
             raise ValueError("remote identity differs")
@@ -154,8 +162,10 @@ def main():
             raise ValueError("frame bound")
         raw = exact(incoming, length)
         try:
+            job = json.loads(raw)
             with contextlib.redirect_stdout(sys.stderr):
-                result = dispatch(json.loads(raw))
+                stage = 'WRITE' if job.get('operation') == 'apply' else 'REMOTE_READ'
+                result = request(stage, lambda: dispatch(job))
         except ImportError:
             result = {"error": "WANDB_SDK_NOT_INSTALLED"}
         except RequestFailed as exc:
