@@ -83,7 +83,7 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
         .bind(
             &guard,
             &json!({"enabled":true,"entity":"fixture","project":"science"}),
-            &json!({"ml_expd":{"run_id":"train","parameters":{},"protocol":{"definitions":{}}}}),
+            &json!({"ml_expd":{"run_id":"train","parameters":{"recipe":{"true_path_gamma":1.0,"fast_weight":0.0},"weights":[2.0,3]},"protocol":{"definitions":{}}}}),
         )
         .unwrap();
     let scope = store.scope(&guard, "attempt-001").unwrap();

@@ -123,6 +123,10 @@ def init(**kwargs):
         assert identity not in data["runs"]
     data["inits"] += 1
     def visible(value):
+        if type(value) is float and value.is_integer():
+            return int(value)
+        if isinstance(value, list):
+            return [visible(item) for item in value]
         if not isinstance(value, dict):
             return value
         return {key: item for key, value in value.items()
