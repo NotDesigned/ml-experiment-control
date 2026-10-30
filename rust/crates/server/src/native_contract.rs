@@ -86,6 +86,12 @@ pub(crate) fn extend(document: &mut Value) {
         None,
     );
     insert(
+        "/api/actions/policy",
+        "get",
+        "Read configured native mutation permissions only; no provider query, legacy Action execution or training acceptance claim. Historical records remain read-only.",
+        None,
+    );
+    insert(
         "/api/executors",
         "get",
         "Configured backend capabilities; no credentials, private paths or implicit provider query",

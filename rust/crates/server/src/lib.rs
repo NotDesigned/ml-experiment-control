@@ -378,6 +378,33 @@ async fn readiness(State(state): State<Arc<AppState>>) -> Json<serde_json::Value
         "scheduler_mutations":submission.as_ref().is_some_and(|service|service.enabled())||cloud.as_ref().is_some_and(|service|service.enabled()),"providers_configured":submission.is_some()||cloud.is_some()}),
     )
 }
+
+/// Compatibility summary for connection checks. These are configured native
+/// permissions, not provider admission evidence or authorization for old Actions.
+fn policy_document(sources: bool, scheduler: bool, administration: bool) -> serde_json::Value {
+    json!({
+        "allow_project_writes":false,
+        "allow_source_imports":sources,
+        "allow_scheduler_mutations":scheduler,
+        "allow_local_evidence_rebuild":false,
+        "allow_resource_deletions":administration,
+        "scope":"native_namespaces",
+        "historical_records_read_only":true
+    })
+}
+
+async fn action_policy(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let reads = state.reads.as_deref();
+    let slurm = reads.and_then(read_api::Api::submissions);
+    let cloud = reads.and_then(read_api::Api::cloud);
+    Json(policy_document(
+        reads.is_some_and(|api| api.sources().is_some()),
+        slurm.as_ref().is_some_and(|service| service.enabled())
+            || cloud.as_ref().is_some_and(|service| service.enabled()),
+        reads.is_some_and(|api| api.administration().is_some()),
+    ))
+}
+
 fn schema_document() -> serde_json::Value {
     let parameter = |name: &str| json!({"$ref":format!("#/components/parameters/{name}")});
     let operation = |description: &str, parameters: Vec<serde_json::Value>| {
@@ -701,6 +728,7 @@ pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/readiness", get(readiness))
+        .route("/api/actions/policy", get(action_policy))
         .route("/api/v2/openapi.json", get(schema))
         .merge(read_http::routes())
         .merge(projects::http::routes())
@@ -766,6 +794,9 @@ mod tests {
             ("/api/readiness", "", 426),
             ("/api/readiness", "1", 426),
             ("/api/readiness", "2", 200),
+            ("/api/actions/policy", "", 426),
+            ("/api/actions/policy", "1", 426),
+            ("/api/actions/policy", "2", 200),
             ("/api/actions/execute", "2", 501),
         ] {
             let response = make()
@@ -780,6 +811,61 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status().as_u16(), status);
+        }
+    }
+    #[tokio::test]
+    async fn policy_is_authenticated_read_only_and_closed_without_configuration() {
+        let make = || {
+            app(
+                Auth {
+                    token: TOKEN.into(),
+                },
+                None,
+            )
+        };
+        for (method, authorization, expected) in [
+            (Method::GET, false, StatusCode::UNAUTHORIZED),
+            (Method::GET, true, StatusCode::OK),
+            (Method::POST, true, StatusCode::METHOD_NOT_ALLOWED),
+        ] {
+            let mut request = Request::builder()
+                .method(method)
+                .uri("/api/actions/policy")
+                .header(CLIENT_PROTOCOL_HEADER, "2");
+            if authorization {
+                request = request.header("authorization", format!("Bearer {TOKEN}"));
+            }
+            let response = make()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            if expected == StatusCode::OK {
+                let data: serde_json::Value = serde_json::from_slice(
+                    &to_bytes(response.into_body(), 65536).await.unwrap(),
+                )
+                .unwrap();
+                assert_eq!(data, policy_document(false, false, false));
+                assert!(!data.to_string().contains(TOKEN));
+            }
+        }
+    }
+    #[test]
+    fn policy_reports_each_permission_independently_without_legacy_execution() {
+        for sources in [false, true] {
+            for scheduler in [false, true] {
+                for administration in [false, true] {
+                    let policy = policy_document(sources, scheduler, administration);
+                    assert_eq!(policy["allow_source_imports"], sources);
+                    assert_eq!(policy["allow_scheduler_mutations"], scheduler);
+                    assert_eq!(policy["allow_resource_deletions"], administration);
+                    assert_eq!(policy["allow_project_writes"], false);
+                    assert_eq!(policy["allow_local_evidence_rebuild"], false);
+                    assert_eq!(policy["historical_records_read_only"], true);
+                    assert_eq!(policy["scope"], "native_namespaces");
+                    assert_eq!(policy.as_object().unwrap().len(), 7);
+                }
+            }
         }
     }
     #[tokio::test]
@@ -892,6 +978,7 @@ mod schema_tests {
             }
         }
         for path in [
+            "/api/actions/policy",
             "/api/executors",
             "/api/backends/{executor}/capacity",
             "/api/projects/{project}/experiment-preparations",

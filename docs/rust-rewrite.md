@@ -1,11 +1,23 @@
 # Rust implementation and acceptance status
 
 Development branch: `rewrite/rust`. Python reference baseline:
-`e725faec689fb8395e692e27d00a8896fa7fe5a5` (1.5.1). Production still uses Python
-1.5.1; the Rust workspace has a separate `native-v0.1.4` release. It has an independent
-Tokyo test installation, bounded PAI CPU/H200 acceptance, and actual Slurm
-image conversion and two-part data delivery. It has not replaced
-production or established GPU acceptance on all backends.
+`e725faec689fb8395e692e27d00a8896fa7fe5a5` (1.5.1). Production runs the native
+service on Tokyo; Python API/builder services on Seoul are retired. The native
+workspace release is `native-v0.1.10`. Direct HTTPS uses
+`https://server-tokyo.adscn.dev:2087/ml-expd`; the original API domain remains
+available through its existing proxy. Historical metadata is attached read-only,
+with separate native write namespaces. Slurm connects through the direct
+L40S-to-Tokyo gateway.
+
+`GET /api/actions/policy` now exposes native permission flags for older client
+connection checks. It neither enables old Action mutation routes nor probes a
+provider. The reported `training=INCOMPLETE` / `migration=IN_PROGRESS` describes
+remaining acceptance and historical compatibility work, not an unfinished file
+transfer: Slurm GPU training/restore and SenseCore GPU acceptance remain unproven,
+and the full legacy metadata audit still has gaps. PAI CPU/H200 and W&B cloud
+acceptance passed in bounded tests. These do not establish large-model or all-backend
+acceptance. The older client's normal `check` can succeed; `check --training`
+continues to fail closed.
 
 The implementation pass connects the main research workflows before the next
 round of debugging and provider tests. “Connected” means the CLI/API/service/
@@ -131,7 +143,7 @@ reconciliation. Missing and stale sockets, same-identity recovery and lost-reply
 refusal are exercised without provider effects.
 
 Bounded native PAI CPU execution, restore and results passed on Tokyo.
-Three-backend training and production cutover remain separate pending checks.
+Three-backend training acceptance remains a separate pending check.
 
 The completion pass also connects per-Run `env` across Slurm/DLC/ACP and a
 shared read-only `data list` path. Environment values are frozen with the protocol;

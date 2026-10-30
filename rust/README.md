@@ -1,10 +1,20 @@
 # Native ML-Expd
 
-Development lives on `rewrite/rust`. Production remains the Python 1.5.1 service.
-The workspace version is `0.1.4`, published separately from the Python service.
+Development lives on `rewrite/rust`. Production uses the native service; the
+workspace version is `0.1.10`, published separately from the retired Python service.
+Tokyo's direct endpoint is `https://server-tokyo.adscn.dev:2087/ml-expd`.
+Port 443 belongs to a separate service and is not an ML-Expd HTTPS endpoint.
 Code implementation, automated verification, provider acceptance and production
 cutover are separate milestones. See [the migration status](../docs/rust-rewrite.md).
-Do not initialize this binary over the production registry.
+Never initialize a new registry over existing production state.
+
+`GET /api/actions/policy` supports the older client's connection check. It reports
+configured native permissions without contacting a provider or enabling historical
+Actions. `GET /api/readiness` still reports `training=INCOMPLETE` and
+`migration=IN_PROGRESS`: the server cutover has completed, but full backend GPU
+acceptance and historical write compatibility have not. A successful connection
+check is not training acceptance; the older client's `check --training` remains
+unsuccessful while training readiness is incomplete.
 
 ## Structure
 

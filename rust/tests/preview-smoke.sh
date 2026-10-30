@@ -79,6 +79,9 @@ unset ML_EXPD_API_TOKEN ML_EXPD_API_URL ML_EXPD_CLIENT_CONFIG
 unset ML_EXPD_API_TOKEN_FILE
 "$preview_bins/ml-exp-rs" --config "$preview_root/client.json" check > "$preview_root/health.json"
 "$preview_bins/ml-exp-rs" --config "$preview_root/client.json" get /api/readiness > "$preview_root/readiness.json"
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" get /api/actions/policy > "$preview_root/policy.json"
+grep -q '"allow_source_imports": false' "$preview_root/policy.json"
+grep -q '"allow_scheduler_mutations": false' "$preview_root/policy.json"
 if "$preview_bins/ml-exp-rs" --config "$preview_root/client.json" get /api/actions/execute > "$preview_root/not-implemented.json" 2>&1; then
   echo 'unported mutation unexpectedly succeeded' >&2; exit 1
 fi
@@ -117,6 +120,9 @@ IFS= read -r preview_address < "$preview_root/server.log"
 [[ "$preview_address" == 127.0.0.1:* ]]
 "$preview_bins/ml-exp-rs" --config "$preview_root/client.json" --url "http://$preview_address" config set --token-file "$preview_root/token" > "$preview_root/config.json"
 "$preview_bins/ml-exp-rs" --config "$preview_root/client.json" check > "$preview_root/source-health.json"
+"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" get /api/actions/policy > "$preview_root/source-policy.json"
+grep -q '"allow_source_imports": true' "$preview_root/source-policy.json"
+grep -q '"allow_scheduler_mutations": false' "$preview_root/source-policy.json"
 grep -q 'source-archive.v1' "$preview_root/source-health.json"
 "$preview_bins/ml-exp-rs" --config "$preview_root/client.json" source import --project demo --directory "$preview_root/source" > "$preview_root/source-import.json"
 source_id="$(jq -r '.source_id' "$preview_root/source-import.json")"

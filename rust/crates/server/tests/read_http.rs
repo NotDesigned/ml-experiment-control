@@ -1064,6 +1064,17 @@ fn historical_namespace_reads_original_metrics_and_refuses_every_mutation_route(
         assert_eq!(health["scheduler_mutations"], false);
         assert_eq!(health["run_writes"], false);
         assert_eq!(health["source_imports"], false);
+        let policy = server.client().get("/api/actions/policy").unwrap();
+        for key in [
+            "allow_project_writes",
+            "allow_source_imports",
+            "allow_scheduler_mutations",
+            "allow_local_evidence_rebuild",
+            "allow_resource_deletions",
+        ] {
+            assert_eq!(policy[key], false, "historical permission: {key}");
+        }
+        assert_eq!(policy["historical_records_read_only"], true);
         assert_eq!(health["projects"], 1);
         assert!(
             health["workspace_id"]
