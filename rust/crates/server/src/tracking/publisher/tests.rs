@@ -83,7 +83,7 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
         .bind(
             &guard,
             &json!({"enabled":true,"entity":"fixture","project":"science"}),
-            &json!({"ml_expd":{"run_id":"train","parameters":{"recipe":{"true_path_gamma":1.0,"fast_weight":0.0},"weights":[2.0,3]},"protocol":{"definitions":{}}}}),
+            &json!({"ml_expd":{"run_id":"train","parameters":{"recipe":{"true_path_gamma":1.0,"fast_weight":0.0},"weights":[2.0,3],"upstream_result_val":3.4976104655686546},"protocol":{"definitions":{}}}}),
         )
         .unwrap();
     let scope = store.scope(&guard, "attempt-001").unwrap();
@@ -179,6 +179,21 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
         .unwrap()
         .to_owned();
     let remote = read_cloud();
+    assert_eq!(
+        remote["runs"][&id]["config"]["ml_expd"]["parameters"]["upstream_result_val"],
+        json!(3.497610465568654)
+    );
+    let binding = store.binding(&guard).unwrap().unwrap();
+    assert_eq!(
+        remote["runs"][&id]["config"]["ml_expd_identity_json"],
+        publication::config_identity(
+            &binding["config"]["ml_expd"],
+            &binding["route"],
+            &scope,
+            &id
+        )
+        .unwrap()
+    );
     let rows = remote["runs"][&id]["history"].as_array().unwrap();
     let curve_keys: Vec<_> = rows
         .iter()

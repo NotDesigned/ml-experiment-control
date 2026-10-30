@@ -27,6 +27,43 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// integers. Accept exact numeric equality without float-rounding large integer
 /// identities; booleans, nonempty values and unexpected keys remain distinct.
 pub fn config_matches(expected: &serde_json::Value, observed: &serde_json::Value) -> bool {
+    matches_config(expected, observed, false)
+}
+
+/// Lossless remote authority binds the full frozen config, destination and
+/// scope. W&B's numeric convenience view is not the scientific source of truth.
+pub fn config_identity(
+    config: &serde_json::Value,
+    route: &serde_json::Value,
+    scope: &str,
+    wandb_id: &str,
+) -> std::result::Result<String, crate::canonical::CanonicalError> {
+    let value = serde_json::json!({"contract":"tracking-config-identity.v1",
+        "config":config,"route":route,"scope":scope,"wandb_id":wandb_id});
+    crate::canonical::python_json_bytes(&value)
+        .map(|bytes| String::from_utf8(bytes).expect("canonical JSON is UTF-8"))
+}
+
+pub fn remote_config_matches(
+    expected: &serde_json::Value,
+    observed: &serde_json::Value,
+    expected_identity: &str,
+    observed_identity: &serde_json::Value,
+) -> bool {
+    match observed_identity {
+        serde_json::Value::Null => config_matches(expected, observed),
+        serde_json::Value::String(identity) if identity == expected_identity => {
+            matches_config(expected, observed, true)
+        }
+        _ => false,
+    }
+}
+
+fn matches_config(
+    expected: &serde_json::Value,
+    observed: &serde_json::Value,
+    lossless_identity: bool,
+) -> bool {
     fn empty_mapping(value: &serde_json::Value) -> bool {
         value
             .as_object()
@@ -36,12 +73,13 @@ pub fn config_matches(expected: &serde_json::Value, observed: &serde_json::Value
         (Some(expected), Some(observed)) => {
             observed.keys().all(|key| expected.contains_key(key))
                 && expected.iter().all(|(key, value)| match observed.get(key) {
-                    Some(observed) => config_matches(value, observed),
+                    Some(observed) => matches_config(value, observed, lossless_identity),
                     None => empty_mapping(value),
                 })
         }
         _ if expected.is_number() && observed.is_number() => {
             crate::metrics::numeric_equal(expected, observed)
+                || lossless_identity && adjacent_config_float(expected, observed)
         }
         _ if expected.is_array() && observed.is_array() => {
             let expected = expected.as_array().expect("array checked");
@@ -50,9 +88,27 @@ pub fn config_matches(expected: &serde_json::Value, observed: &serde_json::Value
                 && expected
                     .iter()
                     .zip(observed)
-                    .all(|(a, b)| config_matches(a, b))
+                    .all(|(a, b)| matches_config(a, b, lossless_identity))
         }
         _ => expected == observed,
+    }
+}
+
+fn adjacent_config_float(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    // Never round integers through f64. The observed provider defect concerns
+    // adjacent finite fractional doubles, not booleans, large IDs or tolerance.
+    let fractional = |value: &serde_json::Value| {
+        let raw = value.as_number()?.to_string();
+        if !raw.contains(['.', 'e', 'E']) {
+            return None;
+        }
+        value.as_f64().filter(|v| v.is_finite() && v.fract() != 0.0)
+    };
+    match (fractional(a), fractional(b)) {
+        (Some(a), Some(b)) => {
+            a.is_sign_negative() == b.is_sign_negative() && a.to_bits().abs_diff(b.to_bits()) == 1
+        }
+        _ => false,
     }
 }
 
@@ -426,6 +482,55 @@ mod tests {
         ] {
             assert!(!config_matches(&a, &b));
         }
+    }
+
+    #[test]
+    fn rounded_remote_fraction_requires_exact_lossless_scope_identity() {
+        use serde_json::{Value, json};
+        let config = json!({"parameters":{"upstream_result_val":3.4976104655686546},"values":[3.4976104655686546]});
+        let visible = json!({"parameters":{"upstream_result_val":3.497610465568654},"values":[3.497610465568654]});
+        let route = json!({"enabled":true,"entity":"team","project":"science"});
+        let scope = r#"["project","run","attempt-001"]"#;
+        let id = config_identity(&config, &route, scope, "same-run").unwrap();
+        assert!(!config_matches(&config, &visible));
+        assert!(!remote_config_matches(&config, &visible, &id, &Value::Null));
+        assert!(remote_config_matches(&config, &visible, &id, &json!(id)));
+        assert!(id.contains("3.4976104655686546"));
+        for changed in [
+            json!({"parameters":{"upstream_result_val":3.4976104655686537},"values":[3.497610465568654]}),
+            json!({"parameters":{"upstream_result_val":true},"values":[3.497610465568654]}),
+            json!({"parameters":{"upstream_result_val":3.497610465568654},"values":[]}),
+        ] {
+            assert!(!remote_config_matches(&config, &changed, &id, &json!(id)));
+        }
+        for wrong in [
+            json!(config_identity(&visible, &route, scope, "same-run").unwrap()),
+            json!(config_identity(&config, &route, scope, "other-run").unwrap()),
+            json!(
+                config_identity(
+                    &config,
+                    &json!({"enabled":true,"entity":"other","project":"science"}),
+                    scope,
+                    "same-run"
+                )
+                .unwrap()
+            ),
+            json!({}),
+        ] {
+            assert!(!remote_config_matches(&config, &visible, &id, &wrong));
+        }
+        assert!(!remote_config_matches(
+            &json!(9007199254740993u64),
+            &json!(9007199254740992.0),
+            "proof",
+            &json!("proof")
+        ));
+        assert!(remote_config_matches(
+            &json!({"legacy":1.0}),
+            &json!({"legacy":1}),
+            "unused",
+            &Value::Null
+        ));
     }
 
     fn event(sequence: i64, event_id: &str) -> HistoryEvent {

@@ -63,7 +63,8 @@ def session(sdk, job):
             name=scope["run"] + "/" + scope["attempt"],
             group=scope["project"] + "/" + scope["run"],
             job_type="attempt", resume=job["resume"], reinit="create_new",
-            config=job["config"], settings=sdk.Settings(
+            config={**job["config"], **({"ml_expd_identity_json": job["config_identity"]}
+                    if "config_identity" in job else {})}, settings=sdk.Settings(
                 api_key=job["api_key"], base_url="https://api.wandb.ai",
                 root_dir=directory.name, disable_git=True, disable_code=True,
                 x_disable_stats=True, x_disable_meta=True,
@@ -120,6 +121,7 @@ def dispatch(job):
             raise ValueError("summary bound")
         return {"wandb_id": identity, "route": route, "state": remote.state,
                 "config": remote.config.get("ml_expd"),
+                "config_identity": remote.config.get("ml_expd_identity_json"),
                 "summary_keys": summary_keys, "evidence": {
                     "history": history,
                     "last_history_step": remote.lastHistoryStep,

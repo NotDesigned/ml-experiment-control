@@ -1,7 +1,7 @@
 # Native ML-Expd
 
 Development lives on `rewrite/rust`. Production uses the native service; the
-workspace version is `0.1.11`, published separately from the retired Python service.
+workspace version is `0.1.12`, published separately from the retired Python service.
 Tokyo's direct endpoint is `https://server-tokyo.adscn.dev:2087/ml-expd`.
 Port 443 belongs to a separate service and is not an ML-Expd HTTPS endpoint.
 Code implementation, automated verification, provider acceptance and production
@@ -18,6 +18,15 @@ unsuccessful while training readiness is incomplete. Readiness now includes
 `checks`, `backends` and `submission_available_backends`. Configuration permission,
 cached provider connectivity and recorded GPU acceptance are reported separately.
 These GETs do not query providers or start jobs.
+
+W&B publication keeps the complete frozen configuration, destination, scope and
+Run ID in a canonical text identity (`ml_expd_identity_json`). This preserves
+original floating-point values even if W&B changes their numeric display. Only
+an exact identity match permits an adjacent finite fractional float in that
+display; integer IDs, changed parameters, arrays and missing fields remain
+checked. Older Runs without the text identity retain strict comparison. A
+blocked old Run needs a separately verified identity backfill; missing remote
+history never authorizes clearing reservations or replaying events.
 
 ## Structure
 

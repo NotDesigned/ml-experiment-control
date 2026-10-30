@@ -333,7 +333,14 @@ fn publish_bound(
         )
         || historical_lifecycle && historical_terminal(&lifecycle))
         && through == total;
-    let mut job = json!({"operation":"observe","api_key":runtime.key,"route":binding["route"],"wandb_id":status["wandb_id"],"scope":status,"config":binding["config"],"confirmed":confirmed,"through":through,
+    let config_identity = publication::config_identity(
+        &binding["config"]["ml_expd"],
+        &binding["route"],
+        scope,
+        status["wandb_id"].as_str().ok_or(Error::Identity)?,
+    )
+    .map_err(|_| Error::Identity)?;
+    let mut job = json!({"operation":"observe","api_key":runtime.key,"route":binding["route"],"wandb_id":status["wandb_id"],"scope":status,"config":binding["config"],"config_identity":config_identity,"confirmed":confirmed,"through":through,
         "open_session":!saved.finish_requested,"resume":if saved.ever_opened||confirmed>0||!saved.state.sent.is_empty(){"must"}else{"allow"}});
     if sdk.is_none() {
         *sdk = Some(Sdk::open(&runtime.config.python)?);
@@ -346,7 +353,12 @@ fn publish_bound(
     if remote["wandb_id"] != status["wandb_id"] || remote["route"] != binding["route"] {
         return Err(Error::Publication("REMOTE_RUN_IDENTITY_MISMATCH"));
     }
-    if !publication::config_matches(&binding["config"]["ml_expd"], &remote["config"]) {
+    if !publication::remote_config_matches(
+        &binding["config"]["ml_expd"],
+        &remote["config"],
+        &config_identity,
+        &remote["config_identity"],
+    ) {
         return Err(Error::Publication("REMOTE_CONFIG_IDENTITY_MISMATCH"));
     }
     let evidence: RemoteEvidence = serde_json::from_value(remote["evidence"].clone())
