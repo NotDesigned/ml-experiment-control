@@ -83,7 +83,7 @@ Research code may use Python/PyTorch or another image language.
 | List and select result archive files | `client/artifacts/files.rs`, `io/artifacts.rs` | Selected-file persistence only after full archive verification; no partial ACK; direct original-file recovery still pending |
 | DSW / CCI debug lifecycle | `core/cloud/debug.rs`, `service/debug.rs`, `client/debug.rs` | Actual zero-GPU DSW create/SSH/CPFS/stop/delete passed; CCI acceptance pending |
 | Backend catalogue/cached capacity | `core/capacity.rs`, `service/capacity.rs`, `capacity_http.rs` | Local GET is effect-free; real PAI quota refresh and retained timestamp accepted; Slurm cached capacity refresh passed; SenseCore pending |
-| Optional W&B publication | `core/tracking`, `server/tracking` | Fake SDK and durable ACK tests; native0.1.6 same-Run official-cloud CPU acceptance passed; original publisher handoff pending |
+| Optional W&B publication | `core/tracking`, `server/tracking` | Fake SDK and durable ACK tests; same-Run official-cloud CPU acceptance passed; historical handoff attached, uncertain sends reserved pending remote proof |
 | Scoped administrative maintenance and record retirement | `core/maintenance.rs`, `server/administration.rs`, `worker/maintenance.rs` | Confined plans and worker receipts; actual provider cleanup pending |
 | Standalone verified client update | `core/distribution.rs`, `client/update.rs` | Public assets verified; public installer and update check passed on Tokyo |
 
@@ -225,17 +225,17 @@ The release worker is built with static musl linkage for training images;
 server and client binaries retain the documented glibc baseline.
 The release workflow tests the exact binaries before packaging. A manual run
 produces artifacts only; a stable native tag enables public publication.
-The [native 0.1.4 release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.4)
-is published and installed on the isolated Tokyo instance. Production cutover
-has not happened.
+The [native release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.10)
+is separate from Python release assets. Production now runs on Tokyo; the
+acceptance history below records the earlier isolated tests.
 
 ## Deliberate limits and remaining acceptance
 
 The native registry uses a separate marker. Normal startup and GET never
-initialize or repair it. Do not point the preview binary at production state.
-Before cutover, historical Project/Run/Attempt identities, source/runtime hashes,
-checkpoint reads, result tombstones and W&B cursors need migration acceptance.
-The old working environment remains the sole production environment meanwhile.
+initialize or repair it. Do not initialize over existing state. The production
+cutover preserved historical identities and journals with read-only historical
+metadata and separate native write roots. Unknown submissions and uncertain W&B
+sends remain reserved; a successful connection check never authorizes replay.
 
 Campaign authoring is intentionally absent; a Run does not need a research
 question or Campaign. Batch commands perform explicit passes, not an unattended
@@ -315,10 +315,10 @@ checks establishes development evidence, not real GPU or production acceptance.
 
 ## Independent Tokyo acceptance (2026-10-29 to 2026-10-30)
 
-The native server and client run under `/opt/ml-expd-native-test`, with a distinct
+Before production cutover, the native server and client ran under `/opt/ml-expd-native-test`, with a distinct
 token, registry, Project and service. HTTPS uses the separately approved
 `https://server-tokyo.adscn.dev:2087/ml-expd` entry; the existing VPN and CCR relay
-are unchanged. Production Python 1.5.1 and its scientific state are untouched.
+were unchanged. Python 1.5.1 and its scientific state were untouched during those isolated tests.
 
 The original CPU executor permits zero GPUs only. A later, separate H200
 executor permits at most one GPU. The original CPU acceptance covers:

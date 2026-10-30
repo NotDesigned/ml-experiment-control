@@ -365,12 +365,12 @@ Bash, curl and GNU coreutils; it checks exact release hashes and binary version
 before replacing the client. It installs no service and reads no API key.
 
 ```sh
-bash install-native.sh --version 0.1.4 --prefix "$HOME/.local/bin"
-ml-exp-rs update --version 0.1.4 --check
+bash install-native.sh --version 0.1.10 --prefix "$HOME/.local/bin"
+ml-exp-rs update --version 0.1.10 --check
 ```
 
 These commands use the published
-[`native-v0.1.4` release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.4).
+[`native-v0.1.10` release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.10).
 Existing Python release assets are separate. Native backend and migration
 acceptance limits are described in the [implementation status](../docs/rust-rewrite.md).
 
