@@ -7,6 +7,7 @@ use crate::{
     history,
     records::{RecordGuard, Store},
 };
+use fs2::FileExt;
 use ml_exp_core::{canonical, records::Scope};
 use ml_exp_io::directory::Directory;
 use serde::{Deserialize, Serialize};
