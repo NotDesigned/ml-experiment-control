@@ -23,6 +23,8 @@ pub enum Error {
     SdkMissing,
     #[error("W&B SDK request failed: {0}; durable publication state retained")]
     SdkRequest(&'static str),
+    #[error("W&B publication blocked: {0}; journal and cursor retained")]
+    Publication(&'static str),
     #[error("W&B publication identity or remote proof is invalid")]
     Identity,
     #[error("W&B journal or private publication store unavailable")]

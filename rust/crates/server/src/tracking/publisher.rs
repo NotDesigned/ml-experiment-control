@@ -219,6 +219,7 @@ fn failure(store: &Store, scope: &str, error: &Error) -> Result<()> {
         Error::SdkMissing => "WANDB_SDK_NOT_INSTALLED",
         Error::Identity => "PUBLICATION_RECONCILE_REQUIRED",
         Error::SdkRequest(code) => code,
+        Error::Publication(code) => code,
         _ => "PUBLISHER_UNAVAILABLE",
     };
     store
@@ -237,7 +238,7 @@ fn publish_scope(
     let parsed = Scope::parse(scope).map_err(|_| Error::Identity)?;
     let _authority = service
         .tracking_journal(&parsed.project, &parsed.run)
-        .map_err(|_| Error::Identity)?;
+        .map_err(|_| Error::Publication("JOURNAL_AUTHORITY_UNAVAILABLE"))?;
     publish_bound(
         store,
         runtime,
@@ -334,14 +335,14 @@ fn publish_bound(
         .ok_or(Error::Transport)?
         .call(&job, cancelled)?;
     validate()?;
-    if remote["wandb_id"] != status["wandb_id"]
-        || remote["route"] != binding["route"]
-        || !publication::config_matches(&binding["config"]["ml_expd"], &remote["config"])
-    {
-        return Err(Error::Identity);
+    if remote["wandb_id"] != status["wandb_id"] || remote["route"] != binding["route"] {
+        return Err(Error::Publication("REMOTE_RUN_IDENTITY_MISMATCH"));
     }
-    let evidence: RemoteEvidence =
-        serde_json::from_value(remote["evidence"].clone()).map_err(|_| Error::Identity)?;
+    if !publication::config_matches(&binding["config"]["ml_expd"], &remote["config"]) {
+        return Err(Error::Publication("REMOTE_CONFIG_IDENTITY_MISMATCH"));
+    }
+    let evidence: RemoteEvidence = serde_json::from_value(remote["evidence"].clone())
+        .map_err(|_| Error::Publication("REMOTE_HISTORY_EVIDENCE_INVALID"))?;
     let local: Vec<_> = events
         .iter()
         .map(|event| HistoryEvent {
@@ -360,12 +361,15 @@ fn publish_bound(
         terminal,
         2,
     )
-    .map_err(|_| Error::Identity)?;
-    if matches!(
-        plan.status,
-        PublicationStatus::ReconcileRequired { .. } | PublicationStatus::IdentityConflict { .. }
-    ) {
-        return Err(Error::Identity);
+    .map_err(|_| Error::Publication("PUBLICATION_PLAN_INVALID"))?;
+    match &plan.status {
+        PublicationStatus::ReconcileRequired { .. } => {
+            return Err(Error::Publication("REMOTE_HISTORY_RECONCILE_REQUIRED"));
+        }
+        PublicationStatus::IdentityConflict { .. } => {
+            return Err(Error::Publication("REMOTE_EVENT_IDENTITY_CONFLICT"));
+        }
+        _ => {}
     }
     let (at, _) = crate::projects::transition_context().map_err(|_| Error::Storage)?;
     let display_ack = evidence.display_version == Some(2)
@@ -392,7 +396,7 @@ fn publish_bound(
     if plan.state.confirmed > confirmed || display_ack {
         store
             .confirm_publication(&guard, scope, &proof, None, &at)
-            .map_err(|_| Error::Identity)?;
+            .map_err(|_| Error::Publication("PUBLICATION_ACK_EVIDENCE_INVALID"))?;
     }
     saved.ever_opened = true;
     saved.state = plan.state;
@@ -447,7 +451,7 @@ fn publish_bound(
         effects.push(match action {
             PublicationAction::EmitHistory{sequence,event_id}=>{
                 let event=events.iter().find(|event|event.seq==sequence&&event.event_id==event_id).ok_or(Error::Identity)?;
-                json!({"operation":"history","sequence":sequence,"record":tracking::history_record(&event.document(),&display).map_err(|_|Error::Identity)?})
+                json!({"operation":"history","sequence":sequence,"record":tracking::history_record(&event.document(),&display).map_err(|_|Error::Publication("JOURNAL_HISTORY_PROJECTION_INVALID"))?})
             },
             PublicationAction::PublishDisplay{..}=>json!({"operation":"display","patch":tracking::summary_patch(&display,&keys,terminal,"worker JSONL; accepted observations").map_err(|_|Error::Identity)?}),
             PublicationAction::Finish{..}=>json!({"operation":"finish","exit_code":exit_code}),
@@ -455,7 +459,10 @@ fn publish_bound(
     }
     job["operation"] = json!("apply");
     job["resume"] = json!("must");
-    job["definitions"] = json!(tracking::definition_specs(&display).map_err(|_| Error::Identity)?);
+    job["definitions"] = json!(
+        tracking::definition_specs(&display)
+            .map_err(|_| Error::Publication("JOURNAL_METRIC_DEFINITIONS_INVALID"))?
+    );
     job["effects"] = json!(effects);
     // Reject an oversized/invalid effect before reserving any new sequence.
     // Transport loss after the durable reservation still requires remote ACK.
