@@ -1287,6 +1287,11 @@ fn historical_result_inventory_is_read_only_exact_and_preserves_release_evidence
     assert_eq!(result["files"][0]["path"], "outputs/final.pt");
     assert_eq!(result["available"], true);
     assert_eq!(result["training"]["exit_code"], 0);
+    let collection_route = "/api/runs/demo/train/attempts/attempt-001/collection";
+    let available = server.client().get(collection_route).unwrap();
+    assert_eq!(available["status"], "AVAILABLE");
+    assert_eq!(available["verification"], "HISTORICAL_RECEIPT");
+    assert_eq!(available["payload_verified"], false);
     assert!(!result.to_string().contains("private-transfer-capability"));
     assert!(!result.to_string().contains("/private/old-service"));
     assert_eq!(
@@ -1334,6 +1339,21 @@ fn historical_result_inventory_is_read_only_exact_and_preserves_release_evidence
     assert_eq!(released["collection_required"], false);
     assert_eq!(released["storage_status"], "RELEASED");
     assert_eq!(released["files"], result["files"]);
+    let summary = server.client().get(collection_route).unwrap();
+    assert_eq!(summary["status"], "RELEASED");
+    assert_eq!(summary["download_available"], false);
+    assert_eq!(summary["publication"]["payload_verified"], false);
+    transfer["retention"]["status"] = json!("EXPIRED");
+    write_json(&path, &transfer);
+    let expired = server.client().get(collection_route).unwrap();
+    assert_eq!(expired["status"], "EXPIRED");
+    assert_eq!(expired["training"]["status"], "COMPLETED");
+    assert_eq!(
+        server.client().get("/api/runs/demo/train").unwrap()["result"],
+        expired
+    );
+    transfer["retention"]["status"] = json!("RELEASED");
+    write_json(&path, &transfer);
     assert_eq!(file_inventory(fixture._temp.path()), released_before);
     transfer["attempt_id"] = json!("attempt-002");
     write_json(&path, &transfer);

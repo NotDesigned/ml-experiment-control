@@ -4,6 +4,7 @@ Private bounded frames use stdin/stdout; credentials never enter argv/logs.
 No imports from the Python server or user experiment are needed.
 """
 import contextlib
+import itertools
 import json
 import struct
 import sys
@@ -11,6 +12,28 @@ import tempfile
 
 BOUND = 8 * 1024 * 1024
 sessions = {}
+
+
+class RequestFailed(Exception):
+    def __init__(self, code):
+        self.code = code
+
+
+def request(stage, operation):
+    try:
+        return operation()
+    except Exception as exc:
+        # Never transport provider messages, URLs, credentials or tracebacks.
+        status = getattr(getattr(exc, 'response', None), 'status_code', None)
+        if status == 401 or type(exc).__name__ == 'AuthenticationError':
+            code = 'WANDB_AUTHENTICATION_FAILED'
+        elif status == 403 or type(exc).__name__ == 'PermissionError':
+            code = 'WANDB_PERMISSION_DENIED'
+        elif stage == 'REMOTE_READ' and type(exc).__name__ == 'CommError' and 'Could not find run' in str(exc):
+            code = 'WANDB_REMOTE_RUN_MISSING'
+        else:
+            code = 'WANDB_' + stage + '_FAILED'
+        raise RequestFailed(code) from None
 
 
 def exact(stream, length):
@@ -33,7 +56,7 @@ def session(sdk, job):
     route = job["route"]
     scope = job["scope"]
     try:
-        handle = sdk.init(
+        handle = request('INIT', lambda: sdk.init(
             entity=route["entity"], project=route["project"], id=identity,
             name=scope["run"] + "/" + scope["attempt"],
             group=scope["project"] + "/" + scope["run"],
@@ -43,7 +66,7 @@ def session(sdk, job):
                 root_dir=directory.name, disable_git=True, disable_code=True,
                 x_disable_stats=True, x_disable_meta=True,
                 x_disable_machine_info=True, console="off", quiet=True,
-                init_timeout=30))
+                init_timeout=30)))
         if (handle.id, handle.entity, handle.project) != (
                 identity, route["entity"], route["project"]):
             raise ValueError("SDK identity differs")
@@ -60,22 +83,23 @@ def dispatch(job):
                   overrides={"base_url": "https://api.wandb.ai"}, timeout=15)
     operation = job["operation"]
     if operation == "default_entity":
-        return {"entity": api.default_entity}
+        return {"entity": request('DEFAULT_ENTITY', lambda: api.default_entity)}
     if operation == "observe":
         # Session creation is explicitly selected by the Rust publisher. A
         # finish verification must not reopen a completed remote Run.
-        if job["open_session"]:
+        if job["open_session"] and job['resume'] == 'allow':
             session(sdk, job)
         route, identity = job["route"], job["wandb_id"]
-        remote = api.run(f'{route["entity"]}/{route["project"]}/{identity}')
+        remote = request('REMOTE_READ', lambda: api.run(f'{route["entity"]}/{route["project"]}/{identity}'))
         if (remote.id, remote.entity, remote.project) != (
                 identity, route["entity"], route["project"]):
             raise ValueError("remote identity differs")
         history = []
-        for row in remote.scan_history(
+        rows = request('HISTORY_READ', lambda: list(itertools.islice(remote.scan_history(
                 keys=["ml_expd/sequence", "ml_expd/event_id"],
                 min_step=max(0, job["confirmed"] - 1),
-                max_step=job["through"], page_size=128, use_cache=False):
+                max_step=job["through"], page_size=128, use_cache=False), 258)))
+        for row in rows:
             if len(history) >= 257:
                 raise ValueError("history bound")
             sequence = row["ml_expd/sequence"]
@@ -99,8 +123,8 @@ def dispatch(job):
             handle.define_metric(definition["name"], **definition["options"])
         for effect in job["effects"]:
             if effect["operation"] == "history":
-                handle.log(effect["record"], step=effect["sequence"] - 1,
-                           commit=True)
+                request('WRITE', lambda: handle.log(effect["record"], step=effect["sequence"] - 1,
+                           commit=True))
             elif effect["operation"] == "display":
                 for key in effect["patch"]["delete"]:
                     if key in handle.summary:
@@ -134,6 +158,8 @@ def main():
                 result = dispatch(json.loads(raw))
         except ImportError:
             result = {"error": "WANDB_SDK_NOT_INSTALLED"}
+        except RequestFailed as exc:
+            result = {"error": exc.code}
         except Exception:
             result = {"error": "WANDB_REQUEST_FAILED"}
         encoded = json.dumps(result, allow_nan=False, separators=(",", ":")).encode()

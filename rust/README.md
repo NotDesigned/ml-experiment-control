@@ -1,7 +1,7 @@
 # Native ML-Expd
 
 Development lives on `rewrite/rust`. Production uses the native service; the
-workspace version is `0.1.10`, published separately from the retired Python service.
+workspace version is `0.1.11`, published separately from the retired Python service.
 Tokyo's direct endpoint is `https://server-tokyo.adscn.dev:2087/ml-expd`.
 Port 443 belongs to a separate service and is not an ML-Expd HTTPS endpoint.
 Code implementation, automated verification, provider acceptance and production
@@ -14,7 +14,10 @@ Actions. `GET /api/readiness` still reports `training=INCOMPLETE` and
 `migration=IN_PROGRESS`: the server cutover has completed, but full backend GPU
 acceptance and historical write compatibility have not. A successful connection
 check is not training acceptance; the older client's `check --training` remains
-unsuccessful while training readiness is incomplete.
+unsuccessful while training readiness is incomplete. Readiness now includes
+`checks`, `backends` and `submission_available_backends`. Configuration permission,
+cached provider connectivity and recorded GPU acceptance are reported separately.
+These GETs do not query providers or start jobs.
 
 ## Structure
 
@@ -73,6 +76,12 @@ flowchart LR
   never automatically repeated under a fresh identity.
 
 ## Client configuration
+
+`update` without `--version` discovers the highest stable `native-vX.Y.Z` release;
+Python releases, drafts and prereleases are excluded. Network or listing errors
+stop the update, and an older default target is refused. Use `--version` only for
+an intentional exact selection. Existing hash, platform and atomic replacement
+checks apply to both paths.
 
 A native client does not require Python. Put the API token in a private file;
 never paste it into a shell command or a repository.
@@ -365,12 +374,13 @@ Bash, curl and GNU coreutils; it checks exact release hashes and binary version
 before replacing the client. It installs no service and reads no API key.
 
 ```sh
-bash install-native.sh --version 0.1.10 --prefix "$HOME/.local/bin"
-ml-exp-rs update --version 0.1.10 --check
+bash install-native.sh --version 0.1.11 --prefix "$HOME/.local/bin"
+ml-exp-rs update --check
+ml-exp-rs update
 ```
 
 These commands use the published
-[`native-v0.1.10` release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.10).
+[`native-v0.1.11` release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.11).
 Existing Python release assets are separate. Native backend and migration
 acceptance limits are described in the [implementation status](../docs/rust-rewrite.md).
 
@@ -655,3 +665,17 @@ path. Personal telemetry uses the workspace zone; the compute/NAS zone remains
 unchanged. Foreign or ambiguous workspace records and log hits are rejected.
 A successful query with no hits means logs are unavailable; it is not evidence
 that the container succeeded or that a failed job can safely be resubmitted.
+
+Historical result summaries consume the same validated receipt as the files API.
+`EXPIRED` and `RELEASED` remain unavailable and return 410 for downloads; retained
+hashes are labelled `HISTORICAL_RECEIPT`, with `payload_verified=false`. A receipt
+does not verify that the original CPFS/NAS output still exists. Re-export requires
+checking that exact approved output directory and creating a separate collection
+receipt; it never removes the old tombstone or repeats the training command.
+
+Historical W&B errors distinguish missing SDK, authentication, remote Run, init,
+history read and writes without exposing exception messages or keys. Uncertain
+migrated sends remain reserved until remote proof; a missing Run is not permission
+to replay them. An operator may recover an explicitly selected zero-confirmation
+scope only after an atomic create-if-absent of its exact original W&B ID proves
+there was no earlier history, and must retain a recovery receipt.

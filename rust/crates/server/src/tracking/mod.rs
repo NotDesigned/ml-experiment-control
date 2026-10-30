@@ -21,6 +21,8 @@ pub enum Error {
     Transport,
     #[error("W&B SDK is not installed in the configured interpreter")]
     SdkMissing,
+    #[error("W&B SDK request failed: {0}; durable publication state retained")]
+    SdkRequest(&'static str),
     #[error("W&B publication identity or remote proof is invalid")]
     Identity,
     #[error("W&B journal or private publication store unavailable")]

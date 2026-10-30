@@ -12,8 +12,8 @@ fn fail() -> Error {
         "native release verification or replacement failed; installed executable was not intentionally changed",
     )
 }
-pub fn run(version: &str, check: bool) -> Result<serde_json::Value, Error> {
-    if !distribution::version(version) {
+pub fn run(requested: Option<&str>, check: bool) -> Result<serde_json::Value, Error> {
+    if requested.is_some_and(|value| !distribution::version(value)) {
         return Err(fail());
     }
     let target = match (std::env::consts::OS, std::env::consts::ARCH) {
@@ -44,6 +44,16 @@ pub fn run(version: &str, check: bool) -> Result<serde_json::Value, Error> {
         .timeout(Duration::from_secs(180))
         .build()
         .map_err(|_| fail())?;
+    let version = match requested {
+        Some(value) => value.to_owned(),
+        None => {
+            let value = discover(&http)?;
+            distribution::prevent_default_downgrade(env!("CARGO_PKG_VERSION"), &value)
+                .map_err(Error::Observation)?;
+            value
+        }
+    };
+    let version = version.as_str();
     let base = format!(
         "https://github.com/NotDesigned/ml-experiment-control/releases/download/native-v{version}"
     );
@@ -151,4 +161,40 @@ pub fn run(version: &str, check: bool) -> Result<serde_json::Value, Error> {
     Ok(
         serde_json::json!({"version":version,"target":target,"sha256":asset.sha256,"installed":true}),
     )
+}
+
+fn discover(http: &reqwest::blocking::Client) -> Result<String, Error> {
+    let mut releases = Vec::new();
+    for page in 1..=10 {
+        let response = http
+            .get(format!("https://api.github.com/repos/NotDesigned/ml-experiment-control/releases?per_page=100&page={page}"))
+            .header(reqwest::header::USER_AGENT, concat!("ml-exp-rs/", env!("CARGO_PKG_VERSION")))
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+            .send().map_err(|_| fail())?;
+        if response.status() != 200 {
+            return Err(Error::Observation(
+                "cannot discover latest stable native release; no version was selected",
+            ));
+        }
+        let mut bytes = Vec::new();
+        response
+            .take(4 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| fail())?;
+        if bytes.len() > 4 * 1024 * 1024 {
+            return Err(fail());
+        }
+        let page: Vec<serde_json::Value> = serde_json::from_slice(&bytes).map_err(|_| fail())?;
+        if page.len() > 100 {
+            return Err(fail());
+        }
+        let complete = page.len() < 100;
+        releases.extend(page);
+        if complete {
+            return distribution::latest_native(&releases).map_err(Error::Observation);
+        }
+    }
+    Err(Error::Observation(
+        "native release listing exceeds discovery limit; select --version explicitly",
+    ))
 }

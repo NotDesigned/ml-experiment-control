@@ -218,6 +218,7 @@ fn failure(store: &Store, scope: &str, error: &Error) -> Result<()> {
     let code = match error {
         Error::SdkMissing => "WANDB_SDK_NOT_INSTALLED",
         Error::Identity => "PUBLICATION_RECONCILE_REQUIRED",
+        Error::SdkRequest(code) => code,
         _ => "PUBLISHER_UNAVAILABLE",
     };
     store

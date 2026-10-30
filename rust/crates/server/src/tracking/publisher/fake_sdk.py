@@ -105,8 +105,13 @@ class Api:
 
     def run(self, path):
         entity, project, identity = path.split("/")
-        assert identity in read()["runs"]
+        if identity not in read()["runs"]:
+            raise CommError('Could not find run; sensitive diagnostic must not be transported')
         return Handle(identity)
+
+
+class CommError(Exception):
+    pass
 
 
 def init(**kwargs):

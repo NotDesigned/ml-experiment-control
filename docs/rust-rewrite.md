@@ -3,7 +3,7 @@
 Development branch: `rewrite/rust`. Python reference baseline:
 `e725faec689fb8395e692e27d00a8896fa7fe5a5` (1.5.1). Production runs the native
 service on Tokyo; Python API/builder services on Seoul are retired. The native
-workspace release is `native-v0.1.10`. Direct HTTPS uses
+workspace release is `native-v0.1.11`. Direct HTTPS uses
 `https://server-tokyo.adscn.dev:2087/ml-expd`; the original API domain remains
 available through its existing proxy. Historical metadata is attached read-only,
 with separate native write namespaces. Slurm connects through the direct
@@ -225,7 +225,7 @@ The release worker is built with static musl linkage for training images;
 server and client binaries retain the documented glibc baseline.
 The release workflow tests the exact binaries before packaging. A manual run
 produces artifacts only; a stable native tag enables public publication.
-The [native release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.10)
+The [native release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.11)
 is separate from Python release assets. Production now runs on Tokyo; the
 acceptance history below records the earlier isolated tests.
 

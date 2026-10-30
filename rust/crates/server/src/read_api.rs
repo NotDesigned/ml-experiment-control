@@ -1096,7 +1096,28 @@ impl Api {
                 .apply_observation(&mut snapshot)
                 .map_err(crate::cloud_runs::failure)?;
         }
-        let value = match query.view {
+        let historical_result = if self.is_historical() {
+            let attempt = match &query.view {
+                View::Run => snapshot.current_attempt_id.as_deref(),
+                View::Show { attempt } | View::Collection { attempt } => Some(attempt.as_str()),
+                _ => None,
+            };
+            if let Some(attempt) = attempt {
+                self.historical_artifacts(&query.project, &query.run, attempt)?
+                    .map(|inventory| {
+                        read_model::historical_collection(
+                            read_model::attempt_collection(&snapshot, attempt, now_unix)?,
+                            &inventory,
+                        )
+                    })
+                    .transpose()?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let mut value = match query.view {
             View::Run => {
                 let attempt = snapshot.current_attempt_id.as_deref();
                 let records = self.live_metrics(&snapshot, attempt)?;
@@ -1142,6 +1163,13 @@ impl Api {
                 now_unix,
             )?,
         };
+        if let Some(result) = historical_result {
+            if value["contract"] == "result-collection-read.v1" {
+                value = result;
+            } else {
+                value["result"] = result;
+            }
+        }
         guard
             .require_observed_live(&query.project, &query.run)
             .map_err(|_| {

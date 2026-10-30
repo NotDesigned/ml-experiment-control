@@ -51,8 +51,9 @@ enum Command {
     },
     /// Install a checksum-verified standalone native release.
     Update {
-        #[arg(long, default_value = "0.1.0")]
-        version: String,
+        /// Exact native version; omitted selects the latest stable native release.
+        #[arg(long)]
+        version: Option<String>,
         #[arg(long)]
         check: bool,
     },
@@ -625,7 +626,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     if let Command::Update { version, check } = &args.command {
         println!(
             "{}",
-            serde_json::to_string_pretty(&ml_exp_client::update::run(version, *check)?)?
+            serde_json::to_string_pretty(&ml_exp_client::update::run(version.as_deref(), *check)?)?
         );
         return Ok(());
     }

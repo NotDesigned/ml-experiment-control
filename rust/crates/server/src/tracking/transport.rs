@@ -70,7 +70,21 @@ impl Sdk {
             Value::Object(ml_exp_core::json::mapping(&frame[4..]).map_err(|_| Error::Transport)?);
         match value["error"].as_str() {
             Some("WANDB_SDK_NOT_INSTALLED") => Err(Error::SdkMissing),
-            Some(_) => Err(Error::Transport),
+            Some(code) => match code {
+                "WANDB_AUTHENTICATION_FAILED" => {
+                    Err(Error::SdkRequest("WANDB_AUTHENTICATION_FAILED"))
+                }
+                "WANDB_PERMISSION_DENIED" => Err(Error::SdkRequest("WANDB_PERMISSION_DENIED")),
+                "WANDB_REMOTE_RUN_MISSING" => Err(Error::SdkRequest("WANDB_REMOTE_RUN_MISSING")),
+                "WANDB_INIT_FAILED" => Err(Error::SdkRequest("WANDB_INIT_FAILED")),
+                "WANDB_HISTORY_READ_FAILED" => Err(Error::SdkRequest("WANDB_HISTORY_READ_FAILED")),
+                "WANDB_REMOTE_READ_FAILED" => Err(Error::SdkRequest("WANDB_REMOTE_READ_FAILED")),
+                "WANDB_WRITE_FAILED" => Err(Error::SdkRequest("WANDB_WRITE_FAILED")),
+                "WANDB_DEFAULT_ENTITY_FAILED" => {
+                    Err(Error::SdkRequest("WANDB_DEFAULT_ENTITY_FAILED"))
+                }
+                _ => Err(Error::Transport),
+            },
             None => Ok(value),
         }
     }

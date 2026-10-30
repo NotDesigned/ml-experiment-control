@@ -21,6 +21,7 @@ pub mod read_api;
 pub mod read_config;
 mod read_http;
 pub mod read_model;
+mod readiness;
 mod readonly;
 pub mod records;
 mod renewal;
@@ -208,7 +209,7 @@ fn health_document(
         "project_write_recovery_errors":[], "project_writes":false, "source_imports":sources.is_some(),
         "source_archive_limits":sources.map(sources::Service::limits),
         "scheduler_mutations":submissions.is_some_and(submissions::Service::enabled), "run_writes":submissions.is_some_and(submissions::Service::can_create_runs), "local_evidence_rebuild":false, "telemetry_enabled":false,
-        "deployment":{"api":"READY", "training":"INCOMPLETE", "migration":"IN_PROGRESS"}
+        "deployment":readiness::observe(None)
     })
 }
 
@@ -233,6 +234,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
             api.sources().as_deref(),
             api.submissions().as_deref(),
         );
+        document["deployment"] = readiness::observe(Some(api));
         document["historical_read_only"] = json!(api.is_historical());
         document["historical_records_attached"] = json!(api.history().is_some());
         if api.is_historical() {
@@ -370,13 +372,14 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
     })
     .await
 }
-async fn readiness(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let submission = state.reads.as_ref().and_then(|api| api.submissions());
-    let cloud = state.reads.as_ref().and_then(|api| api.cloud());
-    Json(
-        json!({"api":"READY", "training":"INCOMPLETE", "migration":"IN_PROGRESS",
-        "scheduler_mutations":submission.as_ref().is_some_and(|service|service.enabled())||cloud.as_ref().is_some_and(|service|service.enabled()),"providers_configured":submission.is_some()||cloud.is_some()}),
-    )
+async fn readiness(State(state): State<Arc<AppState>>) -> Response {
+    if state.reads.is_none() {
+        return Json(readiness::observe(None)).into_response();
+    }
+    read_http::execute(state, read_http::Access::Read, |api, _| {
+        Ok(readiness::observe(Some(api)))
+    })
+    .await
 }
 
 /// Compatibility summary for connection checks. These are configured native

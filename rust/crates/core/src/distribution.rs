@@ -28,6 +28,87 @@ pub fn version(s: &str) -> bool {
                 && (p.len() == 1 || !p.starts_with('0'))
         })
 }
+
+fn version_key(value: &str) -> Result<[u32; 3], &'static str> {
+    if !version(value) {
+        return Err("invalid native version");
+    }
+    let mut key = [0; 3];
+    for (index, part) in value.split('.').enumerate() {
+        key[index] = part.parse().map_err(|_| "invalid native version")?;
+    }
+    Ok(key)
+}
+
+/// GitHub's latest release may belong to the former Python distribution.
+/// Select stable native tags numerically from a bounded, complete listing.
+pub fn latest_native(releases: &[serde_json::Value]) -> Result<String, &'static str> {
+    if releases.len() > 1000 {
+        return Err("native release listing exceeds limit");
+    }
+    let mut latest: Option<([u32; 3], String)> = None;
+    for release in releases {
+        let draft = release["draft"]
+            .as_bool()
+            .ok_or("invalid release listing")?;
+        let prerelease = release["prerelease"]
+            .as_bool()
+            .ok_or("invalid release listing")?;
+        let tag = release["tag_name"]
+            .as_str()
+            .ok_or("invalid release listing")?;
+        if draft || prerelease {
+            continue;
+        }
+        let Some(candidate) = tag.strip_prefix("native-v") else {
+            continue;
+        };
+        if !version(candidate) {
+            continue;
+        }
+        let key = version_key(candidate)?;
+        if latest.as_ref().is_none_or(|(old, _)| key > *old) {
+            latest = Some((key, candidate.into()));
+        }
+    }
+    latest
+        .map(|(_, version)| version)
+        .ok_or("no stable native release found")
+}
+
+pub fn prevent_default_downgrade(installed: &str, selected: &str) -> Result<(), &'static str> {
+    if version_key(selected)? < version_key(installed)? {
+        return Err(
+            "latest stable native release is older than this client; refusing automatic downgrade; select --version explicitly if intended",
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod latest_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn selects_numeric_native_stable_tags_and_refuses_incomplete_or_older_choices() {
+        let row =
+            |tag, draft, prerelease| json!({"tag_name":tag,"draft":draft,"prerelease":prerelease});
+        let rows = vec![
+            row("v1.5.1", false, false),
+            row("native-v0.1.9", false, false),
+            row("native-v0.1.10", false, false),
+            row("native-v9.0.0", false, true),
+            row("native-v8.0.0", true, false),
+            row("native-v10.0.0-rc1", false, false),
+        ];
+        assert_eq!(latest_native(&rows).unwrap(), "0.1.10");
+        assert!(latest_native(&[json!({"tag_name":"native-v0.1.10"})]).is_err());
+        assert!(latest_native(&[]).is_err());
+        assert!(prevent_default_downgrade("0.1.10", "0.1.9").is_err());
+        assert!(prevent_default_downgrade("0.1.9", "0.1.10").is_ok());
+        assert!(prevent_default_downgrade("0.1.10", "0.1.10").is_ok());
+    }
+}
 impl Manifest {
     pub fn select(
         &self,

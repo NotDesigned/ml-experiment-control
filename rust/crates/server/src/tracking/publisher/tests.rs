@@ -4,6 +4,39 @@ use serde_json::Value;
 use std::{fs, os::unix::fs::PermissionsExt};
 
 #[test]
+fn uncertain_history_is_observed_without_opening_or_recreating_remote_runs() {
+    let root = tempfile::tempdir().unwrap();
+    let cloud = root.path().join("cloud.json");
+    fs::write(
+        &cloud,
+        r#"{"hidden":false,"runs":{},"inits":0,"logs":0,"finishes":0}"#,
+    )
+    .unwrap();
+    fs::write(root.path().join("fake_sdk.py"), include_str!("fake_sdk.py")).unwrap();
+    let wrapper = root.path().join("python");
+    fs::write(&wrapper,format!("#!/usr/bin/python3\nimport sys,os\nsys.path.insert(0,{root:?})\nos.environ['TEST_CLOUD']={cloud:?}\nimport fake_sdk\nsys.modules['wandb']=fake_sdk\nexec(compile(sys.argv[4],'<sdk>','exec'),{{'__name__':'__main__'}})\n",root=root.path().to_str().unwrap(),cloud=cloud.to_str().unwrap())).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut sdk = Sdk::open(&wrapper).unwrap();
+    let error = sdk
+        .call(
+            &json!({"operation":"observe","api_key":"never-print",
+        "route":{"entity":"fixture","project":"science"},"wandb_id":"missing",
+        "scope":{"project":"demo","run":"train","attempt":"attempt-001"},
+        "config":{},"confirmed":0,"through":128,"open_session":true,"resume":"must"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::SdkRequest("WANDB_REMOTE_RUN_MISSING")
+    ));
+    assert!(!error.to_string().contains("sensitive"));
+    let state: Value = serde_json::from_slice(&fs::read(&cloud).unwrap()).unwrap();
+    assert_eq!(state["inits"], 0);
+    assert_eq!(state["logs"], 0);
+}
+
+#[test]
 fn historical_terminal_uses_original_outcomes_without_claiming_a_running_run_completed() {
     for value in [
         json!({"state":"CANCELLED"}),

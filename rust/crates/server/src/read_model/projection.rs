@@ -1102,6 +1102,59 @@ pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) 
     bounded(value)
 }
 
+/// Compose a validated historical receipt without treating retained hashes as
+/// a fresh verification of payload bytes. This never changes a release tombstone.
+pub fn historical_collection(mut value: Value, inventory: &Value) -> Result<Value> {
+    for key in ["project", "run_id", "attempt_id"] {
+        if value[key] != inventory[key] || !value[key].is_string() {
+            return Err(Error::Identity);
+        }
+    }
+    if inventory["source"] != "historical-published-receipt"
+        || inventory["read_only"] != true
+        || inventory["payload_verified"] != false
+    {
+        return Err(Error::Evidence);
+    }
+    if inventory["training"]["status"] != "UNKNOWN" {
+        if value["training"]["status"] == "UNKNOWN" {
+            value["training"] = inventory["training"].clone();
+        } else if value["training"]["status"] != inventory["training"]["status"]
+            || value["training"]["exit_code"] != inventory["training"]["exit_code"]
+        {
+            value["training"] = json!({"status":"UNKNOWN","exit_code":null,
+                "diagnostic":"TRAINING_EVIDENCE_CONFLICT", "receipt":inventory["training"],
+                "process":value["training"]});
+        }
+    }
+    let status = inventory["storage_status"]
+        .as_str()
+        .ok_or(Error::Evidence)?;
+    if status == "MISSING" {
+        value["diagnostic"] = json!("ARTIFACT_RECEIPT_NOT_OBSERVED");
+    } else {
+        if !matches!(status, "AVAILABLE" | "RELEASED" | "EXPIRED") {
+            return Err(Error::Evidence);
+        }
+        value["status"] = json!(status);
+        value["phase"] = json!(status);
+        value["storage_status"] = json!(status);
+        value["verification"] = json!("HISTORICAL_RECEIPT");
+        value["payload_verified"] = json!(false);
+        value["download_available"] = inventory["available"].clone();
+        value["publication"] = json!({"status":status,"archive_sha256":inventory["archive"]["sha256"],
+            "archive_bytes":inventory["archive"]["bytes"],"files":inventory["files"],
+            "checksums_complete":inventory["checksums_complete"],"payload_verified":false,
+            "source":"historical-published-receipt"});
+        value["diagnostic"] = if status == "AVAILABLE" {
+            Value::Null
+        } else {
+            json!("ARTIFACT_RELEASED")
+        };
+    }
+    bounded(value)
+}
+
 /// A lightweight metadata projection for project aggregation. No scientific
 /// payload or indexed collector state is substituted for missing evidence.
 pub fn run_summary(snapshot: &Snapshot, now_unix: f64) -> Result<Value> {
