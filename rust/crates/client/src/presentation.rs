@@ -352,7 +352,10 @@ fn result_lines(publication: &Value, verification: &Value) -> Vec<String> {
         verification
     };
     let available = get(publication, "status") == "AVAILABLE"
-        && verified == "SHA256_VERIFIED"
+        && matches!(
+            verified.as_str(),
+            Some("SHA256_VERIFIED" | "HISTORICAL_RECEIPT")
+        )
         && get(publication, "download_available") == true;
     vec![
         format!(

@@ -1292,6 +1292,17 @@ fn historical_result_inventory_is_read_only_exact_and_preserves_release_evidence
     assert_eq!(available["status"], "AVAILABLE");
     assert_eq!(available["verification"], "HISTORICAL_RECEIPT");
     assert_eq!(available["payload_verified"], false);
+    let client = server.client();
+    let human_status = status::observe(
+        &client,
+        &client.negotiate().unwrap(),
+        None,
+        selected(Some("attempt-001")),
+        false,
+    )
+    .unwrap();
+    assert_eq!(human_status["publication"]["download_available"], true);
+    assert_eq!(human_status["verification"]["status"], "HISTORICAL_RECEIPT");
     assert!(!result.to_string().contains("private-transfer-capability"));
     assert!(!result.to_string().contains("/private/old-service"));
     assert_eq!(
@@ -1348,6 +1359,16 @@ fn historical_result_inventory_is_read_only_exact_and_preserves_release_evidence
     let expired = server.client().get(collection_route).unwrap();
     assert_eq!(expired["status"], "EXPIRED");
     assert_eq!(expired["training"]["status"], "COMPLETED");
+    let expired_status = status::observe(
+        &client,
+        &client.negotiate().unwrap(),
+        None,
+        selected(Some("attempt-001")),
+        false,
+    )
+    .unwrap();
+    assert_eq!(expired_status["publication"]["status"], "EXPIRED");
+    assert_eq!(expired_status["publication"]["download_available"], false);
     let run_result = server.client().get("/api/runs/demo/train").unwrap()["result"].clone();
     assert_eq!(run_result["status"], expired["status"]);
     assert_eq!(run_result["publication"], expired["publication"]);

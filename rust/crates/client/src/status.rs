@@ -608,7 +608,7 @@ impl Flow {
                 "backend":scheduler_detail["backend"],"job_id":scheduler_detail["backend_job_id"],"native_state":scheduler_detail["raw_state"],
                 "observed_at":scheduler["as_of"],"stale":get_or(&scheduler,"stale",json!(true)),"reason":otherwise(&queue["reason"],otherwise(&scheduler_detail["reason"],scheduler_detail["pending_reason"].clone()))},
             "training":{"status":get_or(&training,"status",json!("UNKNOWN")),"exit_code":training["exit_code"],"process_state":process["state"],"observed_at":process["as_of"],"stale":get_or(&process,"stale",json!(true))},
-            "publication":{"status":get_or(&self.collection,"status",json!("NOT_OBSERVED")),"phase":self.collection["phase"],"download_available":self.collection["status"]=="AVAILABLE"&&self.collection["verification"]=="SHA256_VERIFIED"&&self.collection["download_available"]==true,
+            "publication":{"status":get_or(&self.collection,"status",json!("NOT_OBSERVED")),"phase":self.collection["phase"],"download_available":self.collection["status"]=="AVAILABLE"&&matches!(self.collection["verification"].as_str(),Some("SHA256_VERIFIED"|"HISTORICAL_RECEIPT"))&&self.collection["download_available"]==true,
                 "diagnostic":self.collection["diagnostic"],"error":self.collection_error},
             "verification":{"status":get_or(&self.collection,"verification",json!("NOT_OBSERVED"))},"progress":progress,
             "queue":otherwise(&queue,Value::Null),"worker":{"state":worker["state"],"observed_at":worker["as_of"],"stale":get_or(&worker,"stale",json!(true))},
