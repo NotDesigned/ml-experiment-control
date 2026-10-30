@@ -637,3 +637,11 @@ the same region; omission retains the original single-zone behavior and profile
 identity. Resource-spec `memory.allocatable` is GiB. A pool with an empty
 `spot_status` has zero SPOT allowance; it does not invalidate the other pools.
 Reported allowance still does not establish idle GPU capacity.
+
+The native offline-log adapter resolves the configured workspace through the
+account-scoped resource catalogue before querying logs. SenseCore requires that
+catalogue's workspace UUID in `resource_id`, rather than the workspace's REST
+path. Personal telemetry uses the workspace zone; the compute/NAS zone remains
+unchanged. Foreign or ambiguous workspace records and log hits are rejected.
+A successful query with no hits means logs are unavailable; it is not evidence
+that the container succeeded or that a failed job can safely be resubmitted.

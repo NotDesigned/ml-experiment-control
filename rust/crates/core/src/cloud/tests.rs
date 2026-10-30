@@ -414,7 +414,7 @@ fn offline_requests_use_exact_workspace_uuid_and_workspace_telemetry_zone() {
     );
     assert_eq!(request.body.unwrap()["resource_id"], json!([id]));
     assert_eq!(
-        p.workspaces("").unwrap().query["filter"],
+        p.workspaces("1").unwrap().query["filter"],
         "resource_type='compute.workspace.v1.instance'"
     );
     assert!(sensecore::log_workspace_id(&p, &[]).is_err());
