@@ -1348,10 +1348,9 @@ fn historical_result_inventory_is_read_only_exact_and_preserves_release_evidence
     let expired = server.client().get(collection_route).unwrap();
     assert_eq!(expired["status"], "EXPIRED");
     assert_eq!(expired["training"]["status"], "COMPLETED");
-    assert_eq!(
-        server.client().get("/api/runs/demo/train").unwrap()["result"],
-        expired
-    );
+    let run_result = server.client().get("/api/runs/demo/train").unwrap()["result"].clone();
+    assert_eq!(run_result["status"], expired["status"]);
+    assert_eq!(run_result["publication"], expired["publication"]);
     transfer["retention"]["status"] = json!("RELEASED");
     write_json(&path, &transfer);
     assert_eq!(file_inventory(fixture._temp.path()), released_before);

@@ -85,30 +85,6 @@ pub fn prevent_default_downgrade(installed: &str, selected: &str) -> Result<(), 
     Ok(())
 }
 
-#[cfg(test)]
-mod latest_tests {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn selects_numeric_native_stable_tags_and_refuses_incomplete_or_older_choices() {
-        let row =
-            |tag, draft, prerelease| json!({"tag_name":tag,"draft":draft,"prerelease":prerelease});
-        let rows = vec![
-            row("v1.5.1", false, false),
-            row("native-v0.1.9", false, false),
-            row("native-v0.1.10", false, false),
-            row("native-v9.0.0", false, true),
-            row("native-v8.0.0", true, false),
-            row("native-v10.0.0-rc1", false, false),
-        ];
-        assert_eq!(latest_native(&rows).unwrap(), "0.1.10");
-        assert!(latest_native(&[json!({"tag_name":"native-v0.1.10"})]).is_err());
-        assert!(latest_native(&[]).is_err());
-        assert!(prevent_default_downgrade("0.1.10", "0.1.9").is_err());
-        assert!(prevent_default_downgrade("0.1.9", "0.1.10").is_ok());
-        assert!(prevent_default_downgrade("0.1.10", "0.1.10").is_ok());
-    }
-}
 impl Manifest {
     pub fn select(
         &self,
@@ -147,5 +123,30 @@ impl Manifest {
             .iter()
             .find(|a| a.target == target && a.executable == executable)
             .ok_or("release has no binary for this platform")
+    }
+}
+
+#[cfg(test)]
+mod latest_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn selects_numeric_native_stable_tags_and_refuses_incomplete_or_older_choices() {
+        let row =
+            |tag, draft, prerelease| json!({"tag_name":tag,"draft":draft,"prerelease":prerelease});
+        let rows = vec![
+            row("v1.5.1", false, false),
+            row("native-v0.1.9", false, false),
+            row("native-v0.1.10", false, false),
+            row("native-v9.0.0", false, true),
+            row("native-v8.0.0", true, false),
+            row("native-v10.0.0-rc1", false, false),
+        ];
+        assert_eq!(latest_native(&rows).unwrap(), "0.1.10");
+        assert!(latest_native(&[json!({"tag_name":"native-v0.1.10"})]).is_err());
+        assert!(latest_native(&[]).is_err());
+        assert!(prevent_default_downgrade("0.1.10", "0.1.9").is_err());
+        assert!(prevent_default_downgrade("0.1.9", "0.1.10").is_ok());
+        assert!(prevent_default_downgrade("0.1.10", "0.1.10").is_ok());
     }
 }
