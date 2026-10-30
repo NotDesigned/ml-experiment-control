@@ -64,8 +64,11 @@ impl Scope {
             &self.workspace,
         )
     }
-    fn workspace_zone(&self) -> &str {
+    pub fn workspace_zone(&self) -> &str {
         self.workspace_zone.as_deref().unwrap_or(&self.zone)
+    }
+    pub fn telemetry_path(&self, station: &str) -> Result<String> {
+        self.path_in_zone(self.workspace_zone(), "telemetryStations", station)
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,6 +261,16 @@ impl Profile {
         )
     }
     pub fn telemetry_stations(&self, token: &str) -> Result<Request> {
+        self.resources(
+            "monitor.ts.v1.telemetryStation",
+            "ListTelemetryStations",
+            token,
+        )
+    }
+    pub fn workspaces(&self, token: &str) -> Result<Request> {
+        self.resources("compute.workspace.v1.instance", "ListWorkspaces", token)
+    }
+    fn resources(&self, kind: &str, action: &str, token: &str) -> Result<Request> {
         self.validate()?;
         component(token)?;
         request(
@@ -266,13 +279,10 @@ impl Profile {
                 region: None,
             },
             Method::Get,
-            "ListTelemetryStations",
+            action,
             "/rmh/v1/resources".into(),
             BTreeMap::from([
-                (
-                    "filter".into(),
-                    "resource_type='monitor.ts.v1.telemetryStation'".into(),
-                ),
+                ("filter".into(), format!("resource_type='{kind}'")),
                 ("page_size".into(), "100".into()),
                 ("page_token".into(), token.into()),
             ]),
@@ -283,16 +293,18 @@ impl Profile {
     pub fn offline_logs(
         &self,
         station: &str,
+        workspace_id: &str,
         worker: &str,
         container: &str,
-        start: i64,
-        end: i64,
+        interval: std::ops::RangeInclusive<i64>,
         tail: u32,
     ) -> Result<Request> {
         self.validate()?;
         component(station)?;
         component(worker)?;
         component(container)?;
+        resource_uuid(workspace_id)?;
+        let (start, end) = interval.into_inner();
         if station != format!("ts-user-{}", self.scope.user_id)
             || start < 0
             || end < start
@@ -300,7 +312,7 @@ impl Profile {
         {
             return Err(Error("offline log scope"));
         }
-        let body = json!({"start":start.to_string(),"end":end.to_string(),"resource_id":[self.scope.workspace_path()?],"page_size":tail.min(200),"offset":"0",
+        let body = json!({"start":start.to_string(),"end":end.to_string(),"resource_id":[workspace_id],"page_size":tail.min(200),"offset":"0",
             "custom_filter":[{"key":"Attributes.k8s.pod.name","value":worker},{"key":"Attributes.k8s.container.name","value":container}]});
         request(
             Endpoint::Sensecore {
@@ -311,7 +323,7 @@ impl Profile {
             "SearchOfflineLogs",
             format!(
                 "/monitor/ts/data/v1{}/logStream/products/product.lepton-acp-new/logs",
-                self.scope.path("telemetryStations", station)?
+                self.scope.telemetry_path(station)?
             ),
             BTreeMap::new(),
             Some(body),
@@ -398,8 +410,41 @@ pub struct OfflineLogs {
     pub worker: String,
     pub unavailable_reason: Option<String>,
 }
+fn resource_uuid(value: &str) -> Result<()> {
+    if !regex::Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+        .expect("resource UUID regex")
+        .is_match(value)
+    {
+        return Err(Error("resource UUID"));
+    }
+    Ok(())
+}
+
+/// RMH resource IDs are UUIDs, distinct from the scoped REST resource paths.
+/// Resolve only the exact configured workspace; never guess a UUID from a job.
+pub fn log_workspace_id(profile: &Profile, rows: &[Value]) -> Result<String> {
+    profile.validate()?;
+    let matching = rows
+        .iter()
+        .filter(|r| {
+            r["name"] == profile.scope.workspace
+                && r["type"] == "compute.workspace.v1.instance"
+                && r["deleted"] != true
+                && r["zone"] == profile.scope.workspace_zone()
+                && r["subscription_name"] == profile.scope.subscription
+                && r["resource_group_name"] == profile.scope.resource_group
+        })
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Err(Error("offline workspace identity"));
+    }
+    let id = matching[0]["id"].as_str().ok_or(Error("resource UUID"))?;
+    resource_uuid(id)?;
+    Ok(id.into())
+}
+
 pub fn validate_offline_logs(
-    profile: &Profile,
+    workspace_id: &str,
     value: &Value,
     worker: &str,
     container: &str,
@@ -407,7 +452,7 @@ pub fn validate_offline_logs(
     end: i64,
     tail: u32,
 ) -> Result<OfflineLogs> {
-    profile.validate()?;
+    resource_uuid(workspace_id)?;
     component(worker)?;
     component(container)?;
     if start < 0 || end < start || !(1..=10000).contains(&tail) {
@@ -427,7 +472,7 @@ pub fn validate_offline_logs(
     for hit in hits {
         if hit["attributes"]["k8s.pod.name"] != worker
             || hit["attributes"]["k8s.container.name"] != container
-            || hit["resource"]["resource_id"] != profile.scope.workspace_path()?
+            || hit["resource"]["resource_id"] != workspace_id
         {
             return Err(Error("offline worker identity"));
         }

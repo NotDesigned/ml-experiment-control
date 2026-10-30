@@ -324,17 +324,25 @@ fn sensecore_workspace_zone_does_not_change_pool_or_mount_zone_and_legacy_hashes
 #[test]
 fn offline_logs_and_pagination_refuse_foreign_hits_truncation_and_ambiguous_absence() {
     let p = sense();
-    let hit = json!({"attributes":{"k8s.pod.name":"pod1","k8s.container.name":"container1"},"resource":{"resource_id":p.scope.workspace_path().unwrap()},"log_time":"2026-10-29T00:00:00Z","body":"checkpoint saved"});
+    let workspace_id = "01234567-89ab-cdef-0123-456789abcdef";
+    let hit = json!({"attributes":{"k8s.pod.name":"pod1","k8s.container.name":"container1"},"resource":{"resource_id":workspace_id},"log_time":"2026-10-29T00:00:00Z","body":"checkpoint saved"});
     let value = json!({"hits":[hit],"total":"1"});
     let end = 1793232000;
-    let logs =
-        sensecore::validate_offline_logs(&p, &value, "pod1", "container1", end - 1, end + 1, 100)
-            .unwrap();
+    let logs = sensecore::validate_offline_logs(
+        workspace_id,
+        &value,
+        "pod1",
+        "container1",
+        end - 1,
+        end + 1,
+        100,
+    )
+    .unwrap();
     assert!(logs.available);
     assert_eq!(logs.text, "checkpoint saved");
     assert!(
         sensecore::validate_offline_logs(
-            &p,
+            workspace_id,
             &value,
             "foreign",
             "container1",
@@ -345,8 +353,29 @@ fn offline_logs_and_pagination_refuse_foreign_hits_truncation_and_ambiguous_abse
         .is_err()
     );
     assert!(
-        p.offline_logs("another-user-station", "pod1", "container1", 1, 2, 10)
-            .is_err()
+        p.offline_logs(
+            "another-user-station",
+            workspace_id,
+            "pod1",
+            "container1",
+            1..=2,
+            10
+        )
+        .is_err()
+    );
+    let mut foreign = value.clone();
+    foreign["hits"][0]["resource"]["resource_id"] = json!(p.scope.workspace_path().unwrap());
+    assert!(
+        sensecore::validate_offline_logs(
+            workspace_id,
+            &foreign,
+            "pod1",
+            "container1",
+            end - 1,
+            end + 1,
+            100
+        )
+        .is_err()
     );
     assert!(Page::pai(&json!({"Jobs":[],"TotalCount":2}), "Jobs", 1, 100).is_err());
     assert!(
@@ -364,5 +393,52 @@ fn offline_logs_and_pagination_refuse_foreign_hits_truncation_and_ambiguous_abse
         }
         .host()
         .is_err()
+    );
+}
+
+#[test]
+fn offline_requests_use_exact_workspace_uuid_and_workspace_telemetry_zone() {
+    let mut p = sense();
+    p.scope.workspace_zone = Some("cn-east-1z".into());
+    let row = json!({"name":p.scope.workspace,"type":"compute.workspace.v1.instance","zone":"cn-east-1z","subscription_name":p.scope.subscription,"resource_group_name":p.scope.resource_group,"id":"01234567-89ab-cdef-0123-456789abcdef"});
+    let id = sensecore::log_workspace_id(&p, &[row.clone()]).unwrap();
+    let station = format!("ts-user-{}", p.scope.user_id);
+    let request = p
+        .offline_logs(&station, &id, "pod1", "pytorch", 1..=2, 20)
+        .unwrap();
+    assert!(request.read_only);
+    assert!(
+        request
+            .path
+            .contains("/zones/cn-east-1z/telemetryStations/")
+    );
+    assert_eq!(request.body.unwrap()["resource_id"], json!([id]));
+    assert_eq!(
+        p.workspaces("").unwrap().query["filter"],
+        "resource_type='compute.workspace.v1.instance'"
+    );
+    assert!(sensecore::log_workspace_id(&p, &[]).is_err());
+    assert!(sensecore::log_workspace_id(&p, &[row.clone(), row.clone()]).is_err());
+    for (key, value) in [
+        ("id", p.scope.workspace_path().unwrap()),
+        ("name", "foreign".into()),
+        ("zone", p.scope.zone.clone()),
+        ("subscription_name", "foreign".into()),
+        ("resource_group_name", "foreign".into()),
+        ("type", "other.resource".into()),
+    ] {
+        let mut invalid = row.clone();
+        invalid[key] = json!(value);
+        assert!(
+            sensecore::log_workspace_id(&p, &[invalid]).is_err(),
+            "{key}"
+        );
+    }
+    let mut deleted = row;
+    deleted["deleted"] = json!(true);
+    assert!(sensecore::log_workspace_id(&p, &[deleted]).is_err());
+    assert!(
+        p.offline_logs(&station, "not-a-uuid", "pod1", "pytorch", 1..=2, 20)
+            .is_err()
     );
 }

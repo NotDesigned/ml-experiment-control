@@ -455,19 +455,17 @@ impl<T: Transport> Adapter<T> {
                 s["name"] == expected_name
                     && s["type"] == "monitor.ts.v1.telemetryStation"
                     && s["deleted"] != true
-                    && s["zone"] == p.scope.zone
+                    && s["zone"] == p.scope.workspace_zone()
                     && s["subscription_name"] == p.scope.subscription
                     && s["resource_group_name"] == p.scope.resource_group
             })
             .collect::<Vec<_>>();
-        if stations.len() != 1
-            || stations[0]["id"]
-                != p.scope
-                    .path("telemetryStations", &expected_name)
-                    .map_err(|_| Error::evidence())?
-        {
+        if stations.len() != 1 {
             return Err(Error::evidence());
         }
+        let workspaces = self.sense_pages("resources", |token| p.workspaces(token), cancelled)?;
+        let workspace_id =
+            sensecore::log_workspace_id(p, &workspaces).map_err(|_| Error::evidence())?;
         let workers = self.sensecore_workers(job, handle, cancelled)?;
         let worker = workers.first().ok_or_else(Error::evidence)?;
         let name = worker["name"].as_str().ok_or_else(Error::evidence)?;
@@ -482,16 +480,24 @@ impl<T: Transport> Adapter<T> {
         let value = self.call(
             p.offline_logs(
                 &expected_name,
+                &workspace_id,
                 name,
                 container,
-                start,
-                end_unix_seconds,
+                start..=end_unix_seconds,
                 tail,
             ),
             cancelled,
         )?;
-        sensecore::validate_offline_logs(p, &value, name, container, start, end_unix_seconds, tail)
-            .map_err(|_| Error::evidence())
+        sensecore::validate_offline_logs(
+            &workspace_id,
+            &value,
+            name,
+            container,
+            start,
+            end_unix_seconds,
+            tail,
+        )
+        .map_err(|_| Error::evidence())
     }
 }
 
