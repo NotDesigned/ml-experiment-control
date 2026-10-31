@@ -3,7 +3,7 @@
 Development branch: `rewrite/rust`. Python reference baseline:
 `e725faec689fb8395e692e27d00a8896fa7fe5a5` (1.5.1). Production runs the native
 service on Tokyo; Python API/builder services on Seoul are retired. The native
-workspace release is `native-v0.1.12`. Direct HTTPS uses
+workspace release is `native-v0.1.13`. Direct HTTPS uses
 `https://server-tokyo.adscn.dev:2087/ml-expd`; the original API domain remains
 available through its existing proxy. Historical metadata is attached read-only,
 with separate native write namespaces. Slurm connects through the direct
@@ -225,9 +225,14 @@ The release worker is built with static musl linkage for training images;
 server and client binaries retain the documented glibc baseline.
 The release workflow tests the exact binaries before packaging. A manual run
 produces artifacts only; a stable native tag enables public publication.
-The [native release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.12)
+The [native release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.13)
 is separate from Python release assets. Production now runs on Tokyo; the
 acceptance history below records the earlier isolated tests.
+
+W&B display contract v3 preserves metric names across Runs; protocol and data
+identities stay in provenance. Explicit variants use readable labels. Already-started
+publications retain their v2 names and confirmation cursors; upgrading does not
+rename or replay W&B history. See [metric display](wandb.md#training-curves-and-final-results).
 
 ## Deliberate limits and remaining acceptance
 

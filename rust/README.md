@@ -1,7 +1,7 @@
 # Native ML-Expd
 
 Development lives on `rewrite/rust`. Production uses the native service; the
-workspace version is `0.1.12`, published separately from the retired Python service.
+workspace version is `0.1.13`, published separately from the retired Python service.
 Tokyo's direct endpoint is `https://server-tokyo.adscn.dev:2087/ml-expd`.
 Port 443 belongs to a separate service and is not an ML-Expd HTTPS endpoint.
 Code implementation, automated verification, provider acceptance and production
