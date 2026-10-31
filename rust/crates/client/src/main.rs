@@ -385,8 +385,18 @@ enum Run {
         run: String,
         #[arg(long)]
         attempt: String,
-        #[arg(long)]
-        checkpoint: String,
+        #[arg(
+            long,
+            required_unless_present = "from_start",
+            conflicts_with = "from_start"
+        )]
+        checkpoint: Option<String>,
+        /// Restart a proven pre-training cloud failure, without a checkpoint.
+        #[arg(long, requires = "sync_request")]
+        from_start: bool,
+        /// Fresh CPU-only run sync performed after the original job ended.
+        #[arg(long, requires = "from_start")]
+        sync_request: Option<String>,
         #[arg(long)]
         max_gpu_hours: f64,
         #[arg(long, default_value = "")]
@@ -775,16 +785,29 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     run,
                     attempt,
                     checkpoint,
+                    from_start,
+                    sync_request,
                     max_gpu_hours,
                     reason,
                 },
         } => {
             let request = ml_exp_core::first_submission::native::retry::Request {
                 confirmation: confirmation.clone(),
-                resume_from: ml_exp_core::checkpoints::Reference {
-                    run_id: run.clone(),
-                    attempt_id: attempt.clone(),
-                    checkpoint_id: checkpoint.clone(),
+                resume_from: checkpoint.as_ref().map(|checkpoint| {
+                    ml_exp_core::checkpoints::Reference {
+                        run_id: run.clone(),
+                        attempt_id: attempt.clone(),
+                        checkpoint_id: checkpoint.clone(),
+                    }
+                }),
+                restart_from: if *from_start {
+                    Some(ml_exp_core::first_submission::native::retry::StartFrom {
+                        run_id: run.clone(),
+                        attempt_id: attempt.clone(),
+                        sync_request_id: sync_request.clone().unwrap_or_default(),
+                    })
+                } else {
+                    None
                 },
                 max_gpu_hours: *max_gpu_hours,
                 reason: reason.clone(),

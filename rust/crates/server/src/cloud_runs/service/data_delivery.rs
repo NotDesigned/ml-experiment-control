@@ -194,10 +194,12 @@ impl Service {
                 .transpose()
                 .map_err(|_| cloud::Error::evidence())?
                 .unwrap_or_default();
-            if features
-                .iter()
-                .any(|f| !matches!(f.as_str(), "storage-layout.v1" | "script-preparation.v1"))
-            {
+            if features.iter().any(|f| {
+                !matches!(
+                    f.as_str(),
+                    "storage-layout.v1" | "script-preparation.v1" | "shared-cache-identity.v2"
+                )
+            }) {
                 return Err(cloud::Error::evidence());
             }
             if saved.copy_request_id.is_none() && features.contains("storage-layout.v1") {

@@ -284,6 +284,26 @@ fn explicit_initialization_and_root_marker_do_not_reinterpret_existing_storage()
 }
 
 #[test]
+fn shared_mount_device_changes_preserve_identity_but_not_replaced_roots() {
+    let f = Fixture::new();
+    f.begin();
+    f.upload();
+    let ready = f.complete().unwrap().state;
+    let path = f.config.root.join(MARKER);
+    let original = fs::read(&path).unwrap();
+    let mut marker: Marker = serde_json::from_slice(&original).unwrap();
+    marker.identity.0 ^= 1;
+    fs::write(&path, json(&marker).unwrap()).unwrap();
+    assert_eq!(f.complete().unwrap().state, ready);
+    // A different root inode or logical storage authority remains invalid.
+    marker.identity.1 ^= 1;
+    fs::write(&path, json(&marker).unwrap()).unwrap();
+    assert!(Store::open(f.config.clone()).is_err());
+    fs::write(&path, original).unwrap();
+    assert_eq!(f.complete().unwrap().state, ready);
+}
+
+#[test]
 fn cancelled_delivery_does_not_create_an_asset() {
     let f = Fixture::new();
     let request = f.request(Command::Begin {

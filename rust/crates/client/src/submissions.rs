@@ -392,14 +392,15 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
         request_sha256,
     } = &plan.expected
     {
-        let next =
-            ml_exp_core::first_submission::native::retry::next(&request.resume_from.attempt_id)
-                .map_err(|_| Error::Response)?;
+        let (run, attempt) = request.parent().map_err(|_| Error::Response)?;
+        let next = ml_exp_core::first_submission::native::retry::next(attempt)
+            .map_err(|_| Error::Response)?;
         if value["parent_submission_id"] != *parent
-            || value["run_id"] != request.resume_from.run_id
+            || value["run_id"] != run
             || value["attempt_id"] != next
             || value["request_sha256"] != *request_sha256
             || value["resume_from"] != json!(request.resume_from)
+            || value["restart_from"] != json!(request.restart_from)
             || value["max_gpu_hours"] != request.max_gpu_hours
             || value["retry_state"] != "CREATED"
             || value["scheduler_mutation_performed"] != false

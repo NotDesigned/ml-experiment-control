@@ -11,6 +11,28 @@ use std::{
     time::{Duration, Instant},
 };
 const ID: &str = "action-0123456789abcdef";
+#[test]
+fn checkpoint_free_retry_requires_exact_parent_and_frozen_cpu_sync_choice() {
+    let request: ml_exp_core::first_submission::native::retry::Request = serde_json::from_value(json!({
+        "confirmation":format!("RETRY {ID}"),"restart_from":{"run_id":"train","attempt_id":"attempt-001","sync_request_id":"a".repeat(32)},"max_gpu_hours":2.0,"reason":"cache repair"
+    })).unwrap();
+    let plan = submissions::plan(Command::Retry {
+        submission: ID,
+        request: &request,
+    })
+    .unwrap();
+    let response = json!({"parent_submission_id":ID,"project":"demo","run_id":"train","attempt_id":"attempt-002",
+        "request_sha256":request.identity(ID).unwrap(),"restart_from":request.restart_from,"max_gpu_hours":2.0,
+        "retry_state":"CREATED","scheduler_mutation_performed":false,"next_action":"PREPARE_NEW_ACTION","reused":false,
+        "reserved_gpu_seconds":7200,"run_sha256":format!("sha256:{}","b".repeat(64)),"attempt_sha256":format!("sha256:{}","c".repeat(64))});
+    assert!(submissions::response(&plan, response.clone()).is_ok());
+    let mut wrong = response.clone();
+    wrong["restart_from"]["sync_request_id"] = json!("f".repeat(32));
+    assert!(submissions::response(&plan, wrong).is_err());
+    let mut wrong = response;
+    wrong["resume_from"] = json!({"run_id":"train","attempt_id":"attempt-001","checkpoint_id":format!("checkpoint.{}","d".repeat(64))});
+    assert!(submissions::response(&plan, wrong).is_err());
+}
 fn health() -> Value {
     json!({"api_protocol_version":2,"min_client_protocol_version":2,"capabilities":["native-slurm-submissions.v1"],"scheduler_mutations":true})
 }
@@ -21,11 +43,12 @@ fn response() -> Value {
 fn cpu_checkpoint_continuation_accepts_zero_gpu_reservation_and_still_checks_authority() {
     let request = ml_exp_core::first_submission::native::retry::Request {
         confirmation: format!("RETRY {ID}"),
-        resume_from: ml_exp_core::checkpoints::Reference {
+        resume_from: Some(ml_exp_core::checkpoints::Reference {
             run_id: "train".into(),
             attempt_id: "attempt-001".into(),
             checkpoint_id: format!("checkpoint.{}", "a".repeat(64)),
-        },
+        }),
+        restart_from: None,
         max_gpu_hours: 1.,
         reason: "CPU-only checkpoint restore".into(),
     };

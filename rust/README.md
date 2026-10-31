@@ -231,6 +231,11 @@ inside the allocated DLC job and counts this time toward the job's time limit.
 It uses the approved persistent mount; an absent mount is never created locally.
 New script-enabled cloud Runs require an image worker declaring
 `script-preparation.v1`; old frozen images keep their original capabilities.
+Workers from 0.1.14 also declare `shared-cache-identity.v2`. Shared dataset
+markers bind the storage target and root inode, while the mount-local device
+number is informational. Each process still checks its open directories for
+replacement, and cache reuse verifies file sizes, permissions and SHA256.
+Upgrading the API alone cannot change a worker frozen into an existing image.
 For SenseCore, preparation status retains the CPU job's identity and distinguishes
 failure from uncertainty and ordinary waiting. A failed copy reports
 `DATA_PREPARATION_FAILED` without creating a training Submission. Direct
@@ -318,6 +323,34 @@ separate contracts. Keep complete optimizer/RNG/cursor state under STATE_DIR.
 Write a complete ready marker before registering a checkpoint. Restoring a new
 Attempt explicitly references the exact checkpoint and storage scope; it does
 not require uploading the full training state through the API.
+
+An explicit checkpoint-free restart is available for a PAI job that failed in
+dataset cache initialization before the managed training process started:
+
+```sh
+ml-exp-rs run sync ACTION --request-id NEW_32_HEX --confirmation 'SYNC ACTION'
+# Wait for that CPU-only probe to end, then create metadata for the next Attempt:
+ml-exp-rs run retry ACTION --confirmation 'RETRY ACTION' --run RUN --attempt attempt-001 \
+  --from-start --sync-request NEW_32_HEX --max-gpu-hours CUMULATIVE_LIMIT
+```
+
+The server confirms the exact parent job is terminal before fencing the probe.
+At least two new exchange sequences exclude the single pending pre-fence packet.
+The fresh managed ledger must still be PREPARED, with no training log/metrics,
+and retain DATA_CACHE_UNAVAILABLE. Missing, started or uncertain evidence is
+rejected. The old worker's CPU sync may itself exit nonzero after waiting for a
+training result that cannot exist; its exact terminal identity and fresh data
+observations, rather than its success label, provide the proof. Nothing here
+submits GPU training: prepare/authorize/execute remain separate. Full cumulative
+Attempt reservations still apply, and an identical retry reuses the same Attempt.
+Checkpoint retries and their hashes remain compatible; Slurm/SenseCore keep the
+checkpoint requirement until an equivalent startup proof is implemented.
+
+If the frozen runtime lacks `shared-cache-identity.v2`, retry reports
+STARTUP_RETRY_RUNTIME_UPGRADE_REQUIRED before creating an Attempt. Build a new
+runtime with the fixed worker and create a new Run using that runtime; do not
+rewrite the old Run/image/Attempt or its shared-cache marker. A new Run can
+reference the existing dataset and retain the same experiment parameters.
 
 Cloud datasets can also be downloaded with `data download`; the client verifies
 the concatenated archive and every member and never overwrites an existing path.

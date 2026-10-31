@@ -9,6 +9,56 @@ struct Sender {
     lose_first: bool,
     checkpoint_error: Mutex<Option<String>>,
 }
+#[test]
+fn one_pending_prepared_packet_cannot_stand_in_for_a_fresh_process_observation() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("runs");
+    let work = temp.path().join("code");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(&work).unwrap();
+    let mut package = launch::compile(Input {
+        root: root.to_str().unwrap(),
+        project: "demo",
+        run: "train",
+        attempt: "attempt-001",
+        workdir: work.to_str().unwrap(),
+        argv: &["/bin/true".into()],
+        timeout_seconds: 3,
+        worker_sha256: &format!("sha256:{}", "a".repeat(64)),
+    })
+    .unwrap();
+    package.channel = Some(exchange::Channel {
+        url: "https://api.example/ml-expd/api/worker-exchange/demo/train/attempt-001".into(),
+        token: "b".repeat(64),
+    });
+    crate::cloud::prepare(&package, &BTreeMap::new()).unwrap();
+    let sender = Sender {
+        calls: Mutex::new(Vec::new()),
+        lose_first: true,
+        checkpoint_error: Mutex::new(None),
+    };
+    assert!(once(&package, &sender).is_err());
+    // The lost packet said PREPARED, but training then actually executed.
+    managed::run(&package.config, &AtomicBool::new(false)).unwrap();
+    assert!(!once(&package, &sender).unwrap()); // only acknowledges the old packet
+    let state: State =
+        serde_json::from_slice(&std::fs::read(package.config.attempt_root.join(STATE)).unwrap())
+            .unwrap();
+    let fresh = packet(&package, &state).unwrap();
+    assert_eq!(fresh.sequence, 2);
+    assert_eq!(fresh.evidence.worker.phase, Phase::Finished);
+    assert!(once(&package, &sender).unwrap());
+    assert_eq!(
+        sender
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|v| v.0)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 2]
+    );
+}
 impl Transport for Sender {
     fn send(&self, _: &exchange::Channel, packet: &Packet) -> Result<Ack> {
         let mut calls = self.calls.lock().unwrap();

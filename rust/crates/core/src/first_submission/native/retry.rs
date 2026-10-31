@@ -7,11 +7,23 @@ use serde_json::{Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 pub const CONTRACT: &str = "native-attempt-retry.v1";
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartFrom {
+    pub run_id: String,
+    pub attempt_id: String,
+    /// CPU-only synchronization requested after the parent job was terminal.
+    pub sync_request_id: String,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub confirmation: String,
-    pub resume_from: checkpoints::Reference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_from: Option<checkpoints::Reference>,
+    /// Explicit full restart, admitted only with durable pre-training failure evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_from: Option<StartFrom>,
     /// Cumulative approval, including all previous Attempt reservations.
     pub max_gpu_hours: f64,
     #[serde(default)]
@@ -20,9 +32,18 @@ pub struct Request {
 impl Request {
     pub fn validate(&self, action: &str) -> Result<()> {
         crate::operations::validate_submission_id(action).map_err(|_| Error("parent Action"))?;
-        self.resume_from
-            .validate()
-            .map_err(|_| Error("retry checkpoint"))?;
+        match (&self.resume_from, &self.restart_from) {
+            (Some(reference), None) => reference
+                .validate()
+                .map_err(|_| Error("retry checkpoint"))?,
+            (None, Some(reference)) => {
+                identity::validate_id(&reference.run_id).map_err(|_| Error("retry Run"))?;
+                number(&reference.attempt_id)?;
+                crate::submission::validate_submission_token(&reference.sync_request_id)
+                    .map_err(|_| Error("startup synchronization identity"))?;
+            }
+            _ => return Err(Error("exactly one retry source is required")),
+        }
         crate::first_submission::validate_gpu_budget(Some(self.max_gpu_hours), "budget_cap")
             .map_err(|_| Error("cumulative budget"))?;
         if self.confirmation != format!("RETRY {action}")
@@ -32,6 +53,19 @@ impl Request {
             return Err(Error("retry confirmation or reason"));
         }
         Ok(())
+    }
+    pub fn parent(&self) -> Result<(&str, &str)> {
+        match (&self.resume_from, &self.restart_from) {
+            (Some(r), None) => Ok((&r.run_id, &r.attempt_id)),
+            (None, Some(r)) => Ok((&r.run_id, &r.attempt_id)),
+            _ => Err(Error("exactly one retry source is required")),
+        }
+    }
+    pub fn checkpoint(&self) -> Result<&checkpoints::Reference> {
+        self.resume_from
+            .as_ref()
+            .filter(|_| self.restart_from.is_none())
+            .ok_or(Error("checkpoint retry required"))
     }
     pub fn identity(&self, action: &str) -> Result<String> {
         self.validate(action)?;
@@ -99,8 +133,8 @@ impl Receipt {
             || next(&parent.attempt_id)? != attempt_id
             || parent.project != field(run, "project")?
             || parent.run_id != field(run, "run_id")?
-            || self.request.resume_from.run_id != parent.run_id
-            || self.request.resume_from.attempt_id != parent.attempt_id
+            || self.request.checkpoint()?.run_id != parent.run_id
+            || self.request.checkpoint()?.attempt_id != parent.attempt_id
             || self.request_sha256 != self.request.identity(&self.parent_action)?
             || self.termination.retained_previous
             || !status.state.is_terminal()
@@ -178,6 +212,7 @@ pub fn plan(run: &Value, request: Request, authority: Authority<'_>, now: &str) 
         checkpoint,
     } = authority;
     let attempt_id = next(&parent.attempt_id)?;
+    let reference = request.checkpoint()?.clone();
     let receipt = Receipt {
         contract: CONTRACT.into(),
         parent_action: action.into(),
@@ -192,11 +227,11 @@ pub fn plan(run: &Value, request: Request, authority: Authority<'_>, now: &str) 
     };
     receipt.validate(run, &attempt_id)?;
     let (context, _) =
-        checkpoints::validate_document(checkpoint, None, Some(&request.resume_from.checkpoint_id))
+        checkpoints::validate_document(checkpoint, None, Some(&reference.checkpoint_id))
             .map_err(|_| Error("retry checkpoint receipt"))?;
     if context.project != field(run, "project")?
-        || context.run_id != request.resume_from.run_id
-        || context.attempt_id != request.resume_from.attempt_id
+        || context.run_id != reference.run_id
+        || context.attempt_id != reference.attempt_id
         || context.source_id != field(run, "source_id")?
         || context.image_id != field(run, "image_id")?
     {

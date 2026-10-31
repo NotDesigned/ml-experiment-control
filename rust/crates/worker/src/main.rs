@@ -68,7 +68,7 @@ fn main() -> ExitCode {
                 println!(
                     "{}",
                     serde_json::json!({"contract":"native-worker-capabilities.v1",
-                    "features":["storage-layout.v1","script-preparation.v1"]})
+                    "features":["storage-layout.v1","script-preparation.v1","shared-cache-identity.v2"]})
                 );
                 return ExitCode::SUCCESS;
             }

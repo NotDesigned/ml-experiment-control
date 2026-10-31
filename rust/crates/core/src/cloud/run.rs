@@ -21,11 +21,12 @@ pub struct Runtime {
 }
 impl Runtime {
     pub fn validate(&self) -> Result<()> {
-        if self
-            .worker_features
-            .iter()
-            .any(|f| !matches!(f.as_str(), "storage-layout.v1" | "script-preparation.v1"))
-        {
+        if self.worker_features.iter().any(|f| {
+            !matches!(
+                f.as_str(),
+                "storage-layout.v1" | "script-preparation.v1" | "shared-cache-identity.v2"
+            )
+        }) {
             return Err(Error("unsupported worker feature"));
         }
         crate::sources::validate_source_id(&self.source_id).map_err(|_| Error("source ID"))?;

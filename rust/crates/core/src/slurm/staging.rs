@@ -113,7 +113,7 @@ pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Op
                 receipt
                     .validate(&doc, &intent.scope.attempt_id)
                     .map_err(|_| helper::Error::Identity)?;
-                if receipt.request.resume_from != reference {
+                if receipt.request.resume_from.as_ref() != Some(&reference) {
                     return Err(helper::Error::Identity);
                 }
             }

@@ -17,6 +17,7 @@ impl Service {
         let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
             .map_err(|_| Error::Authority)?;
         request.validate(action)?;
+        let checkpoint_reference = request.checkpoint()?.clone();
         let lock = self.lock()?;
         let parent = self.load(action)?;
         let project = &parent.binding.project;
@@ -111,9 +112,9 @@ impl Service {
             };
             let checkpoint = self.checkpoints(
                 project,
-                &request.resume_from.run_id,
-                &request.resume_from.attempt_id,
-                Some(&request.resume_from.checkpoint_id),
+                &checkpoint_reference.run_id,
+                &checkpoint_reference.attempt_id,
+                Some(&checkpoint_reference.checkpoint_id),
             )?;
             let attempt = retry::plan(
                 &run_document,

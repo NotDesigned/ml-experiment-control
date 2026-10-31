@@ -102,11 +102,12 @@ class NativeBridge(unittest.TestCase):
                         self.assertEqual(result["request"], frozen)
 
     def test_worker_features_are_frozen_against_exact_binary_and_never_reprobed_on_read(self):
-        for supported in [False, True]:
-            with self.subTest(supported=supported), tempfile.TemporaryDirectory() as directory:
+        for declared in [None, ["storage-layout.v1"], ["storage-layout.v1", "shared-cache-identity.v2"]]:
+            supported = declared is not None
+            with self.subTest(declared=declared), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 binary = root / "worker"
-                response = {"contract": "native-worker-capabilities.v1", "features": ["storage-layout.v1"]}
+                response = {"contract": "native-worker-capabilities.v1", "features": declared or []}
                 binary.write_text("#!/bin/sh\n" + ("printf '%s' '" + json.dumps(response) + "'\n" if supported else "exit 2\n"))
                 binary.chmod(0o500)
                 expected = "sha256:" + hashlib.sha256(binary.read_bytes()).hexdigest()

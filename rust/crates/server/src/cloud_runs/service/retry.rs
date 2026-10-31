@@ -25,6 +25,13 @@ impl Service {
         let lock = self.lock()?;
         let parent = self.load(action)?;
         let binding = &parent.execution.binding;
+        if request
+            .parent()
+            .map_err(|_| cloud::Error::configuration())?
+            != (binding.run_id.as_str(), binding.attempt_id.as_str())
+        {
+            return Err(cloud::Error::evidence());
+        }
         let project = &binding.project;
         let run = &binding.run_id;
         let guard = self
@@ -79,6 +86,24 @@ impl Service {
             if self.current_attempt(project, run)? != binding.attempt_id {
                 return Err(cloud::Error::evidence());
             }
+            if request.restart_from.is_some()
+                && !self
+                    .runtime(
+                        project,
+                        &parent.execution.backend_id,
+                        manifest["container"]["runtime_id"]
+                            .as_str()
+                            .ok_or_else(cloud::Error::evidence)?,
+                    )?
+                    .worker_features
+                    .contains("shared-cache-identity.v2")
+            {
+                return Err(cloud::Error {
+                    code: "STARTUP_RETRY_RUNTIME_UPGRADE_REQUIRED".into(),
+                    http_status: Some(409),
+                    uncertain: false,
+                });
+            }
             let adapter = self.execution_adapter(&parent.execution)?;
             let state = self.outbox.reconcile(
                 &adapter,
@@ -93,14 +118,23 @@ impl Service {
             let termination: ml_exp_core::cloud::JobObservation =
                 serde_json::from_value(state["observation"].clone())
                     .map_err(|_| cloud::Error::evidence())?;
-            if state["handle"]["job_id"] != termination.job_id {
+            if !state["diagnostic"].is_null()
+                || state["handle"]["job_id"] != termination.job_id
+                || !termination.state.is_terminal()
+            {
                 return Err(cloud::Error::evidence());
             }
-            let checkpoint = self.restore_reference(
-                project,
-                &parent.execution.backend_id,
-                &request.resume_from,
-            )?;
+            let checkpoint = match &request.resume_from {
+                Some(reference) => {
+                    self.restore_reference(project, &parent.execution.backend_id, reference)?
+                }
+                None => Value::Null,
+            };
+            let startup_failure = if request.restart_from.is_some() {
+                Some(self.startup_proof(&parent, &request, &termination, &lock, cancelled)?)
+            } else {
+                None
+            };
             let receipt = retry::Receipt {
                 contract: retry::CONTRACT.into(),
                 parent_action: action.into(),
@@ -116,6 +150,7 @@ impl Service {
                     .and_then(|s| s.checked_mul(u64::from(common::number(&next).ok()?)))
                     .ok_or_else(cloud::Error::evidence)?,
                 created_at: now.into(),
+                startup_failure,
             };
             let attempt = retry::plan(&manifest, receipt, &checkpoint)
                 .map_err(|_| cloud::Error::evidence())?;
@@ -158,7 +193,7 @@ impl Service {
         Ok(
             json!({"project":project,"run_id":run,"attempt_id":next,"parent_submission_id":action,"retry_state":"CREATED","reused":exists,
             "request_sha256":request.identity(action).map_err(|_|cloud::Error::evidence())?,"run_sha256":binding.run_sha256,"attempt_sha256":next_binding.attempt_sha256,
-            "resume_from":request.resume_from,"reserved_gpu_seconds":attempt["native_cloud_retry"]["reserved_gpu_seconds"],"max_gpu_hours":request.max_gpu_hours,
+            "resume_from":request.resume_from,"restart_from":request.restart_from,"reserved_gpu_seconds":attempt["native_cloud_retry"]["reserved_gpu_seconds"],"max_gpu_hours":request.max_gpu_hours,
             "scheduler_mutation_performed":false,"next_action":"PREPARE_NEW_ACTION"}),
         )
     }

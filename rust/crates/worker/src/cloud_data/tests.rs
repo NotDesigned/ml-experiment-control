@@ -101,6 +101,27 @@ fn a_cloud_input_is_imported_once_into_shared_storage_and_reused_without_the_sou
         b"immutable cloud input"
     );
     std::fs::remove_file(archive).unwrap();
+    // The next compute node mounts this same cache under another st_dev.
+    let marker = data_root.join(".native-data.json");
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&marker).unwrap()).unwrap();
+    value["identity"][0] = serde_json::json!(value["identity"][0].as_u64().unwrap() ^ 1);
+    std::fs::write(&marker, serde_json::to_vec(&value).unwrap()).unwrap();
+    materialize(&package, &AtomicBool::new(false)).unwrap();
+    // A cache rejection must leave a durable failure without starting training.
+    value["identity"][1] = serde_json::json!(value["identity"][1].as_u64().unwrap() ^ 1);
+    std::fs::write(&marker, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(crate::cloud::run(&package, &BTreeMap::new(), &AtomicBool::new(false)).is_err());
+    assert_eq!(
+        crate::managed::inspect(&package.config).unwrap().phase,
+        ml_exp_core::managed::evidence::Phase::Prepared
+    );
+    let failed = read(&package).unwrap();
+    assert_eq!(failed[0].phase, Phase::Failed);
+    assert_eq!(failed[0].code.as_deref(), Some("DATA_CACHE_UNAVAILABLE"));
+    assert!(!package.config.output_path().join("result").exists());
+    value["identity"][1] = serde_json::json!(value["identity"][1].as_u64().unwrap() ^ 1);
+    std::fs::write(&marker, serde_json::to_vec(&value).unwrap()).unwrap();
     materialize(&package, &AtomicBool::new(false)).unwrap();
     assert!(
         crate::managed::run(&package.config, &AtomicBool::new(false))

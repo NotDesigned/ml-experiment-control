@@ -76,7 +76,15 @@ impl Store {
         let actual: Marker =
             serde_json::from_slice(&self.root.read_regular(OsStr::new(MARKER), 4096)?)
                 .map_err(|_| invalid())?;
-        if actual != self.marker()? {
+        let expected = self.marker()?;
+        // st_dev identifies a mount in this node's namespace, not a shared
+        // filesystem. CPFS/NAS clients can assign different devices to the same
+        // inode. Keep the logical authority and inode binding; Directory still
+        // checks both device and inode on every operation within this process.
+        if actual.contract != expected.contract
+            || actual.target != expected.target
+            || actual.identity.1 != expected.identity.1
+        {
             return Err(invalid());
         }
         self.root.verify_private_parent()
