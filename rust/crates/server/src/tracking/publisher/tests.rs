@@ -51,6 +51,15 @@ fn historical_terminal_uses_original_outcomes_without_claiming_a_running_run_com
 
 #[test]
 fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursors() {
+    exercise_delayed_publication(false);
+}
+
+#[test]
+fn already_started_legacy_display_keeps_names_and_reservations_across_restart() {
+    exercise_delayed_publication(true);
+}
+
+fn exercise_delayed_publication(legacy: bool) {
     let root = tempfile::tempdir().unwrap();
     let cloud = root.path().join("cloud.json");
     fs::write(
@@ -87,6 +96,15 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
         )
         .unwrap();
     let scope = store.scope(&guard, "attempt-001").unwrap();
+    if legacy {
+        // Exact shape of an older saved state, with no display_contract field.
+        let mut saved = serde_json::to_value(Saved::default()).unwrap();
+        saved["state"]["display_version"] = json!(2);
+        assert!(saved.get("display_contract").is_none());
+        store
+            .save_publication_state(&guard, &scope, &saved, "PENDING", None, "fixture")
+            .unwrap();
+    }
     let metric = |id: &str, step: u64, value: f64, variant: &str| {
         Event{event_id:id.into(),payload:normalized_metric(&json!({"name":"loss","unit":"nats/token","step":step,"value":value,"variant_id":variant}),&json!({})).unwrap()}
     };
@@ -109,6 +127,8 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
     };
     let read_cloud = || serde_json::from_slice::<Value>(&fs::read(&cloud).unwrap()).unwrap();
     cycle(&mut sdk).unwrap();
+    let saved = store.publication_state(&guard, &scope).unwrap().unwrap();
+    assert_eq!(saved["display_contract"], if legacy { 2 } else { 3 });
     assert_eq!(
         store.scope_status(&guard, &scope).unwrap().unwrap()["confirmed"],
         0
@@ -205,6 +225,15 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
         })
         .collect();
     assert!(curve_keys.len() >= 4, "variant curves remain distinct");
+    if !legacy {
+        assert_eq!(rows[0]["curves/loss/variants/a"], 3.0);
+        assert_eq!(rows[2]["curves/loss/variants/b"], 5.0);
+        assert!(rows[0].get("curves/loss").is_none());
+        assert_eq!(
+            store.scope_status(&guard, &scope).unwrap().unwrap()["display_version"],
+            3
+        );
+    }
     assert!(
         !remote["runs"][&id]["summary"]
             .as_object()
@@ -250,4 +279,80 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
             .contains("test-key-never-stored")
     );
     drop(sdk);
+}
+
+#[test]
+fn display_version_selection_never_upgrades_started_or_uncertain_scopes() {
+    assert_eq!(Saved::default().display_version(0, 0).unwrap(), 3);
+    assert_eq!(Saved::default().display_version(1, 0).unwrap(), 2);
+    assert_eq!(Saved::default().display_version(0, 2).unwrap(), 2);
+    let mut old = Saved {
+        ever_opened: true,
+        ..Default::default()
+    };
+    assert_eq!(old.display_version(0, 0).unwrap(), 2);
+    old.ever_opened = false;
+    old.state.sent.insert(1, "unknown-send".into());
+    assert_eq!(old.display_version(0, 0).unwrap(), 2);
+    old.display_contract = Some(3);
+    let restored: Saved = serde_json::from_value(serde_json::to_value(&old).unwrap()).unwrap();
+    assert_eq!(restored.display_version(0, 0).unwrap(), 3);
+    assert_eq!(restored.state.sent, old.state.sent);
+    old.display_contract = Some(4);
+    assert!(old.display_version(0, 0).is_err());
+}
+
+#[test]
+fn stable_projection_ignores_destination_reservations_and_reports_ambiguous_names() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path(), "0123456789abcdef0123456789abcdef").unwrap();
+    for (index, run) in ["train-a", "train-b"].iter().enumerate() {
+        let guard = store.guard("demo", run).unwrap();
+        store
+            .bind(
+                &guard,
+                &json!({"enabled":true,"entity":"fixture","project":"science"}),
+                &json!({}),
+            )
+            .unwrap();
+        let scope = store.scope(&guard, "attempt-001").unwrap();
+        let event = |protocol: &str| Event {
+            event_id: format!("{run}-{protocol}"),
+            payload: json!({"kind":"metrics","observations":[{"name":"train_loss","unit":"nats/token","protocol_id":protocol,"value":3.0,"step":1,"status":"VALID"}]}),
+        };
+        store.append(&guard, &scope, &[event(run)]).unwrap();
+        // Exercise the old allocator first so its reservation cannot influence v3.
+        let legacy = store.display(&guard, &scope, 1, 2).unwrap();
+        let stable = store.display(&guard, &scope, 1, 3).unwrap();
+        let row = stable["series"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap();
+        assert_eq!(row["curve"], "curves/train_loss");
+        if index == 1 {
+            assert_ne!(
+                legacy["series"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .next()
+                    .unwrap()["curve"],
+                row["curve"]
+            );
+        }
+        store
+            .append(&guard, &scope, &[event("different-protocol")])
+            .unwrap();
+        assert!(matches!(
+            store.display(&guard, &scope, 2, 3),
+            Err(crate::records::Error::Invalid("DISPLAY_NAME_CONFLICT"))
+        ));
+        assert_eq!(
+            store.total(&guard, &scope).unwrap(),
+            2,
+            "display errors preserve the accepted journal"
+        );
+    }
 }

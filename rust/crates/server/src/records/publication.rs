@@ -81,7 +81,13 @@ impl Store {
             self.require_guard(guard)
         })
     }
-    pub fn display(&self, guard: &RecordGuard<'_>, scope: &str, through: i64) -> Result<Value> {
+    pub fn display(
+        &self,
+        guard: &RecordGuard<'_>,
+        scope: &str,
+        through: i64,
+        version: i64,
+    ) -> Result<Value> {
         self.require_scope(guard, scope)?;
         if self.read_only || through < 0 || through > self.total(guard, scope)? || through > 100_000
         {
@@ -108,6 +114,19 @@ impl Store {
                 after = row.seq;
             }
         }
+        let projection = projection
+            .at(through)
+            .map_err(|_| Error::Invalid("display cutoff"))?;
+        if version == tracking::STABLE_DISPLAY_VERSION {
+            return projection.stable_document().map_err(|error| match error {
+                tracking::Error::Display(code) => Error::Invalid(code),
+                _ => Error::Invalid("display document"),
+            });
+        }
+        if version != 2 {
+            return Err(Error::Invalid("unsupported display version"));
+        }
+        // Only already-started v2 publications retain destination reservations.
         let binding = self.binding(guard)?.ok_or(Error::Unbound)?;
         let destination = records::encoded(&json!([
             binding["route"]["entity"],

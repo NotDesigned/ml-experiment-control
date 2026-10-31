@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "experiment-redact"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "regex",
  "serde_json",
@@ -927,7 +927,7 @@ dependencies = [
 
 [[package]]
 name = "ml-exp-client"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "clap",
  "flate2",
@@ -947,7 +947,7 @@ dependencies = [
 
 [[package]]
 name = "ml-exp-core"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "base64 0.22.1",
  "experiment-redact",
@@ -963,7 +963,7 @@ dependencies = [
 
 [[package]]
 name = "ml-exp-io"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
@@ -978,7 +978,7 @@ dependencies = [
 
 [[package]]
 name = "ml-exp-server"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1017,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "ml-exp-worker"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "clap",
  "experiment-redact",

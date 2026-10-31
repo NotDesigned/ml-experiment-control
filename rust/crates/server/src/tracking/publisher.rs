@@ -29,6 +29,29 @@ struct Saved {
     finish_requested: bool,
     remote_finished: bool,
     ever_opened: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    display_contract: Option<i64>,
+}
+impl Saved {
+    fn display_version(&self, confirmed: i64, observed_display: i64) -> Result<i64> {
+        let version = self.display_contract.unwrap_or_else(|| {
+            if self.ever_opened
+                || self.finish_requested
+                || confirmed > 0
+                || observed_display > 0
+                || !self.state.sent.is_empty()
+                || self.state.display_version.is_some()
+            {
+                2
+            } else {
+                tracking::STABLE_DISPLAY_VERSION
+            }
+        });
+        match version {
+            2 | 3 => Ok(version),
+            _ => Err(Error::Publication("DISPLAY_CONTRACT_UNSUPPORTED")),
+        }
+    }
 }
 pub struct Publisher {
     stop: Arc<AtomicBool>,
@@ -301,6 +324,9 @@ fn publish_bound(
     if saved.state.confirmed > confirmed {
         return Err(Error::Identity);
     }
+    let display_version =
+        saved.display_version(confirmed, status["display_version"].as_i64().unwrap_or(0))?;
+    saved.display_contract = Some(display_version);
     saved.state.confirmed = confirmed;
     saved.state.sent.retain(|sequence, _| *sequence > confirmed);
     let mut events = store
@@ -379,7 +405,7 @@ fn publish_bound(
         &local,
         expected.as_deref(),
         terminal,
-        2,
+        display_version,
     )
     .map_err(|_| Error::Publication("PUBLICATION_PLAN_INVALID"))?;
     match &plan.status {
@@ -392,7 +418,7 @@ fn publish_bound(
         _ => {}
     }
     let (at, _) = crate::projects::transition_context().map_err(|_| Error::Storage)?;
-    let display_ack = evidence.display_version == Some(2)
+    let display_ack = evidence.display_version == Some(display_version)
         && evidence.display_through == Some(plan.state.confirmed)
         && plan.state.confirmed == through;
     let proof = RemoteHistoryEvidence {
@@ -410,7 +436,7 @@ fn publish_bound(
                 event_id: item.event_id.clone(),
             })
             .collect(),
-        display_version: display_ack.then_some(2),
+        display_version: display_ack.then_some(display_version),
         display_through: display_ack.then_some(plan.state.confirmed),
     };
     if plan.state.confirmed > confirmed || display_ack {
@@ -462,8 +488,13 @@ fn publish_bound(
         return save(store, &guard, scope, &saved, phase, error, &at);
     }
     let display = store
-        .display(&guard, scope, through)
-        .map_err(|_| Error::Storage)?;
+        .display(&guard, scope, through, display_version)
+        .map_err(|error| match error {
+            crate::records::Error::Invalid(
+                code @ ("DISPLAY_NAME_CONFLICT" | "DISPLAY_VARIANT_LABEL_REQUIRED"),
+            ) => Error::Publication(code),
+            _ => Error::Storage,
+        })?;
     let keys: Vec<String> =
         serde_json::from_value(remote["summary_keys"].clone()).map_err(|_| Error::Identity)?;
     let mut effects = Vec::new();

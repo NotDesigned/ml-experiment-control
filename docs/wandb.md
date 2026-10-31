@@ -105,9 +105,22 @@ Invalid/conflicting explicit results do not fall back to unrelated history.
 Active Attempts do not expose a final result scalar. Failed Attempts can retain
 valid measurements, so filter `ml_expd/state` when comparing successful runs.
 
-Different units/protocols/datasets receive distinct persisted field names. Within
-one Attempt, multiple variants split into `/variants/HASH` fields. One variant
-per Attempt uses the common comparison name with its identity in provenance.
+New publications (native 0.1.13+) keep the caller's metric name, including slashes
+and Unicode: different Runs both writing `train_loss` use `curves/train_loss` and
+`results/train_loss`. Protocol, dataset, seed and parameters stay in config and
+provenance; they do not append hashes to W&B field names. W&B compares Runs by
+these stable names; choose compatible units/protocols when selecting Runs.
+
+An explicit `variant_id` always adds `/variants/LABEL`, even before another
+variant arrives. Labels stay readable; `%` and `/` are escaped as `%25` and `%2F`.
+Within an Attempt, ambiguous same-name identities or generated-field collisions
+stop publication with `DISPLAY_NAME_CONFLICT`; use distinct names or variants.
+Accepted records remain queryable. Empty/non-string variant labels cannot be
+displayed and report `DISPLAY_VARIANT_LABEL_REQUIRED`.
+
+Already-started publications retain their saved v2 names, including old hashes;
+finished W&B Runs are not reopened. Upgrading does not rename or replay existing
+history, reset confirmation cursors, or resend uncertain events.
 Checkpoint changes retain per-point provenance without splitting the curve.
 Numerator/denominator and step/epoch are metadata/hidden axes, not result metrics.
 Raw records remain available in history; hidden helper fields are excluded from

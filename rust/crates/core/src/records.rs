@@ -581,7 +581,7 @@ pub fn confirmation_plan(
     }
     match (proof.display_version, proof.display_through) {
         (None, None) => {}
-        (Some(2), Some(through)) if through == proof.through && error.is_none() => {}
+        (Some(2 | 3), Some(through)) if through == proof.through && error.is_none() => {}
         _ => return Err(Error::Invalid("remote display acknowledgement")),
     }
     Ok(CursorAdvance {

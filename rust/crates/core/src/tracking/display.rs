@@ -1,6 +1,7 @@
 //! Derived charts, never scientific selection. Checkpoint provenance stays on
 //! each point; a checkpoint change does not create a new training curve.
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -14,7 +15,7 @@ use crate::{
 };
 
 const FIELDS: [&str; 4] = ["name", "unit", "protocol_id", "dataset_id"];
-const VERSION: i64 = 2;
+pub const STABLE_DISPLAY_VERSION: i64 = 3;
 fn object(value: &Value) -> Result<&Map<String, Value>> {
     value.as_object().ok_or(Error::Display("object required"))
 }
@@ -329,6 +330,78 @@ impl Projection {
         }
         Ok(json!({"contract":"metric-display.v2","through":self.cursor,"series":result}))
     }
+    /// Display names belong to an Attempt, not to a destination-wide identity
+    /// registry. Keep scientific identities in provenance and use caller labels
+    /// for variants, including the first variant seen in a streaming journal.
+    pub fn stable_document(&self) -> Result<Value> {
+        let mut fields = BTreeSet::new();
+        let mut result = Map::new();
+        for series in &self.series {
+            let name = text(&series.context, "name")?;
+            let suffix = match get(&series.context, "variant_id") {
+                Value::Null => String::new(),
+                Value::String(label) if !label.is_empty() => {
+                    // Escape separators injectively; ordinary labels stay readable.
+                    let label = label.replace('%', "%25").replace('/', "%2F");
+                    format!("/variants/{label}")
+                }
+                _ => return Err(Error::Display("DISPLAY_VARIANT_LABEL_REQUIRED")),
+            };
+            let public = format!("{name}{suffix}");
+            let curve = format!("curves/{public}");
+            let comparison = format!("results/{public}");
+            // Also reserve epoch/axis names: an explicit name ending in
+            // /by_epoch must not overwrite another metric's epoch curve.
+            for field in [
+                curve.clone(),
+                format!("{curve}/by_epoch"),
+                format!("axes/{public}/step"),
+                format!("axes/{public}/by_epoch/epoch"),
+                comparison.clone(),
+            ] {
+                if !fields.insert(field) {
+                    return Err(Error::Display("DISPLAY_NAME_CONFLICT"));
+                }
+            }
+            let mut row = series.state();
+            row["latest"] = series
+                .summary
+                .as_ref()
+                .or(series.latest.as_ref())
+                .cloned()
+                .unwrap_or(Value::Null);
+            row["selection"] = json!(if series.summary.is_some() {
+                "explicit_summary"
+            } else {
+                "latest_observation"
+            });
+            row["name"] = json!(name);
+            row["curve"] = json!(curve);
+            row["result"] = json!(comparison);
+            result.insert(series.key.clone(), row);
+        }
+        Ok(json!({"contract":"metric-display.v3","through":self.cursor,"series":result}))
+    }
+}
+
+fn display_version(display: &Value) -> Result<i64> {
+    match get(display, "contract").as_str() {
+        Some("metric-display.v2") => Ok(2),
+        Some("metric-display.v3") => Ok(STABLE_DISPLAY_VERSION),
+        _ => Err(Error::Display("unsupported metric display contract")),
+    }
+}
+
+fn curve_keys<'a>(row: &'a Value, display: &Value) -> Result<Vec<(&'a str, bool)>> {
+    if display_version(display)? == STABLE_DISPLAY_VERSION {
+        Ok(vec![(text(row, "curve")?, true)])
+    } else {
+        let multiple = truth(get(row, "multiple_variants"));
+        Ok(vec![
+            (text(row, "curve")?, !multiple),
+            (text(row, "shadow")?, multiple),
+        ])
+    }
 }
 
 pub fn curve_record(event: &Value, display: &Value) -> Result<Value> {
@@ -363,11 +436,11 @@ pub fn curve_record(event: &Value, display: &Value) -> Result<Value> {
         let Some(axis) = axis(item)? else {
             continue;
         };
-        let mut keys = vec![text(row, "shadow")?];
-        if !truth(get(row, "multiple_variants")) {
-            keys.push(text(row, "curve")?);
-        }
-        for key in keys {
+        for (key, visible) in curve_keys(row, display)? {
+            // v2 always wrote its shadow, even when hidden.
+            if !visible && key == text(row, "curve")? {
+                continue;
+            }
             let key = format!("{key}{}", if axis == "epoch" { "/by_epoch" } else { "" });
             record.insert(key.clone(), get(item, "value").clone());
             record.insert(
@@ -407,11 +480,7 @@ pub fn definition_specs(display: &Value) -> Result<Vec<DefinitionSpec>> {
     ];
     for series in object(get(display, "series"))?.values() {
         for axis in ["step", "epoch"] {
-            let multiple = truth(get(series, "multiple_variants"));
-            for (key, visible) in [
-                (text(series, "curve")?, !multiple),
-                (text(series, "shadow")?, multiple),
-            ] {
+            for (key, visible) in curve_keys(series, display)? {
                 let key = format!("{key}{}", if axis == "epoch" { "/by_epoch" } else { "" });
                 let axis_key = format!(
                     "axes/{}/{axis}",
@@ -509,7 +578,10 @@ pub fn summary_patch(
         "ml_expd/display_through".into(),
         get(display, "through").clone(),
     );
-    values.insert("ml_expd/display_version".into(), json!(VERSION));
+    values.insert(
+        "ml_expd/display_version".into(),
+        json!(display_version(display)?),
+    );
     Ok(SummaryPatch {
         delete,
         set: values,
