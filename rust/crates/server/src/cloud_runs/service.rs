@@ -481,6 +481,31 @@ pub(crate) fn failure(error: cloud::Error) -> read_api::Error {
         )
     } else {
         match (error.code.as_str(), error.http_status) {
+            ("STARTUP_RETRY_RUNTIME_UPGRADE_REQUIRED", _) => (
+                409,
+                "STARTUP_RETRY_RUNTIME_UPGRADE_REQUIRED",
+                "the frozen image has the old cache reader; build a new runtime and create a new Run; no Attempt was created",
+            ),
+            ("STARTUP_RETRY_SYNC_REQUIRED", _) => (
+                409,
+                "STARTUP_RETRY_SYNC_REQUIRED",
+                "request a fresh CPU synchronization after the parent job is terminal; no Attempt was created",
+            ),
+            ("STARTUP_RETRY_SYNC_PENDING", _) => (
+                409,
+                "STARTUP_RETRY_SYNC_PENDING",
+                "the original CPU synchronization has not reached a verified terminal state; observe the same synchronization",
+            ),
+            ("STARTUP_RETRY_EVIDENCE_REQUIRED", _) => (
+                409,
+                "STARTUP_RETRY_EVIDENCE_REQUIRED",
+                "fresh post-terminal evidence does not prove a cache failure before training; no Attempt was created",
+            ),
+            ("STARTUP_RETRY_TRAINING_MAY_HAVE_STARTED", _) => (
+                409,
+                "STARTUP_RETRY_TRAINING_MAY_HAVE_STARTED",
+                "training activity or incomplete checkpoint evidence prevents a checkpoint-free restart; no Attempt was created",
+            ),
             ("OSS_DATASET_SCOPE_DENIED", _) => (
                 422,
                 "OSS_DATASET_SCOPE_DENIED",
@@ -585,6 +610,31 @@ mod script_preparation;
 #[cfg(test)]
 mod failure_tests {
     use super::*;
+    #[test]
+    fn startup_retry_rejections_reach_the_client_without_losing_uncertainty() {
+        for code in [
+            "STARTUP_RETRY_RUNTIME_UPGRADE_REQUIRED",
+            "STARTUP_RETRY_SYNC_REQUIRED",
+            "STARTUP_RETRY_SYNC_PENDING",
+            "STARTUP_RETRY_EVIDENCE_REQUIRED",
+            "STARTUP_RETRY_TRAINING_MAY_HAVE_STARTED",
+        ] {
+            let public = failure(cloud::Error {
+                code: code.into(),
+                http_status: Some(409),
+                uncertain: false,
+            });
+            assert_eq!(public.status, 409);
+            assert_eq!(public.code, code);
+            let uncertain = failure(cloud::Error {
+                code: code.into(),
+                http_status: Some(409),
+                uncertain: true,
+            });
+            assert_eq!(uncertain.status, 500);
+            assert_eq!(uncertain.code, "CLOUD_OPERATION_UNCERTAIN");
+        }
+    }
     #[test]
     fn public_failures_keep_actionable_types_and_never_echo_untrusted_codes() {
         for (code, status) in [
