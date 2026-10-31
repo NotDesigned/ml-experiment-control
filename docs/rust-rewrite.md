@@ -129,6 +129,17 @@ refused without repair. New data-copy jobs use the same layout. Runtime receipts
 freeze the exact worker's declared capabilities, so older images/Run identities
 retain their original package and command contract.
 
+After changing the worker or its bridge, check the **installed** package with
+the builder service's interpreter and environment. Updating a source checkout
+does not update a wheel installed in another environment. Run
+`tools/check_native_builder.py --config BUILDER_JSON --bridge-sha256 ACCEPTED_MODULE_SHA256
+--worker-sha256 sha256:ACCEPTED_WORKER_SHA256 --require-feature shared-cache-identity.v2`
+with that interpreter, without `PYTHONPATH` or `PYTHONHOME`. The check prints
+the imported module path/hash and freezes the actual worker declaration in a
+temporary local marker; it starts no provider job. Then exercise an actual
+build through the running daemon and reconcile its receipt. A source-only
+capability probe does not establish that the service loads the same code.
+
 PAI CPU Runs now pass the shared request shape instead of being rejected by a
 Slurm-only positive-GPU constraint. Slurm GPU validation remains unchanged.
 Private configuration failures identify the relevant credential or dependency
