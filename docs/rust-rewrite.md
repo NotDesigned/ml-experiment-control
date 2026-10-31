@@ -232,7 +232,7 @@ acceptance history below records the earlier isolated tests.
 W&B display contract v3 preserves metric names across Runs; protocol and data
 identities stay in provenance. Explicit variants use readable labels. Already-started
 publications retain their v2 names and confirmation cursors; upgrading does not
-rename or replay W&B history. See [metric display](wandb.md#training-curves-and-final-results).
+rename or replay W&B history. See [metric display](wandb.md#curves-and-chosen-results).
 
 ## Deliberate limits and remaining acceptance
 
