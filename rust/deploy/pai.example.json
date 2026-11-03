@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "enabled": false,
+  "allow_run_creation": false,
+  "backends": [{
+    "executor": "pai-gpu",
+    "profile": {
+      "provider": "pai",
+      "region": "cn-hangzhou",
+      "workspace_id": "example-workspace",
+      "quota_id": "example-quota",
+      "max_gpus": 8,
+      "max_cpus": 64,
+      "max_memory_gb": 512,
+      "storage": {
+        "cpfs_uri": "bmcpfs://cpfs-example.cn-hangzhou.cpfs.aliyuncs.com/",
+        "workspace_user": "researcher",
+        "role_arn": "acs:ram::1234567890123456:role/pai-data-researcher"
+      },
+      "vpc": {"VpcId": "vpc-example", "VSwitchId": "vsw-example", "SecurityGroupId": "sg-example"}
+    },
+    "run_root": "/mnt/workspace/ml-expd-native/runs",
+    "data_root": "/mnt/workspace/ml-expd-native/datasets",
+    "credentials_file": "/etc/ml-expd/native/pai-credentials.json",
+    "registry_auth_file": "/etc/ml-expd/native/registry-auth.json",
+    "runtimes": {},
+    "allocation": "guaranteed"
+  }],
+  "exchange": {"public_url": "https://api.example/ml-expd", "signing_key_file": "/etc/ml-expd/native/exchange-key"},
+  "artifacts": {
+    "endpoint": "oss-cn-hangzhou.aliyuncs.com",
+    "bucket": "example-private-bucket",
+    "prefix": "users/researcher/ml-expd-native/",
+    "credentials_file": "/etc/ml-expd/native/oss-credentials.json"
+  },
+  "builds": {
+    "socket": "/run/ml-expd-native-builder/worker.sock",
+    "peer_uid": 0,
+    "worker_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "polling": {"enabled": false, "interval_seconds": 10, "max_candidates": 4096, "rpc_timeout_seconds": 5}
+}

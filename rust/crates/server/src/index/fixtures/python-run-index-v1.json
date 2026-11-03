@@ -1,0 +1,752 @@
+{
+  "generator": "original Python RunIndex + Pydantic RunIndexRow in isolated TemporaryDirectory; no provider or canonical Run file reads",
+  "upserts": [
+    {
+      "row": {
+        "project": "demo",
+        "campaign": "origin",
+        "campaign_source": null,
+        "campaign_binding": {
+          "relationship": "UNRESOLVED",
+          "issues": [],
+          "origin_project": null,
+          "origin_campaign": null,
+          "origin_revision": null,
+          "current_revision": null,
+          "membership": null
+        },
+        "campaign_memberships": [],
+        "run_id": "run-a",
+        "role": null,
+        "role_source": null,
+        "run_dir": "/canonical/a",
+        "scheduler_state": "RUNNING",
+        "evidence": {
+          "scheduler": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "worker": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "process": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "model": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "evaluation": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          }
+        },
+        "latest_metrics": {
+          "loss": 1
+        },
+        "eval_metrics": {},
+        "eval_variants": [],
+        "evaluation_snapshot": {},
+        "canonical_eval_variant_id": null,
+        "decision": {},
+        "decision_history": [],
+        "research_contract": null,
+        "research_contract_source": null,
+        "checkpoint": {},
+        "artifacts": {},
+        "provenance": {},
+        "attempts": [],
+        "warnings": [],
+        "evidence_conflicts": [],
+        "scanned_at": 1.0
+      },
+      "changed": true
+    },
+    {
+      "row": {
+        "project": "demo",
+        "campaign": "other",
+        "campaign_source": null,
+        "campaign_binding": {
+          "relationship": "UNRESOLVED",
+          "issues": [],
+          "origin_project": null,
+          "origin_campaign": null,
+          "origin_revision": null,
+          "current_revision": null,
+          "membership": null
+        },
+        "campaign_memberships": [
+          {
+            "campaign": "origin",
+            "revision_id": "campaign.frozen",
+            "membership": {
+              "run_id": "run-b",
+              "kind": "reuse",
+              "role": null,
+              "arm": null,
+              "replicate": null,
+              "purpose": null,
+              "included_in_analysis": true
+            },
+            "is_origin": false
+          }
+        ],
+        "run_id": "run-b",
+        "role": null,
+        "role_source": null,
+        "run_dir": "/canonical/b",
+        "scheduler_state": null,
+        "evidence": {
+          "scheduler": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "worker": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "process": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "model": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "evaluation": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          }
+        },
+        "latest_metrics": {},
+        "eval_metrics": {},
+        "eval_variants": [],
+        "evaluation_snapshot": {},
+        "canonical_eval_variant_id": null,
+        "decision": {},
+        "decision_history": [],
+        "research_contract": null,
+        "research_contract_source": null,
+        "checkpoint": {},
+        "artifacts": {},
+        "provenance": {},
+        "attempts": [],
+        "warnings": [],
+        "evidence_conflicts": [],
+        "scanned_at": 1.0
+      },
+      "changed": true
+    },
+    {
+      "row": {
+        "project": "demo",
+        "campaign": "origin",
+        "campaign_source": null,
+        "campaign_binding": {
+          "relationship": "UNRESOLVED",
+          "issues": [],
+          "origin_project": null,
+          "origin_campaign": null,
+          "origin_revision": null,
+          "current_revision": null,
+          "membership": null
+        },
+        "campaign_memberships": [],
+        "run_id": "run-a",
+        "role": null,
+        "role_source": null,
+        "run_dir": "/canonical/a",
+        "scheduler_state": "RUNNING",
+        "evidence": {
+          "scheduler": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "worker": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "process": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "model": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "evaluation": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          }
+        },
+        "latest_metrics": {
+          "loss": 1
+        },
+        "eval_metrics": {},
+        "eval_variants": [],
+        "evaluation_snapshot": {},
+        "canonical_eval_variant_id": null,
+        "decision": {},
+        "decision_history": [],
+        "research_contract": null,
+        "research_contract_source": null,
+        "checkpoint": {},
+        "artifacts": {},
+        "provenance": {},
+        "attempts": [],
+        "warnings": [],
+        "evidence_conflicts": [],
+        "scanned_at": 2.0
+      },
+      "changed": false
+    },
+    {
+      "row": {
+        "project": "demo",
+        "campaign": "origin",
+        "campaign_source": null,
+        "campaign_binding": {
+          "relationship": "UNRESOLVED",
+          "issues": [],
+          "origin_project": null,
+          "origin_campaign": null,
+          "origin_revision": null,
+          "current_revision": null,
+          "membership": null
+        },
+        "campaign_memberships": [],
+        "run_id": "run-a",
+        "role": null,
+        "role_source": null,
+        "run_dir": "/canonical/a",
+        "scheduler_state": "RUNNING",
+        "evidence": {
+          "scheduler": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "worker": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "process": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "model": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "evaluation": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          }
+        },
+        "latest_metrics": {
+          "loss": 1.0
+        },
+        "eval_metrics": {},
+        "eval_variants": [],
+        "evaluation_snapshot": {},
+        "canonical_eval_variant_id": null,
+        "decision": {},
+        "decision_history": [],
+        "research_contract": null,
+        "research_contract_source": null,
+        "checkpoint": {},
+        "artifacts": {},
+        "provenance": {},
+        "attempts": [],
+        "warnings": [],
+        "evidence_conflicts": [],
+        "scanned_at": 3.0
+      },
+      "changed": false
+    },
+    {
+      "row": {
+        "project": "demo",
+        "campaign": "origin",
+        "campaign_source": null,
+        "campaign_binding": {
+          "relationship": "UNRESOLVED",
+          "issues": [],
+          "origin_project": null,
+          "origin_campaign": null,
+          "origin_revision": null,
+          "current_revision": null,
+          "membership": null
+        },
+        "campaign_memberships": [],
+        "run_id": "run-a",
+        "role": null,
+        "role_source": null,
+        "run_dir": "/canonical/a",
+        "scheduler_state": "RUNNING",
+        "evidence": {
+          "scheduler": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "worker": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "process": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "model": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          },
+          "evaluation": {
+            "state": null,
+            "attempt_id": null,
+            "as_of": null,
+            "source": null,
+            "detail": {},
+            "stale": false,
+            "stale_reason": null
+          }
+        },
+        "latest_metrics": {
+          "loss": 2
+        },
+        "eval_metrics": {},
+        "eval_variants": [],
+        "evaluation_snapshot": {},
+        "canonical_eval_variant_id": null,
+        "decision": {},
+        "decision_history": [],
+        "research_contract": null,
+        "research_contract_source": null,
+        "checkpoint": {},
+        "artifacts": {},
+        "provenance": {},
+        "attempts": [],
+        "warnings": [],
+        "evidence_conflicts": [],
+        "scanned_at": 4.0
+      },
+      "changed": true
+    }
+  ],
+  "polls": [
+    {
+      "verb": "status",
+      "error": "scheduler unavailable",
+      "now": 100.0,
+      "outcome": null,
+      "expected": {
+        "run_id": "run-a",
+        "project": "demo",
+        "last_poll_at": 100.0,
+        "last_verb": "status",
+        "last_error": "scheduler unavailable",
+        "verb_results": {
+          "status": {
+            "at": 100.0,
+            "error": "scheduler unavailable",
+            "outcome": "failed"
+          }
+        }
+      }
+    },
+    {
+      "verb": "collect",
+      "error": null,
+      "now": 101.0,
+      "outcome": null,
+      "expected": {
+        "run_id": "run-a",
+        "project": "demo",
+        "last_poll_at": 101.0,
+        "last_verb": "collect",
+        "last_error": "scheduler unavailable",
+        "verb_results": {
+          "collect": {
+            "at": 101.0,
+            "error": null,
+            "outcome": "succeeded"
+          },
+          "status": {
+            "at": 100.0,
+            "error": "scheduler unavailable",
+            "outcome": "failed"
+          }
+        }
+      }
+    },
+    {
+      "verb": "status",
+      "error": null,
+      "now": 102.0,
+      "outcome": null,
+      "expected": {
+        "run_id": "run-a",
+        "project": "demo",
+        "last_poll_at": 102.0,
+        "last_verb": "status",
+        "last_error": null,
+        "verb_results": {
+          "collect": {
+            "at": 101.0,
+            "error": null,
+            "outcome": "succeeded"
+          },
+          "status": {
+            "at": 102.0,
+            "error": null,
+            "outcome": "succeeded"
+          }
+        }
+      }
+    },
+    {
+      "verb": "collect",
+      "error": "",
+      "now": 103.0,
+      "outcome": "partial",
+      "expected": {
+        "run_id": "run-a",
+        "project": "demo",
+        "last_poll_at": 103.0,
+        "last_verb": "collect",
+        "last_error": null,
+        "verb_results": {
+          "collect": {
+            "at": 103.0,
+            "error": "",
+            "outcome": "partial"
+          },
+          "status": {
+            "at": 102.0,
+            "error": null,
+            "outcome": "succeeded"
+          }
+        }
+      }
+    }
+  ],
+  "origin_runs": [
+    "run-a",
+    "run-b"
+  ],
+  "runs": [
+    {
+      "project": "demo",
+      "campaign": "origin",
+      "campaign_source": null,
+      "campaign_binding": {
+        "relationship": "UNRESOLVED",
+        "issues": [],
+        "origin_project": null,
+        "origin_campaign": null,
+        "origin_revision": null,
+        "current_revision": null,
+        "membership": null
+      },
+      "campaign_memberships": [],
+      "run_id": "run-a",
+      "role": null,
+      "role_source": null,
+      "run_dir": "/canonical/a",
+      "scheduler_state": "RUNNING",
+      "evidence": {
+        "scheduler": {
+          "state": null,
+          "attempt_id": null,
+          "as_of": null,
+          "source": null,
+          "detail": {},
+          "stale": false,
+          "stale_reason": null
+        },
+        "worker": {
+          "state": null,
+          "attempt_id": null,
+          "as_of": null,
+          "source": null,
+          "detail": {},
+          "stale": false,
+          "stale_reason": null
+        },
+        "process": {
+          "state": null,
+          "attempt_id": null,
+          "as_of": null,
+          "source": null,
+          "detail": {},
+          "stale": false,
+          "stale_reason": null
+        },
+        "model": {
+          "state": null,
+          "attempt_id": null,
+          "as_of": null,
+          "source": null,
+          "detail": {},
+          "stale": false,
+          "stale_reason": null
+        },
+        "evaluation": {
+          "state": null,
+          "attempt_id": null,
+          "as_of": null,
+          "source": null,
+          "detail": {},
+          "stale": false,
+          "stale_reason": null
+        }
+      },
+      "latest_metrics": {
+        "loss": 2
+      },
+      "eval_metrics": {},
+      "eval_variants": [],
+      "evaluation_snapshot": {},
+      "canonical_eval_variant_id": null,
+      "decision": {},
+      "decision_history": [],
+      "research_contract": null,
+      "research_contract_source": null,
+      "checkpoint": {},
+      "artifacts": {},
+      "provenance": {},
+      "attempts": [],
+      "warnings": [],
+      "evidence_conflicts": [],
+      "scanned_at": 4.0
+    },
+    {
+      "project": "demo",
+      "campaign": "other",
+      "campaign_source": null,
+      "campaign_binding": {
+        "relationship": "UNRESOLVED",
+        "issues": [],
+        "origin_project": null,
+        "origin_campaign": null,
+        "origin_revision": null,
+        "current_revision": null,
+        "membership": null
+      },
+      "campaign_memberships": [
+        {
+          "campaign": "origin",
+          "revision_id": "campaign.frozen",
+          "membership": {
+            "run_id": "run-b",
+            "kind": "reuse",
+            "role": null,
+            "arm": null,
+            "replicate": null,
+            "purpose": null,
+            "included_in_analysis": true
+          },
+          "is_origin": false
+        }
+      ],
+      "run_id": "run-b",
+      "role": null,
+      "role_source": null,
+      "run_dir": "/canonical/b",
+      "scheduler_state": null,
+      "evidence": {
+        "scheduler": {
+          "state": null,
+          "attempt_id": null,
+          "as_of": null,
+          "source": null,
+          "detail": {},
+          "stale": false,
+          "stale_reason": null
+        },
+        "worker": {
+          "state": null,
+          "attempt_id": null,
+          "as_of": null,
+          "source": null,
+          "detail": {},
+          "stale": false,
+          "stale_reason": null
+        },
+        "process": {
+          "state": null,
+          "attempt_id": null,
+          "as_of": null,
+          "source": null,
+          "detail": {},
+          "stale": false,
+          "stale_reason": null
+        },
+        "model": {
+          "state": null,
+          "attempt_id": null,
+          "as_of": null,
+          "source": null,
+          "detail": {},
+          "stale": false,
+          "stale_reason": null
+        },
+        "evaluation": {
+          "state": null,
+          "attempt_id": null,
+          "as_of": null,
+          "source": null,
+          "detail": {},
+          "stale": false,
+          "stale_reason": null
+        }
+      },
+      "latest_metrics": {},
+      "eval_metrics": {},
+      "eval_variants": [],
+      "evaluation_snapshot": {},
+      "canonical_eval_variant_id": null,
+      "decision": {},
+      "decision_history": [],
+      "research_contract": null,
+      "research_contract_source": null,
+      "checkpoint": {},
+      "artifacts": {},
+      "provenance": {},
+      "attempts": [],
+      "warnings": [],
+      "evidence_conflicts": [],
+      "scanned_at": 1.0
+    }
+  ],
+  "reference": {
+    "baseline_commit": "e725faec689fb8395e692e27d00a8896fa7fe5a5",
+    "source_sha256": {
+      "server/src/ml_exp_server/ingest/indexer.py": "6a37f94513cb6e29dba1a90991dac3dbe0616f99da5af3cf3059965e6c8b2a82",
+      "server/src/ml_exp_server/schemas.py": "118aed17448b495d4efd86a671bc4222361250ad2006b565a0f782848b88efad"
+    },
+    "execution": "isolated Python interpreter and TemporaryDirectory SQLite only; no network/provider/production state"
+  }
+}

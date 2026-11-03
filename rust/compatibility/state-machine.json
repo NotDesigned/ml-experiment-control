@@ -1,0 +1,756 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "baseline_commit": "e725faec689fb8395e692e27d00a8896fa7fe5a5",
+    "source_path": "src/experiment_control/manifest.py",
+    "source_sha256": "2b51c7ccb21ef21f98f395de2487aa901a0b470331ad1b13e4173f2c80369ba6",
+    "symbols": [
+      "RunState",
+      "ALLOWED_STATE_TRANSITIONS",
+      "TERMINAL_RUN_STATES"
+    ],
+    "generation": "Imported the baseline Python implementation and evaluated every case; no production state or provider access."
+  },
+  "states": [
+    "NOT_SUBMITTED",
+    "CREATED",
+    "SUBMITTING",
+    "QUEUED",
+    "STARTING",
+    "RUNNING",
+    "EVALUATING",
+    "SUCCEEDED",
+    "FAILED",
+    "PREEMPTED",
+    "CANCELLED",
+    "UNKNOWN"
+  ],
+  "terminal_states": [
+    "SUCCEEDED",
+    "FAILED",
+    "PREEMPTED",
+    "CANCELLED"
+  ],
+  "transitions": [
+    {
+      "from": "NOT_SUBMITTED",
+      "to": "NOT_SUBMITTED",
+      "allowed": false
+    },
+    {
+      "from": "NOT_SUBMITTED",
+      "to": "CREATED",
+      "allowed": true
+    },
+    {
+      "from": "NOT_SUBMITTED",
+      "to": "SUBMITTING",
+      "allowed": false
+    },
+    {
+      "from": "NOT_SUBMITTED",
+      "to": "QUEUED",
+      "allowed": false
+    },
+    {
+      "from": "NOT_SUBMITTED",
+      "to": "STARTING",
+      "allowed": false
+    },
+    {
+      "from": "NOT_SUBMITTED",
+      "to": "RUNNING",
+      "allowed": false
+    },
+    {
+      "from": "NOT_SUBMITTED",
+      "to": "EVALUATING",
+      "allowed": false
+    },
+    {
+      "from": "NOT_SUBMITTED",
+      "to": "SUCCEEDED",
+      "allowed": false
+    },
+    {
+      "from": "NOT_SUBMITTED",
+      "to": "FAILED",
+      "allowed": false
+    },
+    {
+      "from": "NOT_SUBMITTED",
+      "to": "PREEMPTED",
+      "allowed": false
+    },
+    {
+      "from": "NOT_SUBMITTED",
+      "to": "CANCELLED",
+      "allowed": false
+    },
+    {
+      "from": "NOT_SUBMITTED",
+      "to": "UNKNOWN",
+      "allowed": false
+    },
+    {
+      "from": "CREATED",
+      "to": "NOT_SUBMITTED",
+      "allowed": false
+    },
+    {
+      "from": "CREATED",
+      "to": "CREATED",
+      "allowed": true
+    },
+    {
+      "from": "CREATED",
+      "to": "SUBMITTING",
+      "allowed": true
+    },
+    {
+      "from": "CREATED",
+      "to": "QUEUED",
+      "allowed": true
+    },
+    {
+      "from": "CREATED",
+      "to": "STARTING",
+      "allowed": true
+    },
+    {
+      "from": "CREATED",
+      "to": "RUNNING",
+      "allowed": true
+    },
+    {
+      "from": "CREATED",
+      "to": "EVALUATING",
+      "allowed": true
+    },
+    {
+      "from": "CREATED",
+      "to": "SUCCEEDED",
+      "allowed": true
+    },
+    {
+      "from": "CREATED",
+      "to": "FAILED",
+      "allowed": true
+    },
+    {
+      "from": "CREATED",
+      "to": "PREEMPTED",
+      "allowed": true
+    },
+    {
+      "from": "CREATED",
+      "to": "CANCELLED",
+      "allowed": true
+    },
+    {
+      "from": "CREATED",
+      "to": "UNKNOWN",
+      "allowed": true
+    },
+    {
+      "from": "SUBMITTING",
+      "to": "NOT_SUBMITTED",
+      "allowed": false
+    },
+    {
+      "from": "SUBMITTING",
+      "to": "CREATED",
+      "allowed": false
+    },
+    {
+      "from": "SUBMITTING",
+      "to": "SUBMITTING",
+      "allowed": true
+    },
+    {
+      "from": "SUBMITTING",
+      "to": "QUEUED",
+      "allowed": true
+    },
+    {
+      "from": "SUBMITTING",
+      "to": "STARTING",
+      "allowed": true
+    },
+    {
+      "from": "SUBMITTING",
+      "to": "RUNNING",
+      "allowed": true
+    },
+    {
+      "from": "SUBMITTING",
+      "to": "EVALUATING",
+      "allowed": true
+    },
+    {
+      "from": "SUBMITTING",
+      "to": "SUCCEEDED",
+      "allowed": true
+    },
+    {
+      "from": "SUBMITTING",
+      "to": "FAILED",
+      "allowed": true
+    },
+    {
+      "from": "SUBMITTING",
+      "to": "PREEMPTED",
+      "allowed": true
+    },
+    {
+      "from": "SUBMITTING",
+      "to": "CANCELLED",
+      "allowed": true
+    },
+    {
+      "from": "SUBMITTING",
+      "to": "UNKNOWN",
+      "allowed": true
+    },
+    {
+      "from": "QUEUED",
+      "to": "NOT_SUBMITTED",
+      "allowed": false
+    },
+    {
+      "from": "QUEUED",
+      "to": "CREATED",
+      "allowed": false
+    },
+    {
+      "from": "QUEUED",
+      "to": "SUBMITTING",
+      "allowed": false
+    },
+    {
+      "from": "QUEUED",
+      "to": "QUEUED",
+      "allowed": true
+    },
+    {
+      "from": "QUEUED",
+      "to": "STARTING",
+      "allowed": true
+    },
+    {
+      "from": "QUEUED",
+      "to": "RUNNING",
+      "allowed": true
+    },
+    {
+      "from": "QUEUED",
+      "to": "EVALUATING",
+      "allowed": true
+    },
+    {
+      "from": "QUEUED",
+      "to": "SUCCEEDED",
+      "allowed": true
+    },
+    {
+      "from": "QUEUED",
+      "to": "FAILED",
+      "allowed": true
+    },
+    {
+      "from": "QUEUED",
+      "to": "PREEMPTED",
+      "allowed": true
+    },
+    {
+      "from": "QUEUED",
+      "to": "CANCELLED",
+      "allowed": true
+    },
+    {
+      "from": "QUEUED",
+      "to": "UNKNOWN",
+      "allowed": true
+    },
+    {
+      "from": "STARTING",
+      "to": "NOT_SUBMITTED",
+      "allowed": false
+    },
+    {
+      "from": "STARTING",
+      "to": "CREATED",
+      "allowed": false
+    },
+    {
+      "from": "STARTING",
+      "to": "SUBMITTING",
+      "allowed": false
+    },
+    {
+      "from": "STARTING",
+      "to": "QUEUED",
+      "allowed": true
+    },
+    {
+      "from": "STARTING",
+      "to": "STARTING",
+      "allowed": true
+    },
+    {
+      "from": "STARTING",
+      "to": "RUNNING",
+      "allowed": true
+    },
+    {
+      "from": "STARTING",
+      "to": "EVALUATING",
+      "allowed": true
+    },
+    {
+      "from": "STARTING",
+      "to": "SUCCEEDED",
+      "allowed": true
+    },
+    {
+      "from": "STARTING",
+      "to": "FAILED",
+      "allowed": true
+    },
+    {
+      "from": "STARTING",
+      "to": "PREEMPTED",
+      "allowed": true
+    },
+    {
+      "from": "STARTING",
+      "to": "CANCELLED",
+      "allowed": true
+    },
+    {
+      "from": "STARTING",
+      "to": "UNKNOWN",
+      "allowed": true
+    },
+    {
+      "from": "RUNNING",
+      "to": "NOT_SUBMITTED",
+      "allowed": false
+    },
+    {
+      "from": "RUNNING",
+      "to": "CREATED",
+      "allowed": false
+    },
+    {
+      "from": "RUNNING",
+      "to": "SUBMITTING",
+      "allowed": false
+    },
+    {
+      "from": "RUNNING",
+      "to": "QUEUED",
+      "allowed": true
+    },
+    {
+      "from": "RUNNING",
+      "to": "STARTING",
+      "allowed": false
+    },
+    {
+      "from": "RUNNING",
+      "to": "RUNNING",
+      "allowed": true
+    },
+    {
+      "from": "RUNNING",
+      "to": "EVALUATING",
+      "allowed": true
+    },
+    {
+      "from": "RUNNING",
+      "to": "SUCCEEDED",
+      "allowed": true
+    },
+    {
+      "from": "RUNNING",
+      "to": "FAILED",
+      "allowed": true
+    },
+    {
+      "from": "RUNNING",
+      "to": "PREEMPTED",
+      "allowed": true
+    },
+    {
+      "from": "RUNNING",
+      "to": "CANCELLED",
+      "allowed": true
+    },
+    {
+      "from": "RUNNING",
+      "to": "UNKNOWN",
+      "allowed": true
+    },
+    {
+      "from": "EVALUATING",
+      "to": "NOT_SUBMITTED",
+      "allowed": false
+    },
+    {
+      "from": "EVALUATING",
+      "to": "CREATED",
+      "allowed": false
+    },
+    {
+      "from": "EVALUATING",
+      "to": "SUBMITTING",
+      "allowed": false
+    },
+    {
+      "from": "EVALUATING",
+      "to": "QUEUED",
+      "allowed": false
+    },
+    {
+      "from": "EVALUATING",
+      "to": "STARTING",
+      "allowed": false
+    },
+    {
+      "from": "EVALUATING",
+      "to": "RUNNING",
+      "allowed": false
+    },
+    {
+      "from": "EVALUATING",
+      "to": "EVALUATING",
+      "allowed": true
+    },
+    {
+      "from": "EVALUATING",
+      "to": "SUCCEEDED",
+      "allowed": true
+    },
+    {
+      "from": "EVALUATING",
+      "to": "FAILED",
+      "allowed": true
+    },
+    {
+      "from": "EVALUATING",
+      "to": "PREEMPTED",
+      "allowed": true
+    },
+    {
+      "from": "EVALUATING",
+      "to": "CANCELLED",
+      "allowed": true
+    },
+    {
+      "from": "EVALUATING",
+      "to": "UNKNOWN",
+      "allowed": true
+    },
+    {
+      "from": "SUCCEEDED",
+      "to": "NOT_SUBMITTED",
+      "allowed": false
+    },
+    {
+      "from": "SUCCEEDED",
+      "to": "CREATED",
+      "allowed": false
+    },
+    {
+      "from": "SUCCEEDED",
+      "to": "SUBMITTING",
+      "allowed": false
+    },
+    {
+      "from": "SUCCEEDED",
+      "to": "QUEUED",
+      "allowed": false
+    },
+    {
+      "from": "SUCCEEDED",
+      "to": "STARTING",
+      "allowed": false
+    },
+    {
+      "from": "SUCCEEDED",
+      "to": "RUNNING",
+      "allowed": false
+    },
+    {
+      "from": "SUCCEEDED",
+      "to": "EVALUATING",
+      "allowed": false
+    },
+    {
+      "from": "SUCCEEDED",
+      "to": "SUCCEEDED",
+      "allowed": true
+    },
+    {
+      "from": "SUCCEEDED",
+      "to": "FAILED",
+      "allowed": false
+    },
+    {
+      "from": "SUCCEEDED",
+      "to": "PREEMPTED",
+      "allowed": false
+    },
+    {
+      "from": "SUCCEEDED",
+      "to": "CANCELLED",
+      "allowed": false
+    },
+    {
+      "from": "SUCCEEDED",
+      "to": "UNKNOWN",
+      "allowed": false
+    },
+    {
+      "from": "FAILED",
+      "to": "NOT_SUBMITTED",
+      "allowed": false
+    },
+    {
+      "from": "FAILED",
+      "to": "CREATED",
+      "allowed": false
+    },
+    {
+      "from": "FAILED",
+      "to": "SUBMITTING",
+      "allowed": false
+    },
+    {
+      "from": "FAILED",
+      "to": "QUEUED",
+      "allowed": false
+    },
+    {
+      "from": "FAILED",
+      "to": "STARTING",
+      "allowed": false
+    },
+    {
+      "from": "FAILED",
+      "to": "RUNNING",
+      "allowed": false
+    },
+    {
+      "from": "FAILED",
+      "to": "EVALUATING",
+      "allowed": false
+    },
+    {
+      "from": "FAILED",
+      "to": "SUCCEEDED",
+      "allowed": false
+    },
+    {
+      "from": "FAILED",
+      "to": "FAILED",
+      "allowed": true
+    },
+    {
+      "from": "FAILED",
+      "to": "PREEMPTED",
+      "allowed": false
+    },
+    {
+      "from": "FAILED",
+      "to": "CANCELLED",
+      "allowed": false
+    },
+    {
+      "from": "FAILED",
+      "to": "UNKNOWN",
+      "allowed": false
+    },
+    {
+      "from": "PREEMPTED",
+      "to": "NOT_SUBMITTED",
+      "allowed": false
+    },
+    {
+      "from": "PREEMPTED",
+      "to": "CREATED",
+      "allowed": false
+    },
+    {
+      "from": "PREEMPTED",
+      "to": "SUBMITTING",
+      "allowed": false
+    },
+    {
+      "from": "PREEMPTED",
+      "to": "QUEUED",
+      "allowed": false
+    },
+    {
+      "from": "PREEMPTED",
+      "to": "STARTING",
+      "allowed": false
+    },
+    {
+      "from": "PREEMPTED",
+      "to": "RUNNING",
+      "allowed": false
+    },
+    {
+      "from": "PREEMPTED",
+      "to": "EVALUATING",
+      "allowed": false
+    },
+    {
+      "from": "PREEMPTED",
+      "to": "SUCCEEDED",
+      "allowed": false
+    },
+    {
+      "from": "PREEMPTED",
+      "to": "FAILED",
+      "allowed": false
+    },
+    {
+      "from": "PREEMPTED",
+      "to": "PREEMPTED",
+      "allowed": true
+    },
+    {
+      "from": "PREEMPTED",
+      "to": "CANCELLED",
+      "allowed": false
+    },
+    {
+      "from": "PREEMPTED",
+      "to": "UNKNOWN",
+      "allowed": false
+    },
+    {
+      "from": "CANCELLED",
+      "to": "NOT_SUBMITTED",
+      "allowed": false
+    },
+    {
+      "from": "CANCELLED",
+      "to": "CREATED",
+      "allowed": false
+    },
+    {
+      "from": "CANCELLED",
+      "to": "SUBMITTING",
+      "allowed": false
+    },
+    {
+      "from": "CANCELLED",
+      "to": "QUEUED",
+      "allowed": false
+    },
+    {
+      "from": "CANCELLED",
+      "to": "STARTING",
+      "allowed": false
+    },
+    {
+      "from": "CANCELLED",
+      "to": "RUNNING",
+      "allowed": false
+    },
+    {
+      "from": "CANCELLED",
+      "to": "EVALUATING",
+      "allowed": false
+    },
+    {
+      "from": "CANCELLED",
+      "to": "SUCCEEDED",
+      "allowed": false
+    },
+    {
+      "from": "CANCELLED",
+      "to": "FAILED",
+      "allowed": false
+    },
+    {
+      "from": "CANCELLED",
+      "to": "PREEMPTED",
+      "allowed": false
+    },
+    {
+      "from": "CANCELLED",
+      "to": "CANCELLED",
+      "allowed": true
+    },
+    {
+      "from": "CANCELLED",
+      "to": "UNKNOWN",
+      "allowed": false
+    },
+    {
+      "from": "UNKNOWN",
+      "to": "NOT_SUBMITTED",
+      "allowed": false
+    },
+    {
+      "from": "UNKNOWN",
+      "to": "CREATED",
+      "allowed": true
+    },
+    {
+      "from": "UNKNOWN",
+      "to": "SUBMITTING",
+      "allowed": true
+    },
+    {
+      "from": "UNKNOWN",
+      "to": "QUEUED",
+      "allowed": true
+    },
+    {
+      "from": "UNKNOWN",
+      "to": "STARTING",
+      "allowed": true
+    },
+    {
+      "from": "UNKNOWN",
+      "to": "RUNNING",
+      "allowed": true
+    },
+    {
+      "from": "UNKNOWN",
+      "to": "EVALUATING",
+      "allowed": true
+    },
+    {
+      "from": "UNKNOWN",
+      "to": "SUCCEEDED",
+      "allowed": true
+    },
+    {
+      "from": "UNKNOWN",
+      "to": "FAILED",
+      "allowed": true
+    },
+    {
+      "from": "UNKNOWN",
+      "to": "PREEMPTED",
+      "allowed": true
+    },
+    {
+      "from": "UNKNOWN",
+      "to": "CANCELLED",
+      "allowed": true
+    },
+    {
+      "from": "UNKNOWN",
+      "to": "UNKNOWN",
+      "allowed": true
+    }
+  ]
+}

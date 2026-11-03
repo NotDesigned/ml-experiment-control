@@ -1,0 +1,692 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "baseline_commit": "e725faec689fb8395e692e27d00a8896fa7fe5a5",
+    "source_path": "src/experiment_control/submission.py",
+    "source_sha256": "ec5b38bb27ea71d818deda7babdaa3229058c8f1e01a278a21c83ba94486ebad",
+    "symbols": [
+      "submission_marker",
+      "validate_submission_token",
+      "SUBMISSION_TOKEN_RE"
+    ],
+    "generation": "Imported the baseline Python implementation and evaluated every case; no production state or provider access."
+  },
+  "input_scope": "String tokens only, matching the Rust string API. Python coercion of non-string objects is outside this fixture.",
+  "cases": [
+    {
+      "token": "",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "00000000000000000000000000000000",
+      "valid": true,
+      "marker": "ml-exp-00000000000000000000000000000000"
+    },
+    {
+      "token": "000000000000000000000000000000000",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0123456789abcdef0123456789abcdef",
+      "valid": true,
+      "marker": "ml-exp-0123456789abcdef0123456789abcdef"
+    },
+    {
+      "token": "ffffffffffffffffffffffffffffffff",
+      "valid": true,
+      "marker": "ml-exp-ffffffffffffffffffffffffffffffff"
+    },
+    {
+      "token": "00000000000000000000000000000000\n",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\n",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u00e9",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0000",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0001",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0002",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0003",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0004",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0005",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0006",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0007",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\b",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\t",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u000b",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\f",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\r",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u000e",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u000f",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0010",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0011",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0012",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0013",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0014",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0015",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0016",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0017",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0018",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u0019",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u001a",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u001b",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u001c",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u001d",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u001e",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u001f",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000 ",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000!",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\"",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000#",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000$",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000%",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000&",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000'",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000(",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000)",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000*",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000+",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000,",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000-",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000.",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000/",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "00000000000000000000000000000001",
+      "valid": true,
+      "marker": "ml-exp-00000000000000000000000000000001"
+    },
+    {
+      "token": "00000000000000000000000000000002",
+      "valid": true,
+      "marker": "ml-exp-00000000000000000000000000000002"
+    },
+    {
+      "token": "00000000000000000000000000000003",
+      "valid": true,
+      "marker": "ml-exp-00000000000000000000000000000003"
+    },
+    {
+      "token": "00000000000000000000000000000004",
+      "valid": true,
+      "marker": "ml-exp-00000000000000000000000000000004"
+    },
+    {
+      "token": "00000000000000000000000000000005",
+      "valid": true,
+      "marker": "ml-exp-00000000000000000000000000000005"
+    },
+    {
+      "token": "00000000000000000000000000000006",
+      "valid": true,
+      "marker": "ml-exp-00000000000000000000000000000006"
+    },
+    {
+      "token": "00000000000000000000000000000007",
+      "valid": true,
+      "marker": "ml-exp-00000000000000000000000000000007"
+    },
+    {
+      "token": "00000000000000000000000000000008",
+      "valid": true,
+      "marker": "ml-exp-00000000000000000000000000000008"
+    },
+    {
+      "token": "00000000000000000000000000000009",
+      "valid": true,
+      "marker": "ml-exp-00000000000000000000000000000009"
+    },
+    {
+      "token": "0000000000000000000000000000000:",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000;",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000<",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000=",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000>",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000?",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000@",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000A",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000B",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000C",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000D",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000E",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000F",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000G",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000H",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000I",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000J",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000K",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000L",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000M",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000N",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000O",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000P",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000Q",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000R",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000S",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000T",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000U",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000V",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000W",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000X",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000Y",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000Z",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000[",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\\",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000]",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000^",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000_",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000`",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000a",
+      "valid": true,
+      "marker": "ml-exp-0000000000000000000000000000000a"
+    },
+    {
+      "token": "0000000000000000000000000000000b",
+      "valid": true,
+      "marker": "ml-exp-0000000000000000000000000000000b"
+    },
+    {
+      "token": "0000000000000000000000000000000c",
+      "valid": true,
+      "marker": "ml-exp-0000000000000000000000000000000c"
+    },
+    {
+      "token": "0000000000000000000000000000000d",
+      "valid": true,
+      "marker": "ml-exp-0000000000000000000000000000000d"
+    },
+    {
+      "token": "0000000000000000000000000000000e",
+      "valid": true,
+      "marker": "ml-exp-0000000000000000000000000000000e"
+    },
+    {
+      "token": "0000000000000000000000000000000f",
+      "valid": true,
+      "marker": "ml-exp-0000000000000000000000000000000f"
+    },
+    {
+      "token": "0000000000000000000000000000000g",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000h",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000i",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000j",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000k",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000l",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000m",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000n",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000o",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000p",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000q",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000r",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000s",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000t",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000u",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000v",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000w",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000x",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000y",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000z",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000{",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000|",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000}",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000~",
+      "valid": false,
+      "marker": null
+    },
+    {
+      "token": "0000000000000000000000000000000\u007f",
+      "valid": false,
+      "marker": null
+    }
+  ]
+}

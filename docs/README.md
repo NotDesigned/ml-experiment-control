@@ -1,5 +1,13 @@
 # Documentation
 
+The default implementation on `main` is native Rust, released as `native-v0.1.16`.
+Start with the [native usage guide](../rust/README.md),
+[deployment guide](../rust/README.md#deploying-a-native-service),
+[architecture and acceptance](rust-rewrite.md) and [development](development.md).
+The guides listed below document retained Python reference packages and
+historical contracts; their commands and configuration are not the native API.
+Use the installed native `--help` and `/api/v2/openapi.json` for current contracts.
+
 Start with the guide for your role. These documents describe the repository's
 implemented behavior; `/api/health` and the installed `/api/v2/openapi.json`
 identify what a particular deployment provides. Credentials, site inventories

@@ -1,0 +1,23 @@
+[Unit]
+Description=ML-Expd native experiment service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ml-expd
+Group=ml-expd
+UMask=0077
+ExecStart=/root/ml-expd/bin/ml-expd-rs --config /etc/ml-expd/native/server.json
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=120s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=/root/ml-expd/bin
+ReadWritePaths=/var/lib/ml-expd-native /srv/ml-expd-native
+
+[Install]
+WantedBy=multi-user.target

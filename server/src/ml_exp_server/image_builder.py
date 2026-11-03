@@ -64,6 +64,9 @@ class ImageBuilder:
                 self._recover_source_context()
 
     def request(self, request: dict) -> dict:
+        if str(request.get("operation", "")).startswith("native-"):
+            from .builds.native_image import request as native_request
+            return native_request(self, request)
         if request.get("operation") == "health":
             return {"status": "ok", "dockerfile_builds": bool(self.config.get("allow_dockerfile_builds"))
                     and self.config.get("publisher") in {"buildkit", "pai-dsw"}}
@@ -630,7 +633,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = result["result"] if result["ok"] else result
                 self.reply(status, result)
                 return
-            if not 0 < size <= 16384 or self.path != "/":
+            if not 0 < size <= 8 * 1024 * 1024 or self.path != "/":
                 raise ValueError("invalid image packaging request")
             self.connection.settimeout(15)
             payload = json.loads(self.rfile.read(size))

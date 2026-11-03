@@ -1,0 +1,1008 @@
+{
+  "baseline_commit": "e725faec689fb8395e692e27d00a8896fa7fe5a5",
+  "source": "server/src/ml_exp_server/storage.py",
+  "source_sha256": "b6a084c06f0171017dbe99bcd468706ea3e3a70cf7acf9e6a50b4a02a34de977",
+  "reference": "actual DurableJsonState.snapshot/commit in private temporary files with explicit UUID supplier",
+  "cases": [
+    {
+      "before": {
+        "schema_version": 1,
+        "projects": []
+      },
+      "events": [],
+      "payload": {
+        "schema_version": 1,
+        "projects": [
+          {
+            "project": "demo",
+            "state": "PAUSED"
+          }
+        ],
+        "extra": {
+          "n": 1,
+          "score": 0.1,
+          "unicode": "科学"
+        }
+      },
+      "event": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:01Z",
+        "detail": {
+          "n": 1
+        }
+      },
+      "expected_revision": 0,
+      "identity": "00000000000000000000000000000001",
+      "head": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:01Z",
+            "detail": {
+              "n": 1
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 1,
+            "transition_id": "00000000000000000000000000000001"
+          },
+          "revision": 1
+        },
+        "extra": {
+          "n": 1,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "PAUSED"
+          }
+        ],
+        "schema_version": 1
+      },
+      "transition": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:01Z",
+        "detail": {
+          "n": 1
+        },
+        "transition_id": "00000000000000000000000000000001",
+        "revision": 1
+      },
+      "revision": 1
+    },
+    {
+      "before": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:01Z",
+            "detail": {
+              "n": 1
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 1,
+            "transition_id": "00000000000000000000000000000001"
+          },
+          "revision": 1
+        },
+        "extra": {
+          "n": 1,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "PAUSED"
+          }
+        ],
+        "schema_version": 1
+      },
+      "events": [
+        {
+          "at": "2026-10-27T00:00:01Z",
+          "detail": {
+            "n": 1
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 1,
+          "transition_id": "00000000000000000000000000000001"
+        }
+      ],
+      "payload": {
+        "schema_version": 1,
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ARCHIVED"
+          }
+        ],
+        "extra": {
+          "n": 2,
+          "score": 0.1,
+          "unicode": "科学"
+        }
+      },
+      "event": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:02Z",
+        "detail": {
+          "n": 2
+        }
+      },
+      "expected_revision": 1,
+      "identity": "00000000000000000000000000000002",
+      "head": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:02Z",
+            "detail": {
+              "n": 2
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 2,
+            "transition_id": "00000000000000000000000000000002"
+          },
+          "revision": 2
+        },
+        "extra": {
+          "n": 2,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ARCHIVED"
+          }
+        ],
+        "schema_version": 1
+      },
+      "transition": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:02Z",
+        "detail": {
+          "n": 2
+        },
+        "transition_id": "00000000000000000000000000000002",
+        "revision": 2
+      },
+      "revision": 2
+    },
+    {
+      "before": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:02Z",
+            "detail": {
+              "n": 2
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 2,
+            "transition_id": "00000000000000000000000000000002"
+          },
+          "revision": 2
+        },
+        "extra": {
+          "n": 2,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ARCHIVED"
+          }
+        ],
+        "schema_version": 1
+      },
+      "events": [
+        {
+          "at": "2026-10-27T00:00:01Z",
+          "detail": {
+            "n": 1
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 1,
+          "transition_id": "00000000000000000000000000000001"
+        },
+        {
+          "at": "2026-10-27T00:00:02Z",
+          "detail": {
+            "n": 2
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 2,
+          "transition_id": "00000000000000000000000000000002"
+        }
+      ],
+      "payload": {
+        "schema_version": 1,
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ACTIVE"
+          }
+        ],
+        "extra": {
+          "n": 3,
+          "score": 0.1,
+          "unicode": "科学"
+        }
+      },
+      "event": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:03Z",
+        "detail": {
+          "n": 3
+        }
+      },
+      "expected_revision": 2,
+      "identity": "00000000000000000000000000000003",
+      "head": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:03Z",
+            "detail": {
+              "n": 3
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 3,
+            "transition_id": "00000000000000000000000000000003"
+          },
+          "revision": 3
+        },
+        "extra": {
+          "n": 3,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ACTIVE"
+          }
+        ],
+        "schema_version": 1
+      },
+      "transition": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:03Z",
+        "detail": {
+          "n": 3
+        },
+        "transition_id": "00000000000000000000000000000003",
+        "revision": 3
+      },
+      "revision": 3
+    },
+    {
+      "before": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:03Z",
+            "detail": {
+              "n": 3
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 3,
+            "transition_id": "00000000000000000000000000000003"
+          },
+          "revision": 3
+        },
+        "extra": {
+          "n": 3,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ACTIVE"
+          }
+        ],
+        "schema_version": 1
+      },
+      "events": [
+        {
+          "at": "2026-10-27T00:00:01Z",
+          "detail": {
+            "n": 1
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 1,
+          "transition_id": "00000000000000000000000000000001"
+        },
+        {
+          "at": "2026-10-27T00:00:02Z",
+          "detail": {
+            "n": 2
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 2,
+          "transition_id": "00000000000000000000000000000002"
+        },
+        {
+          "at": "2026-10-27T00:00:03Z",
+          "detail": {
+            "n": 3
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 3,
+          "transition_id": "00000000000000000000000000000003"
+        }
+      ],
+      "payload": {
+        "schema_version": 1,
+        "projects": [
+          {
+            "project": "demo",
+            "state": "PAUSED"
+          }
+        ],
+        "extra": {
+          "n": 4,
+          "score": 0.1,
+          "unicode": "科学"
+        }
+      },
+      "event": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:04Z",
+        "detail": {
+          "n": 4
+        }
+      },
+      "expected_revision": 3,
+      "identity": "00000000000000000000000000000004",
+      "head": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:04Z",
+            "detail": {
+              "n": 4
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 4,
+            "transition_id": "00000000000000000000000000000004"
+          },
+          "revision": 4
+        },
+        "extra": {
+          "n": 4,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "PAUSED"
+          }
+        ],
+        "schema_version": 1
+      },
+      "transition": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:04Z",
+        "detail": {
+          "n": 4
+        },
+        "transition_id": "00000000000000000000000000000004",
+        "revision": 4
+      },
+      "revision": 4
+    },
+    {
+      "before": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:04Z",
+            "detail": {
+              "n": 4
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 4,
+            "transition_id": "00000000000000000000000000000004"
+          },
+          "revision": 4
+        },
+        "extra": {
+          "n": 4,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "PAUSED"
+          }
+        ],
+        "schema_version": 1
+      },
+      "events": [
+        {
+          "at": "2026-10-27T00:00:01Z",
+          "detail": {
+            "n": 1
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 1,
+          "transition_id": "00000000000000000000000000000001"
+        },
+        {
+          "at": "2026-10-27T00:00:02Z",
+          "detail": {
+            "n": 2
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 2,
+          "transition_id": "00000000000000000000000000000002"
+        },
+        {
+          "at": "2026-10-27T00:00:03Z",
+          "detail": {
+            "n": 3
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 3,
+          "transition_id": "00000000000000000000000000000003"
+        },
+        {
+          "at": "2026-10-27T00:00:04Z",
+          "detail": {
+            "n": 4
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 4,
+          "transition_id": "00000000000000000000000000000004"
+        }
+      ],
+      "payload": {
+        "schema_version": 1,
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ARCHIVED"
+          }
+        ],
+        "extra": {
+          "n": 5,
+          "score": 0.1,
+          "unicode": "科学"
+        }
+      },
+      "event": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:05Z",
+        "detail": {
+          "n": 5
+        }
+      },
+      "expected_revision": 4,
+      "identity": "00000000000000000000000000000005",
+      "head": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:05Z",
+            "detail": {
+              "n": 5
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 5,
+            "transition_id": "00000000000000000000000000000005"
+          },
+          "revision": 5
+        },
+        "extra": {
+          "n": 5,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ARCHIVED"
+          }
+        ],
+        "schema_version": 1
+      },
+      "transition": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:05Z",
+        "detail": {
+          "n": 5
+        },
+        "transition_id": "00000000000000000000000000000005",
+        "revision": 5
+      },
+      "revision": 5
+    },
+    {
+      "before": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:05Z",
+            "detail": {
+              "n": 5
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 5,
+            "transition_id": "00000000000000000000000000000005"
+          },
+          "revision": 5
+        },
+        "extra": {
+          "n": 5,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ARCHIVED"
+          }
+        ],
+        "schema_version": 1
+      },
+      "events": [
+        {
+          "at": "2026-10-27T00:00:01Z",
+          "detail": {
+            "n": 1
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 1,
+          "transition_id": "00000000000000000000000000000001"
+        },
+        {
+          "at": "2026-10-27T00:00:02Z",
+          "detail": {
+            "n": 2
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 2,
+          "transition_id": "00000000000000000000000000000002"
+        },
+        {
+          "at": "2026-10-27T00:00:03Z",
+          "detail": {
+            "n": 3
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 3,
+          "transition_id": "00000000000000000000000000000003"
+        },
+        {
+          "at": "2026-10-27T00:00:04Z",
+          "detail": {
+            "n": 4
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 4,
+          "transition_id": "00000000000000000000000000000004"
+        },
+        {
+          "at": "2026-10-27T00:00:05Z",
+          "detail": {
+            "n": 5
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 5,
+          "transition_id": "00000000000000000000000000000005"
+        }
+      ],
+      "payload": {
+        "schema_version": 1,
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ACTIVE"
+          }
+        ],
+        "extra": {
+          "n": 6,
+          "score": 0.1,
+          "unicode": "科学"
+        }
+      },
+      "event": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:06Z",
+        "detail": {
+          "n": 6
+        }
+      },
+      "expected_revision": 5,
+      "identity": "00000000000000000000000000000006",
+      "head": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:06Z",
+            "detail": {
+              "n": 6
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 6,
+            "transition_id": "00000000000000000000000000000006"
+          },
+          "revision": 6
+        },
+        "extra": {
+          "n": 6,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ACTIVE"
+          }
+        ],
+        "schema_version": 1
+      },
+      "transition": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:06Z",
+        "detail": {
+          "n": 6
+        },
+        "transition_id": "00000000000000000000000000000006",
+        "revision": 6
+      },
+      "revision": 6
+    },
+    {
+      "before": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:06Z",
+            "detail": {
+              "n": 6
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 6,
+            "transition_id": "00000000000000000000000000000006"
+          },
+          "revision": 6
+        },
+        "extra": {
+          "n": 6,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ACTIVE"
+          }
+        ],
+        "schema_version": 1
+      },
+      "events": [
+        {
+          "at": "2026-10-27T00:00:01Z",
+          "detail": {
+            "n": 1
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 1,
+          "transition_id": "00000000000000000000000000000001"
+        },
+        {
+          "at": "2026-10-27T00:00:02Z",
+          "detail": {
+            "n": 2
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 2,
+          "transition_id": "00000000000000000000000000000002"
+        },
+        {
+          "at": "2026-10-27T00:00:03Z",
+          "detail": {
+            "n": 3
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 3,
+          "transition_id": "00000000000000000000000000000003"
+        },
+        {
+          "at": "2026-10-27T00:00:04Z",
+          "detail": {
+            "n": 4
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 4,
+          "transition_id": "00000000000000000000000000000004"
+        },
+        {
+          "at": "2026-10-27T00:00:05Z",
+          "detail": {
+            "n": 5
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 5,
+          "transition_id": "00000000000000000000000000000005"
+        },
+        {
+          "at": "2026-10-27T00:00:06Z",
+          "detail": {
+            "n": 6
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 6,
+          "transition_id": "00000000000000000000000000000006"
+        }
+      ],
+      "payload": {
+        "schema_version": 1,
+        "projects": [
+          {
+            "project": "demo",
+            "state": "PAUSED"
+          }
+        ],
+        "extra": {
+          "n": 7,
+          "score": 0.1,
+          "unicode": "科学"
+        }
+      },
+      "event": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:07Z",
+        "detail": {
+          "n": 7
+        }
+      },
+      "expected_revision": 6,
+      "identity": "00000000000000000000000000000007",
+      "head": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:07Z",
+            "detail": {
+              "n": 7
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 7,
+            "transition_id": "00000000000000000000000000000007"
+          },
+          "revision": 7
+        },
+        "extra": {
+          "n": 7,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "PAUSED"
+          }
+        ],
+        "schema_version": 1
+      },
+      "transition": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:07Z",
+        "detail": {
+          "n": 7
+        },
+        "transition_id": "00000000000000000000000000000007",
+        "revision": 7
+      },
+      "revision": 7
+    },
+    {
+      "before": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:07Z",
+            "detail": {
+              "n": 7
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 7,
+            "transition_id": "00000000000000000000000000000007"
+          },
+          "revision": 7
+        },
+        "extra": {
+          "n": 7,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "PAUSED"
+          }
+        ],
+        "schema_version": 1
+      },
+      "events": [
+        {
+          "at": "2026-10-27T00:00:01Z",
+          "detail": {
+            "n": 1
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 1,
+          "transition_id": "00000000000000000000000000000001"
+        },
+        {
+          "at": "2026-10-27T00:00:02Z",
+          "detail": {
+            "n": 2
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 2,
+          "transition_id": "00000000000000000000000000000002"
+        },
+        {
+          "at": "2026-10-27T00:00:03Z",
+          "detail": {
+            "n": 3
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 3,
+          "transition_id": "00000000000000000000000000000003"
+        },
+        {
+          "at": "2026-10-27T00:00:04Z",
+          "detail": {
+            "n": 4
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 4,
+          "transition_id": "00000000000000000000000000000004"
+        },
+        {
+          "at": "2026-10-27T00:00:05Z",
+          "detail": {
+            "n": 5
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 5,
+          "transition_id": "00000000000000000000000000000005"
+        },
+        {
+          "at": "2026-10-27T00:00:06Z",
+          "detail": {
+            "n": 6
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 6,
+          "transition_id": "00000000000000000000000000000006"
+        },
+        {
+          "at": "2026-10-27T00:00:07Z",
+          "detail": {
+            "n": 7
+          },
+          "event": "CHANGE",
+          "project": "demo",
+          "revision": 7,
+          "transition_id": "00000000000000000000000000000007"
+        }
+      ],
+      "payload": {
+        "schema_version": 1,
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ARCHIVED"
+          }
+        ],
+        "extra": {
+          "n": 8,
+          "score": 0.1,
+          "unicode": "科学"
+        }
+      },
+      "event": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:08Z",
+        "detail": {
+          "n": 8
+        }
+      },
+      "expected_revision": 7,
+      "identity": "00000000000000000000000000000008",
+      "head": {
+        "_durability": {
+          "last_transition": {
+            "at": "2026-10-27T00:00:08Z",
+            "detail": {
+              "n": 8
+            },
+            "event": "CHANGE",
+            "project": "demo",
+            "revision": 8,
+            "transition_id": "00000000000000000000000000000008"
+          },
+          "revision": 8
+        },
+        "extra": {
+          "n": 8,
+          "score": 0.1,
+          "unicode": "科学"
+        },
+        "projects": [
+          {
+            "project": "demo",
+            "state": "ARCHIVED"
+          }
+        ],
+        "schema_version": 1
+      },
+      "transition": {
+        "event": "CHANGE",
+        "project": "demo",
+        "at": "2026-10-27T00:00:08Z",
+        "detail": {
+          "n": 8
+        },
+        "transition_id": "00000000000000000000000000000008",
+        "revision": 8
+      },
+      "revision": 8
+    }
+  ]
+}

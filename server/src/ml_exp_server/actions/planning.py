@@ -45,6 +45,8 @@ class ActionPlanning:
             except ValidationError as exc:
                 raise ActionError(f"invalid operation intent: {exc}") from exc
         payload = intent.model_dump(mode="json")
+        from ..runs.native_intent import validate as validate_native_intent
+        validate_native_intent(payload)
         scope_error = intent_scope_error(str(payload["kind"]), scope.scope_type)
         if scope_error:
             raise ActionError(scope_error)

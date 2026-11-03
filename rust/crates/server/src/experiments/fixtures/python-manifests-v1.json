@@ -1,0 +1,526 @@
+{
+  "generator": "Python3.12/PyYAML6.0.3 ExperimentStateStore.ensure_manifest/create_attempt plus checked-in legacy fixtures",
+  "cases": [
+    {
+      "name": "legacy-canonical",
+      "format": "yaml",
+      "raw": "schema_version: 1\nproject: elf\nrun_id: elf-smoke-slurm-l40s-probe-20260712T0105\ncreated_at: '2026-07-11T16:51:45.459406Z'\nconfig_path: src/configs/training_configs/ablations/owt_elfb/tier0_0_pure_elf_len256.yml\nresolved_config:\n  data_path: /data/researcher/elf/datasets/smoke-owt-tokenized-v1\n  eval_data_path: null\n  max_length: 256\n  max_input_length: null\n  pad_token: pad\n  tokenizer_name: null\n  encoder_model_name: t5-small\n  encoder_checkpoint: null\n  latent_mean: 0.0\n  latent_std: 0.2\n  model: ELF-B\n  bottleneck_dim: 128\n  num_time_tokens: 4\n  num_self_cond_cfg_tokens: 4\n  num_model_mode_tokens: 4\n  attn_dropout: 0.0\n  proj_dropout: 0.0\n  use_sentence_plan: false\n  sentence_encoder_type: sentence_t5\n  sentence_t5_model_name: sentence-transformers/sentence-t5-xl\n  sentence_emb_dim: 768\n  sentence_latent_mean: 0.0\n  sentence_latent_std: 1.0\n  num_plan_tokens: 8\n  plan_adapter_type: slot_mlp\n  plan_slot_dit_depth: 2\n  plan_learned_encoder_norm: true\n  plan_loss_weight: 1.0\n  plan_noise_scale: 1.0\n  plan_time_schedule: aligned\n  plan_time_warp_gamma: 1.0\n  plan_aux_passes: 1\n  plan_aux_token_context: denoiser_z\n  sentence_encoder_grad: none\n  denoiser_p_mean: -1.5\n  denoiser_p_std: 0.8\n  denoiser_noise_scale: 2.0\n  t_eps: 0.05\n  time_schedule: logit_normal\n  decoder_prob: 0.2\n  decoder_noise_scale: 5.0\n  decoder_p_mean: 0.8\n  decoder_p_std: 0.8\n  label_drop_prob: 0.0\n  self_cond_prob: 0.5\n  self_cond_cfg_min: 0.5\n  self_cond_cfg_max: 5.0\n  epochs: 1\n  warmup_epochs: 0.5\n  warmup_steps: -1\n  batch_size: 4\n  global_batch_size: null\n  lr: null\n  blr: 0.001\n  min_lr: 0.0\n  lr_schedule: constant\n  weight_decay: 0.0\n  optimizer: muon\n  adam_b1: 0.9\n  adam_b2: 0.95\n  grad_accum_steps: 1\n  use_bf16: true\n  use_compile: false\n  gradient_checkpointing: false\n  ema_decay1: 0.9999\n  sampling_configs_path: src/configs/sampling_configs/uncond_sampling_configs.yml\n  sampling_configs:\n  - sampling_method: sde\n    num_sampling_steps:\n    - 32\n    cfgs:\n    - 1.0\n    self_cond_cfg_scales:\n    - 3.0\n    time_schedule: logit_normal\n    sde_gamma: 1.5\n  - sampling_method: sde\n    num_sampling_steps:\n    - 64\n    cfgs:\n    - 1.0\n    self_cond_cfg_scales:\n    - 3.0\n    time_schedule: logit_normal\n    sde_gamma: 1.0\n  num_samples: 4\n  online_eval: false\n  eval_ppl_model: gpt2-large\n  eval_ppl_batch_size: 64\n  eval_ppl_max_length: 256\n  reconstruction_eval: false\n  reconstruction_num_samples: null\n  train_sampling_eval_freq: 0\n  train_sampling_eval_num_samples: 64\n  train_sampling_eval_batch_size: 16\n  train_sampling_eval_max_configs: 1\n  log_freq: 10\n  eval_freq: 1\n  save_freq: 1\n  output_dir: /data/researcher/elf/runs/elf-smoke-slurm-l40s-probe-20260712T0105\n  hf_repo_id: null\n  resume: null\n  warm_start: null\n  warm_start_use_ema: false\n  use_wandb: false\n  wandb_project: elf\n  wandb_entity: null\n  wandb_run_name: elf-smoke-slurm-l40s-probe-20260712T0105\n  wandb_run_id: elf-smoke-slurm-l40s-probe-20260712T0105\n  wandb_tag: tier0,owt,elfb,pure_elf,len256\n  wandb_resume: allow\n  seed: 42\n  num_workers: 0\nsource_id: runtime.e0aea8892dc87d62a89fc411194599c6e8bcb663f65a74096c3b3b555012d1b0\nruntime_tree_id: runtime.e0aea8892dc87d62a89fc411194599c6e8bcb663f65a74096c3b3b555012d1b0\ngit_commit: 8a525ae08b349cab6b69bf39af48f5e51850521a\ncampaign_id: campaign.9e9caaaa231bcb4a5a7389988b2dc7bb486219401792b7b14105d7a82e3f9de7\ncampaign: backend-smoke-slurm-probe-20260712T0105\nimage_id: sha256:1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4\nseed: 42\nstorage:\n  run_dir: /data/researcher/elf/runs/elf-smoke-slurm-l40s-probe-20260712T0105\n  checkpoint_dir: /data/researcher/elf/runs/elf-smoke-slurm-l40s-probe-20260712T0105\nresume_policy:\n  enabled: true\n  max_infra_retries: 0\n",
+      "metadata": {
+        "schema_version": 1,
+        "project": "elf",
+        "run_id": "elf-smoke-slurm-l40s-probe-20260712T0105",
+        "created_at": "2026-07-11T16:51:45.459406Z",
+        "config_path": "src/configs/training_configs/ablations/owt_elfb/tier0_0_pure_elf_len256.yml",
+        "resolved_config": {
+          "data_path": "/data/researcher/elf/datasets/smoke-owt-tokenized-v1",
+          "eval_data_path": null,
+          "max_length": 256,
+          "max_input_length": null,
+          "pad_token": "pad",
+          "tokenizer_name": null,
+          "encoder_model_name": "t5-small",
+          "encoder_checkpoint": null,
+          "latent_mean": 0.0,
+          "latent_std": 0.2,
+          "model": "ELF-B",
+          "bottleneck_dim": 128,
+          "num_time_tokens": 4,
+          "num_self_cond_cfg_tokens": 4,
+          "num_model_mode_tokens": 4,
+          "attn_dropout": 0.0,
+          "proj_dropout": 0.0,
+          "use_sentence_plan": false,
+          "sentence_encoder_type": "sentence_t5",
+          "sentence_t5_model_name": "sentence-transformers/sentence-t5-xl",
+          "sentence_emb_dim": 768,
+          "sentence_latent_mean": 0.0,
+          "sentence_latent_std": 1.0,
+          "num_plan_tokens": 8,
+          "plan_adapter_type": "slot_mlp",
+          "plan_slot_dit_depth": 2,
+          "plan_learned_encoder_norm": true,
+          "plan_loss_weight": 1.0,
+          "plan_noise_scale": 1.0,
+          "plan_time_schedule": "aligned",
+          "plan_time_warp_gamma": 1.0,
+          "plan_aux_passes": 1,
+          "plan_aux_token_context": "denoiser_z",
+          "sentence_encoder_grad": "none",
+          "denoiser_p_mean": -1.5,
+          "denoiser_p_std": 0.8,
+          "denoiser_noise_scale": 2.0,
+          "t_eps": 0.05,
+          "time_schedule": "logit_normal",
+          "decoder_prob": 0.2,
+          "decoder_noise_scale": 5.0,
+          "decoder_p_mean": 0.8,
+          "decoder_p_std": 0.8,
+          "label_drop_prob": 0.0,
+          "self_cond_prob": 0.5,
+          "self_cond_cfg_min": 0.5,
+          "self_cond_cfg_max": 5.0,
+          "epochs": 1,
+          "warmup_epochs": 0.5,
+          "warmup_steps": -1,
+          "batch_size": 4,
+          "global_batch_size": null,
+          "lr": null,
+          "blr": 0.001,
+          "min_lr": 0.0,
+          "lr_schedule": "constant",
+          "weight_decay": 0.0,
+          "optimizer": "muon",
+          "adam_b1": 0.9,
+          "adam_b2": 0.95,
+          "grad_accum_steps": 1,
+          "use_bf16": true,
+          "use_compile": false,
+          "gradient_checkpointing": false,
+          "ema_decay1": 0.9999,
+          "sampling_configs_path": "src/configs/sampling_configs/uncond_sampling_configs.yml",
+          "sampling_configs": [
+            {
+              "sampling_method": "sde",
+              "num_sampling_steps": [
+                32
+              ],
+              "cfgs": [
+                1.0
+              ],
+              "self_cond_cfg_scales": [
+                3.0
+              ],
+              "time_schedule": "logit_normal",
+              "sde_gamma": 1.5
+            },
+            {
+              "sampling_method": "sde",
+              "num_sampling_steps": [
+                64
+              ],
+              "cfgs": [
+                1.0
+              ],
+              "self_cond_cfg_scales": [
+                3.0
+              ],
+              "time_schedule": "logit_normal",
+              "sde_gamma": 1.0
+            }
+          ],
+          "num_samples": 4,
+          "online_eval": false,
+          "eval_ppl_model": "gpt2-large",
+          "eval_ppl_batch_size": 64,
+          "eval_ppl_max_length": 256,
+          "reconstruction_eval": false,
+          "reconstruction_num_samples": null,
+          "train_sampling_eval_freq": 0,
+          "train_sampling_eval_num_samples": 64,
+          "train_sampling_eval_batch_size": 16,
+          "train_sampling_eval_max_configs": 1,
+          "log_freq": 10,
+          "eval_freq": 1,
+          "save_freq": 1,
+          "output_dir": "/data/researcher/elf/runs/elf-smoke-slurm-l40s-probe-20260712T0105",
+          "hf_repo_id": null,
+          "resume": null,
+          "warm_start": null,
+          "warm_start_use_ema": false,
+          "use_wandb": false,
+          "wandb_project": "elf",
+          "wandb_entity": null,
+          "wandb_run_name": "elf-smoke-slurm-l40s-probe-20260712T0105",
+          "wandb_run_id": "elf-smoke-slurm-l40s-probe-20260712T0105",
+          "wandb_tag": "tier0,owt,elfb,pure_elf,len256",
+          "wandb_resume": "allow",
+          "seed": 42,
+          "num_workers": 0
+        },
+        "source_id": "runtime.e0aea8892dc87d62a89fc411194599c6e8bcb663f65a74096c3b3b555012d1b0",
+        "runtime_tree_id": "runtime.e0aea8892dc87d62a89fc411194599c6e8bcb663f65a74096c3b3b555012d1b0",
+        "git_commit": "8a525ae08b349cab6b69bf39af48f5e51850521a",
+        "campaign_id": "campaign.9e9caaaa231bcb4a5a7389988b2dc7bb486219401792b7b14105d7a82e3f9de7",
+        "campaign": "backend-smoke-slurm-probe-20260712T0105",
+        "image_id": "sha256:1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4",
+        "seed": 42,
+        "storage": {
+          "run_dir": "/data/researcher/elf/runs/elf-smoke-slurm-l40s-probe-20260712T0105",
+          "checkpoint_dir": "/data/researcher/elf/runs/elf-smoke-slurm-l40s-probe-20260712T0105"
+        },
+        "resume_policy": {
+          "enabled": true,
+          "max_infra_retries": 0
+        }
+      },
+      "raw_sha256": "sha256:6624c6ba62d510288c806dad842b17a231cef94f1870fe5988955625b9dc4d80"
+    },
+    {
+      "name": "legacy-control",
+      "format": "yaml",
+      "raw": "schema_version: 1\ncampaign: fusion-len256-gate-h100-20260711\nproject: elf\nrun_id: elf-a1-frozen-t5-l256-s42-h100-v1\nattempt_id: attempt-001\ncreated_at: '2026-07-11T12:12:58.499166Z'\nsource_id: e44db5b272df3b6a196e8f58addc54446003595f\nimage_id: sha256:1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4\nconfig_path: src/configs/training_configs/ablations/owt_elfb/tier0_1_sentence_t5_len256.yml\nconfig_overrides:\n- epochs=1\n- grad_accum_steps=1\n- save_freq=0.1\n- eval_freq=1\n- num_samples=256\n- reconstruction_num_samples=256\n- train_sampling_eval_freq=2000\n- train_sampling_eval_num_samples=64\n- train_sampling_eval_batch_size=16\nresolved_config:\n  data_path: embedded-language-flows/openwebtext-t5\n  eval_data_path: null\n  max_length: 256\n  max_input_length: null\n  pad_token: pad\n  tokenizer_name: null\n  encoder_model_name: t5-small\n  encoder_checkpoint: null\n  latent_mean: 0.0\n  latent_std: 0.2\n  model: ELF-B\n  bottleneck_dim: 128\n  num_time_tokens: 4\n  num_self_cond_cfg_tokens: 4\n  num_model_mode_tokens: 4\n  attn_dropout: 0.0\n  proj_dropout: 0.0\n  use_sentence_plan: true\n  sentence_encoder_type: sentence_t5\n  sentence_t5_model_name: sentence-transformers/sentence-t5-xl\n  sentence_emb_dim: 768\n  sentence_latent_mean: 0.0\n  sentence_latent_std: 1.0\n  num_plan_tokens: 8\n  plan_adapter_type: slot_mlp\n  plan_slot_dit_depth: 2\n  plan_learned_encoder_norm: true\n  plan_loss_weight: 1.0\n  plan_noise_scale: 1.0\n  plan_time_schedule: aligned\n  plan_time_warp_gamma: 1.0\n  plan_aux_passes: 1\n  plan_aux_token_context: denoiser_z\n  sentence_encoder_grad: none\n  denoiser_p_mean: -1.5\n  denoiser_p_std: 0.8\n  denoiser_noise_scale: 2.0\n  t_eps: 0.05\n  time_schedule: logit_normal\n  decoder_prob: 0.2\n  decoder_noise_scale: 5.0\n  decoder_p_mean: 0.8\n  decoder_p_std: 0.8\n  label_drop_prob: 0.0\n  self_cond_prob: 0.5\n  self_cond_cfg_min: 0.5\n  self_cond_cfg_max: 5.0\n  epochs: 1\n  warmup_epochs: 0.5\n  warmup_steps: -1\n  batch_size: null\n  global_batch_size: 512\n  lr: null\n  blr: 0.001\n  min_lr: 0.0\n  lr_schedule: constant\n  weight_decay: 0.0\n  optimizer: muon\n  adam_b1: 0.9\n  adam_b2: 0.95\n  grad_accum_steps: 1\n  use_bf16: true\n  use_compile: false\n  gradient_checkpointing: false\n  ema_decay1: 0.9999\n  sampling_configs_path: src/configs/sampling_configs/uncond_sampling_configs.yml\n  sampling_configs:\n  - sampling_method: sde\n    num_sampling_steps:\n    - 32\n    cfgs:\n    - 1.0\n    self_cond_cfg_scales:\n    - 3.0\n    time_schedule: logit_normal\n    sde_gamma: 1.5\n  - sampling_method: sde\n    num_sampling_steps:\n    - 64\n    cfgs:\n    - 1.0\n    self_cond_cfg_scales:\n    - 3.0\n    time_schedule: logit_normal\n    sde_gamma: 1.0\n  num_samples: 256\n  online_eval: true\n  eval_ppl_model: gpt2-large\n  eval_ppl_batch_size: 64\n  eval_ppl_max_length: 256\n  reconstruction_eval: true\n  reconstruction_num_samples: 256\n  train_sampling_eval_freq: 2000\n  train_sampling_eval_num_samples: 64\n  train_sampling_eval_batch_size: 16\n  train_sampling_eval_max_configs: 1\n  log_freq: 100\n  eval_freq: 1\n  save_freq: 0.1\n  output_dir: /datapool/researcher/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1\n  hf_repo_id: null\n  resume: null\n  warm_start: null\n  warm_start_use_ema: false\n  use_wandb: false\n  wandb_project: elf\n  wandb_entity: null\n  wandb_run_name: tier0_1_owt_elfb_sentence_t5_len256\n  wandb_run_id: null\n  wandb_tag: tier0,owt,elfb,sentence_t5,len256\n  wandb_resume: null\n  seed: 42\n  num_workers: 8\nbackend:\n  kind: slurm\n  ssh_alias: gpu-cluster\n  partition: h100\n  account: lab\n  qos: normal\n  gres: gpu:h100:4\n  time: '24:00:00'\n  mount_root: /datapool\n  apptainer_cache_dir: /datapool/researcher/elf/apptainer/cache\n  apptainer_tmp_dir: /datapool/researcher/elf/apptainer/tmp\n  source_dir: /datapool/researcher/elf/sources/e44db5b272df3b6a196e8f58addc54446003595f\n  sif_path: /datapool/researcher/elf/images/1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4.sif\n  data_root: /datapool/researcher\n  project_data_root: /datapool/researcher/elf\n  hf_home: /datapool/researcher/.cache/huggingface\n  hf_datasets_cache: /datapool/researcher/.cache/huggingface/datasets\nresources:\n  gpus: 4\n  cpus: 32\nstorage:\n  run_dir: /datapool/researcher/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1\ncommand:\n- env\n- ATTEMPT_ID=attempt-001\n- BACKEND=slurm\n- CHECKPOINT_ROOT=/datapool/researcher/elf/checkpoints\n- DATA_ROOT=/datapool/researcher\n- ELF_B_OWT_CHECKPOINT=/datapool/researcher/elf/checkpoints/ELF-B-owt-torch/checkpoint_95085\n- HF_DATASETS_CACHE=/datapool/researcher/.cache/huggingface/datasets\n- HF_HOME=/datapool/researcher/.cache/huggingface\n- IMAGE_ID=sha256:1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4\n- LOG_FREQ=100\n- NGPU=4\n- NUM_WORKERS=8\n- OUTPUT_DIR=/datapool/researcher/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1\n- PROJECT_DATA_ROOT=/datapool/researcher/elf\n- PROJECT_NAME=elf\n- QUOTA_TYPE=normal\n- REQUIRE_OFFLINE_CACHE=1\n- RUN_ID=elf-a1-frozen-t5-l256-s42-h100-v1\n- SAVE_DIR=/datapool/researcher/elf/saved_models\n- SOURCE_ID=e44db5b272df3b6a196e8f58addc54446003595f\n- USE_WANDB=false\n- WANDB_CACHE_DIR=/datapool/researcher/elf/wandb_cache\n- WANDB_DIR=/datapool/researcher/elf/wandb\n- bash\n- scripts/cloud_train.sh\n- src/configs/training_configs/ablations/owt_elfb/tier0_1_sentence_t5_len256.yml\n- --config_override\n- epochs=1\n- --config_override\n- grad_accum_steps=1\n- --config_override\n- save_freq=0.1\n- --config_override\n- eval_freq=1\n- --config_override\n- num_samples=256\n- --config_override\n- reconstruction_num_samples=256\n- --config_override\n- train_sampling_eval_freq=2000\n- --config_override\n- train_sampling_eval_num_samples=64\n- --config_override\n- train_sampling_eval_batch_size=16\nretry:\n  max_infra_retries: 0\n",
+      "metadata": {
+        "schema_version": 1,
+        "campaign": "fusion-len256-gate-h100-20260711",
+        "project": "elf",
+        "run_id": "elf-a1-frozen-t5-l256-s42-h100-v1",
+        "attempt_id": "attempt-001",
+        "created_at": "2026-07-11T12:12:58.499166Z",
+        "source_id": "e44db5b272df3b6a196e8f58addc54446003595f",
+        "image_id": "sha256:1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4",
+        "config_path": "src/configs/training_configs/ablations/owt_elfb/tier0_1_sentence_t5_len256.yml",
+        "config_overrides": [
+          "epochs=1",
+          "grad_accum_steps=1",
+          "save_freq=0.1",
+          "eval_freq=1",
+          "num_samples=256",
+          "reconstruction_num_samples=256",
+          "train_sampling_eval_freq=2000",
+          "train_sampling_eval_num_samples=64",
+          "train_sampling_eval_batch_size=16"
+        ],
+        "resolved_config": {
+          "data_path": "embedded-language-flows/openwebtext-t5",
+          "eval_data_path": null,
+          "max_length": 256,
+          "max_input_length": null,
+          "pad_token": "pad",
+          "tokenizer_name": null,
+          "encoder_model_name": "t5-small",
+          "encoder_checkpoint": null,
+          "latent_mean": 0.0,
+          "latent_std": 0.2,
+          "model": "ELF-B",
+          "bottleneck_dim": 128,
+          "num_time_tokens": 4,
+          "num_self_cond_cfg_tokens": 4,
+          "num_model_mode_tokens": 4,
+          "attn_dropout": 0.0,
+          "proj_dropout": 0.0,
+          "use_sentence_plan": true,
+          "sentence_encoder_type": "sentence_t5",
+          "sentence_t5_model_name": "sentence-transformers/sentence-t5-xl",
+          "sentence_emb_dim": 768,
+          "sentence_latent_mean": 0.0,
+          "sentence_latent_std": 1.0,
+          "num_plan_tokens": 8,
+          "plan_adapter_type": "slot_mlp",
+          "plan_slot_dit_depth": 2,
+          "plan_learned_encoder_norm": true,
+          "plan_loss_weight": 1.0,
+          "plan_noise_scale": 1.0,
+          "plan_time_schedule": "aligned",
+          "plan_time_warp_gamma": 1.0,
+          "plan_aux_passes": 1,
+          "plan_aux_token_context": "denoiser_z",
+          "sentence_encoder_grad": "none",
+          "denoiser_p_mean": -1.5,
+          "denoiser_p_std": 0.8,
+          "denoiser_noise_scale": 2.0,
+          "t_eps": 0.05,
+          "time_schedule": "logit_normal",
+          "decoder_prob": 0.2,
+          "decoder_noise_scale": 5.0,
+          "decoder_p_mean": 0.8,
+          "decoder_p_std": 0.8,
+          "label_drop_prob": 0.0,
+          "self_cond_prob": 0.5,
+          "self_cond_cfg_min": 0.5,
+          "self_cond_cfg_max": 5.0,
+          "epochs": 1,
+          "warmup_epochs": 0.5,
+          "warmup_steps": -1,
+          "batch_size": null,
+          "global_batch_size": 512,
+          "lr": null,
+          "blr": 0.001,
+          "min_lr": 0.0,
+          "lr_schedule": "constant",
+          "weight_decay": 0.0,
+          "optimizer": "muon",
+          "adam_b1": 0.9,
+          "adam_b2": 0.95,
+          "grad_accum_steps": 1,
+          "use_bf16": true,
+          "use_compile": false,
+          "gradient_checkpointing": false,
+          "ema_decay1": 0.9999,
+          "sampling_configs_path": "src/configs/sampling_configs/uncond_sampling_configs.yml",
+          "sampling_configs": [
+            {
+              "sampling_method": "sde",
+              "num_sampling_steps": [
+                32
+              ],
+              "cfgs": [
+                1.0
+              ],
+              "self_cond_cfg_scales": [
+                3.0
+              ],
+              "time_schedule": "logit_normal",
+              "sde_gamma": 1.5
+            },
+            {
+              "sampling_method": "sde",
+              "num_sampling_steps": [
+                64
+              ],
+              "cfgs": [
+                1.0
+              ],
+              "self_cond_cfg_scales": [
+                3.0
+              ],
+              "time_schedule": "logit_normal",
+              "sde_gamma": 1.0
+            }
+          ],
+          "num_samples": 256,
+          "online_eval": true,
+          "eval_ppl_model": "gpt2-large",
+          "eval_ppl_batch_size": 64,
+          "eval_ppl_max_length": 256,
+          "reconstruction_eval": true,
+          "reconstruction_num_samples": 256,
+          "train_sampling_eval_freq": 2000,
+          "train_sampling_eval_num_samples": 64,
+          "train_sampling_eval_batch_size": 16,
+          "train_sampling_eval_max_configs": 1,
+          "log_freq": 100,
+          "eval_freq": 1,
+          "save_freq": 0.1,
+          "output_dir": "/datapool/researcher/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1",
+          "hf_repo_id": null,
+          "resume": null,
+          "warm_start": null,
+          "warm_start_use_ema": false,
+          "use_wandb": false,
+          "wandb_project": "elf",
+          "wandb_entity": null,
+          "wandb_run_name": "tier0_1_owt_elfb_sentence_t5_len256",
+          "wandb_run_id": null,
+          "wandb_tag": "tier0,owt,elfb,sentence_t5,len256",
+          "wandb_resume": null,
+          "seed": 42,
+          "num_workers": 8
+        },
+        "backend": {
+          "kind": "slurm",
+          "ssh_alias": "gpu-cluster",
+          "partition": "h100",
+          "account": "lab",
+          "qos": "normal",
+          "gres": "gpu:h100:4",
+          "time": "24:00:00",
+          "mount_root": "/datapool",
+          "apptainer_cache_dir": "/datapool/researcher/elf/apptainer/cache",
+          "apptainer_tmp_dir": "/datapool/researcher/elf/apptainer/tmp",
+          "source_dir": "/datapool/researcher/elf/sources/e44db5b272df3b6a196e8f58addc54446003595f",
+          "sif_path": "/datapool/researcher/elf/images/1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4.sif",
+          "data_root": "/datapool/researcher",
+          "project_data_root": "/datapool/researcher/elf",
+          "hf_home": "/datapool/researcher/.cache/huggingface",
+          "hf_datasets_cache": "/datapool/researcher/.cache/huggingface/datasets"
+        },
+        "resources": {
+          "gpus": 4,
+          "cpus": 32
+        },
+        "storage": {
+          "run_dir": "/datapool/researcher/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1"
+        },
+        "command": [
+          "env",
+          "ATTEMPT_ID=attempt-001",
+          "BACKEND=slurm",
+          "CHECKPOINT_ROOT=/datapool/researcher/elf/checkpoints",
+          "DATA_ROOT=/datapool/researcher",
+          "ELF_B_OWT_CHECKPOINT=/datapool/researcher/elf/checkpoints/ELF-B-owt-torch/checkpoint_95085",
+          "HF_DATASETS_CACHE=/datapool/researcher/.cache/huggingface/datasets",
+          "HF_HOME=/datapool/researcher/.cache/huggingface",
+          "IMAGE_ID=sha256:1e25f456cd26219ff89015a41b8653efb0db4444f911522802f850a791710de4",
+          "LOG_FREQ=100",
+          "NGPU=4",
+          "NUM_WORKERS=8",
+          "OUTPUT_DIR=/datapool/researcher/elf/runs/elf-a1-frozen-t5-l256-s42-h100-v1",
+          "PROJECT_DATA_ROOT=/datapool/researcher/elf",
+          "PROJECT_NAME=elf",
+          "QUOTA_TYPE=normal",
+          "REQUIRE_OFFLINE_CACHE=1",
+          "RUN_ID=elf-a1-frozen-t5-l256-s42-h100-v1",
+          "SAVE_DIR=/datapool/researcher/elf/saved_models",
+          "SOURCE_ID=e44db5b272df3b6a196e8f58addc54446003595f",
+          "USE_WANDB=false",
+          "WANDB_CACHE_DIR=/datapool/researcher/elf/wandb_cache",
+          "WANDB_DIR=/datapool/researcher/elf/wandb",
+          "bash",
+          "scripts/cloud_train.sh",
+          "src/configs/training_configs/ablations/owt_elfb/tier0_1_sentence_t5_len256.yml",
+          "--config_override",
+          "epochs=1",
+          "--config_override",
+          "grad_accum_steps=1",
+          "--config_override",
+          "save_freq=0.1",
+          "--config_override",
+          "eval_freq=1",
+          "--config_override",
+          "num_samples=256",
+          "--config_override",
+          "reconstruction_num_samples=256",
+          "--config_override",
+          "train_sampling_eval_freq=2000",
+          "--config_override",
+          "train_sampling_eval_num_samples=64",
+          "--config_override",
+          "train_sampling_eval_batch_size=16"
+        ],
+        "retry": {
+          "max_infra_retries": 0
+        }
+      },
+      "raw_sha256": "sha256:3776124f1a84ee8f9b039070be652a509a33e80f4e536d88f2c1c32e27dbfe02"
+    },
+    {
+      "name": "native-run",
+      "format": "yaml",
+      "raw": "schema_version: 1\nidentity_version: 2\nproject: demo\nrun_id: train\ncreated_at: '2026-10-27T01:02:03Z'\nconfig_path: train.yaml\nresolved_config:\n  seed: 42\n  lr: 1.0e-06\n  weight_decay: 0.1\n  quoted_yes: 'yes'\n  version: 2.10.0\n  unicode: \u4e2d\u6587\nsource_id: source.1111111111111111111111111111111111111111111111111111111111111111\nruntime_tree_id: source.1111111111111111111111111111111111111111111111111111111111111111\ngit_commit: null\ncampaign_id: null\ncampaign: baseline\nimage_id: sha256:2222222222222222222222222222222222222222222222222222222222222222\nseed: 42\nbackend:\n  kind: slurm\nresources:\n  gpus: 1\nstorage:\n  run_dir: /synthetic/run\ncommand:\n- python\n- train.py\n- --attempt\n- '{attempt_id}'\nexecution: {}\nconfig_overrides: []\nassets: []\ncheckpoint: {}\nevaluation: {}\nresume_policy:\n  enabled: true\n  max_infra_retries: 1\nfuture_metadata:\n  arbitrary_field:\n  - 1\n  - true\n  - null\n  - 'on'\n",
+      "metadata": {
+        "schema_version": 1,
+        "identity_version": 2,
+        "project": "demo",
+        "run_id": "train",
+        "created_at": "2026-10-27T01:02:03Z",
+        "config_path": "train.yaml",
+        "resolved_config": {
+          "seed": 42,
+          "lr": 1e-06,
+          "weight_decay": 0.1,
+          "quoted_yes": "yes",
+          "version": "2.10.0",
+          "unicode": "\u4e2d\u6587"
+        },
+        "source_id": "source.1111111111111111111111111111111111111111111111111111111111111111",
+        "runtime_tree_id": "source.1111111111111111111111111111111111111111111111111111111111111111",
+        "git_commit": null,
+        "campaign_id": null,
+        "campaign": "baseline",
+        "image_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "seed": 42,
+        "backend": {
+          "kind": "slurm"
+        },
+        "resources": {
+          "gpus": 1
+        },
+        "storage": {
+          "run_dir": "/synthetic/run"
+        },
+        "command": [
+          "python",
+          "train.py",
+          "--attempt",
+          "{attempt_id}"
+        ],
+        "execution": {},
+        "config_overrides": [],
+        "assets": [],
+        "checkpoint": {},
+        "evaluation": {},
+        "resume_policy": {
+          "enabled": true,
+          "max_infra_retries": 1
+        },
+        "future_metadata": {
+          "arbitrary_field": [
+            1,
+            true,
+            null,
+            "on"
+          ]
+        }
+      },
+      "raw_sha256": "sha256:322380be2a16db3d471f5cb461e2cf9f2fddb6a40ba4b8e18f39d12d68b64ce5"
+    },
+    {
+      "name": "native-attempt",
+      "format": "yaml",
+      "raw": "schema_version: 1\nidentity_version: 2\nproject: demo\nrun_id: train\ncreated_at: '2026-10-27T02:03:04Z'\nconfig_path: train.yaml\nresolved_config:\n  seed: 42\n  lr: 1.0e-06\n  weight_decay: 0.1\n  quoted_yes: 'yes'\n  version: 2.10.0\n  unicode: \u4e2d\u6587\nsource_id: source.1111111111111111111111111111111111111111111111111111111111111111\nruntime_tree_id: source.1111111111111111111111111111111111111111111111111111111111111111\ngit_commit: null\ncampaign_id: null\ncampaign: baseline\nimage_id: sha256:2222222222222222222222222222222222222222222222222222222222222222\nseed: 42\nbackend:\n  kind: slurm\nresources:\n  gpus: 1\nstorage:\n  run_dir: /synthetic/run\ncommand:\n- python\n- train.py\n- --attempt\n- attempt-001\nexecution: {}\nconfig_overrides: []\nassets: []\ncheckpoint: {}\nevaluation: {}\nresume_policy:\n  enabled: true\n  max_infra_retries: 1\nfuture_metadata:\n  arbitrary_field:\n  - 1\n  - true\n  - null\n  - 'on'\nattempt_id: attempt-001\nresume_from: checkpoint.example\n",
+      "metadata": {
+        "schema_version": 1,
+        "identity_version": 2,
+        "project": "demo",
+        "run_id": "train",
+        "created_at": "2026-10-27T02:03:04Z",
+        "config_path": "train.yaml",
+        "resolved_config": {
+          "seed": 42,
+          "lr": 1e-06,
+          "weight_decay": 0.1,
+          "quoted_yes": "yes",
+          "version": "2.10.0",
+          "unicode": "\u4e2d\u6587"
+        },
+        "source_id": "source.1111111111111111111111111111111111111111111111111111111111111111",
+        "runtime_tree_id": "source.1111111111111111111111111111111111111111111111111111111111111111",
+        "git_commit": null,
+        "campaign_id": null,
+        "campaign": "baseline",
+        "image_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "seed": 42,
+        "backend": {
+          "kind": "slurm"
+        },
+        "resources": {
+          "gpus": 1
+        },
+        "storage": {
+          "run_dir": "/synthetic/run"
+        },
+        "command": [
+          "python",
+          "train.py",
+          "--attempt",
+          "attempt-001"
+        ],
+        "execution": {},
+        "config_overrides": [],
+        "assets": [],
+        "checkpoint": {},
+        "evaluation": {},
+        "resume_policy": {
+          "enabled": true,
+          "max_infra_retries": 1
+        },
+        "future_metadata": {
+          "arbitrary_field": [
+            1,
+            true,
+            null,
+            "on"
+          ]
+        },
+        "attempt_id": "attempt-001",
+        "resume_from": "checkpoint.example"
+      },
+      "raw_sha256": "sha256:129d84e988ce7ed11cc611e9c059d82499967a9ace9bc72dc3da7d3a1307f5a6"
+    },
+    {
+      "name": "project",
+      "format": "yaml",
+      "raw": "schema_version: 1\nproject: demo\ntitle: Synthetic readonly reader\nrun_roots:\n- runs\ncampaigns: []\n",
+      "metadata": {
+        "schema_version": 1,
+        "project": "demo",
+        "title": "Synthetic readonly reader",
+        "run_roots": [
+          "runs"
+        ],
+        "campaigns": []
+      },
+      "raw_sha256": "sha256:82a2bfb75955c11884c915f8eb005aff3d8a82cf9606dc4ce3a8701d4c9cf19c"
+    }
+  ]
+}

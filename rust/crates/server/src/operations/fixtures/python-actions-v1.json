@@ -1,0 +1,248 @@
+{
+  "generator": "Python ActionStore/ActionService 1.5.1 isolated TemporaryDirectory; controlled utc_now/uuid4, no provider calls",
+  "now": "2026-10-27T00:00:00Z",
+  "plan": {
+    "action_id": "action-0123456789abcdef",
+    "ready": true,
+    "operation": "WRITE_CAMPAIGN",
+    "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "gate_bundle_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "gate_expires_at": "2100-01-01T00:00:00Z",
+    "scope": {
+      "project": "demo",
+      "scope_type": "run",
+      "object_id": "train"
+    },
+    "historical_extra": {
+      "preserve": true
+    },
+    "run_id": "train"
+  },
+  "prepared": {
+    "action_id": "action-0123456789abcdef",
+    "gate_bundle_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "gate_expires_at": "2100-01-01T00:00:00Z",
+    "historical_extra": {
+      "preserve": true
+    },
+    "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "operation": "WRITE_CAMPAIGN",
+    "ready": true,
+    "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "run_id": "train",
+    "scope": {
+      "object_id": "train",
+      "project": "demo",
+      "scope_type": "run"
+    },
+    "execution": {
+      "revision": 1,
+      "status": "PREPARED",
+      "authorized_at": null,
+      "authorization_note": "",
+      "started_at": null,
+      "finished_at": null,
+      "result": null,
+      "error": null
+    },
+    "journal": [
+      {
+        "event": "action_prepared",
+        "payload": {
+          "operation": "WRITE_CAMPAIGN",
+          "ready": true
+        },
+        "revision": 1,
+        "timestamp": "2026-10-27T00:00:00Z",
+        "transition_id": "00000000000000000000000000000001"
+      }
+    ]
+  },
+  "authorized": {
+    "action_id": "action-0123456789abcdef",
+    "gate_bundle_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "gate_expires_at": "2100-01-01T00:00:00Z",
+    "historical_extra": {
+      "preserve": true
+    },
+    "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "operation": "WRITE_CAMPAIGN",
+    "ready": true,
+    "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "run_id": "train",
+    "scope": {
+      "object_id": "train",
+      "project": "demo",
+      "scope_type": "run"
+    },
+    "execution": {
+      "authorization_actor": "actor:test",
+      "authorization_expires_at": "2100-01-01T00:00:00Z",
+      "authorization_note": "approved explicitly",
+      "authorized_at": "2026-10-27T00:00:00Z",
+      "authorized_gate_bundle_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "authorized_intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "error": null,
+      "finished_at": null,
+      "result": null,
+      "revision": 2,
+      "started_at": null,
+      "status": "AUTHORIZED"
+    },
+    "journal": [
+      {
+        "event": "action_prepared",
+        "payload": {
+          "operation": "WRITE_CAMPAIGN",
+          "ready": true
+        },
+        "revision": 1,
+        "timestamp": "2026-10-27T00:00:00Z",
+        "transition_id": "00000000000000000000000000000001"
+      },
+      {
+        "event": "execution_authorized",
+        "payload": {
+          "error": null,
+          "status": "AUTHORIZED"
+        },
+        "revision": 2,
+        "timestamp": "2026-10-27T00:00:00Z",
+        "transition_id": "00000000000000000000000000000002"
+      }
+    ]
+  },
+  "claimed": {
+    "action_id": "action-0123456789abcdef",
+    "gate_bundle_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "gate_expires_at": "2100-01-01T00:00:00Z",
+    "historical_extra": {
+      "preserve": true
+    },
+    "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "operation": "WRITE_CAMPAIGN",
+    "ready": true,
+    "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "run_id": "train",
+    "scope": {
+      "object_id": "train",
+      "project": "demo",
+      "scope_type": "run"
+    },
+    "execution": {
+      "authorization_actor": "actor:test",
+      "authorization_expires_at": "2100-01-01T00:00:00Z",
+      "authorization_note": "approved explicitly",
+      "authorized_at": "2026-10-27T00:00:00Z",
+      "authorized_gate_bundle_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "authorized_intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "error": null,
+      "finished_at": null,
+      "next_action": "WAIT",
+      "resolution": "STILL_IN_PROGRESS",
+      "result": null,
+      "revision": 3,
+      "safe_to_retry": false,
+      "started_at": "2026-10-27T00:00:00Z",
+      "status": "EXECUTING"
+    },
+    "journal": [
+      {
+        "event": "action_prepared",
+        "payload": {
+          "operation": "WRITE_CAMPAIGN",
+          "ready": true
+        },
+        "revision": 1,
+        "timestamp": "2026-10-27T00:00:00Z",
+        "transition_id": "00000000000000000000000000000001"
+      },
+      {
+        "event": "execution_authorized",
+        "payload": {
+          "error": null,
+          "status": "AUTHORIZED"
+        },
+        "revision": 2,
+        "timestamp": "2026-10-27T00:00:00Z",
+        "transition_id": "00000000000000000000000000000002"
+      },
+      {
+        "event": "execution_started",
+        "payload": {
+          "error": null,
+          "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "status": "EXECUTING"
+        },
+        "revision": 3,
+        "timestamp": "2026-10-27T00:00:00Z",
+        "transition_id": "00000000000000000000000000000003"
+      }
+    ]
+  },
+  "events": [
+    {
+      "event": "action_prepared",
+      "payload": {
+        "operation": "WRITE_CAMPAIGN",
+        "ready": true
+      },
+      "revision": 1,
+      "timestamp": "2026-10-27T00:00:00Z",
+      "transition_id": "00000000000000000000000000000001"
+    },
+    {
+      "event": "execution_authorized",
+      "payload": {
+        "error": null,
+        "status": "AUTHORIZED"
+      },
+      "revision": 2,
+      "timestamp": "2026-10-27T00:00:00Z",
+      "transition_id": "00000000000000000000000000000002"
+    },
+    {
+      "event": "execution_started",
+      "payload": {
+        "error": null,
+        "intent_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "status": "EXECUTING"
+      },
+      "revision": 3,
+      "timestamp": "2026-10-27T00:00:00Z",
+      "transition_id": "00000000000000000000000000000003"
+    }
+  ],
+  "action_id_cases": [
+    {
+      "scope": {
+        "project": "demo",
+        "scope_type": "run",
+        "object_id": "train"
+      },
+      "intent_key": "request-001",
+      "action_id": "action-32d525de0f7b4323"
+    },
+    {
+      "scope": {
+        "project": "实验",
+        "scope_type": "attempt",
+        "object_id": "run::attempt-001"
+      },
+      "intent_key": "固定请求",
+      "action_id": "action-98dabcdf2abbc705"
+    }
+  ],
+  "reference": {
+    "baseline_commit": "e725faec689fb8395e692e27d00a8896fa7fe5a5",
+    "source_sha256": {
+      "server/src/ml_exp_server/actions/database.py": "652f6c59767b621d9f45f040254c290bcb375cbf611eba796b38abdeffcd6ffd",
+      "server/src/ml_exp_server/actions/store.py": "51320c07436b334384c031101f40e8c7f40b560abd23264eec932b819dde83c2",
+      "server/src/ml_exp_server/actions/recovery.py": "22d213c65115c405ba011dfa402fc740fc8c882174350a188e64a4c3bd269ae7",
+      "server/src/ml_exp_server/actions/policy.py": "840f7dc5690785cc8740531338f347ac43f6015f32c76c78f0bba9187c842cc6",
+      "server/src/ml_exp_server/actions/execution.py": "275ea19e710f4741fefceb10192e4fc4b41bad389c69b17dfe4cb01d9986c168"
+    },
+    "execution": "isolated Python interpreter and TemporaryDirectory SQLite only; no network/provider/production state"
+  }
+}

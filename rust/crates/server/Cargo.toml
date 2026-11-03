@@ -1,0 +1,55 @@
+[package]
+name = "ml-exp-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ml-expd-rs"
+path = "src/main.rs"
+
+[[bin]]
+name = "ml-expd-state-audit"
+path = "src/state_audit/main.rs"
+
+[dependencies]
+ml-exp-core.workspace = true
+ml-exp-io.workspace = true
+experiment-redact.workspace = true
+time.workspace = true
+getrandom.workspace = true
+url = "2.5"
+percent-encoding = "2.3"
+serde_json = { workspace = true, features = ["raw_value"] }
+clap.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+rusqlite.workspace = true
+fs2.workspace = true
+sha2.workspace = true
+libc.workspace = true
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+subtle = "2"
+yaml-rust2 = "0.13"
+regex.workspace = true
+tar.workspace = true
+flate2.workspace = true
+http-body-util = "0.1"
+tempfile.workspace = true
+
+futures-core = "0.3"
+
+reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "rustls-tls"] }
+hmac = "0.12"
+base64 = "0.22"
+sha1 = "0.10"
+
+[dev-dependencies]
+ml-exp-client = { path = "../client" }
+ml-exp-worker = { path = "../worker" }
+tower = { version = "0.5", features = ["util"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "=0.4.7"
