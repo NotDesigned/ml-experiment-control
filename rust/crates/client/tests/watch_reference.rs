@@ -266,6 +266,7 @@ fn real_http_two_rounds_do_not_follow_a_changed_current_attempt() {
                         Err(error) => panic!("missing exact watch GET: {error}"),
                     }
                 };
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();

@@ -192,6 +192,7 @@ fn real_http_reads_keep_prefix_credentials_identity_and_unmodified_metric_dimens
                         Err(error) => panic!("missing exact read GET: {error}"),
                     }
                 };
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();

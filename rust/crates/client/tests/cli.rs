@@ -8,9 +8,24 @@ use std::time::Duration;
 use ml_exp_io::{create_private_dir, write_atomic};
 
 fn command(home: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ml-exp-rs"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ml-exp"));
     command.env_clear().env("HOME", home);
+    #[cfg(windows)]
+    command.env("SystemRoot", std::env::var_os("SystemRoot").unwrap());
     command
+}
+
+#[test]
+fn canonical_version_is_verified_without_configuration() {
+    ml_exp_client::update::verify_executable(
+        Path::new(env!("CARGO_BIN_EXE_ml-exp")),
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+    assert!(
+        ml_exp_client::update::verify_executable(Path::new(env!("CARGO_BIN_EXE_ml-exp")), "99.0.0")
+            .is_err()
+    );
 }
 
 fn json_output(output: Output) -> serde_json::Value {
@@ -121,6 +136,7 @@ fn environment_url_and_token_candidates_drive_the_real_read_only_request() {
     let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
+        socket.set_nonblocking(false).unwrap();
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -186,6 +202,7 @@ fn environment_token_file_does_not_use_an_ambient_system_proxy() {
     let base = format!("http://{}", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
+        socket.set_nonblocking(false).unwrap();
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -453,6 +470,7 @@ fn serve_responses(
                     Err(e) => panic!("missing CLI request {path}: {e}"),
                 }
             };
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();

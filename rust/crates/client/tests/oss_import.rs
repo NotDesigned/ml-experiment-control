@@ -25,6 +25,7 @@ fn existing_object_import_preserves_content_identity_and_rejects_wrong_response(
         let expected = source.clone();
         let worker = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();

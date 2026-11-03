@@ -109,6 +109,7 @@ fn effect_shell_follows_only_the_original_preparation_and_submission_over_get() 
                     }
                 };
                 stream.set_nonblocking(false).unwrap();
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();

@@ -53,6 +53,7 @@ fn health() -> Value {
     json!({"api_protocol_version":2,"min_client_protocol_version":2,"capabilities":["native-artifacts.v1"]})
 }
 fn read(socket: &mut TcpStream) -> (String, Value) {
+    socket.set_nonblocking(false).unwrap();
     socket
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();

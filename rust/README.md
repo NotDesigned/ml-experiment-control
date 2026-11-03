@@ -86,6 +86,22 @@ flowchart LR
 
 ## Client configuration
 
+The client command is `ml-exp`. Release 0.1.16 provides Linux x86_64/ARM64,
+macOS Intel/Apple Silicon and Windows x86_64 executables. The ARM64 Linux client
+is statically linked with musl; the API/worker bundle remains Linux x86_64.
+Use `install-native.sh --version 0.1.16` on Linux/macOS or
+`./install-native.ps1 -Version 0.1.16` in Windows PowerShell. The Windows installer
+adds its per-user directory to PATH; open a new terminal if needed.
+
+For clients through 0.1.15, use the new installer once: their old update manifest
+selects a retired executable name. Configuration stays in the existing
+`ml-expd-rust/client.json` location under XDG_CONFIG_HOME or `.config` in HOME
+(USERPROFILE on Windows). Later updates use the canonical `ml-exp` release entry.
+Windows credential files must allow only the current user, SYSTEM and local
+Administrators. Client-created settings get a protected DACL; broad inherited
+credentials and reparse points are rejected. Windows uploads contain regular
+files, without Unix executable mode bits.
+
 `update` without `--version` discovers the highest stable `native-vX.Y.Z` release;
 Python releases, drafts and prereleases are excluded. Network or listing errors
 stop the update, and an older default target is refused. Use `--version` only for
@@ -96,11 +112,11 @@ A native client does not require Python. Put the API token in a private file;
 never paste it into a shell command or a repository.
 
 ```sh
-ml-exp-rs --url https://api.example/ml-expd config set --token-file /private/api-token
-ml-exp-rs check
-ml-exp-rs backend
-ml-exp-rs backend slurm-h100
-ml-exp-rs backend slurm-h100 --refresh
+ml-exp --url https://api.example/ml-expd config set --token-file /private/api-token
+ml-exp check
+ml-exp backend
+ml-exp backend slurm-h100
+ml-exp backend slurm-h100 --refresh
 ```
 
 The saved token is bound to the normalized API URL. An explicitly selected URL
@@ -111,7 +127,7 @@ UNKNOWN and STALE observations do not promise availability or a start time.
 
 ## Temporary SSH machines
 
-`ml-exp-rs debug list` shows the configured DSW or CCI profiles. Create a request
+`ml-exp debug list` shows the configured DSW or CCI profiles. Create a request
 file using a profile from that list, a new 32-character hexadecimal request ID
 and your actual SSH public key. The private key stays on your machine.
 
@@ -128,12 +144,12 @@ and your actual SSH public key. The private key stays on your machine.
 ```
 
 ```sh
-ml-exp-rs debug create --file ./debug.json
+ml-exp debug create --file ./debug.json
 debug_identity='debug.REPLACE_WITH_RETURNED_IDENTITY'
-ml-exp-rs debug refresh "$debug_identity"
-ml-exp-rs debug show "$debug_identity"
-ml-exp-rs debug stop "$debug_identity" --confirmation "STOP $debug_identity"
-ml-exp-rs debug delete "$debug_identity" --confirmation "DELETE $debug_identity"
+ml-exp debug refresh "$debug_identity"
+ml-exp debug show "$debug_identity"
+ml-exp debug stop "$debug_identity" --confirmation "STOP $debug_identity"
+ml-exp debug delete "$debug_identity" --confirmation "DELETE $debug_identity"
 ```
 
 Only DSW supports delete; CCI supports create and stop. Refresh checks the
@@ -154,11 +170,11 @@ list/refresh using the saved request identity instead of creating another machin
 Register an approved Project, upload source, and upload or reference data first:
 
 ```sh
-ml-exp-rs source import --help
-ml-exp-rs data upload --project demo --executor pai-h200 --directory ./data
-ml-exp-rs data list --project demo --executor pai-h200
-ml-exp-rs env list --project demo
-ml-exp-rs run start --project demo --file experiment.json --state ./private-state.json
+ml-exp source import --help
+ml-exp data upload --project demo --executor pai-h200 --directory ./data
+ml-exp data list --project demo --executor pai-h200
+ml-exp env list --project demo
+ml-exp run start --project demo --file experiment.json --state ./private-state.json
 ```
 
 `experiment.json` uses this shape (replace the source and base image identities):
@@ -248,7 +264,7 @@ Preparation saves client recovery state before requesting any effect. Continue
 using the returned preparation ID and confirmation:
 
 ```sh
-ml-exp-rs run continue --help
+ml-exp run continue --help
 ```
 
 Continuing builds/reconciles the environment, stages data and prepares a normal
@@ -274,10 +290,10 @@ Fill `experiment` with a valid configuration as above. At most 256 children can
 be expanded. Child identities are deterministic and each has private saved state.
 
 ```sh
-ml-exp-rs run batch --project demo --file batch.json --state-dir ./private-batch
-ml-exp-rs run batch-continue --state-dir ./private-batch --confirmation 'PREPARE BATCH 22222222222222222222222222222222'
-ml-exp-rs run batch-status --state-dir ./private-batch
-ml-exp-rs run batch-submit --state-dir ./private-batch --max-active 2 --confirmation 'SUBMIT BATCH 22222222222222222222222222222222'
+ml-exp run batch --project demo --file batch.json --state-dir ./private-batch
+ml-exp run batch-continue --state-dir ./private-batch --confirmation 'PREPARE BATCH 22222222222222222222222222222222'
+ml-exp run batch-status --state-dir ./private-batch
+ml-exp run batch-submit --state-dir ./private-batch --max-active 2 --confirmation 'SUBMIT BATCH 22222222222222222222222222222222'
 ```
 
 Continue and submit are explicit passes. Repeating a pass queries the saved
@@ -287,7 +303,7 @@ The cap covers this batch, not other clients or the provider's entire quota.
 An expired authorization gate can be replaced explicitly:
 
 ```sh
-ml-exp-rs run renew action-0123456789abcdef --request-id 33333333333333333333333333333333 --confirmation 'RENEW action-0123456789abcdef'
+ml-exp run renew action-0123456789abcdef --request-id 33333333333333333333333333333333 --confirmation 'RENEW action-0123456789abcdef'
 ```
 
 The replacement remains PREPARED and needs fresh authorization. It retains the
@@ -328,9 +344,9 @@ An explicit checkpoint-free restart is available for a PAI job that failed in
 dataset cache initialization before the managed training process started:
 
 ```sh
-ml-exp-rs run sync ACTION --request-id NEW_32_HEX --confirmation 'SYNC ACTION'
+ml-exp run sync ACTION --request-id NEW_32_HEX --confirmation 'SYNC ACTION'
 # Wait for that CPU-only probe to end, then create metadata for the next Attempt:
-ml-exp-rs run retry ACTION --confirmation 'RETRY ACTION' --run RUN --attempt attempt-001 \
+ml-exp run retry ACTION --confirmation 'RETRY ACTION' --run RUN --attempt attempt-001 \
   --from-start --sync-request NEW_32_HEX --max-gpu-hours CUMULATIVE_LIMIT
 ```
 
@@ -369,11 +385,11 @@ This command requires a cloud executor with configured object storage. It does
 not directly mount OSS and does not materialize a backend cache by itself.
 
 ```sh
-ml-exp-rs data import-oss --project demo --executor pai-h200 \
+ml-exp data import-oss --project demo --executor pai-h200 \
   --object-key users/alice/datasets/train.tar \
   --sha256 REPLACE_WITH_64_HEX --archive-bytes 17827328
-ml-exp-rs run files action-REPLACE_WITH_16_HEX
-ml-exp-rs run file action-REPLACE_WITH_16_HEX --path summary.json --output ./summary.json
+ml-exp run files action-REPLACE_WITH_16_HEX
+ml-exp run file action-REPLACE_WITH_16_HEX --path summary.json --output ./summary.json
 ```
 
 `run files` lists a verified result archive's inventory. `run file` reads and
@@ -417,8 +433,8 @@ before replacing the client. It installs no service and reads no API key.
 
 ```sh
 bash install-native.sh --version 0.1.11 --prefix "$HOME/.local/bin"
-ml-exp-rs update --check
-ml-exp-rs update
+ml-exp update --check
+ml-exp update
 ```
 
 These commands use the published

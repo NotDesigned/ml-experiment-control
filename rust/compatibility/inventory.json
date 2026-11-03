@@ -103,7 +103,7 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/client/src/main.rs",
-        "scope": "Separate ml-exp-rs executable exists; Python module entry is retained and not replaced.",
+        "scope": "Separate ml-exp executable exists; Python module entry is retained and not replaced.",
         "compatibility_accepted": false
       }
     },
@@ -3096,7 +3096,7 @@
       "python_baseline_unchanged": true,
       "rust_foundation": {
         "path": "rust/crates/core/src/slurm/allocation.rs",
-        "scope": "Pure parsing and cache-result reduction for the bounded scontrol/squeue allocation protocol. Python retains SSH, PAI and SenseCore provider reads, cache locking and API projection; an optional ml-exp-rs bridge can run the native parser.",
+        "scope": "Pure parsing and cache-result reduction for the bounded scontrol/squeue allocation protocol. Python retains SSH, PAI and SenseCore provider reads, cache locking and API projection; an optional ml-exp bridge can run the native parser.",
         "compatibility_accepted": false,
         "isolated_domain_tests": true
       }
