@@ -1,9 +1,8 @@
-name: quality
+name: legacy-python-quality
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  # Retained Python reference packages are checked only when explicitly requested.
+  # Native changes use rust-rewrite.yml; the optional image bridge stays covered there.
   workflow_dispatch:
 
 permissions:

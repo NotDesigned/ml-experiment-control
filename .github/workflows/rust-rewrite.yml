@@ -1,22 +1,39 @@
-name: rust-rewrite
+name: native-quality
 
 on:
   push:
-    branches: [rewrite/rust]
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
 
 concurrency:
-  group: rust-rewrite-${{ github.ref }}
-  cancel-in-progress: true
+  group: native-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TARGET_DIR: .ops/cargo-target
 
 jobs:
+  plan:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.evidence.outputs.full }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: evidence
+        run: python3 tools/ci_evidence.py plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   native:
+    needs: plan
+    if: always() && (github.event_name != 'push' || needs.plan.outputs.full == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -41,6 +58,8 @@ jobs:
         run: bash rust/tests/preview-smoke.sh
 
   image-effects:
+    needs: plan
+    if: always() && (github.event_name != 'push' || needs.plan.outputs.full == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -55,3 +74,28 @@ jobs:
         env:
           PYTHONPATH: server/src:src:worker/src
         run: python rust/tests/test_native_build_bridge.py
+
+  test:
+    needs: [plan, native, image-effects]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require complete checks or verified exact-tree evidence
+        env:
+          REUSED: ${{ needs.plan.result == 'success' && needs.plan.outputs.full == 'false' }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+          IMAGE_RESULT: ${{ needs.image-effects.result }}
+        run: |
+          if [[ "$REUSED" != true ]]; then
+            test "$NATIVE_RESULT" = success
+            test "$IMAGE_RESULT" = success
+          fi
+      - uses: actions/checkout@v4
+      - run: python3 tools/ci_evidence.py record
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quality-evidence-${{ github.run_attempt }}
+          path: .ops/tested-tree.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

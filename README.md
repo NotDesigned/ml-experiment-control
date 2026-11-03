@@ -1,30 +1,44 @@
 # ML-Expd
 
-> **`rewrite/rust` development branch:** a full native rewrite and module
-> consolidation is in progress. Only the first isolated slices exist; this branch
-> is **not a complete or deployable replacement**. See the
-> [rewrite architecture and acceptance plan](docs/rust-rewrite.md) and
-> [native preview instructions](rust/README.md). The guides below describe the
-> retained Python baseline, unless explicitly marked as Rust preview behavior.
+The default implementation on `main` is native Rust, released as **0.1.16**.
+The client, API, worker and state machines are Rust programs; optional image
+build/copy operations retain a narrow Python bridge, and W&B uses its official
+SDK process. The HTTP protocol remains **2**.
 
 Submit code, a Dockerfile and data to an existing HTTP API; run experiments on
 SSH Slurm/Apptainer, SenseCore ACP or Alibaba PAI DLC; retrieve verified results.
 Backend credentials and image builds stay on the server side.
 
+## Install the native client
+
+Download `install-native.sh` from the
+[native release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.16).
+Linux x86_64, including WSL2:
+
+```sh
+bash install-native.sh --version 0.1.16
+~/.local/bin/ml-exp-rs --url https://api.example/ml-expd config set --token-file /private/api-token
+~/.local/bin/ml-exp-rs check
+~/.local/bin/ml-exp-rs backend
+```
+
+Keep the token in a private file. Subsequent calls reuse the saved URL and token.
+`ml-exp-rs update` selects the latest stable native release and refuses an
+automatic downgrade. Sites may install the same client as `ml-exp`.
+
 ## Choose a starting point
 
 | Your task | Guide |
 |---|---|
-| Run an experiment through an existing service | [Client quickstart](docs/api-quickstart.md) |
-| Install and configure the service | [Operator guide](docs/operator-guide.md) |
-| Connect a client or enable a backend | [Configuration](docs/configuration.md) |
-| Deploy a basic API and a separate client | [Two-machine example](docs/two-machine-quickstart.md) |
-| Understand package and module boundaries | [Architecture](docs/architecture.md) |
+| Run an experiment through an existing service | [Native usage guide](rust/README.md) |
+| Install and configure the service | [Native deployment](rust/README.md#deploying-a-native-service) |
+| Connect a client or enable a backend | [Native configuration](rust/README.md#client-configuration) |
+| Understand package and module boundaries | [Architecture and acceptance](docs/rust-rewrite.md) |
 | Develop or test changes | [Development](docs/development.md) |
 
-The [documentation index](docs/README.md) links feature and API references.
-Read [compatibility and upgrades](docs/architecture.md#compatibility-and-upgrades)
-before changing an existing installation.
+The [documentation index](docs/README.md) separates native guides from retained
+Python reference documentation. Read the [migration status](docs/rust-rewrite.md)
+before upgrading existing state; never initialize a registry over production data.
 
 ## Workflow and responsibilities
 
@@ -42,7 +56,7 @@ Training and evaluation use the same mechanism. Experiment code defines metric
 meaning, checkpoint contents, recovery and model selection. The platform handles
 preparation, scheduling requests, evidence, transfer and result verification.
 
-Use `ml-exp check --json` to discover the installed versions, executors, base-image
+Use `ml-exp-rs --json check` to discover the installed versions, executors, base-image
 digests, capabilities and limits. HTTP protocol remains **2**. Advertised GPU
 specifications do not guarantee immediate allocation. Image publication,
 scheduler success, training completion and downloadable results are separate
@@ -50,9 +64,15 @@ facts; see [recovery](docs/recovery.md).
 
 ## Packages and storage
 
-- [Client](client/README.md): standalone Python HTTP client, with no runtime dependencies.
-- [Server](server/README.md): API, experiment preparation and result collection, using the reusable [core](docs/library-integration.md).
-- [Worker](worker/README.md): standalone standard-library programs copied into job images and remote scripts.
+- `rust/crates/core`: pure identities, validation, budgets and state transitions.
+- `rust/crates/io`: confined filesystem, process and transfer effects.
+- `rust/crates/client`: standalone native HTTP client, without Python dependencies.
+- `rust/crates/server`: API, durable execution, backend adapters and observation.
+- `rust/crates/worker`: in-image execution, checkpoints, metrics and result collection.
+- `rust/`: shared credential redaction and workspace configuration.
+
+The retained `client/`, `server/`, `worker/` and `src/` Python packages are
+reference/bridge sources, not the default client or API installation path.
 
 W&B is an [optional server integration](docs/wandb.md). Platform metrics work
 without it. Temporary [CCI/DSW debug sessions](docs/debug-sessions.md) are separate
