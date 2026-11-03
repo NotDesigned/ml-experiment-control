@@ -83,7 +83,7 @@ jobs:
 
   clients:
     env:
-      RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '-C target-feature=+crt-static' || '' }}
+      RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '-C target-feature=+crt-static -C link-arg=/Brepro' || '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:

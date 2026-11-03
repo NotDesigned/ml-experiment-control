@@ -77,7 +77,7 @@ jobs:
 
   client-platforms:
     env:
-      RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '-C target-feature=+crt-static' || '' }}
+      RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '-C target-feature=+crt-static -C link-arg=/Brepro' || '' }}
     needs: plan
     if: always() && (github.event_name != 'push' || needs.plan.outputs.full == 'true')
     runs-on: ${{ matrix.os }}

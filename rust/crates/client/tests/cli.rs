@@ -10,6 +10,8 @@ use ml_exp_io::{create_private_dir, write_atomic};
 fn command(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ml-exp"));
     command.env_clear().env("HOME", home);
+    #[cfg(windows)]
+    command.env("SystemRoot", std::env::var_os("SystemRoot").unwrap());
     command
 }
 
