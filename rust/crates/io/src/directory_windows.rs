@@ -165,10 +165,48 @@ impl Directory {
         Ok(file)
     }
     pub fn validate_regular_entry(&self, name: &OsStr, file: &File) -> io::Result<()> {
-        if !same(file, &self.open_regular_read(name)?)? {
+        leaf(name)?;
+        self.verify_private_parent()?;
+        let current = OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(self.inner.path.join(name))?;
+        let metadata = current.metadata()?;
+        if !metadata.is_file()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || info(&current)?.nNumberOfLinks != 1
+            || !same(file, &current)?
+        {
             return Err(invalid());
         }
         self.verify_private_parent()
+    }
+    /// Multiple processes may open this stable leaf; fs2 owns the advisory lock.
+    /// Retaining the handle still prevents deletion or replacement of the leaf.
+    pub fn open_lock(&self, name: &OsStr) -> io::Result<File> {
+        leaf(name)?;
+        self.verify_private_parent()?;
+        let path = self.inner.path.join(name);
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        let file = match options.create_new(true).open(&path) {
+            Ok(file) => {
+                crate::windows_private::protect(&path)?;
+                file
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                options.create_new(false).open(&path)?
+            }
+            Err(e) => return Err(e),
+        };
+        self.validate_regular_entry(name, &file)?;
+        crate::windows_private::validate(&file, true)?;
+        Ok(file)
     }
     pub fn entry_exists(&self, name: &OsStr) -> io::Result<bool> {
         leaf(name)?;
@@ -220,5 +258,19 @@ mod tests {
         for name in ["../bad", "data:stream", "CON", "NUL.txt", "tail."] {
             assert!(dir.open_regular_read(OsStr::new(name)).is_err());
         }
+    }
+    #[test]
+    fn independent_lock_handles_preserve_exclusion_and_leaf_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = Directory::open(temp.path(), false).unwrap();
+        let first = dir.open_lock(OsStr::new(".dispatch.lock")).unwrap();
+        let second = dir.open_lock(OsStr::new(".dispatch.lock")).unwrap();
+        fs2::FileExt::try_lock_exclusive(&first).unwrap();
+        assert!(fs2::FileExt::try_lock_exclusive(&second).is_err());
+        assert!(fs::rename(temp.path().join(".dispatch.lock"), temp.path().join("old")).is_err());
+        dir.validate_regular_entry(OsStr::new(".dispatch.lock"), &first)
+            .unwrap();
+        fs2::FileExt::unlock(&first).unwrap();
+        fs2::FileExt::try_lock_exclusive(&second).unwrap();
     }
 }

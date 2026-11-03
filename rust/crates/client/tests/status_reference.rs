@@ -120,6 +120,7 @@ fn real_http_status_keeps_queue_training_and_publication_independent() {
                         Err(e) => panic!("missing status GET: {e}"),
                     }
                 };
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();

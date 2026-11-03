@@ -218,6 +218,7 @@ fn one_post_is_sent_and_lost_or_foreign_response_never_replays_it() {
                     Err(e) => panic!("missing request {e}"),
                 }
             };
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
@@ -405,6 +406,7 @@ fn worker_refresh_is_explicit_bounded_and_never_requires_scheduler_mutation_perm
     ));
     let worker = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
+        socket.set_nonblocking(false).unwrap();
         socket
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();

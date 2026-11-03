@@ -179,7 +179,8 @@ pub(crate) fn protect(path: &Path) -> io::Result<()> {
         return Err(invalid());
     }
     let file = OpenOptions::new()
-        .access_mode(0x0004_0000 | 0x0002_0000 | FILE_READ_ATTRIBUTES)
+        // WRITE_DAC, WRITE_OWNER, READ_CONTROL and FILE_READ_ATTRIBUTES.
+        .access_mode(0x0004_0000 | 0x0008_0000 | 0x0002_0000 | FILE_READ_ATTRIBUTES)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;
@@ -190,8 +191,10 @@ pub(crate) fn protect(path: &Path) -> io::Result<()> {
         SetSecurityInfo(
             file.as_raw_handle(),
             SE_FILE_OBJECT,
-            Security::DACL_SECURITY_INFORMATION | Security::PROTECTED_DACL_SECURITY_INFORMATION,
-            std::ptr::null_mut(),
+            Security::OWNER_SECURITY_INFORMATION
+                | Security::DACL_SECURITY_INFORMATION
+                | Security::PROTECTED_DACL_SECURITY_INFORMATION,
+            sid(&current),
             std::ptr::null_mut(),
             acl,
             std::ptr::null_mut(),

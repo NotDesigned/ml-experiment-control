@@ -134,6 +134,7 @@ fn environment_url_and_token_candidates_drive_the_real_read_only_request() {
     let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
+        socket.set_nonblocking(false).unwrap();
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -199,6 +200,7 @@ fn environment_token_file_does_not_use_an_ambient_system_proxy() {
     let base = format!("http://{}", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
+        socket.set_nonblocking(false).unwrap();
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -466,6 +468,7 @@ fn serve_responses(
                     Err(e) => panic!("missing CLI request {path}: {e}"),
                 }
             };
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();

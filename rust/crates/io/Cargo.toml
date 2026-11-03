@@ -15,6 +15,9 @@ thiserror.workspace = true
 
 tar.workspace = true
 
+[dev-dependencies]
+fs2 = "0.4.3"
+
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
 libc.workspace = true

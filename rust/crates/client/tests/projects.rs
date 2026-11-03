@@ -27,7 +27,10 @@ fn accept(listener: &TcpListener) -> TcpStream {
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(2))
             }
@@ -36,6 +39,7 @@ fn accept(listener: &TcpListener) -> TcpStream {
     }
 }
 fn read(stream: &mut TcpStream) -> Request {
+    stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();

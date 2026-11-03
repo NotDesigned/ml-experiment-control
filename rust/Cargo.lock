@@ -966,6 +966,7 @@ dependencies = [
 name = "ml-exp-io"
 version = "0.1.16"
 dependencies = [
+ "fs2",
  "getrandom 0.3.4",
  "libc",
  "ml-exp-core",
