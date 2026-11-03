@@ -14,7 +14,9 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-unknown-linux-gnu"
-BINARIES = ("ml-exp-rs", "ml-expd-rs", "ml-exp-worker-rs", "ml-expd-state-audit")
+BINARIES = ("ml-exp", "ml-expd-rs", "ml-exp-worker-rs", "ml-expd-state-audit")
+CLIENT_TARGETS = ("aarch64-unknown-linux-musl", "x86_64-apple-darwin",
+                  "aarch64-apple-darwin", "x86_64-pc-windows-msvc")
 
 
 def digest(path):
@@ -37,7 +39,26 @@ def static_worker(path):
         return 1 in types and 3 not in types  # PT_LOAD present, PT_INTERP absent.
 
 
-def build(binary_dir, output, version):
+def client_format(path, target):
+    """Reject artifacts whose executable format or CPU differs from their label."""
+    with path.open('rb') as stream:
+        header = stream.read(64)
+        if len(header) != 64:
+            return False
+        if target == 'aarch64-unknown-linux-musl':
+            return header[:6] == b'\x7fELF\x02\x01' and struct.unpack_from('<H', header, 18)[0] == 183
+        if 'apple-darwin' in target:
+            return header[:4] == b'\xcf\xfa\xed\xfe' and struct.unpack_from('<I', header, 4)[0] == (0x0100000c if target.startswith('aarch64') else 0x01000007)
+        if target == 'x86_64-pc-windows-msvc':
+            offset = struct.unpack_from('<I', header, 60)[0]
+            if header[:2] != b'MZ' or not 64 <= offset <= 65536:
+                return False
+            stream.seek(offset)
+            return stream.read(6) == b'PE\0\0\x64\x86'
+        return False
+
+
+def build(binary_dir, output, version, client_dir=None):
     if not re.fullmatch(r"(?:0|[1-9][0-9]{0,5})\.(?:0|[1-9][0-9]{0,5})\.(?:0|[1-9][0-9]{0,5})", version):
         raise ValueError("native publication requires a stable exact version")
     workspace = tomllib.loads((ROOT / "rust/Cargo.toml").read_text())
@@ -62,10 +83,26 @@ def build(binary_dir, output, version):
         path.chmod(0o755)
         assets.append({"name": filename, "target": TARGET, "executable": name,
                        "bytes": path.stat().st_size, "sha256": digest(path)})
+    if client_dir is None:
+        raise ValueError("all native client platform artifacts are required")
+    expected = {f"ml-exp-{target}" + (".exe" if "windows" in target else "")
+                for target in CLIENT_TARGETS}
+    if {p.name for p in client_dir.iterdir()} != expected:
+        raise ValueError("client platform artifacts are incomplete or unexpected")
+    for target in CLIENT_TARGETS:
+        name = f"ml-exp-{target}" + (".exe" if "windows" in target else "")
+        path = client_dir / name
+        if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 128 * 1024**2 or not client_format(path, target):
+            raise ValueError("invalid platform client executable")
+        shutil.copyfile(path, output / name)
+        (output / name).chmod(0o755)
+        assets.append({"name": name, "target": target, "executable": "ml-exp",
+                       "bytes": path.stat().st_size, "sha256": digest(path)})
     manifest = {"schema_version": 1, "version": version, "protocol_version": 2, "assets": assets}
     (output / "native-release.json").write_text(json.dumps(manifest, indent=2) + "\n")
     shutil.copyfile(ROOT / "rust/install.sh", output / "install-native.sh")
     (output / "install-native.sh").chmod(0o755)
+    shutil.copyfile(ROOT / "rust/install.ps1", output / "install-native.ps1")
     # The server bundle contains no secrets, provider profiles, databases,
     # images or training payloads. Optional Python image effects are separate.
     archive = output / f"ml-expd-native-{version}-{TARGET}.tar.gz"
@@ -97,9 +134,10 @@ def main():
     parser.add_argument("--binary-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--client-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
-        manifest = build(args.binary_dir, args.output, args.version)
+        manifest = build(args.binary_dir, args.output, args.version, args.client_dir)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         parser.exit(1, f"native packaging refused: {error}\n")
     print(json.dumps({"version": manifest["version"], "executables": len(manifest["assets"]), "published": False}))

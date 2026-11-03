@@ -45,8 +45,9 @@ PYTHONHOME. Then verify a real daemon build and receipt. See the native guide.
 `native-quality` checks PRs. On `main`, it reuses a successful PR run only after
 verifying its exact Git tree and matching run-attempt evidence; missing evidence
 or an API failure causes full checks. Direct changes to `main` receive full
-checks. Rust fmt, clippy, all workspace tests, executable smoke and the optional
-image bridge are required. The final `test` job fails if a required job is skipped
+checks. Rust fmt, clippy, all workspace tests, executable smoke, the optional
+image bridge and client tests on Linux ARM64, macOS Intel/Apple Silicon and
+Windows x86_64 are required. The final `test` job fails if a required job is skipped
 or unsuccessful without verified reuse evidence.
 
 `legacy-python-quality` is manual-only for work on retained Python reference
@@ -65,3 +66,10 @@ send boundaries. Preserve frozen definitions, private configuration, unknown
 operations and existing worker hashes. A release does not require rebuilding old
 experiment images or restarting training. Retain small verification records,
 not duplicate build environments or unused installation archives.
+
+The canonical client binary is `ml-exp` (`ml-exp.exe` on Windows). Release jobs
+run client tests on each target OS, validate every platform binary, and require
+all five client targets before assembling the manifest. Tag publication also
+installs and self-updates the public client on all five runner platforms. Linux
+ARM64 uses static musl; Windows uses the static MSVC runtime. Server and worker
+packaging remains Linux x86_64. The former client name is not a second entrypoint.

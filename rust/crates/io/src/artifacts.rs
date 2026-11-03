@@ -6,12 +6,13 @@ use ml_exp_core::artifacts::{
     publication::{Policy, export_path},
 };
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::{
     collections::BTreeSet,
     ffi::OsStr,
     fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
-    os::unix::fs::MetadataExt,
 };
 
 fn invalid() -> io::Error {
@@ -190,13 +191,14 @@ fn pack_kind(
         let bytes = reader.bytes;
         let sha256 = format!("{:x}", reader.hash.finalize());
         let after = file.metadata()?;
-        if before.len() != after.len()
-            || before.mtime() != after.mtime()
-            || before.mtime_nsec() != after.mtime_nsec()
-            || before.ctime() != after.ctime()
-            || before.ctime_nsec() != after.ctime_nsec()
-            || bytes != before.len()
-        {
+        let stable = before.len() == after.len() && before.modified()? == after.modified()?;
+        #[cfg(unix)]
+        let stable = stable
+            && before.mtime() == after.mtime()
+            && before.mtime_nsec() == after.mtime_nsec()
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec();
+        if !stable || bytes != before.len() {
             return Err(invalid());
         }
         parent.validate_regular_entry(
@@ -491,7 +493,7 @@ pub fn inspect_data_stream(
     Ok(definition)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;

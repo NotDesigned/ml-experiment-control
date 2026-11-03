@@ -86,7 +86,7 @@ fn no_repeat(listener: &TcpListener) {
     }
 }
 fn command(home: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ml-exp-rs"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ml-exp"));
     cmd.env_clear().env("HOME", home);
     cmd
 }

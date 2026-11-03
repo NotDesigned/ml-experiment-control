@@ -154,7 +154,6 @@ pub fn list(
     }
     Ok(value)
 }
-#[cfg(unix)]
 pub fn upload(
     client: &Client,
     project: &str,
@@ -261,12 +260,6 @@ pub fn upload(
         source: Box::new(source),
     })
 }
-#[cfg(not(unix))]
-pub fn upload(_: &Client, _: &str, _: &str, _: &Path, _: &Value) -> Result<Value, Error> {
-    Err(Error::Observation(
-        "native dataset packing currently requires Unix",
-    ))
-}
 /// Immutable object parts go directly to the client. Verify the archive and
 /// each member before no-clobber publication. Downloading datasets sends no ACK.
 pub fn download(
@@ -336,8 +329,7 @@ pub fn download(
     temporary.persist_noclobber(&output).map_err(|_| {
         Error::Observation("verified dataset could not be published without replacing a file")
     })?;
-    std::fs::File::open(parent)
-        .and_then(|f| f.sync_all())
+    ml_exp_io::sync_directory(parent)
         .map_err(|_| Error::Observation("dataset saved; directory sync could not be confirmed"))?;
     Ok(
         serde_json::json!({"asset_id":asset,"sha256":metadata.definition.sha256,"bytes":metadata.definition.archive_bytes,"output":output,"verified":true,"acknowledged":false}),

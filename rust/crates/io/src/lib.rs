@@ -1,20 +1,27 @@
 //! Shared filesystem boundary. No domain decisions, HTTP, provider calls or hidden configuration.
 //! Durable writes and bounded private reads never silently replace an immutable record.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod checkpoints;
 #[cfg(unix)]
 pub mod directory;
-#[cfg(unix)]
+#[cfg(windows)]
+#[path = "directory_windows.rs"]
+pub mod directory;
+#[cfg(target_os = "linux")]
 pub mod framing;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod observations;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod process;
 #[cfg(target_os = "linux")]
 pub mod unix_http;
+#[cfg(windows)]
+mod windows_private;
 
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
@@ -24,6 +31,8 @@ pub fn read_private(path: &Path, limit: u64, require_owner: bool) -> io::Result<
         .ok_or_else(|| io::Error::other("invalid private file bound"))?;
     let mut options = OpenOptions::new();
     options.read(true);
+    #[cfg(windows)]
+    windows_private::read_options(&mut options);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -31,6 +40,8 @@ pub fn read_private(path: &Path, limit: u64, require_owner: bool) -> io::Result<
     }
     let file = options.open(path)?;
     let meta = file.metadata()?;
+    #[cfg(windows)]
+    windows_private::validate(&file, require_owner)?;
     if !meta.is_file() || meta.len() > limit {
         return Err(io::Error::other("private file must be regular and bounded"));
     }
@@ -59,6 +70,8 @@ pub fn write_atomic(path: &Path, bytes: &[u8], immutable: bool) -> io::Result<()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    #[cfg(windows)]
+    windows_private::protect(temporary.path())?;
     temporary.write_all(bytes)?;
     temporary.as_file().sync_all()?;
     if immutable {
@@ -74,6 +87,8 @@ pub fn write_atomic(path: &Path, bytes: &[u8], immutable: bool) -> io::Result<()
 pub fn sha256_file(path: &Path) -> io::Result<String> {
     let mut options = OpenOptions::new();
     options.read(true);
+    #[cfg(windows)]
+    windows_private::read_options(&mut options);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -110,7 +125,10 @@ pub fn create_private_dir(path: &Path) -> io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
-    builder.create(path)
+    builder.create(path)?;
+    #[cfg(windows)]
+    windows_private::protect(path)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -154,4 +172,15 @@ mod tests {
 }
 
 pub mod artifacts;
+#[cfg(target_os = "linux")]
 pub mod datasets;
+
+/// Unix directories require an explicit durability barrier. Windows publishes
+/// through synced file handles; opening a directory as a regular file is invalid.
+pub fn sync_directory(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    File::open(path)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}

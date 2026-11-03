@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "ml-exp-rs"
+name = "ml-exp"
 path = "src/main.rs"
 
 [dependencies]
@@ -26,3 +26,6 @@ tempfile.workspace = true
 fs2.workspace = true
 
 [dev-dependencies]
+
+[target.'cfg(windows)'.dependencies]
+self-replace = "=1.5.0"

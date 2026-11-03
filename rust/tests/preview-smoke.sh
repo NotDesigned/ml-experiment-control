@@ -75,14 +75,14 @@ IFS= read -r preview_address < "$preview_root/server.log"
 [[ "$preview_address" == 127.0.0.1:* ]]
 export ML_EXPD_API_TOKEN_FILE="$preview_root/token"
 unset ML_EXPD_API_TOKEN ML_EXPD_API_URL ML_EXPD_CLIENT_CONFIG
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" --url "http://$preview_address" config set --token-file "$preview_root/token" > "$preview_root/config.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" --url "http://$preview_address" config set --token-file "$preview_root/token" > "$preview_root/config.json"
 unset ML_EXPD_API_TOKEN_FILE
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" check > "$preview_root/health.json"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" get /api/readiness > "$preview_root/readiness.json"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" get /api/actions/policy > "$preview_root/policy.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" check > "$preview_root/health.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" get /api/readiness > "$preview_root/readiness.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" get /api/actions/policy > "$preview_root/policy.json"
 grep -q '"allow_source_imports": false' "$preview_root/policy.json"
 grep -q '"allow_scheduler_mutations": false' "$preview_root/policy.json"
-if "$preview_bins/ml-exp-rs" --config "$preview_root/client.json" get /api/actions/execute > "$preview_root/not-implemented.json" 2>&1; then
+if "$preview_bins/ml-exp" --config "$preview_root/client.json" get /api/actions/execute > "$preview_root/not-implemented.json" 2>&1; then
   echo 'unported mutation unexpectedly succeeded' >&2; exit 1
 fi
 grep -q 'HTTP 501' "$preview_root/not-implemented.json"
@@ -93,9 +93,9 @@ if grep -q 'native-preview-test-token' "$preview_root/config.json" "$preview_roo
 fi
 
 # Real binaries compose the same pure reducers and bounded read API.
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" run status --project demo --run train --json > "$preview_root/status.json"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" run logs --project demo --run train > "$preview_root/logs.txt"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" run metrics --project demo --run train > "$preview_root/metrics.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" run status --project demo --run train --json > "$preview_root/status.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" run logs --project demo --run train > "$preview_root/logs.txt"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" run metrics --project demo --run train > "$preview_root/metrics.json"
 grep -q '"state": "RUNNING"' "$preview_root/status.json"
 grep -q '"download_available": false' "$preview_root/status.json"
 grep -q 'native exact log' "$preview_root/logs.txt"
@@ -118,24 +118,24 @@ for _ in {1..100}; do
 done
 IFS= read -r preview_address < "$preview_root/server.log"
 [[ "$preview_address" == 127.0.0.1:* ]]
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" --url "http://$preview_address" config set --token-file "$preview_root/token" > "$preview_root/config.json"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" check > "$preview_root/source-health.json"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" get /api/actions/policy > "$preview_root/source-policy.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" --url "http://$preview_address" config set --token-file "$preview_root/token" > "$preview_root/config.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" check > "$preview_root/source-health.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" get /api/actions/policy > "$preview_root/source-policy.json"
 grep -q '"allow_source_imports": true' "$preview_root/source-policy.json"
 grep -q '"allow_scheduler_mutations": false' "$preview_root/source-policy.json"
 grep -q 'source-archive.v1' "$preview_root/source-health.json"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" source import --project demo --directory "$preview_root/source" > "$preview_root/source-import.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" source import --project demo --directory "$preview_root/source" > "$preview_root/source-import.json"
 source_id="$(jq -r '.source_id' "$preview_root/source-import.json")"
 archive_sha="$(jq -r '.observation.sha256' "$preview_root/source-import.json")"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" source show --project demo --source "$source_id" > "$preview_root/source-show.json"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" source lookup --project demo --sha256 "$archive_sha" > "$preview_root/source-lookup.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" source show --project demo --source "$source_id" > "$preview_root/source-show.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" source lookup --project demo --sha256 "$archive_sha" > "$preview_root/source-lookup.json"
 grep -q '"source_id"' "$preview_root/source-show.json"
 grep -q '"source_id"' "$preview_root/source-lookup.json"
 grep -q 'synthetic source' "$preview_root/source/train.py"
 
 # Metadata writes are an explicit separate mode; approved files are read only.
 sha256sum "$preview_root/project/project.json" "$preview_root/project/runs/train/manifest.yaml" > "$preview_root/research.before"
-if "$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project list > "$preview_root/disabled.log" 2>&1; then
+if "$preview_bins/ml-exp" --config "$preview_root/client.json" project list > "$preview_root/disabled.log" 2>&1; then
   echo 'unconfigured project lifecycle unexpectedly available' >&2; exit 1
 fi
 kill "$preview_pid"
@@ -154,25 +154,25 @@ start_lifecycle() {
   done
   IFS= read -r preview_address < "$preview_root/server.log"
   [[ "$preview_address" == 127.0.0.1:* ]]
-  "$preview_bins/ml-exp-rs" --config "$preview_root/client.json" --url "http://$preview_address" config set --token-file "$preview_root/token" > "$preview_root/config.json"
+  "$preview_bins/ml-exp" --config "$preview_root/client.json" --url "http://$preview_address" config set --token-file "$preview_root/token" > "$preview_root/config.json"
 }
 start_lifecycle
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project pause demo --expected-revision 1 > "$preview_root/paused.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" project pause demo --expected-revision 1 > "$preview_root/paused.json"
 grep -q '"state": "PAUSED"' "$preview_root/paused.json"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project resume demo --expected-revision 2 > "$preview_root/resumed.json"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project archive demo --reason completed --expected-revision 3 > "$preview_root/archived.json"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project restore demo --expected-revision 4 > "$preview_root/restored.json"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project unregister demo --expected-revision 5 > "$preview_root/unregistered.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" project resume demo --expected-revision 2 > "$preview_root/resumed.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" project archive demo --reason completed --expected-revision 3 > "$preview_root/archived.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" project restore demo --expected-revision 4 > "$preview_root/restored.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" project unregister demo --expected-revision 5 > "$preview_root/unregistered.json"
 kill "$preview_pid"
 wait "$preview_pid"
 preview_pid=
 start_lifecycle
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project list > "$preview_root/empty-ledger.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" project list > "$preview_root/empty-ledger.json"
 grep -q '"projects": \[\]' "$preview_root/empty-ledger.json"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" get /api/projects > "$preview_root/empty-projects.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" get /api/projects > "$preview_root/empty-projects.json"
 [[ "$(cat "$preview_root/empty-projects.json")" == '[]' ]]
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" project register "$preview_root/project/project.json" --expected-revision 6 > "$preview_root/registered.json"
-"$preview_bins/ml-exp-rs" --config "$preview_root/client.json" run status --project demo --run train --json > "$preview_root/registered-status.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" project register "$preview_root/project/project.json" --expected-revision 6 > "$preview_root/registered.json"
+"$preview_bins/ml-exp" --config "$preview_root/client.json" run status --project demo --run train --json > "$preview_root/registered-status.json"
 sha256sum "$preview_root/project/project.json" "$preview_root/project/runs/train/manifest.yaml" > "$preview_root/research.after"
 cmp "$preview_root/research.before" "$preview_root/research.after"
 

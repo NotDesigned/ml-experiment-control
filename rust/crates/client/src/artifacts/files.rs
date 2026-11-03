@@ -166,9 +166,7 @@ pub fn download(
         temporary
             .persist_noclobber(&output)
             .map_err(|_| Error::Observation("destination changed; no file was overwritten"))?;
-        File::open(output.parent().ok_or_else(invalid)?)
-            .and_then(|f| f.sync_all())
-            .map_err(|_| invalid())?;
+        ml_exp_io::sync_directory(output.parent().ok_or_else(invalid)?).map_err(|_| invalid())?;
     }
     Ok(
         json!({"submission_id":action,"source":"verified_result_archive","file":record,"local_file":output,

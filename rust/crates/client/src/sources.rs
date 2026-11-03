@@ -321,10 +321,11 @@ impl Write for BoundedWriter {
 /// never run. The initial names, file metadata, and directory attachment are
 /// rechecked before success. This is not an atomic snapshot against root or a
 /// hostile process with the same UID changing and restoring the source tree.
-#[cfg(unix)]
 pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
     use ml_exp_io::directory::Directory;
-    use std::{ffi::OsString, os::unix::fs::MetadataExt, path::Component};
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    use std::{ffi::OsString, path::Component};
     const MAX_DIRECTORIES: usize = 1024;
     const MAX_DEPTH: usize = 32;
     struct Entry {
@@ -346,6 +347,8 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
     for component in absolute.components() {
         match component {
             Component::RootDir | Component::Normal(_) => normalized.push(component.as_os_str()),
+            #[cfg(windows)]
+            Component::Prefix(_) => normalized.push(component.as_os_str()),
             Component::CurDir => {}
             _ => return Err(packing()),
         }
@@ -436,11 +439,11 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         header.set_uid(0);
         header.set_gid(0);
         header.set_mtime(0);
-        header.set_mode(if entry.metadata.mode() & 0o111 != 0 {
-            0o500
-        } else {
-            0o400
-        });
+        #[cfg(unix)]
+        let executable = entry.metadata.mode() & 0o111 != 0;
+        #[cfg(not(unix))]
+        let executable = false;
+        header.set_mode(if executable { 0o500 } else { 0o400 });
         header.set_size(entry.metadata.len());
         header.set_cksum();
         let mut body = (&mut file).take(entry.metadata.len());
@@ -486,11 +489,4 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         }
     }
     inspect_archive(writer.file)
-}
-
-#[cfg(not(unix))]
-pub fn pack_directory(_path: &Path) -> Result<PreparedArchive, Error> {
-    Err(Error::Observation(
-        "native source directory packing currently requires Unix descriptor-safe filesystem operations",
-    ))
 }

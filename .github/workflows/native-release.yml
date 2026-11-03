@@ -69,7 +69,102 @@ jobs:
           NATIVE_PROFILE: release
         run: bash rust/tests/preview-smoke.sh
       - name: Package executables and deployment examples
-        run: python3 tools/build_native_release.py --binary-dir "$CARGO_TARGET_DIR/release" --output .ops/native-dist --version "$NATIVE_RELEASE_VERSION"
+        run: |
+          mkdir .ops/native-linux
+          for program in ml-exp ml-expd-rs ml-exp-worker-rs ml-expd-state-audit; do
+            cp "$CARGO_TARGET_DIR/release/$program" .ops/native-linux/
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-linux
+          path: .ops/native-linux/*
+          if-no-files-found: error
+          retention-days: 3
+
+  clients:
+    env:
+      RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '-C target-feature=+crt-static' || '' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .ops/native-release-target
+          key: native-client-release-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('rust/Cargo.lock') }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - if: runner.os == 'macOS'
+        run: echo "TMPDIR=$(python3 -c 'import os,tempfile; print(os.path.realpath(tempfile.gettempdir()))')" >> "$GITHUB_ENV"
+      - name: Build and validate the exact platform client
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          native_version="${GITHUB_REF_NAME#native-v}"
+          if [[ "$GITHUB_REF" != refs/tags/native-v* ]]; then native_version="$REQUESTED_VERSION"; fi
+          cargo test --locked --manifest-path rust/Cargo.toml -p ml-exp-client --target ${{ matrix.target }}
+          cargo build --locked --release --manifest-path rust/Cargo.toml -p ml-exp-client --target ${{ matrix.target }}
+          native_suffix=
+          if [[ "$RUNNER_OS" == Windows ]]; then native_suffix=.exe; fi
+          native_binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/ml-exp$native_suffix"
+          test "$("$native_binary" --version)" = "ml-exp $native_version"
+          "$native_binary" --help
+          mkdir .ops/native-client
+          cp "$native_binary" ".ops/native-client/ml-exp-${{ matrix.target }}$native_suffix"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-client-${{ matrix.target }}
+          path: .ops/native-client/*
+          if-no-files-found: error
+          retention-days: 3
+
+  package:
+    needs: [build, clients]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux
+          path: native-bin
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-client-*
+          merge-multiple: true
+          path: native-clients
+      - name: Package all required platforms and exact hashes
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          native_version="${GITHUB_REF_NAME#native-v}"
+          if [[ "$GITHUB_REF" != refs/tags/native-v* ]]; then native_version="$REQUESTED_VERSION"; fi
+          chmod +x native-bin/*
+          mkdir -p .ops
+          python3 tools/build_native_release.py --binary-dir native-bin --client-dir native-clients --output .ops/native-dist --version "$native_version"
       - uses: actions/upload-artifact@v4
         with:
           name: native-dist
@@ -79,7 +174,7 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/native-v')
-    needs: build
+    needs: package
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -95,4 +190,43 @@ jobs:
         run: |
           cd native-dist
           sha256sum --check SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" ./* --verify-tag --title "ML-Expd native ${GITHUB_REF_NAME#native-v}" --notes 'Native Linux x86_64 executables, exact hashes and deployment examples. See the bundled migration and usage guides. Deployment requires separate acceptance and existing-state checks.'
+          gh release create "$GITHUB_REF_NAME" ./* --verify-tag --title "ML-Expd native ${GITHUB_REF_NAME#native-v}" --notes 'Native ml-exp clients for Linux x86_64/ARM64, macOS Intel/Apple Silicon and Windows x86_64; Linux x86_64 API/worker bundle. Includes SHA256 manifests and POSIX/PowerShell installers. Clients through 0.1.15 require the new installer once for the ml-exp rename; saved configuration is retained. See the bundled usage and acceptance guides.'
+
+  installer-smoke:
+    if: startsWith(github.ref, 'refs/tags/native-v')
+    needs: publish
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and update the public Linux or macOS client
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_version="${GITHUB_REF_NAME#native-v}"
+          native_prefix="$RUNNER_TEMP/ml-exp-public"
+          bash rust/install.sh --version "$native_version" --prefix "$native_prefix"
+          test "$("$native_prefix/ml-exp" --version)" = "ml-exp $native_version"
+          "$native_prefix/ml-exp" update --check
+          "$native_prefix/ml-exp" update
+          test "$("$native_prefix/ml-exp" --version)" = "ml-exp $native_version"
+      - name: Install and update the public Windows client
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Version = $env:GITHUB_REF_NAME.Substring('native-v'.Length)
+          $Prefix = Join-Path $env:RUNNER_TEMP 'ml-exp-public'
+          ./rust/install.ps1 -Version $Version -Prefix $Prefix -NoPath
+          $Client = Join-Path $Prefix 'ml-exp.exe'
+          if ((& $Client --version) -ne "ml-exp $Version") { throw 'Installed client version differs.' }
+          & $Client update --check
+          if ($LASTEXITCODE -ne 0) { throw 'Public update check failed.' }
+          & $Client update
+          if ($LASTEXITCODE -ne 0) { throw 'Public self replacement failed.' }
+          if ((& $Client --version) -ne "ml-exp $Version") { throw 'Updated client version differs.' }

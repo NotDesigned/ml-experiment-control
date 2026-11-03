@@ -13,18 +13,26 @@ Backend credentials and image builds stay on the server side.
 
 Download `install-native.sh` from the
 [native release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.16).
-Linux x86_64, including WSL2:
+Clients are published for Linux x86_64/ARM64, macOS Intel/Apple Silicon and
+Windows x86_64. The API and worker deployment bundle targets Linux x86_64.
+
+Linux or macOS:
 
 ```sh
 bash install-native.sh --version 0.1.16
-~/.local/bin/ml-exp-rs --url https://api.example/ml-expd config set --token-file /private/api-token
-~/.local/bin/ml-exp-rs check
-~/.local/bin/ml-exp-rs backend
+~/.local/bin/ml-exp --url https://api.example/ml-expd config set --token-file /private/api-token
+~/.local/bin/ml-exp check
+~/.local/bin/ml-exp backend
 ```
 
 Keep the token in a private file. Subsequent calls reuse the saved URL and token.
-`ml-exp-rs update` selects the latest stable native release and refuses an
-automatic downgrade. Sites may install the same client as `ml-exp`.
+`ml-exp update` selects the latest stable native release and refuses an
+automatic downgrade. Windows users download `install-native.ps1` from the same
+release and run `./install-native.ps1 -Version 0.1.16` in PowerShell.
+
+Clients from 0.1.15 or earlier use the old executable/manifest name. Run the new
+installer once to switch to `ml-exp`; subsequent updates use `ml-exp update`.
+Existing URL/token configuration remains valid and is not moved or overwritten.
 
 ## Choose a starting point
 
@@ -56,7 +64,7 @@ Training and evaluation use the same mechanism. Experiment code defines metric
 meaning, checkpoint contents, recovery and model selection. The platform handles
 preparation, scheduling requests, evidence, transfer and result verification.
 
-Use `ml-exp-rs --json check` to discover the installed versions, executors, base-image
+Use `ml-exp --json check` to discover the installed versions, executors, base-image
 digests, capabilities and limits. HTTP protocol remains **2**. Advertised GPU
 specifications do not guarantee immediate allocation. Image publication,
 scheduler success, training completion and downloadable results are separate

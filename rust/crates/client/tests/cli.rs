@@ -8,9 +8,22 @@ use std::time::Duration;
 use ml_exp_io::{create_private_dir, write_atomic};
 
 fn command(home: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ml-exp-rs"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ml-exp"));
     command.env_clear().env("HOME", home);
     command
+}
+
+#[test]
+fn canonical_version_is_verified_without_configuration() {
+    ml_exp_client::update::verify_executable(
+        Path::new(env!("CARGO_BIN_EXE_ml-exp")),
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+    assert!(
+        ml_exp_client::update::verify_executable(Path::new(env!("CARGO_BIN_EXE_ml-exp")), "99.0.0")
+            .is_err()
+    );
 }
 
 fn json_output(output: Output) -> serde_json::Value {

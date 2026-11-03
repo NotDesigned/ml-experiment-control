@@ -10,9 +10,9 @@ use std::{
 
 #[derive(Parser)]
 #[command(
-    name = "ml-exp-rs",
+    name = "ml-exp",
     version,
-    about = "Rust rewrite preview: private settings, exact observations and project lifecycle"
+    about = "Submit experiments, inspect progress and retrieve verified results"
 )]
 struct Args {
     #[arg(long, global = true, env = "ML_EXPD_API_URL")]
@@ -840,7 +840,9 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     };
     let config = args.config.unwrap_or_else(|| {
         let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from);
         config::default_config_path(xdg.as_deref(), home.as_deref())
     });
     let settings = credentials::load_settings(&config)?;

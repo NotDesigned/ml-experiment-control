@@ -18,6 +18,18 @@ pub struct Asset {
     pub bytes: u64,
     pub sha256: String,
 }
+
+/// Canonical published client targets, independent of the calling host.
+pub fn client_target(os: &str, arch: &str) -> Result<&'static str, &'static str> {
+    match (os, arch) {
+        ("linux", "x86_64") => Ok("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64") => Ok("aarch64-unknown-linux-musl"),
+        ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
+        ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
+        ("windows", "x86_64") => Ok("x86_64-pc-windows-msvc"),
+        _ => Err("no native client release for this platform"),
+    }
+}
 pub fn version(s: &str) -> bool {
     let parts: Vec<_> = s.split('.').collect();
     parts.len() == 3
@@ -130,6 +142,20 @@ impl Manifest {
 mod latest_tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn selects_only_published_platforms() {
+        for (os, arch, expected) in [
+            ("linux", "x86_64", "x86_64-unknown-linux-gnu"),
+            ("linux", "aarch64", "aarch64-unknown-linux-musl"),
+            ("macos", "x86_64", "x86_64-apple-darwin"),
+            ("macos", "aarch64", "aarch64-apple-darwin"),
+            ("windows", "x86_64", "x86_64-pc-windows-msvc"),
+        ] {
+            assert_eq!(client_target(os, arch).unwrap(), expected);
+        }
+        assert!(client_target("windows", "aarch64").is_err());
+        assert!(client_target("linux", "riscv64").is_err());
+    }
     #[test]
     fn selects_numeric_native_stable_tags_and_refuses_incomplete_or_older_choices() {
         let row =

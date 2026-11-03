@@ -210,9 +210,7 @@ pub fn download(
         temporary.persist_noclobber(&output).map_err(|_| {
             Error::Observation("destination changed; no existing file was overwritten or ACK sent")
         })?;
-        File::open(output.parent().ok_or_else(invalid)?)
-            .and_then(|f| f.sync_all())
-            .map_err(|_| invalid())?;
+        ml_exp_io::sync_directory(output.parent().ok_or_else(invalid)?).map_err(|_| invalid())?;
         proof
     };
     artifacts::proof_matches(receipt, &proof).map_err(|_| invalid())?;
