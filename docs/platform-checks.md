@@ -20,6 +20,12 @@ Implementations: [native_image.py](../server/src/ml_exp_server/builds/native_ima
 [image_builder.py](../server/src/ml_exp_server/image_builder.py),
 [dockerfile_build.py](../server/src/ml_exp_server/dockerfile_build.py).
 
+The new end-to-end fixture also exposed an unprivileged-builder bug: copying a
+sealed tree made the temporary context readonly before worker injection. The
+temporary context and its generated control files are now writable by their
+owner; the original frozen source is unchanged. Root privileges are not an
+implicit requirement of this packaging step.
+
 ## Additional platform policies to simplify
 
 These remain in the code in this change. They are not described as provider
