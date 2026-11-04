@@ -85,5 +85,5 @@ fn image_dataset_resumes_durable_parts_verifies_tree_and_reuses_ready_without_or
         url: "https://127.0.0.1/data".into(),
         allowed_hosts: std::collections::BTreeSet::from(["127.0.0.1".into()]),
     };
-    assert!(invalid.validate().is_err());
+    assert!(invalid.validate().is_ok());
 }

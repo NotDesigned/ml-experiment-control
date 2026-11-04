@@ -1,9 +1,10 @@
 # Runtime image builds
 
-The operator chooses a private Docker/BuildKit publisher, local or reached over
-SSH, or an optional PAI DSW publisher. Building and training are separate: any
-training backend can consume a compatible, authenticated published image. The
-client always supplies source plus a Dockerfile through the same API.
+The default publisher builds on a CPU PAI DSW instance and pushes to ACR.
+An optional ACR Git build provides fallback. A local Docker/BuildKit publisher
+is also supported; remote Docker engines and SSH desktop tunnels have been
+removed. Building and training are separate: compatible authenticated images
+can be used by any configured training backend.
 
 ## Dockerfile contract
 
@@ -47,7 +48,7 @@ the verified digest, not a mutable cache tag or local RepoDigests assertion.
 
 With `ephemeral_buildkit: true`, each build owns its container/cache volume,
 pushes without loading the training image into Docker and cleans its exact
-resources after success/failure. A lease records owner and Docker endpoint;
+resources after success/failure. A lease records the local builder;
 failed cleanup blocks later publication. No global prune is performed.
 `registry_cache: true` uses one inline cache tag per project; cache misses permit
 cold construction. Cached layers do not guarantee GPU capacity or fast cold pulls.
@@ -56,65 +57,11 @@ SIF and removing the converter's private temporary OCI cache.
 
 ## Diagnose and resume a failed build
 
-`/runtimes/{id}/progress` includes a structured `build_error` and diagnostic
-code. Stage messages, including remote bytes/inodes and their required budget,
-are written to build logs before BuildKit starts. `BUILDER_DOCKER_UNAVAILABLE`
-means the configured Docker tunnel/engine could not be reached; it does not mean
-that either the API disk or the desktop disk is full. Historical discarded
-stderr cannot be reconstructed.
-
-Keep the original Runtime and call its `/reconcile` with its saved confirmation.
-A missing local receipt alone never permits a new build. For a current remote
-BuildKit definition, reconciliation can additionally check under both private
-locks that no lease/container remains and the authenticated registry returns
-404 for the exact bundle tag. Only this positive, identity-bound observation
-can grant `BUILD_PUBLICATION_ABSENT` with `retry_safe: true`. Registry/network
-errors, busy builders, malformed observations and existing-but-unverified
-manifests do not grant retry. Reconcile never builds or deletes an image.
-
-An explicit `/execute` can then retry the same Runtime; the worker checks
-publication absence again under its locks immediately before creating a builder.
-Old observations cannot overwrite a newly published image. Prior error evidence
-is kept in `build_error_history`; unknown failures have a structured error and
-remain unsafe. When the Runtime is READY, continue the original Preparation.
-This prepares a Submission; GPU authorization/execution remain separate.
-
-## SSH desktop setup
-
-On the API host, create/recreate a root-private socket directory:
-
-```bash
-install -d -m 0700 -o root -g root /run/ml-expd-desktop
-```
-
-Use `/etc/tmpfiles.d/ml-expd-desktop.conf` containing
-`d /run/ml-expd-desktop 0700 root root -`. From WSL with Docker Desktop running:
-
-```bash
-ssh -NT -o ExitOnForwardFailure=yes \
-  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-  -R /run/ml-expd-desktop/docker.sock:/var/run/docker.sock server-alias
-```
-
-Keep SSH and Docker running. Confirm an abandoned socket has no listener before
-removing that exact path; never unlink an active tunnel. No public Docker port,
-Cloudflare proxy or local fallback is required.
-
-Configure the root-owned builder with `docker_host` set to
-`unix:///run/ml-expd-desktop/docker.sock`, `publisher: buildkit`,
-`ephemeral_buildkit: true`, pinned `buildkit_image` and repository/auth.
-**Remove local `build_storage_path` in remote mode.** Provision the pinned tool
-image on the desktop before probes, which use pull=never. New dataset uploads
-bypass Docker and the desktop: Slurm receives parts over SSH, while SenseCore
-receives a streamed CCR data image. The old desktop data helper is retained only
-for historical assets/sessions; do not provision it for new input uploads.
-
-Source contexts are bounded gzip archives, sent using Docker's archive API,
-SHA/size checked and sealed on the desktop before BuildKit reads them across
-the private bridge. This avoids WAN BuildKit filesystem-session transfer.
-Scoped leases remove only that source context. Historical desktop dataset assets
-remain separate and are not removed by build cleanup.
-A broken tunnel fails closed; reconcile uncertain publication before retrying.
+Query the original Runtime's progress, logs and reconciliation endpoint.
+DSW reconciliation checks the owned instance and published registry image;
+ACR reconciliation can accept a late completed image without triggering a
+second build. Missing receipts alone do not establish a failed publication.
+Once the Runtime is READY, continue its original Preparation.
 
 ## PAI DSW and ACR fallback
 
@@ -138,8 +85,8 @@ Configure the private image builder, not a DLC training executor:
 ```
 
 Merge this with the common peer UID/GID, source/state root and socket settings
-from [image-builder.json](../server/examples/image-builder.json). Omit desktop
-Docker endpoint/BuildKit options in DSW mode. PAI API credentials remain private;
+from [image-builder.json](../server/examples/image-builder.json). Omit local
+BuildKit options in DSW mode. PAI API credentials remain private;
 MCP upload/exec uses an isolated CLI profile. Signed REST creates, queries,
 stops and deletes only the owned instance. No public Docker port is exposed.
 
@@ -202,53 +149,10 @@ copy to CCR and verifies it before scheduling; repeated requests reuse it.
 Image layers do not accumulate on the API disk. Old frozen image/delivery
 references remain unchanged.
 
-## Capacity and progress
+## Local BuildKit storage
 
-Local builders can configure `build_storage_path` on the Docker-state filesystem.
-Remote builders must measure bytes/inodes on a restricted desktop volume probe.
-Default conservative budget: 4× compressed external base layers + 2× context
-bytes + 2 GiB reserve; at least 100,000 free inodes. Config keys are
-`build_expansion_factor`, `build_reserve_bytes`, `build_min_free_inodes`.
-This is not measured unpacked size or a guarantee for arbitrary RUN commands.
-Docker Desktop also needs enough physical space on its Windows backing drive.
-
-Runtime `/logs` and `/progress` expose storage, source staging, build/push and
-digest verification. Structured errors include BUILD_STORAGE_INSUFFICIENT,
-BUILD_STORAGE_UNCHECKED, BUILD_DISK_EXHAUSTED and transport/session errors.
-Check `build_error.retry_safe`, logs and exact receipt. A retry-safe capacity
-failure still needs explicit operator action; ENOSPC/publication uncertainty
-requires reconciliation. Old unbuilt recipes need fresh Runtime preparation.
-
-## Optional verified CCR layer cache
-
-`server/examples/ssh-builder/https_blobs.py` is a restricted GET/HEAD adapter for
-the fixed CCR blob host/path. It streams certificate-verified HTTPS, stores no
-signed URLs in logs and has no published port. It can use an owned compressed
-blob cache volume (`CCR_BLOB_CACHE=/cache`); unverified partials are never hits.
-Choose `buildkit_network`/credential-free `buildkit_http_proxy` to reach it.
-
-For slow desktop-to-CCR transfers, an operator can use the separate bounded
-relay `ccr_relay.py` and `prewarm_ccr.py`:
-
-```bash
-python3 server/examples/ssh-builder/prewarm_ccr.py \
-  --config /etc/ml-expd/image-builder.json \
-  --image REGISTRY/REPOSITORY@sha256:ACTUAL_CCR_DIGEST \
-  --relay-url https://api.example.org/ml-expd-builder-relay \
-  --relay-token-file /etc/ml-expd/builder-relay.token --max-cache-gib 16
-```
-
-The relay needs its own private token/TLS configuration and fixed restricted
-routing; it is not an experiment API or general proxy. Prewarm downloads exact
-ranges directly to desktop, verifies complete layer hashes, resumes verified
-partial prefixes and renews short-lived upstream signatures. It does not build
-or schedule. Use at least 256 MiB for the adapter during prewarm; inspect owned
-cgroup OOM evidence on failure. Monitor its bounded cache and backing drive;
-no automatic cache/registry deletion is implied.
-
-Keep build-command timeout separate from RPC wait and worker duration. Set the
-builder's `timeout_seconds` explicitly and inspect the actual configuration;
-the private build RPC permits up to 7200 seconds. For optional DSW and ACR build
-budgets, see [PAI configuration](pai.md). Remove obsolete owned cache blobs only
-while idle; retain pinned
-images, results and recovery evidence.
+Set `build_storage_path` to the local Docker state filesystem when using the
+local publisher. The builder checks free bytes and inodes before downloading
+layers. Build logs distinguish space exhaustion from registry or build errors.
+Remote Docker probes, blob relays and desktop cache helpers are no longer
+provided.

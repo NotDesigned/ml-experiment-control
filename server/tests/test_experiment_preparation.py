@@ -16,7 +16,6 @@ from ml_exp_server.runs.experiment_preparation import ExperimentPreparationReque
 from tests.test_container_api import client, import_source, runtime
 from tests.test_sensecore_data_workflow import stored
 from tests.test_ccr_data_delivery import delivery, receipt, secret
-from tests.test_desktop_data_upload import remote_client, stage
 
 
 def spec(client, **changes):
@@ -163,66 +162,8 @@ def test_request_needs_exactly_one_runtime(runtime_spec, runtime_id):
         ExperimentPreparationRequest(runtime=runtime_spec, run={"run_id": "trial", "executor": "gpu", "runtime_id": runtime_id}, max_gpu_hours=1)
 
 
-def test_server_prepares_cpu_nas_delivery_before_run_and_reuses_ready(delivery, service, monkeypatch):
-    from types import SimpleNamespace
-    from ml_exp_server.data.data_delivery import DataDeliveryService
-    client, data, value, asset = delivery
-    copy_value = value
-    events = []
-    def create(copy, document, **kwargs):
-        events.append("cpu-copy")
-        assert copy["gpus"] == 0 and copy["cpus"] == 2
-        data.callback("demo", copy_value["delivery_id"], secret(data, copy_value), receipt(copy_value))
-    rest = SimpleNamespace(find=lambda *a: [], specs=lambda *a: [{"name": "N6lS.Iu.I10.2c4g", "device": {"number": 0},
-        "cpu": {"vcpu_allocatable": 2}, "memory": {"allocatable": 4}}], create=create)
-    monkeypatch.setattr(DataDeliveryService, "rest", property(lambda self: rest))
-    monkeypatch.setattr(service.submissions, "prepare_first_attempt", lambda *a, **kw: events.append("submission-check") or submission(*a, **kw))
-    body = spec(client, run={"run_id": "with-data", "executor": "cloud", "inputs": [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]})
-    value, pending = service.accept("demo", ExperimentPreparationRequest.model_validate(body))
-    completed = service.finish(pending)
-    assert completed["status"] == "READY", completed
-    assert events == ["cpu-copy", "submission-check"]
-    body["run"]["run_id"] = "reuse-data"
-    _, pending = service.accept("demo", ExperimentPreparationRequest.model_validate(body))
-    assert service.finish(pending)["status"] == "READY"
-    assert events == ["cpu-copy", "submission-check", "submission-check"]
-    original_prepare = DataDeliveryService.prepare
-    used = []
-    def became_ready(self, *a):
-        result = original_prepare(self, *a)
-        if not used:
-            used.append(True)
-            result = {**result, "status": "PREPARED"}
-        return result
-    monkeypatch.setattr(DataDeliveryService, "prepare", became_ready)
-    body["run"]["run_id"] = "copy-became-ready"
-    _, pending = service.accept("demo", ExperimentPreparationRequest.model_validate(body))
-    assert service.finish(pending)["status"] == "READY"
-    assert events.count("cpu-copy") == 1
-    monkeypatch.setattr(DataDeliveryService, "prepare", original_prepare)
-    original_read = DataDeliveryService.read
-    statuses = iter(["QUEUED", "READY"])
-    def queued_read(self, *a):
-        result = original_read(self, *a)
-        return {**result, "status": next(statuses, "READY")}
-    monkeypatch.setattr(DataDeliveryService, "read", queued_read)
-    body["run"]["run_id"] = "shared-copy"
-    _, pending = service.accept("demo", ExperimentPreparationRequest.model_validate(body))
-    assert service.finish(pending)["status"] == "READY"
 
 
-def test_uncertain_data_delivery_keeps_exact_id_across_worker_changes(delivery, service, monkeypatch):
-    from ml_exp_server.data.data_delivery import DataDeliveryService
-    client, data, value, asset = delivery
-    data.update("demo", value["delivery_id"], status="RECONCILE_REQUIRED")
-    body = spec(client, run={"run_id": "uncertain-data", "executor": "cloud", "inputs": [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]})
-    _, pending = service.accept("demo", ExperimentPreparationRequest.model_validate(body))
-    stopped = service.finish(pending)
-    assert stopped["error_code"] == "PREPARATION_DATA_NOT_READY"
-    assert stopped["deliveries"][asset["asset_id"]] == value["delivery_id"]
-    monkeypatch.setattr(DataDeliveryService, "prepare", lambda *a: pytest.fail("do not generate a new delivery identity"))
-    _, pending = service.continue_preparation(*pending)
-    assert service.finish(pending)["error_code"] == "PREPARATION_DATA_NOT_READY"
 
 
 def test_object_data_is_delivered_by_worker_without_cpu_copy(client, stored, service, monkeypatch):
@@ -556,37 +497,6 @@ def test_cpu_script_controller_requires_ready_cache_and_launch_cannot_redownload
         assert json.loads(environment["ML_EXPD_DATA_PREPARATION"]) == ctl.run["data_preparation"]
 
 
-@pytest.mark.parametrize("mode", ["publish", "cached", "uncertain"])
-def test_slurm_desktop_data_preparation_records_receipt_and_never_replays_uncertain_copy(remote_client, service, monkeypatch, mode):
-    from ml_exp_server.backends.slurm import SlurmDataStager
-    from tests.test_artifact_store import archive
-    from tests.test_desktop_data_upload import historical_asset
-    body = archive({"tokens.bin": b"training tokens"})
-    asset = historical_asset(remote_client, body)
-    calls = []
-    real_receipt = SlurmDataStager.receipt
-    monkeypatch.setattr(SlurmDataStager, "check", lambda *a: {"status": "READY" if mode == "cached" else "NOT_FOUND"})
-    def publish(self, *args):
-        calls.append("copy")
-        if mode == "uncertain":
-            raise ApplicationError("inspect original copy", code="SLURM_DATA_PREPARATION_FAILED")
-        return real_receipt(self, *args)
-    monkeypatch.setattr(SlurmDataStager, "publish", publish)
-    request = spec(remote_client, run={"run_id": "slurm-data", "executor": "gpu",
-                                     "inputs": [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]})
-    _, pending = service.accept("demo", ExperimentPreparationRequest.model_validate(request))
-    value = service.finish(pending)
-    if mode == "uncertain":
-        assert value["error_code"] == "SLURM_DATA_PREPARATION_FAILED"
-        _, continued = service.continue_preparation(*pending)
-        again = service.finish(continued)
-        assert again["error_code"] == "SLURM_DATA_NOT_READY" and calls == ["copy"]
-    else:
-        assert value["status"] == "READY", value
-        assert value["data_receipts"][asset["asset_id"]]["transport"] == "ssh_stream_shared_storage"
-        assert calls == ([] if mode == "cached" else ["copy"])
-        _, frozen = frozen_campaign(remote_client, value["run"])
-        assert frozen["inputs"][0]["require_cached"] is True
 
 
 def object_input(control):
@@ -614,11 +524,10 @@ def test_cpu_script_with_worker_delivered_inputs_is_rejected_before_build(cpu_do
 
 
 @pytest.mark.parametrize("entry", ["preparation", "create"])
-def test_cpu_script_rejects_historical_object_asset_even_under_desktop_policy(cpu_download, monkeypatch, entry):
+def test_cpu_script_rejects_historical_object_asset_requires_backend_transport(cpu_download, monkeypatch, entry):
     control = cpu_download
     asset = object_input(control)
     config = json.loads(control.config.read_text())
-    config.update(data_upload_storage="desktop-builder", data_upload_socket="desktop.sock")
     control.config.write_text(json.dumps(config))
     control.body["run"]["inputs"] = [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]
     monkeypatch.setattr(control.service.containers, "prepare", lambda *a: pytest.fail("unsupported historical asset must not build"))
@@ -635,29 +544,6 @@ def test_cpu_script_rejects_historical_object_asset_even_under_desktop_policy(cp
     assert not control.creates
 
 
-def test_cpu_script_accepts_desktop_asset_and_freezes_only_cached_input(cpu_download, remote_client, stage, monkeypatch):
-    from ml_exp_server.data.data_delivery import DataDeliveryService
-    from tests.test_artifact_store import archive
-    from tests.test_desktop_data_upload import historical_asset
-    control = cpu_download
-    stage.uploads.capacity.headroom = 0  # This tiny transfer verifies routing, not disk admission.
-    content = archive({"tokens.bin": b"desktop input"})
-    asset = historical_asset(remote_client, content)
-    assert asset["remote_storage"] == "desktop-builder"
-    control.body["run"]["inputs"] = [{"asset_id": asset["asset_id"], "mount_path": "/inputs/data"}]
-    value, pending = accept_cpu(control)
-    assert value["status"] == "EXECUTING" and pending is not None
-    checked = []
-    def ready(self, project, asset_id, executor):
-        checked.append((project, asset_id, executor))
-        return {"status": "READY", "asset_id": asset_id, "data_path": "/data/lab/demo/data-assets/" + asset_id}
-    monkeypatch.setattr(DataDeliveryService, "ready_for", ready)
-    response = remote_client.post("/api/projects/demo/runs", json=control.body["run"])
-    assert response.status_code == 200, response.text
-    _, frozen = frozen_campaign(remote_client, response.json())
-    assert frozen["inputs"][0]["require_cached"] is True
-    assert frozen["data_preparation"]["inputs"][0]["require_cached"] is True
-    assert checked == [("demo", asset["asset_id"], "cloud")] and not control.creates
 
 
 @pytest.mark.parametrize("variant", ["no-script", "non-cpu"])
@@ -688,7 +574,7 @@ def test_legacy_script_with_object_inputs_keeps_inside_job_transport_on_repeat_c
     path, frozen = frozen_campaign(control.client, first.json())
     assert "data_preparation_mode" not in frozen
     original = path.read_bytes()
-    config.update(data_delivery=cpu, data_upload_storage="desktop-builder", data_upload_socket="desktop.sock")
+    config.update(data_delivery=cpu)
     control.config.write_text(json.dumps(config))
     again = control.client.post("/api/projects/demo/runs", json=control.body["run"])
     assert again.status_code == 200, again.text

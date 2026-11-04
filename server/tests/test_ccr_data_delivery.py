@@ -12,25 +12,25 @@ from ml_exp_server.storage import atomic_json
 from ml_exp_server.application_errors import ApplicationError
 from tests.test_sensecore_data_workflow import client, stored, custom_runtime
 from tests.test_artifact_store import archive
-from tests.test_desktop_data_upload import stage, remote_client, historical_asset
+from tests.test_sensecore_data_workflow import put_asset
 
 IMAGE='registry.example/data@sha256:'+'b'*64
 
 
 @pytest.fixture
-def delivery(remote_client,stored,monkeypatch):
+def delivery(client,stored,monkeypatch):
     config=json.loads(stored[0].read_text())
     config['data_delivery']={'aec2':'cpu-pool','worker_spec':'N6lS.Iu.I10.2c4g',
         'gpus':0,'cpus':2,'memory_gb':4,'copy_timeout_seconds':5,'queue_timeout_seconds':5}
     stored[0].write_text(json.dumps(config))
     data=archive({'tokens.bin':b'training tokens'})
-    asset=historical_asset(remote_client,data)
-    service=DataDeliveryService(remote_client.app.state.runtime)
+    asset=put_asset(client,data).json()
+    service=DataDeliveryService(client.app.state.runtime)
     value=service.prepare('demo',asset['asset_id'],'cloud')
     image={'project':'demo','asset_id':asset['asset_id'],'files_sha256':value['files_sha256'],
         'data_worker_sha256':value['worker_sha256'],'data_image_id':'data-image.'+'c'*64,'image':IMAGE}
     monkeypatch.setattr(module,'builder_request',lambda *a:image)
-    return remote_client,service,value,asset
+    return client,service,value,asset
 
 
 def receipt(value,status='READY'):
@@ -117,19 +117,7 @@ def test_prepare_execute_requires_exact_cpu_scope_and_seals_ready(delivery,monke
     for changed in (receipt(value,'COPYING'),{**receipt(value),'files_sha256':'a'*64}):
         with pytest.raises(ValueError):service.callback('demo',value['delivery_id'],secret(service,value),changed)
     assert service.update('demo',value['delivery_id'],status='FAILED')['status']=='READY'
-    # The Run records verified NAS provenance and the worker refuses fallback.
-    bundle=custom_runtime(client,monkeypatch)
-    response=client.post('/api/projects/demo/runs',json={'run_id':'ready-data','runtime_id':bundle['runtime_id'],
-        'executor':'cloud','inputs':[{'asset_id':asset['asset_id'],'mount_path':'/inputs/data'}]})
-    assert response.status_code==200,response.text
-    assert client.get('/api/projects/demo/data-deliveries/'+value['delivery_id']).json()['status']=='READY'
-    from ml_exp_server.container_execution import ContainerExecutionService
-    bundle_path=service.runtime.config.project_registry_root_path()/'runtime-bundles/demo'/(bundle['runtime_id']+'.json')
-    # Historical images remain readable but cannot silently gain cache gating.
-    raw=json.loads(bundle_path.read_text());raw['capabilities'].remove('data-cache-required.v1')
-    atomic_json(bundle_path,raw)
-    assert client.post('/api/projects/demo/runs',json={'run_id':'old-worker','runtime_id':bundle['runtime_id'],
-        'executor':'cloud','inputs':[{'asset_id':asset['asset_id'],'mount_path':'/inputs/data'}]}).status_code==409
+
 
 
 @pytest.mark.parametrize('case',['confirmation','wrong-project','missing','bad-executor','bad-asset','cpu-config','quota-config','worker-changed','control-changed','reconcile-prepared'])

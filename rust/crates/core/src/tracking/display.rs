@@ -166,9 +166,6 @@ impl Projection {
         let index = match self.series.iter().position(|series| series.key == key) {
             Some(index) => index,
             None => {
-                if self.series.len() >= 512 {
-                    return Err(Error::Display("DISPLAY_CONTEXT_LIMIT"));
-                }
                 let context = FIELDS
                     .into_iter()
                     .chain(["variant_id"])

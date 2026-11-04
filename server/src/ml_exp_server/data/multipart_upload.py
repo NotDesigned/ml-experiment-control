@@ -87,8 +87,6 @@ class UploadStore:
     @contextmanager
     def run_binding_guard(self, binding):
         if binding.get("kind") in {"artifacts", "checkpoint"}:
-            # The standalone desktop asset helper intentionally ships only
-            # stdlib storage modules and never handles Run-bound capabilities.
             from ..deletion_state import RunFence
             with RunFence(self.root.parent).guard(binding["project"], binding["run_id"]):
                 yield

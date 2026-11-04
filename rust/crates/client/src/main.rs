@@ -376,10 +376,10 @@ enum Run {
     },
     /// Ingest the next metrics history page; repeat until COMPLETE. Does not change the job.
     History { submission: String },
-    /// Append a new Attempt from an explicit checkpoint and cumulative budget; does not submit.
+    /// Append a new Attempt from an explicit checkpoint or full restart; does not submit.
     Retry {
         submission: String,
-        #[arg(long)]
+        #[arg(long, default_value = "")]
         confirmation: String,
         #[arg(long)]
         run: String,
@@ -391,13 +391,13 @@ enum Run {
             conflicts_with = "from_start"
         )]
         checkpoint: Option<String>,
-        /// Restart a proven pre-training cloud failure, without a checkpoint.
-        #[arg(long, requires = "sync_request")]
+        /// Restart from the beginning after the parent job is terminal.
+        #[arg(long)]
         from_start: bool,
-        /// Fresh CPU-only run sync performed after the original job ended.
+        /// Legacy CPU synchronization reference; optional.
         #[arg(long, requires = "from_start")]
         sync_request: Option<String>,
-        #[arg(long)]
+        #[arg(long, default_value_t = 0.)]
         max_gpu_hours: f64,
         #[arg(long, default_value = "")]
         reason: String,
@@ -421,7 +421,7 @@ enum Run {
         project: String,
         #[arg(long)]
         run: String,
-        #[arg(long)]
+        #[arg(long, default_value_t = 0.)]
         max_gpu_hours: f64,
         #[arg(long, default_value = "")]
         reason: String,

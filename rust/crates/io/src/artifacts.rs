@@ -1,5 +1,5 @@
 //! Result archive effects on backend storage. Constant-size payload buffers;
-//! checkpoints are excluded, no symlinks, no extra/missing/unstable files.
+//! checkpoints require explicit selection; no symlinks or unstable files.
 use crate::directory::Directory;
 use ml_exp_core::artifacts::{
     self, FileReceipt,
@@ -28,6 +28,24 @@ fn allowed(kind: Kind, path: &str) -> bool {
         Kind::Results => export_path(path),
         Kind::Data => ml_exp_core::datasets::path(path),
     }
+}
+fn selected_paths(root: &Directory, policy: &Policy, kind: Kind) -> io::Result<Vec<String>> {
+    let mut paths = Vec::new();
+    walk(root, "", &mut paths, &mut 0, kind)?;
+    if kind == Kind::Results {
+        for path in &policy.required_files {
+            if path.starts_with("checkpoints/") || path == "checkpoint.ready.json" {
+                open(root, path, kind)?;
+                paths.push(path.clone());
+            }
+        }
+    } else {
+        paths.sort();
+    }
+    if paths.len() > artifacts::MAX_FILES {
+        return Err(invalid());
+    }
+    Ok(paths)
 }
 pub(crate) fn walk(
     directory: &Directory,
@@ -136,11 +154,7 @@ fn pack_kind(
     kind: Kind,
 ) -> io::Result<(String, u64, Vec<FileReceipt>)> {
     policy.validate().map_err(|_| invalid())?;
-    let mut paths = Vec::new();
-    walk(root, "", &mut paths, &mut 0, kind)?;
-    if kind == Kind::Data {
-        paths.sort();
-    }
+    let paths = selected_paths(root, policy, kind)?;
     if paths.is_empty() {
         return Err(invalid());
     }
@@ -214,11 +228,7 @@ fn pack_kind(
     archive.finish()?;
     let writer = archive.into_inner()?;
     writer.inner.sync_all()?;
-    let mut after = Vec::new();
-    walk(root, "", &mut after, &mut 0, kind)?;
-    if kind == Kind::Data {
-        after.sort();
-    }
+    let after = selected_paths(root, policy, kind)?;
     if paths != after {
         return Err(invalid());
     }
@@ -411,9 +421,9 @@ pub fn copy_result_file(
     Ok(record.clone())
 }
 
-pub fn estimate(root: &Directory) -> io::Result<u64> {
-    let mut paths = Vec::new();
-    walk(root, "", &mut paths, &mut 0, Kind::Results)?;
+pub fn estimate(root: &Directory, policy: &Policy) -> io::Result<u64> {
+    policy.validate().map_err(|_| invalid())?;
+    let paths = selected_paths(root, policy, Kind::Results)?;
     let mut bytes = 16u64 * 1024 * 1024;
     for path in paths {
         let (_, file) = open(root, &path, Kind::Results)?;
@@ -537,6 +547,7 @@ mod tests {
         std::fs::write(root.path().join("nested/weights.bin"), [0, 1, 2, 255]).unwrap();
         std::fs::write(root.path().join("empty.log"), []).unwrap();
         std::fs::create_dir(root.path().join("checkpoints")).unwrap();
+        std::fs::write(root.path().join("checkpoints/state.pt"), b"explicit backup").unwrap();
         symlink("/outside", root.path().join("checkpoints/private")).unwrap();
         std::fs::write(
             root.path().join("checkpoint.ready.json"),
@@ -560,6 +571,23 @@ mod tests {
         file.write_all(&[42]).unwrap();
         assert!(verify(&mut file, &receipt).is_err());
         assert!(root.path().join("checkpoints/private").is_symlink());
+        let policy = Policy {
+            required_files: vec!["checkpoints/state.pt".into()],
+        };
+        assert!(
+            estimate(&directory, &policy).unwrap()
+                > estimate(&directory, &Policy::default()).unwrap()
+        );
+        let mut selected = tempfile::tempfile().unwrap();
+        let (sha, bytes, files) = pack(&directory, &mut selected, &policy).unwrap();
+        assert_eq!(files.len(), 3);
+        assert!(files.iter().any(|f| f.path == "checkpoints/state.pt"));
+        let selected_receipt = self::receipt(sha, bytes, files);
+        verify(&mut selected, &selected_receipt).unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join("checkpoints/state.pt")).unwrap(),
+            b"explicit backup"
+        );
     }
     #[test]
     fn missing_required_files_symlinks_and_duplicate_members_fail() {

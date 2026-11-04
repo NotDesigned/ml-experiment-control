@@ -4,8 +4,8 @@ Default implementation: native Rust on `main`. Python reference baseline:
 `e725faec689fb8395e692e27d00a8896fa7fe5a5` (1.5.1). Production runs the native
 service on Tokyo; Python API/builder services on Seoul are retired. The native
 workspace release is `native-v0.1.16`. Direct HTTPS uses
-`https://server-tokyo.adscn.dev:2087/ml-expd`; the original API domain remains
-available through its existing proxy. Historical metadata is attached read-only,
+`https://ml-exp.adscn.dev`; the old API domain and temporary port have been removed.
+Historical metadata is attached read-only,
 with separate native write namespaces. Slurm connects through the direct
 L40S-to-Tokyo gateway.
 
@@ -329,7 +329,10 @@ Local/DSW logs live in ignored `.ops` directories and are not release artifacts.
 format, lint, workspace-test, binary-smoke and bridge-test commands. Passing these
 checks establishes development evidence, not real GPU or production acceptance.
 
-## Independent Tokyo acceptance (2026-10-29 to 2026-10-30)
+## Historical Tokyo acceptance (2026-10-29 to 2026-10-30)
+
+The temporary endpoints described below were removed on 2026-11-05. The only
+current production API is `https://ml-exp.adscn.dev`.
 
 Before production cutover, the native server and client ran under `/opt/ml-expd-native-test`, with a distinct
 token, registry, Project and service. HTTPS uses the separately approved

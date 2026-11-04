@@ -102,7 +102,7 @@ def test_relay_without_script_and_old_worker_are_checked(gateway, monkeypatch):
         validate_worker(request, {'capabilities': []}, service.profile_capabilities()['gpu'])
     cloud = copy.deepcopy(service.profiles()['cloud']); cloud['backend']['api_relay'] = ctl.run['backend']['api_relay']
     with pytest.raises(ApplicationError, match='Slurm gateway'):
-        declaration(cloud, artifact_store=True, desktop=True)
+        declaration(cloud, artifact_store=True)
 
 
 @pytest.mark.parametrize('missing', [False, True])

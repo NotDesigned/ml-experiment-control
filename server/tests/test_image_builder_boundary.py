@@ -147,7 +147,7 @@ def test_builder_command_capture_and_configured_tools(builder):
     assert value._command(["/bin/echo", "result"], capture=True) == "result\n"
     assert value._command(["/bin/true"]) == ""
     value.config.update(docker="/bin/echo", skopeo="/bin/echo")
-    assert value._docker(["version"], capture=True).strip() == "version"
+    assert value._docker(["version"], capture=True).strip() == "--host unix:///var/run/docker.sock version"
     assert "inspect" in value._skopeo(["inspect"], capture=True)
 
 

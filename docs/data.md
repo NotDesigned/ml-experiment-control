@@ -41,13 +41,12 @@ The API's global **1 GiB buffer** accounts for in-flight multipart bytes,
 sidecars and filesystem blocks. It seals a part and removes it only after a
 matching durable destination ACK. Lost ACKs retain resumable bytes. Full capacity
 returns `503 TRANSFER_BUFFER_BUSY` with `Retry-After`. A complete new dataset is
-not retained on the API host or desktop. This limit does not cap source snapshots,
+not retained on the API host. This limit does not cap source snapshots,
 result storage, recovery scratch, databases or total server disk.
 
 Slurm's `storage_root` must be shared with its compute nodes. Only the SSH gateway
 needs external access; see [offline nodes](#slurm-without-compute-node-internet).
-SenseCore streams fixed data layers through registry REST, without Docker or the
-desktop builder. It requires an operator-provisioned Python/glibc/Bash base in
+SenseCore streams fixed data layers through registry REST, without a Docker builder. It requires an operator-provisioned Python/glibc/Bash base in
 the same CCR repository. The data Runtime is separate from the training Runtime.
 The copy uses a verified RESERVED 2CPU/4GiB/0GPU debug profile. GPU placement
 excludes debug clusters. A published CCR image (`verification=PENDING_BACKEND`)
@@ -55,9 +54,8 @@ is not proof that the dataset is available on NAS.
 
 Slurm/SenseCore target-backed datasets expose metadata and backend references;
 their direct API archive/download returns `404 DIRECT_DOWNLOAD_UNAVAILABLE`.
-OSS datasets support direct download below. Historical object-store/desktop
-assets keep their original read/reuse paths; new uploads do not select those
-legacy paths. If a configured finite local-payload lifetime expires historical
+OSS datasets support direct download below. Historical object-store assets retain their read paths. Desktop staging and
+its archive RPC have been removed; new uploads select backend storage. If a configured finite local-payload lifetime expires historical
 local data, it returns `410 ASSET_EXPIRED` while retaining its identity. Backend
 shared storage, NAS, CCR and durable OSS originals have separate lifetimes.
 

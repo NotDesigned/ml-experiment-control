@@ -410,15 +410,19 @@ impl Service {
         Ok(execution)
     }
     pub(in crate::cloud_runs) fn check(&self, prepared: &Prepared) -> cloud::Result<()> {
-        let current = self.current_execution(
+        let mut current = self.current_execution(
             &prepared.execution.job.project,
             &prepared.execution.job.run_id,
             &prepared.execution.job.attempt_id,
             &prepared.execution.job.submission_token,
         )?;
+        // The submitted command belongs to the saved Action. A change to the
+        // service's public URL only affects future submissions; it cannot change
+        // whether the original job's evidence is readable.
+        current.job.command = prepared.execution.job.command.clone();
         if current != prepared.execution {
             return Err(cloud::Error::evidence());
         }
-        action::validate(&prepared.plan, &current).map_err(|_| cloud::Error::evidence())
+        action::validate(&prepared.plan, &prepared.execution).map_err(|_| cloud::Error::evidence())
     }
 }

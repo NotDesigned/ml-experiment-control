@@ -58,8 +58,6 @@ pub enum Error {
     Policy,
     #[error("invalid or escaping source archive path")]
     Path,
-    #[error("source archive path is protected")]
-    Protected,
     #[error("source archive has duplicate paths")]
     Duplicate,
     #[error("source kind or Git proposal operation is not implemented")]
@@ -90,32 +88,6 @@ fn parts(raw: &str) -> Vec<&str> {
         .filter(|part| !part.is_empty() && *part != ".")
         .collect()
 }
-/// Python `_is_protected` semantics, including case-normalized components and
-/// pathlib's final suffix rule. A leading-dot filename alone has no suffix.
-pub fn is_protected(raw: &str) -> bool {
-    parts(raw).iter().any(|part| {
-        let lowered = part.to_lowercase();
-        [
-            ".git",
-            ".ssh",
-            ".aws",
-            ".gnupg",
-            "credentials",
-            "keys",
-            "secrets",
-            ".env",
-        ]
-        .contains(&lowered.as_str())
-            || lowered.starts_with(".env.")
-            || lowered.starts_with("credentials.")
-            || lowered.starts_with("secrets.")
-            || lowered.rfind('.').is_some_and(|at| {
-                at > 0
-                    && at + 1 < lowered.len()
-                    && [".key", ".pem", ".p12", ".pfx"].contains(&&lowered[at..])
-            })
-    })
-}
 fn relative(raw: &str) -> Result<String> {
     if raw.is_empty()
         || raw.starts_with('/')
@@ -141,9 +113,6 @@ pub fn archive_path(raw: &str, kind: MemberKind, policy: &Policy) -> Result<Opti
         return Ok(None);
     }
     let path = relative(raw)?;
-    if is_protected(raw) {
-        return Err(Error::Protected);
-    }
     if !matches!(kind, MemberKind::Directory | MemberKind::File) {
         return Err(Error::Unsupported);
     }
@@ -571,15 +540,15 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn archive_paths_are_bounded_and_protected_without_fs_effects() {
+    fn archive_paths_reject_traversal_and_links_without_filename_guesses() {
         let policy = Policy::default();
         assert_eq!(
             archive_path(".", MemberKind::Directory, &policy).unwrap(),
             None
         );
         assert!(archive_path("../escape", MemberKind::File, &policy).is_err());
-        assert!(archive_path(".env.local", MemberKind::File, &policy).is_err());
-        assert!(archive_path("keys/model.bin", MemberKind::File, &policy).is_err());
+        assert!(archive_path(".env.local", MemberKind::File, &policy).is_ok());
+        assert!(archive_path("keys/model.bin", MemberKind::File, &policy).is_ok());
         assert!(archive_path("link", MemberKind::Symlink, &policy).is_err());
         assert_eq!(
             archive_path("src/main.py", MemberKind::File, &policy).unwrap(),

@@ -278,11 +278,6 @@ fn path_policy(path: &str) -> PathPolicy {
         if matches!(part, ".git" | ".venv" | "__pycache__") {
             return PathPolicy::Skip;
         }
-        // The existing client additionally rejects `.env*`, even names that
-        // the server's narrower protected-path policy would accept.
-        if part.to_lowercase().starts_with(".env") {
-            return PathPolicy::Reject;
-        }
     }
     match source_contract::archive_path(
         path,

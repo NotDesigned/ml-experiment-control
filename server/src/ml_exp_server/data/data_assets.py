@@ -55,12 +55,6 @@ class AssetStore:
                 raise ValueError('local retention marker is a symlink')
             if marker.exists():
                 value = {**value, 'local_retention': json.loads(marker.read_text())}
-            locator = self.root.parent / "desktop-data-assets" / project / (asset_id + ".json")
-            if locator.exists():
-                staged = json.loads(locator.read_text())
-                if any(staged[key] != value[key] for key in ("sha256", "archive_bytes", "files")):
-                    raise ValueError("desktop asset locator differs")
-                value = {**value, "remote_storage": "desktop-builder"}
             locations = self.root.parent / "remote-data-assets" / project / (asset_id + ".json")
             if locations.exists():
                 staged = json.loads(locations.read_text())
@@ -182,9 +176,6 @@ class AssetStore:
         if locator(value) is not None:
             return value,OSSDatasets(self).archive(value)
         self.require_available(value)
-        if value.get("remote_storage") == "desktop-builder":
-            from .remote_data_uploads import remote_archive
-            return value, remote_archive(self.objects.config["data_upload_socket"], project, asset_id, value["archive_bytes"])
         if value.get("remote_storage") in TARGET_STORAGE - {"oss"}:
             raise ApplicationError("this data archive is held on its frozen executor storage",
                                    status_code=404, code="DIRECT_DOWNLOAD_UNAVAILABLE")
@@ -206,12 +197,10 @@ class AssetStore:
             raise ValueError("remote asset identity differs")
         files = value.get("files", [])
         self.validate_inventory(files)
-        remote = value["remote_storage"] != "desktop-builder"
-        if remote:
-            scope = value.get("storage_scope", "")
-            if (not re.fullmatch(r"storage\.[0-9a-f]{64}", scope)
-                    or not isinstance(value.get("remote_locator"), dict)):
-                raise ValueError("remote asset storage scope differs")
+        scope = value.get("storage_scope", "")
+        if (not re.fullmatch(r"storage\.[0-9a-f]{64}", scope)
+                or not isinstance(value.get("remote_locator"), dict)):
+            raise ValueError("remote asset storage scope differs")
         with self.record(project, value["asset_id"]) as destination:
             if destination.exists():
                 previous = json.loads((destination / "asset.json").read_text())
@@ -222,9 +211,6 @@ class AssetStore:
                 atomic_json(destination / "asset.json", value)
                 destination.chmod(0o500)
                 previous = value
-            if not remote:
-                atomic_json(self.root.parent / "desktop-data-assets" / project / (value["asset_id"] + ".json"), value)
-                return {**previous, "remote_storage": "desktop-builder"}
             path = self.root.parent / "remote-data-assets" / project / (value["asset_id"] + ".json")
             current = json.loads(path.read_text()) if path.exists() else {
                 "sha256": value["sha256"], "archive_bytes": value["archive_bytes"], "files": files, "locations": {}}

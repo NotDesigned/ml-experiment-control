@@ -46,24 +46,6 @@ impl Service {
         let attempts = directory.child(OsStr::new("attempts"), false).map_err(io)?;
         let next = common::next(&binding.attempt_id).map_err(|_| cloud::Error::evidence())?;
         let exists = attempts.entry_exists(OsStr::new(&next)).map_err(io)?;
-        for n in 1..=common::number(&binding.attempt_id).map_err(|_| cloud::Error::evidence())? {
-            let saved = self
-                .saved_attempt(project, run, &format!("attempt-{n:03}"))?
-                .ok_or_else(cloud::Error::evidence)?;
-            self.check(&saved)?;
-            if self
-                .actions
-                .observe(
-                    saved.plan["action_id"]
-                        .as_str()
-                        .ok_or_else(cloud::Error::evidence)?,
-                )
-                .map_err(op)?["execution"]["status"]
-                != "VERIFIED"
-            {
-                return Err(cloud::Error::evidence());
-            }
-        }
         let attempt = if exists {
             let saved = read(
                 &attempts.child(OsStr::new(&next), false).map_err(io)?,
@@ -85,24 +67,6 @@ impl Service {
         } else {
             if self.current_attempt(project, run)? != binding.attempt_id {
                 return Err(cloud::Error::evidence());
-            }
-            if request.restart_from.is_some()
-                && !self
-                    .runtime(
-                        project,
-                        &parent.execution.backend_id,
-                        manifest["container"]["runtime_id"]
-                            .as_str()
-                            .ok_or_else(cloud::Error::evidence)?,
-                    )?
-                    .worker_features
-                    .contains("shared-cache-identity.v2")
-            {
-                return Err(cloud::Error {
-                    code: "STARTUP_RETRY_RUNTIME_UPGRADE_REQUIRED".into(),
-                    http_status: Some(409),
-                    uncertain: false,
-                });
             }
             let adapter = self.execution_adapter(&parent.execution)?;
             let state = self.outbox.reconcile(
@@ -130,11 +94,6 @@ impl Service {
                 }
                 None => Value::Null,
             };
-            let startup_failure = if request.restart_from.is_some() {
-                Some(self.startup_proof(&parent, &request, &termination, &lock, cancelled)?)
-            } else {
-                None
-            };
             let receipt = retry::Receipt {
                 contract: retry::CONTRACT.into(),
                 parent_action: action.into(),
@@ -147,10 +106,9 @@ impl Service {
                     .map_err(|_| cloud::Error::evidence())?,
                 reserved_gpu_seconds: u64::from(parent.execution.job.gpus)
                     .checked_mul(parent.execution.job.max_time_seconds)
-                    .and_then(|s| s.checked_mul(u64::from(common::number(&next).ok()?)))
                     .ok_or_else(cloud::Error::evidence)?,
                 created_at: now.into(),
-                startup_failure,
+                startup_failure: None,
             };
             let attempt = retry::plan(&manifest, receipt, &checkpoint)
                 .map_err(|_| cloud::Error::evidence())?;

@@ -17,11 +17,13 @@ impl Service {
         let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
             .map_err(|_| Error::Authority)?;
         request.validate(action)?;
-        let checkpoint_reference = request.checkpoint()?.clone();
         let lock = self.lock()?;
         let parent = self.load(action)?;
         let project = &parent.binding.project;
         let run = &parent.binding.run_id;
+        if request.parent()? != (run.as_str(), parent.binding.attempt_id.as_str()) {
+            return Err(Error::Conflict);
+        }
         let guard = self
             .fence
             .existing_observation_guard(project, run)
@@ -46,20 +48,6 @@ impl Service {
             .map_err(|_| Error::Authority)?;
         let next = retry::next(&parent.binding.attempt_id)?;
         let current = self.facts(project, run)?;
-        // Every previous reservation must have its own immutable authority and
-        // VERIFIED scheduler identity. Missing slots are never treated as free.
-        for n in 1..=retry::number(&parent.binding.attempt_id)? {
-            let previous = self
-                .saved_attempt(project, run, &format!("attempt-{n:03}"))?
-                .ok_or(Error::Authority)?;
-            self.check(&previous)?;
-            let id = previous.plan["action_id"]
-                .as_str()
-                .ok_or(Error::Authority)?;
-            if self.actions.observe(id)?["execution"]["status"] != "VERIFIED" {
-                return Err(Error::Conflict);
-            }
-        }
         let exists = attempts
             .entry_exists(OsStr::new(&next))
             .map_err(|_| Error::Authority)?;
@@ -110,12 +98,16 @@ impl Service {
             else {
                 return Err(Error::ObservationUnavailable);
             };
-            let checkpoint = self.checkpoints(
-                project,
-                &checkpoint_reference.run_id,
-                &checkpoint_reference.attempt_id,
-                Some(&checkpoint_reference.checkpoint_id),
-            )?;
+            let checkpoint = if let Some(reference) = &request.resume_from {
+                self.checkpoints(
+                    project,
+                    &reference.run_id,
+                    &reference.attempt_id,
+                    Some(&reference.checkpoint_id),
+                )?
+            } else {
+                Value::Null
+            };
             let attempt = retry::plan(
                 &run_document,
                 request.clone(),

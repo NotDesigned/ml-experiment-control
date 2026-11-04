@@ -11,7 +11,7 @@ from .builds.builder_client import builder_request
 STORAGE_CAPABILITIES = {
     "target-backed-data-upload.v1", "fixed-transfer-buffer.v1", "ccr-streamed-data-image.v1",
     "artifact-retention.v1", "oss-datasets.v1", "result-collection.v1", "training-result.v1",
-    "experiment-records.v1", "input-delivery-progress.v1", "desktop-data-upload.v1",
+    "experiment-records.v1", "input-delivery-progress.v1",
     "ccr-data-delivery.v1", "nas-data-ready-reuse.v1", "managed-worker.v1",
     "data-preparation.v1", "persistent-checkpoints.v1", "multipart-upload.v1",
     "direct-object-download.v1", "data-assets.v1", "checkpoint-upload.v1",

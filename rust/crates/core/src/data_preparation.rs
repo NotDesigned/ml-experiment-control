@@ -81,14 +81,10 @@ impl Request {
     pub fn validate(&self) -> Result<(), &'static str> {
         if !datasets::path(&self.script)
             || self.script.len() > 4096
-            || !matches!(self.interpreter.as_str(), "python3" | "/bin/sh")
+            || self.interpreter.is_empty()
+            || self.interpreter.contains('\0')
             || !(5..=86400).contains(&self.timeout_seconds)
-            || self.arguments.len() > 128
-            || self
-                .arguments
-                .iter()
-                .any(|a| a.contains('\0') || a.len() > 8192)
-            || self.arguments.iter().map(String::len).sum::<usize>() > 32768
+            || self.arguments.iter().any(|a| a.contains('\0'))
             || self
                 .expected_content_sha256
                 .as_deref()

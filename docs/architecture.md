@@ -45,7 +45,7 @@ flowchart TD
 ```
 
 The API freezes and orchestrates work; backend schedulers allocate resources.
-A private image builder executes Docker publication locally, through SSH Docker,
+A private image builder executes Docker publication locally, through PAI DSW,
 or in an optional PAI CPU DSW. DSW also supports temporary debugging; **DLC is
 PAI's training backend**. SenseCore uses ACP for training and bounded data/result
 copy jobs; CCI is a separate temporary debug-machine feature.
@@ -119,8 +119,8 @@ See [data](data.md), [checkpoints](persistent-checkpoints.md) and
 
 Existing Run/Attempt/source identities, routes, immutable image references,
 review digests, publication routes and saved client operation IDs remain frozen.
-Legacy project parsing and historical desktop/object-store assets retain their
-read paths. Generic Slurm replaces site-specific names for new configuration;
+Legacy project parsing and historical object-store assets retain their
+read paths. Desktop staging has been removed. Generic Slurm replaces site-specific names for new configuration;
 old storage records remain readable. Historical compatibility is not permission
 to create another job or rewrite a manifest.
 

@@ -140,7 +140,6 @@ impl Service {
                 .map_err(|_| cloud::Error::evidence())?;
             self.check(&prepared)
         };
-        self.fence_startup_sync(&prepared, request, &lock, now, cancelled)?;
         self.sync_outbox.prepare(
             &collector.profile,
             &job,

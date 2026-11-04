@@ -140,20 +140,17 @@ pub fn publish(package: &Package) -> Result<()> {
         }
         let outputs =
             Directory::open(&package.config.output_path(), false).map_err(|_| Error::Storage)?;
+        let policy = package.artifacts.clone().unwrap_or_default();
         if dir.capacity().map_err(|_| Error::Storage)?.available_bytes
-            < ml_exp_io::artifacts::estimate(&outputs).map_err(|_| Error::Storage)?
+            < ml_exp_io::artifacts::estimate(&outputs, &policy).map_err(|_| Error::Storage)?
         {
             return Err(Error::Storage);
         }
         let mut file = dir
             .create_new_regular(OsStr::new("archive.tar"))
             .map_err(|_| Error::Storage)?;
-        let (sha256, bytes, files) = ml_exp_io::artifacts::pack(
-            &outputs,
-            &mut file,
-            &package.artifacts.clone().unwrap_or_default(),
-        )
-        .map_err(|_| Error::Storage)?;
+        let (sha256, bytes, files) =
+            ml_exp_io::artifacts::pack(&outputs, &mut file, &policy).map_err(|_| Error::Storage)?;
         file.sync_all().map_err(|_| Error::Storage)?;
         dir.seal_regular(OsStr::new("archive.tar"), &file, false)
             .map_err(|_| Error::Storage)?;

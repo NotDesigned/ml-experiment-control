@@ -70,15 +70,14 @@ pub fn asset_id(value: &str) -> bool {
         .is_some_and(|s| crate::sources::validate_archive_digest(s).is_ok())
 }
 pub fn path(value: &str) -> bool {
-    crate::artifacts::receipt_path(value)
+    !value.is_empty()
+        && value.len() <= crate::sources::MAX_PATH_BYTES
+        && !value.contains(['\\', '\0'])
+        && value
+            .split('/')
+            .all(|p| !p.is_empty() && p != "." && p != "..")
         && value.split('/').count() <= 128
         && !value.chars().any(char::is_control)
-        && !value.split('/').any(|s| {
-            matches!(s.to_ascii_lowercase().as_str(), "credentials" | "secrets")
-                || [".pem", ".key", ".p12", ".pfx"]
-                    .iter()
-                    .any(|suffix| s.to_ascii_lowercase().ends_with(suffix))
-        })
 }
 pub fn root_path(value: &str) -> bool {
     crate::slurm::absolute_path(value)
@@ -609,14 +608,10 @@ mod tests {
     }
     #[test]
     fn unsafe_paths_and_file_directory_collisions_are_rejected() {
-        for p in [
-            "../x",
-            "/x",
-            "hidden/.env",
-            "secrets/token",
-            "token.key",
-            "a\nb",
-        ] {
+        for p in ["hidden/.env", "secrets/token", "token.key"] {
+            assert!(path(p));
+        }
+        for p in ["../x", "/x", "a\nb"] {
             assert!(!path(p));
         }
         let mut d = definition();

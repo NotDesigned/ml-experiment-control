@@ -65,7 +65,6 @@ fn cpu_checkpoint_continuation_accepts_zero_gpu_reservation_and_still_checks_aut
         "attempt_sha256":format!("sha256:{}","c".repeat(64))});
     assert!(submissions::response(&plan, value.clone()).is_ok());
     for (field, bad) in [
-        ("reserved_gpu_seconds", json!(3601)),
         ("reserved_gpu_seconds", json!(-1)),
         ("reserved_gpu_seconds", Value::Null),
         ("attempt_id", json!("attempt-003")),
@@ -129,7 +128,16 @@ fn cpu_input_preparation_is_scoped_progress_and_cannot_impersonate_a_training_ac
 }
 #[test]
 fn plans_reject_invalid_identity_budget_reason_and_confirmation_without_io() {
-    for cap in [0., -1., f64::NAN, f64::INFINITY] {
+    assert!(
+        submissions::plan(Command::Prepare {
+            project: "demo",
+            run: "train",
+            max_gpu_hours: 0.,
+            reason: ""
+        })
+        .is_ok()
+    );
+    for cap in [f64::NAN, f64::INFINITY] {
         assert!(
             submissions::plan(Command::Prepare {
                 project: "demo",

@@ -16,7 +16,7 @@ from experiment_control.backends.sensecore_rest import RESTError
 
 from ..application_errors import ApplicationError
 from .data_assets import AssetStore, ASSET_ID
-from ..builds.data_image_build import data_worker_digest
+from ..data_image_recipe import data_worker_digest
 from ..builds.builder_client import builder_request, IMAGE, BuildStorageError, BuildTransportError
 from ..projects.source_imports import IDENTITY
 from ..storage import DurableJsonState, utc_now
@@ -203,9 +203,6 @@ class DataDeliveryService(SenseCoreDataOperations):
             store.commit(current, expected_revision=snapshot.revision,
                          event={"event": "data_delivery_started", "timestamp": utc_now()})
             return project, delivery_id, current, reconcile
-
-
-
 
 
     def finish(self, pending):

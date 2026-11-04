@@ -130,7 +130,7 @@ off. Add an executor, builder and object store independently when enabling train
 these are not provisioned or inferred from cloud credentials.
 
 Training backend, image builder and storage are separate choices. A Slurm service
-can use a local/SSH builder without PAI credentials. A DLC service can consume an
+can use a local BuildKit publisher without PAI credentials. A DLC service can consume an
 image from the same builder without enabling DSW. ACR, CCR and S3/OSS credentials
 are required only for the configured repositories and transfer paths.
 

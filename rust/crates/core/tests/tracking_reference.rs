@@ -146,6 +146,22 @@ fn tracking_contract_and_display_match_frozen_python_reference() {
     let cases = fixture["cases"].as_array().unwrap();
     for case in cases {
         let result = evaluate(case);
+        // These frozen Python errors came only from retired display-size caps.
+        if matches!(
+            case["id"].as_str(),
+            Some("parameters-12" | "parameters-14" | "parameters-15" | "parameters-17")
+        ) {
+            let encoded = result.unwrap();
+            let actual: Value = serde_json::from_str(encoded.as_str().unwrap()).unwrap();
+            let original: Value =
+                serde_json::from_str(case["input"]["raw"].as_str().unwrap()).unwrap();
+            assert_eq!(actual, original);
+            continue;
+        }
+        if case["id"] == "capacity-513" {
+            assert_eq!(result.unwrap(), json!(513));
+            continue;
+        }
         if let Some(expected) = case.get("expected") {
             assert_eq!(
                 result.unwrap_or_else(|error| panic!("{}: {error}", case["id"])),

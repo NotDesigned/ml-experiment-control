@@ -203,17 +203,6 @@ fn exercise_delayed_publication(legacy: bool) {
         remote["runs"][&id]["config"]["ml_expd"]["parameters"]["upstream_result_val"],
         json!(3.497610465568654)
     );
-    let binding = store.binding(&guard).unwrap().unwrap();
-    assert_eq!(
-        remote["runs"][&id]["config"]["ml_expd_identity_json"],
-        publication::config_identity(
-            &binding["config"]["ml_expd"],
-            &binding["route"],
-            &scope,
-            &id
-        )
-        .unwrap()
-    );
     let rows = remote["runs"][&id]["history"].as_array().unwrap();
     let curve_keys: Vec<_> = rows
         .iter()

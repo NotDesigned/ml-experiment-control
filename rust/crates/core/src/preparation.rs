@@ -14,21 +14,14 @@ pub struct Request {
     pub request_id: String,
     pub run: Map<String, Value>,
     pub runtime: Option<build::Definition>,
+    #[serde(default)]
     pub approval: Approval,
 }
 impl Request {
     pub fn validate(&self, project: &str) -> Result<(), &'static str> {
         submission::validate_submission_token(&self.request_id)
             .map_err(|_| "preparation request identity")?;
-        let run = self.resolve(project, &format!("sha256:{}", "0".repeat(64)))?;
-        let hours = run.resources.gpus as f64 * run.walltime_seconds as f64 / 3600.0;
-        if !self.approval.max_gpu_hours.is_finite()
-            || self.approval.max_gpu_hours <= 0.0
-            || hours > self.approval.max_gpu_hours
-            || self.approval.reason.len() > 4000
-        {
-            return Err("preparation budget");
-        }
+        self.resolve(project, &format!("sha256:{}", "0".repeat(64)))?;
         Ok(())
     }
     pub fn resolve(&self, project: &str, worker: &str) -> Result<creation::Request, &'static str> {
@@ -208,11 +201,11 @@ mod tests {
         serde_json::from_value(json!({"request_id":"a".repeat(32),"run":{"run_id":"trial","runtime_id":format!("runtime.{}","1".repeat(64)),"executor":"dlc","command":["train"],"resources":{"gpus":1,"cpus":2,"memory_gb":4},"walltime_seconds":300,"seed":42},"approval":{"max_gpu_hours":1.0,"reason":"test"}})).unwrap()
     }
     #[test]
-    fn prepare_refuses_budget_or_runtime_ambiguity_before_build_effects() {
+    fn prepare_allows_optional_cost_metadata_and_refuses_runtime_ambiguity() {
         let mut a = request();
         assert!(a.validate("demo").is_ok());
-        a.approval.max_gpu_hours = 0.01;
-        assert!(a.validate("demo").is_err());
+        a.approval.max_gpu_hours = 0.;
+        assert!(a.validate("demo").is_ok());
         a = request();
         let id = a.id("demo").unwrap();
         a.run.insert("seed".into(), json!(43));

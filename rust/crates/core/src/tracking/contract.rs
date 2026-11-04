@@ -251,8 +251,8 @@ fn parameter_json() -> JsonOptions {
     }
 }
 pub fn finite_parameters(value: &Value) -> Result<&Value> {
-    if !value.is_null() && canonical::encode(value, parameter_json())?.len() > 16384 {
-        return Err(Error::Contract("parameters exceed 16 KiB"));
+    if !value.is_null() {
+        canonical::encode(value, parameter_json())?;
     }
     Ok(value)
 }
@@ -260,8 +260,5 @@ pub fn finite_parameters(value: &Value) -> Result<&Value> {
 /// valid JSON null/zero. Returned bytes use Python's ordinary spaced JSON format.
 pub fn finite_parameters_json(bytes: &[u8]) -> Result<Vec<u8>> {
     let encoded = canonical::python_json_from_slice(bytes, parameter_json())?;
-    if encoded.len() > 16384 {
-        return Err(Error::Contract("parameters exceed 16 KiB"));
-    }
     Ok(encoded)
 }
