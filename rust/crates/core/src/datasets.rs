@@ -70,7 +70,12 @@ pub fn asset_id(value: &str) -> bool {
         .is_some_and(|s| crate::sources::validate_archive_digest(s).is_ok())
 }
 pub fn path(value: &str) -> bool {
-    crate::artifacts::receipt_path(value)
+    !value.is_empty()
+        && value.len() <= crate::sources::MAX_PATH_BYTES
+        && !value.contains(['\\', '\0'])
+        && value
+            .split('/')
+            .all(|p| !p.is_empty() && p != "." && p != "..")
         && value.split('/').count() <= 128
         && !value.chars().any(char::is_control)
 }
