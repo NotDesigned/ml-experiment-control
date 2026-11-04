@@ -235,3 +235,19 @@ def test_forty_five_minute_observation_survives_old_limit_without_retriggering(s
     finally:BUILD_PROGRESS.reset(token)
     assert sleeps==[5] and sum(c[0]=='push' for c in calls)==1
     assert json.loads((tmp_path/'progress.json').read_text())['timeout_seconds']==2700
+
+
+def test_preferred_acr_publishes_without_creating_dsw_and_unknown_lease_still_blocks(setup,monkeypatch):
+    from ml_exp_server.builds import pai_dsw,pai_build_recovery
+    b,context,calls,state=setup;b.config['acr_fallback']['prefer']=True
+    monkeypatch.setattr(pai_dsw,'DswPublisher',lambda *a:(_ for _ in ()).throw(AssertionError('must not create DSW')))
+    assert p.publish_runtime(b,'tag',context,RECEIPT)==IMAGE
+    assert sum(c[0]=='push' for c in calls)==1
+    p.journal(b,ID).unlink();calls.clear()
+    (b.root/(ID+'.dsw.json')).write_text('{"phase":"CREATED"}')
+    monkeypatch.setattr(pai_build_recovery,'observe_dsw_absence',lambda *a:None)
+    def unresolved(*a):raise BuildTransportError('PRIMARY_UNRESOLVED',{})
+    monkeypatch.setattr(pai_dsw,'DswPublisher',lambda *a:SimpleNamespace(publish=unresolved))
+    with pytest.raises(BuildTransportError,match='PRIMARY_UNRESOLVED'):
+        p.publish_runtime(b,'tag',context,RECEIPT)
+    assert calls==[] and not p.journal(b,ID).exists()

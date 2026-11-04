@@ -23,6 +23,26 @@ from ml_exp_server.projects.source_revisions import _tree_digest
 
 
 class NativeBridge(unittest.TestCase):
+    def test_preferred_acr_skips_dsw_but_never_overlaps_an_unknown_primary(self):
+        from ml_exp_server.builds import acr_fallback
+        from ml_exp_server.builds.builder_client import BuildTransportError
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt = {'bundle_id': 'a' * 64}
+            builder = SimpleNamespace(root=root, config={'acr_fallback': {'prefer': True}})
+            with patch.object(acr_fallback, 'publish', return_value='image') as publish, \
+                    patch('ml_exp_server.builds.pai_dsw.DswPublisher') as dsw, \
+                    patch('ml_exp_server.builds.pai_build_recovery.observe_dsw_absence', return_value=None):
+                self.assertEqual(acr_fallback.publish_runtime(builder, 'tag', root, receipt), 'image')
+                dsw.assert_not_called()
+                publish.assert_called_once()
+                publish.reset_mock()
+                (root / ('a' * 64 + '.dsw.json')).write_text('{"phase":"CREATED"}')
+                dsw.return_value.publish.side_effect = BuildTransportError('PRIMARY_UNRESOLVED', {})
+                with self.assertRaises(BuildTransportError):
+                    acr_fallback.publish_runtime(builder, 'tag', root, receipt)
+                publish.assert_not_called()
+
     def test_dsw_empty_poll_and_lost_start_ack_do_not_restart_or_clean_the_builder(self):
         from ml_exp_server.builds.pai_dsw import DswPublisher
         from ml_exp_server.builds.image_build_context import BUILD_PROGRESS

@@ -3,7 +3,7 @@
 Default implementation: native Rust on `main`. Python reference baseline:
 `e725faec689fb8395e692e27d00a8896fa7fe5a5` (1.5.1). Production runs the native
 service on Tokyo; Python API/builder services on Seoul are retired. The native
-workspace release is `native-v0.1.19`. Direct HTTPS uses
+workspace release is `native-v0.1.20`. Direct HTTPS uses
 `https://ml-exp.adscn.dev`; the old API domain and temporary port have been removed.
 Historical metadata is attached read-only,
 with separate native write namespaces. Slurm connects through the direct

@@ -130,7 +130,8 @@ For an ACR Personal repository bound to a private build GitHub repository, add:
 {
   "acr_fallback": {
     "git_repository": "https://github.com/YOUR_ACCOUNT/YOUR_PRIVATE_BUILD_REPO",
-    "wait_seconds": 2700
+    "wait_seconds": 2700,
+    "prefer": false
   }
 }
 ```
@@ -140,6 +141,15 @@ file `Dockerfile`. The builder host needs authenticated `git`/`gh`. Configure
 exact registry authentication/blob host allowlists as required. ACR Personal
 cannot use third-party private-base credentials through this Git build path;
 choose a compatible pinned base.
+
+Set `prefer: true` to build new runtime images directly through ACR while the
+DSW Docker engine is unavailable. Existing DSW leases still require confirmed
+absence before switching that bundle; an in-flight or unknown primary cannot be
+overlapped. Existing ACR publication intents are observed without sending a new
+tag. This affects runtime source builds only; data-image delivery keeps its CPU
+DSW path and never sends datasets or weights to Git. Omit `prefer` or set it to
+false to restore the DSW-first order. The frozen source, worker and Runtime
+identity do not change with this operator choice.
 
 Fallback is allowed only after confirmed primary-instance absence and an
 authenticated registry absence check. It records one publication intent and
