@@ -1,6 +1,6 @@
 # ML-Expd
 
-The default implementation on `main` is native Rust, released as **0.1.19**.
+The default implementation on `main` is native Rust, released as **0.1.20**.
 The client, API, worker and state machines are Rust programs; optional image
 build/copy operations retain a narrow Python bridge, and W&B uses its official
 SDK process. The HTTP protocol remains **2**.
@@ -12,14 +12,14 @@ Backend credentials and image builds stay on the server side.
 ## Install the native client
 
 Download `install-native.sh` from the
-[native release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.19).
+[native release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.20).
 Clients are published for Linux x86_64/ARM64, macOS Intel/Apple Silicon and
 Windows x86_64. The API and worker deployment bundle targets Linux x86_64.
 
 Linux or macOS:
 
 ```sh
-bash install-native.sh --version 0.1.19
+bash install-native.sh --version 0.1.20
 ~/.local/bin/ml-exp --url https://api.example/ml-expd config set --token-file /private/api-token
 ~/.local/bin/ml-exp check
 ~/.local/bin/ml-exp backend
@@ -28,7 +28,7 @@ bash install-native.sh --version 0.1.19
 Keep the token in a private file. Subsequent calls reuse the saved URL and token.
 `ml-exp update` selects the latest stable native release and refuses an
 automatic downgrade. Windows users download `install-native.ps1` from the same
-release and run `./install-native.ps1 -Version 0.1.19` in PowerShell.
+release and run `./install-native.ps1 -Version 0.1.20` in PowerShell.
 
 Clients from 0.1.15 or earlier use the old executable/manifest name. Run the new
 installer once to switch to `ml-exp`; subsequent updates use `ml-exp update`.

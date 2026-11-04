@@ -201,6 +201,9 @@ def publish_runtime(builder, tag, context, receipt):
     lease = builder.root / (identity + '.dsw.json')
     if builder.config.get('acr_fallback') and lease.exists() and observe_dsw_absence(builder, identity) is not None:
         return publish(builder, context, receipt)
+    if builder.config.get('acr_fallback', {}).get('prefer') is True and not lease.exists():
+        phase('BUILDING_ON_ACR', 'Publishing the sealed runtime context using the preferred ACR Git builder')
+        return publish(builder, context, receipt)
     try:
         return DswPublisher(builder).publish(tag, context)
     except BuildTransportError:
