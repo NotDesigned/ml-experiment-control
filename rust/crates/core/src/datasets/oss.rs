@@ -17,10 +17,8 @@ impl Import {
         if self.object_key.len() > 1024
             || !path(&self.object_key)
             || self.object_key.split('/').any(|s| {
-                s.starts_with('.')
-                    || !s
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+                !s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
             })
         {
             return Err(Error);
