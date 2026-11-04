@@ -42,7 +42,7 @@ def builder(tmp_path):
     return value, request, published
 
 
-@pytest.mark.parametrize("failure", ["get-before-build", "unknown-operation", "recipe", "base-policy", "registry", "source-identity", "source-symlink", "tree-symlink", "metadata-symlink", "modified-source", "copy-race"])
+@pytest.mark.parametrize("failure", ["get-before-build", "unknown-operation", "recipe", "registry", "source-identity", "source-symlink", "tree-symlink", "metadata-symlink", "modified-source", "copy-race"])
 def test_builder_rejects_invalid_or_changed_definitions(builder, tmp_path, monkeypatch, failure):
     value, request, source = builder
     if failure == "get-before-build":
@@ -51,8 +51,6 @@ def test_builder_rejects_invalid_or_changed_definitions(builder, tmp_path, monke
         request["operation"] = "execute-project-dockerfile"
     elif failure == "recipe":
         request["packaging_revision"] = "unreviewed"
-    elif failure == "base-policy":
-        value.config["base_image_prefixes"] = ["approved.example/"]
     elif failure == "registry":
         value.config["repository"] = "registry example"
     elif failure == "source-identity":
@@ -90,6 +88,8 @@ def test_builder_rejects_invalid_or_changed_definitions(builder, tmp_path, monke
 
 def test_buildkit_source_packaging_and_receipt_binding(builder):
     value, request, source = builder
+    # Obsolete deployment settings cannot re-enable source filtering.
+    value.config["base_image_prefixes"] = ["unrelated.example/"]
     result = value.request(request)
     assert result["source_id"] == request["source_id"] and result["image"].endswith("b" * 64)
     receipt = value.root / (result["bundle_id"] + ".json")
@@ -181,7 +181,7 @@ def test_unix_builder_accepts_only_authorized_bounded_requests(tmp_path, case):
         else:
             conn = builder_client.UnixConnection(path, timeout=5)
             body = b"invalid" if case == "invalid-json" else b""
-            length = "16385" if case == "oversized" else "2" if case in {"wrong-uid", "bad-path"} else str(len(body))
+            length = str(8 * 1024 * 1024 + 1) if case == "oversized" else "2" if case in {"wrong-uid", "bad-path"} else str(len(body))
             conn.request("POST", "/other" if case == "bad-path" else "/", body=body,
                          headers={"Content-Length": length})
             response = conn.getresponse()

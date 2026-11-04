@@ -17,6 +17,13 @@ PINNED_IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
 INTERNAL = "ml-expd-build-internal"
 
 
+def _has_heredoc(value: str) -> bool:
+    # Quoted/escaped strings and shell comments can contain literal <<. Only
+    # an unquoted operator changes how the following Dockerfile lines parse.
+    tokens = re.finditer(r"""'[^']*'|"(?:\\.|[^"\\])*"|\\.|(?<!\S)\#[^\n]*|(<<-?)""", value, re.DOTALL)
+    return any(token[1] for token in tokens)
+
+
 def inspect_dockerfile(tree: Path, name: str) -> dict:
     name = relative_source_path(name)
     path = tree / name
@@ -28,12 +35,14 @@ def inspect_dockerfile(tree: Path, name: str) -> dict:
     text = raw.decode("utf-8")
     # Pin the frontend as well as external stages. Heredoc/syntax extensions can
     # be added with a parser supporting their complete grammar in a later recipe.
-    if re.search(r"(?im)^\s*#\s*(syntax|escape)\s*=", text) or "<<" in text:
-        raise ValueError("custom frontend/escape directives and heredocs are not supported by this recipe")
+    if re.search(r"(?im)^\s*#\s*(syntax|escape)\s*=", text):
+        raise ValueError("custom frontend/escape directives are not supported by the Dockerfile parser")
     parser = DockerfileParser(fileobj=io.BytesIO(raw))
     stages, images = set(), []
     for instruction in parser.structure:
         value, operation = instruction["value"], instruction["instruction"]
+        if operation in {"RUN", "COPY", "ADD"} and _has_heredoc(value):
+            raise ValueError("heredocs are not supported by the Dockerfile parser")
         if operation == "FROM":
             parts = shlex.split(value)
             if parts and parts[0].startswith("--platform="):
@@ -48,14 +57,12 @@ def inspect_dockerfile(tree: Path, name: str) -> dict:
                 images.append(image)
             if len(parts) == 3:
                 stages.add(parts[2].lower())
-        elif operation in {"ONBUILD", "ADD"}:
-            raise ValueError("use COPY and explicit RUN commands instead of ADD/ONBUILD")
         elif operation == "COPY":
             match = re.search(r"(?:^|\s)--from=([^\s]+)", value)
             if match and match[1].lower() not in stages and not match[1].isdigit():
                 raise ValueError("COPY --from must reference an earlier build stage")
     if not images:
-        raise ValueError("Dockerfile must include a pinned external base and provide Python 3")
+        raise ValueError("Dockerfile must include a digest-pinned external base")
     return {"path": name, "sha256": hashlib.sha256(raw).hexdigest(), "base_images": images,
             "text": text}
 

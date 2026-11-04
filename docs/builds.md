@@ -20,11 +20,16 @@ WORKDIR /workspace
 COPY . /workspace
 ```
 
-Replace the placeholder with an operator-approved digest. Every external FROM
+Replace the placeholder with the image digest. Any registry/repository may be
+used; ML-Expd does not filter image origins. Private images need credentials on
+the builder, and the builder must be able to reach the registry. Every external FROM
 must be pinned; named/numeric earlier stages are supported. The supported target
 is linux/amd64. Current admission rejects custom syntax/escape directives,
-heredocs, ADD, ONBUILD, build-argument FROM and external-image COPY --from.
+heredocs, build-argument FROM and external-image COPY --from. ADD and ONBUILD
+are supported; literal `<<` inside quoted strings or comments is permitted.
 Dockerfile size is at most 256 KiB; `ml-expd-build-internal` is reserved.
+See [platform checks](platform-checks.md) for the distinction between user
+requirements, implementation limits and additional platform policies under review.
 
 The final image needs Python 3.10+, `/bin/sh`, GNU `timeout`, permission to create
 `/inputs` and `/outputs`, and access to the configured backend mount/workdir.
@@ -97,7 +102,7 @@ Cloudflare proxy or local fallback is required.
 
 Configure the root-owned builder with `docker_host` set to
 `unix:///run/ml-expd-desktop/docker.sock`, `publisher: buildkit`,
-`ephemeral_buildkit: true`, pinned `buildkit_image`, repository/auth and allowlist.
+`ephemeral_buildkit: true`, pinned `buildkit_image` and repository/auth.
 **Remove local `build_storage_path` in remote mode.** Provision the pinned tool
 image on the desktop before probes, which use pull=never. New dataset uploads
 bypass Docker and the desktop: Slurm receives parts over SSH, while SenseCore
@@ -123,7 +128,6 @@ Configure the private image builder, not a DLC training executor:
   "timeout_seconds": 1200,
   "repository": "REGISTRY/NAMESPACE/RUNTIME",
   "registry_auth_file": "/etc/ml-expd/build-docker/config.json",
-  "base_image_prefixes": ["REGISTRY/"],
   "pai_dsw": {
     "workspace_id": "WORKSPACE_ID",
     "quota_id": "QUOTA_ID",

@@ -5,7 +5,6 @@
   "state_root": "/var/lib/ml-expd-builder",
   "source_root": "/srv/ml-expd/projects/source-revisions/sources",
   "repository": "registry.example.org/team/ml-expd-runtime",
-  "base_image_prefixes": ["registry.example.org/team/base@sha256:"],
   "publisher": "buildkit",
   "build_storage_path": "/var/lib/docker",
   "allow_dockerfile_builds": true,

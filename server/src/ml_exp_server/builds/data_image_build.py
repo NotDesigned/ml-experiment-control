@@ -22,9 +22,6 @@ def build(builder, request):
     if (not PROJECT.fullmatch(project) or not re.fullmatch(r"asset\.[0-9a-f]{64}", asset_id)
             or not IMAGE.fullmatch(base) or builder.config.get("publisher") != "buildkit"):
         raise ValueError("invalid data image identity or publisher")
-    prefix = builder.config.get("base_image_prefixes", [])
-    if prefix and not any(base.startswith(item) for item in prefix):
-        raise ValueError("data image base is outside packaging policy")
     def remote(operation, value):
         result = builder.desktop_stage(operation, value, b"")
         if not result.get("ok"):

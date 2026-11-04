@@ -87,9 +87,6 @@ def request(builder, value):
     if (binary.is_symlink() or not binary.is_file()
             or "sha256:" + hashlib.sha256(binary.read_bytes()).hexdigest() != recipe["worker_sha256"]):
         raise ValueError("native data worker differs")
-    prefixes = builder.config.get("base_image_prefixes", [])
-    if prefixes and not any(recipe["base_image"].startswith(p) for p in prefixes):
-        raise ValueError("native data base is outside policy")
     key = identifier.removeprefix("data-image.")
     definition = builder.root / (key + ".native-data-definition.json")
     receipt = builder.root / (key + ".native-data.json")

@@ -131,10 +131,8 @@ def request(builder, value):
             or _tree_digest(tree, require_read_only=True) != expected):
         raise ValueError("native source tree changed")
     inspection = inspect_dockerfile(tree, value["dockerfile"])
-    prefixes = builder.config.get("base_image_prefixes", [])
-    if (inspection["base_images"][-1] != value["base_image"]
-            or prefixes and any(not any(image.startswith(p) for p in prefixes) for image in inspection["base_images"])):
-        raise ValueError("native Dockerfile base is outside policy")
+    if inspection["base_images"][-1] != value["base_image"]:
+        raise ValueError("native Dockerfile base differs from the frozen request")
     with (builder.root / (identifier + ".lock")).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if receipt.exists():

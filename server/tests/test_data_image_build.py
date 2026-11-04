@@ -42,6 +42,7 @@ def data_builder(tmp_path):
 
 def test_data_image_receipt_reuse_and_reconciliation(data_builder):
     builder,request,asset=data_builder
+    builder.config['base_image_prefixes']=['unrelated.example/']
     with pytest.raises(ValueError):builder.request({**request,'action':'get'})
     assert builder.request({**request,'action':'progress'})['progress']['phase']=='EXECUTING'
     result=builder.request(request)
@@ -96,13 +97,12 @@ def test_module_entry_builder_keeps_remote_context_and_progress(data_builder):
     assert entry.BUILD_REMOTE_CONTEXT.get() is None and entry.BUILD_CONTEXT_BYTES.get() == 0
 
 
-@pytest.mark.parametrize('case',['project','asset','base','publisher','policy','input','identity','worker','publish-error'])
+@pytest.mark.parametrize('case',['project','asset','base','publisher','input','identity','worker','publish-error'])
 def test_data_image_rejects_changed_inputs(data_builder,case):
     builder,request,asset=data_builder
     if case in {'project','asset'}:request['project' if case=='project' else 'asset_id']='invalid/escape'
     elif case=='base':builder.config['data_base_image']='latest'
     elif case=='publisher':builder.config['publisher']='archive'
-    elif case=='policy':builder.config['base_image_prefixes']=['unapproved.example/']
     elif case=='input':builder.desktop_stage=lambda *a:{'ok':False}
     elif case=='identity':asset['project']='other'
     elif case=='worker':builder.desktop_stage=lambda op,*a:{'ok':True,'result':asset if op=='asset' else {'data_worker_sha256':'wrong'}}

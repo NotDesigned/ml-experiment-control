@@ -112,7 +112,7 @@ Configure these files; keep every actual secret outside Git:
 | Template/config | Required choices |
 |---|---|
 | [Backend executor templates](configuration.md#enable-only-the-backends-you-use) | Choose Slurm, SenseCore or DLC; combine only the entries you need |
-| [image-builder.json](../server/examples/image-builder.json) | Daemon peer UID/GID, matching source root/socket, publisher, repository and allowlist |
+| [image-builder.json](../server/examples/image-builder.json) | Daemon peer UID/GID, matching source root/socket, publisher, repository and registry credentials |
 | [registry-pull.json](../server/examples/registry-pull.json) | Slurm pull-only credential, distinct from publisher auth |
 | [artifact-store.json](../server/examples/artifact-store.json) | S3 endpoint/bucket/auth, worker callback base, quotas and part policy |
 | Private backend credentials | Configure only selected backends: [Slurm](slurm.md), [SenseCore](sensecore-rest.md), [PAI](pai.md) |
@@ -201,7 +201,7 @@ API connection and experiment configuration on their own machine.
    connectivity and permissions. Keep persistent training state separate from
    temporary API result storage.
 3. **Prepare the image builder and registry.** Follow [image builds](builds.md)
-   for the private builder socket, source root, registry allowlist and separate
+   for the private builder socket, source root, registry credentials and separate
    publisher/pull credentials. Verify a bounded build reaches READY and the
    selected backend can read its digest. Start with one supported builder;
    additional cloud builders and fallback registries are optional.

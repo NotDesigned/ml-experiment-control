@@ -139,9 +139,6 @@ class ImageBuilder:
             retried = (self.root / (identity + '.definition.json')).is_file()
             if not self.config.get("allow_dockerfile_builds") or self.config.get("publisher") not in {"buildkit", "pai-dsw"}:
                 raise ValueError("Dockerfile builds require an enabled image publisher")
-            prefixes = self.config.get("base_image_prefixes", [])
-            if prefixes and not any(image.startswith(prefix) for prefix in prefixes):
-                raise ValueError("base image is outside packaging policy")
             source = Path(self.config["source_root"]) / project / source_id
             metadata = json.loads((source / "source.json").read_text())
             tree = source / "tree"
@@ -153,9 +150,8 @@ class ImageBuilder:
             if _tree_digest(tree, require_read_only=True) != expected:
                 raise ValueError("source changed before packaging")
             inspection = inspect_dockerfile(tree, custom_path)
-            if (image != inspection["base_images"][-1] or
-                    prefixes and any(not any(base.startswith(prefix) for prefix in prefixes) for base in inspection["base_images"])):
-                raise ValueError("Dockerfile base images do not match packaging policy")
+            if image != inspection["base_images"][-1]:
+                raise ValueError("Dockerfile base differs from the frozen request")
             registry = self.config["repository"]
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]+", registry):
                 raise ValueError("invalid image packaging repository")
