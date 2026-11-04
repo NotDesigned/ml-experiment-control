@@ -37,7 +37,7 @@ SERVER_CAPABILITIES = (
     "input-delivery-progress.v1",
     "backend-capabilities.v1",
     "server-experiment-preparation.v1",
-    "desktop-data-upload.v1",
+
     "ccr-data-delivery.v1",
     "nas-data-ready-reuse.v1",
     "execution-progress.v1",
@@ -69,10 +69,6 @@ SERVER_CAPABILITIES = (
     "terminal-snapshot-limits.v1",
     "tls-bind.v1",
 )
-
-
-
-
 
 
 class DaemonHealth(BaseModel):

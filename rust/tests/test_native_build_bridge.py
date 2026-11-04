@@ -23,6 +23,44 @@ from ml_exp_server.projects.source_revisions import _tree_digest
 
 
 class NativeBridge(unittest.TestCase):
+    def test_buildkit_uses_local_engine_even_with_remote_docker_environment(self):
+        from ml_exp_server.image_builder import ImageBuilder
+        with tempfile.TemporaryDirectory() as directory:
+            builder = ImageBuilder({"state_root": directory})
+            with patch.dict("os.environ", {"DOCKER_HOST": "tcp://remote.example:2375"}), \
+                    patch.object(builder, "_command", return_value="ok") as command:
+                self.assertEqual(builder._docker(["version"], capture=True), "ok")
+                self.assertEqual(command.call_args.args[0], [
+                    "/usr/bin/docker", "--host", "unix:///var/run/docker.sock", "version"])
+
+    def test_removed_remote_docker_configuration_does_not_build_locally(self):
+        from ml_exp_server.image_builder import ImageBuilder
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(subprocess, "run", side_effect=AssertionError("must not start a builder")):
+            with self.assertRaisesRegex(ValueError, "remote Docker publishing was removed"):
+                ImageBuilder({"state_root": directory, "docker_host": "unix:///old-desktop.sock"})
+
+    def test_removed_data_staging_route_never_dispatches_a_build(self):
+        import os
+        import threading
+        from ml_exp_server.image_builder import BuilderServer, Handler
+        from ml_exp_server.builds.builder_client import UnixConnection
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "builder.sock")
+            with BuilderServer(path, Handler) as server:
+                server.builder = SimpleNamespace(config={"client_uid": os.getuid()},
+                    request=lambda _: self.fail("removed data route dispatched a build"))
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                connection = UnixConnection(path, timeout=5)
+                try:
+                    connection.request("POST", "/data-stage/create", body=b"{}")
+                    self.assertEqual(connection.getresponse().status, 409)
+                finally:
+                    connection.close()
+                    server.shutdown()
+                    thread.join()
+
     def test_multistage_registry_origins_are_unrestricted_but_frozen_base_is_checked(self):
         for old_filter in [None, ["unrelated.example/"]]:
             for wrong_base in [False, True]:

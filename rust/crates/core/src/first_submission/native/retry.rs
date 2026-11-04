@@ -1,5 +1,5 @@
 //! Explicit same-Run continuation. No clock, checkpoint selection or scheduler
-//! effect is hidden in this module. Every Attempt reserves its full GPU limit.
+//! effect is hidden in this module. Resource estimates do not gate retries.
 use super::{Binding, Error, Result, field};
 use crate::{canonical, checkpoints, identity, slurm};
 use serde::{Deserialize, Serialize};
@@ -12,19 +12,22 @@ pub const CONTRACT: &str = "native-attempt-retry.v1";
 pub struct StartFrom {
     pub run_id: String,
     pub attempt_id: String,
-    /// CPU-only synchronization requested after the parent job was terminal.
+    /// Legacy synchronization reference, retained for old request identities.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sync_request_id: String,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
+    #[serde(default)]
     pub confirmation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_from: Option<checkpoints::Reference>,
-    /// Explicit full restart, admitted only with durable pre-training failure evidence.
+    /// Explicit restart from the beginning after the parent job is terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart_from: Option<StartFrom>,
-    /// Cumulative approval, including all previous Attempt reservations.
+    /// Optional cost metadata; this value does not gate submission.
+    #[serde(default)]
     pub max_gpu_hours: f64,
     #[serde(default)]
     pub reason: String,
@@ -39,18 +42,8 @@ impl Request {
             (None, Some(reference)) => {
                 identity::validate_id(&reference.run_id).map_err(|_| Error("retry Run"))?;
                 number(&reference.attempt_id)?;
-                crate::submission::validate_submission_token(&reference.sync_request_id)
-                    .map_err(|_| Error("startup synchronization identity"))?;
             }
             _ => return Err(Error("exactly one retry source is required")),
-        }
-        crate::first_submission::validate_gpu_budget(Some(self.max_gpu_hours), "budget_cap")
-            .map_err(|_| Error("cumulative budget"))?;
-        if self.confirmation != format!("RETRY {action}")
-            || self.reason.chars().count() > 4000
-            || self.reason.chars().any(char::is_control)
-        {
-            return Err(Error("retry confirmation or reason"));
         }
         Ok(())
     }
@@ -97,7 +90,7 @@ pub fn number(attempt: &str) -> Result<u32> {
         .ok_or(Error("Attempt identity"))?
         .parse()
         .map_err(|_| Error("Attempt identity"))?;
-    if n == 0 || n > 256 || format!("attempt-{n:03}") != attempt {
+    if n == 0 || format!("attempt-{n:03}") != attempt {
         return Err(Error("Attempt limit"));
     }
     Ok(n)
@@ -118,7 +111,6 @@ fn reservation(run: &Value, count: u32) -> Result<u64> {
         .map_err(|_| Error("walltime reservation"))?;
     gpus.checked_mul(seconds)
         .and_then(|v| v.checked_mul(u64::from(count)))
-        .filter(|v| *v > 0)
         .ok_or(Error("cumulative reservation"))
 }
 impl Receipt {
@@ -133,8 +125,7 @@ impl Receipt {
             || next(&parent.attempt_id)? != attempt_id
             || parent.project != field(run, "project")?
             || parent.run_id != field(run, "run_id")?
-            || self.request.checkpoint()?.run_id != parent.run_id
-            || self.request.checkpoint()?.attempt_id != parent.attempt_id
+            || self.request.parent()? != (parent.run_id.as_str(), parent.attempt_id.as_str())
             || self.request_sha256 != self.request.identity(&self.parent_action)?
             || self.termination.retained_previous
             || !status.state.is_terminal()
@@ -145,8 +136,8 @@ impl Receipt {
             || status.ssh_alias != self.backend_id
             || !slurm::component(&self.backend_id)
             || status.partition != field(&run["backend"], "partition")?
-            || self.reserved_gpu_seconds != reservation(run, count)?
-            || self.reserved_gpu_seconds as f64 > self.request.max_gpu_hours * 3600.
+            || ![reservation(run, 1)?, reservation(run, count)?]
+                .contains(&self.reserved_gpu_seconds)
             || OffsetDateTime::parse(&self.created_at, &Rfc3339).is_err()
             || [
                 &parent.project_sha256,
@@ -212,7 +203,6 @@ pub fn plan(run: &Value, request: Request, authority: Authority<'_>, now: &str) 
         checkpoint,
     } = authority;
     let attempt_id = next(&parent.attempt_id)?;
-    let reference = request.checkpoint()?.clone();
     let receipt = Receipt {
         contract: CONTRACT.into(),
         parent_action: action.into(),
@@ -222,20 +212,24 @@ pub fn plan(run: &Value, request: Request, authority: Authority<'_>, now: &str) 
         termination,
         request: request.clone(),
         request_sha256: request.identity(action)?,
-        reserved_gpu_seconds: reservation(run, number(&attempt_id)?)?,
+        reserved_gpu_seconds: reservation(run, 1)?,
         created_at: now.into(),
     };
     receipt.validate(run, &attempt_id)?;
-    let (context, _) =
-        checkpoints::validate_document(checkpoint, None, Some(&reference.checkpoint_id))
-            .map_err(|_| Error("retry checkpoint receipt"))?;
-    if context.project != field(run, "project")?
-        || context.run_id != reference.run_id
-        || context.attempt_id != reference.attempt_id
-        || context.source_id != field(run, "source_id")?
-        || context.image_id != field(run, "image_id")?
-    {
-        return Err(Error("retry checkpoint provenance"));
+    if let Some(reference) = &request.resume_from {
+        let (context, _) =
+            checkpoints::validate_document(checkpoint, None, Some(&reference.checkpoint_id))
+                .map_err(|_| Error("retry checkpoint receipt"))?;
+        if context.project != field(run, "project")?
+            || context.run_id != reference.run_id
+            || context.attempt_id != reference.attempt_id
+            || context.source_id != field(run, "source_id")?
+            || context.image_id != field(run, "image_id")?
+        {
+            return Err(Error("retry checkpoint provenance"));
+        }
+    } else if !checkpoint.is_null() {
+        return Err(Error("restart checkpoint"));
     }
     let mut attempt = run.clone();
     attempt["attempt_id"] = json!(attempt_id);

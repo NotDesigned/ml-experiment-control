@@ -279,8 +279,7 @@ class ContainerExecutionService:
         profiles = self.profiles() if profiles is None else profiles
         store_file = self.runtime.config.container_execution.artifact_store_file
         storage_config = json.loads(Path(store_file).read_text()) if store_file else {}
-        desktop = storage_config.get("data_upload_storage") == "desktop-builder"
-        return {name: declaration(profile, artifact_store=bool(store_file), desktop=desktop,
+        return {name: declaration(profile, artifact_store=bool(store_file),
                                   cpu_preparation=bool(storage_config.get("data_delivery")),oss_datasets=bool(storage_config.get("oss_datasets")))
                 for name, profile in profiles.items()}
 
@@ -489,7 +488,7 @@ class ContainerExecutionService:
                 if prepared_assets and binding.asset_id in prepared_assets:
                     validate_worker(request, bundle, capability, cache_required=True)
                     inputs[-1]["require_cached"] = True
-                if asset.get("remote_storage") in {"desktop-builder", "sensecore-ccr"} and selected_profile["backend"]["kind"] == "sensecore":
+                if asset.get("remote_storage") in {"sensecore-ccr"} and selected_profile["backend"]["kind"] == "sensecore":
                     if "data-cache-required.v1" not in bundle.get("capabilities", []):
                         raise ApplicationError("CCR data delivery requires a newly built runtime with data-cache-required.v1", code="CONTAINER_EXECUTION_BLOCKED")
                     from .data.data_delivery import DataDeliveryService

@@ -19,10 +19,6 @@ import subprocess
 import tempfile
 import time
 import uuid
-import tarfile
-import io
-from contextlib import contextmanager
-from urllib.parse import urlsplit, parse_qs
 
 from dockerfile_parse import DockerfileParser
 
@@ -32,10 +28,9 @@ from .dockerfile_build import DOCKERFILE_RECIPE, INTERNAL, inspect_dockerfile, m
 from .worker_contract import CAPABILITIES, WORKER_CONTRACT, install_workers
 from .runs.execution_progress import record_progress, progress_view
 from .application_errors import ApplicationError
-from .builds.build_contexts import CONTEXT_ID, MAX_BYTES
-from .builds.image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE, BUILD_REMOTE_CONTEXT, BUILD_CONTEXT_BYTES, BUILD_RETRY
+from .builds.image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE, BUILD_RETRY
 from .builds.builder_client import IMAGE, ID, PROJECT, MANIFEST_TYPE, bundle_id, BuildStorageError, BuildTransportError, BuildReceiptMissingError
-from .builds.build_recovery import desktop_ready, publication_absence, observe_absence
+from .builds.build_recovery import publication_absence
 
 
 class ImageBuilder:
@@ -47,21 +42,14 @@ class ImageBuilder:
         network = config.get("buildkit_network")
         if "buildkit_network" in config and (not isinstance(network, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", network)):
             raise ValueError("invalid private BuildKit network")
-        host = config.get("docker_host")
-        if "docker_host" in config:
-            if (not isinstance(host, str) or not re.fullmatch(r"unix:///[-A-Za-z0-9_./]+", host)
-                    or ".." in host.split("/") or config.get("publisher") != "buildkit"
-                    or not config.get("ephemeral_buildkit") or config.get("build_storage_path") is not None
-                    or not IMAGE.fullmatch(str(config.get("buildkit_image", "")))):
-                raise ValueError("remote Docker requires a Unix socket, ephemeral pinned BuildKit and remote storage checks")
+        if config.get("docker_host"):
+            raise ValueError("remote Docker publishing was removed; use PAI DSW or local BuildKit")
         self.root = Path(config["state_root"])
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self.config.get("ephemeral_buildkit"):
             with (self.root / "ephemeral-buildkit.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                self._recover_probe()
                 self._recover_builder()
-                self._recover_source_context()
 
     def request(self, request: dict) -> dict:
         if str(request.get("operation", "")).startswith("native-"):
@@ -73,9 +61,6 @@ class ImageBuilder:
         if request.get('operation') == 'mirror':
             from .builds.image_mirror import mirror
             return mirror(self, request)
-        if request.get("operation") == "data-image":
-            from .builds.data_image_build import build
-            return build(self, request)
         project, source_id, image = (request.get(k, "") for k in ("project", "source_id", "base_image"))
         if (not PROJECT.fullmatch(project) or not re.fullmatch(r"source\.[0-9a-f]{64}", source_id)
                 or not IMAGE.fullmatch(image)):
@@ -215,131 +200,6 @@ class ImageBuilder:
             record_progress(progress_path, "READY", "Published image manifest and worker identity verified")
             return result
 
-    def desktop_stage(self, operation, data, body):
-        container = self.config.get("data_upload_container", "")
-        if (not re.fullmatch(r"ml-expd-data-stage[-A-Za-z0-9]*", container)
-                or "docker_host" not in self.config or operation not in {"info", "create", "read", "part", "complete", "abort", "asset", "context-create", "context-seal", "context-remove", "part-discard"}):
-            raise ValueError("desktop data staging is not configured")
-        host = self.config["docker_host"]
-        if operation == "part":
-            return self._desktop_part(data, body)
-        command = [self.config.get("docker_bin", "docker"), "--host", host, "exec", container,
-                   "python", "-m", "ml_exp_server.desktop_upload", operation, json.dumps(data, ensure_ascii=True)]
-        try:
-            result = subprocess.run(command, input=body, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    timeout=self.config.get("data_upload_timeout_seconds", 1200), check=False)
-        except subprocess.TimeoutExpired:
-            raise ApplicationError("desktop RPC timed out; inspect acknowledged parts before resuming", status_code=503,
-                                   code="DESKTOP_RPC_TIMEOUT") from None
-        except OSError:
-            raise ApplicationError("desktop RPC connection is unavailable", status_code=503, code="DESKTOP_RPC_UNAVAILABLE") from None
-        return self._desktop_reply(result)
-
-    @staticmethod
-    def _desktop_reply(result):
-        if result.returncode:
-            raise ApplicationError("desktop RPC process failed", status_code=503, code="DESKTOP_RPC_FAILED")
-        try:
-            if len(result.stdout) > 8 * 1024 ** 2:
-                raise ValueError("response too large")
-            value = json.loads(result.stdout)
-            if not isinstance(value, dict) or not isinstance(value.get("ok"), bool):
-                raise ValueError("invalid response")
-            return value
-        except ValueError:
-            raise ApplicationError("desktop RPC response was incomplete or invalid", status_code=503, code="DESKTOP_RPC_RESPONSE") from None
-
-    def _desktop_part(self, data, body):
-        if (not 0 < len(body) <= 64 * 1024 ** 2 or len(body) != data.get("bytes")
-                or hashlib.sha256(body).hexdigest() != data.get("sha256")):
-            raise ValueError("desktop RPC part identity differs")
-        identity = "part." + uuid.uuid4().hex
-        archive = io.BytesIO()
-        with tarfile.open(fileobj=archive, mode="w") as tar:
-            entry = tarfile.TarInfo(identity)
-            entry.size, entry.mode = len(body), 0o600
-            entry.mtime = int(time.time())
-            tar.addfile(entry, io.BytesIO(body))
-        container = self.config["data_upload_container"]
-        prefix = [self.config.get("docker_bin", "docker"), "--host", self.config["docker_host"]]
-        try:
-            result = subprocess.run([*prefix, "cp", "-", container + ":/stage/rpc-parts"], input=archive.getvalue(),
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    timeout=self.config.get("data_upload_timeout_seconds", 1200), check=False)
-            if result.returncode:
-                raise ApplicationError("desktop RPC body transport failed", status_code=503, code="DESKTOP_RPC_FAILED")
-            command = [*prefix, "exec", container, "python", "-m", "ml_exp_server.desktop_upload", "part-file",
-                       json.dumps({**data, "body_id": identity}, ensure_ascii=True)]
-            result = subprocess.run(command, input=b"", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    timeout=self.config.get("data_upload_timeout_seconds", 1200), check=False)
-            return self._desktop_reply(result)
-        except subprocess.TimeoutExpired:
-            raise ApplicationError("desktop RPC part transport timed out", status_code=503, code="DESKTOP_RPC_TIMEOUT") from None
-        except OSError:
-            raise ApplicationError("desktop RPC part transport is unavailable", status_code=503, code="DESKTOP_RPC_UNAVAILABLE") from None
-        finally:
-            try:
-                self.desktop_stage("part-discard", {"body_id": identity}, b"")
-            except ApplicationError:
-                # The helper removes only expired, owned temporary RPC bodies;
-                # acknowledged session parts and published assets are separate.
-                pass
-
-    def _recover_source_context(self):
-        record = self.root / "source-context.json"
-        if not record.exists():
-            return
-        value = json.loads(record.read_text())
-        if (not CONTEXT_ID.fullmatch(value.get("context_id", "")) or value.get("docker_host") != self._endpoint()
-                or value.get("container") != self.config.get("data_upload_container")):
-            raise ValueError("source context recovery identity changed")
-        result = self.desktop_stage("context-remove", {"context_id": value["context_id"]}, b"")
-        if not result["ok"]:
-            raise ValueError("source context cleanup failed")
-        record.unlink()
-
-    @contextmanager
-    def _source_context(self, context):
-        if "docker_host" not in self.config or BUILD_REMOTE_CONTEXT.get() is not None:
-            yield
-            return
-        container = self.config.get("data_upload_container", "")
-        if not re.fullmatch(r"ml-expd-data-stage[-A-Za-z0-9]*", container):
-            raise ValueError("remote source builds require the owned desktop staging helper")
-        self._recover_source_context()
-        identity = "context." + uuid.uuid4().hex
-        record = self.root / "source-context.json"
-        with tempfile.TemporaryDirectory(prefix="source-context-", dir=self.root) as temporary:
-            archive = Path(temporary) / "context.tar.gz"
-            self._progress("STAGING_SOURCE_CONTEXT", "Sending a sealed source archive to the desktop; no scheduler submission")
-            with tarfile.open(archive, mode="w:gz", dereference=False) as tar:
-                for path in sorted(context.rglob("*")):
-                    if path.is_symlink() or not (path.is_file() or path.is_dir()):
-                        raise ValueError("invalid source build context file")
-                    tar.add(path, arcname=path.relative_to(context).as_posix(), recursive=False)
-            if archive.stat().st_size > MAX_BYTES:
-                raise ValueError("source context exceeds its independent limit")
-            digest = hashlib.sha256()
-            with archive.open("rb") as stream:
-                while chunk := stream.read(1024 ** 2):
-                    digest.update(chunk)
-            atomic_json(record, {"context_id": identity, "docker_host": self._endpoint(), "container": container})
-            token = None
-            try:
-                data = {"context_id": identity, "bytes": archive.stat().st_size, "sha256": digest.hexdigest()}
-                result = self.desktop_stage("context-create", data, b"")
-                if not result["ok"]:
-                    raise ValueError("source context preparation failed")
-                self._docker(["cp", str(archive), container + ":/stage/build-contexts/" + identity + "/context.tar.gz"])
-                result = self.desktop_stage("context-seal", {"context_id": identity}, b"")
-                if not result["ok"] or result["result"].get("sha256") != data["sha256"] or result["result"].get("bytes") != data["bytes"]:
-                    raise ValueError("source context transport identity differs")
-                token = BUILD_REMOTE_CONTEXT.set(f"http://{container}:8080/build-contexts/{identity}.tar.gz")
-                yield
-            finally:
-                if token is not None:
-                    BUILD_REMOTE_CONTEXT.reset(token)
-                self._recover_source_context()
 
     def _publish_buildkit(self, tag: str, context: Path) -> str:
         if not self.config.get("ephemeral_buildkit", False):
@@ -353,30 +213,18 @@ class ImageBuilder:
         with (self.root / "ephemeral-buildkit.lock").open("a") as lock:
             self._progress("WAITING_BUILDER", "Waiting for the private image builder; no scheduler submission has occurred")
             fcntl.flock(lock, fcntl.LOCK_EX)
-            desktop_ready(self.config)
-            self._recover_probe()
-            if (BUILD_RETRY.get() is not None and self.config.get('docker_host')
-                    and observe_absence(self, BUILD_RETRY.get()) is None):
-                raise BuildTransportError('BUILD_PUBLICATION_UNRESOLVED', {
-                    'publication_uncertain': True, 'scheduler_submitted': False,
-                    'reason': 'worker_or_lease_present',
-                })
             self._recover_builder()
             self._storage_preflight(context)
             name = "ml-expd-" + uuid.uuid4().hex
-            atomic_json(self.root / "ephemeral-builder.json", {"name": name, "docker_host": self._endpoint()})
+            atomic_json(self.root / "ephemeral-builder.json", {"name": name})
             try:
                 self._docker(["buildx", "create", "--name", name, "--driver", "docker-container",
                               "--driver-opt", "image=" + image, "--driver-opt", "default-load=false",
                               *(["--driver-opt", "env.HTTP_PROXY=" + self.config["buildkit_http_proxy"]]
                                 if "buildkit_http_proxy" in self.config else []),
                               *(["--driver-opt", "network=" + self.config["buildkit_network"]]
-                                if "buildkit_network" in self.config else []),
-                              *(["--driver-opt", "env.NO_PROXY=" + self.config["data_upload_container"]]
-                                if "data_upload_container" in self.config else []),
-                              *([self.config["docker_host"]] if "docker_host" in self.config else [])])
-                with self._source_context(context):
-                    return self._buildkit_image(tag, context, name)
+                                if "buildkit_network" in self.config else [])])
+                return self._buildkit_image(tag, context, name)
             finally:
                 # Removing this exact builder also removes its dedicated state
                 # volume. No --keep-state, host image load or shared prune.
@@ -387,7 +235,7 @@ class ImageBuilder:
         # This must be Docker's real state-volume filesystem, not /tmp or a
         # staging directory on another mount. The check runs under build lock.
         path = self.config.get("build_storage_path")
-        if path is None and "docker_host" not in self.config:
+        if path is None:
             return
         self._progress("CHECKING_BUILD_STORAGE", "Checking builder bytes and inodes before downloading image layers")
         try:
@@ -405,8 +253,9 @@ class ImageBuilder:
                     reference = image.split("@", 1)[0] + "@" + platform["digest"]
                     manifest = json.loads(self._skopeo(["inspect", "--authfile", auth, "--raw", "docker://" + reference], capture=True))
                 compressed += sum(int(layer["size"]) for layer in manifest["layers"])
-            available_bytes, available_inodes = self._storage_available(path)
-            context_bytes = sum(p.stat().st_size for p in context.rglob("*") if p.is_file()) + BUILD_CONTEXT_BYTES.get()
+            stats = os.statvfs(path)
+            available_bytes, available_inodes = stats.f_bavail * stats.f_frsize, stats.f_favail
+            context_bytes = sum(p.stat().st_size for p in context.rglob("*") if p.is_file())
             factor = float(self.config.get("build_expansion_factor", 4))
             reserve = int(self.config.get("build_reserve_bytes", 2 * 1024 ** 3))
             required = int(compressed * factor) + 2 * context_bytes + reserve
@@ -423,43 +272,6 @@ class ImageBuilder:
             raise BuildStorageError("BUILD_STORAGE_INSUFFICIENT", details)
         self._progress("BUILD_STORAGE_READY", f"Builder storage ready: {details['available_bytes']} bytes / {details['available_inodes']} inodes available; {required} bytes / {details['required_inodes']} inodes required")
 
-    def _endpoint(self) -> str:
-        return self.config.get("docker_host", "unix:///var/run/docker.sock")
-
-    def _storage_available(self, path) -> tuple[int, int]:
-        if "docker_host" not in self.config:
-            stats = os.statvfs(path)
-            return stats.f_bavail * stats.f_frsize, stats.f_favail
-        # The temporary anonymous volume is on the remote Docker data filesystem.
-        # Never use this API host's disk or pull a probe image before checking.
-        name = "ml-expd-storage-" + uuid.uuid4().hex
-        atomic_json(self.root / "storage-probe.json", {"name": name, "docker_host": self._endpoint()})
-        try:
-            raw = self._docker(["run", "--rm", "--name", name, "--pull=never", "--network=none",
-                                "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
-                                "--mount", "type=volume,target=/probe", "--entrypoint", "/bin/sh",
-                                self.config["buildkit_image"], "-c", "stat -f -c '%a %S %d' /probe"], capture=True)
-            blocks, size, inodes = map(int, raw.split())
-            if blocks < 0 or size <= 0 or inodes < 0:
-                raise ValueError("invalid remote storage observation")
-            return blocks * size, inodes
-        finally:
-            self._recover_probe()
-
-    def _recover_probe(self):
-        path = self.root / "storage-probe.json"
-        if not path.exists():
-            return
-        record = json.loads(path.read_text())
-        name = record["name"]
-        if (not re.fullmatch(r"ml-expd-storage-[0-9a-f]{32}", name)
-                or record.get("docker_host") != self._endpoint()):
-            raise ValueError("remote storage probe recovery endpoint or identity changed")
-        names = self._docker(["ps", "--all", "--filter", "name=^/" + name + "$",
-                              "--format", "{{.Names}}"], capture=True).splitlines()
-        if name in names:
-            self._docker(["rm", "--force", "--volumes", name])
-        path.unlink()
 
     def _remove_builder(self, name):
         names = self._docker(["buildx", "ls", "--format", "{{.Name}}"], capture=True).splitlines()
@@ -474,8 +286,6 @@ class ImageBuilder:
         name = record["name"]
         if not re.fullmatch(r"ml-expd-[0-9a-f]{32}", name):
             raise ValueError("invalid ephemeral builder recovery identity")
-        if record.get("docker_host", "unix:///var/run/docker.sock") != self._endpoint():
-            raise ValueError("ephemeral builder recovery endpoint changed")
         self._remove_builder(name)
         path.unlink()
 
@@ -494,7 +304,7 @@ class ImageBuilder:
                       "--provenance=false", "--sbom=false", "--tag", tag,
                       "--metadata-file", str(metadata), "--output",
                       "type=image,push=true,oci-mediatypes=false,compression=gzip",
-                      *cache, BUILD_REMOTE_CONTEXT.get() or str(context)])
+                      *cache, str(context)])
         value = json.loads(metadata.read_text())
         digest = value.get("containerimage.digest", "")
         config_digest = value.get("containerimage.config.digest", "")
@@ -523,8 +333,8 @@ class ImageBuilder:
             record_progress(path, phase, message, timeout_seconds=self.config.get("timeout_seconds", 600))
 
     def _docker(self, arguments: list[str], *, capture: bool = False) -> str:
-        host = ["--host", self.config["docker_host"]] if "docker_host" in self.config else []
-        return self._command([self.config.get("docker", "/usr/bin/docker"), *host, *arguments], capture=capture)
+        return self._command([self.config.get("docker", "/usr/bin/docker"),
+                              "--host", "unix:///var/run/docker.sock", *arguments], capture=capture)
 
     def _skopeo(self, arguments: list[str], *, capture: bool = False) -> str:
         return self._command([self.config.get("skopeo", "/usr/bin/skopeo"),
@@ -573,39 +383,6 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def do_GET(self):
-        try:
-            uid = struct.unpack("3i", self.connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
-            if uid != self.server.builder.config["client_uid"]:
-                raise ValueError("desktop archive client is not authorized")
-            target = urlsplit(self.path)
-            query = parse_qs(target.query, strict_parsing=True)
-            if target.path != "/data-stage/archive" or set(query) != {"project", "asset_id"} or any(len(v) != 1 for v in query.values()):
-                raise ValueError("invalid desktop archive request")
-            data = {key: value[0] for key, value in query.items()}
-            result = self.server.builder.desktop_stage("asset", {"binding": {"project": data["project"], "kind": "asset"},
-                                                        "asset_id": data["asset_id"]}, b"")
-            if not result["ok"]:
-                raise ValueError("desktop archive is unavailable")
-            config = self.server.builder.config
-            command = [config.get("docker_bin", "docker"), "--host", config["docker_host"], "exec", "-i",
-                       config["data_upload_container"], "python", "-m", "ml_exp_server.desktop_upload", "archive", json.dumps(data)]
-            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        except Exception:
-            self.reply(409, {"error": "desktop archive is unavailable"})
-            return
-        try:
-            self.send_response(200)
-            self.send_header("Content-Type", "application/x-tar")
-            self.send_header("Content-Length", str(result["result"]["archive_bytes"]))
-            self.end_headers()
-            self.connection.settimeout(300)
-            shutil.copyfileobj(process.stdout, self.wfile, 1024 ** 2)
-        finally:
-            process.stdout.close()
-            if process.poll() is None:
-                process.terminate()
-            process.wait(timeout=15)
 
     def do_POST(self):
         status = 200
@@ -614,21 +391,6 @@ class Handler(BaseHTTPRequestHandler):
             if uid != self.server.builder.config["client_uid"]:
                 raise ValueError("image packaging client is not authorized")
             size = int(self.headers.get("Content-Length", "0"))
-            if self.path.startswith("/data-stage/"):
-                if not 0 <= size <= 64 * 1024 ** 2:
-                    raise ValueError("invalid desktop data part size")
-                metadata = self.headers.get("X-ML-Expd-Data", "")
-                if len(metadata) > 8192:
-                    raise ValueError("invalid desktop data metadata")
-                self.connection.settimeout(300)
-                body = self.rfile.read(size)
-                if len(body) != size:
-                    raise ValueError("truncated desktop data part")
-                result = self.server.builder.desktop_stage(self.path.removeprefix("/data-stage/"), json.loads(metadata), body)
-                status = 200 if result["ok"] else result.get("status_code", 409)
-                result = result["result"] if result["ok"] else result
-                self.reply(status, result)
-                return
             if not 0 < size <= 8 * 1024 * 1024 or self.path != "/":
                 raise ValueError("invalid image packaging request")
             self.connection.settimeout(15)

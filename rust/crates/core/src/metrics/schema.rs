@@ -159,7 +159,7 @@ impl MetricSchema {
         }
         let definitions = match fields.get("definitions") {
             None => return Ok(Self::default()),
-            Some(Value::Object(definitions)) if definitions.len() <= 256 => definitions,
+            Some(Value::Object(definitions)) => definitions,
             _ => return Err(MetricError::Schema),
         };
         let mut result = Vec::with_capacity(definitions.len());

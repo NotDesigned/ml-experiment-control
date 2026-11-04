@@ -617,7 +617,7 @@ fn schema_document() -> serde_json::Value {
             "run_id":{"type":"string"},"runtime_id":{"type":"string"},"executor":{"type":"string"},"command":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"}},
             "resources":{"type":"object","additionalProperties":false,"required":["gpus","memory_gb"],"properties":{"gpus":{"type":"integer","minimum":1},"cpus":{"type":"integer","minimum":1,"default":8},"nodes":{"type":"integer","const":1,"default":1},"memory_gb":{"type":"integer","minimum":1}}},
             "walltime_seconds":{"type":"integer","minimum":1,"maximum":3600000},"seed":{"type":"integer"},"wandb":{"type":"object","additionalProperties":false,"properties":{"enabled":{"type":"boolean","default":true},"preparation_enabled":{"type":"boolean","default":false},"entity":{"type":["string","null"]},"project":{"type":["string","null"]}}},"data":{"type":"array","maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["name","asset_id"],"properties":{"name":{"type":"string"},"asset_id":{"type":"string"}}}},"parameters":{"type":"object"},"evaluation":{"type":"object"},"metrics_schema":{"type":"object"},"artifacts":{"type":"object","additionalProperties":false,"properties":{"required_files":{"type":"array","items":{"type":"string"},"maxItems":20000}}}}}),vec![parameter("protocol"),parameter("project")]));
-    paths.insert("/api/runs/{project}/{run}/submissions".into(),post("Prepare the first authored Run/Attempt with trusted source and materialized-image receipts; never submits a scheduler job",json!({"type":"object","additionalProperties":false,"required":["max_gpu_hours"],"properties":{"max_gpu_hours":{"type":"number","exclusiveMinimum":0},"reason":{"type":"string","maxLength":4000,"default":""}}}),run()));
+    paths.insert("/api/runs/{project}/{run}/submissions".into(),post("Prepare the first authored Run/Attempt with trusted source and materialized-image receipts; never submits a scheduler job",json!({"type":"object","additionalProperties":false,"properties":{"max_gpu_hours":{"type":"number","default":0},"reason":{"type":"string","default":""}}}),run()));
     for (name, description, body) in [
         (
             "history",
@@ -626,8 +626,8 @@ fn schema_document() -> serde_json::Value {
         ),
         (
             "retry",
-            "Append a new Attempt from an explicit parent checkpoint after exact terminal scheduler evidence; reserves cumulative GPU budget and never submits",
-            json!({"type":"object","additionalProperties":false,"required":["confirmation","resume_from","max_gpu_hours"],"properties":{"confirmation":{"type":"string","pattern":"^RETRY action-[a-f0-9]{16}$"},"max_gpu_hours":{"type":"number","exclusiveMinimum":0},"reason":{"type":"string","maxLength":4000},"resume_from":{"type":"object","additionalProperties":false,"required":["run_id","attempt_id","checkpoint_id"],"properties":{"run_id":{"type":"string"},"attempt_id":{"type":"string"},"checkpoint_id":{"type":"string"}}}}}),
+            "Append a new Attempt from an explicit checkpoint or full restart after exact terminal scheduler evidence; never submits",
+            json!({"type":"object","additionalProperties":false,"oneOf":[{"required":["resume_from"]},{"required":["restart_from"]}],"properties":{"confirmation":{"type":"string","default":""},"max_gpu_hours":{"type":"number","default":0},"reason":{"type":"string"},"restart_from":{"type":"object","additionalProperties":false,"required":["run_id","attempt_id"],"properties":{"run_id":{"type":"string"},"attempt_id":{"type":"string"},"sync_request_id":{"type":"string"}}},"resume_from":{"type":"object","additionalProperties":false,"required":["run_id","attempt_id","checkpoint_id"],"properties":{"run_id":{"type":"string"},"attempt_id":{"type":"string"},"checkpoint_id":{"type":"string"}}}}}),
         ),
         (
             "cancel",

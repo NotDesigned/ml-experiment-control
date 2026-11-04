@@ -28,11 +28,11 @@ from tests.test_sensecore_data_workflow import stored
 
 
 def test_malformed_location_list_is_rejected_without_falling_back_to_legacy():
-    original = {"remote_storage": "desktop-builder", "remote_locations": []}
+    original = {"remote_storage": "object", "remote_locations": []}
     with pytest.raises(ApplicationError) as error:
         for_backend(original, profile(), "demo")
     assert error.value.code == "INPUT_STORAGE_SCOPE_MISMATCH"
-    assert original == {"remote_storage": "desktop-builder", "remote_locations": []}
+    assert original == {"remote_storage": "object", "remote_locations": []}
 
 
 @pytest.mark.parametrize("storage_label", ["slurm", "wyd"])
@@ -53,7 +53,7 @@ def test_native_slurm_cache_failure_never_launches_a_second_transfer(monkeypatch
 
 def test_cpu_script_matching_rejects_adapter_without_before_job_input_support(client):
     selected = ContainerExecutionService(client.app.state.runtime).profiles()["cloud"]
-    capabilities = declaration(selected, artifact_store=True, desktop=False, cpu_preparation=True)
+    capabilities = declaration(selected, artifact_store=True, cpu_preparation=True)
     capabilities["data"]["asset_preparation"] = "inside_job"
     run = request(data_preparation={"script": "download.py"},
                   inputs=[{"asset_id": "asset." + "a" * 64, "mount_path": "/inputs/data"}])

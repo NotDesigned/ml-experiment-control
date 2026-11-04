@@ -57,13 +57,13 @@ def test_quota_bad_or_missing_evidence_never_becomes_free_capacity(api,case):
 
 def test_capabilities_require_explicit_native_persistent_dataset():
     profile={'backend':B,'storage_root':'/data/ml-expd'}
-    v=declaration(profile,artifact_store=True,desktop=False)
+    v=declaration(profile,artifact_store=True)
     assert not v['storage']['persistent'] and not v['data']['assets']
     assert v['data']['download_script'] is None and v['resources']['inventory_query']
     assert v['jobs']['exact_submission_lookup'] and v['observability']['queue_reason']
     mount={'DataSourceId':'d-data','DataSourceVersion':'v1','MountPath':'/data','MountAccess':'RW'}
     profile['backend']={**B,'storage_id':'nas-immutable','filesystem_type':'nas','data_sources':[mount]}
-    v=declaration(profile,artifact_store=True,desktop=False)
+    v=declaration(profile,artifact_store=True)
     assert v['storage']['persistent'] and v['storage']['checkpoint_registration']
     assert v['data']['download_script']=='inside_job' and not v['data']['assets']
     assert storage_scope(profile['backend'],'/data/ml-expd')==v['storage']['storage_id']
@@ -73,14 +73,14 @@ def test_capabilities_require_explicit_native_persistent_dataset():
             dict(mount,MountPath='relative'),dict(mount,MountPath='/other')]
     for bad in mounts:
         p=deepcopy(profile);p['backend']['data_sources']=[bad]
-        assert not declaration(p,artifact_store=True,desktop=False)['storage']['persistent']
+        assert not declaration(p,artifact_store=True)['storage']['persistent']
     profile['backend']['filesystem_type']='oss'
-    assert not declaration(profile,artifact_store=True,desktop=False)['storage']['persistent']
+    assert not declaration(profile,artifact_store=True)['storage']['persistent']
 
 
 def test_resume_matching_rejects_unmounted_pai_instead_of_key_error():
     profile={'backend':B,'storage_root':'/data/ml-expd'}
-    v=declaration(profile,artifact_store=True,desktop=False)
+    v=declaration(profile,artifact_store=True)
     selected=match({'pai':profile},{'pai':v},request(),ExecutionRequirements(),ExecutorSelector(backend='pai-dlc'))
     assert selected['executor']=='pai'
     with pytest.raises(ApplicationError,match='checkpoint.storage_scope'):
@@ -178,14 +178,14 @@ def test_personal_cpfs_enables_same_storage_recovery_across_quota():
         'cpfs_uri':'bmcpfs://cpfs-approved.us-southeast-1.cpfs.aliyuncs.com/',
         'workspace_user':'owner','data_role_arn':'acs:ram::123:role/pai-data-owner'}
     profile={'backend':backend,'storage_root':'/mnt/workspace/ml-expd'}
-    value=declaration(profile,artifact_store=True,desktop=False)
+    value=declaration(profile,artifact_store=True)
     assert value['storage']['persistent'] and value['storage']['checkpoint_registration']
     assert value['data']['download_script']=='inside_job' and not value['data']['assets']
     assert storage_scope({**backend,'quota_id':'another'},profile['storage_root'])==value['storage']['storage_id']
     assert storage_scope({**backend,'workspace_user':'another'},profile['storage_root'])!=value['storage']['storage_id']
     assert storage_scope({**backend,'cpfs_uri':backend['cpfs_uri'].replace('cpfs-approved','cpfs-other')},profile['storage_root'])!=value['storage']['storage_id']
     for path in ['/mnt/models/weights','/mnt/datasets/data','/other']:
-        assert not declaration({**profile,'storage_root':path},artifact_store=True,desktop=False)['storage']['persistent']
+        assert not declaration({**profile,'storage_root':path},artifact_store=True)['storage']['persistent']
 
 
 def test_resource_defaults_preserve_historical_intents_and_freeze_new_choices():

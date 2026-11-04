@@ -10,7 +10,6 @@ import pytest
 from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.image_builder import BuilderServer, Handler, ImageBuilder, BUILD_LOG
 from ml_exp_server.builds.builder_client import BuildTransportError, builder_request
-from ml_exp_server.data.remote_data_uploads import stage_request
 from ml_exp_server import image_builder as module
 from ml_exp_server.builds import builder_client
 from tests.test_container_api import client, import_source, archive, wait_runtime
@@ -34,20 +33,19 @@ def test_command_transport_classification_does_not_expose_private_output(tmp_pat
     finally:BUILD_LOG.reset(token)
 
 
-@pytest.mark.parametrize('case',['build-session','build-rpc','upload-rpc'])
+@pytest.mark.parametrize('case',['build-session','build-rpc'])
 def test_private_error_boundary_preserves_only_safe_codes(tmp_path,case):
     path=str(tmp_path/'builder.sock');server=BuilderServer(path,Handler)
     def fail(*args):
         if case=='build-session':raise BuildTransportError('BUILD_SESSION_TIMEOUT',{'publication_uncertain':True,'scheduler_submitted':False})
-        raise ApplicationError('private-secret',status_code=503,code='DESKTOP_RPC_TIMEOUT')
-    server.builder=SimpleNamespace(config={'client_uid':os.getuid()},request=fail,desktop_stage=fail)
+        raise ApplicationError('private-secret',status_code=503,code='PAI_DSW_BUILD_UNCERTAIN')
+    server.builder=SimpleNamespace(config={'client_uid':os.getuid()},request=fail)
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     try:
-        with pytest.raises(ApplicationError if case=='upload-rpc' else BuildTransportError) as error:
-            stage_request(path,'read',{}) if case=='upload-rpc' else builder_request(path,{'operation':'build'})
+        with pytest.raises(BuildTransportError) as error:
+            builder_request(path,{'operation':'build'})
         assert 'private-secret' not in str(error.value)
-        if case=='upload-rpc':assert error.value.status_code==503 and error.value.code=='DESKTOP_RPC_TIMEOUT'
-        else:assert error.value.details['publication_uncertain']
+        assert error.value.details['publication_uncertain']
     finally:server.shutdown();thread.join();server.server_close()
 
 

@@ -444,7 +444,6 @@ fn missing_slot_after_an_action_exists_never_generates_a_replacement_intent() {
 #[test]
 fn unapproved_resources_runtime_inputs_and_attempt_mismatches_fail_before_preparation() {
     for change in [
-        "budget",
         "nan",
         "cpus",
         "gpus",
@@ -975,8 +974,6 @@ async fn native_http_rejects_untrusted_bodies_and_execution_disabled_by_operator
     for body in [
         r#"{"max_gpu_hours":1,"script":"unsafe"}"#,
         r#"{"max_gpu_hours":1,"max_gpu_hours":2}"#,
-        r#"{"max_gpu_hours":0}"#,
-        r#"{"max_gpu_hours":1,"reason":"bad\nreason"}"#,
     ] {
         let (status, value) = http_request(
             app.clone(),

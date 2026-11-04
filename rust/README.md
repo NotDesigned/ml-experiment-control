@@ -1,9 +1,8 @@
 # Native ML-Expd
 
 The native implementation lives on `main`. Production uses the native service;
-the workspace version is `0.1.16`, published separately from the retired Python service.
-Tokyo's direct endpoint is `https://server-tokyo.adscn.dev:2087/ml-expd`.
-Port 443 belongs to a separate service and is not an ML-Expd HTTPS endpoint.
+the workspace version is `0.1.17`, published separately from the retired Python service.
+The production endpoint is `https://ml-exp.adscn.dev`; previous endpoints have been removed.
 Code implementation, automated verification, provider acceptance and production
 cutover are separate milestones. See [the migration status](../docs/rust-rewrite.md).
 Never initialize a new registry over existing production state.
@@ -86,11 +85,11 @@ flowchart LR
 
 ## Client configuration
 
-The client command is `ml-exp`. Release 0.1.16 provides Linux x86_64/ARM64,
+The client command is `ml-exp`. Release 0.1.17 provides Linux x86_64/ARM64,
 macOS Intel/Apple Silicon and Windows x86_64 executables. The ARM64 Linux client
 is statically linked with musl; the API/worker bundle remains Linux x86_64.
-Use `install-native.sh --version 0.1.16` on Linux/macOS or
-`./install-native.ps1 -Version 0.1.16` in Windows PowerShell. The Windows installer
+Use `install-native.sh --version 0.1.17` on Linux/macOS or
+`./install-native.ps1 -Version 0.1.17` in Windows PowerShell. The Windows installer
 adds its per-user directory to PATH; open a new terminal if needed.
 
 For clients through 0.1.15, use the new installer once: their old update manifest
@@ -340,33 +339,18 @@ Write a complete ready marker before registering a checkpoint. Restoring a new
 Attempt explicitly references the exact checkpoint and storage scope; it does
 not require uploading the full training state through the API.
 
-An explicit checkpoint-free restart is available for a PAI job that failed in
-dataset cache initialization before the managed training process started:
+An explicit restart from the beginning is available after the exact parent job
+is terminal, on Slurm, PAI or SenseCore:
 
 ```sh
-ml-exp run sync ACTION --request-id NEW_32_HEX --confirmation 'SYNC ACTION'
-# Wait for that CPU-only probe to end, then create metadata for the next Attempt:
-ml-exp run retry ACTION --confirmation 'RETRY ACTION' --run RUN --attempt attempt-001 \
-  --from-start --sync-request NEW_32_HEX --max-gpu-hours CUMULATIVE_LIMIT
+ml-exp run retry ACTION --run RUN --attempt attempt-001 --from-start
 ```
 
-The server confirms the exact parent job is terminal before fencing the probe.
-At least two new exchange sequences exclude the single pending pre-fence packet.
-The fresh managed ledger must still be PREPARED, with no training log/metrics,
-and retain DATA_CACHE_UNAVAILABLE. Missing, started or uncertain evidence is
-rejected. The old worker's CPU sync may itself exit nonzero after waiting for a
-training result that cannot exist; its exact terminal identity and fresh data
-observations, rather than its success label, provide the proof. Nothing here
-submits GPU training: prepare/authorize/execute remain separate. Full cumulative
-Attempt reservations still apply, and an identical retry reuses the same Attempt.
-Checkpoint retries and their hashes remain compatible; Slurm/SenseCore keep the
-checkpoint requirement until an equivalent startup proof is implemented.
-
-If the frozen runtime lacks `shared-cache-identity.v2`, retry reports
-STARTUP_RETRY_RUNTIME_UPGRADE_REQUIRED before creating an Attempt. Build a new
-runtime with the fixed worker and create a new Run using that runtime; do not
-rewrite the old Run/image/Attempt or its shared-cache marker. A new Run can
-reference the existing dataset and retain the same experiment parameters.
+Use `--checkpoint CHECKPOINT_ID` instead to restore saved state. A retry creates
+new Attempt metadata; it does not automatically submit training. Repeating the
+same request reuses that Attempt. Budget and legacy CPU-sync fields remain
+readable metadata and are optional. Unknown provider submissions must be
+reconciled before a retry; no special startup failure code is required.
 
 Cloud datasets can also be downloaded with `data download`; the client verifies
 the concatenated archive and every member and never overwrites an existing path.

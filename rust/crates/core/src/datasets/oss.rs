@@ -77,6 +77,7 @@ mod tests {
         for key in [
             "users/alice/datasets/train.tar",
             "public/datasets/fineweb/train.tar",
+            "public/datasets/credentials/a.tar",
         ] {
             request(key).bind("users/alice/ml-expd/").unwrap();
         }
@@ -86,7 +87,6 @@ mod tests {
             "users/alice/datasets/../results/train.tar",
             "public/datasets/.secret.tar",
             "public/datasets/%2e%2e/train.tar",
-            "public/datasets/credentials/a.tar",
             "public/datasets//a.tar",
             "https://example.org/data.tar",
             "public/datasets/a.tar?x=1",

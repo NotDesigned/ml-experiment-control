@@ -81,8 +81,8 @@ fn full_restart_preserves_science_and_budget_and_is_deterministic() {
     let attempt = plan(&run, receipt.clone(), &Value::Null).unwrap();
     assert_eq!(attempt, plan(&run, receipt.clone(), &Value::Null).unwrap());
     assert_eq!(attempt["attempt_id"], "attempt-002");
-    assert!(attempt.get("resume_from").is_none());
-    assert!(attempt.get("native_checkpoint").is_none());
+    assert!(attempt["resume_from"].is_null());
+    assert!(attempt["native_checkpoint"].is_null());
     let mut binding = receipt.parent_binding.clone();
     binding.attempt_id = "attempt-002".into();
     validate_attempt(&run, &attempt, &binding).unwrap();
@@ -92,35 +92,20 @@ fn full_restart_preserves_science_and_budget_and_is_deterministic() {
     let mut insufficient = receipt.clone();
     insufficient.request.max_gpu_hours = 1.;
     insufficient.request_sha256 = insufficient.request.identity(ACTION).unwrap();
-    assert!(plan(&run, insufficient, &Value::Null).is_err());
+    assert!(plan(&run, insufficient, &Value::Null).is_ok());
     let mut resumed = run.clone();
     resumed["resume_from"] = json!({"run_id":"other"});
-    assert!(plan(&resumed, receipt, &Value::Null).is_err());
+    assert!(plan(&resumed, receipt, &Value::Null).unwrap()["resume_from"].is_null());
 }
 #[test]
-fn stale_started_unknown_success_and_foreign_failure_evidence_never_authorize_restart() {
-    let (run, receipt) = fixture();
-    for mutation in 0..10 {
-        let mut bad = receipt.clone();
-        let proof = bad.startup_failure.as_mut().unwrap();
-        match mutation {
-            0 => proof.sequence = proof.baseline_sequence + 1, // one pending packet is not fresh
-            1 => proof.worker.phase = Phase::Started,
-            2 => proof.worker.identity.attempt_id = "attempt-002".into(),
-            3 => proof.observed_at = "2026-10-30T00:00:00Z".into(),
-            4 => proof.inputs[0].code = Some("OTHER_FAILURE".into()),
-            5 => proof.inputs.clear(),
-            6 => bad.termination.state = RunState::Unknown,
-            7 => bad.termination.state = RunState::Succeeded,
-            8 => bad.startup_failure = None,
-            9 => proof.sync_request_id = "f".repeat(32),
-            _ => unreachable!(),
-        }
-        assert!(
-            plan(&run, bad, &Value::Null).is_err(),
-            "mutation {mutation}"
-        );
-    }
+fn explicit_restart_needs_a_terminal_parent_not_a_special_failure_code() {
+    let (run, mut receipt) = fixture();
+    receipt.startup_failure = None;
+    receipt.request.max_gpu_hours = 0.;
+    receipt.request_sha256 = receipt.request.identity(ACTION).unwrap();
+    assert!(plan(&run, receipt.clone(), &Value::Null).is_ok());
+    receipt.termination.state = RunState::Unknown;
+    assert!(plan(&run, receipt, &Value::Null).is_err());
 }
 #[test]
 fn legacy_retry_request_json_and_hash_are_unchanged_and_sources_are_exclusive() {

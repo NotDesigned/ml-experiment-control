@@ -25,15 +25,13 @@ def targeted(client, stored, tmp_path, monkeypatch):
     values["executors"]["gpu"]["storage_root"] = str(tmp_path / "remote")
     profiles.write_text(yaml.safe_dump(values))
     config = json.loads(stored[0].read_text())
-    config.update(upload_part_bytes=1024, local_storage_headroom_bytes=0,
-                  data_upload_storage="desktop-builder", data_upload_socket="never-contact-desktop")
+    config.update(upload_part_bytes=1024, local_storage_headroom_bytes=0)
     stored[0].write_text(json.dumps(config))
     original = subprocess.Popen
     def local(command, **kwargs):
         assert command[0] == "ssh"
         return original(shlex.split(command[-1]), **kwargs)
     monkeypatch.setattr("ml_exp_server.data.remote_data_uploads.subprocess.Popen", local)
-    monkeypatch.setattr("ml_exp_server.data.remote_data_uploads.stage_request", lambda *a, **k: pytest.fail("desktop must not be contacted"))
     return client, runtime.config.project_registry_root_path(), profiles
 
 
@@ -42,7 +40,7 @@ def begin(client, data, **changes):
         "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data), "target": {"executor": "gpu"}, **changes})
 
 
-def test_new_upload_requires_target_and_exposes_bounded_buffer_metadata_without_desktop(targeted):
+def test_new_upload_requires_target_and_exposes_bounded_buffer_metadata_on_target(targeted):
     client, root, _ = targeted
     data = archive({"x": b"x"})
     assert begin(client, data, target=None).status_code == 422

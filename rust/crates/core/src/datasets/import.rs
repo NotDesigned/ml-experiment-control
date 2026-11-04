@@ -15,6 +15,7 @@ pub enum Source {
     },
     Https {
         url: String,
+        #[serde(default)]
         allowed_hosts: BTreeSet<String>,
     },
 }
@@ -94,27 +95,15 @@ impl Config {
             }
             Source::Https { url, allowed_hosts } => {
                 let uri = url::Url::parse(url).map_err(|_| Error)?;
-                if allowed_hosts.is_empty()
-                    || allowed_hosts.len() > 16
-                    || url.len() > 16384
-                    || uri.scheme() != "https"
+                if uri.scheme() != "https"
+                    || uri.host_str().is_none()
                     || !uri.username().is_empty()
                     || uri.password().is_some()
                     || uri.fragment().is_some()
-                    || uri.port_or_known_default() != Some(443)
-                    || !matches!(uri.host(),Some(url::Host::Domain(host)) if host.contains('.')&&!host.ends_with(".localhost")&&!host.ends_with(".local")&&allowed_hosts.contains(host))
+                    || !allowed_hosts.is_empty()
+                        && !uri.host_str().is_some_and(|h| allowed_hosts.contains(h))
                 {
                     return Err(Error);
-                }
-                for host in allowed_hosts {
-                    if host.len() > 253
-                        || !host.contains('.')
-                        || !host.bytes().all(|b| {
-                            b.is_ascii_lowercase() || b.is_ascii_digit() || b".-".contains(&b)
-                        })
-                    {
-                        return Err(Error);
-                    }
                 }
             }
         }

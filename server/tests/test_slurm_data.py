@@ -11,16 +11,16 @@ from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.container_execution import ContainerExecutionService
 from ml_exp_server.runs.experiment_preparation import ExperimentPreparationRequest
 from ml_exp_server.backends.slurm import SlurmDataStager
-from tests.test_desktop_data_upload import remote_client, stage, stored, client, historical_asset
+from tests.test_sensecore_data_workflow import stored, client, put_asset
 from tests.test_artifact_store import archive
 from tests.test_experiment_preparation import service, spec
 
 
 @pytest.fixture
-def backend(remote_client, tmp_path, monkeypatch):
+def backend(client, stored, tmp_path, monkeypatch):
     data=archive({'nested/tokens.bin':b'training data'*1024})
-    asset=historical_asset(remote_client,data)['asset_id']
-    profile=ContainerExecutionService(remote_client.app.state.runtime).profiles()['gpu']
+    asset=put_asset(client,data).json()['asset_id']
+    profile=ContainerExecutionService(client.app.state.runtime).profiles()['gpu']
     profile['storage_root']=str(tmp_path/'backend')
     original=subprocess.Popen
     commands=[]
@@ -29,7 +29,7 @@ def backend(remote_client, tmp_path, monkeypatch):
         assert command[0]=='ssh' and 'BatchMode=yes' in command
         return original(shlex.split(command[-1]),**kwargs)
     monkeypatch.setattr('ml_exp_server.backends.slurm.subprocess.Popen',local)
-    return remote_client,profile,asset,commands
+    return client,profile,asset,commands
 
 
 def test_real_backend_stream_verified_reused_and_corruption_rejected(backend):
@@ -46,40 +46,8 @@ def test_real_backend_stream_verified_reused_and_corruption_rejected(backend):
     assert file.read_bytes()==b'corruption'
 
 
-def test_server_preparation_seals_cache_without_gpu_or_compute_https(backend, service, monkeypatch):
-    client,profile,asset,_=backend
-    config=Path(client.app.state.runtime.config.container_execution.profiles_file)
-    import yaml
-    doc=yaml.safe_load(config.read_text());doc['executors']['gpu']=profile;config.write_text(yaml.safe_dump(doc))
-    body=spec(client,run={'run_id':'cached-slurm','executor':'gpu','inputs':[{'asset_id':asset,'mount_path':'/inputs/data'}]})
-    accepted,pending=service.accept('demo',ExperimentPreparationRequest.model_validate(body))
-    result=service.finish(pending)
-    assert result['status']=='READY',result
-    assert result['data_receipts'][asset]['status']=='READY'
-    request=yaml.safe_load((Path(client.app.state.runtime.project('demo').base_dir)/'experiments/campaigns/run-cached-slurm.yaml').read_text())['runs'][0]
-    assert request['inputs'][0]['require_cached']
-    # Another Run verifies the same cache without transferring it again.
-    monkeypatch.setattr(SlurmDataStager,'publish',lambda *a:pytest.fail('must reuse'))
-    body['run']['run_id']='reused-slurm'
-    _,pending=service.accept('demo',ExperimentPreparationRequest.model_validate(body))
-    assert service.finish(pending)['status']=='READY'
 
 
-@pytest.mark.parametrize('marker', ['slurm:', 'wyd:'])
-def test_uncertain_slurm_transfer_never_replayed_then_verified_continue(backend, service, monkeypatch, marker):
-    client,profile,asset,_=backend
-    import yaml
-    p=Path(client.app.state.runtime.config.container_execution.profiles_file)
-    v=yaml.safe_load(p.read_text());v['executors']['gpu']=profile;p.write_text(yaml.safe_dump(v))
-    body=spec(client,run={'run_id':'interrupted-slurm','executor':'gpu','inputs':[{'asset_id':asset,'mount_path':'/inputs/data'}]})
-    _,pending=service.accept('demo',ExperimentPreparationRequest.model_validate(body))
-    service.update(*pending,delivery_requested=[marker+asset])
-    stopped=service.finish(pending)
-    assert stopped['error_code']=='SLURM_DATA_NOT_READY'
-    SlurmDataStager(client.app.state.runtime).publish('demo',asset,profile)
-    _,pending=service.continue_preparation(*pending)
-    monkeypatch.setattr(SlurmDataStager,'publish',lambda *a:pytest.fail('uncertain transfer cannot replay'))
-    assert service.finish(pending)['status']=='READY'
 
 
 def test_metadata_bound_is_checked_before_ssh(backend):

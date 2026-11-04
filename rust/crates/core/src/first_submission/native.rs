@@ -196,8 +196,8 @@ pub struct Runtime {
     pub source_dir: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Approval {
     pub max_gpu_hours: f64,
     #[serde(default)]
@@ -318,10 +318,8 @@ pub fn definition(
     approval: &Approval,
 ) -> Result<String> {
     profile.validate()?;
-    super::validate_gpu_budget(Some(approval.max_gpu_hours), "budget_cap")
-        .map_err(|_| Error("budget"))?;
-    if approval.reason.chars().count() > 4000 || approval.reason.chars().any(char::is_control) {
-        return Err(Error("reason"));
+    if !approval.max_gpu_hours.is_finite() {
+        return Err(Error("nonfinite cost metadata"));
     }
     identity::validate_id(&binding.project).map_err(|_| Error("project"))?;
     slot(&binding.project, &binding.run_id)?;
@@ -350,11 +348,8 @@ pub fn definition(
     let continuation = binding.attempt_id != "attempt-001";
     if continuation {
         let receipt = retry::validate_attempt(run, attempt, binding)?;
-        if receipt.backend_id != profile.target.backend_id
-            || receipt.reserved_gpu_seconds as f64 > approval.max_gpu_hours * 3600.
-            || approval.max_gpu_hours > receipt.request.max_gpu_hours
-        {
-            return Err(Error("retry cumulative approval"));
+        if receipt.backend_id != profile.target.backend_id {
+            return Err(Error("retry backend"));
         }
     }
     if field(attempt, "attempt_id")? != binding.attempt_id
@@ -454,7 +449,6 @@ pub fn definition(
             .memory_gb
             .is_none_or(|v| v > profile.max_memory_gb)
         || seconds > profile.max_walltime_seconds
-        || seconds as f64 * spec.resources.gpus as f64 > approval.max_gpu_hours * 3600.0
     {
         return Err(Error("backend policy or GPU budget"));
     }

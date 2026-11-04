@@ -33,9 +33,9 @@ def test_public_capabilities_are_private_readonly_and_not_inventory(client):
 
 
 def test_local_and_unmounted_storage_are_not_declared_container_capable():
-    local = declaration({"backend": {"kind": "local"}}, artifact_store=False, desktop=False)
+    local = declaration({"backend": {"kind": "local"}}, artifact_store=False)
     assert local["runtime"]["platforms"] == [] and local["storage"]["storage_id"] is None
-    cloud = declaration({"backend": {"kind": "sensecore"}, "storage_root": "/workspace"}, artifact_store=True, desktop=True)
+    cloud = declaration({"backend": {"kind": "sensecore"}, "storage_root": "/workspace"}, artifact_store=True)
     assert not cloud["storage"]["persistent"] and cloud["data"]["download_script"] is None
     assert cloud["data"]["asset_preparation"] == "inside_job"
 
@@ -62,14 +62,14 @@ def test_mismatches_are_explicit_without_building(client, fields, requirements, 
     service = ContainerExecutionService(client.app.state.runtime)
     profile = service.profiles()["cloud"]
     profile["capacity"] = {"gpus": 1, "cpus": 8, "memory_gb": 32}
-    cap = declaration(profile, artifact_store=False, desktop=False)
+    cap = declaration(profile, artifact_store=False)
     assert expected in mismatches(cap, profile, request(**fields), ExecutionRequirements(**requirements))
     assert mismatches(cap, profile, request(), ExecutionRequirements()) == []
 
 
 def test_native_process_does_not_satisfy_oci():
     profile = {"backend": {"kind": "local"}}
-    cap = declaration(profile, artifact_store=False, desktop=False)
+    cap = declaration(profile, artifact_store=False)
     assert "runtime.materialization" in mismatches(cap, profile, request(), ExecutionRequirements())
 
 
@@ -125,7 +125,7 @@ def test_resume_matching_requires_same_project_storage(client):
 ])
 def test_runtime_worker_support_is_checked_separately(client, fields, requirements, expected):
     profile = ContainerExecutionService(client.app.state.runtime).profiles()["cloud"]
-    cap = declaration(profile, artifact_store=True, desktop=True)
+    cap = declaration(profile, artifact_store=True)
     with pytest.raises(ApplicationError, match=expected):
         validate_worker(request(**fields), {"capabilities": []}, cap, ExecutionRequirements(**requirements), cache_required=expected == "data-cache-required.v1")
     validate_worker(request(**fields), {"capabilities": ["data-cache-required.v1", "data-assets.v1", "data-preparation.v1", "persistent-checkpoints.v1"]}, cap, ExecutionRequirements(**requirements), cache_required=expected == "data-cache-required.v1")
@@ -151,7 +151,7 @@ def test_data_preparation_contract_explains_phase_budget_transport_and_bound(cli
     profile = service.profiles()["cloud" if kind == "sensecore" else "gpu"]
     if relay:
         profile["backend"]["api_relay"] = {"endpoint": "tcp://127.0.0.1:18443", "origin": "https://api.example"}
-    cap = declaration(profile, artifact_store=True, desktop=True, cpu_preparation=cpu)
+    cap = declaration(profile, artifact_store=True, cpu_preparation=cpu)
     assert cap["data"]["download_script"] == phase
     assert cap["data"]["preparation"] == {"phase": phase, "budget": "preparation" if phase == "before_job" else "training",
                                           "transport": transport, "max_timeout_seconds": maximum}
@@ -163,14 +163,14 @@ def test_relay_cannot_be_declared_on_sensecore(client):
     profile = ContainerExecutionService(client.app.state.runtime).profiles()["cloud"]
     profile["backend"]["api_relay"] = {"endpoint": "tcp://127.0.0.1:18443", "origin": "https://api.example"}
     with pytest.raises(ApplicationError) as error:
-        declaration(profile, artifact_store=True, desktop=False, cpu_preparation=True)
+        declaration(profile, artifact_store=True, cpu_preparation=True)
     assert error.value.code == "EXECUTOR_TRANSPORT_INVALID"
 
 
 @pytest.mark.parametrize("cpu", [False, True])
 def test_before_job_requirement_matches_only_published_preparation_capability(client, cpu):
     profile = ContainerExecutionService(client.app.state.runtime).profiles()["cloud"]
-    cap = declaration(profile, artifact_store=True, desktop=False, cpu_preparation=cpu)
+    cap = declaration(profile, artifact_store=True, cpu_preparation=cpu)
     reasons = mismatches(cap, profile, request(data_preparation={"script": "download.py"}),
                          ExecutionRequirements(data_preparation_before_job=True))
     assert ("data.download_script.before_job" in reasons) is not cpu
@@ -180,7 +180,7 @@ def test_before_job_requirement_matches_only_published_preparation_capability(cl
 def test_cpu_preparation_script_limit_is_rejected_during_matching(client, timeout, accepted):
     service = ContainerExecutionService(client.app.state.runtime)
     profiles = {"cloud": service.profiles()["cloud"]}
-    caps = {"cloud": declaration(profiles["cloud"], artifact_store=True, desktop=False, cpu_preparation=True)}
+    caps = {"cloud": declaration(profiles["cloud"], artifact_store=True, cpu_preparation=True)}
     run = request(executor="cloud", data_preparation={"script": "download.py", "timeout_seconds": timeout})
     if accepted:
         assert match(profiles, caps, run, ExecutionRequirements(), None)["executor"] == "cloud"
@@ -192,17 +192,17 @@ def test_cpu_preparation_script_limit_is_rejected_during_matching(client, timeou
 def test_gateway_preparation_requires_the_runtime_relay_worker(client):
     profile = ContainerExecutionService(client.app.state.runtime).profiles()["gpu"]
     profile["backend"]["api_relay"] = {"endpoint": "tcp://127.0.0.1:18443", "origin": "https://api.example"}
-    cap = declaration(profile, artifact_store=True, desktop=False)
+    cap = declaration(profile, artifact_store=True)
     with pytest.raises(ApplicationError, match="api-tcp-relay.v1"):
         validate_worker(request(), {"capabilities": []}, cap)
     validate_worker(request(), {"capabilities": ["api-tcp-relay.v1"]}, cap)
 
 
-@pytest.mark.parametrize("desktop,cpu,script,rejected", [(False, True, True, False),
-    (True, True, True, False), (False, True, False, False), (False, False, True, False)])
-def test_cpu_scripts_require_inputs_prepared_before_job_only_when_needed(client, desktop, cpu, script, rejected):
+@pytest.mark.parametrize("cpu,script,rejected", [(True, True, False),
+    (True, False, False), (False, True, False)])
+def test_cpu_scripts_require_inputs_prepared_before_job_only_when_needed(client, cpu, script, rejected):
     profile = ContainerExecutionService(client.app.state.runtime).profiles()["cloud"]
-    cap = declaration(profile, artifact_store=True, desktop=desktop, cpu_preparation=cpu)
+    cap = declaration(profile, artifact_store=True, cpu_preparation=cpu)
     fields = {"inputs": [{"asset_id": "asset." + "a" * 64, "mount_path": "/inputs/data"}]}
     if script:
         fields["data_preparation"] = {"script": "download.py"}
@@ -212,11 +212,11 @@ def test_cpu_scripts_require_inputs_prepared_before_job_only_when_needed(client,
 
 @pytest.mark.parametrize("script,cpu,asset,rejected", [(True, True, {}, True),
     (True, True, {"remote_storage": "object"}, True),
-    (True, True, {"remote_storage": "desktop-builder"}, False),
+    (True, True, {"remote_storage": "sensecore-ccr"}, False),
     (False, True, {}, False), (True, False, {}, False)])
 def test_actual_asset_transport_is_checked_independently_of_current_upload_policy(client, script, cpu, asset, rejected):
     profile = ContainerExecutionService(client.app.state.runtime).profiles()["cloud"]
-    cap = declaration(profile, artifact_store=True, desktop=True, cpu_preparation=cpu)
+    cap = declaration(profile, artifact_store=True, cpu_preparation=cpu)
     run = request(**({"data_preparation": {"script": "download.py"}} if script else {}))
     if rejected:
         with pytest.raises(ApplicationError) as error:

@@ -274,6 +274,28 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     let action = prepared["submission_id"].as_str().unwrap();
     assert_eq!(prepared["status"], "PREPARED");
     assert!(service.handles_action(action).unwrap());
+    let original_run = fs::read(runs.join("train/manifest.json")).unwrap();
+    let mut relocated = config.clone();
+    relocated["exchange"]["public_url"] = json!("https://new-api.example");
+    let relocated_service = Service::open(
+        settings.clone(),
+        Settings::from_slice(&serde_json::to_vec(&relocated).unwrap()).unwrap(),
+        sources.clone(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        relocated_service
+            .for_run("demo", "train", "2026-10-29T00:02:00Z")
+            .unwrap()["submission_id"],
+        action
+    );
+    assert_eq!(
+        fs::read(runs.join("train/manifest.json")).unwrap(),
+        original_run
+    );
+    drop(relocated_service);
     let authorized = service
         .authorize(
             action,

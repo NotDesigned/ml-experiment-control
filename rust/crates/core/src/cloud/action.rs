@@ -95,16 +95,13 @@ pub fn prepare(
     expires: &str,
 ) -> Result<Value> {
     execution.validate()?;
+    if !approval.max_gpu_hours.is_finite() {
+        return Err(Error("nonfinite cost metadata"));
+    }
     let start = OffsetDateTime::parse(now, &Rfc3339).map_err(|_| Error("Action time"))?;
     let end = OffsetDateTime::parse(expires, &Rfc3339).map_err(|_| Error("Action expiry"))?;
-    if end <= start
-        || end - start > time::Duration::hours(24)
-        || !approval.max_gpu_hours.is_finite()
-        || approval.max_gpu_hours <= 0.
-        || execution.job.gpus as f64 * execution.job.max_time_seconds as f64
-            > approval.max_gpu_hours * 3600.
-    {
-        return Err(Error("GPU budget or gate window"));
+    if end <= start || end - start > time::Duration::hours(24) {
+        return Err(Error("gate window"));
     }
     let binding = &execution.binding;
     let mut plan = json!({"operation":"SUBMIT_RUN","scope":scope(execution),"run_id":execution.job.run_id,"attempt_id":execution.job.attempt_id,
@@ -137,15 +134,6 @@ pub fn validate(plan: &Value, execution: &Execution) -> Result<()> {
             != serde_json::to_value(binding).map_err(|_| Error("Action binding"))?
     {
         return Err(Error("Action binding"));
-    }
-    let approval: Approval = serde_json::from_value(plan["native_cloud"]["approval"].clone())
-        .map_err(|_| Error("approval"))?;
-    if !approval.max_gpu_hours.is_finite()
-        || approval.max_gpu_hours <= 0.
-        || execution.job.gpus as f64 * execution.job.max_time_seconds as f64
-            > approval.max_gpu_hours * 3600.
-    {
-        return Err(Error("GPU budget"));
     }
     let start = plan["created_at"]
         .as_str()

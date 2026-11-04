@@ -410,7 +410,7 @@ fn packs_deterministic_regular_files_and_preserves_only_executable_intent() {
 
 #[cfg(unix)]
 #[test]
-fn source_aliases_credentials_empty_and_expanded_limit_fail_without_payload_echo() {
+fn source_filename_choices_are_allowed_but_aliases_and_size_limits_remain() {
     use std::os::unix::fs::{PermissionsExt, symlink};
     for case in [
         "secret",
@@ -472,6 +472,10 @@ fn source_aliases_credentials_empty_and_expanded_limit_fail_without_payload_echo
                     .unwrap();
             }
             _ => unreachable!(),
+        }
+        if matches!(case, "secret" | "nested-secret") {
+            assert!(sources::pack_directory(temp.path()).is_ok(), "{case}");
+            continue;
         }
         let error = sources::pack_directory(temp.path()).err().expect(case);
         assert!(!error.to_string().contains("DO_NOT_LEAK_VALUE"));

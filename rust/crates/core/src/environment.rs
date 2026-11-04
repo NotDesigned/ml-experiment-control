@@ -6,21 +6,14 @@ use std::collections::BTreeMap;
 pub struct Error;
 
 pub fn validate(values: &BTreeMap<String, String>) -> Result<(), Error> {
-    let mut bytes = 0usize;
-    if values.len() > 128 {
-        return Err(Error);
-    }
     for (key, value) in values {
         let mut chars = key.bytes();
-        if key.len() > 128
-            || !chars
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+        if !chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
             || !chars.all(|c| c.is_ascii_alphanumeric() || c == b'_')
-            || value.len() > 8192
             || value.contains('\0')
             || key.starts_with("ML_EXPD_")
-            || key.starts_with("RESUME_")
             || matches!(
                 key.as_str(),
                 "PROJECT_NAME"
@@ -35,18 +28,10 @@ pub fn validate(values: &BTreeMap<String, String>) -> Result<(), Error> {
                     | "INPUTS_DIR"
                     | "DATASETS_JSON"
                     | "METRICS_PATH"
-                    | "CUDA_VISIBLE_DEVICES"
-                    | "NVIDIA_VISIBLE_DEVICES"
-                    | "NVIDIA_DRIVER_CAPABILITIES"
-                    | "LD_LIBRARY_PATH"
             )
         {
             return Err(Error);
         }
-        bytes = bytes.checked_add(key.len() + value.len()).ok_or(Error)?;
-    }
-    if bytes > 32 * 1024 {
-        return Err(Error);
     }
     Ok(())
 }
@@ -79,7 +64,6 @@ mod tests {
             "METRICS_PATH",
             "RUN_ID",
             "ML_EXPD_API_TOKEN",
-            "RESUME_DIR",
             "1bad",
             "X=Y",
         ] {
@@ -96,10 +80,10 @@ mod tests {
         ] {
             assert!(from_document(&bad).is_err());
         }
-        assert!(validate(&BTreeMap::from([("X".into(), "x".repeat(8193))])).is_err());
+        assert!(validate(&BTreeMap::from([("X".into(), "x".repeat(8193))])).is_ok());
         let oversized = (0..5)
             .map(|i| (format!("K{i}"), "x".repeat(8192)))
             .collect();
-        assert!(validate(&oversized).is_err());
+        assert!(validate(&oversized).is_ok());
     }
 }

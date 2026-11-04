@@ -157,6 +157,6 @@ only the actual CCR blob redirect hostnames verified by the operator, without
 scheme, paths or wildcards; redirects use TLS and receive no registry credentials.
 Workspace, storage mount and dataset root are derived from the chosen executor.
 Verify the CPU spec is exactly 2 CPUs, 4 GiB and 0 GPUs in the selected debug pool.
-New dataset upload does not require a desktop SSH tunnel. Runtime builds use
-the separately configured builder, which can be local/SSH Docker or PAI DSW;
+Dataset uploads stream directly to backend storage. Runtime builds use
+the separately configured builder, which can be local Docker or PAI DSW;
 see [builds](builds.md).

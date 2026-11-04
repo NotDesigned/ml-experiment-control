@@ -8,7 +8,7 @@ from ..results.checkpoint_registry import storage_scope
 # receivers publish only "slurm"; no old backend/module entry point is retained.
 SLURM_STORAGE = frozenset({"slurm", "wyd"})
 TARGET_STORAGE = SLURM_STORAGE | {"sensecore-ccr", "oss"}
-REMOTE = TARGET_STORAGE | {"desktop-builder"}
+REMOTE = TARGET_STORAGE
 
 
 def for_backend(asset, profile, project):

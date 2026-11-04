@@ -41,7 +41,7 @@ pub(crate) fn extend(document: &mut Value) {
     );
     let mut run=document["paths"]["/api/projects/{project}/runs"]["post"]["requestBody"]["content"]["application/json"]["schema"].clone();
     run["properties"]["scheduling"] = scheduling;
-    run["properties"]["env"] = json!({"type":"object","maxProperties":128,"additionalProperties":{"type":"string","maxLength":8192},"description":"Frozen per-Run environment. Platform directory, identity, resume and ML_EXPD_ variables are reserved. Store credentials separately."});
+    run["properties"]["env"] = json!({"type":"object","additionalProperties":{"type":"string"},"description":"Frozen per-Run environment. Platform directory, identity and ML_EXPD_ variables are reserved. Store credentials separately."});
     run["properties"]["resume_from"] = object(
         &["run_id", "attempt_id", "checkpoint_id"],
         json!({"run_id":{"type":"string"},"attempt_id":{"type":"string"},"checkpoint_id":{"type":"string"}}),
@@ -57,13 +57,13 @@ pub(crate) fn extend(document: &mut Value) {
     let definition = object(
         &["source_id", "executor", "base_image", "dockerfile"],
         json!({
-        "source_id":{"type":"string"},"executor":{"type":"string"},"base_image":{"type":"string","description":"Digest-pinned approved base"},"dockerfile":{"type":"string"}}),
+        "source_id":{"type":"string"},"executor":{"type":"string"},"base_image":{"type":"string","description":"Digest-pinned base"},"dockerfile":{"type":"string"}}),
     );
     let confirmation = object(&["confirmation"], json!({"confirmation":{"type":"string"}}));
     let empty = object(&[], json!({}));
     let approval = object(
-        &["max_gpu_hours"],
-        json!({"max_gpu_hours":{"type":"number","exclusiveMinimum":0},"reason":{"type":"string","default":"","maxLength":4000}}),
+        &[],
+        json!({"max_gpu_hours":{"type":"number","default":0,"description":"Optional cost metadata; not a submission limit"},"reason":{"type":"string","default":""}}),
     );
     let paths = document["paths"].as_object_mut().expect("OpenAPI paths");
     let mut insert = |path: &str, method: &str, description: &str, body: Option<Value>| {
@@ -152,7 +152,7 @@ pub(crate) fn extend(document: &mut Value) {
         "post",
         "Freeze one experiment configuration and deterministic recovery slot; no training authorization",
         Some(object(
-            &["request_id", "run", "approval"],
+            &["request_id", "run"],
             json!({"request_id":{"type":"string"},"run":run,"runtime":{"anyOf":[definition,{"type":"null"}]},"approval":approval}),
         )),
     );
@@ -207,7 +207,7 @@ pub(crate) fn extend(document: &mut Value) {
                 "memory_gb",
             ],
             json!({
-        "profile":{"type":"string"},"request_id":{"type":"string"},"ssh_public_key":{"type":"string","maxLength":8192},"lease_seconds":{"type":"integer","minimum":60,"maximum":14400},"gpus":{"type":"integer","minimum":0},"cpus":{"type":"integer","minimum":1},"memory_gb":{"type":"integer","minimum":1}}),
+        "profile":{"type":"string"},"request_id":{"type":"string"},"ssh_public_key":{"type":"string","maxLength":8192},"lease_seconds":{"type":"integer","minimum":1,"description":"DSW maximum 14400 seconds; other profiles use provider limits"},"gpus":{"type":"integer","minimum":0},"cpus":{"type":"integer","minimum":1},"memory_gb":{"type":"integer","minimum":1}}),
         )),
     );
     insert(

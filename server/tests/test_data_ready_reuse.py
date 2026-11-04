@@ -11,7 +11,6 @@ from ml_exp_server.application_errors import ApplicationError
 from ml_exp_server.storage import atomic_json
 from tests.test_ccr_data_delivery import delivery, receipt, secret, IMAGE
 from tests.test_sensecore_data_workflow import client, stored, custom_runtime
-from tests.test_desktop_data_upload import stage, remote_client
 from tests.test_artifact_store import archive
 
 
@@ -142,7 +141,7 @@ def test_stored_identity_mismatch_and_interrupted_reused_operation(delivery, mon
 
 
 @pytest.mark.parametrize('error', [BuildStorageError('BUILD_STORAGE_UNCHECKED', {'error_class': 'TimeoutExpired'}),
-    BuildTransportError('DESKTOP_RPC_UNAVAILABLE', {'publication_uncertain': True}), ValueError('SECRET must never be returned')])
+    BuildTransportError('PAI_DSW_BUILD_UNCERTAIN', {'publication_uncertain': True}), ValueError('SECRET must never be returned')])
 def test_failure_reports_phase_without_raw_exception_or_replay(delivery, monkeypatch, error):
     _, service, old, _ = delivery
     monkeypatch.setattr(module, 'builder_request', lambda *a: (_ for _ in ()).throw(error))

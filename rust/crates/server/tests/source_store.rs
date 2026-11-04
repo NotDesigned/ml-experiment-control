@@ -112,7 +112,7 @@ fn publish_read_reuse_and_archive_receipt_are_durable() {
 }
 
 #[test]
-fn protected_archive_path_is_rejected_without_publishing_a_source() {
+fn explicit_filename_choice_is_published_without_secret_heuristics() {
     let temp = tempfile::tempdir().unwrap();
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
     Store::initialize(temp.path(), Policy::default()).unwrap();
@@ -122,9 +122,9 @@ fn protected_archive_path_is_rejected_without_publishing_a_source() {
     assert!(
         store
             .import_archive("demo", &mut input, &digest, "2026-10-28T00:00:00Z")
-            .is_err()
+            .is_ok()
     );
-    assert!(store.find_archive("demo", &digest).unwrap().is_none());
+    assert!(store.find_archive("demo", &digest).unwrap().is_some());
 }
 
 #[test]

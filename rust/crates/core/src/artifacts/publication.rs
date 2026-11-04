@@ -36,11 +36,7 @@ impl Policy {
     }
 }
 pub fn export_path(path: &str) -> bool {
-    receipt_path(path)
-        && !path.chars().any(char::is_control)
-        && path != "checkpoint.ready.json"
-        && path != "checkpoints"
-        && !path.starts_with("checkpoints/")
+    receipt_path(path) && !path.chars().any(char::is_control)
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -308,24 +304,18 @@ mod tests {
         assert!(completed.validate_successor(&releasing).is_err());
     }
     #[test]
-    fn scientific_output_requirements_are_explicit_and_checkpoints_are_separate() {
+    fn scientific_output_requirements_can_explicitly_include_checkpoints() {
         let mut policy = Policy {
             required_files: vec!["weights.bin".into()],
         };
         assert!(policy.check(&bundle().archive.files).is_ok());
         policy.required_files.push("validation.json".into());
         assert!(policy.check(&bundle().archive.files).is_err());
-        for path in [
-            "../other",
-            "/weights",
-            "checkpoints/state.pt",
-            "checkpoint.ready.json",
-            "data\nfile",
-        ] {
+        for path in ["../other", "/weights", "data\nfile"] {
             assert!(!export_path(path));
         }
         let mut invalid = bundle();
         invalid.archive.files[0].path = "checkpoints/state.pt".into();
-        assert!(invalid.validate().is_err());
+        assert!(invalid.validate().is_ok());
     }
 }

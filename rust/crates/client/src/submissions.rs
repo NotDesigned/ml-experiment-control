@@ -1,9 +1,7 @@
 //! Pure request and response planning; one explicit transport call per command.
 //! Mutation response loss retains uncertainty and never triggers a second POST.
 use crate::{Client, Error, session};
-use ml_exp_core::{
-    first_submission::validate_gpu_budget, identity, operations::validate_submission_id,
-};
+use ml_exp_core::{identity, operations::validate_submission_id};
 use serde_json::{Value, json};
 
 pub enum Command<'a> {
@@ -126,7 +124,7 @@ impl Plan {
 }
 fn invalid() -> Error {
     Error::Observation(
-        "invalid submission identity, finite positive budget, reason or exact execution confirmation; no request sent",
+        "invalid submission identity, numeric metadata, reason or execution confirmation; no request sent",
     )
 }
 fn reason(value: &str) -> Result<(), Error> {
@@ -254,7 +252,9 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
             max_gpu_hours,
             reason: value,
         } => {
-            validate_gpu_budget(Some(max_gpu_hours), "budget_cap").map_err(|_| invalid())?;
+            if !max_gpu_hours.is_finite() {
+                return Err(invalid());
+            }
             reason(value)?;
             (
                 project,
@@ -409,9 +409,7 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
             || value["project"]
                 .as_str()
                 .is_none_or(|v| identity::validate_id(v).is_err())
-            || value["reserved_gpu_seconds"]
-                .as_u64()
-                .is_none_or(|v| v as f64 > request.max_gpu_hours * 3600.)
+            || value["reserved_gpu_seconds"].as_u64().is_none()
             || ["run_sha256", "attempt_sha256"].iter().any(|k| {
                 value[k]
                     .as_str()

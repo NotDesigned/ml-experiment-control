@@ -191,8 +191,8 @@ durable ACK; the whole archive and expanded files live only on shared storage.
 The backend validates archive/file hashes and atomically publishes the cache.
 A bounded read-only check permits reuse before GPU submission. GPU nodes need no
 external data access. New frozen inputs require the verified cache and fail closed
-if it disappears. Historical desktop-backed assets retain their original staging
-path, and old low-level Runs retain their frozen worker download behavior.
+if it disappears. Desktop staging has been removed. Old low-level Runs retain their frozen
+worker download behavior; upload data to a configured backend for new Runs.
 
 ### Slurm compute nodes without Internet access
 

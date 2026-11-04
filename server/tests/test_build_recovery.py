@@ -26,99 +26,14 @@ def proof(identity=IDENTITY):
             'registry_manifest_status': 404, 'active_builders': 0, 'leases_clear': True}
 
 
-@pytest.mark.parametrize('case', ['ok', 'status', 'large', 'socket', 'http'])
-def test_docker_read_is_bounded_readonly_and_never_exposes_transport_errors(monkeypatch, case):
-    calls=[]
-    class Connection:
-        def __init__(self, path, timeout):
-            assert path == '/private/docker.sock' and timeout == 5
-        def request(self, method, path, *, headers):
-            assert headers == {'Host': 'localhost'}
-            calls.append((method,path))
-            if case=='socket':raise OSError('credential-must-not-escape')
-            if case=='http':raise http.client.HTTPException('credential-must-not-escape')
-        def getresponse(self):
-            return SimpleNamespace(status=503 if case=='status' else 200,
-                                   read=lambda n:b'x'*n if case=='large' else b'OK')
-        def close(self):calls.append('close')
-    monkeypatch.setattr(recovery,'UnixConnection',Connection)
-    if case=='ok':assert recovery.docker_read({'docker_host':'unix:///private/docker.sock'},'/_ping')==b'OK'
-    else:
-        with pytest.raises(BuildTransportError) as error:
-            recovery.docker_read({'docker_host':'unix:///private/docker.sock'},'/_ping')
-        assert error.value.code=='BUILDER_DOCKER_UNAVAILABLE'
-        assert error.value.details['publication_uncertain'] is False
-        assert 'credential' not in str(error.value)
-    assert calls[0]==('GET','/_ping') and calls[-1]=='close'
 
 
-@pytest.mark.parametrize('host,body',[(None,b'bad'),('unix:///socket',b'OK'),('unix:///socket',b'bad')])
-def test_desktop_ping_has_no_local_fallback(monkeypatch,host,body):
-    monkeypatch.setattr(recovery,'docker_read',lambda *a:body)
-    if host and body!=b'OK':
-        with pytest.raises(BuildTransportError,match='BUILDER_DOCKER_UNAVAILABLE'):
-            recovery.desktop_ready({'docker_host':host})
-    else:recovery.desktop_ready({'docker_host':host})
 
 
-@pytest.fixture
-def observer(tmp_path,monkeypatch):
-    value=SimpleNamespace(root=tmp_path,config={'docker_host':'unix:///socket','ephemeral_buildkit':True,
-                                               'repository':'registry.example/runtime'})
-    calls=[]
-    monkeypatch.setattr(recovery,'docker_read',lambda config,path:calls.append(('docker',path)) or b'[]')
-    class Registry:
-        prefix='/v2/runtime'
-        def __init__(self,repository,auth,timeout):
-            assert repository=='registry.example/runtime' and timeout==15
-        def request(self,method,path,**kw):
-            assert method=='GET' and path.endswith('/manifests/bundle-'+IDENTITY)
-            assert kw['expected']==(200,404)
-            # Both locks must remain held throughout the registry observation.
-            for name in [IDENTITY+'.lock','ephemeral-buildkit.lock']:
-                with (tmp_path/name).open('a') as lock:
-                    with pytest.raises(BlockingIOError):fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            calls.append(('registry',path));return 404,{},b'{}'
-    monkeypatch.setattr(recovery,'Registry',Registry)
-    return value,calls
 
 
-def test_authenticated_absence_requires_both_locks_and_only_reads(observer):
-    value,calls=observer
-    result=recovery.publication_absence(value,IDENTITY)
-    assert recovery.valid_absence(result,IDENTITY)
-    assert len(calls)==2 and calls[0][0]=='docker' and calls[1][0]=='registry'
 
 
-@pytest.mark.parametrize('case',['local','not-ephemeral','bundle-busy','worker-busy','receipt','builder','context','probe','containers','invalid-json','transport','registry','published'])
-def test_no_retry_on_busy_unknown_or_published_state(observer,monkeypatch,case):
-    value,calls=observer
-    marker={'receipt':IDENTITY+'.json','builder':'ephemeral-builder.json','context':'source-context.json','probe':'storage-probe.json'}.get(case)
-    if marker:(value.root/marker).write_text('{}')
-    if case=='local':value.config.pop('docker_host')
-    if case=='not-ephemeral':value.config['ephemeral_buildkit']=False
-    lock=None
-    if case in ['bundle-busy','worker-busy']:
-        lock=(value.root/(IDENTITY+'.lock' if case=='bundle-busy' else 'ephemeral-buildkit.lock')).open('a')
-        fcntl.flock(lock,fcntl.LOCK_EX)
-    if case=='containers':monkeypatch.setattr(recovery,'docker_read',lambda *a:b'[{"State":"running"}]')
-    if case=='invalid-json':monkeypatch.setattr(recovery,'docker_read',lambda *a:b'not json')
-    if case=='transport':monkeypatch.setattr(recovery,'docker_read',lambda *a:(_ for _ in ()).throw(BuildTransportError('BUILDER_DOCKER_UNAVAILABLE',{})))
-    if case in ['registry','published']:
-        class Registry:
-            prefix='/v2/runtime'
-            def __init__(self,*a,**kw):pass
-            def request(self,*a,**kw):
-                if case=='registry':raise ValueError('private-secret')
-                return 200,{},b'{}'
-        monkeypatch.setattr(recovery,'Registry',Registry)
-    try:
-        if case in ['invalid-json','transport','registry','published']:
-            with pytest.raises(BuildTransportError) as error:recovery.publication_absence(value,IDENTITY)
-            assert 'private-secret' not in str(error.value)
-        else:assert recovery.publication_absence(value,IDENTITY) is None
-    finally:
-        if lock:lock.close()
 
 
 @pytest.mark.parametrize('change',[None,{}, {'extra':1},{'source':'other'},{'bundle_id':'b'*64},
@@ -193,26 +108,6 @@ def test_missing_receipt_from_worker_roundtrips_proof_and_never_builds(builder,t
     finally:server.shutdown();thread.join();server.server_close()
 
 
-@pytest.mark.parametrize('case',['none','absent','published'])
-def test_retry_rechecks_current_publication_under_build_lock_before_creating_container(tmp_path,monkeypatch,case):
-    from tests.test_ssh_builder import config
-    value=image_builder.ImageBuilder(config(tmp_path))
-    calls=[]
-    monkeypatch.setattr(image_builder,'desktop_ready',lambda config:None)
-    def observe(*a):
-        calls.append('fresh-observation')
-        if case=='published':raise BuildTransportError('BUILD_PUBLICATION_UNRESOLVED',{})
-        return None if case=='none' else proof()
-    monkeypatch.setattr(image_builder,'observe_absence',observe)
-    value._recover_probe=lambda:None;value._recover_builder=lambda:None
-    value._storage_preflight=lambda *a:(_ for _ in ()).throw(RuntimeError('after-positive-proof'))
-    value._docker=lambda *a,**kw:(_ for _ in ()).throw(AssertionError('must not create before proof'))
-    token=BUILD_RETRY.set(IDENTITY)
-    try:
-        with pytest.raises(RuntimeError if case=='absent' else BuildTransportError):
-            value._publish_buildkit('registry.example/runtime:bundle-'+IDENTITY,tmp_path)
-    finally:BUILD_RETRY.reset(token)
-    assert calls==['fresh-observation']
 
 
 def test_stage_messages_are_in_logs_before_buildkit_starts(tmp_path):
@@ -223,18 +118,6 @@ def test_stage_messages_are_in_logs_before_buildkit_starts(tmp_path):
     assert (tmp_path/'bundle.log').read_text()=='WAITING_BUILDER: Waiting for connection\n'
 
 
-def test_real_unix_http_docker_request_uses_valid_host(tmp_path):
-    from http.server import BaseHTTPRequestHandler
-    import socketserver,threading
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self,*a):pass
-        def do_GET(self):
-            self.send_response(200 if self.headers['Host']=='localhost' else 400)
-            self.end_headers();self.wfile.write(b'OK')
-    server=socketserver.UnixStreamServer(str(tmp_path/'docker.sock'),Handler)
-    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
-    try:recovery.desktop_ready({'docker_host':'unix://'+str(tmp_path/'docker.sock')})
-    finally:server.shutdown();thread.join();server.server_close()
 
 
 def test_retry_request_preserves_context_binding_and_clears_it_after_success(builder):

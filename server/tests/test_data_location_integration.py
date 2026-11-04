@@ -1,4 +1,4 @@
-"""Executor-scoped inputs use remote storage without a desktop rebuild."""
+"""Executor-scoped inputs use remote storage on backend storage."""
 from copy import deepcopy
 import hashlib
 import json
@@ -42,7 +42,7 @@ def test_asset_selects_each_backend_copy_and_ignores_gpu_size(storage_label):
     larger = deepcopy(slurm); larger["capacity"] = {"gpus": 8}
     assert for_backend(original, larger, "demo") == for_backend(original, slurm, "demo")
     assert original == before
-    old = {"asset_id": original["asset_id"], "remote_storage": "desktop-builder"}
+    old = {"asset_id": original["asset_id"], "remote_storage": "object"}
     assert for_backend(old, cloud, "demo") is old
 
 
@@ -113,7 +113,7 @@ def test_uploaded_ccr_image_copies_to_nas_without_any_builder_call(client, store
     value = service.prepare("demo", asset["asset_id"], "cloud")
     assert value["uploaded_image"] == asset["remote_locator"]
     assert value["worker_sha256"] == "4" * 64
-    monkeypatch.setattr("ml_exp_server.data.data_delivery.builder_request", lambda *a: pytest.fail("already published CCR input never calls desktop builder"))
+    monkeypatch.setattr("ml_exp_server.data.data_delivery.builder_request", lambda *a: pytest.fail("already published CCR input never rebuilds the data image"))
     monkeypatch.setattr("ml_exp_server.data.data_delivery.data_worker_digest", lambda: "9" * 64)
     creates = []
 

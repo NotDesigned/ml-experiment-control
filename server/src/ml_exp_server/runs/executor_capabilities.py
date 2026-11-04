@@ -37,7 +37,7 @@ class ExecutorSelector(BaseModel):
     candidates: list[str] = Field(default_factory=list, max_length=64)
 
 
-def declaration(profile, *, artifact_store: bool, desktop: bool, cpu_preparation: bool = False, oss_datasets: bool = False) -> dict:
+def declaration(profile, *, artifact_store: bool, cpu_preparation: bool = False, oss_datasets: bool = False) -> dict:
     kind = profile["backend"]["kind"]
     adapter = DECLARATIONS[kind]
     persistent = bool(adapter.persistent_filesystem and profile.get("storage_root")
@@ -128,7 +128,7 @@ def mismatches(capabilities, profile, request, requirements) -> list[str]:
 def validate_script_asset(request, capabilities, asset):
     if (request.data_preparation is not None
             and capabilities["data"]["preparation"]["transport"] == "cpu-acp-shared-storage"
-            and asset.get("remote_storage") not in {"desktop-builder", "sensecore-ccr"}):
+            and asset.get("remote_storage") not in {"sensecore-ccr"}):
         raise ApplicationError("CPU download scripts require pre-staged CCR input assets", code="DATA_SCRIPT_INPUT_TRANSPORT_UNSUPPORTED")
 
 

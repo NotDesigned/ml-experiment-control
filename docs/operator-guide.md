@@ -9,7 +9,7 @@ mutations; copying them alone does not produce a runnable GPU service.
 | Component | Access it needs |
 |---|---|
 | Daemon | Dedicated UID, writable state and API token; selected backend/store credentials for training |
-| Private builder | Private socket, registry push auth; local/SSH Docker/BuildKit or a separately configured PAI CPU DSW |
+| Private builder | Private socket, registry push auth; local Docker/BuildKit or a separately configured PAI CPU DSW |
 | Slurm | Daemon-owned SSH identity, Slurm/Apptainer, shared storage, registry pull auth |
 | PAI DLC | OpenAPI credentials, workspace/quota, personal CPFS/role, registry pull auth |
 | SenseCore | REST AK/SK, workspace/pools/specs, CCR pull authorization, mounted NAS |
@@ -177,7 +177,7 @@ environments:
 ```
 
 Catalogue metadata is operator-verified, not automatic package detection.
-Use [builds](builds.md) to configure local or SSH desktop Runtime construction.
+Use [builds](builds.md) to configure DSW/ACR or local BuildKit Runtime construction.
 New input uploads always select backend storage; `data_upload_storage` and
 `data_upload_socket` are legacy-session settings, not a way to select new uploads.
 For optional provider-specific transfers, follow [SenseCore data publication](sensecore-rest.md#dataset-publication-and-cpu-copy)
@@ -293,7 +293,7 @@ contracts and state written by newer versions; an old release is not an
 automatic rollback target.
 See [Action storage](action-storage.md).
 
-Registry images, backend datasets/state and historical desktop archives require
+Registry images and backend datasets/state require
 explicit retention. No global Docker prune or automatic NAS cleanup exists.
 Record exact commit/package versions and verification privately; these docs
 are not a list of live jobs or historical test counts. Known defects and
@@ -338,6 +338,6 @@ filesystem overhead; saturation returns 503 and retains unconfirmed parts. It is
 not a cap on source, result/recovery caches, journals or Garage objects. Review
 `transfer_buffer` and `local_storage` independently in `/api/storage-limits`.
 
-Treat API disk, desktop builder disk, Slurm shared storage and SenseCore NAS as distinct
+Treat API disk, DSW build storage, Slurm shared storage and SenseCore NAS as distinct
 capacity domains. Check each domain's actual write/quota/inode state. In
 particular, freeing an API archive does not free NAS training-state generations.

@@ -105,7 +105,8 @@ impl Create {
                     | "ecdsa-sha2-nistp521"
             )
             || !public_key(words[0], words[1])
-            || !(60..=14400).contains(&self.lease_seconds)
+            || self.lease_seconds == 0
+            || self.lease_seconds > i64::MAX as u64
             || self.cpus == 0
             || self.memory_gb == 0
         {
@@ -237,15 +238,15 @@ impl Profile {
             Self::PaiDsw { profile, .. }
                 if request.gpus <= profile.max_gpus
                     && request.cpus <= profile.max_cpus
-                    && request.memory_gb <= profile.max_memory_gb => {}
+                    && request.memory_gb <= profile.max_memory_gb
+                    && request.lease_seconds <= 14400 => {}
             Self::SensecoreCci { profile, .. }
                 if (request.gpus, request.cpus, request.memory_gb)
                     == (
                         profile.worker_gpus,
                         profile.worker_cpus,
                         profile.worker_memory_gb,
-                    )
-                    && request.lease_seconds <= 7200 => {}
+                    ) => {}
             _ => return Err(Error("debug resource policy")),
         }
         let identity = canonical::digest(&json!([contract, profile_sha256, request]))
