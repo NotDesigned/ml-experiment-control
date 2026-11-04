@@ -19,6 +19,10 @@ struct Args {
     /// Existing/partial registries are refused; no provider job is created.
     #[arg(long, requires = "config", conflicts_with = "check")]
     initialize: bool,
+    /// With the API stopped, append proven reserved W&B history gaps to the
+    /// original remote Run. Arguments are PROJECT RUN ATTEMPT.
+    #[arg(long, num_args=3, requires="config", conflicts_with_all=["check","initialize"])]
+    repair_tracking: Vec<String>,
     #[arg(long, default_value = "127.0.0.1:18765")]
     bind: SocketAddr,
     /// Enable explicit administrative deletion plans in an initialized namespace.
@@ -348,6 +352,35 @@ async fn main() -> std::process::ExitCode {
             None => (None, None),
         },
     };
+    if !args.repair_tracking.is_empty() {
+        let scope = serde_json::to_string(&args.repair_tracking).expect("string scope");
+        let Some(source) = reads.clone() else {
+            eprintln!("native tracking authority unavailable");
+            return std::process::ExitCode::FAILURE;
+        };
+        let Some(runtime) = tracking.as_ref().filter(|r| r.routing().enabled).cloned() else {
+            eprintln!("W&B publisher is not configured");
+            return std::process::ExitCode::FAILURE;
+        };
+        return match tokio::task::spawn_blocking(move || {
+            ml_exp_server::tracking::repair(source, runtime, &scope)
+        })
+        .await
+        {
+            Ok(Ok(value)) => {
+                println!("{value}");
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(Err(error)) => {
+                eprintln!("{error}");
+                std::process::ExitCode::FAILURE
+            }
+            Err(_) => {
+                eprintln!("tracking repair unavailable");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     let listener = match tokio::net::TcpListener::bind(args.bind).await {
         Ok(listener) => listener,
         Err(_) => {

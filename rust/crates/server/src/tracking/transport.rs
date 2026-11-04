@@ -61,9 +61,32 @@ impl Sdk {
         let mut frame = Vec::with_capacity(bytes.len() + 4);
         frame.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
         frame.extend_from_slice(&bytes);
-        let deadline = Instant::now() + Duration::from_secs(90);
+        let deadline = Instant::now()
+            + Duration::from_secs(if request["operation"] == "shutdown" {
+                45
+            } else {
+                90
+            });
         framing::write_frame(&self.input, &frame, BOUND, deadline, cancelled)
             .map_err(|_| Error::Transport)?;
+        self.response(deadline, cancelled)
+    }
+    pub(super) fn shutdown(&mut self) -> Result<()> {
+        let flag = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(45);
+        let mut value = self.call(&serde_json::json!({"operation":"shutdown"}), &flag)?;
+        // Cancellation can leave one earlier response on the pipe. Drain that
+        // receipt, then wait for the one shutdown request; never send it twice.
+        if value["shutdown"] != true {
+            value = self.response(deadline, &flag)?;
+        }
+        if value["shutdown"] == true {
+            Ok(())
+        } else {
+            Err(Error::Transport)
+        }
+    }
+    fn response(&mut self, deadline: Instant, cancelled: &AtomicBool) -> Result<Value> {
         let frame = framing::read_prefix(&self.output, BOUND, deadline, cancelled)
             .map_err(|_| Error::Transport)?;
         let value =

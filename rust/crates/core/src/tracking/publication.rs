@@ -43,8 +43,9 @@ pub struct RemoteHistoryEvent {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteEvidence {
     pub history: Vec<RemoteHistoryEvent>,
-    /// W&B's zero-based `lastHistoryStep`; `None` means no usable value was
-    /// returned.  A value of -1 denotes an empty history.
+    /// Highest observed canonical sequence minus one. The SDK adapter must
+    /// translate physical W&B row positions; appended repairs can differ.
+    /// None is unavailable evidence; -1 denotes an empty history.
     pub last_history_step: Option<i64>,
     pub display_version: Option<i64>,
     pub display_through: Option<i64>,
@@ -177,6 +178,42 @@ fn reconcile(reason: &str) -> PublicationStatus {
     }
 }
 
+/// Select an explicitly requested repair of reserved holes below an already
+/// observed suffix. This never releases a reservation or confirms a cursor.
+pub fn missing_reserved(
+    state: &PublicationState,
+    remote: &RemoteEvidence,
+    events: &[HistoryEvent],
+    expected_event_id: Option<&str>,
+) -> Result<Vec<HistoryEvent>> {
+    validate_state(state)?;
+    let seen = remote_index(remote)?;
+    if state.confirmed > 0 && seen.get(&state.confirmed).map(String::as_str) != expected_event_id {
+        return Err(Error::Remote("confirmed identity"));
+    }
+    let maximum = remote
+        .last_history_step
+        .unwrap_or(-1)
+        .checked_add(1)
+        .ok_or(Error::Remote("last_history_step overflow"))?
+        .max(seen.keys().next_back().copied().unwrap_or(state.confirmed));
+    let mut missing = Vec::new();
+    for event in events {
+        validate_event(event)?;
+        if let Some(id) = seen.get(&event.sequence) {
+            if id != &event.event_id {
+                return Err(Error::Remote("event identity"));
+            }
+        } else if event.sequence > state.confirmed && event.sequence <= maximum {
+            if state.sent.get(&event.sequence) != Some(&event.event_id) {
+                return Err(Error::State("repair requires original reservation"));
+            }
+            missing.push(event.clone());
+        }
+    }
+    Ok(missing)
+}
+
 /// Reduce one publisher cycle to deterministic actions and a next state.
 ///
 /// `events` must be the exact local journal suffix after `state.confirmed`,
@@ -279,7 +316,9 @@ pub fn plan(
                     },
                 });
             }
-            Some(_) => {}
+            // Do not send a later event past an unacknowledged reservation.
+            // The SDK may still buffer that earlier write across this cycle.
+            Some(_) => break,
             None => {
                 next.sent.insert(event.sequence, event.event_id.clone());
                 actions.push(PublicationAction::EmitHistory {
@@ -598,5 +637,37 @@ mod tests {
             reduce(&PublicationState::default(), &remote, &[], None, false, 2),
             Err(Error::Remote("conflicting duplicate sequence"))
         ));
+    }
+
+    #[test]
+    fn pending_reservation_blocks_newer_writes_and_explicit_repair_requires_exact_ids() {
+        let state = PublicationState {
+            confirmed: 1,
+            sent: BTreeMap::from([(2, "e2".into()), (3, "e3".into())]),
+            ..Default::default()
+        };
+        let events = [event(2, "e2"), event(3, "e3"), event(4, "e4")];
+        let waiting = reduce(&state, &remote(&[(1, "e1")]), &events, Some("e1"), false, 3).unwrap();
+        assert!(waiting.actions.is_empty());
+        assert_eq!(waiting.state.sent, state.sent);
+        let gap = remote(&[(1, "e1"), (3, "e3")]);
+        assert_eq!(
+            missing_reserved(&state, &gap, &events, Some("e1")).unwrap(),
+            vec![event(2, "e2")]
+        );
+        assert!(
+            missing_reserved(
+                &state,
+                &remote(&[(1, "e1"), (3, "wrong")]),
+                &events,
+                Some("e1")
+            )
+            .is_err()
+        );
+        let unreserved = PublicationState {
+            sent: BTreeMap::new(),
+            ..state
+        };
+        assert!(missing_reserved(&unreserved, &gap, &events, Some("e1")).is_err());
     }
 }
