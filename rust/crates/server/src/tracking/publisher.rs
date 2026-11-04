@@ -13,7 +13,7 @@ use ml_exp_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -21,6 +21,16 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+mod repair;
+pub use repair::repair;
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryRepair {
+    events: BTreeMap<i64, String>,
+    attempted: bool,
+    remote_confirmed: bool,
+}
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +41,8 @@ struct Saved {
     ever_opened: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     display_contract: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    history_repair: Option<HistoryRepair>,
 }
 impl Saved {
     fn display_version(&self, confirmed: i64, observed_display: i64) -> Result<i64> {
@@ -177,8 +189,11 @@ impl Publisher {
                             outcome.is_ok(),
                             false,
                         );
-                        if let Err(error) = outcome {
-                            record_failure(&store, &scope, &mut sdk, &error);
+                        match outcome {
+                            Err(error) if !flag.load(Ordering::Relaxed) => {
+                                record_failure(&store, &scope, &mut sdk, &error);
+                            }
+                            _ => {}
                         }
                     }
                     let Ok(guard) = sleep.0.lock() else {
@@ -188,6 +203,9 @@ impl Publisher {
                         break;
                     }
                     let _ = sleep.1.wait_timeout(guard, Duration::from_secs(1));
+                }
+                if let Some(sdk) = sdk.as_mut() {
+                    let _ = sdk.shutdown();
                 }
                 drop(sdk);
             })
@@ -494,6 +512,7 @@ fn publish_bound(
         });
     }
     job["operation"] = json!("apply");
+    job["physical_next_step"] = remote["physical_next_step"].clone();
     job["resume"] = json!("must");
     job["definitions"] = json!(
         tracking::definition_specs(&display)

@@ -68,7 +68,12 @@ class Handle:
     def lastHistoryStep(self):
         return max((row["_step"] for row in read()["runs"][self.id]["history"]), default=-1)
 
-    def scan_history(self, keys, min_step, max_step, **kwargs):
+    @property
+    def step(self):
+        run = read()["runs"][self.id]
+        return max((row["_step"] for row in run['history'] + run['pending']), default=-1) + 1
+
+    def scan_history(self, keys, min_step, max_step=None, **kwargs):
         data = read()
         run = data["runs"][self.id]
         if not data["hidden"]:
@@ -76,7 +81,7 @@ class Handle:
             run["pending"] = []
             write(data)
         return [{key: row[key] for key in keys} for row in run["history"]
-                if min_step <= row["_step"] < max_step]
+                if min_step <= row["_step"] and (max_step is None or row["_step"] < max_step)]
 
     def define_metric(self, name, **options):
         data = read()
@@ -92,6 +97,9 @@ class Handle:
 
     def finish(self, exit_code):
         data = read()
+        run = data["runs"][self.id]
+        run["history"].extend(run["pending"])
+        run["pending"] = []
         data["runs"][self.id]["state"] = "finished" if exit_code == 0 else "failed"
         data["finishes"] += 1
         write(data)

@@ -4,6 +4,171 @@ use serde_json::Value;
 use std::{fs, os::unix::fs::PermissionsExt};
 
 #[test]
+fn explicit_gap_repair_appends_original_ids_and_normal_publication_resumes_without_duplicates() {
+    exercise_gap_repair(false);
+}
+
+#[test]
+fn uncertain_repair_is_observed_without_resending_or_clearing_original_reservations() {
+    exercise_gap_repair(true);
+}
+
+fn exercise_gap_repair(uncertain: bool) {
+    struct FixtureSource(std::path::PathBuf);
+    impl Source for FixtureSource {
+        fn publisher_leader(&self) -> Result<std::fs::File> {
+            fs::File::create(self.0.join("leader")).map_err(|_| Error::Storage)
+        }
+        fn validate_publisher_leader(&self, _: &std::fs::File) -> Result<()> {
+            Ok(())
+        }
+        fn publisher_store(&self) -> Result<Store> {
+            Store::open(&self.0, "0123456789abcdef0123456789abcdef").map_err(|_| Error::Storage)
+        }
+        fn tracking_journal(&self, _: &str, _: &str) -> Result<Store> {
+            self.publisher_store()
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let cloud = root.path().join("cloud.json");
+    fs::write(
+        &cloud,
+        r#"{"hidden":false,"runs":{},"inits":0,"logs":0,"finishes":0}"#,
+    )
+    .unwrap();
+    fs::write(root.path().join("fake_sdk.py"), include_str!("fake_sdk.py")).unwrap();
+    let wrapper = root.path().join("python");
+    fs::write(&wrapper,format!("#!/usr/bin/python3\nimport sys,os\nsys.path.insert(0,{root:?})\nos.environ['TEST_CLOUD']={cloud:?}\nimport fake_sdk\nsys.modules['wandb']=fake_sdk\nexec(compile(sys.argv[4],'<sdk>','exec'),{{'__name__':'__main__'}})\n",root=root.path().to_str().unwrap(),cloud=cloud.to_str().unwrap())).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+    let runtime = Runtime {
+        config: super::super::Config {
+            schema_version: 1,
+            python: wrapper,
+            api_key_file: root.path().join("unused"),
+            entity: Some("fixture".into()),
+            project: None,
+            enabled: true,
+            historical_handoff: None,
+        },
+        key: "never-print".into(),
+        routing: Default::default(),
+        diagnostic: None,
+    };
+    let source = Arc::new(FixtureSource(root.path().to_owned()));
+    let store = source.publisher_store().unwrap();
+    let guard = store.guard("demo", "train").unwrap();
+    let route = json!({"enabled":true,"entity":"fixture","project":"science"});
+    store
+        .bind(&guard, &route, &json!({"ml_expd":{"run_id":"train"}}))
+        .unwrap();
+    let scope = store.scope(&guard, "attempt-001").unwrap();
+    let metric = |step| Event {
+        event_id: format!("m{step}"),
+        payload: normalized_metric(
+            &json!({"name":"loss","unit":"nats/token","step":step,"value":1.0/(step as f64)}),
+            &json!({}),
+        )
+        .unwrap(),
+    };
+    store
+        .append(
+            &guard,
+            &scope,
+            &[metric(1), metric(2), metric(3), metric(4)],
+        )
+        .unwrap();
+    let flag = AtomicBool::new(false);
+    let mut sdk = None;
+    publish_bound(&store, &runtime, &mut sdk, &scope, &flag, false, &|| Ok(())).unwrap();
+    let status = store.scope_status(&guard, &scope).unwrap().unwrap();
+    let id = status["wandb_id"].as_str().unwrap().to_owned();
+    sdk.as_mut().unwrap().shutdown().unwrap();
+    let mut data: Value = serde_json::from_slice(&fs::read(&cloud).unwrap()).unwrap();
+    assert_eq!(data["runs"][&id]["pending"], json!([]));
+    assert_eq!(data["runs"][&id]["history"].as_array().unwrap().len(), 4);
+    let rows = data["runs"][&id]["history"].take();
+    data["runs"][&id]["history"] = json!(
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["ml_expd/sequence"] != 2)
+            .collect::<Vec<_>>()
+    );
+    fs::write(&cloud, serde_json::to_vec(&data).unwrap()).unwrap();
+    drop(sdk.take());
+    let original = store.publication_state(&guard, &scope).unwrap().unwrap();
+    if uncertain {
+        let mut reserved = original.clone();
+        reserved["history_repair"] =
+            json!({"events":{"2":"m2"},"attempted":true,"remote_confirmed":false});
+        store
+            .save_publication_state(
+                &guard,
+                &scope,
+                &reserved,
+                "REPAIR_ACK_PENDING",
+                None,
+                "fixture",
+            )
+            .unwrap();
+    }
+    drop(guard);
+    let result = repair(source.clone(), runtime.clone(), &scope).unwrap();
+    if uncertain {
+        assert_eq!(result["status"], "REPAIR_ACK_PENDING");
+        assert_eq!(result["writes"], 0);
+        let guard = store.guard("demo", "train").unwrap();
+        assert_eq!(
+            store.publication_state(&guard, &scope).unwrap().unwrap()["state"],
+            original["state"]
+        );
+        let mut data: Value = serde_json::from_slice(&fs::read(&cloud).unwrap()).unwrap();
+        assert_eq!(data["logs"], 4, "an uncertain repair cannot be sent again");
+        // Model the delayed remote visibility of the already-attempted append.
+        let mut late = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["ml_expd/sequence"] == 2)
+            .unwrap()
+            .clone();
+        late["_step"] = json!(4);
+        data["runs"][&id]["history"]
+            .as_array_mut()
+            .unwrap()
+            .push(late);
+        fs::write(&cloud, serde_json::to_vec(&data).unwrap()).unwrap();
+    } else {
+        assert_eq!(result["status"], "REPAIRED");
+        assert_eq!(result["appended"], 1);
+        assert_eq!(result["confirmed"], 4);
+    }
+    let repeated = repair(source.clone(), runtime.clone(), &scope).unwrap();
+    assert_eq!(repeated["writes"], 0);
+    let guard = store.guard("demo", "train").unwrap();
+    store.append(&guard, &scope, &[metric(5)]).unwrap();
+    publish_bound(&store, &runtime, &mut sdk, &scope, &flag, false, &|| Ok(())).unwrap();
+    publish_bound(&store, &runtime, &mut sdk, &scope, &flag, false, &|| Ok(())).unwrap();
+    assert_eq!(
+        store.scope_status(&guard, &scope).unwrap().unwrap()["confirmed"],
+        5
+    );
+    sdk.as_mut().unwrap().shutdown().unwrap();
+    let data: Value = serde_json::from_slice(&fs::read(&cloud).unwrap()).unwrap();
+    let rows = data["runs"][&id]["history"].as_array().unwrap();
+    assert_eq!(rows.len(), 5);
+    let ids: BTreeSet<_> = rows
+        .iter()
+        .map(|r| r["ml_expd/event_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 5);
+    let repaired = rows.iter().find(|r| r["ml_expd/sequence"] == 2).unwrap();
+    assert_eq!(repaired["_step"], 4);
+    assert_eq!(repaired["axes/loss/step"], 2);
+    assert_eq!(store.events(&guard, &scope, 0, 128).unwrap().len(), 5);
+}
+
+#[test]
 fn uncertain_history_is_observed_without_opening_or_recreating_remote_runs() {
     let root = tempfile::tempdir().unwrap();
     let cloud = root.path().join("cloud.json");

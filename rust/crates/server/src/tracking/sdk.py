@@ -4,7 +4,6 @@ Private bounded frames use stdin/stdout; credentials never enter argv/logs.
 No imports from the Python server or user experiment are needed.
 """
 import contextlib
-import itertools
 import json
 import struct
 import sys
@@ -80,10 +79,17 @@ def session(sdk, job):
 
 
 def dispatch(job):
+    operation = job["operation"]
+    if operation == "shutdown":
+        for identity in list(sessions):
+            handle, directory = sessions[identity]
+            request('WRITE', lambda: handle.finish(exit_code=0))
+            del sessions[identity]
+            directory.cleanup()
+        return {"shutdown": True}
     import wandb as sdk
     api = sdk.Api(api_key=job["api_key"],
                   overrides={"base_url": "https://api.wandb.ai"}, timeout=15)
-    operation = job["operation"]
     if operation == "default_entity":
         return {"entity": request('DEFAULT_ENTITY', lambda: api.default_entity)}
     if operation == "observe":
@@ -102,37 +108,47 @@ def dispatch(job):
         if (remote.id, remote.entity, remote.project) != (
                 identity, route["entity"], route["project"]):
             raise ValueError("remote identity differs")
-        history = []
-        rows = request('HISTORY_READ', lambda: list(itertools.islice(remote.scan_history(
-                keys=["ml_expd/sequence", "ml_expd/event_id"],
-                min_step=max(0, job["confirmed"] - 1),
-                max_step=job["through"], page_size=128, use_cache=False), 258)))
-        for row in rows:
-            if len(history) >= 257:
-                raise ValueError("history bound")
-            sequence = row["ml_expd/sequence"]
-            if type(sequence) is not int:
-                raise ValueError("history sequence")
-            history.append({"sequence": sequence,
-                            "event_id": row["ml_expd/event_id"]})
+        def history_rows():
+            history, maximum = [], 0
+            # Physical W&B rows may contain an appended repair of an earlier
+            # sequence. Training axes and canonical identity are independent.
+            for row in remote.scan_history(
+                    keys=["ml_expd/sequence", "ml_expd/event_id"],
+                    min_step=max(0, job["confirmed"] - 1),
+                    page_size=128, use_cache=False):
+                sequence = row["ml_expd/sequence"]
+                if type(sequence) is not int:
+                    raise ValueError("history sequence")
+                maximum = max(maximum, sequence)
+                if sequence < max(1, job["confirmed"]) or sequence > job["through"]:
+                    continue
+                if len(history) >= 257:
+                    raise ValueError("history bound")
+                history.append({"sequence": sequence,
+                                "event_id": row["ml_expd/event_id"]})
+            return history, maximum
+        history, maximum = request('HISTORY_READ', history_rows)
         summary_keys = list(remote.summary.keys())
         if len(summary_keys) > 8192:
             raise ValueError("summary bound")
         return {"wandb_id": identity, "route": route, "state": remote.state,
                 "config": remote.config.get("ml_expd"),
-                "summary_keys": summary_keys, "evidence": {
+                "summary_keys": summary_keys,
+                "physical_next_step": max(0, (remote.lastHistoryStep if remote.lastHistoryStep is not None else -1) + 1), "evidence": {
                     "history": history,
-                    "last_history_step": remote.lastHistoryStep,
+                    "last_history_step": maximum - 1,
                     "display_version": remote.summary.get("ml_expd/display_version"),
                     "display_through": remote.summary.get("ml_expd/display_through")}}
     if operation == "apply":
         handle = session(sdk, job)
+        step = max(job.get("physical_next_step", 0), handle.step)
         for definition in job["definitions"]:
             handle.define_metric(definition["name"], **definition["options"])
         for effect in job["effects"]:
             if effect["operation"] == "history":
-                request('WRITE', lambda: handle.log(effect["record"], step=effect["sequence"] - 1,
+                request('WRITE', lambda: handle.log(effect["record"], step=step,
                            commit=True))
+                step += 1
             elif effect["operation"] == "display":
                 for key in effect["patch"]["delete"]:
                     if key in handle.summary:
