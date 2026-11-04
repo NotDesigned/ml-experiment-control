@@ -141,7 +141,7 @@ impl Outbox {
             .map_err(|_| Error::evidence())?;
         file.try_lock_exclusive().map_err(|_| Error {
             code: "CLOUD_EFFECT_BUSY".into(),
-            http_status: None,
+            http_status: Some(503),
             uncertain: false,
         })?;
         let guard = Guard { outbox: self, file };

@@ -422,6 +422,36 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         client.get("/api/runs/demo/train").unwrap()["native_submission"]["status"],
         "AUTHORIZED"
     );
+    // A provider observation can hold the outbox lock across a slow GET. A
+    // concurrent cached read must report temporary contention, not corrupt
+    // frozen evidence, and cannot dispatch or change the original Action.
+    let effects_lock =
+        fs::File::open(registry.join("cloud-submissions/effects/.cloud-effects.lock")).unwrap();
+    fs2::FileExt::lock_exclusive(&effects_lock).unwrap();
+    let http = reqwest::blocking::Client::new();
+    for path in [
+        format!("/api/submissions/{action}"),
+        "/api/runs/demo/train".into(),
+    ] {
+        let response = http
+            .get(format!("http://{address}{path}"))
+            .bearer_auth(token)
+            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
+            .send()
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 503);
+        let error: Value = serde_json::from_slice(&response.bytes().unwrap()).unwrap();
+        assert_eq!(error["code"], "CLOUD_RUN_BUSY", "{error}");
+    }
+    fs2::FileExt::unlock(&effects_lock).unwrap();
+    assert_eq!(
+        client.get(&format!("/api/submissions/{action}")).unwrap()["status"],
+        "AUTHORIZED"
+    );
+    assert_eq!(
+        fs::read(runs.join("train/manifest.json")).unwrap(),
+        original_run
+    );
     let initial_status = ml_exp_client::status::observe(
         &client,
         &health,

@@ -3,11 +3,19 @@
 Default implementation: native Rust on `main`. Python reference baseline:
 `e725faec689fb8395e692e27d00a8896fa7fe5a5` (1.5.1). Production runs the native
 service on Tokyo; Python API/builder services on Seoul are retired. The native
-workspace release is `native-v0.1.16`. Direct HTTPS uses
+workspace release is `native-v0.1.19`. Direct HTTPS uses
 `https://ml-exp.adscn.dev`; the old API domain and temporary port have been removed.
 Historical metadata is attached read-only,
 with separate native write namespaces. Slurm connects through the direct
 L40S-to-Tokyo gateway.
+
+Run status and Submission GETs read retained evidence; they do not contact the
+provider. The optional background observer and explicit `run reconcile` refresh
+the original cloud job. A concurrent cloud observation may temporarily return
+HTTP 503 `CLOUD_RUN_BUSY`: repeat the same query, without submitting another job.
+Lock contention is not a frozen-identity failure. Scheduler observation times
+remain unknown where the retained record has no timestamp; PAI image-pull events
+are not yet included in the cached Run summary.
 
 `GET /api/actions/policy` now exposes native permission flags for older client
 connection checks. It neither enables old Action mutation routes nor probes a
