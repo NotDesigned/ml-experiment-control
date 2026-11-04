@@ -421,9 +421,9 @@ pub fn copy_result_file(
     Ok(record.clone())
 }
 
-pub fn estimate(root: &Directory) -> io::Result<u64> {
-    let mut paths = Vec::new();
-    walk(root, "", &mut paths, &mut 0, Kind::Results)?;
+pub fn estimate(root: &Directory, policy: &Policy) -> io::Result<u64> {
+    policy.validate().map_err(|_| invalid())?;
+    let paths = selected_paths(root, policy, Kind::Results)?;
     let mut bytes = 16u64 * 1024 * 1024;
     for path in paths {
         let (_, file) = open(root, &path, Kind::Results)?;
@@ -571,15 +571,15 @@ mod tests {
         file.write_all(&[42]).unwrap();
         assert!(verify(&mut file, &receipt).is_err());
         assert!(root.path().join("checkpoints/private").is_symlink());
+        let policy = Policy {
+            required_files: vec!["checkpoints/state.pt".into()],
+        };
+        assert!(
+            estimate(&directory, &policy).unwrap()
+                > estimate(&directory, &Policy::default()).unwrap()
+        );
         let mut selected = tempfile::tempfile().unwrap();
-        let (sha, bytes, files) = pack(
-            &directory,
-            &mut selected,
-            &Policy {
-                required_files: vec!["checkpoints/state.pt".into()],
-            },
-        )
-        .unwrap();
+        let (sha, bytes, files) = pack(&directory, &mut selected, &policy).unwrap();
         assert_eq!(files.len(), 3);
         assert!(files.iter().any(|f| f.path == "checkpoints/state.pt"));
         let selected_receipt = self::receipt(sha, bytes, files);

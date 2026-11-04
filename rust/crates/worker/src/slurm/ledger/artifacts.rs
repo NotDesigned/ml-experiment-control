@@ -103,7 +103,7 @@ impl Helper {
                 } else {
                     Policy::default()
                 };
-                let required = ml_exp_io::artifacts::estimate(&payload)?;
+                let required = ml_exp_io::artifacts::estimate(&payload, &policy)?;
                 let capacity = directory.capacity()?;
                 if capacity.insufficient(required, 2) {
                     return Err(Error::Storage(std::io::Error::other(
