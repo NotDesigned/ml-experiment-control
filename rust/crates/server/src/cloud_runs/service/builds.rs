@@ -96,6 +96,43 @@ fn name(id: &str) -> cloud::Result<String> {
     }
     Ok(format!("{id}.runtime.json"))
 }
+fn retry_proven(proof: &Value, id: &str) -> bool {
+    let observed = proof["observed_at"].as_str().and_then(|value| {
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+    });
+    proof.as_object().is_some_and(|fields| fields.len() == 6)
+        && proof["source"] == "pai-dsw-reconcile.v1"
+        && proof["bundle_id"].as_str() == id.strip_prefix("runtime.")
+        && proof["registry_manifest_status"].as_u64() == Some(404)
+        && proof["active_builders"].as_u64() == Some(0)
+        && proof["leases_clear"] == true
+        && observed.is_some_and(|at| {
+            let age = time::OffsetDateTime::now_utc() - at;
+            age >= time::Duration::ZERO && age <= time::Duration::seconds(60)
+        })
+}
+#[test]
+fn only_fresh_exact_deleted_dsw_proof_grants_runtime_retry() {
+    let id = format!("runtime.{}", "a".repeat(64));
+    let proof = json!({"source":"pai-dsw-reconcile.v1","bundle_id":"a".repeat(64),
+        "observed_at":time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).unwrap(),
+        "registry_manifest_status":404,"active_builders":0,"leases_clear":true});
+    assert!(retry_proven(&proof, &id));
+    for (key, value) in [
+        ("bundle_id", json!("b".repeat(64))),
+        ("registry_manifest_status", json!(200)),
+        ("active_builders", json!(1)),
+        ("leases_clear", json!(false)),
+        ("observed_at", json!("2020-01-01T00:00:00Z")),
+        ("observed_at", json!("2099-01-01T00:00:00Z")),
+        ("extra", json!(true)),
+    ] {
+        let mut changed = proof.clone();
+        changed[key] = value;
+        assert!(!retry_proven(&changed, &id));
+    }
+    assert!(!retry_proven(&Value::Null, &id));
+}
 impl Service {
     pub fn has_builds(&self) -> bool {
         self.builds.is_some()
@@ -279,9 +316,49 @@ impl Service {
             record.diagnostic = None;
         } else {
             // Diagnostics have no commands, URLs, credentials or raw response.
-            record.diagnostic = Some(
-                json!({"http_status":status,"code":result["code"].as_str().filter(|s|s.len()<=100&&s.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()||b==b'_')).unwrap_or("NATIVE_BUILD_UNRESOLVED"),"retry_safe":false}),
-            );
+            let missing = result["code"] == "BUILD_RECEIPT_MISSING";
+            let retry = missing && retry_proven(&result["retry_proof"], &record.runtime_id);
+            let mut diagnostic = json!({"http_status":status,"code":result["code"].as_str().filter(|s|s.len()<=100&&s.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()||b==b'_')).unwrap_or("NATIVE_BUILD_UNRESOLVED"),"retry_safe":retry});
+            let mut details = serde_json::Map::new();
+            for key in ["error_class", "phase", "reason", "instance_id"] {
+                if let Some(value) = result["details"][key].as_str().filter(|s| {
+                    !s.is_empty()
+                        && s.len() <= 100
+                        && s.bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                }) {
+                    details.insert(key.into(), json!(value));
+                }
+            }
+            for key in [
+                "log_offset",
+                "poll_failures",
+                "timeout_seconds",
+                "exit_code",
+            ] {
+                if let Some(value) = result["details"][key].as_u64() {
+                    details.insert(key.into(), json!(value));
+                }
+            }
+            if !details.is_empty() {
+                diagnostic["details"] = Value::Object(details);
+            }
+            if missing {
+                if let Some(previous) = &record.diagnostic {
+                    if previous["code"] == "BUILD_RECEIPT_MISSING" {
+                        if let Some(original) = previous.get("build_failure") {
+                            diagnostic["build_failure"] = original.clone();
+                        }
+                    } else if previous["code"] != "BUILD_EXECUTING" {
+                        diagnostic["build_failure"] = previous.clone();
+                    }
+                }
+            }
+            if retry {
+                record.started = false;
+                diagnostic["retry_proof"] = result["retry_proof"].clone();
+            }
+            record.diagnostic = Some(diagnostic);
         }
         self.slots
             .replace_regular(OsStr::new(&name(&record.runtime_id)?), &encode(record)?)
@@ -378,9 +455,15 @@ impl Service {
             return Ok(self.build_view(&record));
         }
         if record.runtime.is_none() && record.started {
-            let (status, value) = self.builder_call(&record, "get")?;
+            let observed = encode(&record)?;
+            let (status, value) = self.builder_call(&record, "reconcile")?;
             let lock = self.lock()?;
             record = self.build_record(project, id)?;
+            if encode(&record)? != observed
+                || self.active_builds.lock().is_ok_and(|s| s.contains(id))
+            {
+                return Ok(self.build_view(&record));
+            }
             self.accept_build(&mut record, status, value)?;
             lock.validate()?;
         }

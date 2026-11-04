@@ -778,6 +778,67 @@ fn check_builder_dispatch_evidence(
         .unwrap();
     assert_eq!(value["status"], "RECONCILE_REQUIRED");
     assert_eq!(value["retry_safe"], false);
+    fs::remove_file(&socket).unwrap();
+    let listener = UnixListener::bind(&socket).unwrap();
+    let proof = json!({"source":"pai-dsw-reconcile.v1","bundle_id":lost_id.strip_prefix("runtime.").unwrap(),
+        "observed_at":time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).unwrap(),
+        "registry_manifest_status":404,"active_builders":0,"leases_clear":true});
+    let replies = vec![
+        json!({"code":"PAI_DSW_BUILD_UNCERTAIN","details":{"phase":"BUILDING_ON_DSW","reason":"DSW_OBSERVATION_UNAVAILABLE","log_offset":40330,"password":"never-exposed"}}),
+        json!({"code":"BUILD_RECEIPT_MISSING"}),
+        json!({"code":"BUILD_RECEIPT_MISSING","retry_proof":{}}),
+        json!({"code":"BUILD_RECEIPT_MISSING","retry_proof":proof}),
+    ];
+    let recovery = std::thread::spawn(move || {
+        for reply in replies {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.strip_prefix("Content-Length: ") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let request: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(request["operation"], "native-reconcile");
+            let reply = reply.to_string();
+            write!(
+                reader.get_mut(),
+                "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\n\r\n{}",
+                reply.len(),
+                reply
+            )
+            .unwrap();
+        }
+    });
+    let failed = service.reconcile_runtime("demo", lost_id).unwrap();
+    assert_eq!(failed["build_error"]["details"]["log_offset"], 40330);
+    assert!(failed["build_error"]["details"].get("password").is_none());
+    for _ in 0..2 {
+        let missing = service.reconcile_runtime("demo", lost_id).unwrap();
+        assert_eq!(missing["retry_safe"], false);
+        assert_eq!(
+            missing["build_error"]["build_failure"]["code"],
+            "PAI_DSW_BUILD_UNCERTAIN"
+        );
+    }
+    let ready = service.reconcile_runtime("demo", lost_id).unwrap();
+    assert_eq!(ready["runtime_id"], lost_id);
+    assert_eq!(ready["status"], "PREPARED");
+    assert_eq!(ready["retry_safe"], true);
+    assert_eq!(ready["scheduler_submitted"], false);
+    assert_eq!(
+        ready["build_error"]["build_failure"]["code"],
+        "PAI_DSW_BUILD_UNCERTAIN"
+    );
+    recovery.join().unwrap();
 }
 
 fn check_materializer_diagnostics(

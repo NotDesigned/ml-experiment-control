@@ -107,27 +107,53 @@ class DswPublisher:
                 "subprocess.Popen(['python3',str(root/'worker.py'),str(root)], "
                 "stdin=subprocess.DEVNULL,stdout=(root/'build.log').open('wb'), "
                 "stderr=subprocess.STDOUT,start_new_session=True)")
-        self.cli(["dsw", "instance", "exec", self.instance, "--code", code], private, timeout=45)
         deadline, offset = time.monotonic() + self.timeout, 0
+        failures = 0
+        try:
+            self.cli(["dsw", "instance", "exec", self.instance, "--code", code], private, timeout=45)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            # The start may have reached DSW. Observe its durable state instead
+            # of replaying Popen or deleting a possibly running build.
+            self.phase("WAITING_DSW_OBSERVATION", "Start acknowledgement unavailable; observing the same CPU build")
         while True:
             code = ("from pathlib import Path; import json; root=Path(" + repr(remote) + "); "
                     "p=root/'build.log'; f=p.open('rb'); f.seek(" + str(offset) + "); chunk=f.read(65536); "
                     "offset=f.tell(); f.close(); print(chunk.decode('utf-8',errors='replace'),end=''); "
                     "s=root/'status.json'; state=json.loads(s.read_text()) if s.exists() else {'status':'RUNNING'}; "
                     "state['log_offset']=offset; print('\\nML_EXPD_DSW_STATUS_JSON='+json.dumps(state))")
-            output = self.cli(["dsw", "instance", "exec", self.instance, "--code", code], private, timeout=45)
-            lines = [line.removeprefix("ML_EXPD_DSW_STATUS_JSON=") for line in output.splitlines()
-                     if line.startswith("ML_EXPD_DSW_STATUS_JSON=")]
-            if len(lines) != 1:
-                raise ValueError("DSW durable build status is unavailable")
-            state = json.loads(lines[0])
-            offset = state["log_offset"]
-            if type(offset) is not int or offset < 0:
-                raise ValueError("DSW build log position is invalid")
+            try:
+                output = self.cli(["dsw", "instance", "exec", self.instance, "--code", code], private, timeout=45)
+                lines = [line.removeprefix("ML_EXPD_DSW_STATUS_JSON=") for line in output.splitlines()
+                         if line.startswith("ML_EXPD_DSW_STATUS_JSON=")]
+                if len(lines) != 1:
+                    raise ValueError("DSW durable build status is unavailable")
+                state = json.loads(lines[0])
+                if not isinstance(state, dict):
+                    raise ValueError("DSW durable build status is not an object")
+                position = state["log_offset"]
+                if type(position) is not int or position < offset or state.get("status") not in {"RUNNING", "SUCCEEDED", "FAILED"}:
+                    raise ValueError("DSW build status or log position is invalid")
+                offset = position
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+                failures += 1
+                details = {"instance_id": self.instance, "phase": "BUILDING_ON_DSW",
+                           "reason": "DSW_OBSERVATION_UNAVAILABLE", "error_class": type(error).__name__,
+                           "log_offset": offset, "poll_failures": failures, "timeout_seconds": self.timeout,
+                           "publication_uncertain": True, "scheduler_submitted": False}
+                if time.monotonic() >= deadline:
+                    raise BuildTransportError("PAI_DSW_BUILD_TIMEOUT", details) from None
+                self.phase("WAITING_DSW_OBSERVATION", "Build status unavailable; retrying observation of the same CPU build")
+                self.log_output("DSW observation retry " + str(failures) + ": " + type(error).__name__)
+                time.sleep(3)
+                continue
             if state["status"] == "SUCCEEDED":
                 return state["receipt"]
             if state["status"] != "RUNNING" or time.monotonic() > deadline:
-                raise ValueError("DSW build failed or exceeded configured build timeout; inspect bounded build logs")
+                raise BuildTransportError("PAI_DSW_BUILD_FAILED" if state["status"] == "FAILED" else "PAI_DSW_BUILD_TIMEOUT", {
+                    "instance_id": self.instance, "phase": "BUILDING_ON_DSW", "log_offset": offset,
+                    "reason": "DSW_WORKER_FAILED" if state["status"] == "FAILED" else "DSW_BUILD_BUDGET_EXHAUSTED",
+                    "error_class": state.get("error_class", "ValueError"), "poll_failures": failures,
+                    "timeout_seconds": self.timeout, "publication_uncertain": True, "scheduler_submitted": False})
             self.phase("BUILDING_ON_DSW", "Docker build running; observed " + str(offset) + " log bytes")
             time.sleep(3)
 
@@ -324,11 +350,15 @@ class DswPublisher:
                     raise ValueError("independent registry manifest differs from DSW receipt")
                 self.record("PUBLICATION_VERIFIED", image=image, context_sha256=request["context_sha256"])
                 return image
-        except BuildTransportError:
+        except BuildTransportError as error:
+            self.record("BUILD_FAILED", build_diagnostic={"code": error.code, **error.details})
             raise
         except (PaiError, OSError, ValueError, subprocess.SubprocessError) as error:
-            raise BuildTransportError("PAI_DSW_BUILD_UNCERTAIN", {"error_class": type(error).__name__,
-                                      "publication_uncertain": True, "scheduler_submitted": False}) from None
+            details = {"instance_id": self.instance, "error_class": type(error).__name__,
+                       "publication_uncertain": True, "scheduler_submitted": False}
+            self.record("CREATE_INTENT" if self.instance is None else "BUILD_FAILED",
+                        build_diagnostic={"code": "PAI_DSW_BUILD_UNCERTAIN", **details})
+            raise BuildTransportError("PAI_DSW_BUILD_UNCERTAIN", details) from None
         finally:
             if self.instance is not None:
                 self.phase("STOPPING_DSW_BUILDER", "Stopping and deleting only this build's CPU DSW instance")

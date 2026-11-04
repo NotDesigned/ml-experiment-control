@@ -23,6 +23,53 @@ from ml_exp_server.projects.source_revisions import _tree_digest
 
 
 class NativeBridge(unittest.TestCase):
+    def test_dsw_empty_poll_and_lost_start_ack_do_not_restart_or_clean_the_builder(self):
+        from ml_exp_server.builds.pai_dsw import DswPublisher
+        from ml_exp_server.builds.image_build_context import BUILD_PROGRESS
+        for lost_start in (False, True):
+            with self.subTest(lost_start=lost_start), tempfile.TemporaryDirectory() as directory:
+                builder = DswPublisher.__new__(DswPublisher)
+                builder.timeout = 1200
+                builder.instance = 'dsw-owned'
+                calls = []
+                responses = iter(['', 'ML_EXPD_DSW_STATUS_JSON={"status":"RUNNING","log_offset":4}',
+                                  'ML_EXPD_DSW_STATUS_JSON={"status":"SUCCEEDED","log_offset":8,"receipt":{"ok":true}}'])
+                def cli(args, *_args, **_kwargs):
+                    calls.append(args[-1])
+                    if 'Popen' in args[-1]:
+                        if lost_start:
+                            raise subprocess.TimeoutExpired('owned-start', 45)
+                        return ''
+                    return next(responses)
+                builder.cli = cli
+                builder.log_output = lambda value: value
+                token = BUILD_PROGRESS.set(Path(directory) / 'progress.json')
+                try:
+                    with patch('ml_exp_server.builds.pai_dsw.time.sleep'):
+                        self.assertEqual(builder.build('/tmp/ml-expd-build-' + 'a' * 32, Path(directory)), {'ok': True})
+                finally:
+                    BUILD_PROGRESS.reset(token)
+                self.assertEqual(sum('Popen' in value for value in calls), 1)
+                self.assertEqual(len(calls), 4)
+
+    def test_native_reconcile_returns_fresh_retry_evidence_without_dispatch(self):
+        from ml_exp_server.builds.builder_client import BuildReceiptMissingError
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            request = {'operation': 'native-reconcile', 'runtime_id': 'runtime.' + 'a' * 64,
+                       'project': 'demo', 'source_id': 'source.' + 'b' * 64,
+                       'base_image': 'registry.example/python@sha256:' + 'c' * 64,
+                       'dockerfile': 'Dockerfile', 'worker_sha256': 'sha256:' + 'd' * 64, 'mirror': False}
+            frozen = {k:v for k,v in request.items() if k != 'operation'}
+            (root / ('a' * 64 + '.native-definition.json')).write_text(json.dumps(frozen))
+            proof = {'source': 'pai-dsw-reconcile.v1', 'bundle_id': 'a' * 64}
+            with patch.object(native_image, 'published_image', return_value=None), \
+                    patch('ml_exp_server.builds.build_recovery.publication_absence', return_value=proof) as observe:
+                with self.assertRaises(BuildReceiptMissingError) as error:
+                    native_image.request(SimpleNamespace(root=root,config={}), request)
+                self.assertEqual(error.exception.retry_proof, proof)
+                observe.assert_called_once()
+
     def test_buildkit_uses_local_engine_even_with_remote_docker_environment(self):
         from ml_exp_server.image_builder import ImageBuilder
         with tempfile.TemporaryDirectory() as directory:
