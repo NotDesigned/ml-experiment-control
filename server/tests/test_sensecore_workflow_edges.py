@@ -57,21 +57,27 @@ def test_custom_dockerfile_is_built_with_managed_source_and_immutable_receipt(tm
     logs = value.request({**request,"operation":"logs"}); assert logs["truncated"] and logs["lines"][-1] == "last build line"
 
 
-@pytest.mark.parametrize("case", ["ambiguous", "disabled", "archive", "wrong-base", "disallowed-other-base"])
-def test_builder_requires_opt_in_and_checks_all_external_bases(tmp_path, case):
+@pytest.mark.parametrize("case", ["ambiguous", "disabled", "archive", "wrong-base"])
+def test_builder_requires_opt_in_and_preserves_frozen_base(tmp_path, case):
     value, request, source = builder(tmp_path)
     if case == "ambiguous": request["requirements"] = "requirements.txt"
     if case == "disabled": value.config["allow_dockerfile_builds"] = False
     if case == "archive": value.config["publisher"] = "archive"
     if case == "wrong-base": request["base_image"] = BASE.replace("a"*64,"b"*64)
-    if case == "disallowed-other-base":
-        tree=source/"tree"; tree.chmod(0o700)
-        (tree/"Dockerfile").chmod(0o600); (tree/"Dockerfile").write_text("FROM other.example/base@sha256:"+"b"*64+" AS build\nFROM "+BASE+"\n")
-        digest=_tree_digest(tree); new_id="source."+digest[7:]; (source/"source.json").chmod(0o600)
-        (source/"source.json").write_text(json.dumps({"project":"demo","tree_digest":digest})); seal_tree(source)
-        source.chmod(0o700); source.rename(source.with_name(new_id)); source.with_name(new_id).chmod(0o500)
-        request["source_id"]=new_id; value.config["base_image_prefixes"]=["registry.example/"]
     with pytest.raises(ValueError): value.request(request)
+
+
+def test_builder_accepts_multistage_images_from_different_registries(tmp_path):
+    value, request, source = builder(tmp_path)
+    tree=source/"tree"; tree.chmod(0o700)
+    (tree/"Dockerfile").chmod(0o600)
+    (tree/"Dockerfile").write_text("FROM ghcr.io/astral-sh/uv@sha256:"+"b"*64+" AS uv\nFROM "+BASE+"\nCOPY --from=uv /uv /usr/local/bin/uv\n")
+    digest=_tree_digest(tree); new_id="source."+digest[7:]; (source/"source.json").chmod(0o600)
+    (source/"source.json").write_text(json.dumps({"project":"demo","tree_digest":digest})); seal_tree(source)
+    source.chmod(0o700); source.rename(source.with_name(new_id)); source.with_name(new_id).chmod(0o500)
+    request["source_id"]=new_id; value.config["base_image_prefixes"]=["unrelated.example/"]
+    value._publish_buildkit = lambda *args: "registry.example/runtime@sha256:" + "c" * 64
+    assert value.request(request)["source_id"] == new_id
 
 
 def test_command_log_is_thread_scoped_and_preserves_errors(tmp_path):

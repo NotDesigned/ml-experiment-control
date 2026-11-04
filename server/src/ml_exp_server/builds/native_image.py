@@ -131,10 +131,8 @@ def request(builder, value):
             or _tree_digest(tree, require_read_only=True) != expected):
         raise ValueError("native source tree changed")
     inspection = inspect_dockerfile(tree, value["dockerfile"])
-    prefixes = builder.config.get("base_image_prefixes", [])
-    if (inspection["base_images"][-1] != value["base_image"]
-            or prefixes and any(not any(image.startswith(p) for p in prefixes) for image in inspection["base_images"])):
-        raise ValueError("native Dockerfile base is outside policy")
+    if inspection["base_images"][-1] != value["base_image"]:
+        raise ValueError("native Dockerfile base differs from the frozen request")
     with (builder.root / (identifier + ".lock")).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if receipt.exists():
@@ -151,6 +149,13 @@ def request(builder, value):
         with tempfile.TemporaryDirectory(prefix="native-build-", dir=builder.root) as directory:
             context = Path(directory)
             shutil.copytree(tree, context, dirs_exist_ok=True, symlinks=False)
+            # copytree preserves the sealed source modes. Only our temporary
+            # control files need to be writable; the source stays unchanged.
+            context.chmod(0o700)
+            for filename in ("Dockerfile", ".dockerignore", "Dockerfile.dockerignore"):
+                control = context / filename
+                if control.exists():
+                    control.chmod(0o600)
             internal = context / INTERNAL
             internal.mkdir(mode=0o700)
             shutil.copytree(tree, internal / "source", symlinks=False)

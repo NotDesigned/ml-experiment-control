@@ -18,9 +18,75 @@ from unittest.mock import patch
 
 from ml_exp_server.builds import native_data, native_image, native_worker
 from ml_exp_server.data import registry_transport
+from ml_exp_server.dockerfile_build import inspect_dockerfile
+from ml_exp_server.projects.source_revisions import _tree_digest
 
 
 class NativeBridge(unittest.TestCase):
+    def test_multistage_registry_origins_are_unrestricted_but_frozen_base_is_checked(self):
+        for old_filter in [None, ["unrelated.example/"]]:
+            for wrong_base in [False, True]:
+                with self.subTest(old_filter=old_filter, wrong_base=wrong_base), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    tree = root / "sources/demo/pending/tree"
+                    tree.mkdir(parents=True)
+                    base = "docker.io/library/python@sha256:" + "2" * 64
+                    text = "FROM ghcr.io/astral-sh/uv@sha256:" + "3" * 64 + " AS uv\nFROM " + base + "\nCOPY --from=uv /uv /usr/local/bin/uv\n"
+                    (tree / "Dockerfile").write_text(text)
+                    digest = _tree_digest(tree)
+                    source_id = "source." + digest[7:]
+                    source = tree.parent.with_name(source_id)
+                    tree.parent.rename(source)
+                    (source / "source.json").write_text(json.dumps({"project": "demo", "tree_digest": digest}))
+                    for path in source.rglob("*"):
+                        path.chmod(0o555 if path.is_dir() else 0o444)
+                    source.chmod(0o555)
+                    worker = root / "worker"
+                    worker.write_bytes(b"owned fixture; never execute")
+                    config = {"native_worker_bin": str(worker), "native_source_root": str(root / "sources"),
+                              "allow_dockerfile_builds": True, "publisher": "buildkit", "repository": "registry.example/build"}
+                    if old_filter is not None:
+                        config["base_image_prefixes"] = old_filter
+                    calls = []
+                    def publish(tag, context):
+                        self.assertIn(text, (context / "Dockerfile").read_text())
+                        self.assertEqual((context / "ml-expd-build-internal/worker-rs").read_bytes(), worker.read_bytes())
+                        calls.append(tag)
+                        return "registry.example/build@sha256:" + "4" * 64
+                    builder = SimpleNamespace(root=root, config=config, _publish_buildkit=publish)
+                    value = {"operation": "native-build", "runtime_id": "runtime." + "1" * 64,
+                             "project": "demo", "source_id": source_id, "base_image": base if not wrong_base else "other.example/base@sha256:" + "5" * 64,
+                             "dockerfile": "Dockerfile", "worker_sha256": "sha256:" + hashlib.sha256(worker.read_bytes()).hexdigest(), "mirror": False}
+                    with patch.object(native_worker, "freeze_features", return_value=[]), \
+                            patch.object(subprocess, "run", side_effect=AssertionError("test must not contact a provider")):
+                        if wrong_base:
+                            with self.assertRaisesRegex(ValueError, "base differs from the frozen request"):
+                                native_image.request(builder, value)
+                            self.assertEqual(calls, [])
+                            self.assertFalse((root / ("1" * 64 + ".native-definition.json")).exists())
+                        else:
+                            result = native_image.request(builder, value)
+                            self.assertEqual(result["runtime"]["source_id"], source_id)
+                            self.assertEqual(native_image.request(builder, value), result)
+                            self.assertEqual(len(calls), 1)
+
+    def test_standard_dockerfile_instructions_and_literal_shift_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = "FROM docker.io/library/python@sha256:" + "1" * 64 + "\n"
+            for instruction in ["ADD https://example.org/data.tar /tmp/", "ONBUILD RUN echo child",
+                                "RUN echo 'literal << text'", 'RUN echo "literal << text"',
+                                r"RUN echo \<\<", 'RUN ["python", "-c", "print(1 << 2)"]',
+                                "# << in a comment", "RUN true # << in a shell comment"]:
+                with self.subTest(instruction=instruction):
+                    (root / "Dockerfile").write_text(base + instruction + "\n")
+                    self.assertEqual(inspect_dockerfile(root, "Dockerfile")["base_images"], [base[5:].strip()])
+            for instruction in ["RUN <<EOF\necho hello\nEOF", "RUN python <<'PY'\nprint('hello')\nPY", "COPY <<-EOF /tmp/file\nhello\nEOF"]:
+                with self.subTest(instruction=instruction):
+                    (root / "Dockerfile").write_text(base + instruction + "\n")
+                    with self.assertRaisesRegex(ValueError, "heredocs.*Dockerfile parser"):
+                        inspect_dockerfile(root, "Dockerfile")
+
     def test_data_publication_mirrors_exact_digest_and_reuses_receipt_without_copy(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -37,7 +103,7 @@ class NativeBridge(unittest.TestCase):
             value = {"operation": "native-data-get", "data_image_id": "data-image." + key,
                      "recipe": recipe, "download": {"project": "demo", "definition": recipe["definition"],
                         "target": {"backend_id": "sensecore-test"}, "source": {"kind": "dataset_parts"}}}
-            builder = SimpleNamespace(root=root, config={"repository": source, "native_worker_bin": str(worker),
+            builder = SimpleNamespace(root=root, config={"repository": source, "native_worker_bin": str(worker), "base_image_prefixes": ["unrelated.example/"],
                 "sensecore_mirror": {"source_repository": source, "target_repository": target}})
             (root / (key + ".native-data-definition.json")).write_text(json.dumps(recipe))
             calls = []

@@ -152,7 +152,7 @@ def test_ambiguous_build_definitions_fail(changes):
 
 
 @pytest.mark.parametrize("text", ["FROM python:latest", "FROM ${BASE}", "FROM scratch", "RUN echo no-base", "FROM x AS", "FROM --platform=linux/arm64 " + BASE,
-    "# syntax=docker/dockerfile:1\nFROM " + BASE, "FROM " + BASE + "\nRUN <<EOF\ntrue\nEOF", "FROM " + BASE + "\nADD https://remote/file /tmp", "FROM " + BASE + "\nONBUILD RUN true", "FROM " + BASE + "\nCOPY --from=remote:latest /x /x"])
+    "# syntax=docker/dockerfile:1\nFROM " + BASE, "FROM " + BASE + "\nRUN <<EOF\ntrue\nEOF", "FROM " + BASE + "\nCOPY --from=remote:latest /x /x"])
 def test_dynamic_or_unpinned_dockerfiles_fail_before_build(tmp_path, text):
     (tmp_path / "Dockerfile").write_text(text)
     with pytest.raises(ValueError):
