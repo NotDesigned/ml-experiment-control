@@ -224,6 +224,8 @@ def test_failed_or_uncertain_build_never_replays_and_cleans_known_instance(publi
             return original(args,*a,**kw)
         pub.cli=cli
     elif case=='manifest':monkeypatch.setattr(p,'digest',lambda raw:'sha256:'+'0'*64)
+    if case in ('receipt_missing', 'receipt_double', 'cli'):
+        moments=iter([0,0,601,602]);monkeypatch.setattr(p.time,'monotonic',lambda:next(moments,602))
     if case=='waiting':assert pub.publish(TAG,context)==IMAGE
     else:
         with pytest.raises(BuildTransportError) as exc:pub.publish(TAG,context)
@@ -310,12 +312,39 @@ def test_background_build_is_started_once_and_observed_without_replay(publisher,
         text='log line\nML_EXPD_DSW_STATUS_JSON='+json.dumps(state)
         return text+'\n'+text if case=='duplicate' else text
     pub.cli=cli
-    if case=='timeout':
+    if case not in ('running', 'failed'):
         moments=iter([0,601]);monkeypatch.setattr(p.time,'monotonic',lambda:next(moments))
     if case=='running':assert pub.build('/tmp/ml-expd-build-'+'a'*32,Path('/private'))=={'image':IMAGE}
     else:
         with pytest.raises(ValueError):pub.build('/tmp/ml-expd-build-'+'a'*32,Path('/private'))
     assert sum('Popen' in c[-1] for c in calls)==1
+
+
+def test_empty_and_failed_polls_preserve_the_same_live_build_until_a_receipt(publisher):
+    pub, context, api, _ = publisher
+    starts = []
+    responses = iter(['', p.subprocess.TimeoutExpired('owned-poll', 45),
+                      'ML_EXPD_DSW_STATUS_JSON={"status":"RUNNING","log_offset":40330}'])
+    def cli(args, private, **kwargs):
+        if 'Popen' in args[-1]:
+            starts.append(args)
+            return ''
+        if 'status.json' not in args[-1]:
+            return ''
+        assert not any(call[0] == 'StopInstance' for call in api.calls)
+        response = next(responses, None)
+        if isinstance(response, Exception):
+            raise response
+        if response is not None:
+            return response
+        spec = json.loads(next(pub.builder.root.glob('dsw-context-*/request.json')).read_text())
+        return 'ML_EXPD_DSW_STATUS_JSON=' + json.dumps({'status':'SUCCEEDED', 'log_offset':40330,
+            'receipt':{'image':IMAGE,'context_sha256':spec['context_sha256']}})
+    pub.cli = cli
+    assert pub.publish(TAG, context) == IMAGE
+    assert len(starts) == 1
+    assert [call[0] for call in api.calls].count('CreateInstance') == 1
+    assert api.calls[-1][0] == 'DeleteInstance'
 
 
 @pytest.mark.parametrize('case',['stopped','stopping','stop_wait','stop_timeout','startup_timeout','large_context'])
@@ -471,5 +500,5 @@ def test_twenty_minute_build_survives_old_limit_and_stops_at_configured_limit(pu
         return 'ML_EXPD_DSW_STATUS_JSON='+json.dumps({'status':'RUNNING','log_offset':1})
     pub.cli=cli;pub.instance='dsw-owned'
     moments=iter([0,601,1201]);monkeypatch.setattr(p.time,'monotonic',lambda:next(moments))
-    with pytest.raises(ValueError,match='configured build timeout'):pub.build('/tmp/owned',Path('/private'))
+    with pytest.raises(BuildTransportError,match='PAI_DSW_BUILD_TIMEOUT'):pub.build('/tmp/owned',Path('/private'))
     assert len(calls)==3  # One start and two observations, including after the old600s limit.

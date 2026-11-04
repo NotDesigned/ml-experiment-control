@@ -61,6 +61,20 @@ Query the original Runtime's progress, logs and reconciliation endpoint.
 DSW reconciliation checks the owned instance and published registry image;
 ACR reconciliation can accept a late completed image without triggering a
 second build. Missing receipts alone do not establish a failed publication.
+An empty or failed MCP status sample retries observation of the same CPU
+build within its configured budget. The start command is sent once; a lost
+start acknowledgement does not send it again. A confirmed worker failure or
+budget exhaustion triggers cleanup, with its phase, last log offset and error
+class retained in the build diagnostic.
+
+If the original CPU instance was deleted and no image was published, use
+`ml-exp env reconcile RUNTIME_ID --project PROJECT`. Reconciliation checks the
+original instance, instance name, registry and bundle lock without building.
+Confirmed absence changes that same Runtime to PREPARED with `retry_safe=true`;
+`ml-exp env execute RUNTIME_ID --project PROJECT --confirmation "BUILD RUNTIME_ID"`
+can then rebuild it, using the exact confirmation returned by the API. An active
+builder, uncertain create, failed observation, or pending ACR publication stays
+RECONCILE_REQUIRED. Missing receipts do not overwrite the original build error.
 Once the Runtime is READY, continue its original Preparation.
 
 ## PAI DSW and ACR fallback

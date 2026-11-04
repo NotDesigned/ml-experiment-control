@@ -76,7 +76,7 @@ def request(builder, value):
         return data_request(builder, value)
     allowed = {"operation", "runtime_id", "project", "source_id", "base_image", "dockerfile", "worker_sha256", "mirror"}
     if (set(value) != allowed or value["operation"] not in {
-            "native-build", "native-get", "native-logs", "native-progress"}
+            "native-build", "native-get", "native-reconcile", "native-logs", "native-progress"}
             or not re.fullmatch(r"runtime\.[0-9a-f]{64}", value["runtime_id"])
             or not PROJECT.fullmatch(value["project"])
             or not re.fullmatch(r"source\.[0-9a-f]{64}", value["source_id"])
@@ -110,12 +110,15 @@ def request(builder, value):
         return result
     # Either publisher can finish after a lost response. Observe the original
     # tag and recipe, without starting a DSW or sending another Git trigger.
-    if value["operation"] == "native-get":
+    if value["operation"] in {"native-get", "native-reconcile"}:
         if definition.exists():
             image = published_image(builder, "bundle-" + identifier, recipe_labels(value))
             if image:
                 return _finish(builder, value, image, frozen, receipt)
-        raise BuildReceiptMissingError("native image has not been published")
+        from .build_recovery import publication_absence
+        proof = (publication_absence(builder, identifier)
+                 if value["operation"] == "native-reconcile" and definition.exists() else None)
+        raise BuildReceiptMissingError("native image has not been published", retry_proof=proof)
     if not builder.config.get("allow_dockerfile_builds"):
         raise ValueError("native image builds are disabled")
     binary = Path(builder.config["native_worker_bin"])
