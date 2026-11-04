@@ -96,8 +96,8 @@ presentation is:
 | `ml_expd/display_definitions_json` | Exact units, protocol, dataset, variant, checkpoint, counts and result-selection source |
 
 At least two distinct valid positions are needed for an automatically visible
-curve. A final-only value is not history. W&B's internal `_step` is the platform
-event sequence; scientific charts use their explicit step/epoch axes.
+curve. A final-only value is not history. W&B's internal `_step` is a physical publication position, independent of the
+canonical event sequence. Scientific charts use their explicit step/epoch axes.
 
 Explicit summaries take precedence. Without one, legacy latest-observation
 selection remains available; neither selects minimum loss or the best model.
@@ -179,3 +179,30 @@ publication binding, reuses it on repeats and does not alter Run/Attempt history
 It cannot recreate observations that were never saved. Operators should back up
 `project_registry_root/tracking/` with service state: it contains private settings
 and the canonical journal. Do not restore an old journal over active records.
+
+
+## Reserved history gaps (native 0.1.21+)
+
+Normal publication stops at an unacknowledged send and flushes SDK sessions on
+orderly API shutdown. An uncertain send is never automatically replayed.
+
+For a verified remote gap below later published events, an operator can stop the
+API and run the existing configuration with:
+
+```bash
+ml-expd-rs --config /private/server.json --repair-tracking PROJECT RUN ATTEMPT
+```
+
+The command takes the existing publisher leadership lock, compares two remote
+identity scans with original journal events and send reservations, then records
+one repair attempt before appending only those missing events to the original
+W&B Run. Physical rows advance; values, units, scientific axes and event IDs stay
+unchanged. Confirmation still requires matching remote history. Repeating an
+uncertain repair only observes; it does not send again or clear reservations.
+Restart the API to resume incremental publication. Existing W&B panels are not
+recreated. Keep the pre-repair event list and actual remote confirmation evidence.
+
+A saved repair adds `history_repair` to publication state. Older servers cannot
+read that field; after a repair use a forward fix rather than a program downgrade
+or a database restore. This operation does not restart training or recover
+records that are missing from the canonical journal.

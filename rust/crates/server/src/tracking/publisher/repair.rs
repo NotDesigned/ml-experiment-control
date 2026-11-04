@@ -127,7 +127,8 @@ pub fn repair(
             through: observed["evidence"]["last_history_step"]
                 .as_i64()
                 .ok_or(Error::Identity)?
-                + 1,
+                .saturating_add(1)
+                .min(through),
             observed: evidence
                 .history
                 .iter()

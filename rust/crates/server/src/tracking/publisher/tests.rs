@@ -5,6 +5,15 @@ use std::{fs, os::unix::fs::PermissionsExt};
 
 #[test]
 fn explicit_gap_repair_appends_original_ids_and_normal_publication_resumes_without_duplicates() {
+    exercise_gap_repair(false);
+}
+
+#[test]
+fn uncertain_repair_is_observed_without_resending_or_clearing_original_reservations() {
+    exercise_gap_repair(true);
+}
+
+fn exercise_gap_repair(uncertain: bool) {
     struct FixtureSource(std::path::PathBuf);
     impl Source for FixtureSource {
         fn publisher_leader(&self) -> Result<std::fs::File> {
@@ -87,11 +96,53 @@ fn explicit_gap_repair_appends_original_ids_and_normal_publication_resumes_witho
     );
     fs::write(&cloud, serde_json::to_vec(&data).unwrap()).unwrap();
     drop(sdk.take());
+    let original = store.publication_state(&guard, &scope).unwrap().unwrap();
+    if uncertain {
+        let mut reserved = original.clone();
+        reserved["history_repair"] =
+            json!({"events":{"2":"m2"},"attempted":true,"remote_confirmed":false});
+        store
+            .save_publication_state(
+                &guard,
+                &scope,
+                &reserved,
+                "REPAIR_ACK_PENDING",
+                None,
+                "fixture",
+            )
+            .unwrap();
+    }
     drop(guard);
     let result = repair(source.clone(), runtime.clone(), &scope).unwrap();
-    assert_eq!(result["status"], "REPAIRED");
-    assert_eq!(result["appended"], 1);
-    assert_eq!(result["confirmed"], 4);
+    if uncertain {
+        assert_eq!(result["status"], "REPAIR_ACK_PENDING");
+        assert_eq!(result["writes"], 0);
+        let guard = store.guard("demo", "train").unwrap();
+        assert_eq!(
+            store.publication_state(&guard, &scope).unwrap().unwrap()["state"],
+            original["state"]
+        );
+        let mut data: Value = serde_json::from_slice(&fs::read(&cloud).unwrap()).unwrap();
+        assert_eq!(data["logs"], 4, "an uncertain repair cannot be sent again");
+        // Model the delayed remote visibility of the already-attempted append.
+        let mut late = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["ml_expd/sequence"] == 2)
+            .unwrap()
+            .clone();
+        late["_step"] = json!(4);
+        data["runs"][&id]["history"]
+            .as_array_mut()
+            .unwrap()
+            .push(late);
+        fs::write(&cloud, serde_json::to_vec(&data).unwrap()).unwrap();
+    } else {
+        assert_eq!(result["status"], "REPAIRED");
+        assert_eq!(result["appended"], 1);
+        assert_eq!(result["confirmed"], 4);
+    }
     let repeated = repair(source.clone(), runtime.clone(), &scope).unwrap();
     assert_eq!(repeated["writes"], 0);
     let guard = store.guard("demo", "train").unwrap();
