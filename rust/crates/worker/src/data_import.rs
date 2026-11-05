@@ -21,6 +21,8 @@ pub struct Error {
     pub code: &'static str,
     pub http_status: Option<u16>,
     pub errno: Option<i32>,
+    /// Failures with no OS errno, such as a short read, would otherwise say nothing.
+    pub error_class: Option<&'static str>,
 }
 type Result<T> = std::result::Result<T, Error>;
 fn failed(code: &'static str) -> Error {
@@ -28,6 +30,7 @@ fn failed(code: &'static str) -> Error {
         code,
         http_status: None,
         errno: None,
+        error_class: None,
     }
 }
 fn io_error(error: io::Error) -> Error {
@@ -39,6 +42,16 @@ fn io_error(error: io::Error) -> Error {
         },
         http_status: None,
         errno: error.raw_os_error(),
+        error_class: Some(match error.kind() {
+            io::ErrorKind::UnexpectedEof => "UNEXPECTED_EOF",
+            io::ErrorKind::NotFound => "NOT_FOUND",
+            io::ErrorKind::PermissionDenied => "PERMISSION_DENIED",
+            io::ErrorKind::TimedOut => "TIMED_OUT",
+            io::ErrorKind::InvalidData => "INVALID_DATA",
+            io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => "CONNECTION_LOST",
+            io::ErrorKind::Interrupted => "INTERRUPTED",
+            _ => "OTHER",
+        }),
     }
 }
 enum Reader {
@@ -154,6 +167,7 @@ impl Reader {
                         code: "DATA_TICKET_REJECTED",
                         http_status: Some(response.status().as_u16()),
                         errno: None,
+                        error_class: None,
                     });
                 }
                 let mut metadata = Vec::new();
@@ -196,6 +210,7 @@ impl Reader {
                         code: "OBJECT_PART_UNAVAILABLE",
                         http_status: Some(response.status().as_u16()),
                         errno: None,
+                        error_class: None,
                     });
                 }
                 let mut bytes = Vec::with_capacity(count);
@@ -255,6 +270,7 @@ impl Reader {
                         code: "HTTP_RANGE_REJECTED",
                         http_status: Some(status),
                         errno: None,
+                        error_class: None,
                     });
                 }
                 let expected = format!("bytes {offset}-{end}/{total}");

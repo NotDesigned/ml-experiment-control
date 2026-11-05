@@ -22,6 +22,10 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/submissions/{action}/sync/{request}", get(show))
         .route(
+            "/api/runs/{project}/{run}/attempts/{attempt}/provider-diagnostics/refresh",
+            post(provider_diagnostics),
+        )
+        .route(
             "/api/submissions/{action}/sync/{request}/retry",
             post(retry),
         )
@@ -33,6 +37,41 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
             "/api/projects/{project}/datasets/{executor}/{asset}/publications/{request}/diagnostic",
             get(diagnose_data).post(diagnose_data),
         )
+}
+fn diagnostic_lines(query: Option<&str>) -> Option<u32> {
+    let Some(query) = query else {
+        return Some(200);
+    };
+    query
+        .strip_prefix("lines=")?
+        .parse()
+        .ok()
+        .filter(|lines| (1..=2000).contains(lines))
+}
+async fn provider_diagnostics(
+    State(state): State<Arc<AppState>>,
+    Path((project, run, attempt)): Path<(String, String, String)>,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Response {
+    let Some(lines) = diagnostic_lines(query.as_deref()) else {
+        return read_http::failure(invalid());
+    };
+    if !empty(&body, true) {
+        return read_http::failure(invalid());
+    }
+    read_http::execute_timeout(
+        state,
+        Access::Read,
+        std::time::Duration::from_secs(120),
+        move |api, _| {
+            api.cloud()
+                .ok_or_else(invalid)?
+                .provider_diagnostics(&project, &run, &attempt, lines)
+                .map_err(super::failure)
+        },
+    )
+    .await
 }
 async fn diagnose_sync(
     State(state): State<Arc<AppState>>,
