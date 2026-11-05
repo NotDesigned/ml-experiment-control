@@ -50,6 +50,18 @@ def encoded(value):
     return base64.urlsafe_b64encode(json.dumps(value).encode()).decode()
 
 
+def published_image(repository, digests):
+    names = {repository}
+    host, path = repository.split('/', 1)
+    if host in {'docker.io', 'index.docker.io', 'registry-1.docker.io'}:
+        names |= {path, *(domain + '/' + path for domain in ('docker.io', 'index.docker.io', 'registry-1.docker.io'))}
+    matches = [repository + '@' + value.rsplit('@', 1)[1] for value in digests
+               if re.fullmatch(r'[^@]+@sha256:[0-9a-f]{64}', value) and value.rsplit('@', 1)[0] in names]
+    if len(matches) != 1:
+        raise ValueError('DSW registry digest is unavailable or ambiguous')
+    return matches[0]
+
+
 def pull_bases(images, credentials, *, timeout=600):
     """Retry only immutable image downloads, before executing any Dockerfile RUN."""
     if not isinstance(images, list) or len(images) > 64:
@@ -100,11 +112,7 @@ def run(root, spec):
     request('POST', '/images/' + quote(repository, safe='') + '/push?' + urlencode({'tag': name}),
             headers={'X-Registry-Auth': encoded(credentials[host]), 'Content-Length': '0'}, stream=True, timeout=timeout)
     value = request('GET', '/images/' + quote(tag, safe='') + '/json', timeout=timeout)
-    matches = [d for d in value.get('RepoDigests', [])
-               if re.fullmatch(re.escape(repository) + r'@sha256:[0-9a-f]{64}', d)]
-    if len(matches) != 1:
-        raise ValueError('DSW registry digest is unavailable or ambiguous')
-    return {'image': matches[0], 'context_sha256': spec['context_sha256']}
+    return {'image': published_image(repository, value.get('RepoDigests', [])), 'context_sha256': spec['context_sha256']}
 
 
 def main(argv=None):
