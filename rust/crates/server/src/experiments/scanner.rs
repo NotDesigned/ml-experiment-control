@@ -146,6 +146,14 @@ fn read_manifest(
         if !directory.entry_exists(name)? {
             continue;
         }
+        // Discovery reads trees this service did not create, so unlike its own
+        // storage, a linked manifest is refused here.
+        if !directory
+            .regular_identity(name)?
+            .is_some_and(|file| file.is_private_for(effective_uid()))
+        {
+            return Err(DiscoveryError::UnsafeEntry);
+        }
         let mut file = directory.open_regular_read(name)?;
         let length = file.metadata()?.len();
         if length > domain::MAX_BYTES as u64 {

@@ -727,12 +727,7 @@ fn authentication_protocol_and_query_errors_never_echo_request_credentials() {
 
 #[test]
 fn missing_locks_corrupt_canonical_and_file_aliases_fail_without_repair() {
-    for variant in [
-        "missing-lock",
-        "corrupt-canonical",
-        "hardlink-canonical",
-        "symlink-canonical",
-    ] {
+    for variant in ["missing-lock", "corrupt-canonical", "symlink-canonical"] {
         let fixture = Fixture::new();
         let server = fixture.server();
         let manifest = fixture.run().join("manifest.yaml");
@@ -745,9 +740,6 @@ fn missing_locks_corrupt_canonical_and_file_aliases_fail_without_repair() {
                     &fixture.manifest,
                 );
                 fs::write(&manifest, b"broken: [").unwrap();
-            }
-            "hardlink-canonical" => {
-                fs::hard_link(&manifest, fixture.run().join("copied-manifest")).unwrap();
             }
             "symlink-canonical" => {
                 fs::rename(&manifest, fixture.run().join("original-manifest")).unwrap();

@@ -473,7 +473,8 @@ fn source_filename_choices_are_allowed_but_aliases_and_size_limits_remain() {
             }
             _ => unreachable!(),
         }
-        if matches!(case, "secret" | "nested-secret") {
+        // A hard link in the user's own tree packs as ordinary hashed content.
+        if matches!(case, "secret" | "nested-secret" | "hardlink") {
             assert!(sources::pack_directory(temp.path()).is_ok(), "{case}");
             continue;
         }
