@@ -84,8 +84,8 @@ impl Store {
         let expected = self.marker()?;
         // st_dev identifies a mount in this node's namespace, not a shared
         // filesystem. CPFS/NAS clients can assign different devices to the same
-        // inode. Keep the logical authority and inode binding; Directory still
-        // checks both device and inode on every operation within this process.
+        // inode. Keep the logical authority and inode binding; Directory
+        // checks the inode on every operation.
         if actual.contract != expected.contract
             || actual.target != expected.target
             || actual.identity.1 != expected.identity.1
