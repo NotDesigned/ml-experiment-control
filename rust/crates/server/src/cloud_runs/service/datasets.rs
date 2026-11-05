@@ -35,8 +35,7 @@ impl Service {
             return Err(cloud::Error::configuration());
         }
         let mut rows = Vec::new();
-        let mut bytes = 0usize;
-        for name in self.slots.entry_names_limited(32768).map_err(io)? {
+        for name in self.slots.entry_names().map_err(io)? {
             let Some(name) = name
                 .to_str()
                 .filter(|s| s.starts_with("dataset-") && s.ends_with(".json"))
@@ -47,12 +46,6 @@ impl Service {
                 .slots
                 .read_regular(OsStr::new(name), datasets::MAX_METADATA as u64)
                 .map_err(io)?;
-            bytes = bytes
-                .checked_add(raw.len())
-                .ok_or_else(cloud::Error::evidence)?;
-            if bytes > 64 * 1024 * 1024 {
-                return Err(cloud::Error::evidence());
-            }
             let value = ml_exp_core::json::mapping(&raw).map_err(why!(cloud::Error::evidence()))?;
             let state = &value["state"];
             if state["project"] != project || state["target"]["backend_id"] != executor {
@@ -71,9 +64,6 @@ impl Service {
                 datasets::Summary::from_state(&saved.state, saved.archive_verified)
                     .map_err(why!(cloud::Error::evidence()))?,
             );
-            if rows.len() > 1024 {
-                return Err(cloud::Error::evidence());
-            }
         }
         rows.sort_by(|a, b| a.asset_id.cmp(&b.asset_id));
         Ok(json!({"project":project,"executor":executor,"datasets":rows}))

@@ -8,10 +8,9 @@ impl Service {
     pub fn dataset_list(&self, project: &str, executor: &str) -> Result<Value> {
         let backend = self.dataset_backend(project, executor)?;
         let mut rows = Vec::new();
-        let mut bytes = 0usize;
         for name in self
             .slots
-            .entry_names_limited(32768)
+            .entry_names()
             .map_err(why!(Error::DatasetUnavailable))?
         {
             let Some(name) = name
@@ -24,12 +23,6 @@ impl Service {
                 .slots
                 .read_regular(OsStr::new(name), datasets::MAX_METADATA as u64)
                 .map_err(why!(Error::DatasetUnavailable))?;
-            bytes = bytes
-                .checked_add(raw.len())
-                .ok_or(Error::DatasetUnavailable)?;
-            if bytes > 64 * 1024 * 1024 {
-                return Err(Error::DatasetUnavailable);
-            }
             let value =
                 ml_exp_core::json::mapping(&raw).map_err(why!(Error::DatasetUnavailable))?;
             if value["project"] != project || value["target"]["backend_id"] != executor {
@@ -48,9 +41,6 @@ impl Service {
                 datasets::Summary::from_state(&state, state.ready.is_some())
                     .map_err(why!(Error::DatasetUnavailable))?,
             );
-            if rows.len() > 1024 {
-                return Err(Error::DatasetUnavailable);
-            }
         }
         rows.sort_by(|a, b| a.asset_id.cmp(&b.asset_id));
         Ok(json!({"project":project,"executor":executor,"datasets":rows}))

@@ -142,9 +142,6 @@ pub fn list(
     }
     let rows: Vec<datasets::Summary> =
         serde_json::from_value(value["datasets"].clone()).map_err(|_| Error::Response)?;
-    if rows.len() > 1024 {
-        return Err(Error::Response);
-    }
     let mut previous: Option<&str> = None;
     for row in &rows {
         row.validate().map_err(|_| Error::Response)?;
