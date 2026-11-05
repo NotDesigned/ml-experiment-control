@@ -806,6 +806,7 @@ pub fn provider_diagnostics(value: &Value) -> String {
         word(&provider["provider_state"]),
         provider["sub_status"]
             .as_str()
+            .filter(|sub| !sub.is_empty())
             .map(|sub| format!(" ({sub})"))
             .unwrap_or_default()
     ));
