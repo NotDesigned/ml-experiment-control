@@ -331,9 +331,8 @@ are reconciled under the original identity, never replayed with a new token.
 
 ## Inventory and evidence
 
-[The inventory](../rust/compatibility/inventory.json) retains every baseline
-Python module and its original hash: 220 platform modules / 41,359 lines, plus
-238 test/tool/example files. Baseline module parity and connected native
+The Python baseline was 220 platform modules / 41,359 lines, plus 238
+test/tool/example files. Baseline module parity and connected native
 workflows are tracked separately. A zero count of fully accepted Python module
 replacements is not an estimate of how much Rust code is written.
 

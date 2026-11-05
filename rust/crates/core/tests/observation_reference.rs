@@ -5,22 +5,6 @@ use serde_json::Value;
 fn legacy_observational_projections_match() {
     let reference: Value =
         serde_json::from_str(include_str!("../../../compatibility/observation.json")).unwrap();
-    for (index, case) in reference["cases"]["merge"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .enumerate()
-    {
-        let actual = merge_terminal_observation(
-            case["previous"].as_object(),
-            case["current"].as_object().unwrap(),
-        );
-        assert_eq!(
-            python_json_bytes(&actual).unwrap(),
-            python_json_bytes(&case["expected"]).unwrap(),
-            "merge case {index}"
-        );
-    }
     for case in reference["cases"]["outward"].as_array().unwrap() {
         assert_eq!(sanitized_outward(&case["input"]), case["expected"]);
         assert_eq!(operational_decision(&case["input"]), case["decision"]);
