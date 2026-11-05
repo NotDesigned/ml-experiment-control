@@ -18,7 +18,7 @@ pub(super) struct Sdk {
 }
 impl Sdk {
     pub(super) fn validate_request(request: &Value) -> Result<Vec<u8>> {
-        let bytes = serde_json::to_vec(request).map_err(|_| Error::Transport)?;
+        let bytes = serde_json::to_vec(request).map_err(why!(Error::Transport))?;
         if bytes.is_empty() || bytes.len() > BOUND {
             return Err(Error::Transport);
         }
@@ -28,7 +28,7 @@ impl Sdk {
         if !python.is_absolute() {
             return Err(Error::Configuration);
         }
-        let directory = tempfile::tempdir().map_err(|_| Error::Transport)?;
+        let directory = tempfile::tempdir().map_err(why!(Error::Transport))?;
         let mut command = Command::new(python);
         command
             .args(["-I", "-u", "-c", include_str!("sdk.py")])
@@ -46,7 +46,7 @@ impl Sdk {
             .env("LANG", "C.UTF-8")
             .env("WANDB_BASE_URL", "https://api.wandb.ai")
             .env("WANDB_ERROR_REPORTING", "false");
-        let mut child = command.spawn().map_err(|_| Error::Transport)?;
+        let mut child = command.spawn().map_err(why!(Error::Transport))?;
         let input = child.stdin.take().ok_or(Error::Transport)?;
         let output = child.stdout.take().ok_or(Error::Transport)?;
         Ok(Self {
@@ -68,7 +68,7 @@ impl Sdk {
                 90
             });
         framing::write_frame(&self.input, &frame, BOUND, deadline, cancelled)
-            .map_err(|_| Error::Transport)?;
+            .map_err(why!(Error::Transport))?;
         self.response(deadline, cancelled)
     }
     pub(super) fn shutdown(&mut self) -> Result<()> {
@@ -88,9 +88,9 @@ impl Sdk {
     }
     fn response(&mut self, deadline: Instant, cancelled: &AtomicBool) -> Result<Value> {
         let frame = framing::read_prefix(&self.output, BOUND, deadline, cancelled)
-            .map_err(|_| Error::Transport)?;
+            .map_err(why!(Error::Transport))?;
         let value =
-            Value::Object(ml_exp_core::json::mapping(&frame[4..]).map_err(|_| Error::Transport)?);
+            Value::Object(ml_exp_core::json::mapping(&frame[4..]).map_err(why!(Error::Transport))?);
         match value["error"].as_str() {
             Some("WANDB_SDK_NOT_INSTALLED") => Err(Error::SdkMissing),
             Some(code) => match code {

@@ -82,8 +82,8 @@ impl RunFence {
             .join(format!("{run}.json")))
     }
     fn leaf(&self, project: &str, run: &str) -> Result<String> {
-        validate_id(project).map_err(|_| Error::InvalidIdentity)?;
-        validate_observation_id(run).map_err(|_| Error::InvalidIdentity)?;
+        validate_id(project).map_err(why!(Error::InvalidIdentity))?;
+        validate_observation_id(run).map_err(why!(Error::InvalidIdentity))?;
         Ok(format!("{run}.json"))
     }
     fn directory(&self, create: bool) -> io::Result<Directory> {

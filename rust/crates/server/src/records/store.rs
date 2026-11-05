@@ -467,7 +467,7 @@ impl Store {
             let mut items = Vec::new();
             while let Some(row) = rows.next()? {
                 let size: i64 = row.get(0)?;
-                let size = usize::try_from(size).map_err(|_| Error::Invalid("metric history exceeds read budget"))?;
+                let size = usize::try_from(size).map_err(why!(Error::Invalid("metric history exceeds read budget")))?;
                 bytes = bytes.checked_add(size).filter(|size| *size <= maximum_bytes).ok_or(Error::Invalid("metric history exceeds read budget"))?;
                 let raw: String = row.get(1)?;
                 let value: Value = serde_json::from_str(&raw)?;
@@ -765,7 +765,7 @@ impl Store {
                 .collect::<std::result::Result<_, _>>()?
         };
         let plan = records::confirmation_plan(&state, &route, &events, proof, error)
-            .map_err(|_| Error::Confirmation)?;
+            .map_err(why!(Error::Confirmation))?;
         tx.execute(
             "UPDATE scopes SET confirmed=MAX(confirmed,?),last_confirmed_at=? WHERE id=?",
             params![plan.confirmed, at, scope],

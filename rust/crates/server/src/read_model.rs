@@ -62,7 +62,7 @@ pub(crate) fn encoded_size(value: &Value) -> Result<usize> {
         }
     }
     let mut limit = Limit(0);
-    serde_json::to_writer(&mut limit, value).map_err(|_| Error::OutputLimit)?;
+    serde_json::to_writer(&mut limit, value).map_err(why!(Error::OutputLimit))?;
     Ok(limit.0)
 }
 

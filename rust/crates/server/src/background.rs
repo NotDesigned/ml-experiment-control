@@ -88,7 +88,7 @@ impl Observer {
                 }
                 let _ = service.background_stopped();
             })
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
         Ok(Self {
             stop,
             wake,

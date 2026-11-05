@@ -80,7 +80,7 @@ impl Drop for Guard<'_> {
 }
 
 fn encode(value: &Value) -> Result<Vec<u8>> {
-    let mut bytes = serde_json::to_vec(value).map_err(|_| Error::Identity)?;
+    let mut bytes = serde_json::to_vec(value).map_err(why!(Error::Identity))?;
     bytes.push(b'\n');
     if bytes.len() > sources::MAX_METADATA_BYTES {
         return Err(Error::Identity);
@@ -89,12 +89,12 @@ fn encode(value: &Value) -> Result<Vec<u8>> {
 }
 
 fn policy_value(policy: &Policy) -> Result<Value> {
-    serde_json::to_value(policy).map_err(|_| Error::Identity)
+    serde_json::to_value(policy).map_err(why!(Error::Identity))
 }
 
 impl Store {
     pub fn initialize(workspace_root: &Path, policy: Policy) -> Result<()> {
-        policy.validate().map_err(|_| Error::Identity)?;
+        policy.validate().map_err(why!(Error::Identity))?;
         let root = Directory::open(workspace_root, false)?;
         let namespace = root.create_new_child(OsStr::new(NAMESPACE))?;
         namespace.publish_new(OsStr::new(POLICY), &encode(&policy_value(&policy)?)?)?;
@@ -110,13 +110,13 @@ impl Store {
     }
 
     pub fn open(workspace_root: &Path, expected: Policy) -> Result<Self> {
-        expected.validate().map_err(|_| Error::Identity)?;
+        expected.validate().map_err(why!(Error::Identity))?;
         let root = Directory::open(workspace_root, false)?;
         let namespace = root.child(OsStr::new(NAMESPACE), false)?;
         let policy = serde_json::from_slice::<Policy>(
             &namespace.read_regular(OsStr::new(POLICY), sources::MAX_METADATA_BYTES as u64)?,
         )
-        .map_err(|_| Error::Identity)?;
+        .map_err(why!(Error::Identity))?;
         if policy.validate().is_err()
             || policy.max_archive_bytes != expected.max_archive_bytes
             || policy.max_source_bytes != expected.max_source_bytes
@@ -180,8 +180,8 @@ impl Store {
         if bytes.len() > sources::MAX_METADATA_BYTES {
             return Err(Error::Archive);
         }
-        let value: Value = serde_json::from_slice(&bytes).map_err(|_| Error::Archive)?;
-        Metadata::from_value(&value, project, source_id, policy).map_err(|_| Error::Archive)
+        let value: Value = serde_json::from_slice(&bytes).map_err(why!(Error::Archive))?;
+        Metadata::from_value(&value, project, source_id, policy).map_err(why!(Error::Archive))
     }
 
     fn verify_tree(
@@ -194,17 +194,17 @@ impl Store {
         seal_check(&tree)?;
         let (plan, files) = topology(&tree, "")?;
         let mut digest =
-            TreeDigest::new(TreePlan::new(plan, &self.policy).map_err(|_| Error::Archive)?);
+            TreeDigest::new(TreePlan::new(plan, &self.policy).map_err(why!(Error::Archive))?);
         while let Some(request) = digest.next_chunk() {
             let (parent, name) = files.get(request.path).ok_or(Error::Archive)?;
             let mut file = parent.open_regular_read(name)?;
             file.seek(SeekFrom::Start(request.offset))?;
             let mut bytes = vec![0u8; request.len];
             file.read_exact(&mut bytes)?;
-            digest = digest.consume(&bytes).map_err(|_| Error::Archive)?;
+            digest = digest.consume(&bytes).map_err(why!(Error::Archive))?;
             parent.validate_regular_entry(name, &file)?;
         }
-        let tree_digest = digest.finish().map_err(|_| Error::Archive)?;
+        let tree_digest = digest.finish().map_err(why!(Error::Archive))?;
         let metadata = Self::read_metadata(directory, project, source_id, &self.policy)?;
         if metadata.tree_digest() != tree_digest {
             return Err(Error::Archive);
@@ -226,7 +226,7 @@ impl Store {
         project_dir
             .validate_immutable_regular_entry(OsStr::new(archive_sha), &file)
             .map_err(|_| Error::Archive)?;
-        let value: Value = serde_json::from_reader(file).map_err(|_| Error::Archive)?;
+        let value: Value = serde_json::from_reader(file).map_err(why!(Error::Archive))?;
         if value.get("schema_version").and_then(Value::as_u64) != Some(1)
             || value.get("project").and_then(Value::as_str) != Some(project)
             || value.get("archive_sha256").and_then(Value::as_str) != Some(archive_sha)
@@ -237,7 +237,7 @@ impl Store {
             .get("source_id")
             .and_then(Value::as_str)
             .ok_or(Error::Archive)?;
-        sources::validate_source_id(source_id).map_err(|_| Error::Identity)?;
+        sources::validate_source_id(source_id).map_err(why!(Error::Identity))?;
         let project_sources = self.sources.child(OsStr::new(project), false)?;
         let source = project_sources.child(OsStr::new(source_id), false)?;
         let metadata = self.verify_tree(project, source_id, &source)?;
@@ -248,7 +248,7 @@ impl Store {
     }
 
     pub fn find_archive(&self, project: &str, archive_sha: &str) -> Result<Option<Metadata>> {
-        sources::validate_archive_digest(archive_sha).map_err(|_| Error::Identity)?;
+        sources::validate_archive_digest(archive_sha).map_err(why!(Error::Identity))?;
         let _guard = self.lock()?;
         Ok(self
             .receipt(project, archive_sha)?
@@ -256,8 +256,8 @@ impl Store {
     }
 
     pub fn read(&self, project: &str, source_id: &str) -> Result<Metadata> {
-        ml_exp_core::identity::validate_id(project).map_err(|_| Error::Identity)?;
-        sources::validate_source_id(source_id).map_err(|_| Error::Identity)?;
+        ml_exp_core::identity::validate_id(project).map_err(why!(Error::Identity))?;
+        sources::validate_source_id(source_id).map_err(why!(Error::Identity))?;
         let _guard = self.lock()?;
         let project_sources = self.sources.child(OsStr::new(project), false)?;
         let source = project_sources.child(OsStr::new(source_id), false)?;
@@ -271,8 +271,8 @@ impl Store {
         expected_sha: &str,
         created_at: &str,
     ) -> Result<Metadata> {
-        ml_exp_core::identity::validate_id(project).map_err(|_| Error::Identity)?;
-        sources::validate_archive_digest(expected_sha).map_err(|_| Error::Identity)?;
+        ml_exp_core::identity::validate_id(project).map_err(why!(Error::Identity))?;
+        sources::validate_archive_digest(expected_sha).map_err(why!(Error::Identity))?;
         let _guard = self.lock()?;
         if let Some((_, metadata)) = self.receipt(project, expected_sha)? {
             return Ok(metadata);
@@ -281,7 +281,7 @@ impl Store {
         let mut archive_sha = Sha256::new();
         let mut size = 0u64;
         let mut random = [0u8; 8];
-        getrandom::fill(&mut random).map_err(|_| Error::Identity)?;
+        getrandom::fill(&mut random).map_err(why!(Error::Identity))?;
         let staging_name = format!(
             "import-{}-{:016x}",
             &expected_sha[..16],
@@ -317,16 +317,16 @@ impl Store {
             stage.remove_staged_regular(OsStr::new("archive.bin"), &archive_for_removal)?;
             let (plan, files) = topology(&tree, "")?;
             let mut digest =
-                TreeDigest::new(TreePlan::new(plan, &self.policy).map_err(|_| Error::Archive)?);
+                TreeDigest::new(TreePlan::new(plan, &self.policy).map_err(why!(Error::Archive))?);
             while let Some(request) = digest.next_chunk() {
                 let (parent, name) = files.get(request.path).ok_or(Error::Archive)?;
                 let mut file = parent.open_regular_read(name)?;
                 file.seek(SeekFrom::Start(request.offset))?;
                 let mut bytes = vec![0u8; request.len];
                 file.read_exact(&mut bytes)?;
-                digest = digest.consume(&bytes).map_err(|_| Error::Archive)?;
+                digest = digest.consume(&bytes).map_err(why!(Error::Archive))?;
             }
-            let tree_digest = digest.finish().map_err(|_| Error::Archive)?;
+            let tree_digest = digest.finish().map_err(why!(Error::Archive))?;
             let observation = json!({"kind":"archive","sha256":expected_sha});
             let metadata = Metadata::new(
                 project,
@@ -335,7 +335,7 @@ impl Store {
                 &observation,
                 &self.policy,
             )
-            .map_err(|_| Error::Archive)?;
+            .map_err(why!(Error::Archive))?;
             stage.publish_new(OsStr::new(METADATA), &encode(&metadata.to_value())?)?;
             let metadata_file = stage.open_regular_read(OsStr::new(METADATA))?;
             stage.seal_regular(OsStr::new(METADATA), &metadata_file, false)?;

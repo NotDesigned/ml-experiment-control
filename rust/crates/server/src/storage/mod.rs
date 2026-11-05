@@ -114,13 +114,13 @@ impl Binding {
             }
             Ok(())
         })();
-        checked.map_err(|_| {
+        checked.map_err(why!({
             if effects {
                 Error::EffectUncertain
             } else {
                 Error::Detached
             }
-        })
+        }))
     }
 }
 
@@ -375,7 +375,7 @@ impl SqliteDatabase {
             }
             transaction
                 .commit()
-                .map_err(|_| E::from(Error::EffectUncertain))?;
+                .map_err(why!(E::from(Error::EffectUncertain)))?;
             binding.validate(true).map_err(E::from)?;
             if validate().is_err() {
                 return Err(E::from(Error::EffectUncertain));

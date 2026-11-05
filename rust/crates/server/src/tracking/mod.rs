@@ -61,25 +61,27 @@ impl Config {
     /// Local validation only: never start the SDK or resolve a default entity.
     pub fn check_references(&self) -> Result<()> {
         let bytes = ml_exp_io::read_private(&self.api_key_file, 4096, true)
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration, "W&B API key file unreadable"))?;
         let key = std::str::from_utf8(&bytes)
-            .map_err(|_| Error::Configuration)?
+            .map_err(why!(Error::Configuration, "W&B API key encoding invalid"))?
             .trim();
-        WandbSettings::from_value(&json!({"api_key":key})).map_err(|_| Error::Configuration)?;
-        let metadata = std::fs::metadata(&self.python).map_err(|_| Error::Configuration)?;
+        WandbSettings::from_value(&json!({"api_key":key}))
+            .map_err(why!(Error::Configuration, "W&B API key format invalid"))?;
+        let metadata = std::fs::metadata(&self.python).map_err(why!(Error::Configuration))?;
         if !metadata.is_file() {
             return Err(Error::Configuration);
         }
         Ok(())
     }
     pub fn load(path: &Path) -> Result<Self> {
-        let bytes = ml_exp_io::read_private(path, 16384, true).map_err(|_| Error::Configuration)?;
-        let mapping = ml_exp_core::json::mapping(&bytes).map_err(|_| Error::Configuration)?;
+        let bytes =
+            ml_exp_io::read_private(path, 16384, true).map_err(why!(Error::Configuration))?;
+        let mapping = ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Configuration))?;
         if mapping.contains_key("historical_handoff") {
             return Err(Error::RetiredKey("historical_handoff"));
         }
         let config: Self =
-            serde_json::from_value(Value::Object(mapping)).map_err(|_| Error::Configuration)?;
+            serde_json::from_value(Value::Object(mapping)).map_err(why!(Error::Configuration))?;
         if config.schema_version != 1
             || !config.python.is_absolute()
             || !config.api_key_file.is_absolute()
@@ -87,19 +89,20 @@ impl Config {
             return Err(Error::Configuration);
         }
         WandbOptions::from_value(&json!({"entity":config.entity,"project":config.project}))
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
         Ok(config)
     }
 }
 impl Runtime {
     pub fn open(config: Config) -> Result<Self> {
         let bytes = ml_exp_io::read_private(&config.api_key_file, 4096, true)
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration, "W&B API key file unreadable"))?;
         let key = std::str::from_utf8(&bytes)
-            .map_err(|_| Error::Configuration)?
+            .map_err(why!(Error::Configuration, "W&B API key encoding invalid"))?
             .trim()
             .to_owned();
-        WandbSettings::from_value(&json!({"api_key":key})).map_err(|_| Error::Configuration)?;
+        WandbSettings::from_value(&json!({"api_key":key}))
+            .map_err(why!(Error::Configuration, "W&B API key format invalid"))?;
         let mut diagnostic = None;
         let entity = if config.enabled && config.entity.is_none() {
             let lookup = || -> Result<String> {
@@ -109,7 +112,7 @@ impl Runtime {
                     &AtomicBool::new(false),
                 )?;
                 WandbOptions::from_value(&json!({"entity":response["entity"]}))
-                    .map_err(|_| Error::Identity)?
+                    .map_err(why!(Error::Identity))?
                     .entity
                     .ok_or(Error::Identity)
             };

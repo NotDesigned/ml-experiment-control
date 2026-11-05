@@ -55,8 +55,8 @@ impl Service {
         settings.validate()?;
         let (_, workspace_id) = read_config::workspace(&settings.registry_root)?;
         let policy = settings.source_policy.clone().unwrap_or_default();
-        let store =
-            Store::open(&settings.registry_root, policy.clone()).map_err(|_| read_config::Error)?;
+        let store = Store::open(&settings.registry_root, policy.clone())
+            .map_err(why!(read_config::Error))?;
         Ok(Self {
             root: settings.registry_root.clone(),
             workspace_id,
@@ -70,7 +70,7 @@ impl Service {
                 settings.bindings(),
                 RunFence::new(&settings.registry_root),
             )
-            .map_err(|_| read_config::Error)?,
+            .map_err(why!(read_config::Error))?,
             store,
             policy,
         })
@@ -92,7 +92,7 @@ impl Service {
             }
     }
     fn scope(&self, project: &str) -> Result<(), read_api::Error> {
-        ml_exp_core::identity::validate_id(project).map_err(|_| invalid())?;
+        ml_exp_core::identity::validate_id(project).map_err(why!(invalid()))?;
         if !self.approved.contains_key(project) {
             return Err(read_api::Error {
                 status: 404,
@@ -100,7 +100,7 @@ impl Service {
                 detail: "source import requires a Project already approved by the isolated server configuration",
             });
         }
-        let (_, workspace) = read_config::workspace(&self.root).map_err(|_| invalid())?;
+        let (_, workspace) = read_config::workspace(&self.root).map_err(why!(invalid()))?;
         if workspace != self.workspace_id {
             return Err(invalid());
         }
@@ -126,10 +126,10 @@ impl Service {
         let document = self
             .evidence
             .project(project, None)
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         let definition =
             ml_exp_core::projects::ProjectDefinition::from_value(&Value::Object(document.metadata))
-                .map_err(|_| invalid())?;
+                .map_err(why!(invalid()))?;
         if definition.project() != project {
             return Err(invalid());
         }
@@ -137,7 +137,7 @@ impl Service {
     }
     /// This check precedes receiving archive bytes and performs no publication.
     pub fn authorize_upload(&self, project: &str, sha256: &str) -> Result<(), read_api::Error> {
-        sources::validate_archive_digest(sha256).map_err(|_| invalid())?;
+        sources::validate_archive_digest(sha256).map_err(why!(invalid()))?;
         self.approval(project)?;
         Ok(())
     }
@@ -159,10 +159,10 @@ impl Service {
             .store
             .import_archive(project, stream, sha256, now)
             .map_err(store_error)?;
-        self.scope(project).map_err(|_| uncertain())?;
+        self.scope(project).map_err(why!(uncertain()))?;
         self.evidence
             .project(project, Some(&observed))
-            .map_err(|_| uncertain())?;
+            .map_err(why!(uncertain()))?;
         if !matches!(self.approval(project),Ok(digest) if digest==observed) {
             return Err(uncertain());
         }
@@ -172,18 +172,18 @@ impl Service {
             json!({"existing":true}),
             &self.policy,
         )
-        .map_err(|_| uncertain())
+        .map_err(why!(uncertain()))
     }
     pub fn read(&self, project: &str, source_id: &str) -> Result<Value, read_api::Error> {
         self.scope(project)?;
-        sources::validate_source_id(source_id).map_err(|_| invalid())?;
+        sources::validate_source_id(source_id).map_err(why!(invalid()))?;
         let metadata = self.store.read(project, source_id).map_err(store_error)?;
         self.scope(project)?;
         Ok(metadata.to_value())
     }
     pub fn lookup(&self, project: &str, sha256: &str) -> Result<Value, read_api::Error> {
         self.scope(project)?;
-        sources::validate_archive_digest(sha256).map_err(|_| invalid())?;
+        sources::validate_archive_digest(sha256).map_err(why!(invalid()))?;
         let metadata = self
             .store
             .find_archive(project, sha256)
@@ -196,7 +196,7 @@ impl Service {
             json!({"existing":true}),
             &self.policy,
         )
-        .map_err(|_| unavailable())
+        .map_err(why!(unavailable()))
     }
 }
 fn store_error(error: super::Error) -> read_api::Error {

@@ -81,7 +81,7 @@ impl Store {
                     {
                         projection = projection
                             .add(item, row.seq)
-                            .map_err(|_| Error::Invalid("display projection"))?;
+                            .map_err(why!(Error::Invalid("display projection")))?;
                     }
                 }
                 after = row.seq;
@@ -89,7 +89,7 @@ impl Store {
         }
         let projection = projection
             .at(through)
-            .map_err(|_| Error::Invalid("display cutoff"))?;
+            .map_err(why!(Error::Invalid("display cutoff")))?;
         if matches!(version, 3 | 4) {
             return (if version == 4 {
                 projection.client_document()
@@ -119,7 +119,7 @@ impl Store {
             for series in series.values() {
                 let context: Map<_,_> = ["name","unit","protocol_id","dataset_id"].iter().map(|key|((*key).into(),series["context"][*key].clone())).collect();
                 let context = Value::Object(context);
-                let signature = tracking::identity(&context,false).map_err(|_|Error::Invalid("display identity"))?;
+                let signature = tracking::identity(&context,false).map_err(why!(Error::Invalid("display identity")))?;
                 let existing: Option<String> = tx.query_row("SELECT public_name FROM display_metrics WHERE destination=? AND signature=?",params![destination,signature],|row|row.get(0)).optional()?;
                 let name = if let Some(existing) = existing { existing } else {
                     let stem = tracking::stem(context["name"].as_str().ok_or(Error::Invalid("metric name"))?);
@@ -135,6 +135,6 @@ impl Store {
         projection
             .at(through)
             .and_then(|p| p.document(&names))
-            .map_err(|_| Error::Invalid("display document"))
+            .map_err(why!(Error::Invalid("display document")))
     }
 }
