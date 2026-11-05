@@ -1,7 +1,6 @@
 """Read-only proof for retrying an unpublished build; absence alone is not proof."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import fcntl
 import json
 from copy import copy
@@ -41,20 +40,3 @@ def publication_absence(builder, identity):
                 return None
             return observe_dsw_absence(builder, identity)
     return None
-
-
-def valid_absence(proof, identity):
-    if not isinstance(proof, dict) or set(proof) != {
-            'source', 'bundle_id', 'observed_at', 'registry_manifest_status', 'active_builders', 'leases_clear'}:
-        return False
-    if (proof['source'] not in ('builder-reconcile.v1', 'pai-dsw-reconcile.v1') or proof['bundle_id'] != identity
-            or type(proof['registry_manifest_status']) is not int or proof['registry_manifest_status'] != 404
-            or type(proof['active_builders']) is not int
-            or proof['active_builders'] != 0 or proof['leases_clear'] is not True):
-        return False
-    try:
-        observed = datetime.fromisoformat(proof['observed_at'].replace('Z', '+00:00'))
-        age = (datetime.now(timezone.utc) - observed).total_seconds()
-        return 0 <= age <= 60
-    except (AttributeError, TypeError, ValueError):
-        return False

@@ -1,4 +1,4 @@
-"""Client Dockerfile provenance and the managed data/checkpoint launcher."""
+"""Client Dockerfile provenance."""
 from __future__ import annotations
 
 import hashlib
@@ -10,9 +10,7 @@ import shlex
 from dockerfile_parse import DockerfileParser
 
 from .source_paths import relative_source_path
-from .worker_contract import worker_digest, worker_dockerfile
 
-DOCKERFILE_RECIPE = "source-dockerfile-assets-v1"
 PINNED_IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
 INTERNAL = "ml-expd-build-internal"
 
@@ -65,11 +63,3 @@ def inspect_dockerfile(tree: Path, name: str) -> dict:
         raise ValueError("Dockerfile must include a digest-pinned external base")
     return {"path": name, "sha256": hashlib.sha256(raw).hexdigest(), "base_images": images,
             "text": text}
-
-
-def managed_dockerfile(inspection: dict, source_id: str) -> str:
-    return (inspection["text"].rstrip() + "\n\n# ML-Expd managed execution contract\n"
-            'RUN ["python3", "-c", "import sys; assert sys.version_info >= (3, 10)"]\n'
-            f"COPY {INTERNAL}/source/ /workspace/\n"
-            "WORKDIR /workspace\n"
-            + worker_dockerfile(source_id, INTERNAL + "/"))
