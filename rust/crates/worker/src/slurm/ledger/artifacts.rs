@@ -88,8 +88,7 @@ impl Helper {
                 // Exact owned incomplete archive, under the exclusive helper
                 // lock. Never remove a published archive to make space.
                 if directory.entry_exists(OsStr::new(ARCHIVE))? {
-                    let file = directory.open_regular_read(OsStr::new(ARCHIVE))?;
-                    directory.remove_staged_regular(OsStr::new(ARCHIVE), &file)?;
+                    directory.remove_staged_regular(OsStr::new(ARCHIVE))?;
                 }
                 let payload = directories[5].child(OsStr::new("payload"), false)?;
                 let attempt = snapshot
@@ -115,11 +114,11 @@ impl Helper {
                 let (sha256, bytes, files) = match packed {
                     Ok(v) => v,
                     Err(e) => {
-                        let _ = directory.remove_staged_regular(OsStr::new(ARCHIVE), &file);
+                        let _ = directory.remove_staged_regular(OsStr::new(ARCHIVE));
                         return Err(e.into());
                     }
                 };
-                directory.seal_regular(OsStr::new(ARCHIVE), &file, false)?;
+                ml_exp_io::directory::seal_regular(&file, false)?;
                 let scope = &request.intent().scope;
                 let bundle = Bundle {
                     contract: artifacts::publication::CONTRACT.into(),
@@ -147,7 +146,7 @@ impl Helper {
                 bundle.validate().map_err(|_| Error::Metadata)?;
                 directory.publish_new(OsStr::new(BUNDLE), &json(&bundle)?)?;
                 let file = directory.open_regular_read(OsStr::new(BUNDLE))?;
-                directory.seal_regular(OsStr::new(BUNDLE), &file, false)?;
+                ml_exp_io::directory::seal_regular(&file, false)?;
                 bundle
             };
             let state = State::new(bundle).map_err(|_| Error::Metadata)?;
@@ -206,12 +205,11 @@ impl Helper {
                         save(&directory, &state)?;
                         if directory.entry_exists(OsStr::new(ARCHIVE))? {
                             let file = directory.open_regular_read(OsStr::new(ARCHIVE))?;
-                            directory
-                                .validate_immutable_regular_entry(OsStr::new(ARCHIVE), &file)?;
+                            ml_exp_io::directory::require_sealed(&file)?;
                             if file.metadata()?.len() != state.bundle.archive.bytes {
                                 return Err(Error::Metadata);
                             }
-                            directory.remove_staged_regular(OsStr::new(ARCHIVE), &file)?;
+                            directory.remove_staged_regular(OsStr::new(ARCHIVE))?;
                         }
                         state.retention = artifacts::finish_release(
                             &state.bundle.archive,
@@ -259,7 +257,7 @@ impl Helper {
             return Err(Error::Metadata);
         }
         let file = directory.open_regular_read(OsStr::new(ARCHIVE))?;
-        directory.validate_immutable_regular_entry(OsStr::new(ARCHIVE), &file)?;
+        ml_exp_io::directory::require_sealed(&file)?;
         if file.metadata()?.len() != state.bundle.archive.bytes {
             return Err(Error::Metadata);
         }

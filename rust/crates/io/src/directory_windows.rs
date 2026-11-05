@@ -168,24 +168,6 @@ impl Directory {
         }
         Ok(file)
     }
-    pub fn validate_regular_entry(&self, name: &OsStr, file: &File) -> io::Result<()> {
-        leaf(name)?;
-        self.verify_private_parent()?;
-        let current = OpenOptions::new()
-            .access_mode(FILE_READ_ATTRIBUTES)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(self.inner.path.join(name))?;
-        let metadata = current.metadata()?;
-        if !metadata.is_file()
-            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-            || info(&current)?.nNumberOfLinks != 1
-            || !same(file, &current)?
-        {
-            return Err(invalid());
-        }
-        self.verify_private_parent()
-    }
     /// Take an advisory lock on `name` through a fresh handle. Contention is
     /// returned as `WouldBlock`, which the caller maps to its own busy error.
     pub fn lock(&self, name: &OsStr, options: LockOptions<'_>) -> io::Result<FileLock> {
@@ -254,7 +236,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let dir = Directory::open(temp.path(), false).unwrap();
         fs::write(temp.path().join("data"), b"training").unwrap();
-        let file = dir.open_regular_read(OsStr::new("data")).unwrap();
+        let _file = dir.open_regular_read(OsStr::new("data")).unwrap();
         assert!(
             OpenOptions::new()
                 .write(true)
@@ -262,8 +244,6 @@ mod tests {
                 .is_err()
         );
         assert!(fs::rename(temp.path().join("data"), temp.path().join("replaced")).is_err());
-        dir.validate_regular_entry(OsStr::new("data"), &file)
-            .unwrap();
         for name in ["../bad", "data:stream", "CON", "NUL.txt", "tail."] {
             assert!(dir.open_regular_read(OsStr::new(name)).is_err());
         }
@@ -283,7 +263,6 @@ mod tests {
             io::ErrorKind::WouldBlock
         );
         assert!(fs::rename(temp.path().join(".dispatch.lock"), temp.path().join("old")).is_err());
-        dir.validate_regular_entry(name, &first).unwrap();
         drop(first);
         assert!(dir.lock(name, options).is_ok());
     }

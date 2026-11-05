@@ -68,8 +68,6 @@ enum Reader {
         http: reqwest::blocking::Client,
     },
     File {
-        parent: Directory,
-        name: std::ffi::OsString,
         file: File,
         size: u64,
     },
@@ -104,12 +102,7 @@ impl Reader {
                 if size != config.definition.archive_bytes {
                     return Err(failed("SOURCE_SIZE_MISMATCH"));
                 }
-                Ok(Self::File {
-                    parent,
-                    name,
-                    file,
-                    size,
-                })
+                Ok(Self::File { file, size })
             }
             Source::Https { url, .. } => {
                 let http = reqwest::blocking::Client::builder()
@@ -230,21 +223,13 @@ impl Reader {
                 }
                 Ok(bytes)
             }
-            Self::File {
-                parent,
-                name,
-                file,
-                size,
-            } => {
+            Self::File { file, size } => {
                 let before = file.metadata().map_err(io_error)?;
                 if before.len() != *size || *size != total {
                     return Err(failed("SOURCE_CHANGED"));
                 }
                 let mut bytes = vec![0; count];
                 file.read_exact_at(&mut bytes, offset).map_err(io_error)?;
-                parent
-                    .validate_regular_entry(name, file)
-                    .map_err(io_error)?;
                 let after = file.metadata().map_err(io_error)?;
                 if before.len() != after.len()
                     || before.mtime() != after.mtime()
@@ -539,12 +524,12 @@ pub fn bundle(config: &Config, output: &Path, cancelled: &AtomicBool) -> Result<
         ml_exp_io::artifacts::verify_data_stream(&mut file, &config.definition)
             .map_err(io_error)?;
         parent
-            .publish_regular_as(&temporary, name, &file)
+            .publish_regular_as(&temporary, name)
             .map_err(io_error)?;
         Ok(())
     })();
     if result.is_err() {
-        let _ = parent.remove_staged_regular(&temporary, &file);
+        let _ = parent.remove_staged_regular(&temporary);
     }
     result
 }

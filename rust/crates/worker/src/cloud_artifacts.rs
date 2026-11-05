@@ -143,10 +143,7 @@ pub fn publish(package: &Package) -> Result<()> {
             .entry_exists(OsStr::new("archive.tar"))
             .map_err(|_| Error::Storage)?
         {
-            let file = dir
-                .open_regular_read(OsStr::new("archive.tar"))
-                .map_err(|_| Error::Storage)?;
-            dir.remove_staged_regular(OsStr::new("archive.tar"), &file)
+            dir.remove_staged_regular(OsStr::new("archive.tar"))
                 .map_err(|_| Error::Storage)?;
         }
         let outputs =
@@ -163,8 +160,7 @@ pub fn publish(package: &Package) -> Result<()> {
         let (sha256, bytes, files) =
             ml_exp_io::artifacts::pack(&outputs, &mut file, &policy).map_err(|_| Error::Storage)?;
         file.sync_all().map_err(|_| Error::Storage)?;
-        dir.seal_regular(OsStr::new("archive.tar"), &file, false)
-            .map_err(|_| Error::Storage)?;
+        ml_exp_io::directory::seal_regular(&file, false).map_err(|_| Error::Storage)?;
         let id = &package.manifest.identity;
         let bundle = Bundle {
             contract: artifacts::publication::CONTRACT.into(),
@@ -263,10 +259,7 @@ pub fn publish(package: &Package) -> Result<()> {
         .entry_exists(OsStr::new("archive.tar"))
         .map_err(|_| Error::Storage)?
     {
-        let file = dir
-            .open_regular_read(OsStr::new("archive.tar"))
-            .map_err(|_| Error::Storage)?;
-        dir.remove_staged_regular(OsStr::new("archive.tar"), &file)
+        dir.remove_staged_regular(OsStr::new("archive.tar"))
             .map_err(|_| Error::Storage)?;
     }
     dir.verify_private_parent().map_err(|_| Error::Storage)?;

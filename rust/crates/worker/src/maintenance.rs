@@ -56,8 +56,7 @@ fn remove(root: &Directory, depth: usize, budget: &mut usize) -> io::Result<()> 
             remove(&directory, depth + 1, budget)?;
             root.remove_staged_empty_child(&directory)?;
         } else {
-            let file = root.open_regular_read(&name)?;
-            root.remove_staged_regular(&name, &file)?;
+            root.remove_staged_regular(&name)?;
         }
     }
     Ok(())

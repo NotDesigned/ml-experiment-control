@@ -137,8 +137,6 @@ fn private_bytes(root: &Directory, name: &OsStr, maximum: u64) -> Result<Vec<u8>
         .take(maximum + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| Error::Storage)?;
-    root.validate_regular_entry(name, &file)
-        .map_err(|_| Error::Storage)?;
     if bytes.len() as u64 != metadata.len() {
         return Err(Error::Storage);
     }

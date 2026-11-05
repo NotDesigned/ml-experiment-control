@@ -148,7 +148,6 @@ pub(super) fn manifest(
             .map_err(why!(Error::SnapshotLimit, "snapshot byte budget exhausted"))?;
         let mut bytes = Vec::new();
         (&mut file).take(length + 1).read_to_end(&mut bytes)?;
-        directory.validate_regular_entry(name, &file)?;
         if bytes.len() as u64 != length {
             return Err(Error::BytesChanged);
         }
@@ -224,9 +223,6 @@ pub(super) fn evidence(
             .take(before.len() + 1)
             .read_to_end(&mut bytes)
             .map_err(why!(EvidenceProblem::Io))?;
-        directory
-            .validate_regular_entry(OsStr::new(filename), &file)
-            .map_err(|_| EvidenceProblem::Io)?;
         if bytes.len() as u64 != before.len() {
             return Err(EvidenceProblem::Io);
         }
@@ -360,9 +356,6 @@ fn tail_bytes(
         .take(before.len() - window)
         .read_to_end(&mut bytes)
         .map_err(why!(EvidenceProblem::Io))?;
-    directory
-        .validate_regular_entry(OsStr::new(filename), &file)
-        .map_err(|_| EvidenceProblem::Io)?;
     if bytes.len() as u64 != before.len() - window {
         return Err(EvidenceProblem::Io);
     }

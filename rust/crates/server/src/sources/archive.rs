@@ -179,7 +179,7 @@ pub(super) fn extract(file: &mut File, tree: &Directory, policy: &Policy) -> Res
             return Err(Error::Archive);
         }
         let executable = entry.header().mode().map_err(why!(Error::Archive))? & 0o111 != 0;
-        parent.seal_regular(OsStr::new(name), &output, executable)?;
+        ml_exp_io::directory::seal_regular(&output, executable)?;
     }
     if pending_path.is_some() || pending_size.is_some() {
         return Err(Error::Archive);

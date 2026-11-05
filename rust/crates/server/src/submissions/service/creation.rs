@@ -299,11 +299,8 @@ pub(super) fn clean_files(directory: &Directory, names: &[&str]) -> Result<()> {
             .entry_exists(OsStr::new(name))
             .map_err(why!(Error::Authority))?
         {
-            let file = directory
-                .open_regular_read(OsStr::new(name))
-                .map_err(why!(Error::Authority))?;
             directory
-                .remove_staged_regular(OsStr::new(name), &file)
+                .remove_staged_regular(OsStr::new(name))
                 .map_err(why!(Error::Authority))?;
         }
     }

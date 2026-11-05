@@ -94,7 +94,6 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
         {
             return Err(invalid());
         }
-        directory.validate_regular_entry(OsStr::new("image.sif"), &file)?;
         return Ok(serde_json::json!({"runtime":receipt.runtime}));
     }
     if !build {
@@ -102,8 +101,7 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
     }
     // Only this operation's unpublished temporary file can be replaced.
     if directory.entry_exists(OsStr::new("image.partial.sif"))? {
-        let file = directory.open_regular_read(OsStr::new("image.partial.sif"))?;
-        directory.remove_staged_regular(OsStr::new("image.partial.sif"), &file)?;
+        directory.remove_staged_regular(OsStr::new("image.partial.sif"))?;
     }
     if directory.entry_exists(OsStr::new("image.sif"))? {
         return Err(invalid());
@@ -169,14 +167,9 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
     }
     let file = directory.open_regular_read(OsStr::new("image.partial.sif"))?;
     let (sha, _) = ml_exp_io::artifacts::hash(&mut &file)?;
-    directory.validate_regular_entry(OsStr::new("image.partial.sif"), &file)?;
     // The destination is new, operation-owned and held under the exclusive
     // gateway lock. Atomic publication keeps unfinished SIFs out of receipts.
-    directory.publish_regular_as(
-        OsStr::new("image.partial.sif"),
-        OsStr::new("image.sif"),
-        &file,
-    )?;
+    directory.publish_regular_as(OsStr::new("image.partial.sif"), OsStr::new("image.sif"))?;
     let runtime = Runtime {
         runtime_id: request.runtime.runtime_id.clone(),
         source_id: request.runtime.source_id.clone(),
@@ -203,7 +196,7 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
         .ok_or_else(invalid)?
         .validate()
         .map_err(|_| invalid())?;
-    directory.seal_regular(OsStr::new("image.sif"), &file, false)?;
+    ml_exp_io::directory::seal_regular(&file, false)?;
     let receipt = Receipt { request, runtime };
     directory.publish_new(OsStr::new("receipt.json"), &serde_json::to_vec(&receipt)?)?;
     Ok(serde_json::json!({"runtime":receipt.runtime}))

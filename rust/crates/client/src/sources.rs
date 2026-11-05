@@ -450,10 +450,6 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         {
             return Err(packing());
         }
-        entry
-            .parent
-            .validate_regular_entry(&entry.name, &file)
-            .map_err(|_| packing())?;
     }
     let writer = archive
         .into_inner()

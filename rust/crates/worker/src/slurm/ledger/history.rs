@@ -90,7 +90,6 @@ impl Helper {
             let mut bytes = vec![0; count];
             file.read_exact(&mut bytes)?;
             hash.update(&bytes);
-            outputs.validate_regular_entry(OsStr::new("metrics.jsonl"), &file)?;
             let after = file.metadata()?;
             if before.len() != after.len()
                 || before.mtime() != after.mtime()

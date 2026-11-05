@@ -178,14 +178,13 @@ impl Store {
         if sha != record.sha256 || bytes != record.bytes {
             return Err(invalid());
         }
-        parts.seal_regular(OsStr::new(&name), &file, false)?;
+        ml_exp_io::directory::seal_regular(&file, false)?;
         Self::save(directory, &next)?;
         Ok(next)
     }
     fn cleanup(directory: &Directory) -> io::Result<()> {
         if directory.entry_exists(OsStr::new("archive.tar"))? {
-            let file = directory.open_regular_read(OsStr::new("archive.tar"))?;
-            directory.remove_staged_regular(OsStr::new("archive.tar"), &file)?;
+            directory.remove_staged_regular(OsStr::new("archive.tar"))?;
         }
         let parts = directory.child(OsStr::new("parts"), false)?;
         for name in parts.entry_names_limited(ml_exp_core::multipart::MAX_MAX_PARTS as usize)? {
@@ -196,8 +195,7 @@ impl Store {
             if name != OsStr::new(&number.to_string()) {
                 return Err(invalid());
             }
-            let file = parts.open_regular_read(&name)?;
-            parts.remove_staged_regular(&name, &file)?;
+            parts.remove_staged_regular(&name)?;
         }
         Ok(())
     }
@@ -230,8 +228,7 @@ impl Store {
                 tree::remove_staging(directory, &old)?;
             }
             if directory.entry_exists(OsStr::new("archive.tar"))? {
-                let old = directory.open_regular_read(OsStr::new("archive.tar"))?;
-                directory.remove_staged_regular(OsStr::new("archive.tar"), &old)?;
+                directory.remove_staged_regular(OsStr::new("archive.tar"))?;
             }
             let required = state
                 .definition

@@ -77,7 +77,7 @@ impl Store {
         let namespace = root.create_new_child(OsStr::new(NAMESPACE))?;
         namespace.publish_new(OsStr::new(POLICY), &encode(&policy_value(&policy)?)?)?;
         let policy_file = namespace.open_regular_read(OsStr::new(POLICY))?;
-        namespace.seal_regular(OsStr::new(POLICY), &policy_file, false)?;
+        ml_exp_io::directory::seal_regular(&policy_file, false)?;
         let lock = namespace.create_new_regular(OsStr::new(LOCK))?;
         lock.sync_all()?;
         namespace.create_new_child(OsStr::new(SOURCES))?;
@@ -143,9 +143,7 @@ impl Store {
         policy: &Policy,
     ) -> Result<Metadata> {
         let file = directory.open_regular_read(OsStr::new(METADATA))?;
-        directory
-            .validate_immutable_regular_entry(OsStr::new(METADATA), &file)
-            .map_err(|_| Error::Archive)?;
+        ml_exp_io::directory::require_sealed(&file).map_err(|_| Error::Archive)?;
         let mut bytes = Vec::new();
         (&file)
             .take((sources::MAX_METADATA_BYTES + 1) as u64)
@@ -175,7 +173,6 @@ impl Store {
             let mut bytes = vec![0u8; request.len];
             file.read_exact(&mut bytes)?;
             digest = digest.consume(&bytes).map_err(why!(Error::Archive))?;
-            parent.validate_regular_entry(name, &file)?;
         }
         let tree_digest = digest.finish().map_err(why!(Error::Archive))?;
         let metadata = Self::read_metadata(directory, project, source_id, &self.policy)?;
@@ -196,9 +193,7 @@ impl Store {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(Error::Io(error)),
         };
-        project_dir
-            .validate_immutable_regular_entry(OsStr::new(archive_sha), &file)
-            .map_err(|_| Error::Archive)?;
+        ml_exp_io::directory::require_sealed(&file).map_err(|_| Error::Archive)?;
         let value: Value = serde_json::from_reader(file).map_err(why!(Error::Archive))?;
         if value.get("schema_version").and_then(Value::as_u64) != Some(1)
             || value.get("project").and_then(Value::as_str) != Some(project)
@@ -289,8 +284,7 @@ impl Store {
             let tree = stage.create_new_child(OsStr::new("tree"))?;
             archive::extract(&mut archive_file, &tree, &self.policy)?;
             drop(archive_file);
-            let archive_for_removal = stage.open_regular_read(OsStr::new("archive.bin"))?;
-            stage.remove_staged_regular(OsStr::new("archive.bin"), &archive_for_removal)?;
+            stage.remove_staged_regular(OsStr::new("archive.bin"))?;
             let (plan, files) = topology(&tree, "")?;
             let mut digest =
                 TreeDigest::new(TreePlan::new(plan, &self.policy).map_err(why!(Error::Archive))?);
@@ -314,7 +308,7 @@ impl Store {
             .map_err(why!(Error::Archive))?;
             stage.publish_new(OsStr::new(METADATA), &encode(&metadata.to_value())?)?;
             let metadata_file = stage.open_regular_read(OsStr::new(METADATA))?;
-            stage.seal_regular(OsStr::new(METADATA), &metadata_file, false)?;
+            ml_exp_io::directory::seal_regular(&metadata_file, false)?;
             seal_tree(&tree)?;
             let source_id = metadata.source_id().to_owned();
             let _guard = self.lock()?;
@@ -330,7 +324,7 @@ impl Store {
                 let receipt = json!({"schema_version":1,"project":project,"archive_sha256":expected_sha,"source_id":source_id,"tree_digest":verified.tree_digest()});
                 imports_project.publish_new(OsStr::new(expected_sha), &encode(&receipt)?)?;
                 let receipt_file = imports_project.open_regular_read(OsStr::new(expected_sha))?;
-                imports_project.seal_regular(OsStr::new(expected_sha), &receipt_file, false)?;
+                ml_exp_io::directory::seal_regular(&receipt_file, false)?;
                 return Ok(verified);
             }
             let published_directory =
@@ -355,7 +349,7 @@ impl Store {
             let receipt = json!({"schema_version":1,"project":project,"archive_sha256":expected_sha,"source_id":source_id,"tree_digest":verified.tree_digest()});
             imports_project.publish_new(OsStr::new(expected_sha), &encode(&receipt)?)?;
             let receipt_file = imports_project.open_regular_read(OsStr::new(expected_sha))?;
-            imports_project.seal_regular(OsStr::new(expected_sha), &receipt_file, false)?;
+            ml_exp_io::directory::seal_regular(&receipt_file, false)?;
             Ok(verified)
         })();
         if published {
@@ -432,7 +426,7 @@ fn seal_check(directory: &Directory) -> Result<()> {
             seal_check(&child)?;
         } else {
             let file = directory.open_regular_read(&name)?;
-            directory.validate_immutable_regular_entry(&name, &file)?;
+            ml_exp_io::directory::require_sealed(&file)?;
         }
     }
     Ok(())
@@ -444,8 +438,7 @@ fn cleanup_stage(parent: &Directory, stage: &Directory) -> Result<()> {
         if let Ok(child) = stage.child(&name, false) {
             cleanup_stage(stage, &child)?;
         } else {
-            let file = stage.open_regular_read(&name)?;
-            stage.remove_staged_regular(&name, &file)?;
+            stage.remove_staged_regular(&name)?;
         }
     }
     parent.remove_staged_empty_child(stage)?;

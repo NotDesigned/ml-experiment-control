@@ -34,7 +34,6 @@ pub fn window(directory: &Directory, name: &str) -> Window {
         (&mut file)
             .take((WINDOW_BYTES + 1) as u64)
             .read_to_end(&mut bytes)?;
-        directory.validate_regular_entry(OsStr::new(name), &file)?;
         if bytes.len() as u64 != before.len() - offset || changed(&before, &file.metadata()?) {
             return Ok(Window::unavailable(Problem::Changed));
         }
@@ -110,7 +109,6 @@ pub fn history(
     let mut bytes = vec![0; count];
     file.read_exact(&mut bytes)?;
     hash.update(&bytes);
-    directory.validate_regular_entry(OsStr::new("metrics.jsonl"), &file)?;
     if changed(&before, &file.metadata()?) {
         return Err(io::Error::other("metrics changed while sampling"));
     }

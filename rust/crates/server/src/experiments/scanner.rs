@@ -146,7 +146,6 @@ fn read_manifest(
         budget.metadata(length)?;
         let mut bytes = Vec::new();
         (&mut file).take(length + 1).read_to_end(&mut bytes)?;
-        directory.validate_regular_entry(name, &file)?;
         if bytes.len() as u64 != length {
             return Err(DiscoveryError::Changed);
         }

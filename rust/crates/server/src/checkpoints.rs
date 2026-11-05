@@ -88,9 +88,7 @@ impl Store {
 
     fn read_value(directory: &Directory, name: &OsStr) -> Result<Value> {
         let file = directory.open_regular_read(name)?;
-        directory
-            .validate_immutable_regular_entry(name, &file)
-            .map_err(|_| Error::Document)?;
+        ml_exp_io::directory::require_sealed(&file).map_err(|_| Error::Document)?;
         let bytes = directory.read_regular(name, MAX_DOCUMENT_BYTES)?;
         serde_json::from_slice(&bytes).map_err(why!(Error::Document))
     }
@@ -186,7 +184,7 @@ impl Store {
         let name = OsString::from(format!("{checkpoint_id}.json"));
         directory.publish_new(&name, &Self::encode(&registered)?)?;
         let file = directory.open_regular_read(&name)?;
-        directory.seal_regular(&name, &file, false)?;
+        ml_exp_io::directory::seal_regular(&file, false)?;
         Ok(registered)
     }
 }
@@ -217,7 +215,7 @@ impl Store {
             directory.publish_new(OsStr::new(&name), &Self::encode(&value)?)?;
         }
         let file = directory.open_regular_read(OsStr::new(&name))?;
-        directory.seal_regular(OsStr::new(&name), &file, false)?;
+        ml_exp_io::directory::seal_regular(&file, false)?;
         Ok(())
     }
 }

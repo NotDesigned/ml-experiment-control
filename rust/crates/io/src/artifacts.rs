@@ -82,15 +82,14 @@ pub(crate) fn walk(
         if let Ok(child) = directory.child(OsStr::new(name), false) {
             walk(&child, &path, found, budget, kind)?;
         } else {
-            let file = directory.open_regular_read(OsStr::new(name))?;
-            directory.validate_regular_entry(OsStr::new(name), &file)?;
+            directory.open_regular_read(OsStr::new(name))?;
             found.push(path);
         }
     }
     directory.verify_private_parent()?;
     Ok(())
 }
-pub(crate) fn open(root: &Directory, path: &str, kind: Kind) -> io::Result<(Directory, File)> {
+pub(crate) fn open(root: &Directory, path: &str, kind: Kind) -> io::Result<File> {
     if !allowed(kind, path) {
         return Err(invalid());
     }
@@ -100,8 +99,7 @@ pub(crate) fn open(root: &Directory, path: &str, kind: Kind) -> io::Result<(Dire
     for n in names {
         parent = parent.child(OsStr::new(n), false)?;
     }
-    let file = parent.open_regular_read(OsStr::new(name))?;
-    Ok((parent, file))
+    parent.open_regular_read(OsStr::new(name))
 }
 struct HashWriter<W> {
     inner: W,
@@ -178,7 +176,7 @@ fn pack_kind(
     let mut archive = tar::Builder::new(writer);
     let mut files = Vec::new();
     for path in &paths {
-        let (parent, mut file) = open(root, path, kind)?;
+        let mut file = open(root, path, kind)?;
         let before = file.metadata()?;
         let mut header = tar::Header::new_gnu();
         header.set_entry_type(tar::EntryType::Regular);
@@ -215,10 +213,6 @@ fn pack_kind(
         if !stable || bytes != before.len() {
             return Err(invalid());
         }
-        parent.validate_regular_entry(
-            OsStr::new(path.rsplit('/').next().ok_or_else(invalid)?),
-            &file,
-        )?;
         files.push(FileReceipt {
             path: path.clone(),
             bytes,
@@ -234,7 +228,7 @@ fn pack_kind(
     }
     // A second hash pass also catches a file changed after its own first read.
     for record in &files {
-        let (_, mut file) = open(root, &record.path, kind)?;
+        let mut file = open(root, &record.path, kind)?;
         let (h, n) = hash(&mut file)?;
         if h != record.sha256 || n != record.bytes {
             return Err(invalid());
@@ -426,7 +420,7 @@ pub fn estimate(root: &Directory, policy: &Policy) -> io::Result<u64> {
     let paths = selected_paths(root, policy, Kind::Results)?;
     let mut bytes = 16u64 * 1024 * 1024;
     for path in paths {
-        let (_, file) = open(root, &path, Kind::Results)?;
+        let file = open(root, &path, Kind::Results)?;
         bytes = bytes
             .checked_add(file.metadata()?.len())
             .and_then(|v| v.checked_add(8192))

@@ -18,7 +18,6 @@ fn window(directory: &Directory, name: &str) -> Window {
         (&mut file)
             .take((WINDOW_BYTES + 1) as u64)
             .read_to_end(&mut bytes)?;
-        directory.validate_regular_entry(OsStr::new(name), &file)?;
         let after = file.metadata()?;
         if bytes.len() as u64 != before.len() - offset
             || before.len() != after.len()

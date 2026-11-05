@@ -135,6 +135,26 @@ fn directory_flags() -> OFlags {
     OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK
 }
 
+/// Seal a retained regular file. Only the two source-file modes are supported.
+pub fn seal_regular(file: &File, executable: bool) -> io::Result<()> {
+    file.sync_all()?;
+    file.set_permissions(std::fs::Permissions::from_mode(if executable {
+        0o500
+    } else {
+        0o400
+    }))?;
+    file.sync_all()
+}
+
+/// Sealed content must still be read-only. This catches an accidental chmod or
+/// an unsealed copy; the hashes verify the content itself.
+pub fn require_sealed(file: &File) -> io::Result<()> {
+    if file.metadata()?.permissions().mode() & 0o222 != 0 {
+        return Err(invalid("sealed file is writable"));
+    }
+    Ok(())
+}
+
 impl Directory {
     /// Original spelling assembled from retained components, for provenance or
     /// a library that only accepts pathnames. This is NOT a dirfd I/O primitive.
@@ -355,25 +375,8 @@ impl Directory {
                 | OFlags::NONBLOCK,
             Mode::RUSR | Mode::WUSR,
         )?);
-        self.validate_regular_entry(name, &file)?;
         rfs::fsync(&self.inner.file)?;
         Ok(file)
-    }
-
-    /// Seal a retained regular file without following its name. Only the two
-    /// source-file modes are supported; symlinks and replaced bindings fail.
-    pub fn seal_regular(&self, name: &OsStr, file: &File, executable: bool) -> io::Result<()> {
-        self.verify_private_parent()?;
-        self.validate_regular_entry(name, file)?;
-        file.sync_all()?;
-        file.set_permissions(std::fs::Permissions::from_mode(if executable {
-            0o500
-        } else {
-            0o400
-        }))?;
-        file.sync_all()?;
-        self.validate_regular_entry(name, file)?;
-        self.verify_private_parent()
     }
 
     /// Change only this fixed directory's owner mode. Unsealing is for an
@@ -429,31 +432,24 @@ impl Directory {
     }
 
     /// Remove a known regular leaf only inside an operation-owned unpublished
-    /// staging tree, under the caller's domain lock. No symlink is followed.
-    /// This cannot prevent an administrator/same-UID adversary replacing a leaf
-    /// between checks; it is not an arbitrary-tree deletion primitive.
-    pub fn remove_staged_regular(&self, name: &OsStr, file: &File) -> io::Result<()> {
+    /// staging tree, under the caller's domain lock. No symlink is followed and
+    /// an unexpected type stops the cleanup. This is not an arbitrary-tree
+    /// deletion primitive.
+    pub fn remove_staged_regular(&self, name: &OsStr) -> io::Result<()> {
         self.verify_private_parent()?;
-        self.validate_regular_entry(name, file)?;
+        self.regular_identity(name)?;
         rfs::unlinkat(&self.inner.file, name, AtFlags::empty())?;
         rfs::fsync(&self.inner.file)?;
         self.verify_private_parent()
     }
 
     /// No-replace publication of an operation-owned completed regular file.
-    pub fn publish_regular_as(
-        &self,
-        source: &OsStr,
-        target: &OsStr,
-        file: &File,
-    ) -> io::Result<()> {
+    pub fn publish_regular_as(&self, source: &OsStr, target: &OsStr) -> io::Result<()> {
         leaf(source)?;
         leaf(target)?;
         self.verify_private_parent()?;
-        self.validate_regular_entry(source, file)?;
         rename_regular_new(&self.inner.file, source, target)?;
         rfs::fsync(&self.inner.file)?;
-        self.validate_regular_entry(target, file)?;
         self.verify_private_parent()
     }
 
@@ -502,41 +498,6 @@ impl Directory {
         };
         self.verify_attached()?;
         Ok(result)
-    }
-
-    pub fn validate_regular_entry(&self, name: &OsStr, file: &File) -> io::Result<()> {
-        leaf(name)?;
-        self.verify_attached()?;
-        let entry = rfs::statat(&self.inner.file, name, AtFlags::SYMLINK_NOFOLLOW)?;
-        if FileType::from_raw_mode(entry.st_mode) != FileType::RegularFile
-            || !same_file(file, &entry)?
-            || entry.st_mode & 0o022 != 0
-            || !trusted_storage_owner(entry.st_uid, effective_uid())
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "regular entry binding or ownership became unsafe: {} mode={:o} uid={} inode={} open_inode={}",
-                    name.to_string_lossy(),
-                    entry.st_mode,
-                    entry.st_uid,
-                    entry.st_ino,
-                    rfs::fstat(file)?.st_ino
-                ),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Validate a regular file that is intended to be immutable metadata.
-    /// The owner-write bit is rejected as well as group/other writes; callers
-    /// should publish with `seal_regular` and re-check this binding on reads.
-    pub fn validate_immutable_regular_entry(&self, name: &OsStr, file: &File) -> io::Result<()> {
-        self.validate_regular_entry(name, file)?;
-        if file.metadata()?.permissions().mode() & 0o222 != 0 {
-            return Err(invalid("immutable metadata is writable"));
-        }
-        Ok(())
     }
 
     /// Take an advisory lock on `name` through a fresh description. Contention
@@ -599,7 +560,6 @@ impl Directory {
             OFlags::WRONLY | OFlags::APPEND | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::empty(),
         )?))?;
-        self.validate_regular_entry(name, &file)?;
         if file
             .metadata()?
             .len()
@@ -610,7 +570,6 @@ impl Directory {
         }
         file.write_all(bytes)?;
         file.sync_all()?;
-        self.validate_regular_entry(name, &file)?;
         self.verify_private_parent()
     }
 
@@ -626,7 +585,6 @@ impl Directory {
             OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::empty(),
         )?))?;
-        self.validate_regular_entry(name, &file)?;
         if file.metadata()?.len() > maximum {
             return Err(invalid("regular file exceeds limit"));
         }
@@ -635,14 +593,13 @@ impl Directory {
         if bytes.len() as u64 > maximum {
             return Err(invalid("regular file exceeds limit"));
         }
-        self.validate_regular_entry(name, &file)?;
         Ok(bytes)
     }
 
     /// Open a regular metadata/log file through this directory capability.
-    /// Callers performing bounded tail reads must validate this exact entry
-    /// again after I/O and retain a fixed initial length. Never use an extra
-    /// SQLite database/sidecar descriptor to verify SQLite's own POSIX locks.
+    /// Callers performing bounded tail reads retain a fixed initial length.
+    /// Never use an extra SQLite database/sidecar descriptor to verify
+    /// SQLite's own POSIX locks.
     pub fn open_regular_read(&self, name: &OsStr) -> io::Result<File> {
         leaf(name)?;
         self.verify_attached()?;
@@ -652,7 +609,6 @@ impl Directory {
             OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::empty(),
         )?))?;
-        self.validate_regular_entry(name, &file)?;
         Ok(file)
     }
 
@@ -666,13 +622,12 @@ impl Directory {
         let result = (|| {
             file.write_all(bytes)?;
             file.sync_all()?;
-            self.validate_regular_entry(&temporary, &file)?;
             rename_regular_new(&self.inner.file, &temporary, name)?;
             rfs::fsync(&self.inner.file)?;
             self.verify_attached()?;
             Ok(())
         })();
-        if result.is_err() && self.validate_regular_entry(&temporary, &file).is_ok() {
+        if result.is_err() {
             let _ = rfs::unlinkat(&self.inner.file, &temporary, AtFlags::empty());
             let _ = rfs::fsync(&self.inner.file);
         }
@@ -690,14 +645,11 @@ impl Directory {
         let result = (|| {
             file.write_all(bytes)?;
             file.sync_all()?;
-            self.validate_regular_entry(&temporary, &file)?;
-            self.regular_identity(name)?;
             rfs::renameat(&self.inner.file, &temporary, &self.inner.file, name)?;
             rfs::fsync(&self.inner.file)?;
-            self.validate_regular_entry(name, &file)?;
             Ok(())
         })();
-        if result.is_err() && self.validate_regular_entry(&temporary, &file).is_ok() {
+        if result.is_err() {
             let _ = rfs::unlinkat(&self.inner.file, &temporary, AtFlags::empty());
             let _ = rfs::fsync(&self.inner.file);
         }
@@ -861,9 +813,6 @@ mod tests {
             OsStr::new("target"),
         )
         .unwrap();
-        directory
-            .validate_regular_entry(OsStr::new("target"), &first)
-            .unwrap();
         assert!(!directory.entry_exists(OsStr::new("first")).unwrap());
         let mut second = directory.create_new_regular(OsStr::new("second")).unwrap();
         second.write_all(b"different").unwrap();
@@ -881,9 +830,7 @@ mod tests {
             directory.read_regular(OsStr::new("target"), 100).unwrap(),
             b"original"
         );
-        directory
-            .validate_regular_entry(OsStr::new("second"), &second)
-            .unwrap();
+        assert!(directory.entry_exists(OsStr::new("second")).unwrap());
         symlink("target", temp.path().join("alias")).unwrap();
         assert!(
             link_regular_new(
@@ -916,15 +863,47 @@ mod tests {
         assert!(!temp.path().join("missing").exists());
         symlink("a.log", temp.path().join("alias")).unwrap();
         assert!(directory.open_regular_read(OsStr::new("alias")).is_err());
-        fs::rename(temp.path().join("a.log"), temp.path().join("old.log")).unwrap();
-        directory
-            .publish_new(OsStr::new("a.log"), b"different")
-            .unwrap();
+    }
+
+    #[test]
+    fn failed_publication_leaves_no_temporary_and_keeps_the_existing_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = Directory::open(temp.path(), false).unwrap();
+        directory.publish_new(OsStr::new("once"), b"first").unwrap();
         assert!(
             directory
-                .validate_regular_entry(OsStr::new("a.log"), &file)
+                .publish_new(OsStr::new("once"), b"second")
                 .is_err()
         );
+        assert!(
+            directory
+                .replace_regular(OsStr::new("once"), b"third")
+                .is_ok()
+        );
+        fs::create_dir(temp.path().join("folder")).unwrap();
+        assert!(
+            directory
+                .replace_regular(OsStr::new("folder"), b"bad")
+                .is_err()
+        );
+        let names = directory.entry_names().unwrap();
+        assert_eq!(names, ["folder", "once"].map(OsString::from));
+        assert_eq!(fs::read(temp.path().join("once")).unwrap(), b"third");
+    }
+
+    #[test]
+    fn sealing_is_read_only_and_a_writable_file_is_not_sealed() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = Directory::open(temp.path(), false).unwrap();
+        let file = directory.create_new_regular(OsStr::new("data")).unwrap();
+        assert!(require_sealed(&file).is_err());
+        seal_regular(&file, false).unwrap();
+        require_sealed(&file).unwrap();
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .unwrap();
+        assert!(require_sealed(&file).is_err());
+        seal_regular(&file, true).unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o500);
     }
 
     #[test]
