@@ -55,7 +55,7 @@ impl Service {
         let value: Prepared = serde_json::from_slice(
             &self
                 .slots
-                .read_regular(OsStr::new(&name), MAX_SLOT_BYTES)
+                .read_whole(OsStr::new(&name))
                 .map_err(why!(Error::Authority))?,
         )
         .map_err(why!(Error::Authority))?;
@@ -129,9 +129,6 @@ impl Service {
                 context.expires,
             )?;
             let bytes = serde_json::to_vec(&prepared).map_err(why!(Error::Configuration))?;
-            if bytes.len() as u64 > MAX_SLOT_BYTES {
-                return Err(Error::Configuration);
-            }
             self.slots
                 .publish_new(
                     OsStr::new(&Self::slot_name(project, run, &facts.binding.attempt_id)?),

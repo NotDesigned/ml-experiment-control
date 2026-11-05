@@ -17,8 +17,6 @@ use std::{
 const HEAD: &str = "registry.json";
 const EVENTS: &str = "events.jsonl";
 const LOCK: &str = ".registry.lock";
-const MAX_HEAD: u64 = 4 * 1024 * 1024;
-const MAX_JOURNAL: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -169,7 +167,7 @@ impl Store {
         let change = projects::bootstrap(None, seeds, now)?;
         if let Some(commit) = &change.commit {
             let empty = durable::Snapshot::from_value(&json!({"schema_version":1,"projects":[]}))?;
-            let plan = durable::commit(
+            durable::commit(
                 &empty,
                 &[],
                 &commit.payload,
@@ -177,11 +175,6 @@ impl Store {
                 Some(0),
                 transition_id,
             )?;
-            if encoded(&plan.head)?.len() as u64 > MAX_HEAD
-                || encoded(&plan.transition)?.len() as u64 > MAX_JOURNAL
-            {
-                return Err(Error::Invalid);
-            }
         }
         let parent = Directory::open(path.parent().ok_or(Error::Invalid)?, false)?;
         let name = path.file_name().ok_or(Error::Invalid)?;
@@ -244,16 +237,13 @@ impl Store {
             })
     }
     fn load(&self, _lock: &Lock) -> Result<Loaded, Error> {
-        let head = self.directory.read_regular(OsStr::new(HEAD), MAX_HEAD)?;
+        let head = self.directory.read_whole(OsStr::new(HEAD))?;
         let state = durable::Snapshot::from_value(&decode(&head)?)?;
         let registry = registry(&state.value)?;
-        let (events, normalized_journal) = journal(
-            &self
-                .directory
-                .read_regular(OsStr::new(EVENTS), MAX_JOURNAL)?,
-        )?;
+        let (events, normalized_journal) =
+            journal(&self.directory.read_whole(OsStr::new(EVENTS))?)?;
         let missing = durable::missing_transition(&state, &events)?;
-        if self.directory.read_regular(OsStr::new(HEAD), MAX_HEAD)? != head {
+        if self.directory.read_whole(OsStr::new(HEAD))? != head {
             return Err(Error::Invalid);
         }
         Ok(Loaded {
@@ -285,11 +275,8 @@ impl Store {
                 self.directory.replace_regular(OsStr::new(EVENTS), &bytes)?;
             }
             if let Some(transition) = loaded.missing {
-                self.directory.append_regular(
-                    OsStr::new(EVENTS),
-                    &encoded(&transition)?,
-                    MAX_JOURNAL,
-                )?;
+                self.directory
+                    .append_regular(OsStr::new(EVENTS), &encoded(&transition)?)?;
             }
             let repaired = self.load(lock)?;
             if repaired.normalized_journal.is_some() || repaired.missing.is_some() {
@@ -322,37 +309,16 @@ impl Store {
         )?;
         let bytes = encoded(&plan.head)?;
         let event = encoded(&plan.transition)?;
-        let mut journal_size = match &loaded.normalized_journal {
-            Some(bytes) => bytes.len() as u64,
-            None => self
-                .directory
-                .open_regular_read(OsStr::new(EVENTS))?
-                .metadata()?
-                .len(),
-        };
-        if let Some(missing) = &loaded.missing {
-            journal_size = journal_size
-                .checked_add(encoded(missing)?.len() as u64)
-                .ok_or(Error::Invalid)?;
-        }
-        if bytes.len() as u64 > MAX_HEAD
-            || journal_size
-                .checked_add(event.len() as u64)
-                .is_none_or(|n| n > MAX_JOURNAL)
-        {
-            return Err(Error::Invalid);
-        }
         (|| {
             let repaired = self.repair(lock, loaded)?;
             if repaired.state.revision + 1 != plan.revision {
                 return Err(Error::Invalid);
             }
             self.directory.replace_regular(OsStr::new(HEAD), &bytes)?;
-            if self.directory.read_regular(OsStr::new(HEAD), MAX_HEAD)? != bytes {
+            if self.directory.read_whole(OsStr::new(HEAD))? != bytes {
                 return Err(Error::Invalid);
             }
-            self.directory
-                .append_regular(OsStr::new(EVENTS), &event, MAX_JOURNAL)?;
+            self.directory.append_regular(OsStr::new(EVENTS), &event)?;
             let final_state = self.load(lock)?;
             if final_state.state.revision != plan.revision || final_state.missing.is_some() {
                 return Err(Error::Invalid);

@@ -11,7 +11,7 @@ use std::{
 };
 
 /// Matches the deepest reference `Store` will open for a located Run.
-const MAX_DEPTH: usize = 32;
+pub(super) const MAX_DEPTH: usize = 32;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DiscoveryError {
@@ -69,9 +69,6 @@ fn read_manifest(
         }
         let mut file = directory.open_regular_read(name)?;
         let length = file.metadata()?.len();
-        if length > domain::MAX_BYTES as u64 {
-            return Err(DocumentError::TooLarge.into());
-        }
         let mut bytes = Vec::new();
         (&mut file).take(length + 1).read_to_end(&mut bytes)?;
         if bytes.len() as u64 != length {
@@ -92,7 +89,7 @@ pub(super) fn scan(
 ) -> Result<Discovery, DiscoveryError> {
     identity::validate_id(project).map_err(why!(DiscoveryError::UnsafeEntry))?;
     let guard = fence.shared_existing()?;
-    let project_bytes = parent.read_regular(project_filename, domain::MAX_BYTES as u64)?;
+    let project_bytes = parent.read_whole(project_filename)?;
     let project_document = Document::decode(&project_bytes, ManifestSource::ProjectYaml)?;
     domain::validate_project(&project_document.metadata, project)?;
     for (index, root) in roots.iter().enumerate() {

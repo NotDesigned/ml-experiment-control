@@ -191,6 +191,11 @@ impl Directory {
             Err(e) => Err(e),
         }
     }
+    pub fn read_whole(&self, name: &OsStr) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        self.open_regular_read(name)?.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
     pub fn read_regular(&self, name: &OsStr, maximum: u64) -> io::Result<Vec<u8>> {
         let file = self.open_regular_read(name)?;
         if file.metadata()?.len() > maximum {

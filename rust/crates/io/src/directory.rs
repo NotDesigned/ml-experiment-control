@@ -498,7 +498,7 @@ impl Directory {
     /// Append bounded metadata to an existing private file. The caller must
     /// hold its domain lock; this is not a compare-and-set operation. An error
     /// after write starts can mean a partial/durable effect and needs recovery.
-    pub fn append_regular(&self, name: &OsStr, bytes: &[u8], maximum: u64) -> io::Result<()> {
+    pub fn append_regular(&self, name: &OsStr, bytes: &[u8]) -> io::Result<()> {
         leaf(name)?;
         if !self
             .regular_identity(name)?
@@ -512,16 +512,16 @@ impl Directory {
             OFlags::WRONLY | OFlags::APPEND | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::empty(),
         )?))?;
-        if file
-            .metadata()?
-            .len()
-            .checked_add(bytes.len() as u64)
-            .is_none_or(|size| size > maximum)
-        {
-            return Err(invalid("append file exceeds its budget"));
-        }
         file.write_all(bytes)?;
         file.sync_all()
+    }
+
+    /// Read a whole regular file of the service's own state. Anything a job,
+    /// a peer or a credential owner can write keeps a `read_regular` limit.
+    pub fn read_whole(&self, name: &OsStr) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        self.open_regular_read(name)?.read_to_end(&mut bytes)?;
+        Ok(bytes)
     }
 
     pub fn read_regular(&self, name: &OsStr, maximum: u64) -> io::Result<Vec<u8>> {
@@ -1101,26 +1101,21 @@ mod tests {
             ..Default::default()
         };
         assert!(directory.lock(name, options).is_err());
-        assert!(directory.append_regular(name, b"x", 10).is_err());
+        assert!(directory.append_regular(name, b"x").is_err());
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
         directory.publish_new(name, b"old").unwrap();
         let before = directory.regular_identity(name).unwrap();
         let mut lock = directory.lock(name, options).unwrap();
         lock.write_all(b"new").unwrap();
         lock.sync_all().unwrap();
-        directory.append_regular(name, b"\n", 4).unwrap();
+        directory.append_regular(name, b"\n").unwrap();
         assert_eq!(fs::read(temp.path().join(name)).unwrap(), b"new\n");
         assert_eq!(directory.regular_identity(name).unwrap(), before);
-        assert!(directory.append_regular(name, b"x", 4).is_err());
-        assert_eq!(fs::read(temp.path().join(name)).unwrap(), b"new\n");
+        assert_eq!(directory.read_whole(name).unwrap(), b"new\n");
         symlink("ledger", temp.path().join("symbolic")).unwrap();
         for alias in ["symbolic", "missing"] {
             assert!(directory.lock(OsStr::new(alias), options).is_err());
-            assert!(
-                directory
-                    .append_regular(OsStr::new(alias), b"x", 10)
-                    .is_err()
-            );
+            assert!(directory.append_regular(OsStr::new(alias), b"x").is_err());
         }
         assert!(
             std::process::Command::new("mkfifo")
@@ -1130,11 +1125,8 @@ mod tests {
                 .success()
         );
         assert!(directory.lock(OsStr::new("fifo"), options).is_err());
-        assert!(
-            directory
-                .append_regular(OsStr::new("fifo"), b"x", 10)
-                .is_err()
-        );
+        assert!(directory.append_regular(OsStr::new("fifo"), b"x").is_err());
+        assert!(directory.read_whole(OsStr::new("fifo")).is_err());
     }
 
     #[test]

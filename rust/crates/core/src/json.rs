@@ -1,5 +1,5 @@
 //! Strict JSON remains JSON: YAML style and scalar resolution are irrelevant.
-const MAX_DEPTH: usize = 64;
+pub const MAX_DEPTH: usize = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     #[error("JSON is malformed or not one mapping")]

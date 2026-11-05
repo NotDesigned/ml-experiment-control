@@ -17,7 +17,6 @@ use std::{
 
 type Result<T> = std::result::Result<T, Error>;
 const LOCK: &str = ".run-deletion.lock";
-const MAX_TOMBSTONE: u64 = 4 * 1024 * 1024;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid Run deletion identity")]
@@ -251,7 +250,7 @@ impl Guard<'_> {
     }
 }
 fn read_existing(directory: &Directory, name: &OsStr) -> io::Result<Value> {
-    serde_json::from_slice(&directory.read_regular(name, MAX_TOMBSTONE)?).map_err(io::Error::other)
+    serde_json::from_slice(&directory.read_whole(name)?).map_err(io::Error::other)
 }
 
 #[cfg(test)]

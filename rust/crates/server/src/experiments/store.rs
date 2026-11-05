@@ -18,8 +18,6 @@ pub enum Error {
     Missing,
     #[error("frozen manifest bytes changed during observation or differ from the expected SHA256")]
     BytesChanged,
-    #[error("experiment snapshot exceeds its bounded metadata or Attempt limit")]
-    SnapshotLimit,
     #[error(transparent)]
     Document(#[from] DocumentError),
     #[error(transparent)]
@@ -93,10 +91,7 @@ fn same(first: &Document, second: &Document) -> Result<()> {
     }
 }
 fn read(directory: &Directory, name: &OsStr, source: ManifestSource) -> Result<Document> {
-    Ok(Document::decode(
-        &directory.read_regular(name, domain::MAX_BYTES as u64)?,
-        source,
-    )?)
+    Ok(Document::decode(&directory.read_whole(name)?, source)?)
 }
 fn read_first(directory: &Directory, sources: &[ManifestSource]) -> Result<Document> {
     for source in sources {
@@ -122,7 +117,7 @@ impl ProjectAnchor {
     fn run_directory(&self, reference: &RunRef) -> Result<Directory> {
         identity::validate_id(&reference.project).map_err(why!(Error::Binding))?;
         identity::validate_observation_id(&reference.run_id).map_err(why!(Error::Binding))?;
-        if reference.relative_components.len() > 32 {
+        if reference.relative_components.len() > super::scanner::MAX_DEPTH {
             return Err(Error::Binding);
         }
         let mut directory = self
@@ -304,8 +299,7 @@ impl Store {
         let anchor = self.project_anchor(&reference.project)?;
         let project = anchor.project(&reference.project)?;
         let directory = anchor.run_directory(reference)?;
-        let mut budget = snapshot::Budget::new();
-        let run = snapshot::manifest(&directory, RUN_SOURCES, &mut budget)?;
+        let run = snapshot::manifest(&directory, RUN_SOURCES)?;
         domain::validate_run(&run.metadata, &reference.project, &reference.run_id)?;
         let current_status = snapshot::evidence(
             &directory,
@@ -314,7 +308,6 @@ impl Store {
             &reference.project,
             &reference.run_id,
             None,
-            &mut budget,
         );
         let current_collection = snapshot::evidence(
             &directory,
@@ -323,7 +316,6 @@ impl Store {
             &reference.project,
             &reference.run_id,
             None,
-            &mut budget,
         );
         let current_decision = snapshot::evidence(
             &directory,
@@ -332,7 +324,6 @@ impl Store {
             &reference.project,
             &reference.run_id,
             None,
-            &mut budget,
         );
         let attempts_directory = if directory.entry_exists(OsStr::new("attempts"))? {
             Some(directory.child(OsStr::new("attempts"), false)?)
@@ -349,7 +340,7 @@ impl Store {
             (None, Some(_)) => return Err(Error::Missing),
             (None, None) => Vec::new(),
             (Some(root), None) => root
-                .entry_names_limited(snapshot::MAX_ATTEMPTS)?
+                .entry_names()?
                 .into_iter()
                 .filter_map(|name| {
                     name.to_str()
@@ -358,9 +349,6 @@ impl Store {
                 })
                 .collect(),
         };
-        if names.len() > snapshot::MAX_ATTEMPTS {
-            return Err(Error::SnapshotLimit);
-        }
         let (current_attempt_id, current_selection_source, diagnostics) = snapshot::current(
             &[&current_status, &current_collection, &current_decision],
             &names,
@@ -370,7 +358,7 @@ impl Store {
         for attempt_id in names {
             let root = attempts_directory.as_ref().ok_or(Error::Missing)?;
             let attempt_directory = root.child(OsStr::new(&attempt_id), false)?;
-            let manifest = snapshot::manifest(&attempt_directory, ATTEMPT_SOURCES, &mut budget)?;
+            let manifest = snapshot::manifest(&attempt_directory, ATTEMPT_SOURCES)?;
             let provenance = domain::validate_attempt(
                 &run,
                 &manifest,
@@ -379,7 +367,7 @@ impl Store {
                 &attempt_id,
             )?;
             let prefix = format!("attempts/{attempt_id}");
-            let mut evidence = |name: &str| {
+            let evidence = |name: &str| {
                 snapshot::evidence(
                     &attempt_directory,
                     name,
@@ -387,7 +375,6 @@ impl Store {
                     &reference.project,
                     &reference.run_id,
                     Some(&attempt_id),
-                    &mut budget,
                 )
             };
             let status = evidence("status.json");

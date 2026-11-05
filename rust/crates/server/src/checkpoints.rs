@@ -10,7 +10,6 @@ use std::{ffi::OsStr, path::Path};
 
 const NAMESPACE: &str = "persistent-checkpoints";
 const LOCK: &str = ".checkpoints.lock";
-const MAX_DOCUMENT_BYTES: u64 = checkpoints::MANIFEST_LIMIT as u64 * 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -79,16 +78,13 @@ impl Store {
     fn encode(value: &Value) -> Result<Vec<u8>> {
         let mut bytes = serde_json::to_vec(value).map_err(why!(Error::Document))?;
         bytes.push(b'\n');
-        if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
-            return Err(Error::Document);
-        }
         Ok(bytes)
     }
 
     fn read_value(directory: &Directory, name: &OsStr) -> Result<Value> {
         let file = directory.open_regular_read(name)?;
         ml_exp_io::directory::require_sealed(&file).map_err(|_| Error::Document)?;
-        let bytes = directory.read_regular(name, MAX_DOCUMENT_BYTES)?;
+        let bytes = directory.read_whole(name)?;
         serde_json::from_slice(&bytes).map_err(why!(Error::Document))
     }
 
@@ -205,9 +201,7 @@ impl Store {
         let value =
             serde_json::json!({"checkpoint_id":id,"plan_id":plan_id,"status":"REMOVAL_REQUESTED"});
         if directory.entry_exists(OsStr::new(&name))? {
-            if directory.read_regular(OsStr::new(&name), MAX_DOCUMENT_BYTES)?
-                != Self::encode(&value)?
-            {
+            if directory.read_whole(OsStr::new(&name))? != Self::encode(&value)? {
                 return Err(Error::Document);
             }
         } else {

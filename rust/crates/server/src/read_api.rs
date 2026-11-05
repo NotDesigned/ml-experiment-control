@@ -102,11 +102,6 @@ impl From<experiments::Error> for Error {
                 "EXPERIMENT_NOT_FOUND",
                 "the configured experiment or manifest is unavailable",
             ),
-            experiments::Error::SnapshotLimit => error(
-                413,
-                "EXPERIMENT_READ_LIMIT",
-                "experiment metadata exceeds the read budget",
-            ),
             experiments::Error::Binding => error(
                 422,
                 "INVALID_EXPERIMENT_IDENTITY",

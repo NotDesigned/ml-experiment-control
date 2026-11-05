@@ -22,7 +22,6 @@ use std::{
 const LOCK: &str = ".managed-launch.lock";
 const MANIFEST: &str = "launch-manifest.json";
 const RECEIPT: &str = "managed-receipt.json";
-const LEDGER_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -212,11 +211,10 @@ impl Held {
             .seek(SeekFrom::Start(0))
             .map_err(|_| Error::Storage)?;
         let mut bytes = Vec::new();
-        (&mut self.file)
-            .take(LEDGER_BYTES + 1)
+        self.file
             .read_to_end(&mut bytes)
             .map_err(|_| Error::Storage)?;
-        if bytes.len() as u64 > LEDGER_BYTES || !bytes.ends_with(b"\n") {
+        if !bytes.ends_with(b"\n") {
             return Err(Error::Uncertain);
         }
         let lines = bytes[..bytes.len() - 1]
@@ -268,7 +266,7 @@ impl Held {
         let mut bytes = serde_json::to_vec(&record).map_err(|_| Error::Storage)?;
         bytes.push(b'\n');
         self.root
-            .append_regular(OsStr::new(LOCK), &bytes, LEDGER_BYTES)
+            .append_regular(OsStr::new(LOCK), &bytes)
             .map_err(|_| Error::Storage)
     }
     fn runtime(&mut self, config: &Config) -> Result<BTreeMap<String, String>> {

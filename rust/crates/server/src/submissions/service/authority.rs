@@ -86,7 +86,6 @@ impl Service {
             .map_err(why!(Error::Authority))?;
         if snapshot.run.legacy_observation_only
             || snapshot.attempts.is_empty()
-            || snapshot.attempts.len() > 256
             || !snapshot.diagnostics.is_empty()
         {
             return Err(Error::Authority);

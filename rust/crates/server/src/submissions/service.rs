@@ -24,7 +24,6 @@ use std::{
 
 const NAMESPACE: &str = "submissions";
 const LOCK: &str = ".submissions.lock";
-const MAX_SLOT_BYTES: u64 = 24 * 1024 * 1024;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("native submission configuration or retained workspace is invalid")]
