@@ -36,7 +36,7 @@ impl Service {
             serde_json::from_slice::<Observation>(
                 &self
                     .slots
-                    .read_regular(OsStr::new(&name), 4 * 1024 * 1024)
+                    .read_whole(OsStr::new(&name))
                     .map_err(why!(Error::Authority))?,
             )
             .map_err(why!(Error::Authority))?

@@ -29,8 +29,7 @@ fn record(_: crate::records::Error) -> Error {
     invalid()
 }
 fn load<T: DeserializeOwned>(d: &Directory, name: &str) -> Result<T, Error> {
-    serde_json::from_slice(&d.read_regular(OsStr::new(name), 1024 * 1024).map_err(io)?)
-        .map_err(why!(invalid()))
+    serde_json::from_slice(&d.read_whole(OsStr::new(name)).map_err(io)?).map_err(why!(invalid()))
 }
 fn save(d: &Directory, name: &str, v: &impl Serialize) -> Result<(), Error> {
     let bytes = serde_json::to_vec(v).map_err(why!(invalid()))?;
@@ -103,9 +102,7 @@ impl Api {
                 Ok(None)
             };
         }
-        let raw = dir
-            .read_regular(OsStr::new("manifest.json"), 1024 * 1024)
-            .map_err(io)?;
+        let raw = dir.read_whole(OsStr::new("manifest.json")).map_err(io)?;
         let manifest: Value = serde_json::from_slice(&raw).map_err(why!(invalid()))?;
         if manifest["native_creation"]["format"] != FORMAT {
             return Ok(None);

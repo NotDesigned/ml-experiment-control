@@ -35,7 +35,7 @@ impl Service {
         }
         let bytes = self
             .slots
-            .read_regular(OsStr::new(&name), helper::MAX_METADATA_BYTES as u64)
+            .read_whole(OsStr::new(&name))
             .map_err(why!(Error::Authority))?;
         let saved: Saved = serde_json::from_value(Value::Object(
             ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?,
@@ -77,9 +77,6 @@ impl Service {
             state: state.clone(),
         };
         let bytes = serde_json::to_vec(&saved).map_err(why!(Error::Authority))?;
-        if bytes.len() > helper::MAX_METADATA_BYTES {
-            return Err(Error::Authority);
-        }
         self.slots
             .replace_regular(OsStr::new(&Self::artifact_name(prepared)?), &bytes)
             .map_err(why!(Error::Uncertain))?;

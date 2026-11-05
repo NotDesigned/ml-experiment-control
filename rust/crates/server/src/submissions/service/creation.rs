@@ -229,7 +229,7 @@ pub(super) fn publish_json(directory: &Directory, name: &str, value: &Value) -> 
 }
 pub(super) fn read_json(directory: &Directory, name: &str) -> Result<Value> {
     let bytes = directory
-        .read_regular(OsStr::new(name), creation::MAX_REQUEST_BYTES as u64 * 8)
+        .read_whole(OsStr::new(name))
         .map_err(why!(Error::Authority))?;
     let value = experiments::parse_mapping(&bytes, experiments::Format::Json)
         .map(Value::Object)

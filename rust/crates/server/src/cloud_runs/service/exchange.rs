@@ -261,10 +261,7 @@ impl Service {
         if !self.slots.entry_exists(OsStr::new(&name)).map_err(io)? {
             return Ok(None);
         }
-        let bytes = self
-            .slots
-            .read_regular(OsStr::new(&name), 4 * 1024 * 1024)
-            .map_err(io)?;
+        let bytes = self.slots.read_whole(OsStr::new(&name)).map_err(io)?;
         let saved: Saved = serde_json::from_value(Value::Object(
             ml_exp_core::json::mapping(&bytes).map_err(why!(cloud::Error::evidence()))?,
         ))
@@ -527,9 +524,6 @@ impl Service {
             .require_observed_live(project, run)
             .map_err(why!(cloud::Error::evidence()))?;
         let bytes = encode(&saved)?;
-        if bytes.len() > 4 * 1024 * 1024 {
-            return Err(cloud::Error::evidence());
-        }
         self.slots
             .replace_regular(OsStr::new(&Self::exchange_name(&prepared)?), &bytes)
             .map_err(why!(cloud::Error {

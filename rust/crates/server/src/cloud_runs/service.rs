@@ -82,9 +82,7 @@ fn encode(value: &impl Serialize) -> cloud::Result<Vec<u8>> {
     serde_json::to_vec(value).map_err(why!(cloud::Error::evidence()))
 }
 pub(super) fn read(dir: &Directory, name: &str) -> cloud::Result<Value> {
-    let bytes = dir
-        .read_regular(OsStr::new(name), 8 * 1024 * 1024)
-        .map_err(io)?;
+    let bytes = dir.read_whole(OsStr::new(name)).map_err(io)?;
     let value =
         Value::Object(ml_exp_core::json::mapping(&bytes).map_err(why!(cloud::Error::evidence()))?);
     if encode(&value)? != bytes {

@@ -39,7 +39,7 @@ impl Service {
         }
         let bytes = self
             .slots
-            .read_regular(OsStr::new(&name), 2 * 1024 * 1024)
+            .read_whole(OsStr::new(&name))
             .map_err(why!(Error::Authority))?;
         let saved: Saved = serde_json::from_value(Value::Object(
             ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?,
@@ -119,7 +119,7 @@ impl Service {
         {
             let bytes = self
                 .slots
-                .read_regular(OsStr::new(&name), 2 * 1024 * 1024)
+                .read_whole(OsStr::new(&name))
                 .map_err(why!(Error::Authority))?;
             let value: Saved = serde_json::from_value(Value::Object(
                 ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?,
@@ -228,9 +228,6 @@ impl Service {
             }
         }
         let bytes = serde_json::to_vec(&next).map_err(why!(Error::Authority))?;
-        if bytes.len() > 2 * 1024 * 1024 {
-            return Err(Error::Authority);
-        }
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Uncertain))?;

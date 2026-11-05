@@ -21,7 +21,7 @@ impl Service {
             };
             let raw = self
                 .slots
-                .read_regular(OsStr::new(name), datasets::MAX_METADATA as u64)
+                .read_whole(OsStr::new(name))
                 .map_err(why!(Error::DatasetUnavailable))?;
             let value =
                 ml_exp_core::json::mapping(&raw).map_err(why!(Error::DatasetUnavailable))?;
@@ -81,7 +81,7 @@ impl Service {
         }
         let bytes = self
             .slots
-            .read_regular(OsStr::new(&name), datasets::MAX_METADATA as u64)
+            .read_whole(OsStr::new(&name))
             .map_err(why!(Error::DatasetUnavailable))?;
         let mapping =
             ml_exp_core::json::mapping(&bytes).map_err(why!(Error::DatasetUnavailable))?;

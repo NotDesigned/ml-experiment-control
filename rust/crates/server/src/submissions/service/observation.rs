@@ -43,7 +43,7 @@ impl Service {
         }
         let bytes = self
             .slots
-            .read_regular(OsStr::new(&name), helper::MAX_METADATA_BYTES as u64)
+            .read_whole(OsStr::new(&name))
             .map_err(why!(Error::Authority))?;
         let saved: Saved = serde_json::from_slice(&bytes).map_err(why!(Error::Authority))?;
         if saved.request_sha256
@@ -154,9 +154,6 @@ impl Service {
             evidence: *evidence,
         };
         let bytes = serde_json::to_vec(&saved).map_err(why!(Error::Authority))?;
-        if bytes.len() > helper::MAX_METADATA_BYTES {
-            return Err(Error::Authority);
-        }
         let name = Self::observation_name(&prepared)?;
         if self
             .slots

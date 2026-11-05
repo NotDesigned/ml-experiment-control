@@ -32,7 +32,7 @@ impl Service {
         }
         let bytes = self
             .slots
-            .read_regular(OsStr::new(&name), 65536)
+            .read_whole(OsStr::new(&name))
             .map_err(why!(Error::Authority))?;
         let saved: Saved = serde_json::from_value(Value::Object(
             ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?,

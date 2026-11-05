@@ -16,7 +16,7 @@ pub(crate) fn read<T: DeserializeOwned>(slots: &Directory, name: &str) -> io::Re
     if !slots.entry_exists(OsStr::new(name))? {
         return Ok(None);
     }
-    let bytes = slots.read_regular(OsStr::new(name), 32 * 1024 * 1024)?;
+    let bytes = slots.read_whole(OsStr::new(name))?;
     let value = ml_exp_core::json::mapping(&bytes).map_err(why!(invalid()))?;
     serde_json::from_value(serde_json::Value::Object(value))
         .map(Some)
@@ -25,7 +25,7 @@ pub(crate) fn read<T: DeserializeOwned>(slots: &Directory, name: &str) -> io::Re
 pub(crate) fn retain(slots: &Directory, name: &str, value: &impl Serialize) -> io::Result<()> {
     let bytes = serde_json::to_vec(value)?;
     if slots.entry_exists(OsStr::new(name))? {
-        if slots.read_regular(OsStr::new(name), 32 * 1024 * 1024)? != bytes {
+        if slots.read_whole(OsStr::new(name))? != bytes {
             return Err(invalid());
         }
     } else {

@@ -123,7 +123,7 @@ impl Service {
     fn read(&self, id: &str) -> Result<Saved> {
         let bytes = self
             .directory
-            .read_regular(OsStr::new(&Self::name(id)?), 1024 * 1024)
+            .read_whole(OsStr::new(&Self::name(id)?))
             .map_err(why!(invalid()))?;
         let saved: Saved = serde_json::from_value(Value::Object(
             ml_exp_core::json::mapping(&bytes).map_err(why!(invalid()))?,
