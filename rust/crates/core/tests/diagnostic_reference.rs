@@ -1,50 +1,132 @@
 use ml_exp_core::diagnostic::{self, HttpFailure};
 use serde_json::{Value, json};
 
+const CREDENTIAL: &str = "synthetic-credential-ZZZ";
+const NOW_UNIX: i64 = 1_700_000_000;
+
+fn literal(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
+}
+
 #[test]
-fn bounded_http_diagnostics_match_frozen_python_reference() {
-    let x: Value =
-        serde_json::from_str(include_str!("../../../compatibility/diagnostic.json")).unwrap();
-    let credential = x["credential"].as_str().unwrap();
-    for (i, c) in x["text"].as_array().unwrap().iter().enumerate() {
+fn text_redacts_credentials_assignments_urls_and_control_characters() {
+    for (input, expected) in [
+        ("plain failure", "plain failure"),
+        (
+            "hello synthetic-credential-ZZZ tail",
+            "hello [REDACTED] tail",
+        ),
+        ("secret=synthetic-credential-ZZZ", "secret=[REDACTED]"),
+        ("Bearer synthetic-credential-ZZZ", "Bearer [REDACTED]"),
+        ("api_key=\"a long quoted secret\"", "api_key=[REDACTED]"),
+        ("https://some.test/a?signature=signed-secret", "[REDACTED]"),
+        (
+            "-----BEGIN RSA PRIVATE KEY-----\nsecret\n-----END RSA PRIVATE KEY-----",
+            "[REDACTED]",
+        ),
+        ("line\r\n\u{0}\tbreak", "line    break"),
+    ] {
+        assert_eq!(diagnostic::text(input, CREDENTIAL), expected);
+    }
+}
+
+#[test]
+fn json_redacts_sensitive_keys_truncates_depth_and_keeps_scientific_fields() {
+    for (input, expected) in [
+        (
+            r#"{"detail":{"code":"NO_SPACE","required":100,"available":50}}"#,
+            r#"{"detail":{"code":"NO_SPACE","required":100,"available":50}}"#,
+        ),
+        (
+            r#"{"Authorization":"Bearer secret","nested":{"api_url":"https://private.test","input":{"secret":"no"}}}"#,
+            r#"{"Authorization":"[REDACTED]","nested":{"api_url":"[REDACTED]","input":"[REDACTED]"}}"#,
+        ),
+        (
+            r#"{"token_count":77,"message":"BearER abc; stable"}"#,
+            r#"{"token_count":"[REDACTED]","message":"Bearer [REDACTED]; stable"}"#,
+        ),
+        (
+            r#"{"depth":[[[[[[[[{"name":"deep"}]]]]]]]]}"#,
+            r#"{"depth":[[[[[["[TRUNCATED]"]]]]]]}"#,
+        ),
+        (
+            r#"{"detail":"credential=synthetic-credential-ZZZ"}"#,
+            r#"{"detail":"credential=[REDACTED]"}"#,
+        ),
+        (
+            r#"{"detail":"hello synthetic-credential-ZZZ tail"}"#,
+            r#"{"detail":"hello [REDACTED] tail"}"#,
+        ),
+    ] {
         assert_eq!(
-            diagnostic::text(c["input"].as_str().unwrap(), credential),
-            c["expected"],
-            "text {i}"
+            diagnostic::json(&literal(input), CREDENTIAL),
+            literal(expected)
         );
     }
-    for (i, c) in x["json"].as_array().unwrap().iter().enumerate() {
-        assert_eq!(
-            diagnostic::json(&c["input"], credential),
-            c["expected"],
-            "json {i}"
-        );
-    }
-    for (i, c) in x["retry"].as_array().unwrap().iter().enumerate() {
-        assert_eq!(
-            serde_json::to_value(diagnostic::retry_after(
-                c["input"].as_str(),
-                x["now_unix"].as_i64().unwrap()
-            ))
-            .unwrap(),
-            c["expected"],
-            "retry {i}"
-        );
-    }
-    for (i, c) in x["http"].as_array().unwrap().iter().enumerate() {
-        let failure = HttpFailure::from_response(
-            c["status"].as_u64().unwrap() as u16,
-            c["headers"]["X-ML-Expd-Error-Code"].as_str(),
-            c["headers"]["Retry-After"].as_str(),
-            c["body"].as_str().unwrap().as_bytes(),
-            credential,
-            x["now_unix"].as_i64().unwrap(),
-        );
-        assert_eq!(
-            serde_json::to_value(failure).unwrap(),
-            c["expected"],
-            "http {i}"
-        );
+}
+
+#[test]
+fn retry_after_accepts_seconds_and_http_dates_and_caps_or_rejects_the_rest() {
+    assert_eq!(diagnostic::retry_after(Some("60"), NOW_UNIX), Some(60));
+    assert_eq!(
+        diagnostic::retry_after(Some("999999999999999999999999"), NOW_UNIX),
+        Some(86400)
+    );
+    assert_eq!(
+        diagnostic::retry_after(Some("Tue, 14 Nov 2023 22:13:30 GMT"), NOW_UNIX),
+        Some(10)
+    );
+    assert_eq!(
+        diagnostic::retry_after(Some("Tue, 14 Nov 2023 20:13:30 +0000"), NOW_UNIX),
+        Some(0)
+    );
+    assert_eq!(diagnostic::retry_after(Some("-1"), NOW_UNIX), None);
+    assert_eq!(diagnostic::retry_after(Some("nope"), NOW_UNIX), None);
+    assert_eq!(diagnostic::retry_after(None, NOW_UNIX), None);
+}
+
+#[test]
+fn http_failures_keep_status_and_safe_code_and_drop_unparseable_bodies() {
+    for (status, code, retry, body, expected) in [
+        (
+            409,
+            None,
+            None,
+            "{\"detail\": {\"code\": \"NO_SPACE\", \"required\": 100, \"available\": 50}}",
+            r#"{"status":409,"retryable":false,"error_code":"API_ERROR","retry_after":null,"details":{"code":"NO_SPACE","required":100,"available":50},"response_body":{"detail":{"code":"NO_SPACE","required":100,"available":50}},"body_truncated":false}"#,
+        ),
+        (
+            422,
+            Some("INPUT_NOT_READY"),
+            Some("10"),
+            "{\"detail\":{\"phase\":\"DATA\",\"url\":\"https://private.test\"},\"diagnostic\":\"WAIT\"}",
+            r#"{"status":422,"retryable":false,"error_code":"INPUT_NOT_READY","retry_after":10,"details":{"phase":"DATA","url":"[REDACTED]"},"response_body":{"detail":{"phase":"DATA","url":"[REDACTED]"},"diagnostic":"WAIT"},"body_truncated":false}"#,
+        ),
+        (
+            507,
+            Some("synthetic-credential-ZZZ"),
+            None,
+            "{\"detail\":\"disk full\"}",
+            r#"{"status":507,"retryable":false,"error_code":"API_ERROR","retry_after":null,"details":"disk full","response_body":{"detail":"disk full"},"body_truncated":false}"#,
+        ),
+        (
+            409,
+            None,
+            None,
+            "{\"detail\":\"hello synthetic-credential-ZZZ tail\"}",
+            r#"{"status":409,"retryable":false,"error_code":"API_ERROR","retry_after":null,"details":"hello [REDACTED] tail","response_body":{"detail":"hello [REDACTED] tail"},"body_truncated":false}"#,
+        ),
+        (
+            502,
+            Some("bad"),
+            None,
+            "<html>do not retain</html>",
+            r#"{"status":502,"retryable":false,"error_code":"API_ERROR","retry_after":null,"details":null,"response_body":null,"body_truncated":false}"#,
+        ),
+    ] {
+        let failure =
+            HttpFailure::from_response(status, code, retry, body.as_bytes(), CREDENTIAL, NOW_UNIX);
+        assert_eq!(serde_json::to_value(failure).unwrap(), literal(expected));
     }
 }
 

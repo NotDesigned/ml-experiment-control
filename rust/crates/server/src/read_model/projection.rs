@@ -121,9 +121,6 @@ fn sanitize(value: &Value) -> Value {
         value,
     )))
 }
-pub fn outward_metadata(value: &Value) -> Result<Value> {
-    bounded(sanitize(value))
-}
 fn finish(value: Value) -> Result<Value> {
     bounded(sanitize(&value))
 }
@@ -250,36 +247,6 @@ fn checked(snapshot: &Snapshot) -> Result<()> {
         }
     }
     Ok(())
-}
-fn legacy_process_record(attempt: &AttemptSnapshot) -> bool {
-    attempt.manifest.source == ManifestSource::AttemptJson
-        && !attempt.manifest.metadata.contains_key("native_creation")
-}
-fn effective_collection(snapshot: &Snapshot, attempt: &AttemptSnapshot) -> Value {
-    let document = collection(snapshot, attempt);
-    let value = map(document);
-    if !value.as_object().is_some_and(Map::is_empty)
-        || matches!(document, EvidenceDocument::Unavailable { .. })
-        || !legacy_process_record(attempt)
-    {
-        return value;
-    }
-    let record = Value::Object(attempt.manifest.metadata.clone());
-    json!({"attempt_id":attempt.attempt_id,"worker_state":"LOCAL_GPU","process_state":record["state"],
-        "failure_class":record["failure_class"],"observed_at":first_present(&[record["finished_at"].clone(),record["observed_at"].clone(),record["updated_at"].clone()]),
-        "process_evidence":{"return_code":record["return_code"],"launch_error":record["launch_error"]}})
-}
-fn collection_provenance(snapshot: &Snapshot, attempt: &AttemptSnapshot) -> Value {
-    let document = collection(snapshot, attempt);
-    if !matches!(document, EvidenceDocument::Unavailable { .. })
-        && document.metadata().is_none_or(Map::is_empty)
-        && legacy_process_record(attempt)
-    {
-        json!({"availability":"PRESENT","source":format!("attempts/{}/attempt.json",attempt.attempt_id),
-            "raw_sha256":attempt.manifest.raw_sha256,"kind":"legacy_process_record"})
-    } else {
-        evidence_view(document)
-    }
 }
 fn exact<'a>(snapshot: &'a Snapshot, id: &str) -> Result<&'a AttemptSnapshot> {
     checked(snapshot)?;
@@ -604,7 +571,7 @@ fn layers(
         &scope,
     );
     let collection_doc = collection(snapshot, attempt);
-    let collected = effective_collection(snapshot, attempt);
+    let collected = map(collection(snapshot, attempt));
     let collection_time = first_present(&[
         collected["observed_at"].clone(),
         collected["collected_at"].clone(),
@@ -618,12 +585,12 @@ fn layers(
             collected["worker_observed_at"].clone(),
             collection_time.clone(),
         ]),
-        collection_provenance(snapshot, attempt)["source"].clone(),
+        evidence_view(collection(snapshot, attempt))["source"].clone(),
         json!({}),
         "worker",
         &scope,
     );
-    worker["evidence_availability"] = collection_provenance(snapshot, attempt);
+    worker["evidence_availability"] = evidence_view(collection(snapshot, attempt));
     let mut process = layer(
         process_state,
         first_present(&[
@@ -631,7 +598,7 @@ fn layers(
             collected["process_observed_at"].clone(),
             collection_time,
         ]),
-        collection_provenance(snapshot, attempt)["source"].clone(),
+        evidence_view(collection(snapshot, attempt))["source"].clone(),
         take(
             collected["process_evidence"]
                 .as_object()
@@ -647,7 +614,7 @@ fn layers(
         "process",
         &scope,
     );
-    process["evidence_availability"] = collection_provenance(snapshot, attempt);
+    process["evidence_availability"] = evidence_view(collection(snapshot, attempt));
     let model = if let Some((record, source, normalized)) = metric_last(attempt, live)? {
         let detail = model_detail(
             &record,
@@ -690,7 +657,7 @@ fn layers(
     )
 }
 fn assessment(snapshot: &Snapshot, attempt: &AttemptSnapshot) -> Result<Value> {
-    let collected = effective_collection(snapshot, attempt);
+    let collected = map(collection(snapshot, attempt));
     let decision_doc = decision(snapshot, attempt);
     let decision = map(decision_doc);
     let status_doc = scheduler(snapshot, attempt);
@@ -730,7 +697,7 @@ fn assessment(snapshot: &Snapshot, attempt: &AttemptSnapshot) -> Result<Value> {
             .insert(domain.into(), collected["attempt_id"].clone());
         context.domain_evidence_sources.insert(
             domain.into(),
-            collection_provenance(snapshot, attempt)["source"].clone(),
+            evidence_view(collection(snapshot, attempt))["source"].clone(),
         );
     }
     if field(status_doc, "attempt_id").as_str() == Some(&attempt.attempt_id) {
@@ -823,7 +790,7 @@ pub fn attempt_show(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) -> Res
         &json!({"scope":{"project":snapshot.project,"scope_type":"attempt","object_id":format!("{}::{attempt_id}",snapshot.run_id)},
         "run_id":snapshot.run_id,"attempt":summary(snapshot,attempt),"run_dir":".","attempt_dir":format!("attempts/{attempt_id}"),
         "manifest":attempt.manifest,"provenance":attempt.provenance,
-        "collection":failures::compact_evidence(&effective_collection(snapshot,attempt)),
+        "collection":failures::compact_evidence(&map(collection(snapshot, attempt))),
         "evidence":evidence,"diagnostics":snapshot.diagnostics,
         "evidence_availability":{"status":evidence_view(&attempt.status),"backend":evidence_view(&attempt.backend),
             "collection":evidence_view(collection(snapshot,attempt)),"decision":evidence_view(decision(snapshot,attempt)),"submission":evidence_view(&attempt.submission)}}),
@@ -886,7 +853,7 @@ fn stream_view(tail: &LogTail, process: &Value, name: &str, lines: usize) -> Res
 pub fn attempt_logs(snapshot: &Snapshot, attempt_id: &str, query: &LogQuery) -> Result<Value> {
     query.validate()?;
     let attempt = exact(snapshot, attempt_id)?;
-    let collected = effective_collection(snapshot, attempt);
+    let collected = map(collection(snapshot, attempt));
     let mut streams = Map::new();
     for (name, tail) in [("stdout", &attempt.stdout), ("stderr", &attempt.stderr)] {
         if query.stream == LogStream::Both
@@ -998,7 +965,7 @@ pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) 
     clock(now_unix)?;
     let attempt = exact(snapshot, attempt_id)?;
     let collected_doc = collection(snapshot, attempt);
-    let collected = effective_collection(snapshot, attempt);
+    let collected = map(collection(snapshot, attempt));
     let process = object(&collected["process_evidence"]);
     let process_state = collected["process_state"].clone();
     let exit_code = first_present(&[
@@ -1070,11 +1037,11 @@ pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) 
             "evidence":if collected_doc.metadata().is_some(){json!("exact_attempt_process_evidence")}else{Value::Null}},
         "verification":"PENDING","download_available":false,"publication":null,
         "diagnostic":if snapshot.run.metadata.contains_key("native_creation"){"ARTIFACT_PUBLICATION_NOT_OBSERVED"}else{"ARTIFACT_PUBLICATION_NOT_MIGRATED"},
-        "evidence_availability":collection_provenance(snapshot,attempt),"evidence":evidence,
+        "evidence_availability":evidence_view(collection(snapshot, attempt)),"evidence":evidence,
         "process":process,"diagnostics":snapshot.diagnostics}),
     );
     value["evidence"]["model"]["detail"] = detail;
-    if let Some(native) = effective_collection(snapshot, attempt).get("native_artifacts") {
+    if let Some(native) = map(collection(snapshot, attempt)).get("native_artifacts") {
         let state: ml_exp_core::artifacts::publication::State =
             serde_json::from_value(native.clone()).map_err(|_| Error::Evidence)?;
         state.validate().map_err(|_| Error::Identity)?;
@@ -1098,59 +1065,6 @@ pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) 
         value["download_available"] = json!(available);
         value["publication"] = json!({"status":status,"archive_sha256":state.bundle.archive.sha256,"archive_bytes":state.bundle.archive.bytes,"files":state.bundle.archive.files,"retention":state.retention});
         value["diagnostic"] = Value::Null;
-    }
-    bounded(value)
-}
-
-/// Compose a validated historical receipt without treating retained hashes as
-/// a fresh verification of payload bytes. This never changes a release tombstone.
-pub fn historical_collection(mut value: Value, inventory: &Value) -> Result<Value> {
-    for key in ["project", "run_id", "attempt_id"] {
-        if value[key] != inventory[key] || !value[key].is_string() {
-            return Err(Error::Identity);
-        }
-    }
-    if inventory["source"] != "historical-published-receipt"
-        || inventory["read_only"] != true
-        || inventory["payload_verified"] != false
-    {
-        return Err(Error::Evidence);
-    }
-    if inventory["training"]["status"] != "UNKNOWN" {
-        if value["training"]["status"] == "UNKNOWN" {
-            value["training"] = inventory["training"].clone();
-        } else if value["training"]["status"] != inventory["training"]["status"]
-            || value["training"]["exit_code"] != inventory["training"]["exit_code"]
-        {
-            value["training"] = json!({"status":"UNKNOWN","exit_code":null,
-                "diagnostic":"TRAINING_EVIDENCE_CONFLICT", "receipt":inventory["training"],
-                "process":value["training"]});
-        }
-    }
-    let status = inventory["storage_status"]
-        .as_str()
-        .ok_or(Error::Evidence)?;
-    if status == "MISSING" {
-        value["diagnostic"] = json!("ARTIFACT_RECEIPT_NOT_OBSERVED");
-    } else {
-        if !matches!(status, "AVAILABLE" | "RELEASED" | "EXPIRED") {
-            return Err(Error::Evidence);
-        }
-        value["status"] = json!(status);
-        value["phase"] = json!(status);
-        value["storage_status"] = json!(status);
-        value["verification"] = json!("HISTORICAL_RECEIPT");
-        value["payload_verified"] = json!(false);
-        value["download_available"] = inventory["available"].clone();
-        value["publication"] = json!({"status":status,"archive_sha256":inventory["archive"]["sha256"],
-            "archive_bytes":inventory["archive"]["bytes"],"files":inventory["files"],
-            "checksums_complete":inventory["checksums_complete"],"payload_verified":false,
-            "source":"historical-published-receipt"});
-        value["diagnostic"] = if status == "AVAILABLE" {
-            Value::Null
-        } else {
-            json!("ARTIFACT_RELEASED")
-        };
     }
     bounded(value)
 }

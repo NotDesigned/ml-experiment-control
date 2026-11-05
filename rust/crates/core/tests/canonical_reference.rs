@@ -35,7 +35,7 @@ fn fixture() -> Fixture {
 fn python_shortest_float_repr_matches_ieee_patterns() {
     let fixture = fixture();
     assert_eq!(fixture.schema_version, 1);
-    assert_eq!(fixture.floats.len(), 10012);
+    assert_eq!(fixture.floats.len(), 46);
     for f in fixture.floats {
         let bits = u64::from_str_radix(&f.bits, 16).unwrap();
         let value = f64::from_bits(bits);

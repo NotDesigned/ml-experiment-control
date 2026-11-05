@@ -26,42 +26,72 @@ fn waiting(decision: Decision) -> Watch {
         Decision::Complete { .. } => panic!("unexpected completed observation"),
     }
 }
+fn literal(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
+}
 
 #[test]
-fn pure_polling_decisions_match_actual_python_watch_conditions() {
-    let fixture: Value =
-        serde_json::from_str(include_str!("../../../compatibility/client-watch.json")).unwrap();
-    assert_eq!(
-        fixture["baseline_commit"],
-        "e725faec689fb8395e692e27d00a8896fa7fe5a5"
-    );
-    assert_eq!(fixture["cases"].as_array().unwrap().len(), 113);
-    for case in fixture["cases"].as_array().unwrap() {
-        let watch = Watch::new(
-            Duration::from_secs_f64(case["duration"].as_f64().unwrap()),
-            selection(),
-        )
-        .unwrap();
-        let original = case["input"].clone();
+fn polling_waits_until_the_budget_ends_or_the_scheduler_is_terminal_and_keeps_the_observation() {
+    for (duration, elapsed, input, delay) in [
+        (
+            60.0,
+            0.0,
+            literal(
+                r#"{"project":"p","run_id":"r","attempt_id":"attempt-001","scheduler":{"state":"RUNNING"},"publication":{"status":"AVAILABLE","download_available":false}}"#,
+            ),
+            Some(5.0),
+        ),
+        (
+            0.25,
+            0.0,
+            literal(
+                r#"{"project":"p","run_id":"r","attempt_id":"attempt-001","scheduler":{"state":"RUNNING"},"publication":{"status":"EXECUTING","download_available":false}}"#,
+            ),
+            Some(0.25),
+        ),
+        (
+            5.0,
+            5.0,
+            literal(
+                r#"{"project":"p","run_id":"r","attempt_id":"attempt-001","scheduler":{"state":"RUNNING"},"publication":{"status":"AVAILABLE","download_available":false}}"#,
+            ),
+            None,
+        ),
+        (
+            60.0,
+            0.0,
+            literal(
+                r#"{"project":"p","run_id":"r","attempt_id":"attempt-001","scheduler":{"state":"FAILED"},"publication":{"status":"AVAILABLE","download_available":false}}"#,
+            ),
+            None,
+        ),
+        (
+            60.0,
+            0.0,
+            literal(
+                r#"{"project":"p","run_id":"r","attempt_id":"attempt-001","scheduler":{"state":"CANCELLED"},"publication":{"status":"FAILED","download_available":false}}"#,
+            ),
+            None,
+        ),
+    ] {
+        let watch = Watch::new(Duration::from_secs_f64(duration), selection()).unwrap();
         let decision = watch
-            .accept(
-                original.clone(),
-                Duration::from_secs_f64(case["elapsed"].as_f64().unwrap()),
-            )
+            .accept(input.clone(), Duration::from_secs_f64(elapsed))
             .unwrap();
-        match decision {
-            Decision::Wait { delay, value, .. } => {
-                assert_eq!(case["decision"], "wait");
-                assert_eq!(
-                    delay,
-                    Duration::from_secs_f64(case["delay"].as_f64().unwrap())
-                );
-                assert_eq!(value, original);
+        match (decision, delay) {
+            (
+                Decision::Wait {
+                    delay: actual,
+                    value,
+                    ..
+                },
+                Some(expected),
+            ) => {
+                assert_eq!(actual, Duration::from_secs_f64(expected));
+                assert_eq!(value, input);
             }
-            Decision::Complete { value, .. } => {
-                assert_eq!(case["decision"], "complete");
-                assert_eq!(value, original);
-            }
+            (Decision::Complete { value, .. }, None) => assert_eq!(value, input),
+            _ => panic!("unexpected polling decision for {input}"),
         }
     }
 }

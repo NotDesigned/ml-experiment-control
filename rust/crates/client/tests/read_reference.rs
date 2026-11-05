@@ -6,14 +6,14 @@ use ml_exp_client::{
 use ml_exp_core::diagnostic::HttpFailure;
 use serde_json::{Value, json};
 
-fn fixtures() -> Value {
-    serde_json::from_str(include_str!("../../../compatibility/client-read.json")).unwrap()
+fn literal(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
 }
-fn selection(value: &Value) -> Selection<'_> {
+fn selection() -> Selection<'static> {
     Selection {
-        project: value["project"].as_str(),
-        run: value["run"].as_str(),
-        attempt: value["attempt"].as_str(),
+        project: Some("p"),
+        run: Some("r"),
+        attempt: None,
     }
 }
 fn response(value: &Value) -> Result<Value, Error> {
@@ -31,67 +31,130 @@ fn response(value: &Value) -> Result<Value, Error> {
         Ok(value.clone())
     }
 }
+/// Answers each planned GET from `case["responses"]`; any other request fails.
+fn drive(case: &Value) -> (Result<Value, Error>, Vec<String>) {
+    let mut step = read::begin(
+        "https://example.test/ml-expd",
+        &case["health"],
+        case.get("saved"),
+        selection(),
+        serde_json::from_value::<View>(case["view"].clone()).unwrap(),
+    );
+    let mut requests = Vec::new();
+    loop {
+        step = match step {
+            Ok(Step::Read(read)) => {
+                requests.push(read.path().to_owned());
+                assert!(requests.len() <= 4, "nonterminating read plan");
+                let value = case["responses"]
+                    .get(read.path())
+                    .unwrap_or_else(|| panic!("unexpected GET {}", read.path()));
+                read.accept(response(value))
+            }
+            Ok(Step::Complete(value)) => return (Ok(value), requests),
+            Err(error) => return (Err(error), requests),
+        };
+    }
+}
 
 #[test]
-fn exact_attempt_read_plans_match_frozen_python_reference() {
-    let fixtures = fixtures();
-    assert_eq!(
-        fixtures["baseline_commit"],
-        "e725faec689fb8395e692e27d00a8896fa7fe5a5"
-    );
-    for case in fixtures["cases"].as_array().unwrap() {
-        let mut step = read::begin(
-            case["base"].as_str().unwrap(),
-            &case["health"],
-            case.get("saved").filter(|value| !value.is_null()),
-            selection(&case["selection"]),
-            serde_json::from_value::<View>(case["view"].clone()).unwrap(),
-        );
-        let mut requests = Vec::new();
-        loop {
-            step = match step {
-                Ok(Step::Read(read)) => {
-                    requests.push(read.path().to_owned());
-                    assert!(requests.len() <= 4, "nonterminating {}", case["name"]);
-                    let value = case["responses"].get(read.path()).unwrap_or_else(|| {
-                        panic!("unexpected GET {}: {}", case["name"], read.path())
-                    });
-                    read.accept(response(value))
-                }
-                Ok(Step::Complete(value)) => {
-                    assert_eq!(value, case["expected"], "{}", case["name"]);
-                    break;
-                }
-                Err(error) => {
-                    if let Some(status) = case["error_status"].as_u64() {
-                        assert!(
-                            matches!(error, Error::Http(ref failure) if u64::from(failure.status)==status),
-                            "{}: {error}",
-                            case["name"]
-                        );
-                    } else {
-                        assert_eq!(
-                            error.to_string(),
-                            case["error"].as_str().unwrap(),
-                            "{}",
-                            case["name"]
-                        );
-                    }
-                    break;
-                }
-            };
-        }
+fn reads_stay_on_the_saved_attempt_and_encode_unicode_metric_filters() {
+    for case in [
+        literal(
+            r#"{"health":{"capabilities":["metric-records.v1"]},"saved":{"server":"https://example.test/ml-expd","project":"p","run_id":"r","config_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}},"view":{"view":"logs","stream":"both","lines":80},"requests":["/api/submissions/action-aaaaaaaaaaaaaaaa","/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80"],"responses":{"/api/submissions/action-aaaaaaaaaaaaaaaa":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"},"/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["metric-records.v1"]},"saved":{"server":"https://example.test/ml-expd","project":"p","run_id":"r","config_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","preparation":{"preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},"view":{"view":"logs","stream":"both","lines":80},"requests":["/api/projects/p/experiment-preparations/preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","/api/submissions/action-aaaaaaaaaaaaaaaa","/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80"],"responses":{"/api/submissions/action-aaaaaaaaaaaaaaaa":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"},"/api/projects/p/experiment-preparations/preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb":{"project":"p","run_id":"r","preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}},"/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["metric-records.v1"]},"saved":{"contract":"training-operation.v1","server":"https://example.test/ml-expd","project":"p","run_id":"r","operation":"retry","source_attempt_id":"attempt-001","plan":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"request":{"new_attempt_id":"attempt-002"}},"view":{"view":"metrics","keys":null,"names":null,"max_points":2000},"requests":["/api/actions/action-aaaaaaaaaaaaaaaa","/api/attempts/p/r%3A%3Aattempt-002/metrics?max_points=2000&format=records"],"responses":{"/api/actions/action-aaaaaaaaaaaaaaaa":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"/api/attempts/p/r%3A%3Aattempt-002/metrics?max_points=2000&format=records":{"project":"p","run_id":"r","attempt_id":"attempt-002","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-002","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["metric-records.v1"]},"view":{"view":"metrics","keys":"loss,, val_loss , loss","names":["validation loss","训练/损失","*~"],"max_points":2000},"requests":["/api/runs/p/r/attempts","/api/attempts/p/r%3A%3Aattempt-001/metrics?max_points=2000&format=records&name=validation+loss&name=%E8%AE%AD%E7%BB%83%2F%E6%8D%9F%E5%A4%B1&name=%2A~&name=loss&name=val_loss&name=loss"],"responses":{"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001"}]},"/api/attempts/p/r%3A%3Aattempt-001/metrics?max_points=2000&format=records&name=validation+loss&name=%E8%AE%AD%E7%BB%83%2F%E6%8D%9F%E5%A4%B1&name=%2A~&name=loss&name=val_loss&name=loss":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}}"#,
+        ),
+    ] {
+        let (result, requests) = drive(&case);
+        assert_eq!(result.unwrap(), case["expected"]);
+        assert_eq!(json!(requests), case["requests"]);
+    }
+}
+
+#[test]
+fn invalid_views_and_unbound_saved_state_are_refused_before_any_request() {
+    for case in [
+        literal(
+            r#"{"health":{"capabilities":["metric-records.v1"]},"view":{"view":"logs","stream":"both","lines":0},"requests":[],"responses":{},"error":"logs require stdout/stderr/both and 1..10000 lines"}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["metric-records.v1"]},"view":{"view":"metrics","keys":null,"names":["损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损损"],"max_points":2000},"requests":[],"responses":{},"error":"name filters must be valid metric names"}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["Metric-records.v1"]},"view":{"view":"metrics","keys":null,"names":["loss"],"max_points":2000},"requests":[],"responses":{},"error":"server lacks metric-records.v1; --keys retains the legacy field-filter behavior"}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["metric-records.v1"]},"saved":{"server":"https://example.test/ml-expd","project":"p","run_id":"r","config_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"view":{"view":"logs","stream":"both","lines":80},"requests":[],"responses":{},"error":"saved state has no bound Attempt yet; use run status --state to inspect preparation"}"#,
+        ),
+    ] {
+        let (result, requests) = drive(&case);
         assert_eq!(
-            requests,
-            case["requests"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|value| value.as_str().unwrap().to_owned())
-                .collect::<Vec<_>>(),
-            "{}",
-            case["name"]
+            result.unwrap_err().to_string(),
+            case["error"].as_str().unwrap()
         );
+        assert!(requests.is_empty());
+    }
+}
+
+#[test]
+fn a_failed_read_keeps_its_http_status() {
+    let case = literal(
+        r#"{"health":{"capabilities":["metric-records.v1"]},"view":{"view":"logs","stream":"both","lines":80},"requests":["/api/runs/p/r/attempts","/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80"],"responses":{"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001"}]},"/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80":{"$error":{"status":409,"error_code":"READ_FAILURE","details":{"stage":"read","safe_to_retry":false}}}}}"#,
+    );
+    let (result, requests) = drive(&case);
+    assert!(matches!(result, Err(Error::Http(ref failure)) if failure.status == 409));
+    assert_eq!(json!(requests), case["requests"]);
+}
+
+#[test]
+fn a_reply_for_another_run_or_attempt_is_refused() {
+    let listing = json!({"project":"p","run_id":"r","current_attempt_id":"attempt-001",
+        "attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001"}]});
+    let mut foreign = listing.clone();
+    foreign["run_id"] = json!("other");
+    let mut absent = listing.clone();
+    absent["attempts"] = json!([{"attempt_id":"attempt-002","identity":"r::attempt-002"}]);
+    for (attempts, logs, count, error) in [
+        (
+            foreign,
+            Value::Null,
+            1,
+            "Attempt listing differs from the requested Run",
+        ),
+        (
+            absent,
+            Value::Null,
+            1,
+            "current Attempt is absent from the Run listing",
+        ),
+        (
+            listing.clone(),
+            json!({"project":"p","run_id":"r","attempt_id":"attempt-002","stdout":["another Attempt"]}),
+            2,
+            "read response differs from the requested exact Run/Attempt",
+        ),
+        (
+            listing.clone(),
+            json!({"project":"p","run_id":"other","attempt_id":"attempt-001","stdout":["another Run"]}),
+            2,
+            "read response differs from the requested exact Run/Attempt",
+        ),
+    ] {
+        let case = json!({"health":{"capabilities":["metric-records.v1"]},
+            "view":{"view":"logs","stream":"both","lines":80},
+            "responses":{"/api/runs/p/r/attempts":attempts,
+                "/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80":logs}});
+        let (result, requests) = drive(&case);
+        assert_eq!(result.unwrap_err().to_string(), error);
+        assert_eq!(requests.len(), count);
     }
 }
 
@@ -149,7 +212,6 @@ fn duplicate_current_attempts_are_rejected_and_a_resolved_attempt_stays_pinned()
     };
     assert_eq!(actual, result);
 }
-
 #[test]
 fn real_http_reads_keep_prefix_credentials_identity_and_unmodified_metric_dimensions() {
     use std::{
@@ -157,21 +219,20 @@ fn real_http_reads_keep_prefix_credentials_identity_and_unmodified_metric_dimens
         net::TcpListener,
         time::{Duration, Instant},
     };
-    let fixtures = fixtures();
-    for name in [
-        "preparation-discovers-original-submission",
-        "record-mixed-filters",
-        "saved-action-retry",
-        "http-read-409",
-        "saved-no-attempt",
+    for case in [
+        literal(
+            r#"{"health":{"capabilities":["metric-records.v1"]},"view":{"view":"metrics","keys":"loss,, val_loss , loss","names":["validation loss","训练/损失","*~"],"max_points":2000},"requests":["/api/runs/p/r/attempts","/api/attempts/p/r%3A%3Aattempt-001/metrics?max_points=2000&format=records&name=validation+loss&name=%E8%AE%AD%E7%BB%83%2F%E6%8D%9F%E5%A4%B1&name=%2A~&name=loss&name=val_loss&name=loss"],"responses":{"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001"}]},"/api/attempts/p/r%3A%3Aattempt-001/metrics?max_points=2000&format=records&name=validation+loss&name=%E8%AE%AD%E7%BB%83%2F%E6%8D%9F%E5%A4%B1&name=%2A~&name=loss&name=val_loss&name=loss":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["metric-records.v1"]},"saved":{"contract":"training-operation.v1","server":"https://example.test/ml-expd","project":"p","run_id":"r","operation":"retry","source_attempt_id":"attempt-001","plan":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"request":{"new_attempt_id":"attempt-002"}},"view":{"view":"metrics","keys":null,"names":null,"max_points":2000},"requests":["/api/actions/action-aaaaaaaaaaaaaaaa","/api/attempts/p/r%3A%3Aattempt-002/metrics?max_points=2000&format=records"],"responses":{"/api/actions/action-aaaaaaaaaaaaaaaa":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"/api/attempts/p/r%3A%3Aattempt-002/metrics?max_points=2000&format=records":{"project":"p","run_id":"r","attempt_id":"attempt-002","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-002","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["metric-records.v1"]},"view":{"view":"logs","stream":"both","lines":80},"requests":["/api/runs/p/r/attempts","/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80"],"responses":{"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001"}]},"/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80":{"$error":{"status":409,"error_code":"READ_FAILURE","details":{"stage":"read","safe_to_retry":false}}}},"error_status":409}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["metric-records.v1"]},"saved":{"server":"https://example.test/ml-expd","project":"p","run_id":"r","config_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"view":{"view":"logs","stream":"both","lines":80},"requests":[],"responses":{},"error":"saved state has no bound Attempt yet; use run status --state to inspect preparation"}"#,
+        ),
     ] {
-        let case = fixtures["cases"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|case| case["name"] == name)
-            .unwrap()
-            .clone();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
@@ -243,19 +304,16 @@ fn real_http_reads_keep_prefix_credentials_identity_and_unmodified_metric_dimens
             }
         });
         let client = ml_exp_client::Client::new(&base, "synthetic-read-token".into()).unwrap();
-        let saved = case
-            .get("saved")
-            .filter(|value| !value.is_null())
-            .map(|value| {
-                let mut saved = value.clone();
-                saved["server"] = json!(base);
-                saved
-            });
+        let saved = case.get("saved").map(|value| {
+            let mut saved = value.clone();
+            saved["server"] = json!(base);
+            saved
+        });
         let result = read::observe(
             &client,
             &case["health"],
             saved.as_ref(),
-            selection(&case["selection"]),
+            selection(),
             serde_json::from_value(case["view"].clone()).unwrap(),
         );
         if let Some(status) = case["error_status"].as_u64() {
@@ -265,7 +323,7 @@ fn real_http_reads_keep_prefix_credentials_identity_and_unmodified_metric_dimens
         } else if let Some(expected) = case["error"].as_str() {
             assert_eq!(result.unwrap_err().to_string(), expected);
         } else {
-            assert_eq!(result.unwrap(), case["expected"], "{name}");
+            assert_eq!(result.unwrap(), case["expected"]);
         }
         server.join().unwrap();
     }

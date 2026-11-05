@@ -40,7 +40,6 @@ pub(crate) fn observe(api: Option<&Api>) -> Value {
     document(
         api.is_some(),
         api.is_some_and(|api| api.sources().is_some()),
-        api.is_some_and(|api| api.is_historical() || api.history().is_some()),
         backends,
         errors,
     )
@@ -72,13 +71,7 @@ fn backend(row: Value, capacity: Option<&Value>) -> Value {
         "admission_guaranteed":false})
 }
 
-fn document(
-    reads: bool,
-    sources: bool,
-    history: bool,
-    backends: Vec<Value>,
-    mut checks: Vec<Value>,
-) -> Value {
+fn document(reads: bool, sources: bool, backends: Vec<Value>, mut checks: Vec<Value>) -> Value {
     checks.push(
         json!({"id":"local_reads","status":if reads{"PASS"}else{"BLOCKED"},
         "code":if reads{Value::Null}else{json!("LOCAL_READS_NOT_CONFIGURED")}}),
@@ -93,21 +86,12 @@ fn document(
     checks.push(json!({"id":"gpu_acceptance","status":"NOT_RECORDED",
         "code":"GPU_ACCEPTANCE_EVIDENCE_NOT_CONFIGURED",
         "detail":"No machine-readable end-to-end acceptance registry is configured; inspect per-backend submission availability."}));
-    if history {
-        checks.push(
-            json!({"id":"historical_metadata_audit","status":"NOT_RECORDED",
-            "code":"FULL_HISTORICAL_METADATA_AUDIT_NOT_RECORDED"}),
-        );
-        checks.push(json!({"id":"historical_mutations","status":"UNSUPPORTED",
-            "code":"HISTORICAL_NAMESPACE_READ_ONLY",
-            "detail":"Historical logs, metrics and receipts are readable; old submissions are not replayed or rewritten."}));
-    }
     let available = backends
         .iter()
         .filter(|row| row["submission_available"] == true)
         .map(|row| row["executor_id"].clone())
         .collect::<Vec<_>>();
-    json!({"api":"READY","training":"INCOMPLETE","migration":if history{"IN_PROGRESS"}else{"NOT_REQUIRED"},
+    json!({"api":"READY","training":"INCOMPLETE",
         "submission_available":!available.is_empty(),"submission_available_backends":available,
         "scheduler_mutations":backends.iter().any(|row| !row["submission_blockers"].as_array().unwrap().iter().any(|b|b["code"]=="SCHEDULER_MUTATIONS_DISABLED")),
         "providers_configured":!backends.is_empty(),"checks":checks,"backends":backends,
@@ -133,12 +117,12 @@ mod tests {
         disabled["enabled"] = json!(false);
         let blocked = backend(disabled, None);
         assert_eq!(blocked["submission_available"], false);
-        let value = document(true, true, true, vec![allowed, blocked], vec![]);
+        let value = document(true, true, vec![allowed, blocked], vec![]);
         assert_eq!(value["submission_available_backends"], json!(["pai"]));
         assert_eq!(value["training"], "INCOMPLETE");
         assert_eq!(value["provider_queries_performed"], false);
         assert!(
-            document(false, false, false, vec![], vec![])["checks"]
+            document(false, false, vec![], vec![])["checks"]
                 .as_array()
                 .unwrap()
                 .iter()

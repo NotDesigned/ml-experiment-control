@@ -227,7 +227,6 @@ changing source, parameters or restore reference requires a new Run.
 | `GET /api/submissions/S/artifacts` / `/artifacts/SHA256` | Result bundle metadata and download |
 | `POST /api/submissions/S/download-ticket` | Short-lived signed part URL |
 | `POST /api/submissions/S/acknowledge` | Confirm verified local files and release |
-| `GET /api/runs/P/R/attempts/A/files` / `/artifacts/download` | Historical archive inventory and ticket |
 | `GET /api/runs/P/R/tracking` | Frozen [W&B](wandb.md) destination and publication status |
 
 The signed object GET carries no API token. Validate archive and file hashes,

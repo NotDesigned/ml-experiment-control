@@ -69,14 +69,14 @@ The [allocation status endpoint](backends.md#slurm-allocation-status) exposes
 Slurm scheduler allocation/queue evidence. It does not measure GPU utilization
 or guarantee immediate allocation.
 
-## Existing records
+## Earlier state
 
-New code, diagnostics and uploaded asset locations use `slurm`. Readers still
-accept historical `remote_storage: wyd` locations and `wyd:` preparation markers.
-They are not rewritten, and an uncertain old transfer is never replayed under a
-new name. There is no old Python `backends.wyd` import entry point.
+The daemon starts from a brand-new registry. Records from earlier versions,
+including `remote_storage: wyd` locations and `wyd:` preparation markers, stay on
+disk unread: nothing accepts or rewrites them, and an uncertain old transfer is
+never replayed. Only `kind: slurm` configures this backend. There is no `wyd`
+alias and no Python `backends.wyd` import entry point.
 
-Existing executor IDs, SSH aliases and storage roots can keep their old names.
-Changing an SSH alias or root can change the storage identity even when the
-physical filesystem is the same. Do not rename frozen Runs, Attempts, checkpoint
-scopes or old worker manifests while updating a deployment's public examples.
+Executor IDs, SSH aliases and storage roots can keep their old names. Changing an
+SSH alias or root can change the storage identity even when the physical filesystem
+is the same, so do not rename frozen Runs, Attempts or checkpoint scopes.

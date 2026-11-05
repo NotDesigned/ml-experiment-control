@@ -166,7 +166,7 @@ fn training_process_scheduler_and_unmigrated_publication_remain_independent() {
         .insert("return_code".into(), json!(0));
     assert_eq!(
         read_model::attempt_collection(&snapshot, "attempt-001", 0.0).unwrap()["training"]["status"],
-        "COMPLETED"
+        "UNKNOWN"
     );
 }
 
@@ -487,6 +487,7 @@ fn canonical_failure_undeclared_and_conflict_records_remain_diagnostics_without_
     )
     .unwrap();
     assert_eq!(projected["records"][0]["status"], "CONFLICTING");
+    assert_eq!(projected["records"][0]["error"], "CONFLICTING_OBSERVATIONS");
     assert_eq!(projected["validation"]["state"], "FAILED");
     let protocol_rows = live(&[
         json!({"name":"loss","unit":"nats/token","value":2,"protocol_id":"protocol-a"}),

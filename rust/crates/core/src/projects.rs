@@ -2,9 +2,7 @@
 //! and time; they never resolve files, read configuration, index or run a job.
 mod definition;
 use crate::{identity, observation::python_equal};
-pub use definition::{
-    ProjectDefinition, ProjectLayout, ProjectPaths, project_layout, project_paths,
-};
+pub use definition::ProjectDefinition;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -213,12 +211,6 @@ impl Registry {
     }
     pub fn records(&self) -> &[LifecycleRecord] {
         &self.records
-    }
-    pub fn active_records(&self) -> Vec<&LifecycleRecord> {
-        self.records
-            .iter()
-            .filter(|r| r.state == LifecycleState::Active)
-            .collect()
     }
     pub fn payload(&self) -> &Value {
         &self.payload

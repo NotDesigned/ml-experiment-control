@@ -69,7 +69,7 @@ jobs:
       - name: Package executables and deployment examples
         run: |
           mkdir .ops/native-linux
-          for program in ml-exp ml-expd-rs ml-exp-worker-rs ml-expd-state-audit; do
+          for program in ml-exp ml-expd-rs ml-exp-worker-rs; do
             cp "$CARGO_TARGET_DIR/release/$program" .ops/native-linux/
           done
       # A tag's cache is readable only by that tag, so only branch runs save one.

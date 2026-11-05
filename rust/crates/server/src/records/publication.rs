@@ -4,33 +4,6 @@ use super::*;
 use ml_exp_core::tracking;
 
 impl Store {
-    /// Handoff reservations do not reset the scope cursor, status or failure
-    /// counter. Existing native reservations always win across restarts.
-    pub(crate) fn initialize_publication_state(
-        &self,
-        guard: &RecordGuard<'_>,
-        scope: &str,
-        value: &Value,
-    ) -> Result<()> {
-        if self.read_only {
-            return Err(Error::ReadOnly);
-        }
-        self.require_scope(guard, scope)?;
-        let encoded = records::encoded(value)?;
-        if encoded.len() > 8 * 1024 * 1024 {
-            return Err(Error::Invalid("handoff reservation bound"));
-        }
-        self.database.transaction(
-            || self.require_guard(guard),
-            |tx| {
-                tx.execute(
-                    "INSERT OR IGNORE INTO native_publications VALUES (?,?)",
-                    params![scope, encoded],
-                )?;
-                self.require_guard(guard)
-            },
-        )
-    }
     pub fn publication_runs(&self, maximum: usize) -> Result<Vec<(String, String)>> {
         let rows = self.database.read_only(|connection| -> Result<_> {
             let mut statement = connection.prepare("SELECT project,run FROM runs WHERE json_extract(route,'$.enabled')=1 ORDER BY project,run LIMIT ?")?;

@@ -9,10 +9,9 @@ cutover are separate milestones. See [the migration status](../docs/rust-rewrite
 Never initialize a new registry over existing production state.
 
 `GET /api/actions/policy` supports the older client's connection check. It reports
-configured native permissions without contacting a provider or enabling historical
-Actions. `GET /api/readiness` still reports `training=INCOMPLETE` and
-`migration=IN_PROGRESS`: the server cutover has completed, but full backend GPU
-acceptance and historical write compatibility have not. A successful connection
+configured native permissions without contacting a provider. `GET /api/readiness`
+still reports `training=INCOMPLETE`: full backend GPU acceptance has not been
+recorded. A successful connection
 check is not training acceptance; the older client's `check --training` remains
 unsuccessful while training readiness is incomplete. Readiness now includes
 `checks`, `backends` and `submission_available_backends`. Configuration permission,
@@ -449,7 +448,7 @@ Take the installer and `X.Y.Z` from the [latest release](https://github.com/NotD
 Existing Python release assets are separate. Native backend and migration
 acceptance limits are described in the [implementation status](../docs/rust-rewrite.md).
 
-Server bundles contain the server, client, worker and metadata-audit executables,
+Server bundles contain the server, client and worker executables,
 a hash manifest and [deployment examples](deploy/server.example.json). Put private
 configuration under `/etc/ml-expd/native/`; token and provider credentials stay
 in separate files. A single deployment file refers to approved read, Slurm,
@@ -559,118 +558,7 @@ optional official SDK process. Neither is required for basic API/client reads.
 The tag workflow builds/checks native executables and creates `SHA256SUMS`,
 `native-release.json`, individual binaries and a server bundle. A manual workflow
 run only packages; publishing requires an exact stable `native-vX.Y.Z` tag.
-Neither path restarts production. Production cutover still needs provider and
-historical-state acceptance plus the existing idle and identity checks.
-
-## Existing-state audit
-
-The daemon also has an explicit historical reader. It serves the existing
-Project, Run, Attempt, log, metric, collection-status and checkpoint GETs directly
-from the original namespace. It starts no provider observer, SDK publisher or
-initializer, and rejects all mutation routes, including worker ingress.
-
-Generate a pinned configuration from the same private original-read settings
-used by the audit, then run a separate loopback reader:
-
-```sh
-umask 077
-ml-expd-rs --inspect-historical-config /private/original-reads.json > /private/historical-reader.json
-ml-expd-rs --historical-read-config /private/historical-reader.json --token-file /private/reader-token --bind 127.0.0.1:18766
-```
-
-The generated configuration pins the original journal workspace ID or its
-absence. The original flat Project lifecycle ledger and deletion fences must
-already exist. Each historical observation runs in a dedicated thread with
-kernel-enforced write denial; an unsupported kernel is an error. Paused or
-archived Projects stay hidden, and a different journal or native marker is
-refused. No historical SQLite file is copied or migrated.
-
-Frozen YAML observations can resolve finite, previously defined anchors without
-rewriting the original bytes or hash. Cached values and reference expansion
-have separate byte and node budgets; cycles, forward references, duplicate
-anchors, merge keys, tags and ambiguous scalars are rejected. New authored
-inputs keep the stricter parser that refuses anchors and aliases.
-
-A writable native service can attach that same pinned reader with
-`--history-config /private/historical-reader.json` and its ordinary
-`--read-config /private/native-reads.json`. The registry and Run roots must be
-disjoint. Queries, metrics, tracking cursors and checkpoint GETs then use one
-address. Project counters combine both sources. Existing or deleted historical
-Run IDs remain reserved, including in asynchronous preparations; duplicate or
-corrupt native identities cannot fall back to history. Old Actions are never
-converted into native execution authority.
-
-A new Run may explicitly reference a historical checkpoint. The native planner
-still checks the exact Project, complete checkpoint, storage scope and configured
-backend path convention; incompatible storage is rejected. The worker validates
-the checkpoint files before training. This is a new frozen Run, not a replay or
-an automatic restart of the old task. Historical W&B routes and cursors are read
-without republishing or resetting them.
-
-The original `GET /api/runs/{project}/{run}/attempts/{attempt}/files` also
-projects the published archive inventory. It validates the exact Attempt,
-transfer identity, source, receipt and retention without restoring a cache,
-reading payloads or sending an ACK. Released and expired archives retain their
-file identities and training completion evidence. This inventory covers the
-published archive only (`local_files_included=false`); it is not a backend-file
-recovery endpoint. An optional hash-pinned original S3 profile enables the
-historical `GET .../artifacts/download` endpoint to issue a short-lived GET URL.
-It returns 410 for released/expired archives and does not read payloads, restore
-caches, acknowledge downloads or authorize deletion. Native-created Runs use
-their Submission result interfaces and never fall back to original transfers.
-
-To enable historical tickets, add `artifact_store` to the private historical
-reader configuration, with `profile_file` and its lowercase `profile_sha256`.
-The owner-only profile uses the existing `public_endpoint`, `bucket`, `region`,
-`access_key`, `secret_key` and optional `download_url_seconds` fields. Only HTTPS
-GET signing is supported. A changed profile hash is refused; configure a reviewed
-replacement explicitly when migrating or rotating its credentials.
-
-The offline audit accepts an explicit private read configuration without a native
-workspace marker. Run it as the account that owns the original metadata:
-
-```sh
-umask 077
-ml-expd-state-audit --config /private/original-reads.json --action-root /original/actions > /private/baseline.json
-ml-expd-state-audit --config /private/candidate-reads.json --action-root /candidate/actions --compare /private/baseline.json
-```
-
-It reads Run/Attempt manifests, checkpoint receipts, result-transfer metadata,
-source/runtime/preparation control receipts, deletion tombstones, lifecycle records and journal rows, including event IDs and
-W&B publication cursors. Metrics retain their receive order and full scientific
-context. It opens no logs, checkpoint payloads, source trees or result archives,
-creates no workspace or database, and makes no provider request. Two complete
-observations must agree; changing or over-budget evidence fails the audit.
-
-Exit 0 means the requested observation has no reported issues (and a comparison
-is equal); exit 2 means a mismatch or explicit issue; exit 1 means a complete
-observation could not be obtained. Output contains identities and fingerprints,
-not raw manifests, credentials or metric values. Equality covers this metadata
-scope only; it does not authorize production replacement or scheduler execution.
-This tool does not perform historical-state migration.
-
-Database scans are bounded to 2,000,000 rows and 1 GiB of typed cell bytes;
-control catalogues to 64 MiB, with at most 100,000 report entries. These are
-streaming scan limits, not database copies or disk reservations. An inactive WAL
-database without its required shared-memory index returns
-`AUDIT_DATABASE_READ_ONLY_UNAVAILABLE`; the audit does not create auxiliary files
-or switch journal mode. Schema, binding, busy and byte/row limits have separate
-safe error codes. Historical missing fields are fingerprinted as absent; the
-tool does not invent them or promote observations to execution authority.
-
-The audit runs in a dedicated thread with kernel-enforced read-only filesystem
-access (Linux Landlock ABI 3, normally Linux 6.2+). The caller retains its normal
-permissions. If the restriction cannot be fully applied, it returns
-`AUDIT_READ_ONLY_ISOLATION_UNAVAILABLE` before opening the state; there is no
-weaker fallback. This also prevents a read-only SQLite connection from creating
-an empty WAL file on a cold database.
-
-The ordinary checkpoint GET routes support historical registered receipts even
-when no native submission exists. `checkpoint-record-read.v1` advertises this
-read capability separately from provider refresh/registration. The original
-Run/Attempt source, image and issued storage context must match. Withdrawn or
-deleted records stay unavailable. Neither GET nor this audit enables old
-submission replay or rewrites checkpoint receipts.
+Neither path restarts production.
 
 ## Build and verification
 
@@ -731,14 +619,7 @@ unchanged. Foreign or ambiguous workspace records and log hits are rejected.
 A successful query with no hits means logs are unavailable; it is not evidence
 that the container succeeded or that a failed job can safely be resubmitted.
 
-Historical result summaries consume the same validated receipt as the files API.
-`EXPIRED` and `RELEASED` remain unavailable and return 410 for downloads; retained
-hashes are labelled `HISTORICAL_RECEIPT`, with `payload_verified=false`. A receipt
-does not verify that the original CPFS/NAS output still exists. Re-export requires
-checking that exact approved output directory and creating a separate collection
-receipt; it never removes the old tombstone or repeats the training command.
-
-Historical W&B errors distinguish missing SDK, authentication, remote Run, init,
+W&B errors distinguish missing SDK, authentication, remote Run, init,
 history read and writes without exposing exception messages or keys. Uncertain
 migrated sends remain reserved until remote proof; a missing Run is not permission
 to replay them. An operator may recover an explicitly selected zero-confirmation

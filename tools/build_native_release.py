@@ -14,7 +14,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-unknown-linux-gnu"
-BINARIES = ("ml-exp", "ml-expd-rs", "ml-exp-worker-rs", "ml-expd-state-audit")
+BINARIES = ("ml-exp", "ml-expd-rs", "ml-exp-worker-rs")
 CLIENT_TARGETS = ("aarch64-unknown-linux-musl", "x86_64-apple-darwin",
                   "aarch64-apple-darwin", "x86_64-pc-windows-msvc")
 # The image bridge the server's builder imports; not a Python service install.

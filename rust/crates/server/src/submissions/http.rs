@@ -65,9 +65,6 @@ async fn tracking(
         return read_http::failure(error);
     }
     read_http::execute(state, Access::Read, move |api, _| {
-        if let Some(value) = api.historical_tracking(&project, &run)? {
-            return Ok(value);
-        }
         if let Some(value) = api.local_tracking_status(&project, &run)? {
             return Ok(value);
         }
@@ -139,9 +136,6 @@ async fn checkpoint_get(
         return read_http::failure(invalid());
     }
     read_http::execute(state, Access::Read, move |api, _| {
-        if let Some(value) = api.historical_checkpoints(&project, &run, &attempt, id.as_deref())? {
-            return Ok(value);
-        }
         if let Some(cloud) = api.cloud() {
             if cloud
                 .handles_run(&project, &run)

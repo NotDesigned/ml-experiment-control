@@ -36,7 +36,7 @@ backend datasets or checkpoints when rearranging program files.
 From the [latest release](https://github.com/NotDesigned/ml-experiment-control/releases/latest),
 download `SHA256SUMS` and `ml-expd-native-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz`,
 verify the archive's hash, and extract it. The bundle contains `bin/` (`ml-exp`,
-`ml-expd-rs`, `ml-exp-worker-rs`, `ml-expd-state-audit`), `deploy/` examples and
+`ml-expd-rs`, `ml-exp-worker-rs`), `deploy/` examples and
 the upgrade tool, `python/` (the image bridge sources), `README.md`, `MIGRATION.md`,
 `native-release.json` and `release-info.json` (source commit and bridge hashes). It
 contains no secrets and creates no service. No compiler or Python is needed to run
@@ -93,6 +93,10 @@ python3 deploy/deploy_native.py --root /opt/ml-expd --version X.Y.Z          # v
 python3 deploy/deploy_native.py --root /opt/ml-expd --version X.Y.Z --apply
 python3 deploy/deploy_native.py --root /opt/ml-expd --rollback
 ```
+
+Always run the copy from the bundle being installed: a copy from a release that
+still shipped `ml-expd-state-audit` refuses newer bundles, which no longer contain
+it. The retired executable left in `ROOT/bin/` is not touched and can be deleted.
 
 Without `--apply` it changes nothing. It verifies every hash in the bundle, runs the
 new `ml-expd-rs --check` against the live configuration, imports the new bridge with
@@ -187,21 +191,21 @@ A CPU run, successful submit or queue entry does not validate GPU training. Do n
 claim queue ETA or free cards without provider evidence. Current acceptance limits
 are in the [acceptance status](rust-rewrite.md).
 
-`GET /api/readiness` reports `api`, `training`, `migration`, `checks`, `backends`
+`GET /api/readiness` reports `api`, `training`, `checks`, `backends`
 and `submission_available_backends`. It sends no provider request. Configuration
 permission, cached provider connectivity and recorded GPU acceptance are separate
-fields. `training=INCOMPLETE` remains until acceptance evidence exists, and
-`migration=IN_PROGRESS` appears when historical records are attached; neither by
-itself blocks submission. `GET /api/observer` reports local background observer
+fields. `training=INCOMPLETE` remains until acceptance evidence exists; that does
+not by itself block submission. `GET /api/observer` reports local background observer
 state.
 
 ## Existing state
 
-A native service can attach an older namespace read-only with `history_config`, and
-`ml-expd-state-audit` can fingerprint metadata offline. Registry and Run roots must
-stay disjoint from the original. See
-[Existing-state audit](../rust/README.md#existing-state-audit). Neither enables
-replay of old work, and audit equality does not authorize a production replacement.
+The server serves only its native namespace. Older namespaces are never read or
+changed. `history_config` in the deployment file and `historical_handoff` in the
+tracking file are no longer supported: `--check` and startup refuse a file that
+sets either, naming the key, so remove them before upgrading. `deploy_native.py`
+runs that check before stopping anything. Rolling back to an earlier release
+needs the keys restored.
 
 ## Project registration and lifecycle
 

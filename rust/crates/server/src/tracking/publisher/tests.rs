@@ -60,7 +60,6 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64, version: i64) {
             entity: Some("fixture".into()),
             project: None,
             enabled: true,
-            historical_handoff: None,
         },
         key: "never-print".into(),
         routing: Default::default(),
@@ -100,7 +99,7 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64, version: i64) {
         .unwrap();
     let flag = AtomicBool::new(false);
     let mut sdk = None;
-    publish_bound(&store, &runtime, &mut sdk, &scope, &flag, false, &|| Ok(())).unwrap();
+    publish_bound(&store, &runtime, &mut sdk, &scope, &flag, &|| Ok(())).unwrap();
     let status = store.scope_status(&guard, &scope).unwrap().unwrap();
     let id = status["wandb_id"].as_str().unwrap().to_owned();
     sdk.as_mut().unwrap().shutdown().unwrap();
@@ -168,8 +167,8 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64, version: i64) {
     assert_eq!(repeated["writes"], 0);
     let guard = store.guard("demo", "train").unwrap();
     store.append(&guard, &scope, &[metric(5)]).unwrap();
-    publish_bound(&store, &runtime, &mut sdk, &scope, &flag, false, &|| Ok(())).unwrap();
-    publish_bound(&store, &runtime, &mut sdk, &scope, &flag, false, &|| Ok(())).unwrap();
+    publish_bound(&store, &runtime, &mut sdk, &scope, &flag, &|| Ok(())).unwrap();
+    publish_bound(&store, &runtime, &mut sdk, &scope, &flag, &|| Ok(())).unwrap();
     assert_eq!(
         store.scope_status(&guard, &scope).unwrap().unwrap()["confirmed"],
         5
@@ -243,19 +242,6 @@ fn uncertain_history_is_observed_without_opening_or_recreating_remote_runs() {
 }
 
 #[test]
-fn historical_terminal_uses_original_outcomes_without_claiming_a_running_run_completed() {
-    for value in [
-        json!({"state":"CANCELLED"}),
-        json!({"phase":"RESULTS_UPLOADED","exit_code":0}),
-        json!({"phase":"RESULTS_UPLOAD_FAILED"}),
-    ] {
-        assert!(historical_terminal(&value));
-    }
-    assert!(!historical_terminal(&json!({"state":"RUNNING"})));
-    assert!(!historical_terminal(&json!({})));
-}
-
-#[test]
 fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursors() {
     exercise_delayed_publication(4);
 }
@@ -291,7 +277,6 @@ fn exercise_delayed_publication(version: i64) {
             entity: Some("fixture".into()),
             project: None,
             enabled: true,
-            historical_handoff: None,
         },
         key: "test-key-never-stored".into(),
         routing: Default::default(),
@@ -341,9 +326,8 @@ fn exercise_delayed_publication(version: i64) {
         .unwrap();
     let flag = AtomicBool::new(false);
     let mut sdk = None;
-    let cycle = |sdk: &mut Option<Sdk>| {
-        publish_bound(&store, &runtime, sdk, &scope, &flag, false, &|| Ok(()))
-    };
+    let cycle =
+        |sdk: &mut Option<Sdk>| publish_bound(&store, &runtime, sdk, &scope, &flag, &|| Ok(()));
     let read_cloud = || serde_json::from_slice::<Value>(&fs::read(&cloud).unwrap()).unwrap();
     cycle(&mut sdk).unwrap();
     let saved = store.publication_state(&guard, &scope).unwrap().unwrap();

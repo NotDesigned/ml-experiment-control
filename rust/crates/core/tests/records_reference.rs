@@ -31,24 +31,6 @@ fn evaluate(case: &Value) -> records::Result<Value> {
                 json!({"event_id":prepared.event_id,"body":prepared.body,"checksum":prepared.checksum,"dedup":prepared.dedup}),
             )
         }
-        "worker_raw" => {
-            let bytes = input["bytes_hex"]
-                .as_str()
-                .unwrap()
-                .as_bytes()
-                .chunks_exact(2)
-                .map(|v| u8::from_str_radix(std::str::from_utf8(v).unwrap(), 16).unwrap())
-                .collect::<Vec<_>>();
-            Ok(
-                serde_json::to_value(records::worker_batch_json(&bytes, &input["config"])?)
-                    .unwrap(),
-            )
-        }
-        "worker" => Ok(serde_json::to_value(records::worker_batch(
-            &input["body"],
-            &input["config"],
-        )?)
-        .unwrap()),
         _ => unreachable!(),
     }
 }
@@ -81,52 +63,5 @@ fn canonical_record_contract_matches_frozen_python_reference() {
         }
         count += 1;
     }
-    assert_eq!(count, 278);
-}
-
-#[test]
-fn raw_worker_nonfinite_values_remain_validation_failures_and_cannot_be_lifecycle_fields() {
-    let cases=[
-        (br#"{"records":[{"event_id":"m","kind":"metrics","data":{"name":"loss","unit":"nats/token","value":NaN}}]}"#.as_slice(),"nan"),
-        (br#"{"records":[{"event_id":"m","kind":"metrics","data":{"name":"loss","unit":"nats/token","value":[Infinity]}}]}"#.as_slice(),"[inf]"),
-        (br#"{"records":[{"event_id":"m","kind":"metrics","data":{"name":"loss","unit":"nats/token","value":1e400}}]}"#.as_slice(),"inf"),
-    ];
-    for (body, invalid) in cases {
-        let result = records::worker_batch_json(body, &json!({})).unwrap();
-        assert_eq!(result[0].payload["observations"][0]["status"], "FAILED");
-        assert_eq!(
-            result[0].payload["observations"][0]["invalid_value"],
-            invalid
-        );
-    }
-    for body in [
-        br#"{"records":[{"event_id":"x","kind":"lifecycle","data":{"step":NaN}}]}"#.as_slice(),
-        br#"{"records":[{"event_id":"x","kind":"checkpoints","data":{"pid":1e400}}]}"#.as_slice(),
-    ] {
-        assert!(records::worker_batch_json(body, &json!({})).is_err());
-    }
-    let body=br#"{"records":[{"event_id":"x","kind":"metrics","data":{"name":"loss","unit":"u","value":1,"error":{"detail":[Infinity,-Infinity]}}}]}"#;
-    let record =
-        &records::worker_batch_json(body, &json!({})).unwrap()[0].payload["observations"][0];
-    assert_eq!(record["error"], "{'detail': [inf, -inf]}");
-}
-
-#[test]
-fn nonfinite_token_parser_never_reinterprets_user_strings_or_relaxes_json_syntax() {
-    let body=br#"{"records":[{"event_id":"m","kind":"metrics","data":{"name":"loss","unit":"u","value":1,"step":NaN,"error":"\u0000ml-exp-nonfinite:0:0"}}]}"#;
-    let events = records::worker_batch_json(body, &json!({})).unwrap();
-    let observation = &events[0].payload["observations"][0];
-    assert_eq!(observation["error"], "\0ml-exp-nonfinite:0:0");
-    assert!(observation.get("step").is_none());
-    let quoted=br#"{"records":[{"event_id":"m","kind":"metrics","data":{"name":"loss","unit":"u","value":"NaN"}}]}"#;
-    let events = records::worker_batch_json(quoted, &json!({})).unwrap();
-    assert_eq!(events[0].payload["observations"][0]["invalid_value"], "NaN");
-    for body in [
-        b"NaN1".as_slice(),
-        b"[Infinityx]".as_slice(),
-        b"{} trailing".as_slice(),
-        b"{\"records\":[],}".as_slice(),
-    ] {
-        assert!(records::worker_batch_json(body, &json!({})).is_err());
-    }
+    assert_eq!(count, 83);
 }

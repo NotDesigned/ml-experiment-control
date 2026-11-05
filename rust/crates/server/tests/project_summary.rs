@@ -1,20 +1,36 @@
-//! Existing Python project-list DTO with explicit synthetic observations.
+//! Project-list aggregation with explicit synthetic observations.
 use ml_exp_server::read_model::{self, Error};
 use serde_json::{Value, json};
 
 #[test]
-fn metadata_aggregation_matches_actual_python_project_list() {
-    let fixture: Value =
-        serde_json::from_str(include_str!("../../../compatibility/project-summary.json")).unwrap();
-    assert_eq!(
-        fixture["baseline_commit"],
-        "e725faec689fb8395e692e27d00a8896fa7fe5a5"
-    );
-    for case in fixture["cases"].as_array().unwrap() {
+fn run_counts_and_attention_follow_state_and_staleness() {
+    for (rows, expected) in [
+        (
+            r#"[]"#,
+            r#"{"project":"demo","title":"Synthetic 科学","run_counts":{},"attention_count":0}"#,
+        ),
+        (
+            r#"[{"project":"demo","run_id":"run-0","scheduler_state":"","evidence_stale":true}]"#,
+            r#"{"project":"demo","title":"Synthetic 科学","run_counts":{"UNKNOWN":1},"attention_count":1}"#,
+        ),
+        (
+            r#"[{"project":"demo","run_id":"run-0","scheduler_state":"RUNNING","evidence_stale":false},{"project":"demo","run_id":"run-1","scheduler_state":"FAILED","evidence_stale":false},{"project":"demo","run_id":"run-2","scheduler_state":"PREEMPTED","evidence_stale":false}]"#,
+            r#"{"project":"demo","title":"Synthetic 科学","run_counts":{"RUNNING":1,"FAILED":1,"PREEMPTED":1},"attention_count":2}"#,
+        ),
+        (
+            r#"[{"project":"demo","run_id":"run-0","scheduler_state":"RUNNING","evidence_stale":true},{"project":"demo","run_id":"run-1","scheduler_state":"FAILED","evidence_stale":true},{"project":"demo","run_id":"run-2","scheduler_state":"PREEMPTED","evidence_stale":true}]"#,
+            r#"{"project":"demo","title":"Synthetic 科学","run_counts":{"RUNNING":1,"FAILED":1,"PREEMPTED":1},"attention_count":5}"#,
+        ),
+        (
+            r#"[{"project":"demo","run_id":"run-0","scheduler_state":"failed","evidence_stale":false},{"project":"demo","run_id":"run-1","scheduler_state":"SUCCEEDED","evidence_stale":false},{"project":"demo","run_id":"run-2","scheduler_state":"UNKNOWN","evidence_stale":false}]"#,
+            r#"{"project":"demo","title":"Synthetic 科学","run_counts":{"failed":1,"SUCCEEDED":1,"UNKNOWN":1},"attention_count":1}"#,
+        ),
+    ] {
+        let rows: Vec<Value> = serde_json::from_str(rows).unwrap();
+        let expected: Value = serde_json::from_str(expected).unwrap();
         assert_eq!(
-            read_model::project_summary("demo", "Synthetic 科学", case["rows"].as_array().unwrap())
-                .unwrap(),
-            case["expected"]
+            read_model::project_summary("demo", "Synthetic 科学", &rows).unwrap(),
+            expected
         );
     }
 }

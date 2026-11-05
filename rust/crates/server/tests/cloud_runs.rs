@@ -735,7 +735,6 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     assert_eq!(policy["allow_source_imports"], true);
     assert_eq!(policy["allow_scheduler_mutations"], false);
     assert_eq!(policy["allow_resource_deletions"], false);
-    assert_eq!(policy["historical_records_read_only"], true);
     assert_eq!(
         client.get("/api/readiness").unwrap()["training"],
         "INCOMPLETE"
@@ -779,6 +778,13 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             .unwrap()
             .iter()
             .any(|v| v == "native-cloud-submissions.v1")
+    );
+    assert!(
+        health["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "checkpoint-record-read.v1")
     );
     let plan = ml_exp_client::submissions::plan(ml_exp_client::submissions::Command::Create {
         project: "demo",

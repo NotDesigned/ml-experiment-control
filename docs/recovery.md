@@ -179,10 +179,6 @@ does not rerun training or require a replacement training Run. Missing backend
 files cannot be reconstructed by collecting, and original FAILED scheduler
 history stays FAILED. Delayed offline logs remain pending, not proof of success.
 
-Historical records may expose their original receipts and released/expired
-status without a native Submission. Their read compatibility does not authorize
-recreating an old job or changing its recorded identities.
-
 ## Download confirmation and server storage
 
 ```bash

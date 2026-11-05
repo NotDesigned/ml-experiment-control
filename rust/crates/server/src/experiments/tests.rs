@@ -2,7 +2,6 @@ use super::*;
 use crate::deletion::RunFence;
 use ml_exp_io::directory::Directory;
 use serde_json::{Map, Value, json};
-use sha2::Digest;
 use std::{
     ffi::OsStr,
     fs,
@@ -78,12 +77,7 @@ fn actual_python_safe_dump_and_checked_in_legacy_metadata_have_identical_values_
             "{}",
             case["name"]
         );
-        let source = if case["name"] == "legacy-control" {
-            ManifestSource::LegacyRunYaml
-        } else {
-            ManifestSource::RunYaml
-        };
-        let document = super::domain::Document::decode(bytes, source).unwrap();
+        let document = super::domain::Document::decode(bytes, ManifestSource::RunYaml).unwrap();
         assert_eq!(document.raw_sha256, case["raw_sha256"]);
     }
 }
@@ -107,6 +101,7 @@ fn yaml_policy_rejects_ambiguous_or_expansive_input_and_json_requires_json_synta
         "x: -.inf\n",
         "x: !!str 3\n",
         "x: &a [1, 2]\ny: *a\n",
+        "x: &a 1\n",
         "x: 1\nx: 2\n",
         "1: value\n",
         "? [x, y]\n: value\n",
@@ -176,74 +171,6 @@ fn yaml_policy_rejects_ambiguous_or_expansive_input_and_json_requires_json_synta
 }
 
 #[test]
-fn frozen_yaml_references_preserve_values_and_hash_while_authored_input_stays_strict() {
-    let raw = b"source: &source {id: 'source.fixture', argv: ['python', '-u'], enabled: true}\ncopy: *source\nscalar: &number 42\nnumber: *number\n";
-    let document = Document::decode(raw, ManifestSource::RunYaml).unwrap();
-    assert_eq!(document.metadata["source"], document.metadata["copy"]);
-    assert_eq!(document.metadata["number"], 42);
-    assert_eq!(
-        document.raw_sha256,
-        format!("sha256:{:x}", sha2::Sha256::digest(raw))
-    );
-    assert_eq!(
-        parse_mapping(raw, Format::Yaml),
-        Err(DocumentError::UnsupportedYaml)
-    );
-}
-
-#[test]
-fn frozen_yaml_references_reject_cycles_redefinitions_merges_and_unsafe_values() {
-    for text in [
-        "x: &a [*a]\n",
-        "x: *later\ny: &later 1\n",
-        "x: &a 1\ny: &a 2\n",
-        "x: &a {one: 1}\ny: {<<: *a}\n",
-        "x: &a {one: 1, one: 2}\ny: *a\n",
-        "x: &a {one: yes}\ny: *a\n",
-        "x: &a !!str 1\ny: *a\n",
-        "x: &a 1\n---\ny: *a\n",
-    ] {
-        assert!(
-            Document::decode(text.as_bytes(), ManifestSource::RunYaml).is_err(),
-            "{text}"
-        );
-    }
-}
-
-#[test]
-fn frozen_yaml_reference_expansion_is_bounded_before_cloning() {
-    let mut exponential = String::from("x0: &a0 [1, 2]\n");
-    for number in 1..20 {
-        exponential.push_str(&format!(
-            "x{number}: &a{number} [*a{}, *a{}]\n",
-            number - 1,
-            number - 1
-        ));
-    }
-    assert_eq!(
-        Document::decode(exponential.as_bytes(), ManifestSource::RunYaml).err(),
-        Some(DocumentError::Complexity)
-    );
-    let mut bytes = format!("text: &large '{}'\n", "x".repeat(512 * 1024));
-    for number in 0..9 {
-        bytes.push_str(&format!("copy{number}: *large\n"));
-    }
-    assert_eq!(
-        Document::decode(bytes.as_bytes(), ManifestSource::RunYaml).err(),
-        Some(DocumentError::Complexity)
-    );
-    let nesting = format!(
-        "leaf: &leaf 1\nroot: {}*leaf{}\n",
-        "[".repeat(64),
-        "]".repeat(64)
-    );
-    assert_eq!(
-        Document::decode(nesting.as_bytes(), ManifestSource::RunYaml).err(),
-        Some(DocumentError::Complexity)
-    );
-}
-
-#[test]
 fn exact_run_attempt_and_byte_expectations_are_read_without_mutation_or_index() {
     let f = fixture();
     let before = fs::read(run_path(f.root.path()).join("manifest.yaml")).unwrap();
@@ -295,7 +222,7 @@ fn exact_run_attempt_and_byte_expectations_are_read_without_mutation_or_index() 
 }
 
 #[test]
-fn missing_canonical_files_allow_only_explicit_legacy_not_corrupt_or_collected_fallback() {
+fn retired_names_corrupt_files_and_collected_copies_are_not_a_fallback() {
     let f = fixture();
     let path = run_path(f.root.path());
     fs::rename(
@@ -303,9 +230,10 @@ fn missing_canonical_files_allow_only_explicit_legacy_not_corrupt_or_collected_f
         path.join("control_manifest.yaml"),
     )
     .unwrap();
-    let legacy = f.store.run(&f.reference, None).unwrap();
-    assert_eq!(legacy.source, ManifestSource::LegacyRunYaml);
-    assert!(legacy.legacy_observation_only);
+    assert!(matches!(
+        f.store.run(&f.reference, None),
+        Err(Error::Missing)
+    ));
     fs::write(path.join("manifest.yaml"), b"broken: [").unwrap();
     assert!(f.store.run(&f.reference, None).is_err());
     fs::remove_file(path.join("manifest.yaml")).unwrap();

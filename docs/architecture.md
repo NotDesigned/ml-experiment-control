@@ -15,7 +15,7 @@ real providers is recorded separately in [acceptance status](rust-rewrite.md).
 | `ml-exp-core` | `rust/crates/core/` | none | Pure identities, validation, budgets, state transitions, reconciliation decisions and request plans |
 | `ml-exp-io` | `rust/crates/io/` | none | Confined files, hashing, bounded child processes, framing, archive and observation transport |
 | `ml-exp-client` | `rust/crates/client/` | `ml-exp` | Private settings, packaging, saved recovery identities, observation and verified transfers |
-| `ml-exp-server` | `rust/crates/server/` | `ml-expd-rs`, `ml-expd-state-audit` | Authenticated API, durable ledgers, backend adapters and background observation |
+| `ml-exp-server` | `rust/crates/server/` | `ml-expd-rs` | Authenticated API, durable ledgers, backend adapters and background observation |
 | `ml-exp-worker` | `rust/crates/worker/` | `ml-exp-worker-rs` | In-image supervision, Slurm gateway helper, data verification, checkpoints and result collection |
 | `experiment-redact` | `rust/src/` | `experiment-redact` | Shared credential redaction |
 
@@ -89,7 +89,6 @@ Paths are relative to `rust/crates/`.
 | W&B | `core/src/tracking/`, `server/src/tracking/` (the SDK process runs `server/src/tracking/sdk.py`) |
 | Debug machines | `core/src/cloud/debug.rs`, `server/src/cloud_runs/debug_http.rs`, `server/src/cloud_runs/service/debug.rs`, `client/src/debug.rs` |
 | Administrative maintenance | `core/src/maintenance.rs`, `server/src/administration.rs`, `server/src/deletion.rs`, `worker/src/maintenance.rs` |
-| Historical reads and audit | `server/src/history.rs`, `server/src/readonly.rs`, `server/src/state_audit.rs`, `server/src/state_audit/main.rs` |
 
 Slurm and cloud are separate services behind one API. They share core types and
 Action storage but have distinct adapters and effect stores. Adding a backend requires its
@@ -148,9 +147,8 @@ and CI scripts and the `deploy_native.py` upgrade tool are operator tooling. Tag
 
 Existing Run/Attempt/source identities, routes, immutable image references,
 review digests, publication routes and saved client operation IDs remain frozen.
-Historical metadata is attached read-only, with separate native write roots: old
-Actions never become native execution authority, and historical compatibility is
-not permission to create another job or rewrite a manifest. Unknown submissions
+The server reads only its native namespace; older namespaces stay on disk
+untouched and are not served. Unknown submissions
 and uncertain W&B sends stay reserved and are reconciled under their original
 identity, never replayed.
 

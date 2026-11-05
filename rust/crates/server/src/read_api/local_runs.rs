@@ -64,7 +64,7 @@ impl Api {
         self
     }
     pub fn local_enabled(&self) -> bool {
-        !self.is_historical() && !self.local_roots.is_empty()
+        !self.local_roots.is_empty()
     }
     fn local_root(&self, project: &str, run: &str) -> Result<Directory, Error> {
         validate_id(project)
@@ -72,9 +72,6 @@ impl Api {
             .map_err(|_| invalid_query())?;
         self.validate_registry()?;
         self.ensure_active(project)?;
-        if self.history_for(project, run)?.is_some() {
-            return Err(invalid());
-        }
         let p = self.local_roots.get(project).ok_or_else(|| {
             error(
                 404,
@@ -92,7 +89,7 @@ impl Api {
         project: &str,
         run: &str,
     ) -> Result<Option<(Directory, Value, String)>, Error> {
-        if self.is_historical() || !self.local_roots.contains_key(project) {
+        if !self.local_roots.contains_key(project) {
             return Ok(None);
         }
         let root = self.local_root(project, run)?;

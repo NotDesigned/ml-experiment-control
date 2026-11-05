@@ -23,7 +23,7 @@ fn sealed_launcher_encoding_matches_python() {
 }
 
 #[test]
-fn launch_endpoint_capability_and_frozen_body_are_exact() {
+fn launch_endpoint_and_frozen_body_are_exact() {
     let document = json!({"contract":CONTRACT,"identity":{"project":"p","run_id":"r","attempt_id":"attempt-001"},
         "environment":{"OUTPUT_DIR":"/output"},"argv":["--","python","train.py"],"workdir":"/app","timeout_seconds":300});
     let bytes = encode(&document).unwrap();
@@ -54,14 +54,4 @@ fn launch_endpoint_capability_and_frozen_body_are_exact() {
     let mut matching = target;
     matching.sha256 = format!("{:x}", Sha256::digest(&noncanonical));
     assert!(verify(&noncanonical, &matching).is_err());
-    for token in [
-        "",
-        "token with space",
-        "token\n",
-        "token:bad",
-        "token/other",
-    ] {
-        assert!(validate_capability(token).is_err());
-    }
-    assert!(validate_capability("test-token_123").is_ok());
 }

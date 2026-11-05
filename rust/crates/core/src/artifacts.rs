@@ -7,11 +7,9 @@ pub mod publication;
 
 use crate::identity::{validate_attempt, validate_id};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeSet;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-
-pub mod historical;
 
 pub const MAX_FILES: usize = 20_000;
 pub const MAX_PATH: usize = 4096;
@@ -279,11 +277,6 @@ pub fn finish_release(
         released_at: Some(released_at.into()),
         ..retention.clone()
     })
-}
-
-pub fn receipt_value(receipt: &ArchiveReceipt) -> Result<Value> {
-    validate_receipt(receipt)?;
-    Ok(json!({"archive_sha256":receipt.sha256,"archive_bytes":receipt.bytes,"files":receipt.files}))
 }
 
 #[cfg(test)]

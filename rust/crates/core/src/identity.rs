@@ -1,5 +1,3 @@
-use serde::{Deserialize, Serialize};
-
 #[derive(Debug, thiserror::Error)]
 #[error("invalid {0} identity")]
 pub struct IdentityError(&'static str);
@@ -52,16 +50,6 @@ pub fn submission_marker(token: &str) -> Result<String, IdentityError> {
         return Err(IdentityError("submission token"));
     }
     Ok(format!("ml-exp-{token}"))
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdentityReport {
-    pub available: bool,
-    pub ambiguous: bool,
-    #[serde(default)]
-    pub scheduler_job_ids: Vec<String>,
-    pub remote_manifest_exists: Option<bool>,
-    pub remote_manifest_matches: Option<bool>,
 }
 
 #[cfg(test)]

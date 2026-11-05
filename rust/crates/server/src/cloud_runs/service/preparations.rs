@@ -36,15 +36,6 @@ impl Service {
         let run = request
             .resolve(project, worker)
             .map_err(|_| cloud::Error::configuration())?;
-        if let Some(history) = &self.history {
-            history
-                .require_available(project, &run.run_id)
-                .map_err(|error| cloud::Error {
-                    code: error.code.into(),
-                    http_status: Some(error.status),
-                    uncertain: false,
-                })?;
-        }
         if let Some(backend) = self.backends.get(&run.executor) {
             if matches!(
                 backend.adapter.profile,
