@@ -46,6 +46,7 @@ fn state(mut value: Value, project: &str, executor: &str, asset: &str) -> Result
             "copy_job",
             "diagnostic",
             "import_source",
+            "runtime_id",
         ] {
             m.remove(field);
         }

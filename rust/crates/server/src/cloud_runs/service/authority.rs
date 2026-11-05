@@ -152,52 +152,54 @@ impl Service {
             .map_err(|_| cloud::Error::evidence())?;
         let target = backend.definition.target()?;
         let data_root = backend.definition.data_root()?;
-        let datasets =
-            request
-                .data
-                .iter()
-                .map(|input| {
-                    if let Some(receipt) = backend
-                        .definition
-                        .datasets
-                        .iter()
-                        .find(|r| r.project == project && r.asset_id == input.asset_id)
-                    {
-                        return Ok(receipt.clone());
+        let datasets = request
+            .data
+            .iter()
+            .map(|input| {
+                if let Some(receipt) = backend
+                    .definition
+                    .datasets
+                    .iter()
+                    .find(|r| r.project == project && r.asset_id == input.asset_id)
+                {
+                    return Ok(receipt.clone());
+                }
+                if let Some(saved) = self.data_saved(project, &request.executor, &input.asset_id)? {
+                    if let Some(receipt) = saved.state.ready {
+                        return Ok(receipt);
                     }
                     if matches!(
                         backend.adapter.profile,
                         cloud::adapter::Profile::Sensecore(_)
                     ) {
-                        if let Some(saved) =
-                            self.data_saved(project, &request.executor, &input.asset_id)?
-                        {
-                            return saved.state.ready.ok_or(cloud::Error {
-                                code: "INPUT_NOT_READY".into(),
-                                http_status: Some(409),
-                                uncertain: false,
-                            });
-                        }
+                        return Err(cloud::Error {
+                            code: "INPUT_NOT_READY".into(),
+                            http_status: Some(409),
+                            uncertain: false,
+                        });
                     }
-                    let definition = if let Some(recipe) =
-                        backend.definition.imports.iter().find(|r| {
-                            r.project == project && r.definition.asset_id() == input.asset_id
-                        }) {
-                        recipe.definition.clone()
-                    } else {
-                        self.uploaded_data(project, &request.executor, &input.asset_id)?
-                            .ok_or_else(cloud::Error::evidence)?
-                    };
-                    Ok(ml_exp_core::datasets::Receipt {
-                        contract: ml_exp_core::datasets::CONTRACT.into(),
-                        project: project.into(),
-                        target: target.clone(),
-                        asset_id: input.asset_id.clone(),
-                        definition,
-                        root: format!("{data_root}/{project}/{}/tree", input.asset_id),
-                    })
+                }
+                let definition = if let Some(recipe) = backend
+                    .definition
+                    .imports
+                    .iter()
+                    .find(|r| r.project == project && r.definition.asset_id() == input.asset_id)
+                {
+                    recipe.definition.clone()
+                } else {
+                    self.uploaded_data(project, &request.executor, &input.asset_id)?
+                        .ok_or_else(cloud::Error::evidence)?
+                };
+                Ok(ml_exp_core::datasets::Receipt {
+                    contract: ml_exp_core::datasets::CONTRACT.into(),
+                    project: project.into(),
+                    target: target.clone(),
+                    asset_id: input.asset_id.clone(),
+                    definition,
+                    root: format!("{data_root}/{project}/{}/tree", input.asset_id),
                 })
-                .collect::<cloud::Result<Vec<_>>>()?;
+            })
+            .collect::<cloud::Result<Vec<_>>>()?;
         let checkpoint = if request.resume_from.is_some() {
             let root = self.authority(project, &request.run_id)?;
             if root.entry_exists(OsStr::new(&request.run_id)).map_err(io)? {
@@ -360,12 +362,25 @@ impl Service {
             .transpose()
             .map_err(|_| cloud::Error::evidence())?;
         package.result_upload = self.objects.is_some();
+        let mut materialized = std::collections::BTreeSet::new();
+        for mount in &package.config.datasets {
+            if let Some(receipt) = self
+                .data_saved(project, &request.executor, &mount.receipt.asset_id)?
+                .and_then(|s| s.state.ready)
+            {
+                if receipt != mount.receipt {
+                    return Err(cloud::Error::evidence());
+                }
+                materialized.insert(mount.receipt.asset_id.clone());
+            }
+        }
         package.imports = backend
             .definition
             .imports
             .iter()
             .filter(|i| {
                 i.project == project
+                    && !materialized.contains(&i.definition.asset_id())
                     && package
                         .config
                         .datasets
@@ -380,10 +395,11 @@ impl Service {
                 if !matches!(
                     backend.adapter.profile,
                     cloud::adapter::Profile::Sensecore(_)
-                ) && !package
-                    .imports
-                    .iter()
-                    .any(|i| i.definition.asset_id() == mount.receipt.asset_id)
+                ) && !materialized.contains(&mount.receipt.asset_id)
+                    && !package
+                        .imports
+                        .iter()
+                        .any(|i| i.definition.asset_id() == mount.receipt.asset_id)
                     && self
                         .uploaded_data(project, &request.executor, &mount.receipt.asset_id)?
                         .is_some()

@@ -135,6 +135,29 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         service.experiment_status("demo", setup_id).unwrap(),
         setup_view
     );
+    assert_eq!(
+        service.experiment_for_run("demo", "setup-only").unwrap(),
+        Some(setup_view.clone())
+    );
+    assert_eq!(
+        service.experiment_for_run("demo", "not-prepared").unwrap(),
+        None
+    );
+    assert_eq!(
+        service
+            .experiment_status("demo", &format!("preparation-{}", "9".repeat(32)))
+            .unwrap_err()
+            .http_status,
+        Some(404)
+    );
+    let mut discover_setup = setup.clone();
+    discover_setup.request_id = "d".repeat(32);
+    discover_setup
+        .run
+        .insert("run_id".into(), json!("discover-only"));
+    let discover_view = service
+        .experiment_prepare("demo", discover_setup, None)
+        .unwrap();
     let mut changed_setup = setup.clone();
     changed_setup.run.insert("seed".into(), json!(43));
     assert!(
@@ -424,6 +447,19 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     };
     let before = listing();
     let datasets = client.get("/api/projects/demo/datasets/pai-h200").unwrap();
+    assert_eq!(
+        client
+            .get("/api/runs/demo/discover-only/preparation")
+            .unwrap(),
+        discover_view
+    );
+    assert!(matches!(
+        client.get(&format!(
+            "/api/projects/demo/experiment-preparations/preparation-{}",
+            "9".repeat(32)
+        )),
+        Err(ml_exp_client::Error::Http { status: 404, .. })
+    ));
     assert_eq!(datasets["datasets"][0]["asset_id"], dataset.asset_id);
     assert_eq!(listing(), before);
     let capacity = client.get("/api/backends/pai-h200/capacity").unwrap();

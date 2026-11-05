@@ -116,6 +116,9 @@ impl Service {
                 uncertain: false,
             });
         }
+        if let Some(retry) = self.sync_recovery_request(action, &request.request_id)? {
+            return self.retry_sync(action, &request.request_id, &retry, now, cancelled);
+        }
         let lock = self.lock()?;
         let prepared = self.load(action)?;
         if self.actions.observe(action).map_err(op)?["execution"]["status"] != "VERIFIED" {

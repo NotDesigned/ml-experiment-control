@@ -1,0 +1,94 @@
+use crate::{
+    AppState, read_api,
+    read_http::{self, Access},
+};
+use axum::{
+    Router,
+    body::Bytes,
+    extract::{Path, RawQuery, State},
+    response::Response,
+    routing::{get, post},
+};
+use std::sync::{Arc, atomic::AtomicBool};
+fn invalid() -> read_api::Error {
+    read_api::Error {
+        status: 422,
+        code: "INVALID_SYNC_REQUEST",
+        detail: "invalid original synchronization identity or retry confirmation",
+    }
+}
+pub(super) fn routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/api/submissions/{action}/sync/{request}", get(show))
+        .route(
+            "/api/submissions/{action}/sync/{request}/retry",
+            post(retry),
+        )
+}
+fn clock(now: f64) -> Result<String, read_api::Error> {
+    time::OffsetDateTime::from_unix_timestamp(now as i64)
+        .map_err(|_| invalid())?
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|_| invalid())
+}
+async fn show(
+    State(state): State<Arc<AppState>>,
+    Path((action, request)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    if read_api::no_parameters(query.as_deref()).is_err() {
+        return read_http::failure(invalid());
+    }
+    let check = ml_exp_core::cloud::exchange::Sync {
+        request_id: request.clone(),
+        confirmation: format!("SYNC {action}"),
+    };
+    if check.validate(&action).is_err() {
+        return read_http::failure(invalid());
+    }
+    read_http::execute(state, Access::Read, move |api, now| {
+        api.cloud()
+            .ok_or_else(invalid)?
+            .sync_status(&action, &request, &clock(now)?)
+            .map_err(super::failure)
+    })
+    .await
+}
+async fn retry(
+    State(state): State<Arc<AppState>>,
+    Path((action, request)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Response {
+    if read_api::no_parameters(query.as_deref()).is_err() {
+        return read_http::failure(invalid());
+    }
+    let retry: ml_exp_core::cloud::exchange::SyncRetry = match ml_exp_core::json::mapping(&body)
+        .ok()
+        .and_then(|m| serde_json::from_value(serde_json::Value::Object(m)).ok())
+    {
+        Some(r) => r,
+        None => return read_http::failure(invalid()),
+    };
+    if retry.validate(&action, &request).is_err() {
+        return read_http::failure(invalid());
+    }
+    read_http::execute_timeout(
+        state,
+        Access::Submission,
+        std::time::Duration::from_secs(120),
+        move |api, now| {
+            api.cloud()
+                .ok_or_else(invalid)?
+                .retry_sync(
+                    &action,
+                    &request,
+                    &retry,
+                    &clock(now)?,
+                    &AtomicBool::new(false),
+                )
+                .map_err(super::failure)
+        },
+    )
+    .await
+}

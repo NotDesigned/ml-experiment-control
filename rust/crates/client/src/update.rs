@@ -196,15 +196,13 @@ pub fn verify_executable(path: &std::path::Path, version: &str) -> Result<(), Er
 fn discover(http: &reqwest::blocking::Client) -> Result<String, Error> {
     let mut releases = Vec::new();
     for page in 1..=10 {
-        let response = http
+        let response = match http
             .get(format!("https://api.github.com/repos/NotDesigned/ml-experiment-control/releases?per_page=100&page={page}"))
             .header(reqwest::header::USER_AGENT, concat!("ml-exp/", env!("CARGO_PKG_VERSION")))
             .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-            .send().map_err(|_| fail())?;
+            .send() { Ok(r) => r, Err(_) => return discover_web(http) };
         if response.status() != 200 {
-            return Err(Error::Observation(
-                "cannot discover latest stable native release; no version was selected",
-            ));
+            return discover_web(http);
         }
         let mut bytes = Vec::new();
         response
@@ -227,4 +225,49 @@ fn discover(http: &reqwest::blocking::Client) -> Result<String, Error> {
     Err(Error::Observation(
         "native release listing exceeds discovery limit; select --version explicitly",
     ))
+}
+
+// Public website discovery remains usable when the unauthenticated REST quota
+// is exhausted. Selection still requires a stable native tag and the normal
+// manifest/SHA/platform checks; API credentials never go to GitHub.
+fn discover_web(http: &reqwest::blocking::Client) -> Result<String, Error> {
+    let response = http.get("https://github.com/NotDesigned/ml-experiment-control/releases/latest")
+        .send().map_err(|_| Error::Observation("latest-release discovery failed on both GitHub REST and website; use update --version VERSION"))?;
+    if response.status() != 200 {
+        return Err(Error::Observation(
+            "latest-release website is unavailable; use update --version VERSION",
+        ));
+    }
+    web_version(response.url().as_str())
+}
+fn web_version(url: &str) -> Result<String, Error> {
+    let value = url
+        .strip_prefix("https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v")
+        .filter(|v| distribution::version(v))
+        .ok_or(Error::Observation(
+            "latest public release is not a stable native tag; use update --version VERSION",
+        ))?;
+    Ok(value.into())
+}
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    #[test]
+    fn website_fallback_requires_exact_repository_and_stable_native_tag() {
+        assert_eq!(
+            web_version(
+                "https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.24"
+            )
+            .unwrap(),
+            "0.1.24"
+        );
+        for url in [
+            "https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.24-rc1",
+            "https://github.com/NotDesigned/ml-experiment-control/releases/tag/v1.5.1",
+            "https://github.com/other/repository/releases/tag/native-v0.1.24",
+            "https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.24?unexpected=1",
+        ] {
+            assert!(web_version(url).is_err());
+        }
+    }
 }

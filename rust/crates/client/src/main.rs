@@ -124,7 +124,7 @@ enum Data {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Build the same immutable data image and advance its zero-GPU NAS copy.
+    /// Prepare data on persistent storage with a zero-GPU copy (PAI: existing Runtime).
     Publish {
         #[arg(long)]
         project: String,
@@ -136,6 +136,9 @@ enum Data {
         request_id: String,
         #[arg(long)]
         confirmation: String,
+        /// PAI: reuse this READY Runtime; no image build is performed.
+        #[arg(long)]
+        runtime: Option<String>,
     },
     Upload {
         #[arg(long)]
@@ -364,8 +367,14 @@ enum Run {
         submission: String,
         #[arg(long)]
         request_id: String,
-        #[arg(long)]
+        #[arg(long, default_value = "")]
         confirmation: String,
+        /// Read retained evidence only; never submit or query the provider.
+        #[arg(long, conflicts_with = "retry_failed_job")]
+        status: bool,
+        /// One CPU retry under the same request, bound to this exact FAILED job.
+        #[arg(long)]
+        retry_failed_job: Option<String>,
     },
     /// Show the frozen W&B route and local publication cursors/errors; no cloud request.
     Tracking {
@@ -543,11 +552,31 @@ impl Run {
                 submission,
                 request_id,
                 confirmation,
-            } => submissions::Command::Sync {
-                submission,
-                request_id,
-                confirmation,
-            },
+                status,
+                retry_failed_job,
+            } => {
+                if *status {
+                    submissions::Command::SyncStatus {
+                        submission,
+                        request_id,
+                    }
+                } else if let Some(id) = retry_failed_job {
+                    submissions::Command::SyncRetry {
+                        submission,
+                        request_id,
+                        request: ml_exp_core::cloud::exchange::SyncRetry {
+                            expected_failed_job_id: id.clone(),
+                            confirmation: confirmation.clone(),
+                        },
+                    }
+                } else {
+                    submissions::Command::Sync {
+                        submission,
+                        request_id,
+                        confirmation,
+                    }
+                }
+            }
             Self::Tracking { project, run } => submissions::Command::Tracking { project, run },
             Self::History { submission } => submissions::Command::History { submission },
             Self::Cancel {
@@ -568,7 +597,7 @@ impl Run {
                 max_gpu_hours: *max_gpu_hours,
                 reason,
             },
-            Self::Preparation { project, run } => submissions::Command::Existing { project, run },
+            Self::Preparation { project, run } => submissions::Command::Discovery { project, run },
             Self::Submission { submission } => submissions::Command::Show { submission },
             Self::Renew {
                 submission,
@@ -684,11 +713,19 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 asset,
                 request_id,
                 confirmation,
+                runtime,
             } => {
                 datasets::validate(project, executor, Some(asset))?;
                 ml_exp_core::submission::validate_submission_token(request_id)?;
                 if confirmation != &format!("PUBLISH {asset}") {
                     return Err("invalid exact data publication confirmation".into());
+                }
+                if runtime.as_deref().is_some_and(|id| {
+                    !id.strip_prefix("runtime.").is_some_and(|s| {
+                        ml_exp_core::slurm::helper::valid_digest(&format!("sha256:{s}"))
+                    })
+                }) {
+                    return Err("invalid data materialization Runtime identity".into());
                 }
             }
             Data::List { project, executor }
@@ -933,7 +970,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             ml_exp_core::datasets::oss::Import { object_key, sha256, archive_bytes }, &health)?,
                         Data::List{project,executor}=>datasets::list(&client,&project,&executor,&health)?,
                         Data::Download{project,executor,asset,output}=>datasets::download(&client,&project,&executor,&asset,&output,&health)?,
-                        Data::Publish{project,executor,asset,request_id,confirmation}=>client.post(&format!("/api/projects/{project}/datasets/{executor}/{asset}/publish"),&serde_json::json!({"request_id":request_id,"confirmation":confirmation}))?,
+                        Data::Publish{project,executor,asset,request_id,confirmation,runtime}=>client.post(&format!("/api/projects/{project}/datasets/{executor}/{asset}/publish"),&serde_json::json!({"request_id":request_id,"confirmation":confirmation,"runtime_id":runtime}))?,
                         Data::Upload {
                             project,
                             executor,

@@ -12,6 +12,47 @@ use std::{
 };
 const ID: &str = "action-0123456789abcdef";
 #[test]
+fn synchronization_read_and_retry_have_separate_effects_and_exact_failed_identity() {
+    let id = "a".repeat(32);
+    let read = submissions::plan(Command::SyncStatus {
+        submission: ID,
+        request_id: &id,
+    })
+    .unwrap();
+    assert!(!read.is_mutation());
+    let value = json!({"submission_id":ID,"synchronization":{"request_id":id,"resources":{"gpus":0,"cpus":2,"memory_gb":4},"max_time_seconds":600,"training_replayed":false,"retry_limit":1,"retry":{"expected_failed_job_id":"dlc-old"}}});
+    assert!(submissions::response(&read, value.clone()).is_ok());
+    let retry = submissions::plan(Command::SyncRetry {
+        submission: ID,
+        request_id: &id,
+        request: ml_exp_core::cloud::exchange::SyncRetry {
+            expected_failed_job_id: "dlc-old".into(),
+            confirmation: format!("RETRY SYNC {ID} {id} dlc-old"),
+        },
+    })
+    .unwrap();
+    assert!(retry.is_mutation());
+    assert!(submissions::response(&retry, value.clone()).is_ok());
+    let mut wrong = value;
+    wrong["synchronization"]["retry"]["expected_failed_job_id"] = json!("dlc-other");
+    assert!(submissions::response(&retry, wrong).is_err());
+}
+#[test]
+fn discovery_accepts_retained_preparation_before_any_submission_exists() {
+    let plan = submissions::plan(Command::Discovery {
+        project: "demo",
+        run: "train",
+    })
+    .unwrap();
+    assert!(!plan.is_mutation());
+    let id = format!("preparation-{}", "a".repeat(32));
+    let value = json!({"project":"demo","run_id":"train","preparation_id":id,"status":"PREPARED","confirmation":format!("PREPARE {id}"),"training_authorized":false,"scheduler_submitted":false});
+    assert!(submissions::response(&plan, value.clone()).is_ok());
+    let mut wrong = value;
+    wrong["run_id"] = json!("other");
+    assert!(submissions::response(&plan, wrong).is_err());
+}
+#[test]
 fn checkpoint_free_retry_requires_exact_parent_and_frozen_cpu_sync_choice() {
     let request: ml_exp_core::first_submission::native::retry::Request = serde_json::from_value(json!({
         "confirmation":format!("RETRY {ID}"),"restart_from":{"run_id":"train","attempt_id":"attempt-001","sync_request_id":"a".repeat(32)},"max_gpu_hours":2.0,"reason":"cache repair"

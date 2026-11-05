@@ -63,6 +63,116 @@ impl Sync {
     }
 }
 
+/// One explicit metadata-only recovery child of an existing failed sync.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncRetry {
+    pub expected_failed_job_id: String,
+    pub confirmation: String,
+}
+impl SyncRetry {
+    pub fn validate(&self, action: &str, request_id: &str) -> Result<()> {
+        Sync {
+            request_id: request_id.into(),
+            confirmation: format!("SYNC {action}"),
+        }
+        .validate(action)?;
+        component(&self.expected_failed_job_id)?;
+        if self.confirmation
+            != format!(
+                "RETRY SYNC {action} {request_id} {}",
+                self.expected_failed_job_id
+            )
+        {
+            return Err(Error("sync retry confirmation"));
+        }
+        Ok(())
+    }
+    pub fn job(&self, action: &str, request_id: &str, parent: &Job) -> Result<Job> {
+        self.validate(action, request_id)?;
+        let sync = Sync {
+            request_id: request_id.into(),
+            confirmation: format!("SYNC {action}"),
+        };
+        let mut job = sync.job(parent)?;
+        job.run_id = format!("sync-{request_id}-retry-1");
+        job.submission_token = canonical::digest(&json!([
+            "native-cloud-sync-retry.v1",
+            action,
+            request_id,
+            self.expected_failed_job_id,
+            parent.submission_token
+        ]))
+        .map_err(|_| Error("sync retry identity"))?[..32]
+            .into();
+        job.validate()?;
+        Ok(job)
+    }
+}
+
+#[cfg(test)]
+mod sync_retry_tests {
+    use super::*;
+    #[test]
+    fn recovery_is_one_deterministic_cpu_child_and_retains_the_exact_worker_package() {
+        let action = "action-0123456789abcdef";
+        let id = "a".repeat(32);
+        let parent = Job {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+            submission_token: "b".repeat(32),
+            source_id: format!("source.{}", "c".repeat(64)),
+            image: format!("r.example/team/image@sha256:{}", "d".repeat(64)),
+            command: vec![
+                "/worker".into(),
+                "cloud-launch".into(),
+                "--package-json".into(),
+                "{}".into(),
+            ],
+            gpus: 8,
+            cpus: 64,
+            memory_gb: 512,
+            max_time_seconds: 86400,
+            priority: 5,
+        };
+        let request = SyncRetry {
+            expected_failed_job_id: "dlc-original".into(),
+            confirmation: format!("RETRY SYNC {action} {id} dlc-original"),
+        };
+        let child = request.job(action, &id, &parent).unwrap();
+        assert_eq!(child, request.job(action, &id, &parent).unwrap());
+        let original = Sync {
+            request_id: id.clone(),
+            confirmation: format!("SYNC {action}"),
+        }
+        .job(&parent)
+        .unwrap();
+        assert_ne!(child.run_id, original.run_id);
+        assert_ne!(child.submission_token, original.submission_token);
+        assert_eq!(
+            (
+                child.gpus,
+                child.cpus,
+                child.memory_gb,
+                child.max_time_seconds
+            ),
+            (0, 2, 4, 600)
+        );
+        assert_eq!(child.command[..parent.command.len()], parent.command);
+        assert_eq!(child.command.last().unwrap(), "--sync");
+        assert_eq!(
+            (child.image, child.source_id),
+            (parent.image, parent.source_id)
+        );
+        let changed = SyncRetry {
+            expected_failed_job_id: "dlc-other".into(),
+            ..request
+        };
+        assert!(changed.validate(action, &id).is_err());
+    }
+}
+
 // No Debug: this is a scope-limited credential, never the daemon credential.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
