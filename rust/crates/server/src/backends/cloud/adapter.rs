@@ -3,7 +3,7 @@
 use super::{Client, Error, Result};
 use ml_exp_core::cloud::{self, Job, JobObservation, Page, Request, pai, sensecore};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::atomic::AtomicBool,
