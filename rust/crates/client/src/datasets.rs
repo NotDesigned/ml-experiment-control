@@ -198,7 +198,7 @@ pub fn upload(
             for number in 0..definition.part_count().map_err(|_| Error::Response)? {
                 let count = definition.part_size(number).map_err(|_| Error::Response)?;
                 archive
-                    .seek(SeekFrom::Start(number * datasets::PART_BYTES))
+                    .seek(SeekFrom::Start(number * ml_exp_core::multipart::PART_BYTES))
                     .map_err(|_| Error::Response)?;
                 let mut part = vec![0u8; count as usize];
                 archive.read_exact(&mut part).map_err(|_| Error::Response)?;

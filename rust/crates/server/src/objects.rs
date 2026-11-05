@@ -2,7 +2,10 @@
 //! the API retains receipts only, never payload files or full archive buffers.
 use base64::{Engine, engine::general_purpose::STANDARD};
 use hmac::{Hmac, Mac};
-use ml_exp_core::artifacts::ArchiveReceipt;
+use ml_exp_core::{
+    artifacts::ArchiveReceipt,
+    multipart::{MAX_PARTS, PART_BYTES},
+};
 use serde::Deserialize;
 use sha1::Sha1;
 use std::{
@@ -11,8 +14,6 @@ use std::{
     path::Path,
     time::Duration,
 };
-pub const PART_BYTES: u64 = 16 * 1024 * 1024;
-pub const MAX_PARTS: u64 = 65536;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {

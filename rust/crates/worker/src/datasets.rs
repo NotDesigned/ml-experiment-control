@@ -160,7 +160,7 @@ impl Store {
             return Ok(next);
         }
         let capacity = directory.capacity()?;
-        if capacity.insufficient(record.bytes + 16 * 1024 * 1024, 2) {
+        if capacity.insufficient(record.bytes + ml_exp_core::multipart::PART_BYTES, 2) {
             eprintln!(
                 "ML_EXPD_DATA_CAPACITY available_bytes={} available_inodes={:?}",
                 capacity.available_bytes, capacity.available_inodes
@@ -186,7 +186,7 @@ impl Store {
             directory.remove_staged_regular(OsStr::new("archive.tar"))?;
         }
         let parts = directory.child(OsStr::new("parts"), false)?;
-        for name in parts.entry_names_limited(ml_exp_core::multipart::MAX_MAX_PARTS as usize)? {
+        for name in parts.entry_names_limited(ml_exp_core::multipart::MAX_PARTS as usize)? {
             let number = name
                 .to_str()
                 .and_then(|s| s.parse::<u64>().ok())
@@ -233,7 +233,7 @@ impl Store {
                 .definition
                 .archive_bytes
                 .checked_add(state.definition.expanded_bytes().map_err(|_| invalid())?)
-                .and_then(|v| v.checked_add(16 * 1024 * 1024))
+                .and_then(|v| v.checked_add(ml_exp_core::multipart::PART_BYTES))
                 .ok_or_else(invalid)?;
             let capacity = directory.capacity()?;
             if capacity.insufficient(required, (state.definition.files.len() as u64) * 2 + 4) {

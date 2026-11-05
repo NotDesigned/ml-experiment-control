@@ -138,7 +138,11 @@ fn pure_identity_rules_keep_archive_sha_separate_from_the_source_tree() {
         ("demo", "A".repeat(64), 10),
         ("demo", "a".repeat(63), 10),
         ("demo", "a".repeat(64), 0),
-        ("demo", "a".repeat(64), sources::MAX_ARCHIVE_BYTES + 1),
+        (
+            "demo",
+            "a".repeat(64),
+            ml_exp_core::sources::Policy::default().max_archive_bytes + 1,
+        ),
     ] {
         assert!(sources::plan_archive(project, &digest, bytes).is_err());
     }
@@ -489,7 +493,7 @@ fn source_filename_choices_are_allowed_but_aliases_and_size_limits_remain() {
             "expanded" => {
                 File::create(temp.path().join("large.bin"))
                     .unwrap()
-                    .set_len(sources::MAX_SOURCE_BYTES + 1)
+                    .set_len(ml_exp_core::sources::Policy::default().max_source_bytes + 1)
                     .unwrap();
             }
             _ => unreachable!(),
@@ -510,7 +514,8 @@ fn source_filename_choices_are_allowed_but_aliases_and_size_limits_remain() {
     symlink(&real, temp.path().join("alias")).unwrap();
     assert!(sources::pack_directory(&temp.path().join("alias")).is_err());
     let huge = tempfile::tempfile().unwrap();
-    huge.set_len(sources::MAX_ARCHIVE_BYTES + 1).unwrap();
+    huge.set_len(ml_exp_core::sources::Policy::default().max_archive_bytes + 1)
+        .unwrap();
     assert!(sources::inspect_archive(huge).is_err());
 }
 

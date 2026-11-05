@@ -145,8 +145,8 @@ impl Reader {
         }
         match self {
             Self::Parts { url, token, http } => {
-                if offset % datasets::PART_BYTES != 0
-                    || count as u64 != datasets::PART_BYTES.min(total - offset)
+                if offset % ml_exp_core::multipart::PART_BYTES != 0
+                    || count as u64 != ml_exp_core::multipart::PART_BYTES.min(total - offset)
                 {
                     return Err(failed("PART_RANGE_INVALID"));
                 }
@@ -155,7 +155,10 @@ impl Reader {
                     .ok_or_else(|| failed("DOWNLOAD_TIMEOUT"))?
                     .min(Duration::from_secs(120));
                 let response = http
-                    .post(format!("{url}/{}", offset / datasets::PART_BYTES))
+                    .post(format!(
+                        "{url}/{}",
+                        offset / ml_exp_core::multipart::PART_BYTES
+                    ))
                     .bearer_auth(token)
                     .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
                     .timeout(remaining)
@@ -188,7 +191,7 @@ impl Reader {
                         .ok_or_else(|| failed("DATA_TICKET_INVALID"))?,
                 )
                 .map_err(|_| failed("DATA_TICKET_INVALID"))?;
-                if ticket["part"] != offset / datasets::PART_BYTES
+                if ticket["part"] != offset / ml_exp_core::multipart::PART_BYTES
                     || ticket["bytes"] != count as u64
                     || uri.scheme() != "https"
                     || uri.port_or_known_default() != Some(443)
@@ -364,7 +367,7 @@ pub fn materialize(
                     .part_size(number)
                     .map_err(|_| failed("PART_IDENTITY_INVALID"))?;
                 let offset = number
-                    .checked_mul(datasets::PART_BYTES)
+                    .checked_mul(ml_exp_core::multipart::PART_BYTES)
                     .ok_or_else(|| failed("PART_IDENTITY_INVALID"))?;
                 let payload = reader.part(
                     offset,
@@ -507,7 +510,7 @@ pub fn bundle(config: &Config, output: &Path, cancelled: &AtomicBool) -> Result<
             .map_err(|_| failed("IMPORT_CONFIGURATION_INVALID"))?
         {
             let bytes = source.part(
-                part * datasets::PART_BYTES,
+                part * ml_exp_core::multipart::PART_BYTES,
                 config
                     .definition
                     .part_size(part)

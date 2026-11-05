@@ -56,7 +56,7 @@ impl Client {
             || !uri.username().is_empty()
             || uri.password().is_some()
             || uri.fragment().is_some()
-            || expected > 16 * 1024 * 1024
+            || expected > ml_exp_core::multipart::PART_BYTES
         {
             return Err(Error::Response);
         }

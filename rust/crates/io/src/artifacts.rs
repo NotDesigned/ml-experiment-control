@@ -437,8 +437,7 @@ pub fn inspect_data_stream(
     bytes: u64,
 ) -> io::Result<ml_exp_core::datasets::Definition> {
     ml_exp_core::sources::validate_archive_digest(sha256).map_err(|_| invalid())?;
-    ml_exp_core::multipart::part_count(bytes, ml_exp_core::multipart::Policy::default())
-        .map_err(|_| invalid())?;
+    ml_exp_core::multipart::part_count(bytes).map_err(|_| invalid())?;
     let mut reader = HashReader {
         inner: reader.take(bytes.checked_add(1).ok_or_else(invalid)?),
         hash: Sha256::new(),

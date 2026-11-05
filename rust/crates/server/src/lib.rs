@@ -608,10 +608,10 @@ fn schema_document() -> serde_json::Value {
         json!({"type":"object","additionalProperties":false,"required":["object_key","sha256","archive_bytes"],"properties":{"object_key":{"type":"string","maxLength":1024},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"archive_bytes":{"type":"integer","minimum":1}}}),data_parameters()));
     let mut data_part = post(
         "Persist one exact zero-based part on the gateway; fixed 16 MiB maximum; no API disk spool",
-        json!({"type":"string","format":"binary","maxLength":16777216}),
+        json!({"type":"string","format":"binary","maxLength":ml_exp_core::multipart::PART_BYTES}),
         {
             let mut p = data_asset_parameters();
-            p.push(json!({"in":"path","name":"number","required":true,"schema":{"type":"integer","minimum":0,"maximum":65535}}));
+            p.push(json!({"in":"path","name":"number","required":true,"schema":{"type":"integer","minimum":0,"maximum":ml_exp_core::multipart::MAX_PARTS - 1}}));
             p.push(json!({"in":"path","name":"sha256","required":true,"schema":{"type":"string"}}));
             p
         },
@@ -621,7 +621,7 @@ fn schema_document() -> serde_json::Value {
         .expect("operation object")
         .remove("post")
         .expect("post operation");
-    part_operation["requestBody"]["content"] = json!({"application/octet-stream":{"schema":{"type":"string","format":"binary","maxLength":16777216}}});
+    part_operation["requestBody"]["content"] = json!({"application/octet-stream":{"schema":{"type":"string","format":"binary","maxLength":ml_exp_core::multipart::PART_BYTES}}});
     data_part["put"] = part_operation;
     paths.insert(
         "/api/projects/{project}/datasets/{executor}/{asset}/parts/{number}/{sha256}".into(),

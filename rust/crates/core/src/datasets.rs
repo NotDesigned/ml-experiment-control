@@ -1,13 +1,17 @@
 //! Immutable dataset identities and resumable gateway delivery. All filesystem,
 //! network and clock observations are supplied by the effect shells.
-use crate::{artifacts::FileReceipt, canonical, identity, multipart, slurm::helper::Target};
+use crate::{
+    artifacts::FileReceipt,
+    canonical, identity,
+    multipart::{self, MAX_PARTS, PART_BYTES},
+    slurm::helper::Target,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 pub const CONTRACT: &str = "native-dataset.v1";
 pub mod import;
 pub mod oss;
 pub const MAX_METADATA: usize = 8 * 1024 * 1024;
-pub const PART_BYTES: u64 = multipart::DEFAULT_PART_BYTES;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("invalid dataset identity, delivery state or input binding")]
 pub struct Error;
@@ -48,9 +52,7 @@ impl Summary {
         if !asset_id(&self.asset_id)
             || self.file_count == 0
             || self.file_count > crate::artifacts::MAX_FILES
-            || self.part_count
-                != multipart::part_count(self.archive_bytes, multipart::Policy::default())
-                    .map_err(|_| Error)?
+            || self.part_count != multipart::part_count(self.archive_bytes).map_err(|_| Error)?
             || self.received_parts > self.part_count
             || !matches!(self.status.as_str(), "READY" | "ARCHIVED" | "UPLOADING")
             || self.status != "UPLOADING" && self.received_parts != self.part_count
@@ -95,8 +97,7 @@ pub struct Definition {
 impl Definition {
     pub fn validate(&self) -> Result<()> {
         crate::sources::validate_archive_digest(&self.sha256).map_err(|_| Error)?;
-        multipart::part_count(self.archive_bytes, multipart::Policy::default())
-            .map_err(|_| Error)?;
+        multipart::part_count(self.archive_bytes).map_err(|_| Error)?;
         if self.files.is_empty() || self.files.len() > crate::artifacts::MAX_FILES {
             return Err(Error);
         }
@@ -135,11 +136,10 @@ impl Definition {
     }
     pub fn part_count(&self) -> Result<u64> {
         self.validate()?;
-        multipart::part_count(self.archive_bytes, multipart::Policy::default()).map_err(|_| Error)
+        multipart::part_count(self.archive_bytes).map_err(|_| Error)
     }
     pub fn part_size(&self, number: u64) -> Result<u64> {
-        multipart::part_size(self.archive_bytes, multipart::Policy::default(), number)
-            .map_err(|_| Error)
+        multipart::part_size(self.archive_bytes, number).map_err(|_| Error)
     }
     pub fn expanded_bytes(&self) -> Result<u64> {
         self.files
@@ -430,7 +430,7 @@ impl Request {
                 bytes,
             } => {
                 if !asset_id(id)
-                    || *number >= multipart::MAX_MAX_PARTS
+                    || *number >= MAX_PARTS
                     || *bytes == 0
                     || *bytes > PART_BYTES
                     || crate::sources::validate_archive_digest(sha256).is_err()

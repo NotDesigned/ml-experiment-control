@@ -4,6 +4,7 @@ use crate::{
     cloud,
     managed::{self, Error, Result},
 };
+use ml_exp_core::multipart::{MAX_PARTS, PART_BYTES};
 use ml_exp_core::{
     artifacts::{self, publication::Bundle},
     cloud::{
@@ -19,7 +20,6 @@ use std::{
     io::{Read, Seek, SeekFrom},
     time::Duration,
 };
-const PART_BYTES: u64 = 16 * 1024 * 1024;
 fn client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .no_proxy()
@@ -202,7 +202,8 @@ pub fn publish(package: &Package) -> Result<()> {
         },
     )?;
     let count = bundle.archive.bytes.div_ceil(PART_BYTES);
-    if prepared["part_count"] != count || prepared["part_bytes"] != PART_BYTES || count > 65536 {
+    if prepared["part_count"] != count || prepared["part_bytes"] != PART_BYTES || count > MAX_PARTS
+    {
         return Err(Error::Binding);
     }
     if prepared["published"] != true {

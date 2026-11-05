@@ -12,8 +12,7 @@ pub struct Import {
 impl Import {
     pub fn validate(&self) -> Result<()> {
         crate::sources::validate_archive_digest(&self.sha256).map_err(|_| Error)?;
-        multipart::part_count(self.archive_bytes, multipart::Policy::default())
-            .map_err(|_| Error)?;
+        multipart::part_count(self.archive_bytes).map_err(|_| Error)?;
         if self.object_key.len() > 1024
             || !path(&self.object_key)
             || self.object_key.split('/').any(|s| {

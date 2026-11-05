@@ -224,7 +224,7 @@ impl Service {
         let published = saved.state.is_some();
         match request.operation {
             ArtifactOperation::Prepare { .. } => Ok(
-                json!({"published":published,"released":saved.state.as_ref().is_some_and(|s|s.retention.status!=artifacts::RetentionStatus::Keep),"part_bytes":crate::objects::PART_BYTES,"part_count":crate::objects::parts(&saved.bundle.archive).map_err(io)?}),
+                json!({"published":published,"released":saved.state.as_ref().is_some_and(|s|s.retention.status!=artifacts::RetentionStatus::Keep),"part_bytes":ml_exp_core::multipart::PART_BYTES,"part_count":crate::objects::parts(&saved.bundle.archive).map_err(io)?}),
             ),
             ArtifactOperation::Ticket { part } => {
                 if published {
@@ -272,7 +272,7 @@ impl Service {
         let state = saved.state.ok_or_else(unpublished)?;
         Ok(
             json!({"submission_id":action,"state":state,"download_available":state.available().map_err(why!(cloud::Error::evidence()))?,"scheduler_mutation_performed":false,
-            "download":{"kind":"oss-parts","part_bytes":crate::objects::PART_BYTES,"part_count":crate::objects::parts(&state.bundle.archive).map_err(io)?},"verification":"SERVER_VERIFIED"}),
+            "download":{"kind":"oss-parts","part_bytes":ml_exp_core::multipart::PART_BYTES,"part_count":crate::objects::parts(&state.bundle.archive).map_err(io)?},"verification":"SERVER_VERIFIED"}),
         )
     }
     pub fn download_ticket(&self, action: &str, part: u64, now: &str) -> cloud::Result<Value> {
