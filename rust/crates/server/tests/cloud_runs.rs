@@ -387,10 +387,11 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     // inventory too. This was the real 304-file >64KiB failure.
     let mut staging = ready.clone();
     staging.ready = None;
-    private(
+    fs::write(
         &ready_file,
-        &json!({"state":staging,"archive_verified":true}),
-    );
+        serde_json::to_vec(&json!({"state":staging,"archive_verified":true})).unwrap(),
+    )
+    .unwrap();
     let mut download_run = request.clone();
     download_run.run_id = "download-inventory".into();
     download_run.data = vec![ml_exp_core::datasets::Input {
