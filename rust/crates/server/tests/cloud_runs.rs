@@ -232,7 +232,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         )
         .unwrap();
     assert_eq!(cpu_plan["status"], "PREPARED");
-    let action = cpu_plan["action_id"].as_str().unwrap();
+    let action = cpu_plan["submission_id"].as_str().unwrap();
     let error = service.artifacts(action).unwrap_err();
     assert_eq!(error.code, "ARTIFACT_NOT_PUBLISHED");
     assert_eq!(error.http_status, Some(409));
