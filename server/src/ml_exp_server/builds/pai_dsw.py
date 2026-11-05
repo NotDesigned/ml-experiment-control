@@ -28,7 +28,7 @@ from experiment_control.runner import run_process
 
 from .builder_client import BuildTransportError, IMAGE
 from .image_build_context import BUILD_LOG, BUILD_PROGRESS
-from ..data.registry_transport import Registry, MANIFEST, OCI_MANIFEST, digest
+from ..data.registry_transport import Registry, MANIFEST, OCI_MANIFEST, digest, registry_auth
 from ..runs.execution_progress import record_progress
 from ..storage import atomic_json
 from ..pai_storage import PaiStorage
@@ -167,7 +167,8 @@ class DswPublisher:
         previous = json.loads(self.lease.read_text()) if self.lease.exists() else {}
         value = {**previous, "bundle_id": self.identity, "instance_id": self.instance, "name": self.name,
                  "region": self.api.config["region"], "workspace_id": self.config["workspace_id"],
-                 "quota_id": self.config["quota_id"], "datasets": self.datasets(), "phase": phase, "gpu": 0, **details}
+                 "quota_id": self.config["quota_id"], "repository": self.builder.config["repository"],
+                 "datasets": self.datasets(), "phase": phase, "gpu": 0, **details}
         atomic_json(self.lease, value)
 
     def checked_instance(self):
@@ -252,7 +253,7 @@ class DswPublisher:
             preserve_deleted_lease(self.builder, self.identity)
         host = tag.split("/", 1)[0]
         auths = json.loads(Path(self.builder.config["registry_auth_file"]).read_text())["auths"]
-        auth = auths.get(host) or auths.get("https://" + host)
+        auth = registry_auth(auths, host)
         if not isinstance(auth, dict) or not isinstance(auth.get("auth"), str) or b":" not in base64.b64decode(auth["auth"], validate=True):
             raise ValueError("DSW target registry authentication is unavailable")
         self.secrets = [auth["auth"], base64.b64decode(auth["auth"]).decode().split(":", 1)[1]]
@@ -326,7 +327,7 @@ class DswPublisher:
                 # Only credentials for the target and pinned private bases enter
                 # the owned instance; unrelated registry logins remain on host.
                 hosts = {host, *(image.split('/', 1)[0] for image in bases)}
-                selected = {h: auths.get(h) or auths.get('https://' + h) for h in hosts}
+                selected = {h: registry_auth(auths, h) for h in hosts}
                 selected = {h: value for h, value in selected.items() if value is not None}
                 for item in selected.values():
                     self.secrets.extend([item['auth'], base64.b64decode(item['auth'], validate=True).decode().split(':', 1)[1]])

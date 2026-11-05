@@ -88,6 +88,8 @@ def request(builder, value):
             or "sha256:" + hashlib.sha256(binary.read_bytes()).hexdigest() != recipe["worker_sha256"]):
         raise ValueError("native data worker differs")
     key = identifier.removeprefix("data-image.")
+    from .build_recovery import publication_builder
+    builder = publication_builder(builder, key)
     definition = builder.root / (key + ".native-data-definition.json")
     receipt = builder.root / (key + ".native-data.json")
     tag = builder.config["repository"] + ":bundle-" + key

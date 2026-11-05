@@ -108,6 +108,8 @@ def request(builder, value):
         if result.get("request") != frozen:
             raise ValueError("native build receipt differs")
         return result
+    from .build_recovery import publication_builder
+    builder = publication_builder(builder, identifier)
     # Either publisher can finish after a lost response. Observe the original
     # tag and recipe, without starting a DSW or sending another Git trigger.
     if value["operation"] in {"native-get", "native-reconcile"}:

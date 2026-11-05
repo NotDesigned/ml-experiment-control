@@ -195,13 +195,15 @@ def publish_runtime(builder, tag, context, receipt):
     from .pai_dsw import DswPublisher
     from .pai_build_recovery import observe_dsw_absence
     identity = receipt['bundle_id']
+    scope = builder.config.get('acr_fallback', {})
+    enabled = bool(scope) and scope.get('repository', builder.config.get('repository')) == builder.config.get('repository')
     path = journal(builder, identity)
     if path.exists():
         return publish(builder, context, receipt)
     lease = builder.root / (identity + '.dsw.json')
-    if builder.config.get('acr_fallback') and lease.exists() and observe_dsw_absence(builder, identity) is not None:
+    if enabled and lease.exists() and observe_dsw_absence(builder, identity) is not None:
         return publish(builder, context, receipt)
-    if builder.config.get('acr_fallback', {}).get('prefer') is True and not lease.exists():
+    if enabled and scope.get('prefer') is True and not lease.exists():
         phase('BUILDING_ON_ACR', 'Publishing the sealed runtime context using the preferred ACR Git builder')
         return publish(builder, context, receipt)
     try:
@@ -209,7 +211,7 @@ def publish_runtime(builder, tag, context, receipt):
     except BuildTransportError:
         # Cleanup + native Get/List absence + authenticated manifest absence
         # must all succeed under the caller's bundle lock before switching.
-        if not builder.config.get('acr_fallback'):
+        if not enabled:
             raise
         deadline = time.monotonic() + 60
         while observe_dsw_absence(builder, identity) is None:
