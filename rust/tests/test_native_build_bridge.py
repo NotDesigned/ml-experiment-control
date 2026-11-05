@@ -121,7 +121,8 @@ class NativeBridge(unittest.TestCase):
                 thread.start()
                 connection = UnixConnection(path, timeout=5)
                 try:
-                    connection.request("POST", "/data-stage/create", body=b"{}")
+                    # The removed route rejects headers immediately; no body is needed.
+                    connection.request("POST", "/data-stage/create")
                     self.assertEqual(connection.getresponse().status, 409)
                 finally:
                     connection.close()
