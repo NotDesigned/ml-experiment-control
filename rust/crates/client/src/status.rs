@@ -294,7 +294,13 @@ impl Flow {
                 (*self).reference_evidence()
             }
             Phase::InitialProgress(id) => {
-                self.progress(&id, response?)?;
+                match response {
+                    Ok(value) => self.progress(&id, value)?,
+                    Err(Error::Http(error)) if ![401, 403].contains(&error.status) => {
+                        self.unavailable_progress(&error)
+                    }
+                    Err(error) => return Err(error),
+                };
                 (*self).read_run()
             }
             Phase::Run => {

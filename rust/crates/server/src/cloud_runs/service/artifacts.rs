@@ -260,7 +260,12 @@ impl Service {
     }
     pub fn artifacts(&self, action: &str) -> cloud::Result<Value> {
         let prepared = self.load(action)?;
-        let saved = self.artifact_saved(&prepared)?.ok_or_else(missing)?;
+        let unpublished = || cloud::Error {
+            code: "ARTIFACT_NOT_PUBLISHED".into(),
+            http_status: Some(409),
+            uncertain: false,
+        };
+        let saved = self.artifact_saved(&prepared)?.ok_or_else(unpublished)?;
         if saved.administrative_release.is_some() {
             return Err(cloud::Error {
                 code: "ARTIFACTS_ADMINISTRATIVELY_REMOVED".into(),
@@ -268,7 +273,7 @@ impl Service {
                 uncertain: false,
             });
         }
-        let state = saved.state.ok_or_else(missing)?;
+        let state = saved.state.ok_or_else(unpublished)?;
         Ok(
             json!({"submission_id":action,"state":state,"download_available":state.available().map_err(|_|cloud::Error::evidence())?,"scheduler_mutation_performed":false,
             "download":{"kind":"oss-parts","part_bytes":crate::objects::PART_BYTES,"part_count":crate::objects::parts(&state.bundle.archive).map_err(io)?},"verification":"SERVER_VERIFIED"}),

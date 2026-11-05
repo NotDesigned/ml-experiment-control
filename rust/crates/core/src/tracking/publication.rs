@@ -178,8 +178,9 @@ fn reconcile(reason: &str) -> PublicationStatus {
     }
 }
 
-/// Select an explicitly requested repair of reserved holes below an already
-/// observed suffix. This never releases a reservation or confirms a cursor.
+/// Select an explicitly requested repair of reserved holes or a reserved tail.
+/// Unsent local events are never selected. This neither releases reservations
+/// nor confirms a cursor; normal publication does not invoke this operation.
 pub fn missing_reserved(
     state: &PublicationState,
     remote: &RemoteEvidence,
@@ -196,7 +197,15 @@ pub fn missing_reserved(
         .unwrap_or(-1)
         .checked_add(1)
         .ok_or(Error::Remote("last_history_step overflow"))?
-        .max(seen.keys().next_back().copied().unwrap_or(state.confirmed));
+        .max(seen.keys().next_back().copied().unwrap_or(state.confirmed))
+        .max(
+            state
+                .sent
+                .keys()
+                .next_back()
+                .copied()
+                .unwrap_or(state.confirmed),
+        );
     let mut missing = Vec::new();
     for event in events {
         validate_event(event)?;
@@ -651,6 +660,10 @@ mod tests {
         assert!(waiting.actions.is_empty());
         assert_eq!(waiting.state.sent, state.sent);
         let gap = remote(&[(1, "e1"), (3, "e3")]);
+        assert_eq!(
+            missing_reserved(&state, &remote(&[(1, "e1")]), &events, Some("e1")).unwrap(),
+            vec![event(2, "e2"), event(3, "e3")]
+        );
         assert_eq!(
             missing_reserved(&state, &gap, &events, Some("e1")).unwrap(),
             vec![event(2, "e2")]

@@ -183,3 +183,7 @@ There are no replay IDs; `Last-Event-ID` cannot recover missed updates. Queue
 overflow emits `{"type":"resync_required"}` and closes the stream when possible.
 Reload even if a timeout prevented receiving that message. Unknown event types
 are allowed; a slow consumer never blocks others. See [API reads](source-api.md).
+
+Preparation checks actual provider resources and referenced inputs, without estimating worker-package size from dataset inventories. The actual compiled package retains its transport-size bound. A rejected request has no server preparation slot; retrying the exact original POST after correcting the cause preserves the deterministic request identity. GET never creates it.
+
+For a known cloud Submission whose archive is not published, `GET /api/submissions/{id}/artifacts` returns `409 ARTIFACT_NOT_PUBLISHED`; a missing Submission remains 404. This response does not request collection or replay training. Saved client status continues reading the other evidence when optional progress is unavailable, and still fails on authentication errors.

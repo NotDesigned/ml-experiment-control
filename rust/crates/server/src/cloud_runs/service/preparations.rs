@@ -23,8 +23,9 @@ fn name(id: &str) -> cloud::Result<String> {
     Ok(format!("{id}.setup.json"))
 }
 impl Service {
-    /// Check known provider limits and control metadata before spending time on
-    /// image construction. Dataset bytes are unbounded by this metadata budget.
+    /// Check provider resources and input references before image construction.
+    /// The compiled worker package checks its actual serialized size later;
+    /// request bytes and dataset inventories are not a package-size estimate.
     fn setup_preflight(
         &self,
         project: &str,
@@ -104,37 +105,25 @@ impl Service {
                 http_status: Some(422),
                 uncertain: false,
             })?;
-            let mut bytes = encode(request)?.len();
             for input in &run.data {
-                let definition = if let Some(r) = backend
+                if backend
                     .definition
                     .datasets
                     .iter()
-                    .find(|r| r.project == project && r.asset_id == input.asset_id)
+                    .any(|r| r.project == project && r.asset_id == input.asset_id)
                 {
-                    r.definition.clone()
-                } else if let Some(r) = backend
+                    continue;
+                }
+                if backend
                     .definition
                     .imports
                     .iter()
-                    .find(|r| r.project == project && r.definition.asset_id() == input.asset_id)
+                    .any(|r| r.project == project && r.definition.asset_id() == input.asset_id)
                 {
-                    r.definition.clone()
-                } else {
-                    self.uploaded_data(project, &run.executor, &input.asset_id)?
-                        .ok_or_else(cloud::Error::evidence)?
-                };
-                bytes = bytes
-                    .checked_add(encode(&definition)?.len().saturating_mul(2))
-                    .ok_or_else(cloud::Error::configuration)?;
-            }
-            // Leave room for manifests, bindings, channel and environment.
-            if bytes > 32 * 1024 {
-                return Err(cloud::Error {
-                    code: "LAUNCH_METADATA_TOO_LARGE".into(),
-                    http_status: Some(422),
-                    uncertain: false,
-                });
+                    continue;
+                }
+                self.uploaded_data(project, &run.executor, &input.asset_id)?
+                    .ok_or_else(cloud::Error::evidence)?;
             }
         } else if !slurm.is_some_and(|s| s.accepts(&run.executor)) || run.scheduling.is_some() {
             return Err(cloud::Error::configuration());
