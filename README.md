@@ -1,4 +1,4 @@
-# ML-Expd
+# ML-experiment-control
 
 The default implementation on `main` is native Rust, released as **0.1.23**.
 The client, API, worker and state machines are Rust programs; optional image
