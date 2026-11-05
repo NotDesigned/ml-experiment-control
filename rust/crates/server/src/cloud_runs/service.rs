@@ -93,7 +93,10 @@ impl Drop for Lock<'_> {
         let _ = FileExt::unlock(&self.file);
     }
 }
-pub(super) fn op(_: operations::Error) -> cloud::Error {
+pub(super) fn op(error: operations::Error) -> cloud::Error {
+    if matches!(error, operations::Error::NotFound) {
+        return missing();
+    }
     cloud::Error {
         code: "CLOUD_ACTION_UNAVAILABLE".into(),
         http_status: None,
