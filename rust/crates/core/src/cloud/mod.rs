@@ -252,11 +252,16 @@ pub struct Job {
     pub max_time_seconds: u64,
     #[serde(default = "priority")]
     pub priority: u8,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only_storage: bool,
 }
 #[cfg(test)]
 mod tests;
 fn priority() -> u8 {
     5
+}
+fn is_false(value: &bool) -> bool {
+    !value
 }
 impl Job {
     pub fn validate(&self) -> Result<()> {

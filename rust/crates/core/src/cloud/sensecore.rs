@@ -185,6 +185,9 @@ impl Profile {
     pub fn create(&self, job: &Job) -> Result<Request> {
         self.validate()?;
         job.validate()?;
+        if job.read_only_storage {
+            return Err(Error("read-only storage is unsupported by SenseCore"));
+        }
         if u64::from(job.gpus) != u64::from(self.worker_gpus) * u64::from(self.worker_nodes)
             || u64::from(job.cpus) != u64::from(self.worker_cpus) * u64::from(self.worker_nodes)
             || u64::from(job.memory_gb)

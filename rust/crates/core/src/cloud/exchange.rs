@@ -135,6 +135,7 @@ mod sync_retry_tests {
             memory_gb: 512,
             max_time_seconds: 86400,
             priority: 5,
+            read_only_storage: false,
         };
         let request = SyncRetry {
             expected_failed_job_id: "dlc-original".into(),

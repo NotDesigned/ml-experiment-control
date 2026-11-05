@@ -34,6 +34,7 @@ impl Image {
             memory_gb: 4,
             max_time_seconds: 60,
             priority: 5,
+            read_only_storage: false,
         }
         .validate()
     }
@@ -112,6 +113,7 @@ pub fn materialization_job(
         memory_gb: 4,
         max_time_seconds: 3600,
         priority: 5,
+        read_only_storage: false,
     };
     job.validate()?;
     Ok(job)

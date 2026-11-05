@@ -71,6 +71,29 @@ pub(crate) fn extend(document: &mut Value) {
         row[method] = operation(path, description, body);
     };
     insert(
+        "/api/worker-exchange/{project}/{run}/{attempt}/status",
+        "get",
+        "Read only accepted exchange/artifact stage booleans using this exact Attempt capability; never refresh or write.",
+        None,
+    );
+    for path in [
+        "/api/submissions/{action}/sync/{request}/diagnostic",
+        "/api/projects/{project}/datasets/{executor}/{asset}/publications/{request}/diagnostic",
+    ] {
+        insert(
+            path,
+            "get",
+            "Read retained diagnostic evidence only; no provider query or job creation.",
+            None,
+        );
+        insert(
+            path,
+            "post",
+            "Create or observe one persisted 0GPU/2CPU/4GiB/300s diagnostic under the original lineage, CPFS mounted read-only. No worker replay, archive publication or automatic recovery.",
+            Some(empty.clone()),
+        );
+    }
+    insert(
         "/api/submissions/{identity}/renew",
         "post",
         "Explicitly replace an expired never-started gate under one durable request ID. Preserve Run/Attempt, resources, budget and scheduler token; return a PREPARED replacement requiring fresh authorization. Possible prior effects block renewal.",

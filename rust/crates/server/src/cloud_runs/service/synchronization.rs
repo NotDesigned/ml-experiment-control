@@ -42,6 +42,22 @@ fn observation(status: &Value) -> cloud::Result<ml_exp_core::cloud::JobObservati
     Ok(evidence)
 }
 impl Service {
+    pub(super) fn sync_recovery_job(
+        &self,
+        prepared: &Prepared,
+        action: &str,
+        request_id: &str,
+    ) -> cloud::Result<ml_exp_core::cloud::Job> {
+        if let Some(saved) = self.sync_retry_saved(prepared, action, request_id)? {
+            return Ok(saved.job);
+        }
+        Sync {
+            request_id: request_id.into(),
+            confirmation: format!("SYNC {action}"),
+        }
+        .job(&prepared.execution.job)
+        .map_err(|_| cloud::Error::evidence())
+    }
     pub(super) fn sync_recovery_request(
         &self,
         action: &str,

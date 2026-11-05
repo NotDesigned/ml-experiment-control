@@ -12,6 +12,28 @@ use std::{
 };
 const ID: &str = "action-0123456789abcdef";
 #[test]
+fn diagnostic_observation_and_creation_share_exact_lineage_without_replaying_sync() {
+    let request = "d".repeat(32);
+    let value = json!({"contract":"readonly-diagnostic.v1","lineage":{"action":ID,"request_id":request},
+        "resources":{"gpus":0,"cpus":2,"memory_gb":4},"max_time_seconds":300,"storage_read_only":true,"training_replayed":false});
+    for status in [false, true] {
+        let plan = submissions::plan(Command::SyncDiagnostic {
+            submission: ID,
+            request_id: &request,
+            status,
+        })
+        .unwrap();
+        assert_eq!(plan.is_mutation(), !status);
+        assert!(submissions::response(&plan, value.clone()).is_ok());
+        let mut wrong = value.clone();
+        wrong["lineage"]["request_id"] = json!("a".repeat(32));
+        assert!(submissions::response(&plan, wrong).is_err());
+        let mut writable = value.clone();
+        writable["storage_read_only"] = json!(false);
+        assert!(submissions::response(&plan, writable).is_err());
+    }
+}
+#[test]
 fn synchronization_read_and_retry_have_separate_effects_and_exact_failed_identity() {
     let id = "a".repeat(32);
     let read = submissions::plan(Command::SyncStatus {

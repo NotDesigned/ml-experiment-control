@@ -19,6 +19,11 @@ pub enum Command<'a> {
         submission: &'a str,
         request_id: &'a str,
     },
+    SyncDiagnostic {
+        submission: &'a str,
+        request_id: &'a str,
+        status: bool,
+    },
     SyncRetry {
         submission: &'a str,
         request_id: &'a str,
@@ -85,6 +90,7 @@ pub enum Command<'a> {
     },
 }
 enum Expected {
+    Diagnostic(Value),
     Discovery {
         project: String,
         run: String,
@@ -157,6 +163,27 @@ fn reason(value: &str) -> Result<(), Error> {
     }
 }
 pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
+    if let Command::SyncDiagnostic {
+        submission,
+        request_id,
+        status,
+    } = &command
+    {
+        ml_exp_core::cloud::exchange::Sync {
+            request_id: (*request_id).into(),
+            confirmation: format!("SYNC {submission}"),
+        }
+        .validate(submission)
+        .map_err(|_| invalid())?;
+        return Ok(Plan {
+            path: format!("/api/submissions/{submission}/sync/{request_id}/diagnostic"),
+            body: if *status { None } else { Some(b"{}".to_vec()) },
+            expected: Expected::Diagnostic(json!({"action":submission,"request_id":request_id})),
+            executes: !*status,
+            refreshes: false,
+            checkpoint: false,
+        });
+    }
     if let Command::Discovery { project, run } = &command {
         identity::validate_id(project)
             .and_then(|_| identity::validate_id(run))
@@ -443,7 +470,22 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
         checkpoint,
     })
 }
+pub fn diagnostic_response(value: Value, lineage: &Value) -> Result<Value, Error> {
+    if value["contract"] != "readonly-diagnostic.v1"
+        || value["lineage"] != *lineage
+        || value["resources"] != json!({"gpus":0,"cpus":2,"memory_gb":4})
+        || value["max_time_seconds"] != 300
+        || value["storage_read_only"] != true
+        || value["training_replayed"] != false
+    {
+        return Err(Error::Response);
+    }
+    Ok(value)
+}
 pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
+    if let Expected::Diagnostic(lineage) = &plan.expected {
+        return diagnostic_response(value, lineage);
+    }
     if let Expected::Discovery { project, run } = &plan.expected {
         if !value["preparation_id"].is_null() {
             let id = value["preparation_id"].as_str().ok_or(Error::Response)?;
@@ -732,6 +774,7 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
         }
     } else if plan.path.ends_with("/sync")
         || matches!(plan.expected, Expected::Synchronization { .. })
+        || matches!(plan.expected, Expected::Diagnostic(_))
     {
         "native-cloud-sync.v1"
     } else if plan.path.ends_with("/history") {

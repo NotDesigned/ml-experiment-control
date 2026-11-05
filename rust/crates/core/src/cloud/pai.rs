@@ -234,9 +234,22 @@ impl Profile {
         {
             return Err(Error("resource limit"));
         }
+        if job.read_only_storage && self.storage.is_none() {
+            return Err(Error("read-only storage requires CPFS"));
+        }
+        let mut mounts = self
+            .storage
+            .as_ref()
+            .map(Storage::mounts)
+            .unwrap_or_default();
+        if job.read_only_storage {
+            for mount in &mut mounts {
+                mount["MountAccess"] = json!("RO");
+            }
+        }
         let mut document = json!({"WorkspaceId":self.workspace_id,"ResourceId":self.quota_id,"DisplayName":job.name()?,"JobType":"PyTorchJob","Accessibility":"PRIVATE",
             "UserCommand":shell_join(&job.command)?,"JobMaxRunningTimeMinutes":job.max_time_seconds.div_ceil(60),"Priority":job.priority,
-            "DataSources":self.storage.as_ref().map(Storage::mounts).unwrap_or_default(),"UserVpc":self.vpc.as_ref().map(|v|serde_json::to_value(v).expect("VPC serialization")).unwrap_or(json!({})),
+            "DataSources":mounts,"UserVpc":self.vpc.as_ref().map(|v|serde_json::to_value(v).expect("VPC serialization")).unwrap_or(json!({})),
             "Settings":{"Tags":job.tags(&self.scope()?)?,"JobReservedMinutes":0,"EnableErrorMonitoringInAIMaster":false,"EnableRDMA":false,
                 "EnableTideResource":allocation!=Allocation::Guaranteed,"OversoldType":allocation.oversold()},
             "JobSpecs":[{"Type":"Worker","PodCount":1,"UseSpotInstance":false,"RestartPolicy":"Never","Image":job.image,

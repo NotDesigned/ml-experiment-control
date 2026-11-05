@@ -127,6 +127,13 @@ async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next)
     if request.method() == Method::POST
         && (request.uri().path().starts_with("/api/worker-exchange/")
             || request.uri().path().starts_with("/api/dataset-exchange/"))
+        || request.method() == Method::GET && {
+            let parts: Vec<_> = request.uri().path().split('/').collect();
+            parts.len() == 7
+                && parts[1] == "api"
+                && parts[2] == "worker-exchange"
+                && parts[6] == "status"
+        }
     {
         let protocols: Vec<_> = request
             .headers()
@@ -966,7 +973,8 @@ mod schema_tests {
                 "/api/debug"
                     | "/api/projects/{project}/runtimes"
                     | "/api/projects/{project}/datasets/{executor}"
-            ) {
+            ) || path.ends_with("/diagnostic")
+            {
                 assert_eq!(operations.as_object().unwrap().len(), 2);
                 assert!(operations.get("get").is_some());
                 assert!(operations.get("post").is_some());
@@ -975,7 +983,7 @@ mod schema_tests {
                 assert!(operations.get("put").is_some());
             } else if path.starts_with("/api/project-lifecycle/")
                 || path.starts_with("/api/admin/") && !path.ends_with("/maintenance/{identity}")
-                || path.starts_with("/api/worker-exchange/")
+                || path.starts_with("/api/worker-exchange/") && !path.ends_with("/status")
                 || path.starts_with("/api/dataset-exchange/")
                 || path.ends_with("/refresh")
                 || path == "/api/debug/{identity}/stop"
@@ -1007,7 +1015,11 @@ mod schema_tests {
             }
             if path.starts_with("/api/worker-exchange/") {
                 assert_eq!(
-                    operations["post"]["security"],
+                    operations[if path.ends_with("/status") {
+                        "get"
+                    } else {
+                        "post"
+                    }]["security"],
                     serde_json::json!([{"attemptCapability":[]}])
                 );
             } else if path.starts_with("/api/dataset-exchange/") {

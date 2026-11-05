@@ -89,6 +89,7 @@ impl Service {
                     .ok_or_else(cloud::Error::configuration)?,
                 max_time_seconds: run.walltime_seconds,
                 priority: run.scheduling.as_ref().map(|s| s.priority).unwrap_or(5),
+                read_only_storage: false,
             };
             match &backend.adapter.profile {
                 cloud::adapter::Profile::Pai(p) => p.create(

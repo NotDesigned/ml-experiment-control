@@ -14,7 +14,7 @@ use subtle::ConstantTimeEq;
 pub(super) struct Saved {
     package_sha256: String,
     pub(super) bundle: Bundle,
-    state: Option<State>,
+    pub(super) state: Option<State>,
     pub(super) released_parts: u64,
     #[serde(default)]
     pub(super) administrative_release: Option<String>,

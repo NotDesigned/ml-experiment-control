@@ -179,6 +179,7 @@ impl Service {
                 memory_gb: 4,
                 max_time_seconds: 60,
                 priority: 5,
+                read_only_storage: false,
             };
             check.validate().map_err(|_| cloud::Error::evidence())?;
             if !image
@@ -389,6 +390,7 @@ impl Service {
                 memory_gb: 4,
                 max_time_seconds: 3600,
                 priority: 5,
+                read_only_storage: false,
             })
         };
         if let Some(previous) = saved

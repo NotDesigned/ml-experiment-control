@@ -6,6 +6,7 @@ use axum::{
     Router,
     body::Bytes,
     extract::{Path, RawQuery, State},
+    http::Method,
     response::Response,
     routing::{get, post},
 };
@@ -24,6 +25,76 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
             "/api/submissions/{action}/sync/{request}/retry",
             post(retry),
         )
+        .route(
+            "/api/submissions/{action}/sync/{request}/diagnostic",
+            get(diagnose_sync).post(diagnose_sync),
+        )
+        .route(
+            "/api/projects/{project}/datasets/{executor}/{asset}/publications/{request}/diagnostic",
+            get(diagnose_data).post(diagnose_data),
+        )
+}
+async fn diagnose_sync(
+    State(state): State<Arc<AppState>>,
+    Path((action, request)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+    method: Method,
+    body: Bytes,
+) -> Response {
+    let execute = method == Method::POST;
+    if read_api::no_parameters(query.as_deref()).is_err() || !empty(&body, execute) {
+        return read_http::failure(invalid());
+    }
+    read_http::execute_timeout(
+        state,
+        if execute {
+            Access::Submission
+        } else {
+            Access::Read
+        },
+        std::time::Duration::from_secs(120),
+        move |api, now| {
+            api.cloud()
+                .ok_or_else(invalid)?
+                .sync_diagnostic(&action, &request, execute, &clock(now)?)
+                .map_err(super::failure)
+        },
+    )
+    .await
+}
+async fn diagnose_data(
+    State(state): State<Arc<AppState>>,
+    Path((project, executor, asset, request)): Path<(String, String, String, String)>,
+    RawQuery(query): RawQuery,
+    method: Method,
+    body: Bytes,
+) -> Response {
+    let execute = method == Method::POST;
+    if read_api::no_parameters(query.as_deref()).is_err() || !empty(&body, execute) {
+        return read_http::failure(invalid());
+    }
+    read_http::execute_timeout(
+        state,
+        if execute {
+            Access::Submission
+        } else {
+            Access::Read
+        },
+        std::time::Duration::from_secs(120),
+        move |api, now| {
+            api.cloud()
+                .ok_or_else(invalid)?
+                .data_diagnostic(&project, &executor, &asset, &request, execute, &clock(now)?)
+                .map_err(super::failure)
+        },
+    )
+    .await
+}
+fn empty(body: &[u8], execute: bool) -> bool {
+    if !execute {
+        return body.is_empty();
+    }
+    ml_exp_core::json::mapping(body).is_ok_and(|m| m.is_empty())
 }
 fn clock(now: f64) -> Result<String, read_api::Error> {
     time::OffsetDateTime::from_unix_timestamp(now as i64)

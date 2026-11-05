@@ -98,6 +98,7 @@ fn exact_owned_logs_resolve_rmh_uuid_without_rewriting_the_frozen_profile() {
         memory_gb: 64,
         max_time_seconds: 300,
         priority: 5,
+        read_only_storage: false,
     };
     let row = json!({"name":job.name().unwrap(),"uid":"owned-job-uid",
         "id":format!("{}/trainingJobs/{}",p.scope.workspace_path().unwrap(),job.name().unwrap()),

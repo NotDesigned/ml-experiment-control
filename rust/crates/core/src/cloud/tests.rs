@@ -17,6 +17,7 @@ fn job() -> Job {
         memory_gb: 64,
         max_time_seconds: 86400,
         priority: 5,
+        read_only_storage: false,
     }
 }
 fn pai() -> pai::Profile {
@@ -441,4 +442,76 @@ fn offline_requests_use_exact_workspace_uuid_and_workspace_telemetry_zone() {
         p.offline_logs(&station, "not-a-uuid", "pod1", "pytorch", 1..=2, 20)
             .is_err()
     );
+}
+
+#[test]
+fn readonly_diagnostic_mounts_do_not_change_legacy_job_serialization() {
+    let original = job();
+    let legacy = json!({
+        "project":"demo", "run_id":"train", "attempt_id":"attempt-001",
+        "submission_token":"a".repeat(32), "source_id":format!("source.{}", "b".repeat(64)),
+        "image":format!("registry.example/team/image@sha256:{}", "c".repeat(64)),
+        "command":["python", "train.py", "a'b\n$(do-not-run)"],
+        "gpus":1, "cpus":8, "memory_gb":64, "max_time_seconds":86400, "priority":5
+    });
+    let value = serde_json::to_value(&original).unwrap();
+    assert_eq!(value, legacy);
+    assert_eq!(
+        canonical::protocol_identity(&value),
+        canonical::protocol_identity(&legacy)
+    );
+    let restored: Job = serde_json::from_value(legacy).unwrap();
+    assert!(!restored.read_only_storage);
+    assert!(
+        serde_json::to_value(&restored)
+            .unwrap()
+            .get("read_only_storage")
+            .is_none()
+    );
+
+    let mut diagnostic = original.clone();
+    diagnostic.gpus = 0;
+    diagnostic.cpus = 2;
+    diagnostic.memory_gb = 4;
+    diagnostic.max_time_seconds = 300;
+    let mut readonly = diagnostic.clone();
+    readonly.read_only_storage = true;
+    assert_ne!(
+        canonical::protocol_identity(&json!(readonly)),
+        canonical::protocol_identity(&json!(diagnostic))
+    );
+    let profile = pai();
+    let regular = profile
+        .create(&diagnostic, pai::Allocation::Guaranteed)
+        .unwrap()
+        .body
+        .unwrap();
+    let protected = profile
+        .create(&readonly, pai::Allocation::Guaranteed)
+        .unwrap()
+        .body
+        .unwrap();
+    assert_eq!(regular["DataSources"][0]["MountAccess"], "RW");
+    assert!(
+        protected["DataSources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|mount| mount["MountAccess"] == "RO")
+    );
+    assert_eq!(
+        protected["JobSpecs"][0]["ResourceConfig"],
+        regular["JobSpecs"][0]["ResourceConfig"]
+    );
+    assert_eq!(protected["JobMaxRunningTimeMinutes"], 5);
+    let mut no_storage = profile;
+    no_storage.storage = None;
+    assert!(
+        no_storage
+            .create(&readonly, pai::Allocation::Guaranteed)
+            .is_err()
+    );
+    let mut sc_readonly = original;
+    sc_readonly.read_only_storage = true;
+    assert!(sense().create(&sc_readonly).is_err());
 }
