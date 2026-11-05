@@ -119,6 +119,36 @@ reference. Reconcile the prior job before replacement training.
 
 ## Output recovery
 
+### Native CPU sync recovery
+
+For native PAI/SenseCore submissions, inspect an existing CPU sync without
+refreshing the provider or creating a job:
+
+```bash
+ml-exp run sync ACTION --request-id ORIGINAL_32_HEX_REQUEST --status
+```
+
+The GET `/api/submissions/ACTION/sync/REQUEST` reads retained original/retry
+evidence. If the original CPU job is confirmed FAILED and training is terminal,
+one explicit retry is supported under the same request:
+
+```bash
+ml-exp run sync ACTION --request-id ORIGINAL_32_HEX_REQUEST \
+  --retry-failed-job ORIGINAL_FAILED_CPU_JOB \
+  --confirmation 'RETRY SYNC ACTION ORIGINAL_32_HEX_REQUEST ORIGINAL_FAILED_CPU_JOB'
+```
+
+This POST targets `/api/submissions/ACTION/sync/REQUEST/retry`. It refreshes the
+exact parent/failed job evidence, then persists one deterministic CPU child
+before effects. The child keeps the original frozen image, worker, full `--sync`
+command and output directory, with 0 GPUs, 2 CPUs, 4 GiB and a 600-second limit.
+It does not replay training. The failed CPU job and its outbox remain intact.
+Repeating the same request after a lost reply or restart observes the same
+child. Unknown creates are reconciled, never blindly repeated. A second failed
+child is preserved; no further child is automatically allocated.
+
+### Historical collection interface
+
 Training exit, checkpoint persistence and archive publication are independent.
 Check the exact Attempt's receipt, file list and collection before using compute.
 A published archive can be downloaded without a recovery job.
