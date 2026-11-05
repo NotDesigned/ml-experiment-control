@@ -545,8 +545,8 @@ Choose a partition accepting `sbatch`; some debug partitions allow only direct
 `srun`/`salloc`. A later parameter check cannot retroactively prove the outcome
 of an earlier uncertain submission, which must retain its original identity.
 
-The [systemd example](deploy/ml-expd-native.service) installs no unit by itself.
-Adjust its approved writable and read-only paths to the actual configuration.
+The [API](deploy/ml-expd.service) and [builder](deploy/ml-expd-builder.service) systemd examples install no unit by themselves.
+Adjust their approved writable and read-only paths to the actual configuration.
 When attaching history, expose original paths read-only; allow writes only to
 the new native roots. Do not initialize a native marker over an original registry.
 Image building may use the separately configured Python effect adapter; its

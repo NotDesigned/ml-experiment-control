@@ -17,6 +17,10 @@ TARGET = "x86_64-unknown-linux-gnu"
 BINARIES = ("ml-exp", "ml-expd-rs", "ml-exp-worker-rs", "ml-expd-state-audit")
 CLIENT_TARGETS = ("aarch64-unknown-linux-musl", "x86_64-apple-darwin",
                   "aarch64-apple-darwin", "x86_64-pc-windows-msvc")
+# The image bridge the server's builder imports; not a Python service install.
+BRIDGE = {"experiment_control": "src/experiment_control",
+          "ml_exp_server": "server/src/ml_exp_server",
+          "ml_exp_worker": "worker/src/ml_exp_worker"}
 
 
 def digest(path):
@@ -56,6 +60,24 @@ def client_format(path, target):
             stream.seek(offset)
             return stream.read(6) == b'PE\0\0\x64\x86'
         return False
+
+
+def bridge_files():
+    """Map bundle paths to sources of tracked bridge files, without build output."""
+    files = {}
+    for package, source in BRIDGE.items():
+        tracked = subprocess.run(["git", "ls-files", "-z", source], cwd=ROOT, check=True,
+                                 capture_output=True).stdout.decode().split("\0")
+        for name in filter(None, tracked):
+            files[f"{package}/{Path(name).relative_to(source)}"] = ROOT / name
+    if not files:
+        raise ValueError("image bridge sources are missing")
+    return dict(sorted(files.items()))
+
+
+def source_commit():
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
+                          capture_output=True, text=True).stdout.strip()
 
 
 def build(binary_dir, output, version, client_dir=None):
@@ -104,7 +126,13 @@ def build(binary_dir, output, version, client_dir=None):
     (output / "install-native.sh").chmod(0o755)
     shutil.copyfile(ROOT / "rust/install.ps1", output / "install-native.ps1")
     # The server bundle contains no secrets, provider profiles, databases,
-    # images or training payloads. Optional Python image effects are separate.
+    # images or training payloads. It carries the image bridge sources so one
+    # release fully identifies what rust/deploy/deploy_native.py installs.
+    bridge = bridge_files()
+    release_info = output / "release-info.json"
+    release_info.write_text(json.dumps({
+        "schema_version": 1, "version": version, "source_commit": source_commit(),
+        "python": {name: digest(path) for name, path in bridge.items()}}, indent=2) + "\n")
     archive = output / f"ml-expd-native-{version}-{TARGET}.tar.gz"
     epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "0"))
 
@@ -119,11 +147,15 @@ def build(binary_dir, output, version, client_dir=None):
             tar.add(output / f"{name}-{TARGET}", arcname=f"bin/{name}", filter=metadata)
         for source, target in [(ROOT / "rust/README.md", "README.md"),
                                (ROOT / "docs/rust-rewrite.md", "MIGRATION.md"),
-                               (output / "native-release.json", "native-release.json")]:
+                               (output / "native-release.json", "native-release.json"),
+                               (release_info, "release-info.json")]:
             tar.add(source, arcname=target, filter=metadata)
+        for name, path in bridge.items():
+            tar.add(path, arcname=f"python/{name}", filter=metadata)
         for path in sorted((ROOT / "rust/deploy").rglob("*")):
             if path.is_file() and not path.is_symlink():
                 tar.add(path, arcname="deploy/" + str(path.relative_to(ROOT / "rust/deploy")), filter=metadata)
+    release_info.unlink()
     checksums = [f"{digest(path)}  {path.name}\n" for path in sorted(output.iterdir()) if path.is_file()]
     (output / "SHA256SUMS").write_text("".join(checksums))
     return manifest
