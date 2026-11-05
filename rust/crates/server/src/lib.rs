@@ -11,7 +11,6 @@ pub mod deletion;
 pub mod deployment;
 pub mod experiments;
 pub mod history;
-pub mod index;
 mod local_http;
 mod native_contract;
 pub mod objects;
