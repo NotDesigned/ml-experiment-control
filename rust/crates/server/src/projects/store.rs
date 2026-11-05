@@ -133,7 +133,7 @@ pub fn canonical_path(path: &str) -> Result<PathEvidence, Error> {
 fn decode(bytes: &[u8]) -> Result<Value, Error> {
     parse_mapping(bytes, Format::Json)
         .map(Value::Object)
-        .map_err(|_| Error::Invalid)
+        .map_err(why!(Error::Invalid))
 }
 fn registry(payload: &Value) -> Result<Registry, Error> {
     let paths = Registry::required_paths(payload)?
@@ -177,7 +177,7 @@ fn journal(bytes: &[u8]) -> Result<(Vec<Value>, Option<Vec<u8>>), Error> {
     }
 }
 fn encoded(value: &Value) -> Result<Vec<u8>, Error> {
-    let mut bytes = python_json_bytes(value).map_err(|_| Error::Invalid)?;
+    let mut bytes = python_json_bytes(value).map_err(why!(Error::Invalid))?;
     bytes.push(b'\n');
     Ok(bytes)
 }
@@ -433,7 +433,7 @@ fn converted<T: Serialize>(
     change: projects::Change<T>,
 ) -> Result<(Value, Option<projects::Commit>), Error> {
     Ok((
-        serde_json::to_value(change.result).map_err(|_| Error::Invalid)?,
+        serde_json::to_value(change.result).map_err(why!(Error::Invalid))?,
         change.commit,
     ))
 }

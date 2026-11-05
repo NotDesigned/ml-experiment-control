@@ -233,7 +233,7 @@ pub(super) fn scan(
     run_sources: &[ManifestSource],
 ) -> Result<Discovery, DiscoveryError> {
     limits.validate()?;
-    identity::validate_id(project).map_err(|_| DiscoveryError::UnsafeEntry)?;
+    identity::validate_id(project).map_err(why!(DiscoveryError::UnsafeEntry))?;
     let guard = fence.shared_existing()?;
     parent.verify_private_parent()?;
     let project_bytes = parent.read_regular(project_filename, domain::MAX_BYTES as u64)?;
@@ -317,7 +317,7 @@ pub(super) fn scan(
                     child.verify_private_parent()?;
                     let text = name.to_str().ok_or(DiscoveryError::UnsafeEntry)?;
                     identity::validate_observation_id(text)
-                        .map_err(|_| DiscoveryError::UnsafeEntry)?;
+                        .map_err(why!(DiscoveryError::UnsafeEntry))?;
                     if matches!(text, "attempts" | "collected_run" | "uploaded_outputs") {
                         return Err(DiscoveryError::UnsupportedLayout);
                     }

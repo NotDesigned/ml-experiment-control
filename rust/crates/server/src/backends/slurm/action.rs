@@ -51,7 +51,7 @@ impl Runner<'_> {
         }
         guard()?;
         let snapshot = self.actions.observe(command.action_id)?;
-        action::validate(&snapshot, prepare).map_err(|_| Error::Binding)?;
+        action::validate(&snapshot, prepare).map_err(why!(Error::Binding))?;
         guard()?;
         self.actions
             .bind_slurm_request(command.action_id, prepare)?;
@@ -69,7 +69,7 @@ impl Runner<'_> {
             return Err(Error::Binding);
         }
         let snapshot = claimed.snapshot;
-        action::validate(&snapshot, prepare).map_err(|_| Error::Binding)?;
+        action::validate(&snapshot, prepare).map_err(why!(Error::Binding))?;
         // Preparing immutable inputs runs on the networked gateway before
         // sbatch. Its explicit frozen timeout is additional CPU time, never
         // GPU allocation or permission to repeat an uncertain execution.
@@ -79,7 +79,7 @@ impl Runner<'_> {
             .and_then(|doc| doc.get("data_preparation").cloned())
             .map(serde_json::from_value::<ml_exp_core::data_preparation::Request>)
             .transpose()
-            .map_err(|_| Error::Binding)?
+            .map_err(why!(Error::Binding))?
             .map(|p| p.timeout_seconds + 30)
             .unwrap_or(0);
         let deadline = Instant::now()
@@ -97,7 +97,7 @@ impl Runner<'_> {
                     ..
                 }) => {
                     let submit =
-                        Request::submit(prepare.intent().clone()).map_err(|_| Error::Binding)?;
+                        Request::submit(prepare.intent().clone()).map_err(why!(Error::Binding))?;
                     self.after_receipt(
                         prepare,
                         self.rpc(&submit, deadline, guard, cancelled),
@@ -132,14 +132,14 @@ impl Runner<'_> {
         let prepare = &prepare;
         self.validate(prepare)?;
         let snapshot = self.actions.observe(action_id)?;
-        action::validate(&snapshot, prepare).map_err(|_| Error::Binding)?;
+        action::validate(&snapshot, prepare).map_err(why!(Error::Binding))?;
         match snapshot["execution"]["status"].as_str() {
             Some("VERIFIED" | "EXECUTING") => return Ok(snapshot),
             Some("RECONCILE_REQUIRED") => {}
             _ => return Err(Error::Binding),
         }
         let deadline = Instant::now() + self.ssh.budget.timeout;
-        let inspect = Request::inspect(prepare.intent().clone()).map_err(|_| Error::Binding)?;
+        let inspect = Request::inspect(prepare.intent().clone()).map_err(why!(Error::Binding))?;
         let outcome = self.after_receipt(
             prepare,
             self.rpc(&inspect, deadline, guard, cancelled),
@@ -151,8 +151,8 @@ impl Runner<'_> {
         self.persist(&snapshot, prepare, outcome, guard)
     }
     fn validate(&self, prepare: &Request) -> Result<()> {
-        self.ssh.validate().map_err(|_| Error::Binding)?;
-        prepare.validate().map_err(|_| Error::Binding)?;
+        self.ssh.validate().map_err(why!(Error::Binding))?;
+        prepare.validate().map_err(why!(Error::Binding))?;
         if prepare.prepared_content().is_none() || prepare.intent().target != self.ssh.target {
             return Err(Error::Binding);
         }
@@ -237,9 +237,9 @@ impl Runner<'_> {
         } else {
             outcome
         };
-        let (now, id) = crate::projects::transition_context().map_err(|_| Error::Context)?;
+        let (now, id) = crate::projects::transition_context().map_err(why!(Error::Context))?;
         let transition =
-            action::finish(snapshot, prepare, outcome, &now).map_err(|_| Error::Binding)?;
+            action::finish(snapshot, prepare, outcome, &now).map_err(why!(Error::Binding))?;
         let action_id = snapshot["action_id"].as_str().ok_or(Error::Binding)?;
         Ok(self.actions.commit(action_id, &transition, &id, &now)?)
     }

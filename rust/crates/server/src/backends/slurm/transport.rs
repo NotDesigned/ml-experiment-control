@@ -145,7 +145,7 @@ impl SshConfig {
     pub fn validate(&self) -> Result<(), ValidationError> {
         self.target
             .validate()
-            .map_err(|_| ValidationError::Configuration("target"))?;
+            .map_err(why!(ValidationError::Configuration("target")))?;
         for (field, value) in [
             ("ssh_binary", &self.ssh_binary),
             ("config_file", &self.config_file),
@@ -295,7 +295,7 @@ pub fn call(
         return Err(ValidationError::Target);
     }
     let deadline = Instant::now() + config.budget.timeout;
-    let frame = helper::encode_request(request).map_err(|_| ValidationError::Request)?;
+    let frame = helper::encode_request(request).map_err(why!(ValidationError::Request))?;
     let argv = config.argv();
     let environment = config.environment();
     let outcome = match process::execute(process::Request {

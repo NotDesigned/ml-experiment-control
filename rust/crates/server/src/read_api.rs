@@ -292,7 +292,7 @@ impl Api {
         let read_scope_sha256 = settings.identity()?;
         let fence = RunFence::new(&settings.registry_root);
         let store =
-            Store::open(settings.bindings(), fence.clone()).map_err(|_| read_config::Error)?;
+            Store::open(settings.bindings(), fence.clone()).map_err(why!(read_config::Error))?;
         let runs = settings
             .runs()
             .into_iter()
@@ -318,11 +318,11 @@ impl Api {
         // Missing Action storage stays absent; startup and GET do not create it.
         let actions = if registry
             .entry_exists(OsStr::new("actions"))
-            .map_err(|_| read_config::Error)?
+            .map_err(why!(read_config::Error))?
         {
             Some(
                 crate::operations::Store::open_existing(settings.registry_root.join("actions"))
-                    .map_err(|_| read_config::Error)?,
+                    .map_err(why!(read_config::Error))?,
             )
         } else {
             None
@@ -524,9 +524,9 @@ impl Api {
             return Err(invalid_clock());
         }
         let now = time::OffsetDateTime::from_unix_timestamp_nanos((now_unix * 1e9) as i128)
-            .map_err(|_| invalid_clock())?
+            .map_err(why!(invalid_clock()))?
             .format(&time::format_description::well_known::Rfc3339)
-            .map_err(|_| invalid_clock())?;
+            .map_err(why!(invalid_clock()))?;
         if snapshot["native_cloud"]["format"] == "native-cloud-action.v1" {
             return self
                 .cloud
@@ -573,13 +573,13 @@ impl Api {
         let guard = self
             .fence
             .existing_observation_guard(project, run)
-            .map_err(|_| {
+            .map_err(why!({
                 error(
                     409,
                     "SUBMISSION_EVIDENCE_UNAVAILABLE",
                     "Submission Run is deleted or unavailable",
                 )
-            })?;
+            }))?;
         // Validate the configured Run without resolving or borrowing its current
         // Attempt. A first planned Attempt may not yet have a manifest on disk.
         self.ensure_active(project)?;
@@ -610,13 +610,13 @@ impl Api {
                 ));
             }
         }
-        guard.require_observed_live(project, run).map_err(|_| {
+        guard.require_observed_live(project, run).map_err(why!({
             error(
                 409,
                 "SUBMISSION_EVIDENCE_UNAVAILABLE",
                 "Submission Run changed during observation",
             )
-        })?;
+        }))?;
         self.ensure_active(project)?;
         self.validate_registry()?;
         Ok(experiment_redact::redact_json(
@@ -662,13 +662,13 @@ impl Api {
                 "isolated read workspace is unavailable",
             )
         })?;
-        let (_, id) = read_config::workspace(&self.registry_root).map_err(|_| {
+        let (_, id) = read_config::workspace(&self.registry_root).map_err(why!({
             error(
                 409,
                 "READ_WORKSPACE_UNAVAILABLE",
                 "isolated read workspace is unavailable",
             )
-        })?;
+        }))?;
         if id != self.workspace_id {
             return Err(error(
                 409,
@@ -790,32 +790,32 @@ impl Api {
         };
         if !tracking
             .entry_exists(OsStr::new("outbox.sqlite"))
-            .map_err(|_| {
+            .map_err(why!({
                 error(
                     409,
                     "JOURNAL_UNAVAILABLE",
                     "canonical experiment journal is unavailable",
                 )
-            })?
+            }))?
         {
             return Ok(Vec::new());
         }
         let expected_workspace = self.workspace_id.strip_prefix("rust-preview-");
         let records = crate::records::Store::read_only(&self.registry_root);
-        let guard = records.guard(project, run).map_err(|_| {
+        let guard = records.guard(project, run).map_err(why!({
             error(
                 409,
                 "JOURNAL_UNAVAILABLE",
                 "canonical experiment journal is unavailable",
             )
-        })?;
-        if records.workspace_id(&guard).map_err(|_| {
+        }))?;
+        if records.workspace_id(&guard).map_err(why!({
             error(
                 409,
                 "JOURNAL_IDENTITY_UNAVAILABLE",
                 "canonical journal identity is unavailable",
             )
-        })? != expected_workspace.ok_or_else(|| {
+        }))? != expected_workspace.ok_or_else(|| {
             error(
                 409,
                 "READ_WORKSPACE_CHANGED",
@@ -828,23 +828,23 @@ impl Api {
                 "canonical journal belongs to a different workspace",
             ));
         }
-        let binding = records.binding(&guard).map_err(|_| {
+        let binding = records.binding(&guard).map_err(why!({
             error(
                 409,
                 "JOURNAL_IDENTITY_UNAVAILABLE",
                 "canonical journal binding is unavailable",
             )
-        })?;
+        }))?;
         if binding.is_none() {
             return records
                 .metric_records_bounded(&guard, attempt, 0, 0)
-                .map_err(|_| {
+                .map_err(why!({
                     error(
                         409,
                         "JOURNAL_IDENTITY_UNAVAILABLE",
                         "unbound canonical journal contains unresolved records",
                     )
-                });
+                }));
         }
         if !journal_binding_matches(snapshot, binding.as_ref()) {
             return Err(error(
@@ -926,13 +926,13 @@ impl Api {
         } else {
             ml_exp_core::first_submission::native::project_run(value, &submission)
         };
-        projected.map_err(|_| {
+        projected.map_err(why!({
             error(
                 409,
                 "SUBMISSION_EVIDENCE_UNAVAILABLE",
                 "native scheduler receipt cannot be projected onto this exact Attempt",
             )
-        })
+        }))
     }
     pub fn query(&self, query: Query, now_unix: f64) -> Result<Value, Error> {
         validate_id(&query.project).map_err(|_| invalid_query())?;
@@ -951,13 +951,13 @@ impl Api {
         let guard = self
             .fence
             .existing_observation_guard(&query.project, &query.run)
-            .map_err(|_| {
+            .map_err(why!({
                 error(
                     409,
                     "EXPERIMENT_EVIDENCE_UNAVAILABLE",
                     "Run is unavailable or deleted",
                 )
-            })?;
+            }))?;
         let (reference, discovery) = self.locate_run(&query.project, &query.run)?;
         let located = discovery
             .as_ref()
@@ -1037,13 +1037,13 @@ impl Api {
         };
         guard
             .require_observed_live(&query.project, &query.run)
-            .map_err(|_| {
+            .map_err(why!({
                 error(
                     409,
                     "EXPERIMENT_EVIDENCE_UNAVAILABLE",
                     "Run was deleted or changed during observation",
                 )
-            })?;
+            }))?;
         if let Some(before) = discovery {
             let after = self
                 .store

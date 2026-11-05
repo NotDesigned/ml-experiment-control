@@ -342,7 +342,7 @@ impl Database {
         operations::validate_action_id(action_id)?;
         let limit: i64 = limit
             .try_into()
-            .map_err(|_| Error::Invalid("journal limit"))?;
+            .map_err(why!(Error::Invalid("journal limit")))?;
         self.transaction(validate, |connection| {
             self.read_transaction(connection, action_id)?;
             let mut statement = connection.prepare(

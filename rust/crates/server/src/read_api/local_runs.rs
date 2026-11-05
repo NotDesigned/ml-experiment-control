@@ -30,10 +30,10 @@ fn record(_: crate::records::Error) -> Error {
 }
 fn load<T: DeserializeOwned>(d: &Directory, name: &str) -> Result<T, Error> {
     serde_json::from_slice(&d.read_regular(OsStr::new(name), 1024 * 1024).map_err(io)?)
-        .map_err(|_| invalid())
+        .map_err(why!(invalid()))
 }
 fn save(d: &Directory, name: &str, v: &impl Serialize) -> Result<(), Error> {
-    let bytes = serde_json::to_vec(v).map_err(|_| invalid())?;
+    let bytes = serde_json::to_vec(v).map_err(why!(invalid()))?;
     if d.entry_exists(OsStr::new(name)).map_err(io)? {
         d.replace_regular(OsStr::new(name), &bytes).map_err(io)
     } else {
@@ -109,7 +109,7 @@ impl Api {
         let raw = dir
             .read_regular(OsStr::new("manifest.json"), 1024 * 1024)
             .map_err(io)?;
-        let manifest: Value = serde_json::from_slice(&raw).map_err(|_| invalid())?;
+        let manifest: Value = serde_json::from_slice(&raw).map_err(why!(invalid()))?;
         if manifest["native_creation"]["format"] != FORMAT {
             return Ok(None);
         }
@@ -141,7 +141,7 @@ impl Api {
         write: bool,
     ) -> Result<crate::records::Store, Error> {
         let expected =
-            ml_exp_core::records::native_binding(manifest, sha).map_err(|_| invalid())?;
+            ml_exp_core::records::native_binding(manifest, sha).map_err(why!(invalid()))?;
         let store = if write {
             crate::records::Store::open(
                 &self.registry_root,
@@ -175,7 +175,7 @@ impl Api {
         let f = self
             .registry
             .open_lock(OsStr::new(".local-publisher.lock"))
-            .map_err(|_| crate::tracking::Error::Storage)?;
+            .map_err(why!(crate::tracking::Error::Storage))?;
         f.try_lock_exclusive()
             .map_err(|_| crate::tracking::Error::Storage)?;
         Ok(f)
@@ -195,7 +195,7 @@ impl Api {
                 .strip_prefix("rust-preview-")
                 .ok_or(crate::tracking::Error::Storage)?,
         )
-        .map_err(|_| crate::tracking::Error::Storage)
+        .map_err(why!(crate::tracking::Error::Storage))
     }
     pub fn register_local(
         &self,
@@ -211,12 +211,12 @@ impl Api {
             ));
         }
         request.validate(project).map_err(decision)?;
-        let _admission =
-            crate::administration::authorship_guard(&self.registry_root).map_err(|_| invalid())?;
+        let _admission = crate::administration::authorship_guard(&self.registry_root)
+            .map_err(why!(invalid()))?;
         let fence = self
             .fence
             .existing_observation_guard(project, &request.run_id)
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         let root = self.local_root(project, &request.run_id)?;
         let registration_lock = self
             .registry
@@ -244,12 +244,12 @@ impl Api {
                 project,
             );
             let manifest = request.manifest(project, route, now).map_err(decision)?;
-            let raw = serde_json::to_vec(&manifest).map_err(|_| invalid())?;
+            let raw = serde_json::to_vec(&manifest).map_err(why!(invalid()))?;
             let binding = ml_exp_core::records::native_binding(
                 &manifest,
                 &ml_exp_core::slurm::helper::sha256_bytes(&raw),
             )
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
             let (_, random) = crate::projects::transition_context()?;
             let staging = self
                 .registry
@@ -294,7 +294,7 @@ impl Api {
                 .map_err(io)?;
             fence
                 .require_observed_live(project, &request.run_id)
-                .map_err(|_| invalid())?;
+                .map_err(why!(invalid()))?;
             staging
                 .publish_directory(&root, OsStr::new(&request.run_id))
                 .map_err(io)?;
@@ -310,7 +310,7 @@ impl Api {
         )
         .map_err(record)?;
         let expected =
-            ml_exp_core::records::native_binding(&manifest, &sha).map_err(|_| invalid())?;
+            ml_exp_core::records::native_binding(&manifest, &sha).map_err(why!(invalid()))?;
         {
             let guard = store.guard(project, &request.run_id).map_err(record)?;
             store
@@ -340,7 +340,7 @@ impl Api {
         let _fence = self
             .fence
             .existing_observation_guard(project, run)
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         let Some((dir, manifest, sha)) = self.local_document(project, run)? else {
             return Err(error(
                 404,
@@ -350,7 +350,7 @@ impl Api {
         };
         let ingress = dir.child(OsStr::new("local-ingress"), false).map_err(io)?;
         let binding =
-            ml_exp_core::records::native_binding(&manifest, &sha).map_err(|_| invalid())?;
+            ml_exp_core::records::native_binding(&manifest, &sha).map_err(why!(invalid()))?;
         let saved = cursor(&ingress, &binding["config"])?;
         let cursor = saved.stream;
         let store = self.local_store(project, run, &manifest, &sha, false)?;
@@ -376,7 +376,7 @@ impl Api {
         let _fence = self
             .fence
             .existing_observation_guard(project, run)
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         let Some((dir, manifest, sha)) = self.local_document(project, run)? else {
             return Err(error(
                 404,
@@ -406,7 +406,7 @@ impl Api {
         let ingress = dir.child(OsStr::new("local-ingress"), false).map_err(io)?;
         let receipts = ingress.child(OsStr::new("packets"), false).map_err(io)?;
         let binding =
-            ml_exp_core::records::native_binding(&manifest, &sha).map_err(|_| invalid())?;
+            ml_exp_core::records::native_binding(&manifest, &sha).map_err(why!(invalid()))?;
         let before = cursor(&ingress, &binding["config"])?;
         let name = format!(
             "{}-{}.json",

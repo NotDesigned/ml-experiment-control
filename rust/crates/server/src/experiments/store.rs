@@ -128,8 +128,8 @@ impl ProjectAnchor {
         Ok(document)
     }
     fn run_directory(&self, reference: &RunRef) -> Result<Directory> {
-        identity::validate_id(&reference.project).map_err(|_| Error::Binding)?;
-        identity::validate_observation_id(&reference.run_id).map_err(|_| Error::Binding)?;
+        identity::validate_id(&reference.project).map_err(why!(Error::Binding))?;
+        identity::validate_observation_id(&reference.run_id).map_err(why!(Error::Binding))?;
         if reference.relative_components.len() > 32 {
             return Err(Error::Binding);
         }
@@ -139,7 +139,7 @@ impl ProjectAnchor {
             .ok_or(Error::Binding)?
             .clone();
         for name in &reference.relative_components {
-            identity::validate_observation_id(name).map_err(|_| Error::Binding)?;
+            identity::validate_observation_id(name).map_err(why!(Error::Binding))?;
             directory = directory.child(OsStr::new(name), false)?;
         }
         directory.verify_private_parent()?;
@@ -191,7 +191,7 @@ impl Store {
         let guard = fence.shared_existing()?;
         let mut projects = BTreeMap::new();
         for binding in bindings {
-            identity::validate_id(&binding.project).map_err(|_| Error::Binding)?;
+            identity::validate_id(&binding.project).map_err(why!(Error::Binding))?;
             if projects.contains_key(&binding.project)
                 || !binding.project_file.is_absolute()
                 || binding.run_roots.is_empty()
@@ -222,7 +222,7 @@ impl Store {
         Ok(Self { fence, projects })
     }
     fn project_anchor(&self, project: &str) -> Result<&ProjectAnchor> {
-        identity::validate_id(project).map_err(|_| Error::Binding)?;
+        identity::validate_id(project).map_err(why!(Error::Binding))?;
         self.projects.get(project).ok_or(Error::UnknownProject)
     }
     pub fn project(&self, project: &str, expected_raw_sha256: Option<&str>) -> Result<Document> {
@@ -254,7 +254,7 @@ impl Store {
         attempt_id: &str,
         expected: &ExpectedHashes,
     ) -> Result<AttemptRecord> {
-        identity::validate_id(attempt_id).map_err(|_| Error::Binding)?;
+        identity::validate_id(attempt_id).map_err(why!(Error::Binding))?;
         let guard = self
             .fence
             .existing_observation_guard(&reference.project, &reference.run_id)?;
@@ -305,7 +305,7 @@ impl Store {
         reference: &RunRef,
         attempt_id: &str,
     ) -> Result<super::Snapshot> {
-        identity::validate_id(attempt_id).map_err(|_| Error::Binding)?;
+        identity::validate_id(attempt_id).map_err(why!(Error::Binding))?;
         self.snapshot_selected(reference, Some(attempt_id), true)
     }
 

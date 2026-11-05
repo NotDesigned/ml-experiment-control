@@ -202,7 +202,7 @@ fn parse_yaml(bytes: &[u8]) -> Result<Map<String, Value>, DocumentError> {
     if bytes.len() > MAX_BYTES {
         return Err(DocumentError::TooLarge);
     }
-    let text = std::str::from_utf8(bytes).map_err(|_| DocumentError::Malformed)?;
+    let text = std::str::from_utf8(bytes).map_err(why!(DocumentError::Malformed))?;
     // YAML 1.1 treats these raw characters as line breaks, while YAML 1.2
     // treats them as string characters. Escaped literals remain supported.
     if text.contains(['\u{85}', '\u{2028}', '\u{2029}']) {
@@ -216,7 +216,9 @@ fn parse_yaml(bytes: &[u8]) -> Result<Map<String, Value>, DocumentError> {
         if count == MAX_NODES {
             return Err(DocumentError::Complexity);
         }
-        let (event, _) = parser.next_token().map_err(|_| DocumentError::Malformed)?;
+        let (event, _) = parser
+            .next_token()
+            .map_err(why!(DocumentError::Malformed))?;
         match event {
             Event::StreamStart | Event::DocumentEnd => {}
             Event::DocumentStart => {
@@ -296,7 +298,7 @@ fn version(map: &Map<String, Value>) -> Result<(), DocumentError> {
     Ok(())
 }
 pub fn validate_project(map: &Map<String, Value>, project: &str) -> Result<(), DocumentError> {
-    identity::validate_id(project).map_err(|_| DocumentError::Identity)?;
+    identity::validate_id(project).map_err(why!(DocumentError::Identity))?;
     version(map)?;
     exact(map, "project", project)
 }
@@ -305,7 +307,7 @@ pub fn validate_run(
     project: &str,
     run: &str,
 ) -> Result<(), DocumentError> {
-    identity::validate_observation_id(run).map_err(|_| DocumentError::Identity)?;
+    identity::validate_observation_id(run).map_err(why!(DocumentError::Identity))?;
     validate_project(map, project)?;
     exact(map, "run_id", run)
 }
@@ -325,7 +327,7 @@ pub fn validate_attempt(
     run_id: &str,
     attempt_id: &str,
 ) -> Result<Provenance, DocumentError> {
-    identity::validate_id(attempt_id).map_err(|_| DocumentError::Identity)?;
+    identity::validate_id(attempt_id).map_err(why!(DocumentError::Identity))?;
     validate_run(&run.metadata, project, run_id)?;
     version(&attempt.metadata)?;
     let inherited = run.source == ManifestSource::RunJson

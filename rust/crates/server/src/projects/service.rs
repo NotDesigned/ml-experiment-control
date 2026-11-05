@@ -21,18 +21,18 @@ impl Service {
         now: &str,
         identity: &str,
     ) -> Result<(), Error> {
-        settings.validate().map_err(|_| Error::Invalid)?;
+        settings.validate().map_err(why!(Error::Invalid))?;
         let (_, workspace_id) =
-            read_config::workspace(&settings.registry_root).map_err(|_| Error::Invalid)?;
+            read_config::workspace(&settings.registry_root).map_err(why!(Error::Invalid))?;
         let evidence =
             experiments::Store::open(settings.bindings(), RunFence::new(&settings.registry_root))
-                .map_err(|_| Error::Invalid)?;
+                .map_err(why!(Error::Invalid))?;
         let mut seeds = Vec::new();
         let mut observed = Vec::new();
         for project in &settings.projects {
             let document = evidence
                 .project(&project.project, None)
-                .map_err(|_| Error::Invalid)?;
+                .map_err(why!(Error::Invalid))?;
             let definition = ProjectDefinition::from_value(&Value::Object(document.metadata))?;
             if definition.campaign_files().next().is_some()
                 || !definition.to_value()["campaigns"]
@@ -59,19 +59,19 @@ impl Service {
         for (project, digest) in observed {
             evidence
                 .project(&project, Some(&digest))
-                .map_err(|_| Error::EffectUncertain)?;
+                .map_err(why!(Error::EffectUncertain))?;
         }
-        let (_, after) =
-            read_config::workspace(&settings.registry_root).map_err(|_| Error::EffectUncertain)?;
+        let (_, after) = read_config::workspace(&settings.registry_root)
+            .map_err(why!(Error::EffectUncertain))?;
         if after != workspace_id {
             return Err(Error::EffectUncertain);
         }
         Ok(())
     }
     pub fn open(settings: &read_config::Settings) -> Result<Self, Error> {
-        settings.validate().map_err(|_| Error::Invalid)?;
+        settings.validate().map_err(why!(Error::Invalid))?;
         let (_, workspace_id) =
-            read_config::workspace(&settings.registry_root).map_err(|_| Error::Invalid)?;
+            read_config::workspace(&settings.registry_root).map_err(why!(Error::Invalid))?;
         let service = Self {
             workspace_root: settings.registry_root.clone(),
             workspace_id,
@@ -84,7 +84,7 @@ impl Service {
                 settings.bindings(),
                 RunFence::new(&settings.registry_root),
             )
-            .map_err(|_| Error::Invalid)?,
+            .map_err(why!(Error::Invalid))?,
             store: Store::open(&settings.registry_root.join("projects"))?,
         };
         service.snapshot()?;
@@ -92,7 +92,7 @@ impl Service {
     }
     fn validate(&self) -> Result<(), Error> {
         let (_, workspace) =
-            read_config::workspace(&self.workspace_root).map_err(|_| Error::Invalid)?;
+            read_config::workspace(&self.workspace_root).map_err(why!(Error::Invalid))?;
         if workspace != self.workspace_id {
             return Err(Error::Invalid);
         }
@@ -146,7 +146,7 @@ impl Service {
         let document = self
             .evidence
             .project(project, None)
-            .map_err(|_| Error::Invalid)?;
+            .map_err(why!(Error::Invalid))?;
         let definition = ProjectDefinition::from_value(&Value::Object(document.metadata.clone()))?;
         if definition.project() != project {
             return Err(Error::Invalid);
@@ -189,8 +189,8 @@ impl Service {
         // not silently race a different Project identity/content observation.
         self.evidence
             .project(project, Some(&document.raw_sha256))
-            .map_err(|_| Error::EffectUncertain)?;
-        self.validate().map_err(|_| Error::EffectUncertain)?;
+            .map_err(why!(Error::EffectUncertain))?;
+        self.validate().map_err(why!(Error::EffectUncertain))?;
         Ok(experiment_redact::redact_json(json!({"project":result,
             "discovery":{"mode":"ON_DEMAND","source":"approved_run_roots"},
             "effect":"Project registration is durable; Run queries discover authoritative metadata in approved roots"})))
@@ -220,9 +220,9 @@ impl Service {
         if let Some((project, document)) = resumed {
             self.evidence
                 .project(&project, Some(&document.raw_sha256))
-                .map_err(|_| Error::EffectUncertain)?;
+                .map_err(why!(Error::EffectUncertain))?;
         }
-        self.validate().map_err(|_| Error::EffectUncertain)?;
+        self.validate().map_err(why!(Error::EffectUncertain))?;
         let body = match operation {
             Operation::Action { .. } => {
                 json!({"active":result["state"]=="ACTIVE","project":result,"effect":"Project tracking state changed; research files and jobs are unchanged"})
@@ -240,8 +240,8 @@ impl Service {
 pub fn transition_context() -> Result<(String, String), Error> {
     let now = time::OffsetDateTime::from(std::time::SystemTime::now())
         .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|_| Error::Invalid)?;
+        .map_err(why!(Error::Invalid))?;
     let mut random = [0u8; 16];
-    getrandom::fill(&mut random).map_err(|_| Error::Invalid)?;
+    getrandom::fill(&mut random).map_err(why!(Error::Invalid))?;
     Ok((now, format!("{:032x}", u128::from_be_bytes(random))))
 }

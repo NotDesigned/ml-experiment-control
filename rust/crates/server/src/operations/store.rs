@@ -296,12 +296,12 @@ impl Store {
         request: &ml_exp_core::slurm::helper::Request,
     ) -> Result<()> {
         use ml_exp_core::slurm::{action, helper};
-        let frame =
-            helper::encode_request(request).map_err(|_| Error::Invalid("native Slurm request"))?;
+        let frame = helper::encode_request(request)
+            .map_err(why!(Error::Invalid("native Slurm request")))?;
         self.locked(|lock| {
             let plan = self.plan(action_id, lock)?;
             action::validate(&plan, request)
-                .map_err(|_| Error::Invalid("native Slurm Action binding"))?;
+                .map_err(why!(Error::Invalid("native Slurm Action binding")))?;
             let directory = self.action_directory(action_id, false, lock)?;
             let name = OsStr::new("native-slurm-request.frame");
             if directory.entry_exists(name)? {
@@ -338,9 +338,9 @@ impl Store {
         }
         let frame = directory.read_regular(name, helper::MAX_FRAME_BYTES as u64)?;
         let request = helper::decode_request(&frame)
-            .map_err(|_| Error::Invalid("native Slurm request frame"))?;
+            .map_err(why!(Error::Invalid("native Slurm request frame")))?;
         action::validate(&self.plan(action_id, lock)?, &request)
-            .map_err(|_| Error::Invalid("native Slurm Action binding"))?;
+            .map_err(why!(Error::Invalid("native Slurm Action binding")))?;
         Ok(request)
     }
     /// Existing private input only. Missing/corrupt state is never reconstructed
@@ -358,10 +358,10 @@ impl Store {
         use ml_exp_core::cloud::action;
         request
             .validate()
-            .map_err(|_| Error::Invalid("native cloud request"))?;
+            .map_err(why!(Error::Invalid("native cloud request")))?;
         self.locked(|lock| {
             action::validate(&self.plan(action_id, lock)?, request)
-                .map_err(|_| Error::Invalid("native cloud binding"))?;
+                .map_err(why!(Error::Invalid("native cloud binding")))?;
             let directory = self.action_directory(action_id, false, lock)?;
             let name = OsStr::new("native-cloud-request.json");
             if directory.entry_exists(name)? {
@@ -396,10 +396,11 @@ impl Store {
         }
         let bytes = directory.read_regular(name, 2 * 1024 * 1024)?;
         let request = serde_json::from_value(Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(|_| Error::Invalid("native cloud input"))?,
+            ml_exp_core::json::mapping(&bytes)
+                .map_err(why!(Error::Invalid("native cloud input")))?,
         ))?;
         ml_exp_core::cloud::action::validate(&self.plan(action_id, lock)?, &request)
-            .map_err(|_| Error::Invalid("native cloud binding"))?;
+            .map_err(why!(Error::Invalid("native cloud binding")))?;
         Ok(request)
     }
     pub fn cloud_request(&self, action_id: &str) -> Result<ml_exp_core::cloud::action::Execution> {
@@ -704,7 +705,7 @@ impl Store {
                     "{:x}",
                     Sha256::digest(
                         python_json_bytes(&record)
-                            .map_err(|_| Error::Invalid("legacy command encoding"))?
+                            .map_err(why!(Error::Invalid("legacy command encoding")))?
                     )
                 ),
             };

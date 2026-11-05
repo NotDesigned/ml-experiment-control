@@ -143,7 +143,9 @@ pub(super) fn manifest(
         if length > super::domain::MAX_BYTES as u64 {
             return Err(Error::Document(super::DocumentError::TooLarge));
         }
-        budget.reserve(length).map_err(|_| Error::SnapshotLimit)?;
+        budget
+            .reserve(length)
+            .map_err(why!(Error::SnapshotLimit, "snapshot byte budget exhausted"))?;
         let mut bytes = Vec::new();
         (&mut file).take(length + 1).read_to_end(&mut bytes)?;
         directory.validate_regular_entry(name, &file)?;
@@ -211,8 +213,8 @@ pub(super) fn evidence(
     let result = (|| {
         let mut file = directory
             .open_regular_read(OsStr::new(filename))
-            .map_err(|_| EvidenceProblem::Io)?;
-        let before = file.metadata().map_err(|_| EvidenceProblem::Io)?;
+            .map_err(why!(EvidenceProblem::Io))?;
+        let before = file.metadata().map_err(why!(EvidenceProblem::Io))?;
         if before.len() > super::domain::MAX_BYTES as u64 {
             return Err(EvidenceProblem::TooLarge);
         }
@@ -221,14 +223,15 @@ pub(super) fn evidence(
         (&mut file)
             .take(before.len() + 1)
             .read_to_end(&mut bytes)
-            .map_err(|_| EvidenceProblem::Io)?;
+            .map_err(why!(EvidenceProblem::Io))?;
         directory
             .validate_regular_entry(OsStr::new(filename), &file)
             .map_err(|_| EvidenceProblem::Io)?;
         if bytes.len() as u64 != before.len() {
             return Err(EvidenceProblem::Io);
         }
-        let map = parse_mapping(&bytes, Format::Json).map_err(|_| EvidenceProblem::InvalidJson)?;
+        let map =
+            parse_mapping(&bytes, Format::Json).map_err(why!(EvidenceProblem::InvalidJson))?;
         if identity_conflict(&map, project, run, attempt) {
             return Err(EvidenceProblem::IdentityConflict);
         }
@@ -344,19 +347,19 @@ fn tail_bytes(
 ) -> Result<TailBytes, EvidenceProblem> {
     let mut file = directory
         .open_regular_read(OsStr::new(filename))
-        .map_err(|_| EvidenceProblem::Io)?;
-    let before = file.metadata().map_err(|_| EvidenceProblem::Io)?;
+        .map_err(why!(EvidenceProblem::Io))?;
+    let before = file.metadata().map_err(why!(EvidenceProblem::Io))?;
     let start = before.len().saturating_sub(MAX_TAIL_BYTES);
     // Retain a preceding full separator so an aligned UTF-8 boundary or CRLF
     // does not discard its following complete line.
     let window = start.saturating_sub(if text { 3 } else { 1 });
     file.seek(SeekFrom::Start(window))
-        .map_err(|_| EvidenceProblem::Io)?;
+        .map_err(why!(EvidenceProblem::Io))?;
     let mut bytes = Vec::new();
     (&mut file)
         .take(before.len() - window)
         .read_to_end(&mut bytes)
-        .map_err(|_| EvidenceProblem::Io)?;
+        .map_err(why!(EvidenceProblem::Io))?;
     directory
         .validate_regular_entry(OsStr::new(filename), &file)
         .map_err(|_| EvidenceProblem::Io)?;

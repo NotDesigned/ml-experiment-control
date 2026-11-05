@@ -27,7 +27,7 @@ impl Drop for Admission {
     }
 }
 fn admission(root: &Path, exclusive: bool) -> Result<Option<Admission>> {
-    let root = Directory::open(root, false).map_err(|_| invalid())?;
+    let root = Directory::open(root, false).map_err(why!(invalid()))?;
     let directory = match root.child(OsStr::new("administration"), false) {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -35,7 +35,7 @@ fn admission(root: &Path, exclusive: bool) -> Result<Option<Admission>> {
     };
     let file = directory
         .open_existing_lock(OsStr::new(".admission.lock"))
-        .map_err(|_| invalid())?;
+        .map_err(why!(invalid()))?;
     if exclusive {
         fs2::FileExt::try_lock_exclusive(&file)
     } else {
@@ -83,16 +83,16 @@ pub struct Service {
 }
 impl Service {
     pub fn initialize(settings: &read_config::Settings) -> Result<()> {
-        let (root, _) = read_config::workspace(&settings.registry_root).map_err(|_| invalid())?;
+        let (root, _) = read_config::workspace(&settings.registry_root).map_err(why!(invalid()))?;
         let directory = root
             .create_new_child(OsStr::new("administration"))
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         directory
             .open_lock(OsStr::new(".lock"))
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         directory
             .open_lock(OsStr::new(".admission.lock"))
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         Ok(())
     }
     pub fn open(
@@ -100,14 +100,14 @@ impl Service {
         slurm: Option<Arc<submissions::Service>>,
         cloud: Option<Arc<cloud_runs::Service>>,
     ) -> Result<Self> {
-        let (root, _) = read_config::workspace(&settings.registry_root).map_err(|_| invalid())?;
+        let (root, _) = read_config::workspace(&settings.registry_root).map_err(why!(invalid()))?;
         let directory = root
             .child(OsStr::new("administration"), false)
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         directory.verify_private_parent().map_err(|_| invalid())?;
         directory
             .open_existing_lock(OsStr::new(".lock"))
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         Ok(Self {
             settings,
             directory,
@@ -122,7 +122,7 @@ impl Service {
         let file = self
             .directory
             .open_existing_lock(OsStr::new(".lock"))
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         fs2::FileExt::try_lock_exclusive(&file).map_err(|_| invalid())?;
         Ok(file)
     }
@@ -136,12 +136,12 @@ impl Service {
         let bytes = self
             .directory
             .read_regular(OsStr::new(&Self::name(id)?), 1024 * 1024)
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         let saved: Saved = serde_json::from_value(Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(|_| invalid())?,
+            ml_exp_core::json::mapping(&bytes).map_err(why!(invalid()))?,
         ))
-        .map_err(|_| invalid())?;
-        if saved.plan.id().map_err(|_| invalid())? != id
+        .map_err(why!(invalid()))?;
+        if saved.plan.id().map_err(why!(invalid()))? != id
             || saved
                 .receipt
                 .as_ref()
@@ -154,15 +154,15 @@ impl Service {
     fn save(&self, saved: &Saved) -> Result<()> {
         self.directory
             .replace_regular(
-                OsStr::new(&Self::name(&saved.plan.id().map_err(|_| invalid())?)?),
-                &serde_json::to_vec(saved).map_err(|_| invalid())?,
+                OsStr::new(&Self::name(&saved.plan.id().map_err(why!(invalid()))?)?),
+                &serde_json::to_vec(saved).map_err(why!(invalid()))?,
             )
-            .map_err(|_| invalid())
+            .map_err(why!(invalid()))
     }
     fn view(saved: &Saved) -> Result<Value> {
-        let id = saved.plan.id().map_err(|_| invalid())?;
+        let id = saved.plan.id().map_err(why!(invalid()))?;
         Ok(
-            json!({"plan_id":id,"submission_id":saved.action,"identity":saved.plan.config.binding().map_err(|_|invalid())?.identity,"selection":saved.plan.selection,"paths":saved.plan.paths().map_err(|_|invalid())?,"status":if saved.receipt.is_some()&&saved.objects_complete{"COMPLETED"}else if saved.started{"RECONCILE_REQUIRED"}else{"PREPARED"},"confirmation":format!("DELETE {id}"),"scientific_records_preserved":true,"object_parts_released":saved.object_cursor,"receipt":saved.receipt}),
+            json!({"plan_id":id,"submission_id":saved.action,"identity":saved.plan.config.binding().map_err(why!(invalid()))?.identity,"selection":saved.plan.selection,"paths":saved.plan.paths().map_err(why!(invalid()))?,"status":if saved.receipt.is_some()&&saved.objects_complete{"COMPLETED"}else if saved.started{"RECONCILE_REQUIRED"}else{"PREPARED"},"confirmation":format!("DELETE {id}"),"scientific_records_preserved":true,"object_parts_released":saved.object_cursor,"receipt":saved.receipt}),
         )
     }
     pub fn status(&self, id: &str) -> Result<Value> {
@@ -171,20 +171,20 @@ impl Service {
     fn checkpoint_list(&self, cloud: bool, action: &str) -> Result<Vec<Value>> {
         // Scope comes from the committed Action read, never caller input.
         let now = crate::projects::transition_context()
-            .map_err(|_| invalid())?
+            .map_err(why!(invalid()))?
             .0;
         let value = if cloud {
             self.cloud
                 .as_ref()
                 .ok_or_else(invalid)?
                 .get(action, &now)
-                .map_err(|_| invalid())?
+                .map_err(why!(invalid()))?
         } else {
             self.slurm
                 .as_ref()
                 .ok_or_else(invalid)?
                 .get(action, &now)
-                .map_err(|_| invalid())?
+                .map_err(why!(invalid()))?
         };
         let (p, r, a) = (
             value["project"].as_str().ok_or_else(invalid)?,
@@ -196,13 +196,13 @@ impl Service {
                 .as_ref()
                 .ok_or_else(invalid)?
                 .checkpoints(p, r, a, None)
-                .map_err(|_| invalid())?
+                .map_err(why!(invalid()))?
         } else {
             self.slurm
                 .as_ref()
                 .ok_or_else(invalid)?
                 .checkpoints(p, r, a, None)
-                .map_err(|_| invalid())?
+                .map_err(why!(invalid()))?
         };
         result["checkpoints"]
             .as_array()
@@ -210,14 +210,14 @@ impl Service {
             .ok_or_else(invalid)
     }
     pub fn prepare(&self, action: &str, request: Request, now: &str) -> Result<Value> {
-        ml_exp_core::operations::validate_submission_id(action).map_err(|_| invalid())?;
+        ml_exp_core::operations::validate_submission_id(action).map_err(why!(invalid()))?;
         ml_exp_core::submission::validate_submission_token(&request.request_id)
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         let _lock = self.lock()?;
         for name in self
             .directory
             .entry_names_limited(32768)
-            .map_err(|_| invalid())?
+            .map_err(why!(invalid()))?
         {
             let Some(id) = name.to_str().and_then(|n| n.strip_suffix(".json")) else {
                 continue;
@@ -267,24 +267,24 @@ impl Service {
                 .as_ref()
                 .ok_or_else(invalid)?
                 .maintenance_plan(action, selection, request.request_id, now)
-                .map_err(|_| invalid())?
+                .map_err(why!(invalid()))?
         } else {
             self.slurm
                 .as_ref()
                 .ok_or_else(invalid)?
                 .maintenance_plan(action, selection, request.request_id, now)
-                .map_err(|_| invalid())?
+                .map_err(why!(invalid()))?
         };
         let checkpoints = match &plan.selection {
             Selection::Checkpoint { checkpoint } => vec![(**checkpoint).clone()],
             _ => checkpoints,
         };
         self.dependencies(&checkpoints)?;
-        let id = plan.id().map_err(|_| invalid())?;
+        let id = plan.id().map_err(why!(invalid()))?;
         if self
             .directory
             .entry_exists(OsStr::new(&Self::name(&id)?))
-            .map_err(|_| invalid())?
+            .map_err(why!(invalid()))?
         {
             return self.status(&id);
         }
@@ -309,15 +309,15 @@ impl Service {
             self.settings.bindings(),
             RunFence::new(&self.settings.registry_root),
         )
-        .map_err(|_| invalid())?;
+        .map_err(why!(invalid()))?;
         for project in &self.settings.projects {
             let discovered = store
                 .discover(&project.project, &experiments::DiscoveryLimits::default())
-                .map_err(|_| invalid())?;
+                .map_err(why!(invalid()))?;
             for entry in discovered.runs {
                 let snapshot = store
                     .snapshot_metadata(&entry.reference)
-                    .map_err(|_| invalid())?;
+                    .map_err(why!(invalid()))?;
                 for manifest in std::iter::once(&snapshot.run.metadata)
                     .chain(snapshot.attempts.iter().map(|a| &a.manifest.metadata))
                 {
@@ -337,17 +337,17 @@ impl Service {
     }
     fn withdraw(&self, saved: &Saved) -> Result<()> {
         let store = crate::checkpoints::Store::open_existing(&self.settings.registry_root)
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         for document in &saved.checkpoints {
             let (context, _) =
-                checkpoints::validate_document(document, None, None).map_err(|_| invalid())?;
+                checkpoints::validate_document(document, None, None).map_err(why!(invalid()))?;
             store
                 .withdraw(
                     &context,
                     document["checkpoint_id"].as_str().ok_or_else(invalid)?,
-                    &saved.plan.id().map_err(|_| invalid())?,
+                    &saved.plan.id().map_err(why!(invalid()))?,
                 )
-                .map_err(|_| invalid())?;
+                .map_err(why!(invalid()))?;
         }
         Ok(())
     }
@@ -375,14 +375,14 @@ impl Service {
                     .as_ref()
                     .ok_or_else(invalid)?
                     .maintenance_execute(&saved.action, &saved.plan)
-                    .map_err(|_| invalid())?;
+                    .map_err(why!(invalid()))?;
             } else {
                 let receipt = self
                     .slurm
                     .as_ref()
                     .ok_or_else(invalid)?
                     .maintenance_execute(&saved.action, &saved.plan)
-                    .map_err(|_| invalid())?;
+                    .map_err(why!(invalid()))?;
                 let _lock = self.lock()?;
                 saved = self.read(id)?;
                 saved.receipt = Some(receipt);
@@ -402,7 +402,7 @@ impl Service {
                         .as_ref()
                         .ok_or_else(invalid)?
                         .maintenance_release_object(&saved.action, &saved.plan, saved.object_cursor)
-                        .map_err(|_| invalid())?;
+                        .map_err(why!(invalid()))?;
                     saved.object_cursor = cursor;
                     saved.objects_complete = complete;
                     self.save(&saved)?;
@@ -428,13 +428,13 @@ impl Service {
         let id = receipt["plan_id"].as_str().ok_or_else(invalid)?.to_owned();
         let _lock = self.lock()?;
         let mut saved = self.read(&id)?;
-        let binding = saved.plan.config.binding().map_err(|_| invalid())?;
+        let binding = saved.plan.config.binding().map_err(why!(invalid()))?;
         if !saved.started
             || !saved.cloud
             || binding.identity.project != project
             || binding.identity.run_id != run
             || binding.identity.attempt_id != attempt
-            || saved.plan.receipt().map_err(|_| invalid())? != receipt
+            || saved.plan.receipt().map_err(why!(invalid()))? != receipt
         {
             return Err(invalid());
         }
@@ -442,7 +442,7 @@ impl Service {
             .as_ref()
             .ok_or_else(invalid)?
             .maintenance_auth(&saved.action, &saved.plan, token)
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         saved.receipt = Some(receipt);
         self.save(&saved)?;
         Ok(json!({"plan_id":id,"status":"RECEIVED"}))
@@ -454,38 +454,40 @@ impl Service {
         let _admission = admission(&self.settings.registry_root, true)?.ok_or_else(invalid)?;
         let fence = RunFence::new(&self.settings.registry_root);
         let store = experiments::Store::open(self.settings.bindings(), fence.clone())
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         let discovered = store
             .discover(project, &experiments::DiscoveryLimits::default())
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         let reference = &discovered
             .runs
             .iter()
             .find(|r| r.reference.run_id == run)
             .ok_or_else(invalid)?
             .reference;
-        let snapshot = store.snapshot_metadata(reference).map_err(|_| invalid())?;
+        let snapshot = store
+            .snapshot_metadata(reference)
+            .map_err(why!(invalid()))?;
         // The caller retires tracking separately from physical payloads. Every
         // Attempt must have exact terminal native provider evidence.
         for attempt in &snapshot.attempts {
             let value = if let Some(cloud) = &self.cloud {
-                if cloud.handles_run(project, run).map_err(|_| invalid())? {
+                if cloud.handles_run(project, run).map_err(why!(invalid()))? {
                     cloud
                         .for_attempt_admin(project, run, &attempt.attempt_id, now)
-                        .map_err(|_| invalid())?
+                        .map_err(why!(invalid()))?
                 } else {
                     self.slurm
                         .as_ref()
                         .ok_or_else(invalid)?
                         .for_attempt(project, run, &attempt.attempt_id, now)
-                        .map_err(|_| invalid())?
+                        .map_err(why!(invalid()))?
                 }
             } else {
                 self.slurm
                     .as_ref()
                     .ok_or_else(invalid)?
                     .for_attempt(project, run, &attempt.attempt_id, now)
-                    .map_err(|_| invalid())?
+                    .map_err(why!(invalid()))?
             };
             let action = value["submission_id"].as_str().ok_or_else(invalid)?;
             let request_id = ml_exp_core::canonical::digest(&json!([
@@ -494,7 +496,7 @@ impl Service {
                 run,
                 &attempt.attempt_id
             ]))
-            .map_err(|_| invalid())?[..32]
+            .map_err(why!(invalid()))?[..32]
                 .to_owned();
             if self
                 .cloud
@@ -505,16 +507,16 @@ impl Service {
                     .as_ref()
                     .ok_or_else(invalid)?
                     .maintenance_plan(action, Selection::Outputs, request_id, now)
-                    .map_err(|_| invalid())?;
+                    .map_err(why!(invalid()))?;
             } else {
                 self.slurm
                     .as_ref()
                     .ok_or_else(invalid)?
                     .maintenance_plan(action, Selection::Outputs, request_id, now)
-                    .map_err(|_| invalid())?;
+                    .map_err(why!(invalid()))?;
             }
         }
-        let guard = fence.exclusive_existing(false).map_err(|_| invalid())?;
+        let guard = fence.exclusive_existing(false).map_err(why!(invalid()))?;
         let facts = serde_json::Map::from_iter([
             ("run_sha256".into(), json!(snapshot.run.raw_sha256)),
             ("payloads_removed".into(), json!(false)),
@@ -522,7 +524,7 @@ impl Service {
         ]);
         guard
             .mark(project, run, &facts, now)
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         Ok(
             json!({"project":project,"run_id":run,"status":"DELETED","payloads_removed":false,"audit_records_preserved":true}),
         )

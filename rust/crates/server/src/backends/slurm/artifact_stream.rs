@@ -34,8 +34,8 @@ impl Drop for Download {
 }
 impl Download {
     pub fn open(config: &SshConfig, request: &Request, expected: &State) -> io::Result<Self> {
-        config.validate().map_err(|_| invalid())?;
-        request.validate().map_err(|_| invalid())?;
+        config.validate().map_err(why!(invalid()))?;
+        request.validate().map_err(why!(invalid()))?;
         if config.target != request.intent().target
             || !matches!(
                 request.artifact_command(),
@@ -68,7 +68,7 @@ impl Download {
         };
         let deadline = Instant::now() + config.budget.timeout.min(Duration::from_secs(30));
         let flag = AtomicBool::new(false);
-        let frame = helper::encode_request(request).map_err(|_| invalid())?;
+        let frame = helper::encode_request(request).map_err(why!(invalid()))?;
         let stdin = download.child.stdin.take().ok_or_else(invalid)?;
         framing::write_frame(&stdin, &frame, helper::MAX_METADATA_BYTES, deadline, &flag)?;
         drop(stdin);
@@ -78,11 +78,11 @@ impl Download {
             deadline,
             &flag,
         )?;
-        let reply = helper::decode_reply(&frame, request).map_err(|_| invalid())?;
+        let reply = helper::decode_reply(&frame, request).map_err(why!(invalid()))?;
         let ReplyOutcome::Artifacts { publication: state } = reply.outcome else {
             return Err(invalid());
         };
-        if state.bundle != expected.bundle || !state.available().map_err(|_| invalid())? {
+        if state.bundle != expected.bundle || !state.available().map_err(why!(invalid()))? {
             return Err(invalid());
         }
         Ok(download)
