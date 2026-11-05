@@ -165,6 +165,25 @@ impl Drop for Server {
     }
 }
 #[test]
+fn yaml_runs_are_not_local_and_missing_local_manifest_is_not_a_fallback() {
+    let f = Fixture::new();
+    let api = f.api();
+    let run = f.settings.projects[0].run_roots[0].join("remote");
+    fs::create_dir(&run).unwrap();
+    put(&run.join("manifest.yaml"), &json!({"run_id":"remote"}));
+    assert!(
+        api.local_tracking_status("demo", "remote")
+            .unwrap()
+            .is_none()
+    );
+    api.register_local("demo", f.request(), "initial").unwrap();
+    fs::remove_file(f.settings.projects[0].run_roots[0].join("train/manifest.json")).unwrap();
+    assert_eq!(
+        api.local_tracking_status("demo", "train").unwrap_err().code,
+        "LOCAL_EVIDENCE_INVALID"
+    );
+}
+#[test]
 fn multiple_packets_lost_ack_restart_exact_replay_finish_and_public_reads() {
     let f = Fixture::new();
     let mut bytes = Vec::new();

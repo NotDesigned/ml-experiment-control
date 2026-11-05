@@ -992,6 +992,8 @@ mod schema_tests {
                 || path.ends_with("/submissions")
                 || path.ends_with("/datasets/{executor}/{asset}/complete")
                 || path == "/api/projects/{project}/runs"
+                || path == "/api/projects/{project}/local-runs"
+                || path == "/api/local-runs/{project}/{run}/metrics"
                 || path.starts_with("/api/submissions/")
                     && path != "/api/submissions/{identity}"
                     && !path.contains("/artifacts")
@@ -1024,6 +1026,9 @@ mod schema_tests {
             "/api/debug",
             "/api/admin/maintenance/{identity}",
             "/api/worker-exchange/{project}/{run}/{attempt}",
+            "/api/projects/{project}/local-runs",
+            "/api/local-runs/{project}/{run}",
+            "/api/local-runs/{project}/{run}/metrics",
         ] {
             assert!(paths.contains_key(path), "missing native contract: {path}");
         }
