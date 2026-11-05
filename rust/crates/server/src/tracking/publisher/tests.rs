@@ -60,7 +60,6 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64, version: i64) {
             entity: Some("fixture".into()),
             project: None,
             enabled: true,
-            historical_handoff: None,
         },
         key: "never-print".into(),
         routing: Default::default(),
@@ -243,19 +242,6 @@ fn uncertain_history_is_observed_without_opening_or_recreating_remote_runs() {
 }
 
 #[test]
-fn historical_terminal_uses_original_outcomes_without_claiming_a_running_run_completed() {
-    for value in [
-        json!({"state":"CANCELLED"}),
-        json!({"phase":"RESULTS_UPLOADED","exit_code":0}),
-        json!({"phase":"RESULTS_UPLOAD_FAILED"}),
-    ] {
-        assert!(historical_terminal(&value));
-    }
-    assert!(!historical_terminal(&json!({"state":"RUNNING"})));
-    assert!(!historical_terminal(&json!({})));
-}
-
-#[test]
 fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursors() {
     exercise_delayed_publication(4);
 }
@@ -291,7 +277,6 @@ fn exercise_delayed_publication(version: i64) {
             entity: Some("fixture".into()),
             project: None,
             enabled: true,
-            historical_handoff: None,
         },
         key: "test-key-never-stored".into(),
         routing: Default::default(),

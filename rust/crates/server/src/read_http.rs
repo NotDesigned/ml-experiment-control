@@ -29,14 +29,6 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
             get(experiment_submissions),
         )
         .route(
-            "/api/runs/{project}/{run}/attempts/{attempt}/files",
-            get(historical_files),
-        )
-        .route(
-            "/api/runs/{project}/{run}/attempts/{attempt}/artifacts/download",
-            get(historical_download),
-        )
-        .route(
             "/api/runs/{project}/{run}/attempts/{attempt}/collection",
             get(collection),
         )
@@ -188,65 +180,6 @@ async fn projects(State(state): State<Arc<AppState>>, RawQuery(raw): RawQuery) -
         return failure(e);
     }
     execute(state, Access::Read, |api, now| api.projects(now)).await
-}
-async fn historical_files(
-    State(state): State<Arc<AppState>>,
-    path: Result<Path<(String, String, String)>, PathRejection>,
-    RawQuery(raw): RawQuery,
-) -> Response {
-    let Ok(Path((project, run, attempt))) = path else {
-        return bad_path();
-    };
-    match read_api::parameters(raw.as_deref()) {
-        Ok(parameters)
-            if parameters.is_empty()
-                || parameters.len() == 1
-                    && parameters[0].0 == "checksums"
-                    && matches!(parameters[0].1.as_str(), "true" | "false") => {}
-        Ok(_) => {
-            return failure(read_api::Error {
-                status: 422,
-                code: "INVALID_READ_QUERY",
-                detail: "only a boolean checksums query is supported",
-            });
-        }
-        Err(error) => return failure(error),
-    }
-    execute(state, Access::Read, move |api, _| {
-        api.historical_artifacts(&project, &run, &attempt)?
-            .ok_or(read_api::Error {
-                status: 409,
-                code: "NATIVE_ARTIFACTS_REQUIRE_SUBMISSION",
-                detail: "native results must be queried through their exact Submission identity",
-            })
-    })
-    .await
-}
-async fn historical_download(
-    State(state): State<Arc<AppState>>,
-    path: Result<Path<(String, String, String)>, PathRejection>,
-    RawQuery(raw): RawQuery,
-) -> Response {
-    let Ok(Path((project, run, attempt))) = path else {
-        return bad_path();
-    };
-    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
-        return failure(error);
-    }
-    let mut response = execute(state, Access::Read, move |api, now| {
-        api.historical_artifact_ticket(&project, &run, &attempt, now as i64)?
-            .ok_or(read_api::Error {
-                status: 409,
-                code: "NATIVE_ARTIFACTS_REQUIRE_SUBMISSION",
-                detail: "native results must be downloaded through their exact Submission identity",
-            })
-    })
-    .await;
-    response.headers_mut().insert(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-store"),
-    );
-    response
 }
 async fn submission(
     State(state): State<Arc<AppState>>,

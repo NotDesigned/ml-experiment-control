@@ -9,7 +9,7 @@ use std::{net::SocketAddr, path::PathBuf};
 )]
 struct Args {
     /// One private deployment file; initialization remains a separate command.
-    #[arg(long,conflicts_with_all=["bind","token_file","read_config","history_config","inspect_historical_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration","project_lifecycle","source_archives","submission_config","cloud_config","tracking_config","administration"])]
+    #[arg(long,conflicts_with_all=["bind","token_file","read_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration","project_lifecycle","source_archives","submission_config","cloud_config","tracking_config","administration"])]
     config: Option<PathBuf>,
     /// Validate local configuration and private dependencies without a listener,
     /// SDK process, store initialization or provider request.
@@ -31,19 +31,11 @@ struct Args {
     #[arg(long,requires="read_config",conflicts_with_all=["token_file","administration"])]
     initialize_administration: bool,
     #[arg(long)]
-    #[arg(required_unless_present_any = ["config", "initialize_registry", "initialize_project_lifecycle", "initialize_source_archives", "initialize_submissions", "initialize_cloud_submissions", "initialize_administration", "inspect_historical_config"])]
+    #[arg(required_unless_present_any = ["config", "initialize_registry", "initialize_project_lifecycle", "initialize_source_archives", "initialize_submissions", "initialize_cloud_submissions", "initialize_administration"])]
     token_file: Option<PathBuf>,
     /// Private approved source configuration for an isolated Rust preview.
     #[arg(long, conflicts_with = "initialize_registry")]
     read_config: Option<PathBuf>,
-    /// Combine a native writable workspace with original experiments served
-    /// through the same API under enforced read-only access.
-    #[arg(long,requires="read_config",conflicts_with_all=["inspect_historical_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration"])]
-    history_config: Option<PathBuf>,
-    /// Observe existing state and print a pinned private historical reader
-    /// configuration; starts no server and writes no original metadata.
-    #[arg(long,conflicts_with_all=["token_file","read_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration","project_lifecycle","source_archives","submission_config","cloud_config","tracking_config","administration"])]
-    inspect_historical_config: Option<PathBuf>,
     /// Explicitly initialize a fresh registry; existing targets are refused.
     #[arg(long, conflicts_with_all = ["token_file", "read_config"])]
     initialize_registry: Option<PathBuf>,
@@ -81,6 +73,10 @@ async fn main() -> std::process::ExitCode {
     if let Some(path) = args.config.take() {
         let settings = match ml_exp_server::deployment::Settings::load(&path) {
             Ok(value) => value,
+            Err(error @ ml_exp_server::deployment::LoadError::RetiredKey(_)) => {
+                eprintln!("{error}");
+                return std::process::ExitCode::FAILURE;
+            }
             Err(_) => {
                 eprintln!("private deployment configuration is invalid or unavailable");
                 return std::process::ExitCode::FAILURE;
@@ -128,33 +124,12 @@ async fn main() -> std::process::ExitCode {
         args.bind = settings.bind;
         args.token_file = Some(settings.token_file);
         args.read_config = Some(settings.read_config);
-        args.history_config = settings.history_config;
         args.submission_config = settings.submission_config;
         args.cloud_config = settings.cloud_config;
         args.tracking_config = settings.tracking_config;
         args.project_lifecycle = settings.project_lifecycle;
         args.source_archives = settings.source_archives;
         args.administration = settings.administration;
-    }
-    if let Some(path) = &args.inspect_historical_config {
-        let result =
-            ml_exp_server::read_config::load(path).and_then(ml_exp_server::history::inspect);
-        return match result {
-            Ok(settings) => match serde_json::to_string_pretty(&settings) {
-                Ok(value) => {
-                    println!("{value}");
-                    std::process::ExitCode::SUCCESS
-                }
-                Err(_) => {
-                    eprintln!("historical configuration could not be encoded");
-                    std::process::ExitCode::FAILURE
-                }
-            },
-            Err(_) => {
-                eprintln!("historical namespace or mandatory read-only isolation is unavailable");
-                std::process::ExitCode::FAILURE
-            }
-        };
     }
     if let Some(path) = &args.initialize_registry {
         return match ml_exp_server::read_config::initialize(path) {
@@ -289,7 +264,6 @@ async fn main() -> std::process::ExitCode {
             let archives = args.source_archives;
             let submission = args.submission_config.clone();
             let cloud = args.cloud_config.clone();
-            let history = args.history_config.clone();
             let administration = args.administration;
             let routing = tracking.as_ref().map(|runtime| runtime.routing().clone());
             let opened = tokio::task::spawn_blocking(move || {
@@ -299,7 +273,6 @@ async fn main() -> std::process::ExitCode {
                     archives,
                     submission.as_deref(),
                     cloud.as_deref(),
-                    history.as_deref(),
                     routing,
                 )
                 .and_then(|(api, polling)| {
@@ -398,42 +371,6 @@ async fn main() -> std::process::ExitCode {
         },
         None => None,
     };
-    let _historical_publisher = match tracking
-        .as_ref()
-        .filter(|runtime| runtime.routing().enabled)
-        .and_then(|runtime| runtime.historical_handoff().map(|path| (runtime, path)))
-    {
-        Some((runtime, path)) => {
-            let open = || -> Result<_, ml_exp_server::tracking::Error> {
-                let historical = ml_exp_server::history::Settings::load(
-                    args.history_config
-                        .as_deref()
-                        .ok_or(ml_exp_server::tracking::Error::Configuration)?,
-                )
-                .map_err(|_| ml_exp_server::tracking::Error::Configuration)?;
-                let native = ml_exp_server::read_config::load(
-                    args.read_config
-                        .as_deref()
-                        .ok_or(ml_exp_server::tracking::Error::Configuration)?,
-                )
-                .map_err(|_| ml_exp_server::tracking::Error::Configuration)?;
-                let source = ml_exp_server::tracking::handoff::Handoff::open(
-                    ml_exp_server::tracking::handoff::Config::load(path)?,
-                    historical,
-                    &native.registry_root,
-                )?;
-                ml_exp_server::tracking::Publisher::start(source, runtime.clone())
-            };
-            match open() {
-                Ok(publisher) => Some(publisher),
-                Err(error) => {
-                    eprintln!("historical W&B handoff: {error}");
-                    return std::process::ExitCode::FAILURE;
-                }
-            }
-        }
-        None => None,
-    };
     let _publisher = match tracking.filter(|runtime| runtime.routing().enabled) {
         Some(runtime) => match ml_exp_server::tracking::Publisher::start(
             reads
@@ -486,7 +423,6 @@ fn open_api(
     source_archives: bool,
     submission_config: Option<&std::path::Path>,
     cloud_config: Option<&std::path::Path>,
-    history_config: Option<&std::path::Path>,
     tracking: Option<ml_exp_core::tracking::RoutingSettings>,
 ) -> Result<
     (
@@ -503,13 +439,8 @@ fn open_api(
     } else {
         None
     };
-    let mut api = ml_exp_server::read_api::Api::open(settings.clone())?
+    let api = ml_exp_server::read_api::Api::open(settings.clone())?
         .with_local_tracking(tracking.clone().unwrap_or_default());
-    if let Some(path) = history_config {
-        api = api.with_history(ml_exp_server::history::Bridge::open(
-            ml_exp_server::history::Settings::load(path)?,
-        )?)?;
-    }
     let api = match service {
         Some(service) => api.with_lifecycle(service)?,
         None => api,
@@ -528,8 +459,7 @@ fn open_api(
                 source.clone(),
                 api.lifecycle(),
                 tracking.clone().unwrap_or_default(),
-            )?
-            .with_history(api.history())?;
+            )?;
             api = api.with_cloud(std::sync::Arc::new(cloud))?;
         }
         if let Some(path) = submission_config {
@@ -543,7 +473,6 @@ fn open_api(
                     config.enabled,
                 )?
                 .with_runtime_builder(api.cloud())
-                .with_history(api.history())?
                 .with_run_creation(config.creation)?
                 .with_tracking(tracking.unwrap_or_default()),
             );

@@ -47,5 +47,3 @@ ml-exp-client = { path = "../client" }
 ml-exp-worker = { path = "../worker" }
 tower = { version = "0.5", features = ["util"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-landlock = "=0.4.7"

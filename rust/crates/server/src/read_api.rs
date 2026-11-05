@@ -16,11 +16,7 @@ use std::{
     sync::Arc,
 };
 
-mod checkpoint_reads;
-mod composition;
 mod local_runs;
-mod result_reads;
-mod tracking_reads;
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("{code}")]
@@ -279,9 +275,6 @@ pub struct Api {
     submissions: Option<Arc<crate::submissions::Service>>,
     cloud: Option<Arc<crate::cloud_runs::Service>>,
     administration: Option<Arc<crate::administration::Service>>,
-    historical: Option<crate::history::Identity>,
-    legacy: Option<Arc<crate::history::Bridge>>,
-    approved_roots: Vec<PathBuf>,
     local_roots: BTreeMap<String, PathBuf>,
     local_tracking: ml_exp_core::tracking::RoutingSettings,
 }
@@ -289,19 +282,12 @@ impl Api {
     pub fn open(settings: read_config::Settings) -> Result<Self, read_config::Error> {
         settings.validate()?;
         let (registry, workspace_id) = read_config::workspace(&settings.registry_root)?;
-        Self::open_parts(settings, registry, workspace_id, None)
-    }
-    pub(crate) fn open_historical(
-        settings: crate::history::Settings,
-    ) -> Result<Self, read_config::Error> {
-        let (registry, workspace_id, identity) = crate::history::Identity::open(&settings)?;
-        Self::open_parts(settings.reads, registry, workspace_id, Some(identity))
+        Self::open_parts(settings, registry, workspace_id)
     }
     fn open_parts(
         settings: read_config::Settings,
         registry: Directory,
         workspace_id: String,
-        historical: Option<crate::history::Identity>,
     ) -> Result<Self, read_config::Error> {
         let read_scope_sha256 = settings.identity()?;
         let fence = RunFence::new(&settings.registry_root);
@@ -330,10 +316,9 @@ impl Api {
             .collect();
         // This is the fixed isolated namespace, never a request-selected path.
         // Missing Action storage stays absent; startup and GET do not create it.
-        let actions = if historical.is_none()
-            && registry
-                .entry_exists(OsStr::new("actions"))
-                .map_err(|_| read_config::Error)?
+        let actions = if registry
+            .entry_exists(OsStr::new("actions"))
+            .map_err(|_| read_config::Error)?
         {
             Some(
                 crate::operations::Store::open_existing(settings.registry_root.join("actions"))
@@ -350,12 +335,6 @@ impl Api {
                 .map(|p| (p.project.clone(), p.run_roots[0].clone()))
                 .collect(),
             local_tracking: Default::default(),
-            approved_roots: settings
-                .projects
-                .iter()
-                .flat_map(|p| p.run_roots.clone())
-                .chain(std::iter::once(settings.registry_root.clone()))
-                .collect(),
             store,
             registry_root: settings.registry_root,
             registry,
@@ -372,37 +351,17 @@ impl Api {
             submissions: None,
             cloud: None,
             administration: None,
-            historical,
-            legacy: None,
         })
-    }
-    pub fn is_historical(&self) -> bool {
-        self.historical.is_some()
-    }
-    pub(crate) fn observe<T: Send>(
-        &self,
-        operation: impl FnOnce(&Self) -> Result<T, Error> + Send,
-    ) -> Result<T, Error> {
-        if self.is_historical() {
-            crate::readonly::run(|| operation(self)).map_err(|_|error(
-                503,"HISTORICAL_READ_ONLY_UNAVAILABLE",
-                "kernel-enforced historical observation is unavailable; no weaker mode was used",
-            ))?
-        } else {
-            operation(self)
-        }
     }
     pub fn with_lifecycle(
         mut self,
         service: Arc<crate::projects::Service>,
     ) -> Result<Self, read_config::Error> {
-        if self.is_historical()
-            || !service.matches_configuration(
-                &self.registry_root,
-                &self.project_files,
-                &self.workspace_id,
-            )
-        {
+        if !service.matches_configuration(
+            &self.registry_root,
+            &self.project_files,
+            &self.workspace_id,
+        ) {
             return Err(read_config::Error);
         }
         self.lifecycle = Some(service);
@@ -412,32 +371,29 @@ impl Api {
         self.lifecycle.clone()
     }
     pub fn project_lifecycle_read(&self) -> Result<Value, Error> {
-        self.observe(|api| {
-            api.validate_registry()?;
-            if let Some(history)=&api.historical {
-                let snapshot=history.snapshot()?;
-                api.validate_registry()?;
-                return Ok(experiment_redact::redact_json(serde_json::json!({
-                    "projects":snapshot.projects,"events":snapshot.events,
-                    "durability":{"revision":snapshot.revision,"journal_pending":snapshot.journal_pending},
-                    "read_only":true,
-                })));
-            }
-            api.lifecycle.as_ref().ok_or_else(||error(501,"PROJECT_LIFECYCLE_NOT_CONFIGURED","project lifecycle is not configured"))?.list().map_err(Into::into)
-        })
+        self.validate_registry()?;
+        self.lifecycle
+            .as_ref()
+            .ok_or_else(|| {
+                error(
+                    501,
+                    "PROJECT_LIFECYCLE_NOT_CONFIGURED",
+                    "project lifecycle is not configured",
+                )
+            })?
+            .list()
+            .map_err(Into::into)
     }
     pub fn with_sources(
         mut self,
         service: Arc<crate::sources::Service>,
     ) -> Result<Self, read_config::Error> {
-        if self.is_historical()
-            || !service.matches_configuration(
-                &self.registry_root,
-                &self.project_files,
-                &self.workspace_id,
-                self.lifecycle.as_ref(),
-            )
-        {
+        if !service.matches_configuration(
+            &self.registry_root,
+            &self.project_files,
+            &self.workspace_id,
+            self.lifecycle.as_ref(),
+        ) {
             return Err(read_config::Error);
         }
         self.sources = Some(service);
@@ -450,17 +406,14 @@ impl Api {
         mut self,
         service: Arc<crate::submissions::Service>,
     ) -> Result<Self, read_config::Error> {
-        if self.is_historical()
-            || !service.history_matches(self.legacy.as_ref())
-            || !service.matches_configuration(
-                &self.registry_root,
-                &self.project_files,
-                &self.workspace_id,
-                self.sources.as_ref(),
-                self.lifecycle.as_ref(),
-                &self.read_scope_sha256,
-            )
-        {
+        if !service.matches_configuration(
+            &self.registry_root,
+            &self.project_files,
+            &self.workspace_id,
+            self.sources.as_ref(),
+            self.lifecycle.as_ref(),
+            &self.read_scope_sha256,
+        ) {
             return Err(read_config::Error);
         }
         self.submissions = Some(service);
@@ -473,14 +426,11 @@ impl Api {
         mut self,
         service: Arc<crate::cloud_runs::Service>,
     ) -> Result<Self, read_config::Error> {
-        if self.is_historical()
-            || !service.history_matches(self.legacy.as_ref())
-            || !service.matches(
-                &self.registry_root,
-                &self.read_scope_sha256,
-                self.sources.as_ref(),
-            )
-        {
+        if !service.matches(
+            &self.registry_root,
+            &self.read_scope_sha256,
+            self.sources.as_ref(),
+        ) {
             return Err(read_config::Error);
         }
         self.cloud = Some(service);
@@ -490,45 +440,13 @@ impl Api {
         self.cloud.clone()
     }
     pub fn active_project_count(&self) -> Result<usize, Error> {
-        if let Some(history) = &self.legacy {
-            let mut projects = self.active_project_names()?;
-            projects.extend(history.api().active_project_names()?);
-            return Ok(projects.len());
-        }
-        self.observe(Self::active_project_count_observed)
-    }
-    fn active_project_names(&self) -> Result<BTreeSet<String>, Error> {
-        self.observe(|api| {
-            api.validate_registry()?;
-            if let Some(history) = &api.historical {
-                return history.active().map_err(Into::into);
-            }
-            match &api.lifecycle {
-                Some(service) => service.active_projects().map_err(Into::into),
-                None => Ok(api.projects.iter().cloned().collect()),
-            }
-        })
-    }
-    fn active_project_count_observed(&self) -> Result<usize, Error> {
         self.validate_registry()?;
-        if let Some(history) = &self.historical {
-            return Ok(history.active()?.len());
-        }
         match &self.lifecycle {
             Some(service) => Ok(service.active_projects()?.len()),
             None => Ok(self.projects.len()),
         }
     }
     fn ensure_active(&self, project: &str) -> Result<(), Error> {
-        if let Some(history) = &self.historical {
-            if !history.active()?.contains(project) {
-                return Err(error(
-                    404,
-                    "PROJECT_INACTIVE",
-                    "Project is not actively tracked in this historical workspace",
-                ));
-            }
-        }
         if let Some(service) = &self.lifecycle {
             let active = service.active_projects()?;
             if !active.contains(project) {
@@ -744,32 +662,6 @@ impl Api {
                 "isolated read workspace is unavailable",
             )
         })?;
-        if self.is_historical() {
-            if read_config::has_native_marker(&self.registry).map_err(|_| {
-                error(
-                    409,
-                    "READ_WORKSPACE_UNAVAILABLE",
-                    "historical registry is unavailable",
-                )
-            })? {
-                return Err(error(
-                    409,
-                    "READ_WORKSPACE_CHANGED",
-                    "a native marker appeared in the historical namespace",
-                ));
-            }
-            self.fence
-                .shared_existing()
-                .and_then(|guard| guard.validate())
-                .map_err(|_| {
-                    error(
-                        409,
-                        "READ_WORKSPACE_UNAVAILABLE",
-                        "historical deletion fence is unavailable",
-                    )
-                })?;
-            return Ok(());
-        }
         let (_, id) = read_config::workspace(&self.registry_root).map_err(|_| {
             error(
                 409,
@@ -787,15 +679,10 @@ impl Api {
         Ok(())
     }
     pub fn projects(&self, now_unix: f64) -> Result<Value, Error> {
-        let native = self.observe(move |api| api.projects_observed(now_unix))?;
-        self.combined_projects(native, now_unix)
-    }
-    fn projects_observed(&self, now_unix: f64) -> Result<Value, Error> {
         self.validate_registry()?;
-        let visible = match (&self.historical, &self.lifecycle) {
-            (Some(history), _) => Some(history.active()?),
-            (_, Some(service)) => Some(service.active_projects()?),
-            _ => None,
+        let visible = match &self.lifecycle {
+            Some(service) => Some(service.active_projects()?),
+            None => None,
         };
         let mut values = Vec::new();
         let mut value_bytes = 2;
@@ -867,15 +754,6 @@ impl Api {
             }
         }
         self.validate_registry()?;
-        if let Some(history) = &self.historical {
-            if Some(history.active()?) != visible {
-                return Err(error(
-                    409,
-                    "PROJECT_LIFECYCLE_CHANGED",
-                    "historical Project tracking changed during observation",
-                ));
-            }
-        }
         if let Some(service) = &self.lifecycle {
             if Some(service.active_projects()?) != visible {
                 return Err(error(
@@ -900,17 +778,6 @@ impl Api {
         let tracking = match self.registry.child(OsStr::new("tracking"), false) {
             Ok(directory) => directory,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if self
-                    .historical
-                    .as_ref()
-                    .is_some_and(|h| h.journal_workspace_id.is_some())
-                {
-                    return Err(error(
-                        409,
-                        "JOURNAL_UNAVAILABLE",
-                        "the configured historical journal is missing",
-                    ));
-                }
                 return Ok(Vec::new());
             }
             Err(_) => {
@@ -931,24 +798,9 @@ impl Api {
                 )
             })?
         {
-            if self
-                .historical
-                .as_ref()
-                .is_some_and(|h| h.journal_workspace_id.is_some())
-            {
-                return Err(error(
-                    409,
-                    "JOURNAL_UNAVAILABLE",
-                    "the configured historical journal is missing",
-                ));
-            }
             return Ok(Vec::new());
         }
-        let expected_workspace = if let Some(history) = &self.historical {
-            history.journal_workspace_id.as_deref()
-        } else {
-            self.workspace_id.strip_prefix("rust-preview-")
-        };
+        let expected_workspace = self.workspace_id.strip_prefix("rust-preview-");
         let records = crate::records::Store::read_only(&self.registry_root);
         let guard = records.guard(project, run).map_err(|_| {
             error(
@@ -1083,12 +935,6 @@ impl Api {
         })
     }
     pub fn query(&self, query: Query, now_unix: f64) -> Result<Value, Error> {
-        if let Some(history) = self.history_for(&query.project, &query.run)? {
-            return history.query(query, now_unix);
-        }
-        self.observe(move |api| api.query_observed(query, now_unix))
-    }
-    fn query_observed(&self, query: Query, now_unix: f64) -> Result<Value, Error> {
         validate_id(&query.project).map_err(|_| invalid_query())?;
         validate_observation_id(&query.run).map_err(|_| invalid_query())?;
         if !now_unix.is_finite() {
@@ -1143,28 +989,7 @@ impl Api {
                 .apply_observation(&mut snapshot)
                 .map_err(crate::cloud_runs::failure)?;
         }
-        let historical_result = if self.is_historical() {
-            let attempt = match &query.view {
-                View::Run => snapshot.current_attempt_id.as_deref(),
-                View::Show { attempt } | View::Collection { attempt } => Some(attempt.as_str()),
-                _ => None,
-            };
-            if let Some(attempt) = attempt {
-                self.historical_artifacts(&query.project, &query.run, attempt)?
-                    .map(|inventory| {
-                        read_model::historical_collection(
-                            read_model::attempt_collection(&snapshot, attempt, now_unix)?,
-                            &inventory,
-                        )
-                    })
-                    .transpose()?
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let mut value = match query.view {
+        let value = match query.view {
             View::Run => {
                 let attempt = snapshot.current_attempt_id.as_deref();
                 let records = self.live_metrics(&snapshot, attempt)?;
@@ -1210,13 +1035,6 @@ impl Api {
                 now_unix,
             )?,
         };
-        if let Some(result) = historical_result {
-            if value["contract"] == "result-collection-read.v1" {
-                value = result;
-            } else {
-                value["result"] = result;
-            }
-        }
         guard
             .require_observed_live(&query.project, &query.run)
             .map_err(|_| {
@@ -1350,7 +1168,7 @@ impl Api {
         mut self,
         service: Arc<crate::administration::Service>,
     ) -> Result<Self, read_config::Error> {
-        if self.is_historical() || !service.matches(&self.registry_root) {
+        if !service.matches(&self.registry_root) {
             return Err(read_config::Error);
         }
         self.administration = Some(service);

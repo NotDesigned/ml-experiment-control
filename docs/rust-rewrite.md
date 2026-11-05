@@ -5,7 +5,7 @@ Default implementation: native Rust on `main`. Python reference baseline:
 native service on Tokyo; Python API/builder services on Seoul are retired. See the
 [latest release](https://github.com/NotDesigned/ml-experiment-control/releases/latest) for the current version. Direct HTTPS uses
 `https://ml-exp.adscn.dev`; the old API domain and temporary port have been removed.
-Historical metadata is attached read-only, with separate native write namespaces.
+Older namespaces stay on disk untouched and are not served.
 Slurm connects through the direct L40S-to-Tokyo gateway.
 
 Run status and Submission GETs read retained evidence; they do not contact the
@@ -18,16 +18,15 @@ are not yet included in the cached Run summary.
 
 `GET /api/actions/policy` exposes native permission flags for older client
 connection checks. It neither enables old Action mutation routes nor probes a
-provider. The reported `training=INCOMPLETE` / `migration=IN_PROGRESS` describes
-remaining acceptance and historical compatibility work, not an unfinished file
-transfer: Slurm GPU training/restore and SenseCore GPU acceptance remain unproven,
-and the full legacy metadata audit still has gaps. PAI CPU/H200 and W&B cloud
+provider. The reported `training=INCOMPLETE` describes remaining acceptance work,
+not an unfinished file transfer: Slurm GPU training/restore and SenseCore GPU
+acceptance remain unproven. PAI CPU/H200 and W&B cloud
 acceptance passed in bounded tests. These do not establish large-model or all-backend
 acceptance. The older client's normal `check` can succeed; `check --training`
 continues to fail closed.
 
 “Connected” below means the CLI/API/service/worker code exists. It does not mean an
-actual provider run has passed or that all historical Python state can be migrated.
+actual provider run has passed.
 
 ## Architecture
 
@@ -199,8 +198,8 @@ and serialized outbox commit, so a slow query does not block worker ingress.
 
 ## Deployment and release implementation
 
-`ml-expd-rs --config /private/server.json` selects independent backend, tracking
-and optional historical-reader files. `--check` and `--initialize` use the same file:
+`ml-expd-rs --config /private/server.json` selects independent backend and tracking
+files. `--check` and `--initialize` use the same file:
 stores are created together only after dependency validation, existing/partial
 registries are refused, and neither command submits provider jobs. Local checks never
 start the W&B SDK or infer network readiness.
@@ -214,9 +213,7 @@ run produces artifacts only; a stable native tag enables public publication.
 ## Deliberate limits and remaining acceptance
 
 The native registry uses a separate marker. Normal startup and GET never
-initialize or repair it. Do not initialize over existing state. The production
-cutover preserved historical identities and journals with read-only historical
-metadata and separate native write roots. Unknown submissions and uncertain W&B
+initialize or repair it. Do not initialize over existing state. Unknown submissions and uncertain W&B
 sends remain reserved; a successful connection check never authorizes replay.
 
 Campaign authoring is intentionally absent; a Run does not need a research
@@ -228,35 +225,13 @@ or unbounded restart exists. Native debug supports CCI create/stop and DSW
 create/stop/delete. Slurm dataset export is outside the OSS-specific dataset download
 command.
 
-Historical reads reuse the ordinary read projections with mandatory kernel write
-denial, no effect services, and all mutation/worker-ingress routes rejected. The
-pinned reader can attach to a writable native service: one address routes reads by
-exact Run ownership and reserves all historical IDs against new authorship, across
-Slurm and cloud creation paths. Writable and original roots must be disjoint. A new
-frozen Run can reference a historical checkpoint only when the native storage scope
-and path convention match; old Actions never become native execution authority.
-Reading a historical checkpoint does not authorize replaying its old Action or
-restarting a job, and a native-created Run never falls back to this reader.
-
-Historical result inventory GETs validate published receipts without reading
-payloads or restoring a cache. Some early receipts contain only an archive hash:
-absent per-file hashes remain `null`, with `checksums_complete=false` and
-`payload_verified=false`. This compatibility applies only to historical reads; new
-native publication and download acknowledgements still require complete file hashes.
-The inventory covers the published archive, not uncollected files on a backend. A
-hash-pinned original S3 profile can also issue a short-lived historical archive GET
-URL; released archives return 410, and the ticket authorizes no ACK, cache restore or
-deletion. Direct recovery of uncollected backend files remains separate work.
-
 The W&B publisher compares its frozen config in Rust, permitting W&B's omission of
 empty mapping fields while rejecting changed nonempty values, nulls, arrays and extra
 keys. A failed comparison retains unconfirmed events and never replays training.
 
 Next testing sequence: deterministic regressions → isolated client/server on CPU
 DSW → actual storage/build/debug lifecycle → bounded training/restore/collection
-on each enabled backend → historical-state migration and guarded production
-cutover. This order predates the read-only production cutover above, which did not
-transform historical state. Test failures keep their original evidence; missing or
+on each enabled backend. Test failures keep their original evidence; missing or
 ambiguous effects are reconciled under the original identity, never replayed with a
 new token.
 

@@ -101,24 +101,17 @@ fn read(directory: &Directory, name: &OsStr, source: ManifestSource) -> Result<D
 fn read_first(directory: &Directory, sources: &[ManifestSource]) -> Result<Document> {
     for source in sources {
         let name = OsStr::new(source.filename());
-        // An existing corrupt canonical file must never silently fall back to
-        // a legacy copy. Symlink/FIFO/directory entries are errors, not absence.
+        // An existing corrupt file must never silently fall back to another copy.
+        // Symlink/FIFO/directory entries are errors, not absence.
         if directory.entry_exists(name)? {
             return read(directory, name, *source);
         }
     }
     Err(Error::Missing)
 }
-const RUN_SOURCES: &[ManifestSource] = &[
-    ManifestSource::RunYaml,
-    ManifestSource::RunJson,
-    ManifestSource::LegacyRunYaml,
-];
-const ATTEMPT_SOURCES: &[ManifestSource] = &[
-    ManifestSource::AttemptYaml,
-    ManifestSource::AttemptJson,
-    ManifestSource::LegacyAttemptYaml,
-];
+const RUN_SOURCES: &[ManifestSource] = &[ManifestSource::RunYaml, ManifestSource::RunJson];
+const ATTEMPT_SOURCES: &[ManifestSource] =
+    &[ManifestSource::AttemptYaml, ManifestSource::AttemptJson];
 
 impl ProjectAnchor {
     fn validate(&self) -> Result<()> {

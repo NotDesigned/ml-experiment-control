@@ -80,9 +80,6 @@ pub trait Source: Send + Sync {
     fn publication_scopes(&self, store: &Store) -> Result<BTreeSet<String>> {
         candidate_scopes(store)
     }
-    fn historical_lifecycle(&self) -> bool {
-        false
-    }
 }
 impl Source for crate::submissions::Service {
     fn publisher_leader(&self) -> Result<std::fs::File> {
@@ -294,19 +291,11 @@ fn publish_scope(
     let _authority = service
         .tracking_journal(&parsed.project, &parsed.run)
         .map_err(|_| Error::Publication("JOURNAL_AUTHORITY_UNAVAILABLE"))?;
-    publish_bound(
-        store,
-        runtime,
-        sdk,
-        scope,
-        cancelled,
-        service.historical_lifecycle(),
-        &|| {
-            service
-                .validate_publisher_leader(leader)
-                .map_err(|_| Error::Identity)
-        },
-    )
+    publish_bound(store, runtime, sdk, scope, cancelled, &|| {
+        service
+            .validate_publisher_leader(leader)
+            .map_err(|_| Error::Identity)
+    })
 }
 fn publish_bound(
     store: &Store,
@@ -314,7 +303,6 @@ fn publish_bound(
     sdk: &mut Option<Sdk>,
     scope: &str,
     cancelled: &AtomicBool,
-    historical_lifecycle: bool,
     validate: &dyn Fn() -> Result<()>,
 ) -> Result<()> {
     validate()?;
@@ -376,12 +364,11 @@ fn publish_bound(
     let lifecycle = store
         .latest_lifecycle(&guard, scope)
         .map_err(|_| Error::Storage)?;
-    let terminal = (lifecycle["phase"] == "METRICS_DRAINED"
+    let terminal = lifecycle["phase"] == "METRICS_DRAINED"
         && matches!(
             lifecycle["state"].as_str(),
             Some("SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMEOUT")
         )
-        || historical_lifecycle && historical_terminal(&lifecycle))
         && through == total;
     let mut job = json!({"operation":"observe","api_key":runtime.key,"route":binding["route"],"wandb_id":status["wandb_id"],"scope":status,"config":binding["config"],"confirmed":confirmed,"through":through,
         "open_session":!saved.finish_requested,"resume":if saved.ever_opened||confirmed>0||!saved.state.sent.is_empty(){"must"}else{"allow"}});
@@ -469,12 +456,7 @@ fn publish_bound(
         .actions
         .iter()
         .any(|action| matches!(action, PublicationAction::Finish { .. }));
-    let exit_code = if lifecycle["state"] == "SUCCEEDED"
-        || historical_lifecycle
-            && matches!(
-                lifecycle["phase"].as_str(),
-                Some("READY" | "RESULTS_UPLOADED")
-            ) {
+    let exit_code = if lifecycle["state"] == "SUCCEEDED" {
         0
     } else {
         1
@@ -552,15 +534,6 @@ fn publish_bound(
         return Err(Error::Transport);
     }
     Ok(())
-}
-fn historical_terminal(lifecycle: &serde_json::Value) -> bool {
-    matches!(
-        lifecycle["state"].as_str(),
-        Some("SUCCEEDED" | "FAILED" | "CANCELLED" | "PREEMPTED" | "TIMEOUT")
-    ) || matches!(
-        lifecycle["phase"].as_str(),
-        Some("READY" | "DATA_FAILED" | "RESULTS_UPLOADED" | "RESULTS_UPLOAD_FAILED")
-    )
 }
 fn save(
     store: &Store,

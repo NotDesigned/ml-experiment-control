@@ -110,7 +110,6 @@ pub struct Service {
     creation_roots: BTreeMap<String, Directory>,
     tracking: ml_exp_core::tracking::RoutingSettings,
     runtime_builder: Option<Arc<crate::cloud_runs::Service>>,
-    history: Option<Arc<crate::history::Bridge>>,
 }
 struct Facts {
     reference: RunRef,
@@ -187,22 +186,6 @@ mod retry;
 mod scheduler;
 
 impl Service {
-    pub fn with_history(mut self, history: Option<Arc<crate::history::Bridge>>) -> Result<Self> {
-        if let Some(bridge) = &history {
-            bridge
-                .validate_native(&self.settings)
-                .map_err(|_| Error::Configuration)?;
-        }
-        self.history = history;
-        Ok(self)
-    }
-    pub(crate) fn history_matches(&self, history: Option<&Arc<crate::history::Bridge>>) -> bool {
-        match (&self.history, history) {
-            (None, None) => true,
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            _ => false,
-        }
-    }
     pub fn enabled(&self) -> bool {
         self.enabled
     }
@@ -358,7 +341,6 @@ impl Service {
             creation_roots: BTreeMap::new(),
             tracking: ml_exp_core::tracking::RoutingSettings::default(),
             runtime_builder: None,
-            history: None,
         })
     }
     fn public(&self, snapshot: Value, now: &str) -> Result<Value> {

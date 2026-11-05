@@ -9,10 +9,9 @@ cutover are separate milestones. See [the migration status](../docs/rust-rewrite
 Never initialize a new registry over existing production state.
 
 `GET /api/actions/policy` supports the older client's connection check. It reports
-configured native permissions without contacting a provider or enabling historical
-Actions. `GET /api/readiness` still reports `training=INCOMPLETE` and
-`migration=IN_PROGRESS`: the server cutover has completed, but full backend GPU
-acceptance and historical write compatibility have not. A successful connection
+configured native permissions without contacting a provider. `GET /api/readiness`
+still reports `training=INCOMPLETE`: full backend GPU acceptance has not been
+recorded. A successful connection
 check is not training acceptance; the older client's `check --training` remains
 unsuccessful while training readiness is incomplete. Readiness now includes
 `checks`, `backends` and `submission_available_backends`. Configuration permission,
@@ -559,71 +558,7 @@ optional official SDK process. Neither is required for basic API/client reads.
 The tag workflow builds/checks native executables and creates `SHA256SUMS`,
 `native-release.json`, individual binaries and a server bundle. A manual workflow
 run only packages; publishing requires an exact stable `native-vX.Y.Z` tag.
-Neither path restarts production. Production cutover still needs provider and
-historical-state acceptance plus the existing idle and identity checks.
-
-## Historical reader
-
-The daemon also has an explicit historical reader. It serves the existing
-Project, Run, Attempt, log, metric, collection-status and checkpoint GETs directly
-from the original namespace. It starts no provider observer, SDK publisher or
-initializer, and rejects all mutation routes, including worker ingress.
-
-Generate a pinned configuration from the same private original-read settings
-then run a separate loopback reader:
-
-```sh
-umask 077
-ml-expd-rs --inspect-historical-config /private/original-reads.json > /private/historical-reader.json
-```
-
-The generated configuration pins the original journal workspace ID or its
-absence. The original flat Project lifecycle ledger and deletion fences must
-already exist. Each historical observation runs in a dedicated thread with
-kernel-enforced write denial; an unsupported kernel is an error. Paused or
-archived Projects stay hidden, and a different journal or native marker is
-refused. No historical SQLite file is copied or migrated.
-
-Frozen YAML observations can resolve finite, previously defined anchors without
-rewriting the original bytes or hash. Cached values and reference expansion
-have separate byte and node budgets; cycles, forward references, duplicate
-anchors, merge keys, tags and ambiguous scalars are rejected. New authored
-inputs keep the stricter parser that refuses anchors and aliases.
-
-A writable native service can attach that same pinned reader with
-`--history-config /private/historical-reader.json` and its ordinary
-`--read-config /private/native-reads.json`. The registry and Run roots must be
-disjoint. Queries, metrics, tracking cursors and checkpoint GETs then use one
-address. Project counters combine both sources. Existing or deleted historical
-Run IDs remain reserved, including in asynchronous preparations; duplicate or
-corrupt native identities cannot fall back to history. Old Actions are never
-converted into native execution authority.
-
-A new Run may explicitly reference a historical checkpoint. The native planner
-still checks the exact Project, complete checkpoint, storage scope and configured
-backend path convention; incompatible storage is rejected. The worker validates
-the checkpoint files before training. This is a new frozen Run, not a replay or
-an automatic restart of the old task. Historical W&B routes and cursors are read
-without republishing or resetting them.
-
-The original `GET /api/runs/{project}/{run}/attempts/{attempt}/files` also
-projects the published archive inventory. It validates the exact Attempt,
-transfer identity, source, receipt and retention without restoring a cache,
-reading payloads or sending an ACK. Released and expired archives retain their
-file identities and training completion evidence. This inventory covers the
-published archive only (`local_files_included=false`); it is not a backend-file
-recovery endpoint. An optional hash-pinned original S3 profile enables the
-historical `GET .../artifacts/download` endpoint to issue a short-lived GET URL.
-It returns 410 for released/expired archives and does not read payloads, restore
-caches, acknowledge downloads or authorize deletion. Native-created Runs use
-their Submission result interfaces and never fall back to original transfers.
-
-To enable historical tickets, add `artifact_store` to the private historical
-reader configuration, with `profile_file` and its lowercase `profile_sha256`.
-The owner-only profile uses the existing `public_endpoint`, `bucket`, `region`,
-`access_key`, `secret_key` and optional `download_url_seconds` fields. Only HTTPS
-GET signing is supported. A changed profile hash is refused; configure a reviewed
-replacement explicitly when migrating or rotating its credentials.
+Neither path restarts production.
 
 ## Build and verification
 
@@ -684,14 +619,7 @@ unchanged. Foreign or ambiguous workspace records and log hits are rejected.
 A successful query with no hits means logs are unavailable; it is not evidence
 that the container succeeded or that a failed job can safely be resubmitted.
 
-Historical result summaries consume the same validated receipt as the files API.
-`EXPIRED` and `RELEASED` remain unavailable and return 410 for downloads; retained
-hashes are labelled `HISTORICAL_RECEIPT`, with `payload_verified=false`. A receipt
-does not verify that the original CPFS/NAS output still exists. Re-export requires
-checking that exact approved output directory and creating a separate collection
-receipt; it never removes the old tombstone or repeats the training command.
-
-Historical W&B errors distinguish missing SDK, authentication, remote Run, init,
+W&B errors distinguish missing SDK, authentication, remote Run, init,
 history read and writes without exposing exception messages or keys. Uncertain
 migrated sends remain reserved until remote proof; a missing Run is not permission
 to replay them. An operator may recover an explicitly selected zero-confirmation

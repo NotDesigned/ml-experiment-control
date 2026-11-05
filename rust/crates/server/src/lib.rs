@@ -10,7 +10,6 @@ mod data_delivery_http;
 pub mod deletion;
 pub mod deployment;
 pub mod experiments;
-pub mod history;
 mod local_http;
 mod native_contract;
 pub mod objects;
@@ -22,7 +21,6 @@ pub mod read_config;
 mod read_http;
 pub mod read_model;
 mod readiness;
-mod readonly;
 pub mod records;
 mod renewal;
 pub mod sources;
@@ -96,30 +94,6 @@ pub(crate) struct AppState {
 }
 
 async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
-    // Historical mode has no mutation routes, including worker-token ingress.
-    // Authenticate first; a token cannot convert this reader into native
-    // authority or activate a provider/SDK background process.
-    if state.reads.as_ref().is_some_and(|api| api.is_historical())
-        && request.method() != Method::GET
-    {
-        if let Err(status) = access_policy(
-            &state.auth.token,
-            request.headers(),
-            request.method(),
-            request.uri().path(),
-        ) {
-            return (
-                status,
-                Json(json!({"detail":"authentication and client protocol required"})),
-            )
-                .into_response();
-        }
-        return read_http::failure(read_api::Error {
-            status: 405,
-            code: "HISTORICAL_NAMESPACE_READ_ONLY",
-            detail: "historical records are read-only; no operation was dispatched",
-        });
-    }
     // This route has separate, Attempt-scoped authentication in its handler.
     // A worker credential is never accepted by any ordinary API route.
     if request.method() == Method::POST
@@ -242,28 +216,6 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
             api.submissions().as_deref(),
         );
         document["deployment"] = readiness::observe(Some(api));
-        document["historical_read_only"] = json!(api.is_historical());
-        document["historical_records_attached"] = json!(api.history().is_some());
-        if api.is_historical() {
-            for field in ["capabilities", "supported_capabilities"] {
-                document[field]
-                    .as_array_mut()
-                    .expect("capabilities")
-                    .extend([
-                        json!("historical-records-read.v1"),
-                        json!("project-lifecycle-read.v1"),
-                        json!("tracking-status-read.v1"),
-                    ]);
-            }
-        }
-        if api.history().is_some() {
-            for field in ["capabilities", "supported_capabilities"] {
-                document[field]
-                    .as_array_mut()
-                    .expect("capabilities")
-                    .push(json!("tracking-status-read.v1"));
-            }
-        }
         for field in ["capabilities", "supported_capabilities"] {
             document[field]
                 .as_array_mut()
@@ -413,8 +365,7 @@ fn policy_document(sources: bool, scheduler: bool, administration: bool) -> serd
         "allow_scheduler_mutations":scheduler,
         "allow_local_evidence_rebuild":false,
         "allow_resource_deletions":administration,
-        "scope":"native_namespaces",
-        "historical_records_read_only":true
+        "scope":"native_namespaces"
     })
 }
 
@@ -503,8 +454,6 @@ fn schema_document() -> serde_json::Value {
         "/api/runs/{project}/{run}":operation("Current explicitly bound Attempt and independent evidence layers; missing scheduler evidence is unknown",run()),
         "/api/runs/{project}/{run}/attempts":operation("Verified Attempt manifests; no latest-attempt guessing",run()),
         "/api/runs/{project}/{run}/attempts/{attempt}/collection":operation("Read process completion separately from unobserved artifact publication; never starts collection",collection),
-        "/api/runs/{project}/{run}/attempts/{attempt}/files":operation("Read an original published result inventory; no payload restoration, ACK or native Submission fallback",vec![parameter("protocol"),parameter("project"),parameter("run"),parameter("attempt"),json!({"name":"checksums","in":"query","schema":{"type":"boolean","default":false}})]),
-        "/api/runs/{project}/{run}/attempts/{attempt}/artifacts/download":operation("Obtain a short-lived GET URL for an available historical archive; no payload access, ACK or release",vec![parameter("protocol"),parameter("project"),parameter("run"),parameter("attempt")]),
         "/api/attempts/{project}/{identity}/show":operation("Exact Attempt metadata and evidence provenance",exact()),
         "/api/attempts/{project}/{identity}/logs":operation("Exact Attempt bounded captured log tails with source diagnostics",logs),
         "/api/attempts/{project}/{identity}/metrics":operation("Exact Attempt scientific metrics; truncated raw history is PARTIAL, oversized canonical journal is refused",metrics)

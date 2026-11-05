@@ -16,6 +16,20 @@ fn at(stage: &'static str) -> Error {
     Error { stage }
 }
 
+/// The history bridge is gone. A deployment that still names it is refused rather
+/// than started without those Runs, so the operator decides. Nothing on disk is read.
+const RETIRED_HISTORY_KEY: &str = "history_config";
+
+#[derive(Debug, thiserror::Error)]
+pub enum LoadError {
+    #[error(
+        "deployment key {0} is no longer supported; remove it from the file and restart (historical data on disk is not touched)"
+    )]
+    RetiredKey(&'static str),
+    #[error(transparent)]
+    Invalid(#[from] crate::read_config::Error),
+}
+
 /// Safe local configuration facts. No credentials or private paths are returned.
 #[derive(serde::Serialize)]
 pub struct Check {
@@ -24,7 +38,6 @@ pub struct Check {
     pub registry_initialized: bool,
     pub projects: usize,
     pub executors: BTreeSet<String>,
-    pub historical_reads: bool,
 }
 
 #[derive(Deserialize)]
@@ -35,7 +48,6 @@ pub struct Settings {
     pub bind: SocketAddr,
     pub token_file: PathBuf,
     pub read_config: PathBuf,
-    pub history_config: Option<PathBuf>,
     pub submission_config: Option<PathBuf>,
     pub cloud_config: Option<PathBuf>,
     pub tracking_config: Option<PathBuf>,
@@ -54,7 +66,6 @@ impl Settings {
         if self.schema_version != 1
             || std::iter::once(&self.token_file)
                 .chain(std::iter::once(&self.read_config))
-                .chain(self.history_config.iter())
                 .chain(self.submission_config.iter())
                 .chain(self.cloud_config.iter())
                 .chain(self.tracking_config.iter())
@@ -76,17 +87,20 @@ impl Settings {
         }
         Ok(())
     }
-    pub fn from_json(bytes: &[u8]) -> Result<Self, crate::read_config::Error> {
+    pub fn from_json(bytes: &[u8]) -> Result<Self, LoadError> {
         if bytes.len() > 64 * 1024 {
-            return Err(crate::read_config::Error);
+            return Err(crate::read_config::Error.into());
         }
         let mapping = ml_exp_core::json::mapping(bytes).map_err(|_| crate::read_config::Error)?;
+        if mapping.contains_key(RETIRED_HISTORY_KEY) {
+            return Err(LoadError::RetiredKey(RETIRED_HISTORY_KEY));
+        }
         let value: Self = serde_json::from_value(serde_json::Value::Object(mapping))
             .map_err(|_| crate::read_config::Error)?;
         value.validate()?;
         Ok(value)
     }
-    pub fn load(path: &Path) -> Result<Self, crate::read_config::Error> {
+    pub fn load(path: &Path) -> Result<Self, LoadError> {
         Self::from_json(
             &ml_exp_io::read_private(path, 64 * 1024, true)
                 .map_err(|_| crate::read_config::Error)?,
@@ -172,14 +186,14 @@ impl Settings {
         if let Some(path) = &self.tracking_config {
             crate::tracking::Config::load(path)
                 .and_then(|c| c.check_references())
-                .map_err(|_| at("tracking_config"))?;
-        }
-        if let Some(path) = &self.history_config {
-            crate::history::Bridge::open(
-                crate::history::Settings::load(path).map_err(|_| at("history_config"))?,
-            )
-            .and_then(|b| b.validate_native(&reads))
-            .map_err(|_| at("history_separation"))?;
+                .map_err(|error| {
+                    at(match error {
+                        crate::tracking::Error::RetiredKey(_) => {
+                            "tracking_config: remove retired key historical_handoff"
+                        }
+                        _ => "tracking_config",
+                    })
+                })?;
         }
         let parent = ml_exp_io::directory::Directory::open(
             reads
@@ -208,7 +222,6 @@ impl Settings {
             registry_initialized,
             projects: reads.projects.len(),
             executors,
-            historical_reads: self.history_config.is_some(),
         })
     }
 
@@ -276,6 +289,11 @@ mod tests {
             v[field] = value;
             assert!(parse(&v).is_err(), "{field}");
         }
+        let mut v = base.clone();
+        v["history_config"] = json!("/private/history.json");
+        let refused = parse(&v).err().unwrap();
+        assert!(matches!(refused, LoadError::RetiredKey("history_config")));
+        assert!(refused.to_string().contains("history_config"));
         let mut v = base;
         v["source_archives"] = json!(true);
         v["cloud_config"] = json!("/private/cloud.json");

@@ -191,20 +191,21 @@ A CPU run, successful submit or queue entry does not validate GPU training. Do n
 claim queue ETA or free cards without provider evidence. Current acceptance limits
 are in the [acceptance status](rust-rewrite.md).
 
-`GET /api/readiness` reports `api`, `training`, `migration`, `checks`, `backends`
+`GET /api/readiness` reports `api`, `training`, `checks`, `backends`
 and `submission_available_backends`. It sends no provider request. Configuration
 permission, cached provider connectivity and recorded GPU acceptance are separate
-fields. `training=INCOMPLETE` remains until acceptance evidence exists, and
-`migration=IN_PROGRESS` appears when historical records are attached; neither by
-itself blocks submission. `GET /api/observer` reports local background observer
+fields. `training=INCOMPLETE` remains until acceptance evidence exists; that does
+not by itself block submission. `GET /api/observer` reports local background observer
 state.
 
 ## Existing state
 
-A native service can attach an older namespace read-only with `history_config`.
-Registry and Run roots must stay disjoint from the original. See
-[Historical reader](../rust/README.md#historical-reader). This does not enable
-replay of old work.
+The server serves only its native namespace. Older namespaces are never read or
+changed. `history_config` in the deployment file and `historical_handoff` in the
+tracking file are no longer supported: `--check` and startup refuse a file that
+sets either, naming the key, so remove them before upgrading. `deploy_native.py`
+runs that check before stopping anything. Rolling back to an earlier release
+needs the keys restored.
 
 ## Project registration and lifecycle
 

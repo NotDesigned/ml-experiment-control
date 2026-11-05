@@ -62,7 +62,7 @@ impl Fixture {
 }
 
 #[test]
-fn canonical_and_instance_scoped_legacy_runs_are_unique_and_payloads_are_not_scanned() {
+fn canonical_and_instance_scoped_runs_are_unique_and_payloads_are_not_scanned() {
     let fixture = Fixture::new();
     // Keep the checked-in legacy bytes unchanged and bind their actual Project.
     write(
@@ -93,7 +93,7 @@ fn canonical_and_instance_scoped_legacy_runs_are_unique_and_payloads_are_not_sca
         .find(|case| case["name"] == "legacy-control")
         .unwrap();
     write(
-        &scoped.join("control_manifest.yaml"),
+        &scoped.join("manifest.yaml"),
         legacy["raw"].as_str().unwrap().as_bytes(),
     );
     // Stop at the authoritative parent, including when a science copy has a
@@ -162,10 +162,6 @@ fn canonical_corruption_foreign_identity_and_science_only_copies_are_not_absence
         match case {
             "corrupt" => {
                 write(&run.join("manifest.yaml"), b"broken: [");
-                write(
-                    &run.join("control_manifest.yaml"),
-                    b"project: demo\nrun_id: fallback\n",
-                );
             }
             "foreign" => write(
                 &run.join("manifest.json"),

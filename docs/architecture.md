@@ -89,7 +89,6 @@ Paths are relative to `rust/crates/`.
 | W&B | `core/src/tracking/`, `server/src/tracking/` (the SDK process runs `server/src/tracking/sdk.py`) |
 | Debug machines | `core/src/cloud/debug.rs`, `server/src/cloud_runs/debug_http.rs`, `server/src/cloud_runs/service/debug.rs`, `client/src/debug.rs` |
 | Administrative maintenance | `core/src/maintenance.rs`, `server/src/administration.rs`, `server/src/deletion.rs`, `worker/src/maintenance.rs` |
-| Historical reads | `server/src/history.rs`, `server/src/readonly.rs` |
 
 Slurm and cloud are separate services behind one API. They share core types and
 Action storage but have distinct adapters and effect stores. Adding a backend requires its
@@ -148,9 +147,8 @@ and CI scripts and the `deploy_native.py` upgrade tool are operator tooling. Tag
 
 Existing Run/Attempt/source identities, routes, immutable image references,
 review digests, publication routes and saved client operation IDs remain frozen.
-Historical metadata is attached read-only, with separate native write roots: old
-Actions never become native execution authority, and historical compatibility is
-not permission to create another job or rewrite a manifest. Unknown submissions
+The server reads only its native namespace; older namespaces stay on disk
+untouched and are not served. Unknown submissions
 and uncertain W&B sends stay reserved and are reconciled under their original
 identity, never replayed.
 

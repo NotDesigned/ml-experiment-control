@@ -16,7 +16,7 @@ fn observation_never_bootstraps_or_recovers_action_state() {
     assert!(Store::open_existing(root.path()).is_err());
     assert!(fs::read_dir(root.path()).unwrap().next().is_none());
     let writer = Store::open(root.path()).unwrap();
-    let plan = golden()["plan"].clone();
+    let plan = action_plan();
     let id = plan["action_id"].as_str().unwrap();
     // An unpublished execution is not PREPARED, and GET does not create a DB.
     let directory = writer.directory(id).unwrap();
@@ -111,8 +111,19 @@ fn observation_never_bootstraps_or_recovers_action_state() {
 fn uid(value: u32) -> String {
     format!("{value:032x}")
 }
-fn golden() -> Value {
-    serde_json::from_str(include_str!("fixtures/python-actions-v1.json")).unwrap()
+fn action_plan() -> Value {
+    json!({
+        "action_id": "action-0123456789abcdef",
+        "ready": true,
+        "operation": "WRITE_CAMPAIGN",
+        "request_digest": format!("sha256:{}", "a".repeat(64)),
+        "intent_digest": format!("sha256:{}", "b".repeat(64)),
+        "gate_bundle_digest": format!("sha256:{}", "c".repeat(64)),
+        "gate_expires_at": "2100-01-01T00:00:00Z",
+        "scope": {"project": "demo", "scope_type": "run", "object_id": "train"},
+        "historical_extra": {"preserve": true},
+        "run_id": "train"
+    })
 }
 fn policy() -> Policy {
     Policy {
@@ -122,21 +133,24 @@ fn policy() -> Policy {
 }
 
 #[test]
-fn python_prepared_authorized_claimed_snapshots_are_identical() {
-    let golden = golden();
+fn prepared_authorized_and_claimed_snapshots_keep_the_plan_and_the_idempotency_key() {
+    let plan = &action_plan();
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
-    let plan = &golden["plan"];
     let id = plan["action_id"].as_str().unwrap();
+    let prepared = store.save_plan(plan, NOW, &uid(1)).unwrap();
+    assert_eq!(prepared["execution"]["status"], "PREPARED");
+    assert_eq!(prepared["execution"]["revision"], 1);
+    assert_eq!(prepared["historical_extra"], json!({"preserve": true}));
+    let authorized = store
+        .authorize(id, "actor:test", "approved explicitly", NOW, &uid(2))
+        .unwrap();
+    assert_eq!(authorized["execution"]["status"], "AUTHORIZED");
+    assert_eq!(authorized["execution"]["revision"], 2);
+    assert_eq!(authorized["execution"]["authorization_actor"], "actor:test");
     assert_eq!(
-        store.save_plan(plan, NOW, &uid(1)).unwrap(),
-        golden["prepared"]
-    );
-    assert_eq!(
-        store
-            .authorize(id, "actor:test", "approved explicitly", NOW, &uid(2))
-            .unwrap(),
-        golden["authorized"]
+        authorized["execution"]["authorized_intent_digest"],
+        plan["intent_digest"]
     );
     let claimed = store
         .claim(
@@ -152,14 +166,11 @@ fn python_prepared_authorized_claimed_snapshots_are_identical() {
         )
         .unwrap();
     assert_eq!(claimed.dispatch, Some(Dispatch::ProjectWrite));
-    assert_eq!(claimed.snapshot, golden["claimed"]);
-    for case in golden["action_id_cases"].as_array().unwrap() {
-        let scope: Scope = serde_json::from_value(case["scope"].clone()).unwrap();
-        assert_eq!(
-            operations::action_id(&scope, case["intent_key"].as_str().unwrap()),
-            case["action_id"].as_str().unwrap()
-        );
-    }
+    assert_eq!(claimed.snapshot["execution"]["next_action"], "WAIT");
+    assert_eq!(
+        claimed.snapshot["execution"]["resolution"],
+        "STILL_IN_PROGRESS"
+    );
     let saved = fs::read(store.directory(id).unwrap().join("plan.json")).unwrap();
     let mut changed = plan.clone();
     changed["request_digest"] = json!("sha256:different");
@@ -174,11 +185,29 @@ fn python_prepared_authorized_claimed_snapshots_are_identical() {
 }
 
 #[test]
+fn action_id_digest_stays_frozen() {
+    for (scope, intent_key, expected) in [
+        (
+            json!({"project": "demo", "scope_type": "run", "object_id": "train"}),
+            "request-001",
+            "action-32d525de0f7b4323",
+        ),
+        (
+            json!({"project": "\u{5b9e}\u{9a8c}", "scope_type": "attempt", "object_id": "run::attempt-001"}),
+            "\u{56fa}\u{5b9a}\u{8bf7}\u{6c42}",
+            "action-98dabcdf2abbc705",
+        ),
+    ] {
+        let scope: Scope = serde_json::from_value(scope).unwrap();
+        assert_eq!(operations::action_id(&scope, intent_key), expected);
+    }
+}
+
+#[test]
 fn competing_claims_dispatch_exactly_once_and_restart_only_reconciles() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
-    let golden = golden();
-    let plan = &golden["plan"];
+    let plan = &action_plan();
     let id = plan["action_id"].as_str().unwrap();
     store.save_plan(plan, NOW, &uid(1)).unwrap();
     store
@@ -308,7 +337,7 @@ fn blocked_action_authorization_or_claim_cannot_outlive_its_lock_or_directories(
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("actions");
             let store = Store::open(&root).unwrap();
-            let plan = golden()["plan"].clone();
+            let plan = action_plan();
             let id = plan["action_id"].as_str().unwrap().to_owned();
             store.save_plan(&plan, NOW, &uid(1)).unwrap();
             if phase == "claim" {
@@ -408,7 +437,7 @@ fn fixed_command_and_activity_directories_never_adopt_a_replacement() {
     for name in ["commands", "activity_errors"] {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::open(temp.path()).unwrap();
-        let plan = golden()["plan"].clone();
+        let plan = action_plan();
         let id = plan["action_id"].as_str().unwrap();
         store.save_plan(&plan, NOW, &uid(1)).unwrap();
         if name == "commands" {
@@ -447,7 +476,7 @@ fn fixed_command_and_activity_directories_never_adopt_a_replacement() {
 fn missing_action_lock_is_never_recreated_after_bootstrap_or_on_reopen() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
-    let plan = golden()["plan"].clone();
+    let plan = action_plan();
     let id = plan["action_id"].as_str().unwrap();
     store.save_plan(&plan, NOW, &uid(1)).unwrap();
     store
@@ -480,7 +509,7 @@ fn missing_action_lock_is_never_recreated_after_bootstrap_or_on_reopen() {
 fn a_store_lifetime_pins_the_original_metadata_lock_inode() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
-    let plan = golden()["plan"].clone();
+    let plan = action_plan();
     let id = plan["action_id"].as_str().unwrap();
     store.save_plan(&plan, NOW, &uid(1)).unwrap();
     fs::rename(
@@ -514,8 +543,7 @@ fn a_store_lifetime_pins_the_original_metadata_lock_inode() {
 fn journal_deduplicates_and_commands_never_modify_immutable_plan() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
-    let golden = golden();
-    let plan = &golden["plan"];
+    let plan = &action_plan();
     let id = plan["action_id"].as_str().unwrap();
     store.save_plan(plan, NOW, &uid(1)).unwrap();
     let original = fs::read(store.directory(id).unwrap().join("plan.json")).unwrap();
@@ -601,7 +629,7 @@ fn command_replays_follow_python_numeric_equality_without_rewriting_frozen_bytes
     ] {
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path()).unwrap();
-        let plan = golden()["plan"].clone();
+        let plan = action_plan();
         let id = plan["action_id"].as_str().unwrap();
         store.save_plan(&plan, NOW, &uid(1)).unwrap();
         let plan_path = store.directory(id).unwrap().join("plan.json");
@@ -703,68 +731,10 @@ fn revision_mismatch_and_corrupted_json_are_never_repaired_silently() {
 }
 
 #[test]
-fn reads_python_sqlite_rows_without_rewriting_plans_or_existing_payload_bytes() {
-    let root = tempfile::tempdir().unwrap();
-    let golden = golden();
-    let id = golden["plan"]["action_id"].as_str().unwrap();
-    // The old Python service created its metadata flock before publishing
-    // plans/SQLite. Reconstruct that empty non-payload leaf with the fixture.
-    drop(
-        ml_exp_io::directory::Directory::open(root.path(), false)
-            .unwrap()
-            .open_lock(std::ffi::OsStr::new(".actions.lock"))
-            .unwrap(),
-    );
-    fs::create_dir(root.path().join(id)).unwrap();
-    let plan_bytes = serde_json::to_vec_pretty(&golden["plan"]).unwrap();
-    fs::write(root.path().join(id).join("plan.json"), &plan_bytes).unwrap();
-    let connection = rusqlite::Connection::open(root.path().join("actions.sqlite3")).unwrap();
-    // SQLite iterdump orders table names, so FK targets may be created after
-    // their referencing rows. Disable checks only for fixture import; the
-    // production repository enables FK checks on every new connection.
-    connection
-        .execute_batch("PRAGMA foreign_keys=OFF;")
-        .unwrap();
-    connection
-        .execute_batch(include_str!("fixtures/python-actions-v1.sql"))
-        .unwrap();
-    let before: String = connection
-        .query_row(
-            "SELECT payload FROM executions WHERE action_id=?",
-            [id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    drop(connection);
-    let store = Store::open(root.path()).unwrap();
-    assert_eq!(
-        store.snapshot(id, NOW, &uid(40)).unwrap(),
-        golden["claimed"]
-    );
-    let connection = rusqlite::Connection::open(store.database().path()).unwrap();
-    let after: String = connection
-        .query_row(
-            "SELECT payload FROM executions WHERE action_id=?",
-            [id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(before, after);
-    assert_eq!(
-        fs::read(root.path().join(id).join("plan.json")).unwrap(),
-        plan_bytes
-    );
-    let recovered = store.recover_interrupted(NOW, &uid(41)).unwrap();
-    assert_eq!(recovered[0]["execution"]["revision"], 4);
-    assert_eq!(recovered[0]["journal"].as_array().unwrap().len(), 4);
-}
-
-#[test]
 fn published_plan_without_initial_execution_can_authorize_after_restart() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
-    let golden = golden();
-    let plan = &golden["plan"];
+    let plan = &action_plan();
     let id = plan["action_id"].as_str().unwrap();
     fs::create_dir(store.directory(id).unwrap()).unwrap();
     fs::write(
@@ -814,9 +784,9 @@ fn killed_sqlite_writer_rolls_back_uncommitted_state_without_replaying() {
     }
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
-    let golden = golden();
-    let id = golden["plan"]["action_id"].as_str().unwrap();
-    let before = store.save_plan(&golden["plan"], NOW, &uid(1)).unwrap();
+    let plan = action_plan();
+    let id = plan["action_id"].as_str().unwrap();
+    let before = store.save_plan(&plan, NOW, &uid(1)).unwrap();
     let mut child = Guard(
         Command::new(std::env::current_exe().unwrap())
             .args([
@@ -896,7 +866,7 @@ fn database_marker_and_json_symlinks_or_fifos_are_rejected_without_blocking() {
     let id = "action-0123456789abcdef";
     fs::create_dir(store.directory(id).unwrap()).unwrap();
     let target = root.path().join("foreign.json");
-    fs::write(&target, serde_json::to_vec(&golden()["plan"]).unwrap()).unwrap();
+    fs::write(&target, serde_json::to_vec(&action_plan()).unwrap()).unwrap();
     symlink(&target, store.directory(id).unwrap().join("plan.json")).unwrap();
     assert!(store.snapshot(id, NOW, &uid(1)).is_err());
 }
