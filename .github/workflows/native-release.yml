@@ -29,7 +29,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ~/.cargo/registry
@@ -54,9 +55,6 @@ jobs:
           with open('rust/Cargo.toml','rb') as stream: assert tomllib.load(stream)['workspace']['package']['version']==value
           PY
           echo "NATIVE_RELEASE_VERSION=$native_version" >> "$GITHUB_ENV"
-      - run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
-      - run: cargo clippy --locked --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
-      - run: cargo test --locked --manifest-path rust/Cargo.toml --workspace
       - run: cargo build --locked --release --manifest-path rust/Cargo.toml --workspace --bins
       - name: Build a worker independent of the training image's glibc
         run: |
@@ -74,12 +72,55 @@ jobs:
           for program in ml-exp ml-expd-rs ml-exp-worker-rs ml-expd-state-audit; do
             cp "$CARGO_TARGET_DIR/release/$program" .ops/native-linux/
           done
+      # A tag's cache is readable only by that tag, so only branch runs save one.
+      - if: ${{ !startsWith(github.ref, 'refs/tags/') && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .ops/native-release-target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
         with:
           name: native-linux
           path: .ops/native-linux/*
           if-no-files-found: error
           retention-days: 3
+
+  checks:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          components: rustfmt,clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .ops/native-release-target
+          key: native-release-checks-v1-${{ runner.os }}-${{ runner.arch }}-1.85-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            native-release-checks-v1-${{ runner.os }}-${{ runner.arch }}-1.85-
+      - run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+      - run: cargo clippy --locked --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path rust/Cargo.toml --workspace
+      # A tag's cache is readable only by that tag, so only branch runs save one.
+      - if: ${{ !startsWith(github.ref, 'refs/tags/') && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .ops/native-release-target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   clients:
     env:
@@ -105,13 +146,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.85.0
         with:
           targets: ${{ matrix.target }}
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             .ops/native-release-target
           key: native-client-release-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            native-client-release-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-
       - if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
       - if: runner.os == 'macOS'
@@ -133,6 +177,15 @@ jobs:
           "$native_binary" --help
           mkdir .ops/native-client
           cp "$native_binary" ".ops/native-client/ml-exp-${{ matrix.target }}$native_suffix"
+      # A tag's cache is readable only by that tag, so only branch runs save one.
+      - if: ${{ !startsWith(github.ref, 'refs/tags/') && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .ops/native-release-target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
         with:
           name: native-client-${{ matrix.target }}
@@ -141,7 +194,7 @@ jobs:
           retention-days: 3
 
   package:
-    needs: [build, clients]
+    needs: [build, checks, clients]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
