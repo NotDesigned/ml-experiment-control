@@ -105,8 +105,13 @@ enum Data {
         #[arg(long)]
         request_id: String,
         /// Read retained diagnostic evidence only; no provider query or creation.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "provider")]
         status: bool,
+        /// Ask the provider for this copy's reason, events and log tail; creates nothing.
+        #[arg(long)]
+        provider: bool,
+        #[arg(long, default_value_t = 200, requires = "provider")]
+        lines: u32,
     },
     /// Import a complete plain tar already in an approved OSS dataset prefix.
     ImportOss {
@@ -1030,7 +1035,13 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Command::Data { command } => {
                     let health = client.negotiate()?;
                     Output::Json(match command {
-                        Data::Diagnose { project,executor,asset,request_id,status } => {
+                        Data::Diagnose { project,executor,asset,request_id,provider:true,lines,.. } => {
+                            if !(1..=2000).contains(&lines) {
+                                return Err(ml_exp_client::Error::Observation("diagnose requires 1..2000 lines"));
+                            }
+                            client.post(&format!("/api/projects/{project}/datasets/{executor}/{asset}/publications/{request_id}/provider-diagnostics/refresh?lines={lines}"),&serde_json::json!({}))?
+                        },
+                        Data::Diagnose { project,executor,asset,request_id,status,.. } => {
                             let path=format!("/api/projects/{project}/datasets/{executor}/{asset}/publications/{request_id}/diagnostic");
                             let value=if status { client.get(&path)? } else { client.post(&path,&serde_json::json!({}))? };
                             ml_exp_client::submissions::diagnostic_response(value,&serde_json::json!({"project":project,"executor":executor,"asset_id":asset,"request_id":request_id}))?

@@ -225,6 +225,65 @@ impl Service {
             "remote_refresh_performed":execute}),
         )
     }
+    fn provider_read(&self, collector: &Adapter, job: &Job, lines: u32) -> cloud::Result<Value> {
+        let handle = self
+            .sync_outbox
+            .optional_status(job)?
+            .map(|status| status["handle"].clone())
+            .filter(Value::is_object);
+        let Some(handle) = handle else {
+            return Ok(json!({"diagnostic":"NO_PROVIDER_JOB_RECORDED"}));
+        };
+        let handle = serde_json::from_value(handle).map_err(|_| cloud::Error::evidence())?;
+        collector.pai_provider_diagnostics(job, &handle, lines, &AtomicBool::new(false))
+    }
+    /// The provider's account of a data copy and its read-only diagnostic. These
+    /// jobs are not Attempts, so `provider_diagnostics` cannot reach their logs.
+    pub fn data_provider_diagnostics(
+        &self,
+        project: &str,
+        executor: &str,
+        asset: &str,
+        request: &str,
+        lines: u32,
+    ) -> cloud::Result<Value> {
+        ml_exp_core::submission::validate_submission_token(request)
+            .map_err(|_| cloud::Error::configuration())?;
+        let saved = self
+            .data_saved(project, executor, asset)?
+            .ok_or_else(missing)?;
+        if saved.copy_request_id.as_deref() != Some(request) {
+            return Err(unavailable("DATA_COPY_IDENTITY_CONFLICT"));
+        }
+        let copy = saved.copy_intent.ok_or_else(cloud::Error::evidence)?;
+        let collector = self
+            .backends
+            .get(executor)
+            .ok_or_else(cloud::Error::configuration)?
+            .collector
+            .as_ref()
+            .ok_or_else(cloud::Error::configuration)?;
+        let mut result = json!({"project":project,"executor":executor,"asset_id":asset,
+            "request_id":request,"provider_read":false});
+        if !matches!(collector.profile, cloud::adapter::Profile::Pai(_)) {
+            result["diagnostic"] = json!("PROVIDER_DIAGNOSTICS_UNSUPPORTED");
+            return Ok(result);
+        }
+        result["copy"] = self.provider_read(collector, &copy, lines)?;
+        let lineage =
+            json!({"project":project,"executor":executor,"asset_id":asset,"request_id":request});
+        let name = name(&lineage)?;
+        if self.slots.entry_exists(OsStr::new(&name)).map_err(io)? {
+            let diagnostic: Saved = serde_json::from_value(read(&self.slots, &name)?)
+                .map_err(|_| cloud::Error::evidence())?;
+            if diagnostic.lineage != lineage {
+                return Err(cloud::Error::evidence());
+            }
+            result["read_only_diagnostic"] = self.provider_read(collector, &diagnostic.job, lines)?;
+        }
+        result["provider_read"] = json!(true);
+        Ok(result)
+    }
     /// Ask the provider why one exact Attempt is in its current state. This
     /// reads and redacts provider evidence; nothing is stored or mutated.
     pub fn provider_diagnostics(
