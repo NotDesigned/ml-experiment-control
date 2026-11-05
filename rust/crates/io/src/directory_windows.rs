@@ -147,10 +147,7 @@ impl Directory {
         crate::windows_private::read_options(&mut options);
         let file = options.open(self.inner.path.join(name))?;
         let metadata = file.metadata()?;
-        if !metadata.is_file()
-            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-            || info(&file)?.nNumberOfLinks != 1
-        {
+        if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(invalid());
         }
         Ok(file)

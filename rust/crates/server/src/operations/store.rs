@@ -128,7 +128,7 @@ impl Store {
         match directory.regular_identity(name)? {
             None => return Ok(None),
             Some(identity) if identity.is_private_for(effective_uid()) => {}
-            Some(_) => return Err(Error::Invalid("single-link JSON file required")),
+            Some(_) => return Err(Error::Invalid("private JSON file required")),
         }
         let value: Value =
             serde_json::from_slice(&directory.read_regular(name, 64 * 1024 * 1024)?)?;

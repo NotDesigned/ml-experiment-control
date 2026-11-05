@@ -130,8 +130,8 @@ fn read_manifest(
         if !directory.entry_exists(name)? {
             continue;
         }
-        // Discovery reads trees this service did not create, so unlike its own
-        // storage, a linked manifest is refused here.
+        // Discovery reads trees this service did not create, so a manifest that
+        // another group or user could rewrite is refused.
         if !directory
             .regular_identity(name)?
             .is_some_and(|file| file.is_private_for(effective_uid()))

@@ -101,7 +101,7 @@ impl Database {
         match directory.regular_identity(OsStr::new(".sqlite-authoritative"))? {
             None => return Ok(false),
             Some(identity) if identity.is_private_for(effective_uid()) => {}
-            Some(_) => return Err(Error::Invalid("single-link authoritative marker required")),
+            Some(_) => return Err(Error::Invalid("private authoritative marker required")),
         }
         match directory.read_regular(OsStr::new(".sqlite-authoritative"), 4096) {
             Ok(_) => Ok(true),

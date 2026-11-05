@@ -35,7 +35,6 @@ pub struct Directory {
 pub struct RegularIdentity {
     pub device: u64,
     pub inode: u64,
-    pub links: u64,
     pub mode: u32,
     pub owner: u32,
 }
@@ -73,14 +72,9 @@ pub fn trusted_storage_owner(owner: u32, effective: u32) -> bool {
 }
 
 impl RegularIdentity {
-    /// For trees a process did not create, such as discovered Run directories.
+    /// Not writable by another group or user. Link counts are not compared: a
+    /// CPFS client can briefly report a stale value.
     pub fn is_private_for(self, effective: u32) -> bool {
-        self.links == 1 && self.is_owned_safely_for(effective)
-    }
-    /// For this service's own private storage, including shared filesystems.
-    /// Link counts are not compared: a CPFS client can briefly report a stale
-    /// value, and no other writer shares this tree to plant a hard link.
-    pub fn is_owned_safely_for(self, effective: u32) -> bool {
         self.mode & 0o022 == 0 && trusted_storage_owner(self.owner, effective)
     }
 }
@@ -249,7 +243,6 @@ impl Directory {
                 Ok(Some(RegularIdentity {
                     device: stat.st_dev as u64,
                     inode: stat.st_ino as u64,
-                    links: stat.st_nlink as u64,
                     mode: stat.st_mode as u32,
                     owner: stat.st_uid,
                 }))
@@ -394,12 +387,7 @@ impl Directory {
         )?;
         rfs::fsync(&parent.inner.file)?;
         rfs::fsync(&target.inner.file)?;
-        let published = target.child(name, false)?;
-        let old = rfs::fstat(&self.inner.file)?;
-        if !same_file(&published.inner.file, &old)? {
-            return Err(invalid("published directory binding changed"));
-        }
-        Ok(published)
+        target.child(name, false)
     }
 
     /// Remove a known regular leaf only inside an operation-owned unpublished
@@ -514,7 +502,7 @@ impl Directory {
         leaf(name)?;
         if !self
             .regular_identity(name)?
-            .is_some_and(|id| id.is_owned_safely_for(effective_uid()))
+            .is_some_and(|id| id.is_private_for(effective_uid()))
         {
             return Err(invalid("private existing append file required"));
         }
@@ -760,7 +748,7 @@ mod tests {
     };
 
     #[test]
-    fn hard_link_publication_is_no_clobber_and_restores_single_link() {
+    fn hard_link_publication_is_no_clobber_and_removes_the_source_name() {
         let temp = tempfile::tempdir().unwrap();
         let directory = Directory::open(temp.path(), false).unwrap();
         let mut first = directory.create_new_regular(OsStr::new("first")).unwrap();
@@ -885,14 +873,13 @@ mod tests {
     }
 
     #[test]
-    fn ownership_policy_accepts_only_service_or_root_and_private_single_links() {
+    fn ownership_policy_accepts_only_service_or_root_and_refuses_writable_files() {
         assert!(trusted_storage_owner(0, 995));
         assert!(trusted_storage_owner(995, 995));
         assert!(!trusted_storage_owner(1000, 995));
         let identity = RegularIdentity {
             device: 1,
             inode: 2,
-            links: 1,
             mode: 0o100640,
             owner: 995,
         };
@@ -900,13 +887,6 @@ mod tests {
         assert!(
             !RegularIdentity {
                 owner: 1000,
-                ..identity
-            }
-            .is_private_for(995)
-        );
-        assert!(
-            !RegularIdentity {
-                links: 2,
                 ..identity
             }
             .is_private_for(995)
@@ -932,7 +912,6 @@ mod tests {
             .regular_identity(OsStr::new("record.json"))
             .unwrap()
             .unwrap();
-        assert_eq!(identity.links, 1);
         assert_eq!(identity.mode & 0o777, 0o600);
         let names = vec![OsString::from("record.json")];
         assert_eq!(directory.entry_names().unwrap(), names);

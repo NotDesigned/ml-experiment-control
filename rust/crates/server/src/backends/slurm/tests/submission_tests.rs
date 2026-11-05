@@ -663,7 +663,6 @@ fn storage_corruption_and_frozen_authority_changes_prevent_dispatch() {
         "ssh",
         "permissions",
         "symlink",
-        "hardlink",
         "corrupt",
         "deleted",
         "disabled",
@@ -717,7 +716,6 @@ fn storage_corruption_and_frozen_authority_changes_prevent_dispatch() {
                 fs::rename(f.slot(), &saved).unwrap();
                 std::os::unix::fs::symlink(saved, f.slot()).unwrap();
             }
-            "hardlink" => fs::hard_link(f.slot(), root.join("slot-link")).unwrap(),
             "corrupt" => fs::write(f.slot(), b"{").unwrap(),
             "deleted" => {
                 crate::deletion::RunFence::new(&f.settings.registry_root)

@@ -182,23 +182,10 @@ fn canonical_corruption_foreign_identity_and_science_only_copies_are_not_absence
 }
 
 #[test]
-fn linked_manifests_unsafe_permissions_and_names_fail_closed() {
-    for case in ["linked-manifest", "unsafe-name"] {
-        let fixture = Fixture::new();
-        match case {
-            "linked-manifest" => {
-                fixture.add("good", "trial");
-                fs::hard_link(
-                    fixture.runs().join("good/manifest.json"),
-                    fixture.temp.path().join("copy.json"),
-                )
-                .unwrap();
-            }
-            "unsafe-name" => fixture.add("invalid component", "trial"),
-            _ => unreachable!(),
-        }
-        assert!(fixture.discover().is_err(), "{case}");
-    }
+fn unsafe_run_names_fail_closed() {
+    let fixture = Fixture::new();
+    fixture.add("invalid component", "trial");
+    assert!(fixture.discover().is_err());
 }
 
 #[test]

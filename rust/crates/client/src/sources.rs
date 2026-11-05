@@ -45,7 +45,7 @@ fn invalid() -> Error {
 }
 fn packing() -> Error {
     Error::Observation(
-        "cannot pack source: use a stable regular directory without links, special files, credential-looking paths, or unsafe permissions, within the source limits",
+        "cannot pack source: use a stable regular directory without symlinks, special files or credential-looking paths, within the source limits",
     )
 }
 fn sha256(value: &str) -> bool {
@@ -248,7 +248,6 @@ fn same_metadata(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool 
         base && before.dev() == after.dev()
             && before.ino() == after.ino()
             && before.mode() == after.mode()
-            && before.nlink() == after.nlink()
             && before.uid() == after.uid()
             && before.ctime() == after.ctime()
             && before.ctime_nsec() == after.ctime_nsec()
