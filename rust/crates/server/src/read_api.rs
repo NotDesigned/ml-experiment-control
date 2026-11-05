@@ -18,6 +18,7 @@ use std::{
 
 mod checkpoint_reads;
 mod composition;
+mod local_runs;
 mod result_reads;
 mod tracking_reads;
 
@@ -281,6 +282,8 @@ pub struct Api {
     historical: Option<crate::history::Identity>,
     legacy: Option<Arc<crate::history::Bridge>>,
     approved_roots: Vec<PathBuf>,
+    local_roots: BTreeMap<String, PathBuf>,
+    local_tracking: ml_exp_core::tracking::RoutingSettings,
 }
 impl Api {
     pub fn open(settings: read_config::Settings) -> Result<Self, read_config::Error> {
@@ -340,6 +343,13 @@ impl Api {
             None
         };
         Ok(Self {
+            local_roots: settings
+                .projects
+                .iter()
+                .filter(|p| p.discovery_enabled() && p.run_roots.len() == 1)
+                .map(|p| (p.project.clone(), p.run_roots[0].clone()))
+                .collect(),
+            local_tracking: Default::default(),
             approved_roots: settings
                 .projects
                 .iter()
@@ -976,12 +986,17 @@ impl Api {
     }
     fn native_view(
         &self,
-        value: Value,
+        mut value: Value,
         project: &str,
         run: &str,
         attempt: Option<&str>,
         now_unix: f64,
     ) -> Result<Value, Error> {
+        if let Some(local) = self.local_tracking_status(project, run)? {
+            value["execution_kind"] = serde_json::json!("local");
+            value["local_execution"] = local;
+            return Ok(value);
+        }
         if let Some(cloud) = &self.cloud {
             if cloud
                 .handles_run(project, run)

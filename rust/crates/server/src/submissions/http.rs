@@ -68,6 +68,9 @@ async fn tracking(
         if let Some(value) = api.historical_tracking(&project, &run)? {
             return Ok(value);
         }
+        if let Some(value) = api.local_tracking_status(&project, &run)? {
+            return Ok(value);
+        }
         if let Some(cloud) = api.cloud() {
             if cloud
                 .handles_run(&project, &run)

@@ -392,6 +392,12 @@ release resumes its saved cursor. A deleted result cannot start another collecto
 
 ## Metrics and W&B
 
+Existing local training can use the official native client to upload canonical
+JSONL without process control. See [local attachment](../docs/local-metrics.md)
+for upload, watch, restart and explicit completion. Same-ID adoption of an
+external live SDK writer is a separate, unfinished capability.
+
+
 Training code writes arbitrary metric records to METRICS_PATH. Records include
 name, numeric value, unit and optionally step/checkpoint/variant identity.
 The Run freezes the evaluation context and optional required schema. No ELF

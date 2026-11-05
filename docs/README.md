@@ -20,6 +20,7 @@ and deployment evidence belong in private operator records.
 3. [Persistent checkpoints](persistent-checkpoints.md): complete state and explicit restore.
 4. [Metrics](metrics.md): curves, comparison results, units and protocol identity.
 5. [W&B](wandb.md): optional server publication and per-Run destinations.
+6. [Local metrics](local-metrics.md): attach an existing local JSONL stream through the native client.
 6. [Recovery](recovery.md): failed stages, uncertain requests and output collection.
 7. [Debug sessions](debug-sessions.md): temporary CCI/DSW SSH machines.
 8. [Administrative deletion](resource-deletion.md): reviewed Run and storage removal.

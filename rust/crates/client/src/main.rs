@@ -315,6 +315,28 @@ impl Target {
 }
 #[derive(Subcommand)]
 enum Run {
+    /// Upload an existing local JSONL stream; never start, stop or signal training.
+    Attach {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        metrics: PathBuf,
+        #[arg(long)]
+        state: PathBuf,
+        #[arg(long, conflicts_with = "finish")]
+        watch: bool,
+        #[arg(long, value_parser = ["succeeded", "failed", "cancelled"])]
+        finish: Option<String>,
+    },
+    /// Read local ingress cursor and daemon W&B progress; no process/provider probe.
+    LocalStatus {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        run: String,
+    },
     /// Prepare a bounded parameter/seed matrix; saves every recovery identity.
     Batch {
         #[arg(long)]
@@ -1007,6 +1029,47 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         }
                     })
                 }
+                Command::Run {
+                    command:
+                        Run::Attach {
+                            project,
+                            file,
+                            metrics,
+                            state,
+                            watch,
+                            finish,
+                        },
+                } => {
+                    let finish = finish
+                        .map(|f| serde_json::from_value(serde_json::json!(f.to_uppercase())))
+                        .transpose()?;
+                    let mode = if watch {
+                        ml_exp_client::local::Mode::Watch
+                    } else {
+                        finish
+                            .map(ml_exp_client::local::Mode::Finish)
+                            .unwrap_or(ml_exp_client::local::Mode::Once)
+                    };
+                    Output::Json(ml_exp_client::local::attach(
+                        &client,
+                        &project,
+                        &file,
+                        &metrics,
+                        &state,
+                        mode,
+                        |value| {
+                            if watch {
+                                println!("{}", value);
+                            }
+                        },
+                    )?)
+                }
+                Command::Run {
+                    command: Run::LocalStatus { project, run },
+                } => {
+                    client.negotiate()?;
+                    Output::Json(ml_exp_client::local::status(&client, &project, &run)?)
+                }
                 Command::Run { command } => {
                     let health = client.negotiate()?;
                     match command {
@@ -1091,6 +1154,9 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             !keep,
                             &health,
                         )?),
+                        Run::Attach { .. } | Run::LocalStatus { .. } => {
+                            unreachable!("local commands handled above")
+                        }
                         Run::Tracking { .. }
                         | Run::Sync { .. }
                         | Run::History { .. }
