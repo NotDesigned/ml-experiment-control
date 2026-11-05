@@ -595,6 +595,16 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             .unwrap()["submission_id"],
         large_plan["submission_id"]
     );
+    let action = large_plan["submission_id"].as_str().unwrap();
+    let progress = service.submission_progress(action).unwrap().unwrap();
+    assert_eq!(progress["submission_id"], action);
+    assert_eq!(progress["run_id"], "full-inventory");
+    assert_eq!(progress["attempt_id"], "attempt-001");
+    assert_eq!(progress["availability"], "NOT_REPORTED");
+    assert!(progress.get("input_delivery").is_none());
+    let listed = service.run_submissions("demo", "full-inventory").unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["submission_id"], action);
     assert!(
         serde_json::from_slice::<Value>(&fs::read(&cpu_manifest).unwrap()).unwrap()["native_cloud"]
             .get("storage")

@@ -558,7 +558,7 @@ impl Api {
                 return Ok(value);
             }
         }
-        Ok(json!({"submission_id":submission["submission_id"],"project":submission["project"],
+        Ok(serde_json::json!({"submission_id":submission["submission_id"],"project":submission["project"],
             "run_id":submission["run_id"],"attempt_id":submission["attempt_id"],
             "availability":"NOT_REPORTED"}))
     }
@@ -575,7 +575,7 @@ impl Api {
                 .map_err(crate::cloud_runs::failure)?,
             None => Vec::new(),
         };
-        Ok(json!({"project":project,"run_id":run,"submissions":submissions}))
+        Ok(serde_json::json!({"project":project,"run_id":run,"submissions":submissions}))
     }
     pub fn submission(&self, id: &str, now_unix: f64) -> Result<Value, Error> {
         if ml_exp_core::operations::validate_submission_id(id).is_err() {
