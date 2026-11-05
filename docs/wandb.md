@@ -84,47 +84,43 @@ write [metric records](metrics.md#record-and-query) to `OUTPUT_DIR/metrics.jsonl
 - `MetricWriter.log()` writes history points. Multiple measured steps/epochs form a curve.
 - `MetricWriter.summary()` declares the result selected by experiment code. It does not add a curve point or select the best checkpoint.
 
-Each Attempt has a stable W&B run grouped by ML-Expd project/Run. The default
-presentation is:
+Each Attempt has a stable W&B run grouped by ML-Expd project/Run.
+For new publications (native 0.1.25+), **the client owns metric names**:
 
 | W&B field | Content |
 |---|---|
-| `curves/NAME` | History against the explicit scientific step |
-| `curves/NAME/by_epoch` | History against an explicit epoch |
-| `results/NAME` | Explicit comparison result after the Attempt terminates |
+| Exact supplied `name`, such as `train/loss` | History and the current/final summary under the same key |
 | `ml_expd/state` and lifecycle metadata | Observed platform state and stages |
-| `ml_expd/display_definitions_json` | Exact units, protocol, dataset, variant, checkpoint, counts and result-selection source |
+| `ml_expd/display_definitions_json` | Units, protocol, dataset, variant, checkpoint, counts and summary-selection source |
 
-At least two distinct valid positions are needed for an automatically visible
-curve. A final-only value is not history. W&B's internal `_step` is a physical publication position, independent of the
-canonical event sequence. Scientific charts use their explicit step/epoch axes.
+The service adds no prefix, hash, variant label or `/by_epoch` suffix to scientific
+metric names. Use distinct names when curves should be separate; reusing a name
+intentionally shares one W&B metric. Protocol/dataset/variant provenance remains
+in accepted records and does not rename the metric. Across Runs, choose
+compatible units/protocols for comparisons. Two observations with the same key
+inside a single history row cannot be represented without overwriting, and
+publication reports `DISPLAY_NAME_CONFLICT` instead.
 
-Explicit summaries take precedence. Without one, legacy latest-observation
-selection remains available; neither selects minimum loss or the best model.
-Invalid/conflicting explicit results do not fall back to unrelated history.
-Active Attempts do not expose a final result scalar. Failed Attempts can retain
-valid measurements, so filter `ml_expd/state` when comparing successful runs.
+Charts use explicit training `step`, otherwise `epoch`, when supplied. These
+coordinates are stored as hidden `ml_expd/axes/...` helper fields; a metric with
+no scientific coordinate uses W&B's default history position. There is no
+automatic second epoch curve or two-point visibility gate. W&B's internal
+`_step` is a publication position, independent of training progress.
 
-New publications (native 0.1.13+) keep the caller's metric name, including slashes
-and Unicode: different Runs both writing `train_loss` use `curves/train_loss` and
-`results/train_loss`. Protocol, dataset, seed and parameters stay in config and
-provenance; they do not append hashes to W&B field names. W&B compares Runs by
-these stable names; choose compatible units/protocols when selecting Runs.
+The same exact name appears in the live and final summary. An explicit summary
+wins; otherwise the latest accepted observation is used, never minimum loss or
+automatic model selection. When several contexts intentionally share a name,
+the most recent explicit summary (otherwise observation) in journal order wins.
+Invalid explicit results retain their diagnostic and remove that metric's
+summary value instead of falling back to unrelated history. Unrelated
+client-owned summary keys are not removed. Failed Attempts can retain valid
+measurements; filter `ml_expd/state` when comparing successful runs.
 
-An explicit `variant_id` always adds `/variants/LABEL`, even before another
-variant arrives. Labels stay readable; `%` and `/` are escaped as `%25` and `%2F`.
-Within an Attempt, ambiguous same-name identities or generated-field collisions
-stop publication with `DISPLAY_NAME_CONFLICT`; use distinct names or variants.
-Accepted records remain queryable. Empty/non-string variant labels cannot be
-displayed and report `DISPLAY_VARIANT_LABEL_REQUIRED`.
-
-Already-started publications retain their saved v2 names, including old hashes;
-finished W&B Runs are not reopened. Upgrading does not rename or replay existing
-history, reset confirmation cursors, or resend uncertain events.
-Checkpoint changes retain per-point provenance without splitting the curve.
-Numerator/denominator and step/epoch are metadata/hidden axes, not result metrics.
-Raw records remain available in history; hidden helper fields are excluded from
-numeric result summaries.
+Already-started publications keep their frozen v2/v3 mapping, including old
+prefixes or hashes. Finished W&B Runs are not reopened. Upgrading does not rename
+or replay historical points, reset confirmation cursors, or resend uncertain
+events. New publications use exact names. Checkpoint changes remain per-point
+provenance. Numerator/denominator are metadata, not extra result metrics.
 
 ## What reaches W&B
 

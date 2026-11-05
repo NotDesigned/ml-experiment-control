@@ -15,7 +15,7 @@ use crate::{
 };
 
 const FIELDS: [&str; 4] = ["name", "unit", "protocol_id", "dataset_id"];
-pub const STABLE_DISPLAY_VERSION: i64 = 3;
+pub const STABLE_DISPLAY_VERSION: i64 = 4;
 fn object(value: &Value) -> Result<&Map<String, Value>> {
     value.as_object().ok_or(Error::Display("object required"))
 }
@@ -379,18 +379,44 @@ impl Projection {
         }
         Ok(json!({"contract":"metric-display.v3","through":self.cursor,"series":result}))
     }
+    /// W&B keys belong to the caller. Scientific contexts stay in the journal;
+    /// sharing a name intentionally shares one W&B metric, including variants.
+    pub fn client_document(&self) -> Result<Value> {
+        let mut series = Map::new();
+        for item in &self.series {
+            let name = text(&item.context, "name")?;
+            let mut row = item.state();
+            row["latest"] = item
+                .summary
+                .as_ref()
+                .or(item.latest.as_ref())
+                .cloned()
+                .unwrap_or(Value::Null);
+            row["selection"] = json!(if item.summary.is_some() {
+                "explicit_summary"
+            } else {
+                "latest_observation"
+            });
+            row["name"] = json!(name);
+            row["curve"] = json!(name);
+            row["result"] = json!(name);
+            series.insert(item.key.clone(), row);
+        }
+        Ok(json!({"contract":"metric-display.v4","through":self.cursor,"series":series}))
+    }
 }
 
 fn display_version(display: &Value) -> Result<i64> {
     match get(display, "contract").as_str() {
         Some("metric-display.v2") => Ok(2),
-        Some("metric-display.v3") => Ok(STABLE_DISPLAY_VERSION),
+        Some("metric-display.v3") => Ok(3),
+        Some("metric-display.v4") => Ok(4),
         _ => Err(Error::Display("unsupported metric display contract")),
     }
 }
 
 fn curve_keys<'a>(row: &'a Value, display: &Value) -> Result<Vec<(&'a str, bool)>> {
-    if display_version(display)? == STABLE_DISPLAY_VERSION {
+    if display_version(display)? >= 3 {
         Ok(vec![(text(row, "curve")?, true)])
     } else {
         let multiple = truth(get(row, "multiple_variants"));
@@ -430,6 +456,24 @@ pub fn curve_record(event: &Value, display: &Value) -> Result<Value> {
         if !valid_curve(item)? {
             continue;
         }
+        if display_version(display)? == 4 {
+            let name = text(row, "curve")?;
+            if record
+                .insert(name.into(), get(item, "value").clone())
+                .is_some()
+            {
+                return Err(Error::Display("DISPLAY_NAME_CONFLICT"));
+            }
+            for axis in ["step", "epoch"] {
+                if number(get(item, axis))? {
+                    record.insert(
+                        format!("ml_expd/axes/{name}/{axis}"),
+                        get(item, axis).clone(),
+                    );
+                }
+            }
+            continue;
+        }
         let Some(axis) = axis(item)? else {
             continue;
         };
@@ -464,6 +508,39 @@ fn definition(name: impl Into<String>, options: Value) -> DefinitionSpec {
     }
 }
 pub fn definition_specs(display: &Value) -> Result<Vec<DefinitionSpec>> {
+    if display_version(display)? == 4 {
+        let series = object(get(display, "series"))?;
+        let mut names = BTreeSet::new();
+        let mut specs = vec![definition(
+            "ml_expd/*",
+            json!({"hidden":true,"summary":"none","overwrite":true}),
+        )];
+        for row in series.values() {
+            let name = text(row, "curve")?;
+            if !names.insert(name) {
+                continue;
+            }
+            let mut options = json!({"hidden":false,"summary":"none","overwrite":true});
+            if let Some(axis) = ["step", "epoch"].into_iter().find(|axis| {
+                series.values().any(|r| {
+                    get(r, "curve").as_str() == Some(name)
+                        && get(get(r, "positions"), axis)
+                            .as_array()
+                            .is_some_and(|a| !a.is_empty())
+                })
+            }) {
+                let axis_key = format!("ml_expd/axes/{name}/{axis}");
+                specs.push(definition(
+                    &axis_key,
+                    json!({"hidden":true,"summary":"none","overwrite":true}),
+                ));
+                options["step_metric"] = json!(axis_key);
+                options["step_sync"] = json!(false);
+            }
+            specs.push(definition(name, options));
+        }
+        return Ok(specs);
+    }
     let mut specs = vec![
         definition(
             "metrics/*",
@@ -516,10 +593,27 @@ pub fn summary_patch(
     coverage: &str,
 ) -> Result<SummaryPatch> {
     let series = object(get(display, "series"))?;
-    let mut values = Map::new();
+    let client_names = display_version(display)? == 4;
+    // Several contexts can intentionally use the same client name. Choose its
+    // explicit summary, otherwise the last accepted observation, in journal order.
+    let mut selected = Map::new();
     for row in series.values() {
+        let name = text(row, "result")?;
+        let rank = |row: &Value| {
+            (
+                get(row, "selection") == "explicit_summary",
+                get(get(row, "latest"), "sequence").as_i64().unwrap_or(0),
+            )
+        };
+        if !client_names || selected.get(name).is_none_or(|old| rank(row) > rank(old)) {
+            selected.insert(name.into(), row.clone());
+        }
+    }
+    let rows = if client_names { &selected } else { series };
+    let mut values = Map::new();
+    for row in rows.values() {
         let latest = get(row, "latest");
-        if terminal {
+        if terminal || client_names {
             if latest.get("status").is_none() {
                 return Err(Error::Display("missing latest status"));
             }
@@ -531,15 +625,18 @@ pub fn summary_patch(
     let delete = remote_keys
         .iter()
         .filter(|key| {
-            ["metrics/", "axes/", "curves/", "results/"]
-                .iter()
-                .any(|prefix| key.starts_with(prefix))
-                && !values.contains_key(*key)
+            (if client_names {
+                selected.contains_key(key.as_str())
+            } else {
+                ["metrics/", "axes/", "curves/", "results/"]
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix))
+            }) && !values.contains_key(*key)
         })
         .cloned()
         .collect();
     let mut definitions = Map::new();
-    for row in series.values() {
+    for row in rows.values() {
         let latest = get(row, "latest");
         let mut context = object(get(row, "context"))?.clone();
         for key in [

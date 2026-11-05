@@ -60,7 +60,7 @@ impl Saved {
             }
         });
         match version {
-            2 | 3 => Ok(version),
+            2 | 3 | 4 => Ok(version),
             _ => Err(Error::Publication("DISPLAY_CONTRACT_UNSUPPORTED")),
         }
     }
