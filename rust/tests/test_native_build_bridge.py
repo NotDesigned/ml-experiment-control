@@ -346,7 +346,7 @@ class NativeBridge(unittest.TestCase):
                         self.assertEqual(result["request"], frozen)
 
     def test_worker_features_are_frozen_against_exact_binary_and_never_reprobed_on_read(self):
-        for declared in [None, ["storage-layout.v1"], ["storage-layout.v1", "shared-cache-identity.v2"]]:
+        for declared in [None, ["storage-layout.v1"], ["storage-layout.v1", "shared-cache-identity.v2"], ["storage-layout.v1", "package-download.v1"]]:
             supported = declared is not None
             with self.subTest(declared=declared), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)

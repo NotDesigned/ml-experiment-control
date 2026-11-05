@@ -15,7 +15,7 @@ def _valid_features(features):
     return (isinstance(features, list)
             and all(isinstance(item, str) for item in features)
             and len(features) == len(set(features))
-            and set(features) <= {"storage-layout.v1", "script-preparation.v1", "shared-cache-identity.v2"})
+            and set(features) <= {"storage-layout.v1", "script-preparation.v1", "shared-cache-identity.v2", "package-download.v1"})
 
 
 def load_features(path, expected):

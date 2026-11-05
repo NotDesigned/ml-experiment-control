@@ -251,6 +251,20 @@ markers bind the storage target and root inode, while the mount-local device
 number is informational. Each process still checks its open directories for
 replacement, and cache reuse verifies file sizes, permissions and SHA256.
 Upgrading the API alone cannot change a worker frozen into an existing image.
+
+New workers from 0.1.28 declare package-download.v1. Their cloud command is
+short: ml-exp-worker-rs cloud-launch --package-url ... --package-sha256 ...
+plus the existing Attempt token. The same launch JSON is kept in the original
+Submission and fetched through its worker-exchange scope before normal startup.
+File inventories do not enter the provider command. No extra credential, launch
+receipt or data copy is introduced; retries only read that same JSON. Download
+errors report their operation and HTTP status without printing credentials.
+
+Existing images retain --package-json and its 64 KiB argument limit. Upgrade
+the worker in a new Runtime to use the shorter command, or publish the dataset
+to shared storage first. Updating the API does not rewrite old Runtime, Run or
+Submission identities. Slurm's existing staged/offline entrypoint is unchanged.
+
 For SenseCore, preparation status retains the CPU job's identity and distinguishes
 failure from uncertainty and ordinary waiting. A failed copy reports
 `DATA_PREPARATION_FAILED` without creating a training Submission. Direct

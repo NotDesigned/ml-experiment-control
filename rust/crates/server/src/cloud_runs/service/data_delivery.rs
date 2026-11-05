@@ -200,7 +200,10 @@ impl Service {
             if features.iter().any(|f| {
                 !matches!(
                     f.as_str(),
-                    "storage-layout.v1" | "script-preparation.v1" | "shared-cache-identity.v2"
+                    "storage-layout.v1"
+                        | "script-preparation.v1"
+                        | "shared-cache-identity.v2"
+                        | "package-download.v1"
                 )
             }) {
                 return Err(cloud::Error::evidence());

@@ -24,7 +24,10 @@ impl Runtime {
         if self.worker_features.iter().any(|f| {
             !matches!(
                 f.as_str(),
-                "storage-layout.v1" | "script-preparation.v1" | "shared-cache-identity.v2"
+                "storage-layout.v1"
+                    | "script-preparation.v1"
+                    | "shared-cache-identity.v2"
+                    | "package-download.v1"
             )
         }) {
             return Err(Error("unsupported worker feature"));
@@ -177,6 +180,7 @@ pub fn documents(
         request: json!(request),
     })
 }
+#[allow(clippy::too_many_arguments)]
 pub fn execution(
     run: &Value,
     attempt: &Value,
@@ -185,6 +189,7 @@ pub fn execution(
     root: &str,
     token: &str,
     allocation: pai::Allocation,
+    channel: Option<exchange::Channel>,
 ) -> Result<action::Execution> {
     runtime.validate()?;
     let project = &binding.project;
@@ -303,6 +308,13 @@ pub fn execution(
     {
         return Err(Error("frozen scheduling priority"));
     }
+    let download = runtime.worker_features.contains("package-download.v1") && channel.is_some();
+    package.channel = channel;
+    let command = if download {
+        package.download_command(&runtime.worker_path)?
+    } else {
+        package.command(&runtime.worker_path)?
+    };
     let job = Job {
         project: project.clone(),
         run_id: run_id.clone(),
@@ -310,7 +322,7 @@ pub fn execution(
         submission_token: token.into(),
         source_id: runtime.source_id.clone(),
         image: runtime.image.clone(),
-        command: package.command(&runtime.worker_path)?,
+        command,
         gpus: request.resources.gpus,
         cpus: request.resources.cpus,
         memory_gb: request.resources.memory_gb.ok_or(Error("memory"))?,
@@ -324,6 +336,7 @@ pub fn execution(
         binding,
         job,
         allocation: policy.map(|p| p.allocation).unwrap_or(allocation),
+        launch_package: download.then(|| Box::new(package)),
     };
     result.validate()?;
     Ok(result)

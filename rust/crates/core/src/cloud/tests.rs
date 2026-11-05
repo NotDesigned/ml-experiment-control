@@ -123,6 +123,7 @@ fn cloud_run_authorship_launch_and_approval_preserve_science_and_exact_attempt()
         "/mnt/workspace/ml-expd/runs",
         &"0".repeat(32),
         pai::Allocation::AllowIdle,
+        None,
     )
     .unwrap();
     assert_eq!(execution.job.command[1], "cloud-launch");
@@ -158,7 +159,8 @@ fn cloud_run_authorship_launch_and_approval_preserve_science_and_exact_attempt()
             &runtime,
             "/mnt/workspace/ml-expd/runs",
             &"0".repeat(32),
-            pai::Allocation::AllowIdle
+            pai::Allocation::AllowIdle,
+            None,
         )
         .is_err()
     );

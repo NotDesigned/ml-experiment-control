@@ -1,4 +1,15 @@
 use super::*;
+fn launch_error(error: ml_exp_core::cloud::Error) -> cloud::Error {
+    if matches!(error.0, "cloud package size" | "cloud inline package size") {
+        cloud::Error {
+            code: "LAUNCH_METADATA_TOO_LARGE".into(),
+            http_status: Some(422),
+            uncertain: false,
+        }
+    } else {
+        cloud::Error::evidence()
+    }
+}
 impl Service {
     fn selected_profile(
         &self,
@@ -344,6 +355,11 @@ impl Service {
                 .unwrap_or(&backend.adapter.profile)
                 .digest()?,
         };
+        let channel = self
+            .exchange
+            .as_ref()
+            .map(|authority| authority.channel_for(&self.workspace, &binding, token))
+            .transpose()?;
         let mut execution = run::execution(
             &run,
             &attempt,
@@ -352,8 +368,9 @@ impl Service {
             &backend.definition.run_root,
             token,
             backend.definition.allocation,
+            channel,
         )
-        .map_err(|_| cloud::Error::evidence())?;
+        .map_err(launch_error)?;
         let mut package = execution.package().map_err(|_| cloud::Error::evidence())?;
         package.storage = run["native_cloud"]
             .get("storage")
@@ -420,9 +437,15 @@ impl Service {
                 }
             }
         }
-        execution.job.command = package
-            .command(&runtime.worker_path)
-            .map_err(|_| cloud::Error::evidence())?;
+        execution.job.command = if execution.launch_package.is_some() {
+            package.download_command(&runtime.worker_path)
+        } else {
+            package.command(&runtime.worker_path)
+        }
+        .map_err(launch_error)?;
+        if execution.launch_package.is_some() {
+            execution.launch_package = Some(Box::new(package));
+        }
         Ok(execution)
     }
     pub(in crate::cloud_runs) fn check(&self, prepared: &Prepared) -> cloud::Result<()> {
@@ -436,6 +459,7 @@ impl Service {
         // service's public URL only affects future submissions; it cannot change
         // whether the original job's evidence is readable.
         current.job.command = prepared.execution.job.command.clone();
+        current.launch_package = prepared.execution.launch_package.clone();
         if current != prepared.execution {
             return Err(cloud::Error::evidence());
         }

@@ -1,11 +1,15 @@
 //! Cloud bootstrap around the existing sealed worker. It never fetches code,
 //! installs packages, picks a checkpoint or replays an uncertain process.
 use crate::managed;
-use ml_exp_core::{cloud::launch::Package, managed::evidence::Observation, slurm::helper};
+use ml_exp_core::{
+    cloud::launch::{MAX_PACKAGE_BYTES, Package},
+    managed::evidence::Observation,
+    slurm::helper,
+};
 use ml_exp_io::directory::Directory;
 use std::{collections::BTreeMap, ffi::OsStr, path::Path, sync::atomic::AtomicBool};
 pub fn decode(bytes: &[u8]) -> managed::Result<Package> {
-    if bytes.len() > 64 * 1024 {
+    if bytes.len() > MAX_PACKAGE_BYTES {
         return Err(managed::Error::Configuration);
     }
     let value = ml_exp_core::json::mapping(bytes).map_err(|_| managed::Error::Configuration)?;
@@ -14,6 +18,123 @@ pub fn decode(bytes: &[u8]) -> managed::Result<Package> {
     package
         .validate()
         .map_err(|_| managed::Error::Configuration)?;
+    Ok(package)
+}
+fn download_error(operation: &'static str, http_status: Option<u16>) -> managed::Error {
+    managed::Error::PackageDownload {
+        operation,
+        http_status,
+    }
+}
+fn download_bytes(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    token: &str,
+    expected: &str,
+    timeout: std::time::Duration,
+) -> managed::Result<Vec<u8>> {
+    use std::io::Read;
+    let response = client
+        .get(url)
+        .bearer_auth(token)
+        .timeout(timeout)
+        .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
+        .send()
+        .map_err(|_| download_error("request", None))?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        return Err(download_error("request", Some(status)));
+    }
+    if response
+        .content_length()
+        .is_some_and(|n| n > MAX_PACKAGE_BYTES as u64)
+    {
+        return Err(download_error("size", Some(status)));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_PACKAGE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| download_error("response_body", Some(status)))?;
+    if bytes.len() > MAX_PACKAGE_BYTES {
+        return Err(download_error("size", Some(status)));
+    }
+    if helper::sha256_bytes(&bytes) != expected {
+        return Err(download_error("sha256", Some(status)));
+    }
+    Ok(bytes)
+}
+fn download_with_retries(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    token: &str,
+    expected: &str,
+) -> managed::Result<Vec<u8>> {
+    let started = std::time::Instant::now();
+    let budget = std::time::Duration::from_secs(60);
+    for attempt in 0..3 {
+        let result = download_bytes(
+            client,
+            url,
+            token,
+            expected,
+            budget.saturating_sub(started.elapsed()),
+        );
+        let retryable = matches!(
+            &result,
+            Err(managed::Error::PackageDownload {
+                operation: "request" | "response_body",
+                http_status: None | Some(200 | 429 | 502 | 503 | 504)
+            })
+        );
+        if !retryable || attempt == 2 || started.elapsed() >= budget {
+            return result;
+        }
+        if let Err(error) = &result {
+            eprintln!("ML_EXPD_PACKAGE_DOWNLOAD=RETRY {error}");
+        }
+        std::thread::sleep(
+            std::time::Duration::from_secs(attempt + 1)
+                .min(budget.saturating_sub(started.elapsed())),
+        );
+    }
+    unreachable!("bounded package download attempts")
+}
+/// Download metadata only through the existing exact Attempt capability.
+/// Redirects are disabled so its token never follows a different origin.
+pub fn download(url: &str, token: &str, expected: &str) -> managed::Result<Package> {
+    let uri = reqwest::Url::parse(url).map_err(|_| download_error("url", None))?;
+    if uri.scheme() != "https"
+        || uri.host_str().is_none()
+        || !uri.username().is_empty()
+        || uri.password().is_some()
+        || uri.query().is_some()
+        || uri.fragment().is_some()
+        || !helper::valid_digest(expected)
+        || !helper::valid_digest(&format!("sha256:{token}"))
+    {
+        return Err(download_error("url", None));
+    }
+    let channel = ml_exp_core::cloud::exchange::Channel {
+        url: url
+            .strip_suffix("/package")
+            .ok_or_else(|| download_error("url", None))?
+            .into(),
+        token: token.into(),
+    };
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|_| download_error("client", None))?;
+    eprintln!("ML_EXPD_PACKAGE_DOWNLOAD=START");
+    let bytes = download_with_retries(&client, url, token, expected)?;
+    let package = decode(&bytes).map_err(|_| download_error("decode", Some(200)))?;
+    if package.channel.as_ref() != Some(&channel) {
+        return Err(download_error("scope", Some(200)));
+    }
+    eprintln!("ML_EXPD_PACKAGE_DOWNLOAD=READY bytes={}", bytes.len());
     Ok(package)
 }
 fn startup(stage: &'static str, error: std::io::Error) -> managed::Error {
@@ -33,7 +154,7 @@ fn same_or_new(
         .map_err(|_| managed::Error::Storage)?
     {
         let original = directory
-            .read_regular(name, 256 * 1024)
+            .read_regular(name, MAX_PACKAGE_BYTES as u64)
             .map_err(|_| managed::Error::Storage)?;
         if original != bytes {
             return Err(managed::Error::Binding);
@@ -246,5 +367,192 @@ mod tests {
             std::fs::read(package.config.attempt_root.join("state/count")).unwrap(),
             b"once"
         );
+    }
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        time::Duration,
+    };
+
+    fn server(responses: Vec<(u16, Vec<u8>)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/package", listener.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, body) in responses {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.windows(4).any(|v| v == b"\r\n\r\n") {
+                    let mut chunk = [0u8; 1024];
+                    let read = socket.read(&mut chunk).unwrap();
+                    assert!(read > 0);
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                requests.push(String::from_utf8(request).unwrap());
+                write!(
+                    socket,
+                    "HTTP/1.1 {status} fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                socket.write_all(&body).unwrap();
+            }
+            requests
+        });
+        (url, thread)
+    }
+    fn client() -> reqwest::blocking::Client {
+        reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+    }
+    fn large_package() -> Package {
+        use ml_exp_core::{
+            artifacts::FileReceipt,
+            datasets::{self, Definition, Mount, Receipt},
+        };
+        let mut package = ml_exp_core::cloud::launch::compile(ml_exp_core::cloud::launch::Input {
+            root: "/mnt/runs",
+            project: "demo",
+            run: "train",
+            attempt: "attempt-001",
+            workdir: "/workspace",
+            argv: &["/bin/true".into()],
+            timeout_seconds: 60,
+            worker_sha256: &format!("sha256:{}", "a".repeat(64)),
+        })
+        .unwrap();
+        let channel = ml_exp_core::cloud::exchange::Channel {
+            url: "https://api.example/api/worker-exchange/demo/train/attempt-001".into(),
+            token: "b".repeat(64),
+        };
+        let target = helper::Target {
+            backend_id: "pai".into(),
+            profile_sha256: format!("sha256:{}", "c".repeat(64)),
+            storage_scope: format!("sha256:{}", "d".repeat(64)),
+        };
+        let definition = Definition {
+            sha256: "e".repeat(64),
+            archive_bytes: 1024 * 1024,
+            files: (0..304)
+                .map(|i| FileReceipt {
+                    path: format!("dataset/full-inventory/part-{i:04}.bin"),
+                    bytes: 128,
+                    sha256: "f".repeat(64),
+                })
+                .collect(),
+        };
+        package
+            .attach(
+                "/mnt/data",
+                vec![Mount {
+                    name: "data".into(),
+                    receipt: Receipt {
+                        contract: datasets::CONTRACT.into(),
+                        project: "demo".into(),
+                        target: target.clone(),
+                        asset_id: definition.asset_id(),
+                        root: format!("/mnt/data/demo/{}/tree", definition.asset_id()),
+                        definition: definition.clone(),
+                    },
+                }],
+                None,
+            )
+            .unwrap();
+        package.channel = Some(channel.clone());
+        package.imports.push(datasets::import::Config {
+            root: "/mnt/data".into(),
+            project: "demo".into(),
+            target,
+            definition,
+            source: datasets::import::Source::ExchangeParts { channel },
+            timeout_seconds: 3600,
+        });
+        package.validate().unwrap();
+        package
+    }
+    #[test]
+    fn full_304_file_package_downloads_and_decodes_without_entering_argv_or_starting_training() {
+        let package = large_package();
+        let bytes = serde_json::to_vec(&serde_json::to_value(&package).unwrap()).unwrap();
+        assert!(bytes.len() > ml_exp_core::cloud::launch::MAX_INLINE_BYTES);
+        assert!(package.command("/worker").is_err());
+        let command = package.download_command("/worker").unwrap();
+        assert!(command.join(" ").len() < 1024);
+        let expected = helper::sha256_bytes(&bytes);
+        assert_eq!(command[7], expected);
+        let (url, server) = server(vec![(200, bytes.clone())]);
+        let got = download_bytes(
+            &client(),
+            &url,
+            &package.channel.as_ref().unwrap().token,
+            &expected,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(got, bytes);
+        let decoded = decode(&got).unwrap();
+        assert_eq!(
+            decoded.config.datasets[0].receipt.definition.files.len(),
+            304
+        );
+        assert_eq!(decoded.imports.len(), 1);
+        assert!(decoded == package);
+        assert_eq!(server.join().unwrap().len(), 1);
+    }
+    #[test]
+    fn request_status_and_checksum_failures_are_actionable_without_exposing_credentials() {
+        for (status, expected, operation, http_status) in [
+            (503, helper::sha256_bytes(b"body"), "request", Some(503)),
+            (200, helper::sha256_bytes(b"different"), "sha256", Some(200)),
+        ] {
+            let (url, server) = server(vec![(status, b"body".to_vec())]);
+            let error = download_bytes(
+                &client(),
+                &url,
+                "fixture-private-token",
+                &expected,
+                Duration::from_secs(5),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&error, managed::Error::PackageDownload { operation: op, http_status: code } if *op == operation && *code == http_status)
+            );
+            assert!(!error.to_string().contains("fixture-private-token"));
+            assert!(!error.to_string().contains(&url));
+            assert_eq!(server.join().unwrap().len(), 1);
+        }
+    }
+    #[test]
+    fn transient_503_retries_only_the_same_metadata_get() {
+        let body = b"same frozen metadata".to_vec();
+        let (url, server) = server(vec![(503, Vec::new()), (200, body.clone())]);
+        assert_eq!(
+            download_with_retries(
+                &client(),
+                &url,
+                "fixture-token",
+                &helper::sha256_bytes(&body)
+            )
+            .unwrap(),
+            body
+        );
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|r| r.starts_with("GET /package HTTP/1.1\r\n"))
+        );
+        assert_eq!(requests[0], requests[1]);
     }
 }

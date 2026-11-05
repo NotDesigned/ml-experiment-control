@@ -132,7 +132,7 @@ async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next)
             parts.len() == 7
                 && parts[1] == "api"
                 && parts[2] == "worker-exchange"
-                && parts[6] == "status"
+                && matches!(parts[6], "status" | "package")
         }
     {
         let protocols: Vec<_> = request
@@ -983,7 +983,9 @@ mod schema_tests {
                 assert!(operations.get("put").is_some());
             } else if path.starts_with("/api/project-lifecycle/")
                 || path.starts_with("/api/admin/") && !path.ends_with("/maintenance/{identity}")
-                || path.starts_with("/api/worker-exchange/") && !path.ends_with("/status")
+                || path.starts_with("/api/worker-exchange/")
+                    && !path.ends_with("/status")
+                    && !path.ends_with("/package")
                 || path.starts_with("/api/dataset-exchange/")
                 || path.ends_with("/refresh")
                 || path == "/api/debug/{identity}/stop"
@@ -1015,7 +1017,7 @@ mod schema_tests {
             }
             if path.starts_with("/api/worker-exchange/") {
                 assert_eq!(
-                    operations[if path.ends_with("/status") {
+                    operations[if path.ends_with("/status") || path.ends_with("/package") {
                         "get"
                     } else {
                         "post"

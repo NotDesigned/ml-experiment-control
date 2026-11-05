@@ -71,6 +71,12 @@ pub(crate) fn extend(document: &mut Value) {
         row[method] = operation(path, description, body);
     };
     insert(
+        "/api/worker-exchange/{project}/{run}/{attempt}/package",
+        "get",
+        "Read the same frozen launch JSON using its existing exact Attempt capability; no provider query or state mutation.",
+        None,
+    );
+    insert(
         "/api/worker-exchange/{project}/{run}/{attempt}/status",
         "get",
         "Read only accepted exchange/artifact stage booleans using this exact Attempt capability; never refresh or write.",
