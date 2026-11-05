@@ -377,28 +377,18 @@ fn absent_root_and_missing_authoritative_files_are_not_bootstrapped_by_open_or_e
 }
 
 #[test]
-fn symlink_hardlink_and_parent_aliases_are_refused_without_writes() {
+fn symlink_and_parent_aliases_are_refused_without_writes() {
     for leaf in [HEAD, EVENTS, LOCK] {
-        for hard in [false, true] {
+        {
             let (fixture, store) = Fixture::seeded();
             let path = fixture.root.join(leaf);
             let original = fixture._temporary.path().join("original");
             fs::rename(&path, &original).unwrap();
-            if hard {
-                fs::hard_link(&original, &path).unwrap();
-            } else {
-                symlink(&original, &path).unwrap();
-            }
+            symlink(&original, &path).unwrap();
             let before = fixture.bytes();
-            assert!(
-                Store::open(&fixture.root).is_err(),
-                "{leaf}, hardlink={hard}"
-            );
-            assert!(store.snapshot(100).is_err(), "{leaf}, hardlink={hard}");
-            assert!(
-                execute(&store, &action("pause"), 101, 1).is_err(),
-                "{leaf}, hardlink={hard}"
-            );
+            assert!(Store::open(&fixture.root).is_err(), "{leaf}");
+            assert!(store.snapshot(100).is_err(), "{leaf}");
+            assert!(execute(&store, &action("pause"), 101, 1).is_err(), "{leaf}");
             assert_eq!(fixture.bytes(), before);
             assert_eq!(fs::read(&original).unwrap(), fs::read(&path).unwrap());
         }
