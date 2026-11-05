@@ -3,7 +3,6 @@
 use ml_exp_core::slurm::*;
 use ml_exp_core::state::RunState;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("fixtures/slurm/python-reference.json")).unwrap()
@@ -97,17 +96,25 @@ fn fixture_records_exact_baseline_sources() {
         f["baseline_commit"],
         "e725faec689fb8395e692e27d00a8896fa7fe5a5"
     );
+    // The retired sources themselves remain in Git history.
     let sources = [
-        include_bytes!("../../../../src/experiment_control/backends/slurm.py").as_slice(),
-        include_bytes!("../../../../server/src/ml_exp_server/runs/allocation_status.py").as_slice(),
-        include_bytes!("../../../../src/experiment_control/submission.py").as_slice(),
+        (
+            "src/experiment_control/backends/slurm.py",
+            "9a6211594602375c151fdcf0ede6a76a4df1efb3938e9ebba879b14657b779b3",
+        ),
+        (
+            "server/src/ml_exp_server/runs/allocation_status.py",
+            "50bc8ec6956e6699059b71d70c790f1af483dccd343342060551dce0276ca46d",
+        ),
+        (
+            "src/experiment_control/submission.py",
+            "ec5b38bb27ea71d818deda7babdaa3229058c8f1e01a278a21c83ba94486ebad",
+        ),
     ];
     assert_eq!(f["sources"].as_array().unwrap().len(), sources.len());
-    for (source, expected) in sources.iter().zip(f["sources"].as_array().unwrap()) {
-        assert_eq!(
-            format!("{:x}", Sha256::digest(source)),
-            expected["sha256"].as_str().unwrap()
-        );
+    for ((path, sha256), expected) in sources.iter().zip(f["sources"].as_array().unwrap()) {
+        assert_eq!(expected["path"].as_str().unwrap(), *path);
+        assert_eq!(expected["sha256"].as_str().unwrap(), *sha256);
     }
 }
 #[test]
