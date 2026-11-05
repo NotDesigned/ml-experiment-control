@@ -1403,8 +1403,7 @@ fn check_materializer_diagnostics(
             let result = service.materialize_runtime("demo", id, true);
             match &result {
                 Err(error)
-                    if error.code == "CLOUD_RUN_BUSY"
-                        && std::time::Instant::now() < deadline =>
+                    if error.code == "CLOUD_RUN_BUSY" && std::time::Instant::now() < deadline =>
                 {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
