@@ -417,7 +417,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     .unwrap();
     copy.command[3] = "# original frozen launcher\n".to_owned() + &copy.command[3];
     let frozen_copy = json!({"state":ready,"archive_verified":true,"copy_runtime":runtime,"copy_storage":storage,"copy_request_id":"7".repeat(32),"copy_intent":copy});
-    private(&ready_file, &frozen_copy);
+    fs::write(&ready_file, serde_json::to_vec(&frozen_copy).unwrap()).unwrap();
     let intent_bytes = fs::read(&ready_file).unwrap();
     let restarted = open();
     assert_eq!(
@@ -453,7 +453,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         .as_object_mut()
         .unwrap()
         .remove("copy_intent");
-    private(&ready_file, &missing_intent);
+    fs::write(&ready_file, serde_json::to_vec(&missing_intent).unwrap()).unwrap();
     assert!(
         restarted
             .dataset_state("demo", "pai-h200", &ready.asset_id)
@@ -462,10 +462,11 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     fs::write(&ready_file, &ready_bytes).unwrap();
     let mut absent = ready.clone();
     absent.ready = None;
-    private(
+    fs::write(
         &ready_file,
-        &json!({"state":absent,"archive_verified":true}),
-    );
+        serde_json::to_vec(&json!({"state":absent,"archive_verified":true})).unwrap(),
+    )
+    .unwrap();
     assert!(
         service
             .for_run("demo", "full-inventory", "2026-10-29T00:02:00Z")
@@ -473,10 +474,11 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     );
     let mut partial = ready.clone();
     partial.parts.clear();
-    private(
+    fs::write(
         &ready_file,
-        &json!({"state":partial,"archive_verified":true}),
-    );
+        serde_json::to_vec(&json!({"state":partial,"archive_verified":true})).unwrap(),
+    )
+    .unwrap();
     assert!(
         service
             .for_run("demo", "full-inventory", "2026-10-29T00:02:00Z")
