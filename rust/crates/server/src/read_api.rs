@@ -371,7 +371,6 @@ impl Api {
         self.lifecycle.clone()
     }
     pub fn project_lifecycle_read(&self) -> Result<Value, Error> {
-        self.validate_registry()?;
         self.lifecycle
             .as_ref()
             .ok_or_else(|| {
@@ -440,7 +439,6 @@ impl Api {
         self.cloud.clone()
     }
     pub fn active_project_count(&self) -> Result<usize, Error> {
-        self.validate_registry()?;
         match &self.lifecycle {
             Some(service) => Ok(service.active_projects()?.len()),
             None => Ok(self.projects.len()),
@@ -488,7 +486,6 @@ impl Api {
         {
             return Err(invalid_query());
         }
-        self.validate_registry()?;
         let submissions = match &self.cloud {
             Some(cloud) => cloud
                 .run_submissions(project, run)
@@ -501,7 +498,6 @@ impl Api {
         if ml_exp_core::operations::validate_submission_id(id).is_err() {
             return Err(invalid_query());
         }
-        self.validate_registry()?;
         let actions = self.actions.as_ref().ok_or_else(|| {
             error(
                 501,
@@ -583,33 +579,8 @@ impl Api {
         // Validate the configured Run without resolving or borrowing its current
         // Attempt. A first planned Attempt may not yet have a manifest on disk.
         self.ensure_active(project)?;
-        let (reference, discovery) = self.locate_run(project, run)?;
-        let metadata = self.store.snapshot_metadata(&reference)?;
-        if discovery.as_ref().is_some_and(|found| {
-            found
-                .runs
-                .iter()
-                .find(|entry| entry.reference.run_id == run)
-                .is_none_or(|entry| entry.raw_sha256 != metadata.run.raw_sha256)
-        }) {
-            return Err(error(
-                409,
-                "EXPERIMENT_DISCOVERY_CHANGED",
-                "Run binding changed during Submission observation",
-            ));
-        }
-        if let Some(before) = discovery {
-            let after = self
-                .store
-                .discover(project, &experiments::DiscoveryLimits::default())?;
-            if !before.same_bindings(&after) {
-                return Err(error(
-                    409,
-                    "EXPERIMENT_DISCOVERY_CHANGED",
-                    "Run bindings changed during Submission observation",
-                ));
-            }
-        }
+        let reference = self.locate_run(project, run)?;
+        self.store.snapshot_metadata(&reference)?;
         guard.require_observed_live(project, run).map_err(why!({
             error(
                 409,
@@ -617,69 +588,30 @@ impl Api {
                 "Submission Run changed during observation",
             )
         }))?;
-        self.ensure_active(project)?;
-        self.validate_registry()?;
         Ok(experiment_redact::redact_json(
             ml_exp_core::observation::sanitized_outward(&value),
         ))
     }
-    fn locate_run(
-        &self,
-        project: &str,
-        run: &str,
-    ) -> Result<(RunRef, Option<experiments::Discovery>), Error> {
-        let discovery = if self.discovery_projects.contains(project) {
-            Some(
-                self.store
-                    .discover(project, &experiments::DiscoveryLimits::default())?,
-            )
-        } else {
-            None
-        };
-        let reference = match &discovery {
-            Some(found) => found
+    fn locate_run(&self, project: &str, run: &str) -> Result<RunRef, Error> {
+        let reference = if self.discovery_projects.contains(project) {
+            self.store
+                .discover(project, &experiments::DiscoveryLimits::default())?
                 .runs
-                .iter()
+                .into_iter()
                 .find(|entry| entry.reference.run_id == run)
-                .map(|entry| &entry.reference),
-            None => self.runs.get(&(project.into(), run.into())),
-        }
-        .cloned()
-        .ok_or_else(|| {
+                .map(|entry| entry.reference)
+        } else {
+            self.runs.get(&(project.into(), run.into())).cloned()
+        };
+        reference.ok_or_else(|| {
             error(
                 404,
                 "EXPERIMENT_NOT_FOUND",
                 "the exact Run is unavailable in approved storage",
             )
-        })?;
-        Ok((reference, discovery))
-    }
-    fn validate_registry(&self) -> Result<(), Error> {
-        self.registry.verify_private_parent().map_err(|_| {
-            error(
-                409,
-                "READ_WORKSPACE_UNAVAILABLE",
-                "isolated read workspace is unavailable",
-            )
-        })?;
-        let (_, id) = read_config::workspace(&self.registry_root).map_err(why!({
-            error(
-                409,
-                "READ_WORKSPACE_UNAVAILABLE",
-                "isolated read workspace is unavailable",
-            )
-        }))?;
-        if id != self.workspace_id {
-            return Err(error(
-                409,
-                "READ_WORKSPACE_CHANGED",
-                "isolated workspace identity changed",
-            ));
-        }
-        Ok(())
+        })
     }
     pub fn projects(&self, now_unix: f64) -> Result<Value, Error> {
-        self.validate_registry()?;
         let visible = match &self.lifecycle {
             Some(service) => Some(service.active_projects()?),
             None => None,
@@ -719,19 +651,6 @@ impl Api {
             let mut row_bytes = 2;
             for reference in references {
                 let snapshot = self.store.snapshot_metadata(reference)?;
-                if discovery.as_ref().is_some_and(|found| {
-                    found
-                        .runs
-                        .iter()
-                        .find(|run| run.reference.run_id == reference.run_id)
-                        .is_none_or(|run| run.raw_sha256 != snapshot.run.raw_sha256)
-                }) {
-                    return Err(error(
-                        409,
-                        "EXPERIMENT_DISCOVERY_CHANGED",
-                        "Run bindings changed during project aggregation",
-                    ));
-                }
                 let row = read_model::run_summary(&snapshot, now_unix)?;
                 row_bytes = read_model::array_size(row_bytes, &row)?;
                 rows.push(row);
@@ -739,29 +658,6 @@ impl Api {
             let value = read_model::project_summary(project, title, &rows)?;
             value_bytes = read_model::array_size(value_bytes, &value)?;
             values.push(value);
-            self.store.project(project, Some(&document.raw_sha256))?;
-            if let Some(before) = discovery {
-                let after = self
-                    .store
-                    .discover(project, &experiments::DiscoveryLimits::default())?;
-                if !before.same_bindings(&after) {
-                    return Err(error(
-                        409,
-                        "EXPERIMENT_DISCOVERY_CHANGED",
-                        "canonical Run bindings changed during project aggregation",
-                    ));
-                }
-            }
-        }
-        self.validate_registry()?;
-        if let Some(service) = &self.lifecycle {
-            if Some(service.active_projects()?) != visible {
-                return Err(error(
-                    409,
-                    "PROJECT_LIFECYCLE_CHANGED",
-                    "active Project tracking changed during observation",
-                ));
-            }
         }
         Ok(Value::Array(values))
     }
@@ -944,7 +840,6 @@ impl Api {
                 "observation clock is unavailable",
             ));
         }
-        self.validate_registry()?;
         self.ensure_active(&query.project)?;
         // Acquire the existing deletion guard before looking for physical
         // manifests, so a removed-but-tombstoned Run cannot appear unsubmitted.
@@ -958,10 +853,7 @@ impl Api {
                     "Run is unavailable or deleted",
                 )
             }))?;
-        let (reference, discovery) = self.locate_run(&query.project, &query.run)?;
-        let located = discovery
-            .as_ref()
-            .and_then(|d| d.runs.iter().find(|r| r.reference.run_id == query.run));
+        let reference = self.locate_run(&query.project, &query.run)?;
         let mut snapshot: Snapshot = match &query.view {
             View::Run | View::Attempts => self.store.snapshot(&reference)?,
             View::Show { attempt }
@@ -969,13 +861,6 @@ impl Api {
             | View::Metrics { attempt, .. }
             | View::Collection { attempt } => self.store.snapshot_attempt(&reference, attempt)?,
         };
-        if located.is_some_and(|run| run.raw_sha256 != snapshot.run.raw_sha256) {
-            return Err(error(
-                409,
-                "EXPERIMENT_DISCOVERY_CHANGED",
-                "Run manifest changed between discovery and observation",
-            ));
-        }
         if let Some(service) = &self.submissions {
             service
                 .apply_observation(&mut snapshot)
@@ -1044,20 +929,6 @@ impl Api {
                     "Run was deleted or changed during observation",
                 )
             }))?;
-        if let Some(before) = discovery {
-            let after = self
-                .store
-                .discover(&query.project, &experiments::DiscoveryLimits::default())?;
-            if !before.same_bindings(&after) {
-                return Err(error(
-                    409,
-                    "EXPERIMENT_DISCOVERY_CHANGED",
-                    "canonical Run bindings changed during observation",
-                ));
-            }
-        }
-        self.ensure_active(&query.project)?;
-        self.validate_registry()?;
         Ok(value)
     }
 }

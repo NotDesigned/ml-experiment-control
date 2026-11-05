@@ -613,14 +613,7 @@ fn missing_locks_corrupt_canonical_and_file_aliases_fail_without_repair() {
         }
         let client = server.client();
         let error = http_failure(client.get("/api/runs/demo/train").unwrap_err(), 409);
-        assert_eq!(
-            error.error_code,
-            if variant == "missing-lock" {
-                "READ_WORKSPACE_UNAVAILABLE"
-            } else {
-                "EXPERIMENT_EVIDENCE_UNAVAILABLE"
-            }
-        );
+        assert_eq!(error.error_code, "EXPERIMENT_EVIDENCE_UNAVAILABLE");
         if variant == "missing-lock" {
             assert!(!fixture.registry.join(".run-deletion.lock").exists());
         }

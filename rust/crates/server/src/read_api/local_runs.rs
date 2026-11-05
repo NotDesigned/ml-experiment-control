@@ -70,7 +70,6 @@ impl Api {
         validate_id(project)
             .and_then(|_| validate_observation_id(run))
             .map_err(|_| invalid_query())?;
-        self.validate_registry()?;
         self.ensure_active(project)?;
         let p = self.local_roots.get(project).ok_or_else(|| {
             error(

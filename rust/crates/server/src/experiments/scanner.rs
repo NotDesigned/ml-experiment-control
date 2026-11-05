@@ -3,7 +3,7 @@
 use super::{Document, DocumentError, ManifestSource, RunRef, domain};
 use crate::deletion::RunFence;
 use ml_exp_core::identity;
-use ml_exp_io::directory::{Directory, RegularIdentity, effective_uid};
+use ml_exp_io::directory::{Directory, effective_uid};
 use std::{
     collections::BTreeSet,
     ffi::{OsStr, OsString},
@@ -82,22 +82,12 @@ pub struct LocatedRun {
     pub raw_sha256: String,
 }
 pub struct Discovery {
-    pub project_raw_sha256: String,
     pub runs: Vec<LocatedRun>,
     /// Existing deletion evidence is kept explicit and never re-admitted live.
     pub deleted: Vec<LocatedRun>,
     pub examined_directories: usize,
     pub examined_entries: usize,
     pub sampled_metadata_bytes: u64,
-}
-impl Discovery {
-    /// Compare authority bindings, not traversal statistics or unrelated file
-    /// counts. Callers bracket a composed read with two bounded discoveries.
-    pub fn same_bindings(&self, other: &Self) -> bool {
-        self.project_raw_sha256 == other.project_raw_sha256
-            && self.runs == other.runs
-            && self.deleted == other.deleted
-    }
 }
 
 struct Budget<'a> {
@@ -128,12 +118,6 @@ impl Budget<'_> {
         }
         Ok(())
     }
-}
-struct Observation {
-    directory: Directory,
-    names: Option<Vec<OsString>>,
-    manifest: Option<Document>,
-    files: Vec<(OsString, RegularIdentity)>,
 }
 
 fn read_manifest(
@@ -184,45 +168,6 @@ fn names(directory: &Directory, budget: &mut Budget<'_>) -> Result<Vec<OsString>
     Ok(entries)
 }
 
-fn unchanged(first: &Document, second: Option<Document>) -> Result<(), DiscoveryError> {
-    if second.is_some_and(|second| {
-        first.source == second.source && first.raw_sha256 == second.raw_sha256
-    }) {
-        Ok(())
-    } else {
-        Err(DiscoveryError::Changed)
-    }
-}
-
-fn verify_observations(
-    observed: &[Observation],
-    run_sources: &[ManifestSource],
-    budget: &mut Budget<'_>,
-) -> Result<(), DiscoveryError> {
-    for observation in observed {
-        observation.directory.verify_private_parent()?;
-        if let Some(manifest) = &observation.manifest {
-            unchanged(
-                manifest,
-                read_manifest(&observation.directory, run_sources, budget)?,
-            )?;
-        } else {
-            for (name, identity) in &observation.files {
-                if observation.directory.regular_identity(name)? != Some(*identity) {
-                    return Err(DiscoveryError::Changed);
-                }
-            }
-            if read_manifest(&observation.directory, run_sources, budget)?.is_some()
-                || names(&observation.directory, budget)?
-                    != *observation.names.as_ref().ok_or(DiscoveryError::Changed)?
-            {
-                return Err(DiscoveryError::Changed);
-            }
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn scan(
     project: &str,
     parent: &Directory,
@@ -237,8 +182,8 @@ pub(super) fn scan(
     let guard = fence.shared_existing()?;
     parent.verify_private_parent()?;
     let project_bytes = parent.read_regular(project_filename, domain::MAX_BYTES as u64)?;
-    let project_before = Document::decode(&project_bytes, ManifestSource::ProjectYaml)?;
-    domain::validate_project(&project_before.metadata, project)?;
+    let project_document = Document::decode(&project_bytes, ManifestSource::ProjectYaml)?;
+    domain::validate_project(&project_document.metadata, project)?;
     let mut budget = Budget {
         limits,
         directories: 0,
@@ -255,7 +200,6 @@ pub(super) fn scan(
             return Err(DiscoveryError::OverlappingRoots);
         }
     }
-    let mut observed = Vec::new();
     let mut seen = BTreeSet::new();
     let mut runs = Vec::new();
     let mut deleted = Vec::new();
@@ -299,18 +243,11 @@ pub(super) fn scan(
             } else {
                 runs.push(located);
             }
-            observed.push(Observation {
-                directory,
-                names: None,
-                manifest: Some(manifest),
-                files: Vec::new(),
-            });
             // The Run owns all nested artifacts, attempts and collected mirrors.
             // They can never become a second authoritative Run.
             continue;
         }
         let entries = names(&directory, &mut budget)?;
-        let mut files = Vec::new();
         for name in entries.iter().rev() {
             match directory.child(name, false) {
                 Ok(child) => {
@@ -331,51 +268,17 @@ pub(super) fn scan(
                     child_components.push(text.into());
                     pending.push((root_index, child, child_components));
                 }
-                Err(error) if error.kind() == io::ErrorKind::NotADirectory => {
-                    // Reject links/FIFOs/devices and aliases even when their
-                    // names are otherwise unrelated to a scientific manifest.
-                    let file = directory
-                        .regular_identity(name)?
-                        .ok_or(DiscoveryError::Changed)?;
-                    if !file.is_private_for(effective_uid()) {
-                        return Err(DiscoveryError::UnsafeEntry);
-                    }
-                    files.push((name.clone(), file));
-                }
+                // Only a directory can hold a Run. Files and links beside it are
+                // never opened or followed.
+                Err(error) if error.kind() == io::ErrorKind::NotADirectory => {}
                 Err(error) => return Err(error.into()),
             }
         }
-        observed.push(Observation {
-            directory,
-            names: Some(entries),
-            manifest: None,
-            files,
-        });
-    }
-    // Discovery is a bounded observation, not an atomic filesystem snapshot.
-    // Ordinary additions/removals/replacements are refused before returning;
-    // arbitrary same-UID/root ABA mutation is outside directory capabilities.
-    let mut validation = Budget {
-        limits,
-        directories: 0,
-        entries: 0,
-        runs: 0,
-        bytes: 0,
-    };
-    verify_observations(&observed, run_sources, &mut validation)?;
-    let project_after = parent.read_regular(project_filename, domain::MAX_BYTES as u64)?;
-    if project_bytes != project_after {
-        return Err(DiscoveryError::Changed);
-    }
-    parent.verify_private_parent()?;
-    for root in roots {
-        root.verify_private_parent()?;
     }
     // IDs are unique; order is only stable output, never current selection.
     runs.sort_by(|left, right| left.reference.run_id.cmp(&right.reference.run_id));
     deleted.sort_by(|left, right| left.reference.run_id.cmp(&right.reference.run_id));
     Ok(Discovery {
-        project_raw_sha256: project_before.raw_sha256,
         runs,
         deleted,
         examined_directories: budget.directories,

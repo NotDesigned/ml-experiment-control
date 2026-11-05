@@ -123,7 +123,6 @@ fn canonical_and_instance_scoped_runs_are_unique_and_payloads_are_not_scanned() 
             .iter()
             .all(|located| located.reference.run_id != "mirror-copy")
     );
-    assert!(found.same_bindings(&store.discover("elf", &DiscoveryLimits::default()).unwrap()));
 }
 
 #[test]
@@ -183,20 +182,10 @@ fn canonical_corruption_foreign_identity_and_science_only_copies_are_not_absence
 }
 
 #[test]
-fn linked_files_directories_unsafe_permissions_and_names_fail_closed() {
-    for case in [
-        "linked-directory",
-        "linked-manifest",
-        "linked-file",
-        "writable-directory",
-        "unsafe-name",
-    ] {
+fn linked_manifests_unsafe_permissions_and_names_fail_closed() {
+    for case in ["linked-manifest", "writable-directory", "unsafe-name"] {
         let fixture = Fixture::new();
         match case {
-            "linked-directory" => {
-                fixture.add("good", "trial");
-                symlink("good", fixture.runs().join("alias")).unwrap();
-            }
             "linked-manifest" => {
                 fixture.add("good", "trial");
                 fs::hard_link(
@@ -204,10 +193,6 @@ fn linked_files_directories_unsafe_permissions_and_names_fail_closed() {
                     fixture.temp.path().join("copy.json"),
                 )
                 .unwrap();
-            }
-            "linked-file" => {
-                write(&fixture.runs().join("file"), b"opaque");
-                symlink("file", fixture.runs().join("alias")).unwrap();
             }
             "writable-directory" => {
                 fixture.add("group", "trial");
@@ -222,6 +207,22 @@ fn linked_files_directories_unsafe_permissions_and_names_fail_closed() {
         }
         assert!(fixture.discover().is_err(), "{case}");
     }
+}
+
+#[test]
+fn links_and_files_beside_runs_are_ignored_and_never_followed() {
+    let fixture = Fixture::new();
+    fixture.add("good", "trial");
+    symlink("good", fixture.runs().join("directory-alias")).unwrap();
+    symlink(
+        "/never-follow-training-data",
+        fixture.runs().join("dangling"),
+    )
+    .unwrap();
+    write(&fixture.runs().join("note"), b"opaque");
+    let found = fixture.discover().unwrap();
+    assert_eq!(found.runs.len(), 1);
+    assert_eq!(found.runs[0].reference.relative_components, ["good"]);
 }
 
 #[test]
@@ -320,58 +321,4 @@ fn duplicate_and_overlapping_approved_roots_are_rejected_before_traversal() {
             Err(DiscoveryError::OverlappingRoots)
         ));
     }
-}
-
-#[test]
-fn final_proof_refuses_same_name_file_to_directory_transition_and_detached_roots() {
-    let fixture = Fixture::new();
-    write(&fixture.runs().join("entry"), b"ordinary file");
-    let directory = Directory::open(&fixture.runs(), false).unwrap();
-    let name = OsString::from("entry");
-    let observation = Observation {
-        directory: directory.clone(),
-        names: Some(vec![name.clone()]),
-        manifest: None,
-        files: vec![(
-            name.clone(),
-            directory.regular_identity(&name).unwrap().unwrap(),
-        )],
-    };
-    fs::remove_file(fixture.runs().join("entry")).unwrap();
-    fixture.add("entry", "unexpected");
-    let limits = DiscoveryLimits::default();
-    let mut budget = Budget {
-        limits: &limits,
-        directories: 0,
-        entries: 0,
-        runs: 0,
-        bytes: 0,
-    };
-    assert!(verify_observations(&[observation], &[ManifestSource::RunJson], &mut budget).is_err());
-    fs::rename(fixture.runs(), fixture.temp.path().join("old-runs")).unwrap();
-    fs::create_dir(fixture.runs()).unwrap();
-    assert!(fixture.discover().is_err());
-}
-
-#[test]
-fn composed_read_comparison_binds_project_and_run_bytes_not_just_run_names() {
-    let fixture = Fixture::new();
-    fixture.add("trial", "trial");
-    let before = fixture.discover().unwrap();
-    write(
-        &fixture.runs().join("note"),
-        b"a new unrelated regular file",
-    );
-    assert!(before.same_bindings(&fixture.discover().unwrap()));
-    write(
-        &fixture.runs().join("trial/manifest.json"),
-        b"{\"project\":\"demo\",\"run_id\":\"trial\",\"seed\":2}",
-    );
-    assert!(!before.same_bindings(&fixture.discover().unwrap()));
-    let before = fixture.discover().unwrap();
-    write(
-        &fixture.temp.path().join("project/research_project.yaml"),
-        b"project: demo\ntitle: changed\n",
-    );
-    assert!(!before.same_bindings(&fixture.discover().unwrap()));
 }
