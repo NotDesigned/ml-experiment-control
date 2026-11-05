@@ -117,8 +117,13 @@ impl Store {
         let projection = projection
             .at(through)
             .map_err(|_| Error::Invalid("display cutoff"))?;
-        if version == tracking::STABLE_DISPLAY_VERSION {
-            return projection.stable_document().map_err(|error| match error {
+        if matches!(version, 3 | 4) {
+            return (if version == 4 {
+                projection.client_document()
+            } else {
+                projection.stable_document()
+            })
+            .map_err(|error| match error {
                 tracking::Error::Display(code) => Error::Invalid(code),
                 _ => Error::Invalid("display document"),
             });

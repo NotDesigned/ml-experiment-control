@@ -5,21 +5,27 @@ use std::{fs, os::unix::fs::PermissionsExt};
 
 #[test]
 fn explicit_gap_repair_appends_original_ids_and_normal_publication_resumes_without_duplicates() {
-    exercise_gap_repair(false, 2);
+    for version in [3, 4] {
+        exercise_gap_repair(false, 2, version);
+    }
 }
 
 #[test]
 fn explicit_tail_repair_confirms_appended_tail_and_continues_without_duplicates() {
-    exercise_gap_repair(false, 4);
+    for version in [3, 4] {
+        exercise_gap_repair(false, 4, version);
+    }
 }
 
 #[test]
 fn uncertain_repair_is_observed_without_resending_or_clearing_original_reservations() {
-    exercise_gap_repair(true, 2);
-    exercise_gap_repair(true, 4);
+    for version in [3, 4] {
+        exercise_gap_repair(true, 2, version);
+        exercise_gap_repair(true, 4, version);
+    }
 }
 
-fn exercise_gap_repair(uncertain: bool, missing_sequence: i64) {
+fn exercise_gap_repair(uncertain: bool, missing_sequence: i64, version: i64) {
     struct FixtureSource(std::path::PathBuf);
     impl Source for FixtureSource {
         fn publisher_leader(&self) -> Result<std::fs::File> {
@@ -68,6 +74,15 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64) {
         .bind(&guard, &route, &json!({"ml_expd":{"run_id":"train"}}))
         .unwrap();
     let scope = store.scope(&guard, "attempt-001").unwrap();
+    if version == 3 {
+        let saved = Saved {
+            display_contract: Some(3),
+            ..Default::default()
+        };
+        store
+            .save_publication_state(&guard, &scope, &json!(saved), "PENDING", None, "fixture")
+            .unwrap();
+    }
     let metric = |step| Event {
         event_id: format!("m{step}"),
         payload: normalized_metric(
@@ -183,7 +198,14 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64) {
             4
         }
     );
-    assert_eq!(repaired["axes/loss/step"], missing_sequence);
+    assert_eq!(
+        repaired[if version == 4 {
+            "ml_expd/axes/loss/step"
+        } else {
+            "axes/loss/step"
+        }],
+        missing_sequence
+    );
     assert_eq!(store.events(&guard, &scope, 0, 128).unwrap().len(), 5);
 }
 
@@ -235,15 +257,20 @@ fn historical_terminal_uses_original_outcomes_without_claiming_a_running_run_com
 
 #[test]
 fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursors() {
-    exercise_delayed_publication(false);
+    exercise_delayed_publication(4);
 }
 
 #[test]
 fn already_started_legacy_display_keeps_names_and_reservations_across_restart() {
-    exercise_delayed_publication(true);
+    exercise_delayed_publication(2);
 }
 
-fn exercise_delayed_publication(legacy: bool) {
+#[test]
+fn started_v3_keeps_prefixes_across_restart() {
+    exercise_delayed_publication(3);
+}
+
+fn exercise_delayed_publication(version: i64) {
     let root = tempfile::tempdir().unwrap();
     let cloud = root.path().join("cloud.json");
     fs::write(
@@ -280,17 +307,25 @@ fn exercise_delayed_publication(legacy: bool) {
         )
         .unwrap();
     let scope = store.scope(&guard, "attempt-001").unwrap();
-    if legacy {
+    if version != 4 {
         // Exact shape of an older saved state, with no display_contract field.
         let mut saved = serde_json::to_value(Saved::default()).unwrap();
-        saved["state"]["display_version"] = json!(2);
+        saved["state"]["display_version"] = json!(version);
         assert!(saved.get("display_contract").is_none());
+        if version == 3 {
+            saved["display_contract"] = json!(3);
+        }
         store
             .save_publication_state(&guard, &scope, &saved, "PENDING", None, "fixture")
             .unwrap();
     }
     let metric = |id: &str, step: u64, value: f64, variant: &str| {
-        Event{event_id:id.into(),payload:normalized_metric(&json!({"name":"loss","unit":"nats/token","step":step,"value":value,"variant_id":variant}),&json!({})).unwrap()}
+        let name = if version == 4 {
+            format!("loss/{variant}")
+        } else {
+            "loss".into()
+        };
+        Event{event_id:id.into(),payload:normalized_metric(&json!({"name":name,"unit":"nats/token","step":step,"value":value,"variant_id":variant}),&json!({})).unwrap()}
     };
     store
         .append(
@@ -312,7 +347,7 @@ fn exercise_delayed_publication(legacy: bool) {
     let read_cloud = || serde_json::from_slice::<Value>(&fs::read(&cloud).unwrap()).unwrap();
     cycle(&mut sdk).unwrap();
     let saved = store.publication_state(&guard, &scope).unwrap().unwrap();
-    assert_eq!(saved["display_contract"], if legacy { 2 } else { 3 });
+    assert_eq!(saved["display_contract"], version);
     assert_eq!(
         store.scope_status(&guard, &scope).unwrap().unwrap()["confirmed"],
         0
@@ -397,8 +432,10 @@ fn exercise_delayed_publication(legacy: bool) {
                 .filter(|k| k.starts_with("curves/") && k.contains("/variants/"))
         })
         .collect();
-    assert!(curve_keys.len() >= 4, "variant curves remain distinct");
-    if !legacy {
+    if version != 4 {
+        assert!(curve_keys.len() >= 4, "variant curves remain distinct");
+    }
+    if version == 3 {
         assert_eq!(rows[0]["curves/loss/variants/a"], 3.0);
         assert_eq!(rows[2]["curves/loss/variants/b"], 5.0);
         assert!(rows[0].get("curves/loss").is_none());
@@ -406,6 +443,13 @@ fn exercise_delayed_publication(legacy: bool) {
             store.scope_status(&guard, &scope).unwrap().unwrap()["display_version"],
             3
         );
+    }
+    if version == 4 {
+        assert!(curve_keys.is_empty());
+        assert_eq!(rows[0]["loss/a"], 3.0);
+        assert_eq!(rows[2]["loss/b"], 5.0);
+        assert_eq!(remote["runs"][&id]["summary"]["loss/a"], 2.0);
+        assert_eq!(remote["runs"][&id]["summary"]["loss/b"], 4.0);
     }
     assert!(
         !remote["runs"][&id]["summary"]
@@ -428,10 +472,11 @@ fn exercise_delayed_publication(legacy: bool) {
     assert_eq!(status["confirmed"], 5);
     assert_eq!(status["status"], "FINISHED");
     assert_eq!(read_cloud()["finishes"], 1);
-    assert!(
+    assert_eq!(
         read_cloud()["runs"][&id]["summary"]
             .get("curves/legacy")
-            .is_none()
+            .is_none(),
+        version != 4
     );
     assert_eq!(
         read_cloud()["inits"],
@@ -443,7 +488,13 @@ fn exercise_delayed_publication(legacy: bool) {
         .as_object()
         .unwrap()
         .iter()
-        .filter(|(k, _)| k.starts_with("results/"))
+        .filter(|(k, _)| {
+            if version == 4 {
+                ["loss/a", "loss/b"].contains(&k.as_str())
+            } else {
+                k.starts_with("results/")
+            }
+        })
         .collect::<Vec<_>>();
     assert_eq!(finals.len(), 2);
     assert!(
@@ -466,7 +517,7 @@ fn exercise_delayed_publication(legacy: bool) {
 
 #[test]
 fn display_version_selection_never_upgrades_started_or_uncertain_scopes() {
-    assert_eq!(Saved::default().display_version(0, 0).unwrap(), 3);
+    assert_eq!(Saved::default().display_version(0, 0).unwrap(), 4);
     assert_eq!(Saved::default().display_version(1, 0).unwrap(), 2);
     assert_eq!(Saved::default().display_version(0, 2).unwrap(), 2);
     let mut old = Saved {
@@ -482,6 +533,8 @@ fn display_version_selection_never_upgrades_started_or_uncertain_scopes() {
     assert_eq!(restored.display_version(0, 0).unwrap(), 3);
     assert_eq!(restored.state.sent, old.state.sent);
     old.display_contract = Some(4);
+    assert_eq!(old.display_version(0, 0).unwrap(), 4);
+    old.display_contract = Some(5);
     assert!(old.display_version(0, 0).is_err());
 }
 
