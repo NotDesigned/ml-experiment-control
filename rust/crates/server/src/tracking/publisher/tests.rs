@@ -5,21 +5,27 @@ use std::{fs, os::unix::fs::PermissionsExt};
 
 #[test]
 fn explicit_gap_repair_appends_original_ids_and_normal_publication_resumes_without_duplicates() {
-    exercise_gap_repair(false, 2);
+    for version in [3, 4] {
+        exercise_gap_repair(false, 2, version);
+    }
 }
 
 #[test]
 fn explicit_tail_repair_confirms_appended_tail_and_continues_without_duplicates() {
-    exercise_gap_repair(false, 4);
+    for version in [3, 4] {
+        exercise_gap_repair(false, 4, version);
+    }
 }
 
 #[test]
 fn uncertain_repair_is_observed_without_resending_or_clearing_original_reservations() {
-    exercise_gap_repair(true, 2);
-    exercise_gap_repair(true, 4);
+    for version in [3, 4] {
+        exercise_gap_repair(true, 2, version);
+        exercise_gap_repair(true, 4, version);
+    }
 }
 
-fn exercise_gap_repair(uncertain: bool, missing_sequence: i64) {
+fn exercise_gap_repair(uncertain: bool, missing_sequence: i64, version: i64) {
     struct FixtureSource(std::path::PathBuf);
     impl Source for FixtureSource {
         fn publisher_leader(&self) -> Result<std::fs::File> {
@@ -68,6 +74,15 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64) {
         .bind(&guard, &route, &json!({"ml_expd":{"run_id":"train"}}))
         .unwrap();
     let scope = store.scope(&guard, "attempt-001").unwrap();
+    if version == 3 {
+        let saved = Saved {
+            display_contract: Some(3),
+            ..Default::default()
+        };
+        store
+            .save_publication_state(&guard, &scope, &json!(saved), "PENDING", None, "fixture")
+            .unwrap();
+    }
     let metric = |step| Event {
         event_id: format!("m{step}"),
         payload: normalized_metric(
@@ -183,7 +198,14 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64) {
             4
         }
     );
-    assert_eq!(repaired["axes/loss/step"], missing_sequence);
+    assert_eq!(
+        repaired[if version == 4 {
+            "ml_expd/axes/loss/step"
+        } else {
+            "axes/loss/step"
+        }],
+        missing_sequence
+    );
     assert_eq!(store.events(&guard, &scope, 0, 128).unwrap().len(), 5);
 }
 
