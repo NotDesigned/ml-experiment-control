@@ -212,7 +212,10 @@ fn parse_yaml(bytes: &[u8]) -> Result<Map<String, Value>, DocumentError> {
     let mut stack = Vec::new();
     let mut root = None;
     let mut documents = 0;
-    for _ in 0..=MAX_NODES {
+    for count in 0..=MAX_NODES {
+        if count == MAX_NODES {
+            return Err(DocumentError::Complexity);
+        }
         let (event, _) = parser.next_token().map_err(|_| DocumentError::Malformed)?;
         match event {
             Event::StreamStart | Event::DocumentEnd => {}
