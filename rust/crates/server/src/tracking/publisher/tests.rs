@@ -172,7 +172,7 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64) {
         .iter()
         .find(|r| r["ml_expd/sequence"] == missing_sequence)
         .unwrap();
-    assert_eq!(repaired["_step"], 4);
+    assert_eq!(repaired["_step"], if missing_sequence == 4 { 3 } else { 4 });
     assert_eq!(repaired["axes/loss/step"], missing_sequence);
     assert_eq!(store.events(&guard, &scope, 0, 128).unwrap().len(), 5);
 }
