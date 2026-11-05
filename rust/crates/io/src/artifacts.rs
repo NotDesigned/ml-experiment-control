@@ -86,7 +86,6 @@ pub(crate) fn walk(
             found.push(path);
         }
     }
-    directory.verify_private_parent()?;
     Ok(())
 }
 pub(crate) fn open(root: &Directory, path: &str, kind: Kind) -> io::Result<File> {

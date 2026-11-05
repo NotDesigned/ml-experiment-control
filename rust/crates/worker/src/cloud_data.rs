@@ -32,7 +32,6 @@ pub fn cache(config: &ml_exp_core::datasets::import::Config) -> Result<()> {
     let path = std::path::Path::new(&config.root);
     let parent = Directory::open(path.parent().ok_or(Error::Configuration)?, false)
         .map_err(|_| Error::Storage)?;
-    parent.verify_private_parent().map_err(|_| Error::Storage)?;
     let name = path.file_name().ok_or(Error::Configuration)?;
     let store = || {
         crate::datasets::Store::open(crate::datasets::Config {

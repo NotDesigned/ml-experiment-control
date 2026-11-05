@@ -46,28 +46,22 @@ fn packet(package: &Package, state: &State) -> Result<Packet> {
     );
     let outputs = Directory::open(&config.output_path(), false).map_err(|_| Error::Storage);
     let (mut stdout, mut stderr, metrics, history) = match outputs {
-        Ok(outputs) => {
-            let value = (
-                observations::window(&outputs, "stdout.log"),
-                observations::window(&outputs, "stderr.log"),
-                observations::window(&outputs, "metrics.jsonl"),
-                if state.complete {
-                    None
-                } else {
-                    observations::history(
-                        &outputs,
-                        state.cursor.as_ref(),
-                        worker.phase == Phase::Finished,
-                        &config_sha256,
-                    )
-                    .map_err(|_| Error::Storage)?
-                },
-            );
-            outputs
-                .verify_private_parent()
-                .map_err(|_| Error::Storage)?;
-            value
-        }
+        Ok(outputs) => (
+            observations::window(&outputs, "stdout.log"),
+            observations::window(&outputs, "stderr.log"),
+            observations::window(&outputs, "metrics.jsonl"),
+            if state.complete {
+                None
+            } else {
+                observations::history(
+                    &outputs,
+                    state.cursor.as_ref(),
+                    worker.phase == Phase::Finished,
+                    &config_sha256,
+                )
+                .map_err(|_| Error::Storage)?
+            },
+        ),
         Err(_) if worker.phase == Phase::Prepared && state.cursor.is_none() => (
             ml_exp_core::managed::remote::Window::unavailable(Problem::Missing),
             ml_exp_core::managed::remote::Window::unavailable(Problem::Missing),
@@ -233,7 +227,6 @@ pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
     package.validate().map_err(|_| Error::Configuration)?;
     let channel = package.channel.as_ref().ok_or(Error::Configuration)?;
     let root = Directory::open(&package.config.attempt_root, false).map_err(|_| Error::Storage)?;
-    root.verify_private_parent().map_err(|_| Error::Storage)?;
     let _lock = root
         .lock(
             OsStr::new(".cloud-exchange.lock"),

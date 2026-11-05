@@ -47,7 +47,6 @@ impl Helper {
             {
                 return Err(Error::Metadata);
             }
-            outputs.verify_private_parent()?;
             self.observe_shared(request.intent(), &snapshot.directory, false)?;
             let attempt = snapshot
                 .directory

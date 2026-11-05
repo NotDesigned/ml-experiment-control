@@ -1,6 +1,5 @@
 //! Provision only a frozen Run's directories below an existing approved mount.
-//! Retained directory descriptors reject links and replaced ancestors. No chmod,
-//! adoption of a dataset store, mount creation or provider effects occur here.
+//! Retained directory descriptors reject links. No chmod, adoption of a dataset store, mount creation or provider effects occur here.
 use crate::managed::{Error, Result};
 use ml_exp_core::cloud::launch::Package;
 use ml_exp_io::directory::Directory;
@@ -17,9 +16,6 @@ fn descendant(anchor: &Directory, mount: &Path, path: &Path) -> Result<()> {
             return Err(Error::Configuration);
         };
         directory = directory.child(name, true).map_err(|_| Error::Storage)?;
-        directory
-            .verify_private_parent()
-            .map_err(|_| Error::Storage)?;
     }
     Ok(())
 }
@@ -98,7 +94,7 @@ mod tests {
     }
 
     #[test]
-    fn refuses_absent_mount_links_and_shared_writable_descendants_without_repair() {
+    fn refuses_absent_mount_and_links_without_repair() {
         let temp = tempfile::tempdir().unwrap();
         let missing = temp.path().join("missing-mount");
         assert!(prepare(&package(&missing)).is_err());
@@ -107,23 +103,6 @@ mod tests {
         symlink(outside.path(), temp.path().join("native")).unwrap();
         assert!(prepare(&package(temp.path())).is_err());
         assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
-        fs::remove_file(temp.path().join("native")).unwrap();
-        fs::create_dir(temp.path().join("native")).unwrap();
-        fs::set_permissions(
-            temp.path().join("native"),
-            fs::Permissions::from_mode(0o777),
-        )
-        .unwrap();
-        assert!(prepare(&package(temp.path())).is_err());
-        assert!(!temp.path().join("native/runs").exists());
-        assert_eq!(
-            fs::metadata(temp.path().join("native"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o777
-        );
     }
 
     #[test]

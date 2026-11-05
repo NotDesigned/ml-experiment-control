@@ -224,7 +224,7 @@ impl Helper {
         config.validate()?;
         let shared = staging::open_root(&config)?;
         let root = Directory::open(&config.root, true)?;
-        root.verify_private_parent()?;
+        root.require_private()?;
         if !root.entry_names()?.is_empty() {
             return Err(Error::Bootstrap);
         }
@@ -259,7 +259,6 @@ impl Helper {
         config.validate()?;
         let shared = staging::open_root(&config)?;
         let root = Directory::open(&config.root, false)?;
-        root.verify_private_parent()?;
         let result = Self {
             config,
             root,

@@ -119,10 +119,9 @@ impl Service {
             .map_err(io)?
             .sync_all()
             .map_err(io)?;
-        let outbox = directory
+        directory
             .create_new_child(OsStr::new("effects"))
             .map_err(io)?;
-        outbox.verify_private_parent().map_err(io)?;
         Outbox::initialize(&settings.registry_root.join(NAME).join("effects"))?;
         directory
             .create_new_child(OsStr::new("sync-effects"))
@@ -159,7 +158,6 @@ impl Service {
             return Err(cloud::Error::configuration());
         }
         let directory = root.child(OsStr::new(NAME), false).map_err(io)?;
-        directory.verify_private_parent().map_err(io)?;
         let slots = directory.child(OsStr::new("slots"), false).map_err(io)?;
         directory.open_regular_read(OsStr::new(LOCK)).map_err(io)?;
         let mut backends = BTreeMap::new();

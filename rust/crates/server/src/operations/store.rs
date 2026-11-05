@@ -53,7 +53,6 @@ impl Store {
     pub fn open_existing(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         let directory = Directory::open(&root, false)?;
-        directory.verify_private_parent()?;
         directory.open_regular_read(OsStr::new(".actions.lock"))?;
         Ok(Self {
             database: Database::in_directory(directory.clone())?,
@@ -64,7 +63,6 @@ impl Store {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         let directory = Directory::open(&root, true)?;
-        directory.verify_private_parent()?;
         // Only a completely fresh dedicated root may bootstrap its lock.
         // Existing storage without it requires explicit offline recovery;
         // ordinary reopen/read must not create a second lock domain.

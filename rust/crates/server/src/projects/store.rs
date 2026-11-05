@@ -196,7 +196,6 @@ impl Store {
             }
         })?;
         (|| {
-            directory.verify_private_parent()?;
             directory.publish_new(OsStr::new(LOCK), b"")?;
             directory.publish_new(OsStr::new(EVENTS), b"")?;
             directory.publish_new(
@@ -216,7 +215,6 @@ impl Store {
     }
     pub fn open(path: &Path) -> Result<Self, Error> {
         let directory = Directory::open(path, false)?;
-        directory.verify_private_parent()?;
         let store = Self { directory };
         {
             let lock = store.lock(false)?;

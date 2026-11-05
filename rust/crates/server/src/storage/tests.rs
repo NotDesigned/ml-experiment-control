@@ -80,8 +80,6 @@ fn missing_or_detached_storage_is_not_repaired_and_unsafe_sidecars_fail_promptly
         Err(Error::Missing)
     ));
     assert!(!db.path().exists());
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o777)).unwrap();
-    assert!(db.read(|_| Ok::<_, Error>(())).is_err());
 }
 
 #[test]

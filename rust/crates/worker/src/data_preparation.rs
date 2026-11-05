@@ -61,11 +61,7 @@ pub fn prepare(plan: &Plan, allow_download: bool, cancelled: &AtomicBool) -> Res
         root = root
             .child(name, true)
             .map_err(|e| failure("CACHE_ROOT", e))?;
-        root.verify_private_parent()
-            .map_err(|e| failure("CACHE_ROOT", e))?;
     }
-    root.verify_private_parent()
-        .map_err(|e| failure("CACHE_ROOT", e))?;
     let cache = root
         .child(OsStr::new("script-preparations"), true)
         .map_err(|e| failure("CACHE_ROOT", e))?;

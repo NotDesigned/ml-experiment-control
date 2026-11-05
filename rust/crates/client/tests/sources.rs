@@ -356,6 +356,27 @@ fn invalid_health_or_changed_local_archive_never_sends_upload() {
 
 #[cfg(unix)]
 #[test]
+fn group_writable_directories_in_a_users_tree_pack_the_same_as_private_ones() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let nested = temp.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::write(nested.join("train.py"), "print('not executed')\n").unwrap();
+    for mode in [0o775, 0o777] {
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(mode)).unwrap();
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(mode)).unwrap();
+        let writable = sources::pack_directory(temp.path()).unwrap();
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            writable.sha256,
+            sources::pack_directory(temp.path()).unwrap().sha256
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn packs_deterministic_regular_files_and_preserves_only_executable_intent() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();

@@ -179,7 +179,6 @@ pub(super) fn scan(
     limits.validate()?;
     identity::validate_id(project).map_err(why!(DiscoveryError::UnsafeEntry))?;
     let guard = fence.shared_existing()?;
-    parent.verify_private_parent()?;
     let project_bytes = parent.read_regular(project_filename, domain::MAX_BYTES as u64)?;
     let project_document = Document::decode(&project_bytes, ManifestSource::ProjectYaml)?;
     domain::validate_project(&project_document.metadata, project)?;
@@ -192,7 +191,6 @@ pub(super) fn scan(
     };
     budget.metadata(project_bytes.len() as u64)?;
     for (index, root) in roots.iter().enumerate() {
-        root.verify_private_parent()?;
         if roots[..index].iter().any(|previous| {
             root.path().starts_with(previous.path()) || previous.path().starts_with(root.path())
         }) {
@@ -213,7 +211,6 @@ pub(super) fn scan(
         .collect();
     while let Some((root_index, directory, components)) = pending.pop() {
         budget.directory()?;
-        directory.verify_private_parent()?;
         if let Some(manifest) = read_manifest(&directory, run_sources, &mut budget)? {
             let run_id = manifest
                 .metadata
@@ -250,7 +247,6 @@ pub(super) fn scan(
         for name in entries.iter().rev() {
             match directory.child(name, false) {
                 Ok(child) => {
-                    child.verify_private_parent()?;
                     let text = name.to_str().ok_or(DiscoveryError::UnsafeEntry)?;
                     identity::validate_observation_id(text)
                         .map_err(why!(DiscoveryError::UnsafeEntry))?;

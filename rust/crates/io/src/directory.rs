@@ -218,10 +218,10 @@ impl Directory {
         }
     }
 
-    /// The leaf containing a SQLite database must not be writable by another
-    /// group/user. It cannot restrain root or another process acting as the
-    /// same account.
-    pub fn verify_private_parent(&self) -> io::Result<()> {
+    /// A directory holding credentials or bootstrap state must not be writable
+    /// by another group or user. Mode and owner of this one directory, with no
+    /// walk of its ancestors. It cannot restrain root or the same account.
+    pub fn require_private(&self) -> io::Result<()> {
         let stat = rfs::fstat(&self.inner.file)?;
         if stat.st_mode & 0o022 != 0 || !trusted_storage_owner(stat.st_uid, effective_uid()) {
             return Err(invalid(
@@ -332,7 +332,6 @@ impl Directory {
     /// concurrently. Intended for reviewed operator bootstrap, not observation.
     pub fn create_new_child(&self, name: &OsStr) -> io::Result<Self> {
         leaf(name)?;
-        self.verify_private_parent()?;
         rfs::mkdirat(&self.inner.file, name, Mode::RWXU)?;
         rfs::fsync(&self.inner.file)?;
         let directory = self.child(name, false)?;
@@ -345,7 +344,6 @@ impl Directory {
     /// bounds writes, fsyncs and seals before any directory publication.
     pub fn create_new_regular(&self, name: &OsStr) -> io::Result<File> {
         leaf(name)?;
-        self.verify_private_parent()?;
         let file = File::from(rfs::openat(
             &self.inner.file,
             name,
@@ -364,7 +362,6 @@ impl Directory {
     /// Change only this fixed directory's owner mode. Unsealing is for an
     /// operation's own unpublished staging tree, never an existing source.
     pub fn source_mode(&self, sealed: bool) -> io::Result<()> {
-        self.verify_private_parent()?;
         self.inner
             .file
             .set_permissions(std::fs::Permissions::from_mode(if sealed {
@@ -372,8 +369,7 @@ impl Directory {
             } else {
                 0o700
             }))?;
-        self.inner.file.sync_all()?;
-        self.verify_private_parent()
+        self.inner.file.sync_all()
     }
 
     pub fn mode(&self) -> io::Result<u32> {
@@ -385,14 +381,11 @@ impl Directory {
     /// mean publication happened; callers must not delete either destination.
     pub fn publish_directory(&self, target: &Directory, name: &OsStr) -> io::Result<Directory> {
         leaf(name)?;
-        self.verify_private_parent()?;
         let parent = self
             .inner
             .parent
             .as_ref()
             .ok_or_else(|| invalid("cannot publish filesystem root"))?;
-        parent.verify_private_parent()?;
-        target.verify_private_parent()?;
         rename_between_new(
             &parent.inner.file,
             &self.inner.name,
@@ -406,7 +399,6 @@ impl Directory {
         if !same_file(&published.inner.file, &old)? {
             return Err(invalid("published directory binding changed"));
         }
-        published.verify_private_parent()?;
         Ok(published)
     }
 
@@ -415,28 +407,24 @@ impl Directory {
     /// an unexpected type stops the cleanup. This is not an arbitrary-tree
     /// deletion primitive.
     pub fn remove_staged_regular(&self, name: &OsStr) -> io::Result<()> {
-        self.verify_private_parent()?;
         self.regular_identity(name)?;
         rfs::unlinkat(&self.inner.file, name, AtFlags::empty())?;
         rfs::fsync(&self.inner.file)?;
-        self.verify_private_parent()
+        Ok(())
     }
 
     /// No-replace publication of an operation-owned completed regular file.
     pub fn publish_regular_as(&self, source: &OsStr, target: &OsStr) -> io::Result<()> {
         leaf(source)?;
         leaf(target)?;
-        self.verify_private_parent()?;
         rename_regular_new(&self.inner.file, source, target)?;
         rfs::fsync(&self.inner.file)?;
-        self.verify_private_parent()
+        Ok(())
     }
 
     /// Remove one retained empty child of this exact parent. The caller owns
     /// the unpublished staging namespace; populated/published trees are refused.
     pub fn remove_staged_empty_child(&self, child: &Directory) -> io::Result<()> {
-        self.verify_private_parent()?;
-        child.verify_private_parent()?;
         let parent = child
             .inner
             .parent
@@ -450,7 +438,7 @@ impl Directory {
         }
         rfs::unlinkat(&self.inner.file, &child.inner.name, AtFlags::REMOVEDIR)?;
         rfs::fsync(&self.inner.file)?;
-        self.verify_private_parent()
+        Ok(())
     }
 
     pub fn capacity(&self) -> io::Result<Capacity> {
@@ -524,7 +512,6 @@ impl Directory {
     /// after write starts can mean a partial/durable effect and needs recovery.
     pub fn append_regular(&self, name: &OsStr, bytes: &[u8], maximum: u64) -> io::Result<()> {
         leaf(name)?;
-        self.verify_private_parent()?;
         if !self
             .regular_identity(name)?
             .is_some_and(|id| id.is_owned_safely_for(effective_uid()))
@@ -546,8 +533,7 @@ impl Directory {
             return Err(invalid("append file exceeds its budget"));
         }
         file.write_all(bytes)?;
-        file.sync_all()?;
-        self.verify_private_parent()
+        file.sync_all()
     }
 
     pub fn read_regular(&self, name: &OsStr, maximum: u64) -> io::Result<Vec<u8>> {

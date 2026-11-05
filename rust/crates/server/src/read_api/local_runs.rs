@@ -78,9 +78,7 @@ impl Api {
                 "project has no canonical native Run root",
             )
         })?;
-        let root = Directory::open(p, false).map_err(io)?;
-        root.verify_private_parent().map_err(io)?;
-        Ok(root)
+        Directory::open(p, false).map_err(io)
     }
     /// Nonlocal Runs return None. Broken local authority is never a cloud fallback.
     fn local_document(

@@ -13,17 +13,12 @@ pub(super) fn open_root(config: &HelperConfig) -> Result<Option<Directory>> {
     config
         .shared_run_root
         .as_ref()
-        .map(|path| {
-            let root = Directory::open(path, false)?;
-            root.verify_private_parent()?;
-            Ok(root)
-        })
+        .map(|path| Ok(Directory::open(path, false)?))
         .transpose()
 }
 pub(super) fn binding(directory: Option<&Directory>) -> Result<Option<StorageBinding>> {
     directory
         .map(|directory| {
-            directory.verify_private_parent()?;
             Ok(StorageBinding {
                 path: directory.path(),
                 identity: directory.identity()?,
@@ -41,7 +36,6 @@ impl Helper {
         let plan = domain::plan(intent, manifest)?;
         if let Some(plan) = &plan {
             let root = self.shared.as_ref().ok_or(Error::Configuration)?;
-            root.verify_private_parent()?;
             if root.path().to_str() != Some(plan.runs_root.as_str()) {
                 return Err(Error::Configuration);
             }
@@ -96,8 +90,7 @@ impl Helper {
                     "--cleanenv".into(),
                 ];
                 let mount = backend["mount_root"].as_str().ok_or(Error::Configuration)?;
-                let cache = Directory::open(std::path::Path::new(&preparation.cache_root), true)?;
-                cache.verify_private_parent()?;
+                Directory::open(std::path::Path::new(&preparation.cache_root), true)?;
                 argv.extend([
                     "--bind".into(),
                     format!("{mount}:{mount}"),

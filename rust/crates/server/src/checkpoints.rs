@@ -40,7 +40,6 @@ impl Store {
     pub fn open_existing(registry_root: &Path) -> Result<Self> {
         let root = Directory::open(registry_root, false)?;
         let namespace = root.child(OsStr::new(NAMESPACE), false)?;
-        namespace.verify_private_parent()?;
         namespace.open_regular_read(OsStr::new(LOCK))?;
         Ok(Self { namespace })
     }

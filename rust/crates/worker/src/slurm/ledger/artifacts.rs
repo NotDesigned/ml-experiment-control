@@ -221,7 +221,6 @@ impl Helper {
                     }
                 }
             }
-            directory.verify_private_parent()?;
             Ok(state)
         };
         let outcome = match result() {

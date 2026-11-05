@@ -262,6 +262,5 @@ pub fn publish(package: &Package) -> Result<()> {
         dir.remove_staged_regular(OsStr::new("archive.tar"))
             .map_err(|_| Error::Storage)?;
     }
-    dir.verify_private_parent().map_err(|_| Error::Storage)?;
     Ok(())
 }

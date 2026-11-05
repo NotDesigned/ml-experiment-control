@@ -109,18 +109,8 @@ impl Directory {
         }
         current.ok_or_else(invalid)
     }
-    pub fn verify_private_parent(&self) -> io::Result<()> {
-        if !same(&self.inner.file, &open_directory(&self.inner.path)?)? {
-            return Err(invalid());
-        }
-        if let Some(parent) = &self.inner._parent {
-            parent.verify_private_parent()?;
-        }
-        Ok(())
-    }
     pub fn child(&self, name: &OsStr, create: bool) -> io::Result<Self> {
         leaf(name)?;
-        self.verify_private_parent()?;
         let path = self.inner.path.join(name);
         if create && !path.try_exists()? {
             match fs::create_dir(&path) {
@@ -138,7 +128,6 @@ impl Directory {
         })
     }
     pub fn entry_names_limited(&self, maximum: usize) -> io::Result<Vec<OsString>> {
-        self.verify_private_parent()?;
         let mut names = Vec::new();
         for entry in fs::read_dir(&self.inner.path)? {
             if names.len() >= maximum {
@@ -149,12 +138,10 @@ impl Directory {
             names.push(name);
         }
         names.sort();
-        self.verify_private_parent()?;
         Ok(names)
     }
     pub fn open_regular_read(&self, name: &OsStr) -> io::Result<File> {
         leaf(name)?;
-        self.verify_private_parent()?;
         let mut options = OpenOptions::new();
         options.read(true);
         crate::windows_private::read_options(&mut options);
@@ -201,7 +188,6 @@ impl Directory {
     }
     pub fn entry_exists(&self, name: &OsStr) -> io::Result<bool> {
         leaf(name)?;
-        self.verify_private_parent()?;
         match fs::symlink_metadata(self.inner.path.join(name)) {
             Ok(_) => Ok(true),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -223,7 +209,6 @@ impl Directory {
     }
     pub fn publish_new(&self, name: &OsStr, bytes: &[u8]) -> io::Result<()> {
         leaf(name)?;
-        self.verify_private_parent()?;
         crate::write_atomic(&self.inner.path.join(name), bytes, true)
     }
 }

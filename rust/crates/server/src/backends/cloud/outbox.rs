@@ -59,9 +59,6 @@ type Guard = FileLock;
 impl Outbox {
     pub fn initialize(path: &Path) -> Result<()> {
         let directory = Directory::open(path, false).map_err(why!(Error::configuration()))?;
-        directory
-            .verify_private_parent()
-            .map_err(|_| Error::configuration())?;
         if !directory
             .entry_names()
             .map_err(why!(Error::configuration()))?
@@ -90,9 +87,6 @@ impl Outbox {
     }
     pub fn open(path: &Path) -> Result<Self> {
         let directory = Directory::open(path, false).map_err(why!(Error::configuration()))?;
-        directory
-            .verify_private_parent()
-            .map_err(|_| Error::configuration())?;
         let marker = directory
             .read_regular(OsStr::new(MARKER), 1024)
             .map_err(why!(Error::configuration()))?;

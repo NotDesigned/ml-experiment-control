@@ -258,9 +258,7 @@ impl Service {
         operations::Store::open(settings.registry_root.join("actions"))?;
         crate::checkpoints::Store::open(&settings.registry_root)
             .map_err(why!(Error::Configuration))?;
-        namespace
-            .verify_private_parent()
-            .map_err(|_| Error::Configuration)
+        Ok(())
     }
     pub fn open(
         settings: read_config::Settings,
@@ -307,9 +305,6 @@ impl Service {
         let directory = root
             .child(OsStr::new(NAMESPACE), false)
             .map_err(why!(Error::Configuration))?;
-        directory
-            .verify_private_parent()
-            .map_err(|_| Error::Configuration)?;
         let slots = directory
             .child(OsStr::new("slots"), false)
             .map_err(why!(Error::Configuration))?;

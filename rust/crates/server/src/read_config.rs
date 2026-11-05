@@ -168,7 +168,7 @@ pub fn initialize(path: &Path) -> Result<String, Error> {
         return Err(Error);
     }
     let root = parent.create_new_child(leaf).map_err(why!(Error))?;
-    root.verify_private_parent().map_err(|_| Error)?;
+    root.require_private().map_err(why!(Error))?;
     if !root.entry_names().map_err(why!(Error))?.is_empty() {
         return Err(Error);
     }
@@ -193,7 +193,6 @@ pub fn initialize(path: &Path) -> Result<String, Error> {
 /// accidental use of a production/Python registry; ordinary reads create none.
 pub fn workspace(path: &Path) -> Result<(Directory, String), Error> {
     let root = Directory::open(path, false).map_err(why!(Error))?;
-    root.verify_private_parent().map_err(|_| Error)?;
     let data = root
         .read_regular(OsStr::new(MARKER), 4096)
         .map_err(why!(Error))?;

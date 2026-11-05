@@ -183,7 +183,7 @@ fn canonical_corruption_foreign_identity_and_science_only_copies_are_not_absence
 
 #[test]
 fn linked_manifests_unsafe_permissions_and_names_fail_closed() {
-    for case in ["linked-manifest", "writable-directory", "unsafe-name"] {
+    for case in ["linked-manifest", "unsafe-name"] {
         let fixture = Fixture::new();
         match case {
             "linked-manifest" => {
@@ -191,14 +191,6 @@ fn linked_manifests_unsafe_permissions_and_names_fail_closed() {
                 fs::hard_link(
                     fixture.runs().join("good/manifest.json"),
                     fixture.temp.path().join("copy.json"),
-                )
-                .unwrap();
-            }
-            "writable-directory" => {
-                fixture.add("group", "trial");
-                fs::set_permissions(
-                    fixture.runs().join("group"),
-                    fs::Permissions::from_mode(0o777),
                 )
                 .unwrap();
             }

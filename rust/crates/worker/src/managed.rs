@@ -126,7 +126,7 @@ fn hex(value: &str) -> bool {
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 fn private_bytes(root: &Directory, name: &OsStr, maximum: u64) -> Result<Vec<u8>> {
-    root.verify_private_parent().map_err(|_| Error::Storage)?;
+    root.require_private().map_err(|_| Error::Storage)?;
     let mut file = root.open_regular_read(name).map_err(|_| Error::Storage)?;
     let metadata = file.metadata().map_err(|_| Error::Storage)?;
     if metadata.mode() & 0o077 != 0 || metadata.len() > maximum {
@@ -356,10 +356,7 @@ pub fn initialize_with_environment(
     config.validate_runtime(runtime)?;
     let bytes = private_file(&config.manifest_path, launch::MAX_BYTES as u64)?;
     verified(config, &bytes)?;
-    let workdir = Directory::open(&config.workdir, false).map_err(|_| Error::Storage)?;
-    workdir
-        .verify_private_parent()
-        .map_err(|_| Error::Storage)?;
+    Directory::open(&config.workdir, false).map_err(|_| Error::Storage)?;
     let parent = Directory::open(
         config.attempt_root.parent().ok_or(Error::Configuration)?,
         false,
@@ -406,9 +403,6 @@ pub fn initialize_with_environment(
         Some(sha(&bytes))
     };
     held.append(Phase::Prepared, None, runtime_sha256)?;
-    workdir
-        .verify_private_parent()
-        .map_err(|_| Error::Storage)?;
     held.observe(config)
 }
 
@@ -458,9 +452,6 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
     let output_path = config.output_path();
     let output_parent = Directory::open(output_path.parent().ok_or(Error::Configuration)?, false)
         .map_err(|_| Error::Storage)?;
-    output_parent
-        .verify_private_parent()
-        .map_err(|_| Error::Storage)?;
     if output_parent
         .entry_exists(output_path.file_name().ok_or(Error::Configuration)?)
         .map_err(|_| Error::Storage)?
@@ -471,10 +462,7 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
     {
         return Err(Error::Uncertain);
     }
-    let workdir = Directory::open(&config.workdir, false).map_err(|_| Error::Storage)?;
-    workdir
-        .verify_private_parent()
-        .map_err(|_| Error::Storage)?;
+    Directory::open(&config.workdir, false).map_err(|_| Error::Storage)?;
     let bytes = private_bytes(&held.root, OsStr::new(MANIFEST), launch::MAX_BYTES as u64)?;
     let (target, manifest, mut environment) = verified(config, &bytes)?;
     if let Some(plan) = &config.data_preparation {
@@ -507,9 +495,6 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         None,
         initial.runtime_environment_sha256.clone(),
     )?;
-    output_parent
-        .verify_private_parent()
-        .map_err(|_| Error::Uncertain)?;
     let execution = crate::process::execute_explicit(
         &config.workdir,
         &output_path,
@@ -519,15 +504,7 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         &environment,
     )
     .map_err(|_| Error::Uncertain)?;
-    output_parent
-        .verify_private_parent()
-        .map_err(|_| Error::Uncertain)?;
-    Directory::open(&output_path, false)
-        .and_then(|outputs| outputs.verify_private_parent())
-        .map_err(|_| Error::Uncertain)?;
-    workdir
-        .verify_private_parent()
-        .map_err(|_| Error::Uncertain)?;
+    Directory::open(&output_path, false).map_err(|_| Error::Uncertain)?;
     let process = ProcessEvidence::from(execution);
     let receipt = Receipt {
         contract: CONTRACT.into(),

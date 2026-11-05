@@ -64,9 +64,7 @@ fn remove(root: &Directory, depth: usize, budget: &mut usize) -> io::Result<()> 
 pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
     plan.validate().map_err(|_| invalid())?;
     let worker = Directory::open(&plan.config.attempt_root, false)?;
-    worker.verify_private_parent()?;
     let root = Directory::open(&plan.storage_root(), false)?;
-    root.verify_private_parent()?;
     // The phase ledger: it is never created here, because a recreated ledger
     // reads as unstarted and could re-run training.
     let _lock = worker.lock(

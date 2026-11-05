@@ -49,7 +49,7 @@ pub fn verify_inventory(root: &Directory, files: &[FileReceipt], sealed: bool) -
             return Err(invalid());
         }
     }
-    root.verify_private_parent()
+    Ok(())
 }
 fn verify_sealed_directories(root: &Directory, depth: usize, budget: &mut usize) -> io::Result<()> {
     if depth > 128 || root.mode()? & 0o222 != 0 {
@@ -64,7 +64,7 @@ fn verify_sealed_directories(root: &Directory, depth: usize, budget: &mut usize)
             verify_sealed_directories(&child, depth + 1, budget)?;
         }
     }
-    root.verify_private_parent()
+    Ok(())
 }
 fn parent(root: &Directory, path: &str) -> io::Result<(Directory, String)> {
     let mut parts = path.split('/').collect::<Vec<_>>();

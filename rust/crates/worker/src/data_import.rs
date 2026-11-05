@@ -476,7 +476,6 @@ pub fn bundle(config: &Config, output: &Path, cancelled: &AtomicBool) -> Result<
         false,
     )
     .map_err(io_error)?;
-    parent.verify_private_parent().map_err(io_error)?;
     let name = output
         .file_name()
         .ok_or_else(|| failed("SOURCE_PATH_INVALID"))?;

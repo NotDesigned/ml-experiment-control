@@ -24,9 +24,6 @@ impl Service {
                 if project.discovery_enabled() && project.run_roots.len() == 1 {
                     let directory = Directory::open(&project.run_roots[0], false)
                         .map_err(why!(Error::Configuration))?;
-                    directory
-                        .verify_private_parent()
-                        .map_err(|_| Error::Configuration)?;
                     self.creation_roots
                         .insert(project.project.clone(), directory);
                 }
@@ -53,7 +50,6 @@ impl Service {
             .map_err(why!(Error::Authority))?;
         let _lock = self.lock()?;
         self.validate_workspace(project, &request.run_id)?;
-        root.verify_private_parent().map_err(|_| Error::Authority)?;
         let project_document = self
             .evidence
             .project(project, None)

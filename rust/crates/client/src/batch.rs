@@ -42,7 +42,6 @@ pub fn prepare(
             .join(directory)
     };
     let root = ml_exp_io::directory::Directory::open(&absolute, true).map_err(|_| invalid())?;
-    root.verify_private_parent().map_err(|_| invalid())?;
     let manifest = json!({"contract":"native-batch.v1","server":client.base_url(),"project":project,"batch":batch});
     let file = std::ffi::OsStr::new("batch.json");
     let bytes = serde_json::to_vec(&manifest).map_err(|_| invalid())?;

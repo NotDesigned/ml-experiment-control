@@ -83,7 +83,6 @@ impl Store {
         namespace.create_new_child(OsStr::new(SOURCES))?;
         namespace.create_new_child(OsStr::new(IMPORTS))?;
         namespace.create_new_child(OsStr::new(STAGING))?;
-        namespace.verify_private_parent()?;
         Ok(())
     }
 

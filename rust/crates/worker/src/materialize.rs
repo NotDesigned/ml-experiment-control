@@ -52,7 +52,6 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
         return Err(invalid());
     }
     let root = Directory::open(&config.root, false)?;
-    root.verify_private_parent()?;
     let _lock = root.lock(
         OsStr::new(".materializer.lock"),
         LockOptions {

@@ -189,7 +189,6 @@ pub fn verify(root: &Directory, manifest: &Manifest, seal: bool) -> Result<Verif
     for record in &manifest.files {
         verify_file(root, record)?;
     }
-    generation.verify_private_parent()?;
     Ok(Verified {
         manifest: manifest.clone(),
         generation: manifest.generation.clone(),

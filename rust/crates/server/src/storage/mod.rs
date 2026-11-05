@@ -90,7 +90,6 @@ fn uri_path(path: &Path) -> String {
 impl Binding {
     fn validate(&self, effects: bool) -> Result<(), Error> {
         let checked = (|| {
-            self.parent.verify_private_parent()?;
             if self.parent.regular_identity(&self.name)? != Some(self.main) {
                 return Err(Error::Detached);
             }
@@ -156,7 +155,6 @@ impl SqliteDatabase {
 
     fn parent(&self, create: bool) -> Result<Directory, Error> {
         if let Some(parent) = self.anchors.parent.get() {
-            parent.verify_private_parent()?;
             return Ok(parent.clone());
         }
         let path = self
@@ -164,10 +162,8 @@ impl SqliteDatabase {
             .parent()
             .ok_or(Error::Invalid("absolute database path required"))?;
         let candidate = Directory::open(path, create)?;
-        candidate.verify_private_parent()?;
         let _ = self.anchors.parent.set(candidate);
         let parent = self.anchors.parent.get().ok_or(Error::Detached)?.clone();
-        parent.verify_private_parent()?;
         Ok(parent)
     }
 

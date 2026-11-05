@@ -96,7 +96,6 @@ impl Service {
         let directory = root
             .child(OsStr::new("administration"), false)
             .map_err(why!(invalid()))?;
-        directory.verify_private_parent().map_err(|_| invalid())?;
         directory
             .open_regular_read(OsStr::new(".lock"))
             .map_err(why!(invalid()))?;

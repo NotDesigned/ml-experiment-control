@@ -349,7 +349,6 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         }
     }
     let root = Directory::open(&normalized, false).map_err(|_| packing())?;
-    root.verify_private_parent().map_err(|_| packing())?;
     let mut stack = vec![(root, String::new(), 0)];
     let mut entries = Vec::new();
     let mut observed = Vec::new();
@@ -360,7 +359,6 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         if depth > MAX_DEPTH || observed.len() >= MAX_DIRECTORIES {
             return Err(packing());
         }
-        directory.verify_private_parent().map_err(|_| packing())?;
         let names = directory
             .entry_names_limited(MAX_SOURCE_NODES.saturating_sub(nodes))
             .map_err(|_| packing())?;
@@ -466,10 +464,6 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         }
     }
     for proof in observed {
-        proof
-            .parent
-            .verify_private_parent()
-            .map_err(|_| packing())?;
         if proof
             .parent
             .entry_names_limited(MAX_SOURCE_NODES)

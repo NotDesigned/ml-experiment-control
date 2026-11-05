@@ -53,7 +53,6 @@ impl Store {
             return Err(invalid());
         }
         let root = Directory::open(&config.root, false)?;
-        root.verify_private_parent()?;
         Ok(Self { config, root })
     }
     fn marker(&self) -> io::Result<Marker> {
@@ -94,7 +93,7 @@ impl Store {
         {
             return Err(invalid());
         }
-        self.root.verify_private_parent()
+        Ok(())
     }
     fn read(&self, request: &Request) -> io::Result<(Directory, State)> {
         let project = self.root.child(OsStr::new(&request.project), false)?;

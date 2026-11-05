@@ -135,9 +135,7 @@ impl Service {
             .iter()
             .find(|p| p.project == project && p.discovery_enabled() && p.run_roots.len() == 1)
             .ok_or_else(cloud::Error::configuration)?;
-        let root = Directory::open(&project.run_roots[0], false).map_err(io)?;
-        root.verify_private_parent().map_err(io)?;
-        Ok(root)
+        Directory::open(&project.run_roots[0], false).map_err(io)
     }
     pub(super) fn project_hash(&self, project: &str) -> cloud::Result<String> {
         experiments::Store::open(self.settings.bindings(), self.fence.clone())

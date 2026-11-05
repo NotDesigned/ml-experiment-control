@@ -114,15 +114,7 @@ const ATTEMPT_SOURCES: &[ManifestSource] =
     &[ManifestSource::AttemptYaml, ManifestSource::AttemptJson];
 
 impl ProjectAnchor {
-    fn validate(&self) -> Result<()> {
-        self.parent.verify_private_parent()?;
-        for root in &self.roots {
-            root.verify_private_parent()?;
-        }
-        Ok(())
-    }
     fn project(&self, identity: &str) -> Result<Document> {
-        self.validate()?;
         let document = read(&self.parent, &self.filename, ManifestSource::ProjectYaml)?;
         domain::validate_project(&document.metadata, identity)?;
         Ok(document)
@@ -142,7 +134,6 @@ impl ProjectAnchor {
             identity::validate_observation_id(name).map_err(why!(Error::Binding))?;
             directory = directory.child(OsStr::new(name), false)?;
         }
-        directory.verify_private_parent()?;
         Ok(directory)
     }
     fn verify_snapshot(
@@ -155,8 +146,6 @@ impl ProjectAnchor {
     ) -> Result<()> {
         same(project, &self.project(&reference.project)?)?;
         same(run, &read_first(directory, RUN_SOURCES)?)?;
-        self.validate()?;
-        directory.verify_private_parent()?;
         guard.require_observed_live(&reference.project, &reference.run_id)?;
         Ok(())
     }
@@ -230,7 +219,6 @@ impl Store {
         let document = anchor.project(project)?;
         check_sha(&document, expected_raw_sha256)?;
         same(&document, &anchor.project(project)?)?;
-        anchor.validate()?;
         Ok(document)
     }
     pub fn run(&self, reference: &RunRef, expected_raw_sha256: Option<&str>) -> Result<Document> {
@@ -264,7 +252,6 @@ impl Store {
         check_sha(&run, expected.run.as_deref())?;
         let attempts = directory.child(OsStr::new("attempts"), false)?;
         let attempt_directory = attempts.child(OsStr::new(attempt_id), false)?;
-        attempt_directory.verify_private_parent()?;
         let attempt = read_first(&attempt_directory, ATTEMPT_SOURCES)?;
         check_sha(&attempt, expected.attempt.as_deref())?;
         let provenance = domain::validate_attempt(
@@ -275,7 +262,6 @@ impl Store {
             attempt_id,
         )?;
         same(&attempt, &read_first(&attempt_directory, ATTEMPT_SOURCES)?)?;
-        attempt_directory.verify_private_parent()?;
         anchor.verify_snapshot(&project, &run, &directory, reference, &guard)?;
         Ok(AttemptRecord {
             run,
@@ -386,7 +372,6 @@ impl Store {
         for attempt_id in names {
             let root = attempts_directory.as_ref().ok_or(Error::Missing)?;
             let attempt_directory = root.child(OsStr::new(&attempt_id), false)?;
-            attempt_directory.verify_private_parent()?;
             let manifest = snapshot::manifest(&attempt_directory, ATTEMPT_SOURCES, &mut budget)?;
             let provenance = domain::validate_attempt(
                 &run,
@@ -441,10 +426,6 @@ impl Store {
         }
         for (attempt, root) in attempts.iter().zip(&retained) {
             same(&attempt.manifest, &read_first(root, ATTEMPT_SOURCES)?)?;
-            root.verify_private_parent()?;
-        }
-        if let Some(root) = attempts_directory {
-            root.verify_private_parent()?;
         }
         anchor.verify_snapshot(&project, &run, &directory, reference, &guard)?;
         Ok(Snapshot {

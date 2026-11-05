@@ -81,7 +81,6 @@ impl Database {
         Self::in_directory(Directory::open(root, true)?)
     }
     pub(crate) fn in_directory(directory: Directory) -> Result<Self> {
-        directory.verify_private_parent()?;
         let sqlite =
             SqliteDatabase::in_directory(directory.clone(), OsStr::new("actions.sqlite3"))?
                 .with_wal();
@@ -92,7 +91,6 @@ impl Database {
         })
     }
     fn root_directory(&self) -> Result<&Directory> {
-        self.directory.verify_private_parent()?;
         Ok(&self.directory)
     }
     pub fn path(&self) -> PathBuf {

@@ -82,15 +82,11 @@ impl Helper {
             let worker = crate::managed::sample(&package.config).map_err(|_| Error::Metadata)?;
             let outputs = directories[5].child(OsStr::new("payload"), false);
             let (mut stdout, mut stderr, metrics) = match outputs {
-                Ok(outputs) => {
-                    let result = (
-                        window(&outputs, "stdout.log"),
-                        window(&outputs, "stderr.log"),
-                        window(&outputs, "metrics.jsonl"),
-                    );
-                    outputs.verify_private_parent()?;
-                    result
-                }
+                Ok(outputs) => (
+                    window(&outputs, "stdout.log"),
+                    window(&outputs, "stderr.log"),
+                    window(&outputs, "metrics.jsonl"),
+                ),
                 Err(_) => (
                     Window::unavailable(Problem::Missing),
                     Window::unavailable(Problem::Missing),

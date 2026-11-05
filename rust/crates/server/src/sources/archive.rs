@@ -40,7 +40,6 @@ pub(super) fn directory(root: &Directory, path: &str, create: bool) -> Result<Di
     if !path.is_empty() {
         for part in path.split('/') {
             current = current.child(OsStr::new(part), create)?;
-            current.verify_private_parent()?;
         }
     }
     Ok(current)
@@ -198,6 +197,5 @@ pub(super) fn extract(file: &mut File, tree: &Directory, policy: &Policy) -> Res
             return Err(Error::Archive);
         }
     }
-    tree.verify_private_parent()?;
     Ok(())
 }
