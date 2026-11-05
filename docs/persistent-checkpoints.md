@@ -76,15 +76,26 @@ GPU profiles may differ when storage is shared, but Slurm, SenseCore and DLC
 are different scopes. DLC scope also binds the approved user and storage
 endpoint. Cross-backend use requires explicit state export/data asset delivery.
 
-`resume_from` is frozen in the Run. Retrying the same Run does **not** automatically
-select a checkpoint produced by its failed Attempt. A changed restore reference
-currently requires a new Run. Automatic recovery is [not implemented](recovery.md).
+The initial `resume_from` is frozen in the Run. Native cloud retry can explicitly
+select a checkpoint produced by a terminal Attempt of that same Run:
+
+```bash
+ml-exp run retry ACTION --run training --attempt attempt-001 \
+  --checkpoint checkpoint.ACTUAL_64_HEX_HASH --max-gpu-hours 0.5
+```
+
+This creates the next Attempt with its selected restore reference, leaving the
+original Run and Attempt unchanged. It does not submit training or choose the
+latest checkpoint automatically. The parent can have completed successfully;
+its checkpoint must match the same source, image and storage scope. Changed
+scientific configuration requires a new Run. See [recovery](recovery.md).
 
 ## Limits and failures
 
 Backend state bypasses API archive byte limits but remains subject to backend
-disk/quota. Metadata is limited to 256 KiB/20,000 files; combined input/preparation/
-restore manifests must fit 32 KiB. Keep manifests small enough for this tighter bound.
+disk/quota. Checkpoint metadata is limited to 256 KiB/20,000 files. The complete native
+worker package, including input definitions and restore metadata, must fit
+64 KiB; its serialized size determines whether preparation can proceed.
 `checkpoint_upload` is a separate optional full-state backup path on supported
 Slurm/SenseCore executors, governed by archive/part/storage limits. With persistence
 it archives the STATE_DIR ready generation; without persistence it uses the

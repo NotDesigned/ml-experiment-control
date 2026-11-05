@@ -38,13 +38,23 @@ not interchangeable.
 | --- | --- |
 | Slurm | Client → bounded API buffer → connected SSH gateway → shared storage. Offline compute nodes read the shared cache. |
 | SenseCore | Client → bounded API buffer → CCR data image → debug CPU ACP → NAS. A CPU receipt establishes readiness. |
-| PAI | Client → bounded API buffer → personal OSS objects → CPU preparation → personal CPFS. Training reads the verified cache. |
+| PAI | Client → bounded API buffer → personal OSS objects → verified personal CPFS cache. Import runs before training, optionally in a separate CPU job. |
 
 A cache is scoped to its executor/storage identity. An asset's presence on one
 backend does not prove readiness on another. Partial trees and hash mismatches
 are not accepted as ready data. Dataset directories remain outside results.
 
 ## PAI preparation using an existing image
+
+For PAI, an archive-verified asset can be used directly in the Run's `data`
+field even when the API has no READY receipt yet. The worker imports and
+verifies it on CPFS before starting training, or reuses an exact verified cache.
+This inline preparation consumes the allocated job's running time and resources.
+The full worker package, including dataset and checkpoint manifests, must fit
+64 KiB. `ready:null` alone does not prove that a physical cache is absent.
+
+A separate CPU publication avoids doing that work on allocated training GPUs.
+It is optional for this inline path:
 
 Save one request ID before the first call and reuse a READY Runtime:
 
@@ -109,7 +119,7 @@ ml-exp data download --project study --executor pai-h200 \
 ```
 
 Import streams and verifies the archive and member inventory; it is not a claim
-that CPFS is ready. Use the preparation command above before GPU training.
+that CPFS is ready. Use separate CPU publication or the PAI inline import above.
 Downloads obtain object-part tickets, verify the archive and every file, and
 publish into a new local directory. Dataset downloads send no result ACK and
 never delete the OSS original. Bucket, endpoint, prefix and credentials are
