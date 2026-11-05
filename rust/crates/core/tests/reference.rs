@@ -30,25 +30,6 @@ impl Reference {
         assert!(!self.generation.is_empty());
     }
 }
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Transition {
-    from: RunState,
-    to: RunState,
-    allowed: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StateFixture {
-    schema_version: u32,
-    reference: Reference,
-    states: Vec<RunState>,
-    terminal_states: Vec<RunState>,
-    transitions: Vec<Transition>,
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cases<T> {
@@ -72,33 +53,13 @@ struct MarkerCase {
     valid: bool,
     marker: Option<String>,
 }
-
-#[test]
-fn every_state_pair_and_terminal_state_matches_python_reference() {
-    let fixture: StateFixture =
-        serde_json::from_str(include_str!("../../../compatibility/state-machine.json")).unwrap();
-    assert_eq!(fixture.schema_version, 1);
-    fixture.reference.assert_provenance(
-        "src/experiment_control/manifest.py",
-        MANIFEST_SHA,
+/// Every state pair, including sampled scheduler skips, requeue and terminal
+/// self-transitions. A pair missing from this table is refused.
+const ALLOWED_TRANSITIONS: [(&str, &[&str]); 12] = [
+    ("NOT_SUBMITTED", &["CREATED"]),
+    (
+        "CREATED",
         &[
-            "RunState",
-            "ALLOWED_STATE_TRANSITIONS",
-            "TERMINAL_RUN_STATES",
-        ],
-    );
-
-    // The fixture must retain every positive AND negative transition, including
-    // sampled scheduler skips, requeue and terminal self-transitions.
-    let names: Vec<_> = fixture
-        .states
-        .iter()
-        .map(|state| serde_json::to_value(state).unwrap())
-        .collect();
-    assert_eq!(
-        names,
-        [
-            "NOT_SUBMITTED",
             "CREATED",
             "SUBMITTING",
             "QUEUED",
@@ -110,30 +71,115 @@ fn every_state_pair_and_terminal_state_matches_python_reference() {
             "PREEMPTED",
             "CANCELLED",
             "UNKNOWN",
-        ]
-        .map(serde_json::Value::from)
-    );
-    assert_eq!(fixture.terminal_states.len(), 4);
-    assert_eq!(fixture.transitions.len(), 144);
-    let mut pairs = BTreeSet::new();
-    for case in &fixture.transitions {
-        assert!(fixture.states.contains(&case.from));
-        assert!(fixture.states.contains(&case.to));
-        assert!(pairs.insert(format!("{:?}->{:?}", case.from, case.to)));
+        ],
+    ),
+    (
+        "SUBMITTING",
+        &[
+            "SUBMITTING",
+            "QUEUED",
+            "STARTING",
+            "RUNNING",
+            "EVALUATING",
+            "SUCCEEDED",
+            "FAILED",
+            "PREEMPTED",
+            "CANCELLED",
+            "UNKNOWN",
+        ],
+    ),
+    (
+        "QUEUED",
+        &[
+            "QUEUED",
+            "STARTING",
+            "RUNNING",
+            "EVALUATING",
+            "SUCCEEDED",
+            "FAILED",
+            "PREEMPTED",
+            "CANCELLED",
+            "UNKNOWN",
+        ],
+    ),
+    (
+        "STARTING",
+        &[
+            "QUEUED",
+            "STARTING",
+            "RUNNING",
+            "EVALUATING",
+            "SUCCEEDED",
+            "FAILED",
+            "PREEMPTED",
+            "CANCELLED",
+            "UNKNOWN",
+        ],
+    ),
+    (
+        "RUNNING",
+        &[
+            "QUEUED",
+            "RUNNING",
+            "EVALUATING",
+            "SUCCEEDED",
+            "FAILED",
+            "PREEMPTED",
+            "CANCELLED",
+            "UNKNOWN",
+        ],
+    ),
+    (
+        "EVALUATING",
+        &[
+            "EVALUATING",
+            "SUCCEEDED",
+            "FAILED",
+            "PREEMPTED",
+            "CANCELLED",
+            "UNKNOWN",
+        ],
+    ),
+    ("SUCCEEDED", &["SUCCEEDED"]),
+    ("FAILED", &["FAILED"]),
+    ("PREEMPTED", &["PREEMPTED"]),
+    ("CANCELLED", &["CANCELLED"]),
+    (
+        "UNKNOWN",
+        &[
+            "CREATED",
+            "SUBMITTING",
+            "QUEUED",
+            "STARTING",
+            "RUNNING",
+            "EVALUATING",
+            "SUCCEEDED",
+            "FAILED",
+            "PREEMPTED",
+            "CANCELLED",
+            "UNKNOWN",
+        ],
+    ),
+];
+
+#[test]
+fn run_state_transitions_and_terminal_states_are_exact() {
+    let state =
+        |name: &str| -> RunState { serde_json::from_value(serde_json::Value::from(name)).unwrap() };
+    let terminal = ["SUCCEEDED", "FAILED", "PREEMPTED", "CANCELLED"];
+    for (from, allowed) in ALLOWED_TRANSITIONS {
         assert_eq!(
-            case.from.allows(case.to),
-            case.allowed,
-            "Python transition {:?} -> {:?}",
-            case.from,
-            case.to
+            state(from).is_terminal(),
+            terminal.contains(&from),
+            "{from}"
         );
-    }
-    for state in fixture.states {
-        assert_eq!(
-            state.is_terminal(),
-            fixture.terminal_states.contains(&state),
-            "Python terminal classification of {state:?}"
-        );
+        for (to, _) in ALLOWED_TRANSITIONS {
+            assert_eq!(
+                state(from).allows(state(to)),
+                allowed.contains(&to),
+                "{from} -> {to}"
+            );
+        }
     }
 }
 

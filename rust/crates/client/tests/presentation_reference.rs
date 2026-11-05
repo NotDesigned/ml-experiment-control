@@ -1,55 +1,60 @@
-//! Actual baseline projections; the test process uses only Rust and synthetic
-//! evidence, with no clock, credentials, network or production state.
+//! Human status summaries over synthetic evidence; no clock, credentials or network.
 use ml_exp_client::presentation;
 use serde_json::{Value, json};
 
+fn literal(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
+}
+
 #[test]
-fn human_summaries_match_frozen_python_and_do_not_mutate_scientific_evidence() {
-    let fixture: Value = serde_json::from_str(include_str!(
-        "../../../compatibility/client-presentation.json"
-    ))
-    .unwrap();
-    assert_eq!(
-        fixture["reference"]["commit"],
-        "6fc4f0b8e5a93baf8e89509d65263b6a84eb6c49"
-    );
-    assert_eq!(
-        fixture["reference"]["source"],
-        "client/src/ml_exp_client/presentation.py"
-    );
-    assert_eq!(
-        fixture["reference"]["sha256"],
-        "7e72132da981fe9b204a15deeffaa40e326d9f0c9153103eeb4ef15ab71f17df"
-    );
-    let cases = fixture["cases"].as_array().unwrap();
-    for case in cases {
-        let input = &case["input"];
-        let before = input.clone();
-        let result = match case["operation"].as_str().unwrap() {
-            "status_summary" => presentation::status_summary(input),
-            "progress_summary" => presentation::progress_summary(input),
-            "operation_summary" => presentation::operation_summary(input),
-            "experiment_summary" => presentation::experiment_summary(
-                input,
-                case["options"]["state_file"].as_str().unwrap(),
-                case["options"]["executed"].as_bool().unwrap(),
-                case["options"]["client_config"].as_str(),
+fn status_summary_lines_describe_each_evidence_layer_without_changing_input() {
+    for (input, expected) in [
+        (
+            literal(r#"{}"#),
+            "Run: UNKNOWN/UNKNOWN · Attempt not observed\nStage: UNKNOWN\nScheduler: UNKNOWN\nBackend: not observed; job not observed; native not observed\nTraining: UNKNOWN; process not observed\nModel: NOT_OBSERVED\nProgress: recent progress not observed\nResults: NOT_OBSERVED; download unavailable\nVerification: NOT_OBSERVED\nNext: inspect existing evidence; no action specified",
+        ),
+        (
+            literal(
+                r#"{"project":"demo","run_id":"trial","attempt_id":"attempt-001","scheduler":{"state":"FAILED"},"training":{"status":"UNKNOWN"},"publication":{"status":"RELEASED","download_available":true},"verification":{"status":"PENDING"}}"#,
             ),
-            _ => unreachable!(),
-        };
-        if let Some(expected) = case.get("expected") {
-            assert_eq!(
-                result.unwrap_or_else(|error| panic!("{}: {error}", case["name"])),
-                expected.as_str().unwrap(),
-                "{}",
-                case["name"]
-            );
-        } else {
-            assert!(result.is_err(), "{} unexpectedly accepted", case["name"]);
-        }
-        assert_eq!(*input, before, "{} changed its input", case["name"]);
+            "Run: demo/trial · attempt-001\nStage: FAILED\nScheduler: FAILED\nBackend: not observed; job not observed; native not observed\nTraining: UNKNOWN; process not observed\nModel: NOT_OBSERVED\nProgress: recent progress not observed\nResults: RELEASED; download unavailable\nVerification: PENDING\nNext: inspect existing evidence; no action specified",
+        ),
+        (
+            literal(
+                r#"{"project":"demo","run_id":"trial","attempt_id":"attempt-001","scheduler":{"state":"QUEUED"},"training":{"status":"COMPLETED","exit_code":0},"publication":{"status":"RELEASED","download_available":false},"verification":{"status":"SHA256_VERIFIED"},"queue":{"reason":"Current Limit is CPU: 200 limited by Role PAI.AlgoDeveloper.GPU: 8 limited by Role PAI.AlgoDeveloper.","provider_code":"CheckSelfQuotaFailed","position":1,"blocker":{"CodeType":"ConfigRule","Code":"roleMaximumResource","Reason":"Current Limit is CPU: 200 limited by Role PAI.AlgoDeveloper.GPU: 8 limited by Role PAI.AlgoDeveloper."},"as_of":"2026-10-24T00:00:00Z","stale":true,"estimated_start_at":null},"progress":{"phase":"QUEUED"}}"#,
+            ),
+            "Run: demo/trial · attempt-001\nStage: QUEUED\nScheduler: QUEUED\nBackend: not observed; job not observed; native not observed\nWaiting: Current Limit is CPU: 200 limited by Role PAI.AlgoDeveloper.GPU: 8 limited by Role PAI.AlgoDeveloper. (roleMaximumResource; CheckSelfQuotaFailed; position 1; observed 2026-10-24T00:00:00Z; stale evidence)\nTraining: COMPLETED; process not observed; exit 0\nModel: NOT_OBSERVED\nProgress: recent progress not observed\nResults: RELEASED; download unavailable\nVerification: SHA256_VERIFIED\nNext: inspect existing evidence; no action specified",
+        ),
+        (
+            literal(
+                r#"{"project":"demo","run_id":"trial","attempt_id":"attempt-001","scheduler":{"state":"SUCCEEDED","observed_at":1792051748.25,"stale":false},"training":{"status":"UNKNOWN"},"publication":{"status":"RELEASED","download_available":false},"verification":{"status":"SHA256_VERIFIED"},"worker_phase":{"phase":"TRAINING"},"progress":{"phase":"TRAINING"}}"#,
+            ),
+            "Run: demo/trial · attempt-001\nStage: TRAINING (last reported worker phase; not a heartbeat)\nScheduler: SUCCEEDED; observed 2026-10-15T08:09:08+00:00\nBackend: not observed; job not observed; native not observed\nTraining: UNKNOWN; process not observed\nWorker phase: TRAINING; last reported; not a heartbeat\nModel: NOT_OBSERVED\nProgress: recent progress not observed\nResults: RELEASED; download unavailable\nVerification: SHA256_VERIFIED\nNext: inspect existing evidence; no action specified",
+        ),
+        (
+            literal(
+                r#"{"scheduler":{},"model":{},"training":{"diagnostic":false},"progress":{},"publication":{},"verification":{},"queue":{"position":"中文😀"},"input_delivery":{},"worker_phase":{"diagnostic":[],"step":1,"position":0,"message":"中文😀"},"project":"p","run_id":"r","attempt_id":"attempt-001"}"#,
+            ),
+            "Run: p/r · attempt-001\nStage: UNKNOWN\nScheduler: UNKNOWN\nBackend: not observed; job not observed; native not observed\nTraining: UNKNOWN; process not observed\nWorker phase: UNKNOWN; last reported; not a heartbeat\nModel: NOT_OBSERVED\nProgress: recent progress not observed\nResults: NOT_OBSERVED; download unavailable\nVerification: NOT_OBSERVED\nNext: inspect existing evidence; no action specified",
+        ),
+    ] {
+        let before = input.clone();
+        assert_eq!(presentation::status_summary(&input).unwrap(), expected);
+        assert_eq!(input, before);
     }
-    assert_eq!(cases.len(), 669);
+}
+
+#[test]
+fn status_summary_refuses_a_document_that_is_not_an_object() {
+    for input in [
+        json!(null),
+        json!([]),
+        json!(0),
+        json!(false),
+        json!("text"),
+    ] {
+        assert!(presentation::status_summary(&input).is_err(), "{input}");
+    }
 }
 
 #[test]

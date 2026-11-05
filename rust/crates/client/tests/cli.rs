@@ -341,14 +341,7 @@ fn state_preflight_rejects_misdirected_credentials_before_the_handshake() {
 fn real_status_cli_preserves_json_evidence_and_has_a_human_summary() {
     use serde_json::{Value, json};
     use std::net::TcpListener;
-    let fixtures: Value =
-        serde_json::from_str(include_str!("../../../compatibility/client-status.json")).unwrap();
-    let fixture = fixtures["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["name"] == "current-exact-journal-fallback")
-        .unwrap();
+    let fixture: Value = serde_json::from_str(r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"requests":["/api/runs/p/r","/api/runs/p/r/attempts","/api/experiments/p/r/submissions","/api/submissions/action-aaaaaaaaaaaaaaaa/progress","/api/runs/p/r/attempts/attempt-001/collection"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/experiments/p/r/submissions":{"project":"p","run_id":"r","submissions":[{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}]},"/api/submissions/action-aaaaaaaaaaaaaaaa/progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"/api/runs/p/r/attempts/attempt-001/collection":{"project":"p","run_id":"r","attempt_id":"attempt-001","status":"AVAILABLE","verification":"SHA256_VERIFIED","download_available":true,"training":{"status":"COMPLETED","exit_code":0}}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","preparation":{"status":"NOT_OBSERVED","phase":null},"scheduler":{"state":"RUNNING","backend":null,"job_id":null,"native_state":null,"observed_at":null,"stale":true,"reason":null},"training":{"status":"COMPLETED","exit_code":0,"process_state":null,"observed_at":null,"stale":true},"publication":{"status":"AVAILABLE","phase":null,"download_available":true,"diagnostic":null,"error":null},"verification":{"status":"SHA256_VERIFIED"},"progress":{"availability":"AVAILABLE","phase":"TRAINING"},"queue":null,"worker":{"state":null,"observed_at":null,"stale":true},"model":{"state":"step 10","step":10,"last_metric":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"},"metric_record":{"sequence":9,"event_id":"m9","source":"canonical-journal"},"observed_at":null,"stale":true},"input_delivery":null,"worker_phase":null}}"#).unwrap();
     for (human, watch) in [(false, false), (true, false), (false, true)] {
         let temp = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -407,18 +400,17 @@ fn real_status_cli_preserves_json_evidence_and_has_a_human_summary() {
 fn real_logs_and_metrics_commands_follow_the_original_saved_attempt() {
     use serde_json::{Value, json};
     use std::net::TcpListener;
-    let fixtures: Value =
-        serde_json::from_str(include_str!("../../../compatibility/client-read.json")).unwrap();
-    for (name, view) in [
-        ("saved-exact-attempt", "logs"),
-        ("saved-action-retry", "metrics"),
+    for (case, view) in [
+        (
+            r#"{"health":{"capabilities":["metric-records.v1"]},"saved":{"server":"https://example.test/ml-expd","project":"p","run_id":"r","config_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}},"requests":["/api/submissions/action-aaaaaaaaaaaaaaaa","/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80"],"responses":{"/api/submissions/action-aaaaaaaaaaaaaaaa":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"},"/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}}"#,
+            "logs",
+        ),
+        (
+            r#"{"health":{"capabilities":["metric-records.v1"]},"saved":{"contract":"training-operation.v1","server":"https://example.test/ml-expd","project":"p","run_id":"r","operation":"retry","source_attempt_id":"attempt-001","plan":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"request":{"new_attempt_id":"attempt-002"}},"requests":["/api/actions/action-aaaaaaaaaaaaaaaa","/api/attempts/p/r%3A%3Aattempt-002/metrics?max_points=2000&format=records"],"responses":{"/api/actions/action-aaaaaaaaaaaaaaaa":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"/api/attempts/p/r%3A%3Aattempt-002/metrics?max_points=2000&format=records":{"project":"p","run_id":"r","attempt_id":"attempt-002","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-002","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}}"#,
+            "metrics",
+        ),
     ] {
-        let fixture = fixtures["cases"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|c| c["name"] == name)
-            .unwrap();
+        let fixture: Value = serde_json::from_str(case).unwrap();
         let temp = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();

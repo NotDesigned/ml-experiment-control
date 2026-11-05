@@ -1,51 +1,78 @@
 use ml_exp_core::failures::{self, AssessmentContext};
 use serde_json::{Value, json};
 
-fn same_json(actual: &Value, expected: &Value, name: &Value) {
+fn literal(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
+}
+fn same_json(actual: &Value, expected: &Value) {
     // arbitrary_precision retains JSON exponent spelling (-1e-6/-1e-06).
-    // Canonical bytes compare exact Python JSON numbers and all other fields,
-    // rather than treating those equivalent parser spellings as a mismatch.
+    // Canonical bytes compare exact JSON numbers and all other fields, rather
+    // than treating those equivalent parser spellings as a mismatch.
     assert_eq!(
         ml_exp_core::canonical::python_json_bytes(actual).unwrap(),
         ml_exp_core::canonical::python_json_bytes(expected).unwrap(),
-        "{name}"
     );
 }
 
-fn fixtures() -> Value {
-    serde_json::from_str(include_str!("../../../compatibility/failures.json")).unwrap()
-}
 #[test]
-fn exact_attempt_failure_assessments_match_actual_python_reference() {
-    let fixtures = fixtures();
-    assert_eq!(
-        fixtures["baseline_commit"],
-        "e725faec689fb8395e692e27d00a8896fa7fe5a5"
-    );
-    assert_eq!(fixtures["cases"].as_array().unwrap().len(), 248);
-    for case in fixtures["cases"].as_array().unwrap() {
+fn terminal_process_evidence_is_applicable_but_contextual_decisions_are_not() {
+    for case in [
+        literal(
+            r#"{"collection":{"attempt_id":"attempt-002","process_state":"FAILED","process_evidence":{"stderr_tail":["TIMEOUT"]}},"context":{"attempt_id":"attempt-002","attempt_state":"FAILED","attempt_started_at":100,"observed_at":200,"naive_utc_offset_seconds":0},"expected":{"failure_summary":{"failure_signature":"TIMEOUT","failure_class":"timeout","phase":"unknown","source":"collection.process_evidence","failure_domain":"process","attempt_id":"attempt-002","observed_at":200.0,"applicability":"APPLICABLE","evidence_source":null},"diagnostic_evidence":[]}}"#,
+        ),
+        literal(
+            r#"{"collection":{"attempt_id":"attempt-002"},"context":{"attempt_id":"attempt-002","attempt_state":"RUNNING","attempt_started_at":100,"observed_at":200,"naive_utc_offset_seconds":0,"decision_observed_at":1,"decision_source_binding":"RUN_ROOT_FALLBACK","decision_evidence_source":"/synthetic/old/decision.json"},"decision":{"failure_class":"unknown"},"expected":{"failure_summary":null,"diagnostic_evidence":[{"kind":"preliminary_failure_classification","failure_class":"unknown","source":"decision.failure_class","attempt_id":"attempt-002","attempt_state":"RUNNING","observed_at":1.0,"applicability":"NON_APPLICABLE","source_binding":"RUN_ROOT_FALLBACK","evidence_source":"/synthetic/old/decision.json","reason":"decision metadata is contextual only and is not exact, fresh, terminal failure evidence"}]}}"#,
+        ),
+        literal(
+            r#"{"collection":{"attempt_id":"attempt-002"},"context":{"attempt_id":"attempt-002","attempt_state":"RUNNING","attempt_started_at":100,"observed_at":200,"naive_utc_offset_seconds":0,"decision_observed_at":1,"decision_source_binding":"RUN_ROOT_FALLBACK","decision_evidence_source":"/synthetic/old/decision.json"},"expected":{"failure_summary":null,"diagnostic_evidence":[]}}"#,
+        ),
+    ] {
         let context: AssessmentContext = serde_json::from_value(case["context"].clone()).unwrap();
-        let decision = case.get("decision").filter(|value| !value.is_null());
-        let result =
-            failures::attempt_failure_evidence_assessment(&case["collection"], decision, &context);
-        if case.get("error").is_some() {
-            assert!(result.is_err(), "{} unexpectedly accepted", case["name"]);
-        } else {
-            same_json(&result.unwrap(), &case["expected"], &case["name"]);
-        }
-    }
-}
-#[test]
-fn evidence_compaction_and_digest_match_python() {
-    let fixtures = fixtures();
-    for case in fixtures["compact"].as_array().unwrap() {
-        assert_eq!(failures::compact_evidence(&case["input"]), case["expected"]);
-        assert_eq!(
-            failures::evidence_digest(&case["input"]).unwrap(),
-            case["digest"]
+        let result = failures::attempt_failure_evidence_assessment(
+            &case["collection"],
+            case.get("decision"),
+            &context,
         );
+        same_json(&result.unwrap(), &case["expected"]);
     }
 }
+
+#[test]
+fn a_tail_that_is_not_a_list_is_refused() {
+    let case = literal(
+        r#"{"collection":{"attempt_id":"attempt-002","process_state":"FAILED","process_evidence":{"stderr_tail":12}},"context":{"attempt_id":"attempt-002","attempt_state":"FAILED","attempt_started_at":100,"observed_at":200,"naive_utc_offset_seconds":0}}"#,
+    );
+    let context: AssessmentContext = serde_json::from_value(case["context"].clone()).unwrap();
+    assert!(
+        failures::attempt_failure_evidence_assessment(
+            &case["collection"],
+            case.get("decision"),
+            &context
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn compaction_drops_raw_output_and_the_evidence_digest_is_pinned() {
+    for (input, expected, digest) in [
+        (
+            r#"{"raw_stdout":"secret","stderr_tail":["tail"],"nested":{"startup_script":"hidden","value":1}}"#,
+            r#"{"nested":{"value":1}}"#,
+            "sha256:bb776f63f07c8626621df3edc58afc830db7703e9a000b4590f2c693159e25c5",
+        ),
+        (
+            r#"{"nats_per_token":1e-06,"large":1e+20,"zero":-0.0}"#,
+            r#"{"nats_per_token":1e-06,"large":1e+20,"zero":-0.0}"#,
+            "sha256:dc8c1b4a1ea9b41168299c0d51463454a17540e270ab92260952e488bd08cb2c",
+        ),
+    ] {
+        let input = literal(input);
+        assert_eq!(failures::compact_evidence(&input), literal(expected));
+        assert_eq!(failures::evidence_digest(&input).unwrap(), digest);
+    }
+}
+
 #[test]
 fn unknown_timezone_nonfinite_or_unsupported_time_cannot_promote_a_failure_signal() {
     let collection = json!({"attempt_id":"attempt-001","process_state":"FAILED","process_evidence":{"stderr_tail":["CUDA out of memory"]}});

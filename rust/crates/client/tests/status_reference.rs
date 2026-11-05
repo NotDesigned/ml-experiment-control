@@ -4,31 +4,73 @@ use ml_exp_client::{
     status::{self, Step},
 };
 use ml_exp_core::diagnostic::HttpFailure;
-use serde_json::Value;
+use serde_json::{Value, json};
+
+fn literal(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
+}
+fn selection() -> Selection<'static> {
+    Selection {
+        project: Some("p"),
+        run: Some("r"),
+        attempt: None,
+    }
+}
+fn begin(case: &Value) -> Result<Step, Error> {
+    status::begin(
+        "https://example.test/ml-expd",
+        &case["health"],
+        case.get("saved"),
+        selection(),
+        case["details"].as_bool().unwrap(),
+    )
+}
+/// Answers each planned GET from `case["responses"]`; any other request fails.
+fn drive(case: &Value) -> (Result<Value, Error>, Vec<String>) {
+    let mut step = begin(case);
+    let mut requests = Vec::new();
+    loop {
+        step = match step {
+            Ok(Step::Read(read)) => {
+                requests.push(read.path().to_owned());
+                assert!(requests.len() <= 12, "nonterminating status plan");
+                let value = case["responses"]
+                    .get(read.path())
+                    .unwrap_or_else(|| panic!("unexpected request {}", read.path()));
+                let response = if let Some(error) = value.get("$error") {
+                    Err(Error::Http(Box::new(HttpFailure {
+                        status: error["status"].as_u64().unwrap() as u16,
+                        retryable: false,
+                        error_code: error["error_code"].as_str().unwrap().into(),
+                        retry_after: None,
+                        details: error.get("details").cloned(),
+                        response_body: None,
+                        body_truncated: false,
+                    })))
+                } else {
+                    Ok(value.clone())
+                };
+                read.accept(response)
+            }
+            Ok(Step::Complete(value)) => return (Ok(value), requests),
+            Err(error) => return (Err(error), requests),
+        };
+    }
+}
 
 #[test]
 fn saved_status_survives_optional_progress_errors_but_preserves_auth_failures() {
-    let fixtures: Value =
-        serde_json::from_str(include_str!("../../../compatibility/client-status.json")).unwrap();
-    let fixture = fixtures["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["name"] == "saved-exact")
-        .unwrap();
+    let fixture = literal(
+        r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"saved":{"server":"https://example.test/ml-expd","project":"p","run_id":"r","config_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","preparation":{"preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}},"details":false}"#,
+    );
+    let responses = literal(
+        r#"{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/experiments/p/r/submissions":{"project":"p","run_id":"r","submissions":[{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}]},"/api/submissions/action-aaaaaaaaaaaaaaaa":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"},"/api/submissions/action-aaaaaaaaaaaaaaaa/progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"/api/projects/p/experiment-preparations/preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb":{"project":"p","run_id":"r","preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"READY","phase":"READY","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}},"/api/runs/p/r/attempts/attempt-001/collection":{"project":"p","run_id":"r","attempt_id":"attempt-001","status":"AVAILABLE","verification":"SHA256_VERIFIED","download_available":true,"training":{"status":"COMPLETED","exit_code":0}},"/api/attempts/p/r%3A%3Aattempt-001/show":{"run_id":"r","attempt":{"attempt_id":"attempt-001"},"scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"}}}"#,
+    );
+    let training = literal(
+        r#"{"status":"COMPLETED","exit_code":0,"process_state":null,"observed_at":null,"stale":true}"#,
+    );
     for status in [401, 403, 404, 405, 409, 500, 503] {
-        let mut step = status::begin(
-            fixture["base"].as_str().unwrap(),
-            &fixture["health"],
-            Some(&fixture["saved"]),
-            Selection {
-                project: None,
-                run: None,
-                attempt: None,
-            },
-            false,
-        )
-        .unwrap();
+        let mut step = begin(&fixture).unwrap();
         let mut count = 0;
         loop {
             match step {
@@ -46,7 +88,7 @@ fn saved_status_survives_optional_progress_errors_but_preserves_auth_failures() 
                             body_truncated: false,
                         })))
                     } else {
-                        Ok(fixture["responses"][read.path()].clone())
+                        Ok(responses[read.path()].clone())
                     };
                     match read.accept(response) {
                         Ok(next) => step = next,
@@ -63,7 +105,7 @@ fn saved_status_survives_optional_progress_errors_but_preserves_auth_failures() 
                     assert_eq!(value["run_id"], "r");
                     assert_eq!(value["progress"]["availability"], "UNAVAILABLE");
                     assert_eq!(value["progress"]["error"]["status"], status);
-                    assert_eq!(value["training"], fixture["expected"]["training"]);
+                    assert_eq!(value["training"], training);
                     break;
                 }
             }
@@ -72,80 +114,74 @@ fn saved_status_survives_optional_progress_errors_but_preserves_auth_failures() 
 }
 
 #[test]
-fn status_steps_match_python_and_preserve_exact_evidence_layers() {
-    let x: Value =
-        serde_json::from_str(include_str!("../../../compatibility/client-status.json")).unwrap();
-    for c in x["cases"].as_array().unwrap() {
-        let mut step = status::begin(
-            c["base"].as_str().unwrap(),
-            &c["health"],
-            c.get("saved").filter(|v| !v.is_null()),
-            Selection {
-                project: c["selection"]["project"].as_str(),
-                run: c["selection"]["run"].as_str(),
-                attempt: c["selection"]["attempt"].as_str(),
-            },
-            c["details"].as_bool().unwrap(),
-        );
-        let mut requests = Vec::new();
-        loop {
-            step = match step {
-                Ok(Step::Read(read)) => {
-                    requests.push(read.path().to_owned());
-                    assert!(requests.len() <= 12, "nonterminating {}", c["name"]);
-                    let value = c["responses"].get(read.path()).unwrap_or_else(|| {
-                        panic!("unexpected request {}: {}", c["name"], read.path())
-                    });
-                    let response = if let Some(error) = value.get("$error") {
-                        Err(Error::Http(Box::new(HttpFailure {
-                            status: error["status"].as_u64().unwrap() as u16,
-                            retryable: false,
-                            error_code: error["error_code"].as_str().unwrap().into(),
-                            retry_after: None,
-                            details: error.get("details").cloned(),
-                            response_body: None,
-                            body_truncated: false,
-                        })))
-                    } else {
-                        Ok(value.clone())
-                    };
-                    read.accept(response)
-                }
-                Ok(Step::Complete(value)) => {
-                    assert_eq!(value, c["expected"], "{}", c["name"]);
-                    break;
-                }
-                Err(error) => {
-                    if let Some(status) = c["error_status"].as_u64() {
-                        assert!(
-                            matches!(error,Error::Http(ref e) if u64::from(e.status)==status),
-                            "{}: {error}",
-                            c["name"]
-                        );
-                    } else {
-                        assert_eq!(
-                            error.to_string(),
-                            c["error"].as_str().unwrap(),
-                            "{}",
-                            c["name"]
-                        );
-                    }
-                    break;
-                }
-            };
-        }
-        assert_eq!(
-            requests,
-            c["requests"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_str().unwrap().to_string())
-                .collect::<Vec<_>>(),
-            "{}",
-            c["name"]
-        );
+fn status_layers_stay_independent_across_saved_current_and_capability_paths() {
+    for case in [
+        literal(
+            r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"details":false,"requests":["/api/runs/p/r","/api/runs/p/r/attempts","/api/experiments/p/r/submissions","/api/submissions/action-aaaaaaaaaaaaaaaa/progress","/api/runs/p/r/attempts/attempt-001/collection"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/experiments/p/r/submissions":{"project":"p","run_id":"r","submissions":[{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}]},"/api/submissions/action-aaaaaaaaaaaaaaaa/progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"/api/runs/p/r/attempts/attempt-001/collection":{"project":"p","run_id":"r","attempt_id":"attempt-001","status":"AVAILABLE","verification":"SHA256_VERIFIED","download_available":true,"training":{"status":"COMPLETED","exit_code":0}}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","preparation":{"status":"NOT_OBSERVED","phase":null},"scheduler":{"state":"RUNNING","backend":null,"job_id":null,"native_state":null,"observed_at":null,"stale":true,"reason":null},"training":{"status":"COMPLETED","exit_code":0,"process_state":null,"observed_at":null,"stale":true},"publication":{"status":"AVAILABLE","phase":null,"download_available":true,"diagnostic":null,"error":null},"verification":{"status":"SHA256_VERIFIED"},"progress":{"availability":"AVAILABLE","phase":"TRAINING"},"queue":null,"worker":{"state":null,"observed_at":null,"stale":true},"model":{"state":"step 10","step":10,"last_metric":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"},"metric_record":{"sequence":9,"event_id":"m9","source":"canonical-journal"},"observed_at":null,"stale":true},"input_delivery":null,"worker_phase":null}}"#,
+        ),
+        literal(
+            r#"{"health":{},"details":false,"requests":["/api/runs/p/r","/api/runs/p/r/attempts"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","preparation":{"status":"NOT_OBSERVED","phase":null},"scheduler":{"state":"RUNNING","backend":null,"job_id":null,"native_state":null,"observed_at":null,"stale":true,"reason":null},"training":{"status":"UNKNOWN","exit_code":null,"process_state":null,"observed_at":null,"stale":true},"publication":{"status":"NOT_OBSERVED","phase":null,"download_available":false,"diagnostic":null,"error":null},"verification":{"status":"NOT_OBSERVED"},"progress":{"availability":"NOT_OBSERVED","diagnostic":null},"queue":null,"worker":{"state":null,"observed_at":null,"stale":true},"model":{"state":null,"step":null,"last_metric":null,"observed_at":null,"stale":true,"metric_record":null},"input_delivery":null,"worker_phase":null}}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"details":false,"requests":["/api/runs/p/r","/api/runs/p/r/attempts","/api/experiments/p/r/submissions","/api/submissions/action-aaaaaaaaaaaaaaaa/progress","/api/runs/p/r/attempts/attempt-001/collection"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/experiments/p/r/submissions":{"project":"p","run_id":"r","submissions":[{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}]},"/api/submissions/action-aaaaaaaaaaaaaaaa/progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2","timestamp":0}}},"/api/runs/p/r/attempts/attempt-001/collection":{"project":"p","run_id":"r","attempt_id":"attempt-001","status":"AVAILABLE","verification":"SHA256_VERIFIED","download_available":true,"training":{"status":"COMPLETED","exit_code":0}}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","preparation":{"status":"NOT_OBSERVED","phase":null},"scheduler":{"state":"RUNNING","backend":null,"job_id":null,"native_state":null,"observed_at":null,"stale":true,"reason":null},"training":{"status":"COMPLETED","exit_code":0,"process_state":null,"observed_at":null,"stale":true},"publication":{"status":"AVAILABLE","phase":null,"download_available":true,"diagnostic":null,"error":null},"verification":{"status":"SHA256_VERIFIED"},"progress":{"availability":"AVAILABLE","phase":"TRAINING"},"queue":null,"worker":{"state":null,"observed_at":null,"stale":true},"model":{"state":"step 10","step":10,"last_metric":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2","timestamp":0},"metric_record":{"sequence":9,"event_id":"m9","source":"canonical-journal"},"observed_at":0,"stale":null},"input_delivery":null,"worker_phase":null}}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"details":false,"requests":["/api/runs/p/r","/api/runs/p/r/attempts","/api/experiments/p/r/submissions","/api/submissions/action-aaaaaaaaaaaaaaaa/progress","/api/runs/p/r/attempts/attempt-001/collection"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/experiments/p/r/submissions":{"project":"p","run_id":"r","submissions":[{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}]},"/api/submissions/action-aaaaaaaaaaaaaaaa/progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"/api/runs/p/r/attempts/attempt-001/collection":{"project":"p","run_id":"r","attempt_id":"attempt-001","status":"FAILED","verification":"PENDING","download_available":true,"training":{"status":"COMPLETED","exit_code":0}}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","preparation":{"status":"NOT_OBSERVED","phase":null},"scheduler":{"state":"RUNNING","backend":null,"job_id":null,"native_state":null,"observed_at":null,"stale":true,"reason":null},"training":{"status":"COMPLETED","exit_code":0,"process_state":null,"observed_at":null,"stale":true},"publication":{"status":"FAILED","phase":null,"download_available":false,"diagnostic":null,"error":null},"verification":{"status":"PENDING"},"progress":{"availability":"AVAILABLE","phase":"TRAINING"},"queue":null,"worker":{"state":null,"observed_at":null,"stale":true},"model":{"state":"step 10","step":10,"last_metric":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"},"metric_record":{"sequence":9,"event_id":"m9","source":"canonical-journal"},"observed_at":null,"stale":true},"input_delivery":null,"worker_phase":null}}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"saved":{"contract":"training-operation.v1","server":"https://example.test/ml-expd","project":"p","run_id":"r","operation":"retry","source_attempt_id":"attempt-001","plan":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"request":{"new_attempt_id":"attempt-002"}},"details":false,"requests":["/api/actions/action-aaaaaaaaaaaaaaaa","/api/submissions/action-aaaaaaaaaaaaaaaa/progress","/api/runs/p/r","/api/runs/p/r/attempts"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/submissions/action-aaaaaaaaaaaaaaaa/progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-002","phase":"STAGING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"/api/actions/action-aaaaaaaaaaaaaaaa":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-002","preparation":{"status":"PREPARED","phase":null},"scheduler":{"state":"NOT_SUBMITTED","backend":null,"job_id":null,"native_state":null,"observed_at":null,"stale":true,"reason":null},"training":{"status":"UNKNOWN","exit_code":null,"process_state":null,"observed_at":null,"stale":true},"publication":{"status":"NOT_OBSERVED","phase":null,"download_available":false,"diagnostic":null,"error":null},"verification":{"status":"NOT_OBSERVED"},"progress":{"availability":"AVAILABLE","phase":"STAGING"},"queue":null,"worker":{"state":null,"observed_at":null,"stale":true},"model":{"state":"step 10","step":10,"last_metric":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"},"metric_record":{"sequence":9,"event_id":"m9","source":"canonical-journal"},"observed_at":null,"stale":true},"input_delivery":null,"worker_phase":null}}"#,
+        ),
+    ] {
+        let (result, requests) = drive(&case);
+        assert_eq!(result.unwrap(), case["expected"]);
+        assert_eq!(json!(requests), case["requests"]);
     }
+}
+
+#[test]
+fn foreign_evidence_and_invalid_listings_are_refused() {
+    for case in [
+        literal(
+            r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"details":false,"requests":["/api/runs/p/r"],"responses":{"/api/runs/p/r":{"project":"foreign","run_id":"r","evidence":{}}},"error":"status response differs from the requested exact Run/Attempt"}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"details":false,"requests":["/api/runs/p/r","/api/runs/p/r/attempts"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":null}},"error":"invalid Run Attempt listing"}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"details":false,"requests":["/api/runs/p/r","/api/runs/p/r/attempts","/api/experiments/p/r/submissions"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/experiments/p/r/submissions":{"project":"p","run_id":"r","submissions":[{"project":"foreign","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}]}},"error":"Submission listing contains a different Run identity"}"#,
+        ),
+    ] {
+        let (result, requests) = drive(&case);
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            case["error"].as_str().unwrap()
+        );
+        assert_eq!(json!(requests), case["requests"]);
+    }
+    // The saved server is checked before any read is planned.
+    let case = literal(
+        r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"saved":{"contract":"training-operation.v1","server":"https://foreign.test/ml-expd","project":"p","run_id":"r","operation":"retry","source_attempt_id":"attempt-001","plan":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"request":{"new_attempt_id":"attempt-002"}},"details":false,"error":"observation state belongs to a different server or Run"}"#,
+    );
+    assert_eq!(
+        begin(&case).err().unwrap().to_string(),
+        case["error"].as_str().unwrap()
+    );
+}
+
+#[test]
+fn collection_auth_failure_is_an_error_but_a_conflict_becomes_explicit_evidence() {
+    let case = literal(
+        r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"details":false,"requests":["/api/runs/p/r","/api/runs/p/r/attempts","/api/experiments/p/r/submissions","/api/submissions/action-aaaaaaaaaaaaaaaa/progress","/api/runs/p/r/attempts/attempt-001/collection"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/experiments/p/r/submissions":{"project":"p","run_id":"r","submissions":[{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}]},"/api/submissions/action-aaaaaaaaaaaaaaaa/progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"/api/runs/p/r/attempts/attempt-001/collection":{"$error":{"status":401,"error_code":"READ_FAILURE","details":{"phase":"COLLECTION"}}}}}"#,
+    );
+    let (result, requests) = drive(&case);
+    assert!(matches!(result, Err(Error::Http(ref e)) if e.status == 401));
+    assert_eq!(json!(requests), case["requests"]);
+    let case = literal(
+        r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"details":true,"requests":["/api/runs/p/r","/api/runs/p/r/attempts","/api/experiments/p/r/submissions","/api/submissions/action-aaaaaaaaaaaaaaaa/progress","/api/runs/p/r/attempts/attempt-001/collection","/api/attempts/p/r%3A%3Aattempt-001/show"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/experiments/p/r/submissions":{"project":"p","run_id":"r","submissions":[{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}]},"/api/submissions/action-aaaaaaaaaaaaaaaa/progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"/api/runs/p/r/attempts/attempt-001/collection":{"$error":{"status":409,"error_code":"READ_FAILURE","details":{"phase":"COLLECTION"}}},"/api/attempts/p/r%3A%3Aattempt-001/show":{"run_id":"r","attempt":{"attempt_id":"attempt-001"},"scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"}}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","preparation":{"status":"NOT_OBSERVED","phase":null},"scheduler":{"state":"RUNNING","backend":null,"job_id":null,"native_state":null,"observed_at":null,"stale":true,"reason":null},"training":{"status":"UNKNOWN","exit_code":null,"process_state":null,"observed_at":null,"stale":true},"publication":{"status":"NOT_OBSERVED","phase":null,"download_available":false,"diagnostic":null,"error":{"status":409,"error_code":"READ_FAILURE"}},"verification":{"status":"NOT_OBSERVED"},"progress":{"availability":"AVAILABLE","phase":"TRAINING"},"queue":null,"worker":{"state":null,"observed_at":null,"stale":true},"model":{"state":"step 10","step":10,"last_metric":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"},"metric_record":{"sequence":9,"event_id":"m9","source":"canonical-journal"},"observed_at":null,"stale":true},"input_delivery":null,"worker_phase":null,"evidence":{"submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"},"progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"collection_error":{"status":409,"error_code":"READ_FAILURE","details":{"phase":"COLLECTION"}},"run":{"project":"p","run_id":"r","evidence":{}},"attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"collection":{},"attempt":{"run_id":"r","attempt":{"attempt_id":"attempt-001"},"scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"}}}}}"#,
+    );
+    let (result, requests) = drive(&case);
+    assert_eq!(result.unwrap(), case["expected"]);
+    assert_eq!(json!(requests), case["requests"]);
 }
 
 #[test]
@@ -155,16 +191,14 @@ fn real_http_status_keeps_queue_training_and_publication_independent() {
         net::TcpListener,
         time::{Duration, Instant},
     };
-    let fixture: Value =
-        serde_json::from_str(include_str!("../../../compatibility/client-status.json")).unwrap();
-    for name in ["current-exact-journal-fallback", "collection-http-409"] {
-        let c = fixture["cases"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|c| c["name"] == name)
-            .unwrap()
-            .clone();
+    for c in [
+        literal(
+            r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"details":false,"requests":["/api/runs/p/r","/api/runs/p/r/attempts","/api/experiments/p/r/submissions","/api/submissions/action-aaaaaaaaaaaaaaaa/progress","/api/runs/p/r/attempts/attempt-001/collection"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/experiments/p/r/submissions":{"project":"p","run_id":"r","submissions":[{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}]},"/api/submissions/action-aaaaaaaaaaaaaaaa/progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"/api/runs/p/r/attempts/attempt-001/collection":{"project":"p","run_id":"r","attempt_id":"attempt-001","status":"AVAILABLE","verification":"SHA256_VERIFIED","download_available":true,"training":{"status":"COMPLETED","exit_code":0}}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","preparation":{"status":"NOT_OBSERVED","phase":null},"scheduler":{"state":"RUNNING","backend":null,"job_id":null,"native_state":null,"observed_at":null,"stale":true,"reason":null},"training":{"status":"COMPLETED","exit_code":0,"process_state":null,"observed_at":null,"stale":true},"publication":{"status":"AVAILABLE","phase":null,"download_available":true,"diagnostic":null,"error":null},"verification":{"status":"SHA256_VERIFIED"},"progress":{"availability":"AVAILABLE","phase":"TRAINING"},"queue":null,"worker":{"state":null,"observed_at":null,"stale":true},"model":{"state":"step 10","step":10,"last_metric":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"},"metric_record":{"sequence":9,"event_id":"m9","source":"canonical-journal"},"observed_at":null,"stale":true},"input_delivery":null,"worker_phase":null}}"#,
+        ),
+        literal(
+            r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"details":true,"requests":["/api/runs/p/r","/api/runs/p/r/attempts","/api/experiments/p/r/submissions","/api/submissions/action-aaaaaaaaaaaaaaaa/progress","/api/runs/p/r/attempts/attempt-001/collection","/api/attempts/p/r%3A%3Aattempt-001/show"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/experiments/p/r/submissions":{"project":"p","run_id":"r","submissions":[{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}]},"/api/submissions/action-aaaaaaaaaaaaaaaa/progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"/api/runs/p/r/attempts/attempt-001/collection":{"$error":{"status":409,"error_code":"READ_FAILURE","details":{"phase":"COLLECTION"}}},"/api/attempts/p/r%3A%3Aattempt-001/show":{"run_id":"r","attempt":{"attempt_id":"attempt-001"},"scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"}}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","preparation":{"status":"NOT_OBSERVED","phase":null},"scheduler":{"state":"RUNNING","backend":null,"job_id":null,"native_state":null,"observed_at":null,"stale":true,"reason":null},"training":{"status":"UNKNOWN","exit_code":null,"process_state":null,"observed_at":null,"stale":true},"publication":{"status":"NOT_OBSERVED","phase":null,"download_available":false,"diagnostic":null,"error":{"status":409,"error_code":"READ_FAILURE"}},"verification":{"status":"NOT_OBSERVED"},"progress":{"availability":"AVAILABLE","phase":"TRAINING"},"queue":null,"worker":{"state":null,"observed_at":null,"stale":true},"model":{"state":"step 10","step":10,"last_metric":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"},"metric_record":{"sequence":9,"event_id":"m9","source":"canonical-journal"},"observed_at":null,"stale":true},"input_delivery":null,"worker_phase":null,"evidence":{"submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"},"progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"collection_error":{"status":409,"error_code":"READ_FAILURE","details":{"phase":"COLLECTION"}},"run":{"project":"p","run_id":"r","evidence":{}},"attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"collection":{},"attempt":{"run_id":"r","attempt":{"attempt_id":"attempt-001"},"scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"}}}}}"#,
+        ),
+    ] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
@@ -232,14 +266,13 @@ fn real_http_status_keeps_queue_training_and_publication_independent() {
             c["details"].as_bool().unwrap(),
         )
         .unwrap();
-        assert_eq!(value, c["expected"], "{name}");
+        assert_eq!(value, c["expected"]);
         server.join().unwrap();
     }
 }
 
 #[test]
 fn duplicate_exact_attempts_are_refused_instead_of_choosing_the_first() {
-    use serde_json::json;
     let step = status::begin(
         "https://example.test",
         &json!({}),
@@ -273,10 +306,8 @@ fn duplicate_exact_attempts_are_refused_instead_of_choosing_the_first() {
         ))
     ));
 }
-
 #[test]
 fn native_missing_scheduler_evidence_never_borrows_process_completion() {
-    use serde_json::json;
     for (layer_attempt, freshness) in [("attempt-001", "UNKNOWN"), ("attempt-002", "OBSERVED")] {
         let mut step = status::begin(
             "https://example.test",

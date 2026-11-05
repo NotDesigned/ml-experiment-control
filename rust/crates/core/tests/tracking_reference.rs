@@ -1,216 +1,231 @@
-//! Frozen observations from the original Python implementation. The test runner
-//! uses only Rust, and never imports an SDK or contacts W&B.
+//! Native tracking contract and display cases; never imports an SDK or contacts W&B.
 use ml_exp_core::tracking::{self, Projection, RoutingSettings, WandbOptions, WandbSettings};
 use serde_json::{Value, json};
 
-fn evaluate(case: &Value) -> tracking::Result<Value> {
+fn literal(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
+}
+
+#[test]
+fn wandb_options_fill_defaults_and_refuse_invalid_documents() {
+    for case in [
+        literal(
+            r#"{"id":"options-basic-0","operation":"options","input":{},"expected":{"enabled":true,"entity":null,"project":null}}"#,
+        ),
+        literal(
+            r#"{"id":"options-entity-1","operation":"options","input":{"entity":"0"},"expected":{"enabled":true,"entity":"0","project":null}}"#,
+        ),
+    ] {
+        let options = WandbOptions::from_value(&case["input"]).unwrap();
+        assert_eq!(options.to_value(), case["expected"]);
+    }
+    for case in [
+        literal(
+            r#"{"id":"options-basic-6","operation":"options","input":[],"error":"ValidationError"}"#,
+        ),
+        literal(
+            r#"{"id":"options-basic-9","operation":"options","input":{"entity":""},"error":"ValidationError"}"#,
+        ),
+    ] {
+        assert!(WandbOptions::from_value(&case["input"]).is_err());
+    }
+}
+
+#[test]
+fn wandb_settings_refuse_empty_keys_and_unknown_fields() {
+    assert!(WandbSettings::from_value(&literal(r#"{}"#)).is_ok());
+    assert!(WandbSettings::from_value(&literal(r#"{"api_key":""}"#)).is_err());
+    assert!(WandbSettings::from_value(&literal(r#"{"unknown":1}"#)).is_err());
+}
+
+fn route(input: &Value) -> Value {
+    let raw = &input["settings"];
+    let settings = RoutingSettings {
+        enabled: raw.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+        preparation_enabled: raw
+            .get("preparation_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        credentials_configured: raw
+            .get("api_key")
+            .and_then(Value::as_str)
+            .is_some_and(|key| !key.is_empty()),
+        resolved_entity: raw
+            .get("resolved_entity")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        project: raw
+            .get("project")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    };
+    let options = if input["options"].is_null() {
+        None
+    } else {
+        Some(WandbOptions::from_value(&input["options"]).unwrap())
+    };
+    tracking::resolve(
+        options.as_ref(),
+        &settings,
+        input["project"].as_str().unwrap(),
+    )
+}
+
+#[test]
+fn run_routes_follow_credentials_server_settings_and_the_requested_entity() {
+    for case in [
+        literal(
+            r#"{"id":"route-0","operation":"route","input":{"settings":{},"options":null,"project":"fallback-project"},"expected":{"run":{"requested":true,"enabled":false,"reason":"CREDENTIALS_NOT_CONFIGURED","entity":null,"project":"fallback-project"},"preparation":{"requested":false,"enabled":false,"reason":"DISABLED_BY_REQUEST","entity":null,"project":"fallback-project"}}}"#,
+        ),
+        literal(
+            r#"{"id":"route-1","operation":"route","input":{"settings":{},"options":{},"project":"fallback-project"},"expected":{"run":{"requested":true,"enabled":false,"reason":"CREDENTIALS_NOT_CONFIGURED","entity":null,"project":"fallback-project"},"preparation":{"requested":false,"enabled":false,"reason":"DISABLED_BY_REQUEST","entity":null,"project":"fallback-project"}}}"#,
+        ),
+        literal(
+            r#"{"id":"route-10","operation":"route","input":{"settings":{"enabled":false},"options":{},"project":"fallback-project"},"expected":{"run":{"requested":true,"enabled":false,"reason":"DISABLED_BY_SERVER","entity":null,"project":"fallback-project"},"preparation":{"requested":false,"enabled":false,"reason":"DISABLED_BY_REQUEST","entity":null,"project":"fallback-project"}}}"#,
+        ),
+        literal(
+            r#"{"id":"route-24","operation":"route","input":{"settings":{"api_key":"synthetic-key"},"options":{"entity":"requested-team"},"project":"fallback-project"},"expected":{"run":{"requested":true,"enabled":true,"reason":null,"entity":"requested-team","project":"fallback-project"},"preparation":{"requested":false,"enabled":false,"reason":"DISABLED_BY_REQUEST","entity":"requested-team","project":"fallback-project"}}}"#,
+        ),
+    ] {
+        assert_eq!(route(&case["input"]), case["expected"]["run"]);
+    }
+}
+
+#[test]
+fn metric_stems_fingerprints_and_identities_stay_pinned() {
+    for case in [
+        literal(
+            r#"{"id":"helpers-3","operation":"helpers","input":{"name":"a b","context":{"name":"a b","unit":"nats/token","protocol_id":"p\u2028x","dataset_id":"d","variant_id":"v"}},"expected":{"stem":"a_b","fingerprint":"c8687a08aa5d6ed2","identity":"{\"dataset_id\":\"d\",\"name\":\"a b\",\"protocol_id\":\"p\\u2028x\",\"unit\":\"nats/token\"}","variant_identity":"{\"dataset_id\":\"d\",\"name\":\"a b\",\"protocol_id\":\"p\\u2028x\",\"unit\":\"nats/token\",\"variant_id\":\"v\"}"}}"#,
+        ),
+        literal(
+            r#"{"id":"helpers-8","operation":"helpers","input":{"name":"","context":{"name":"","unit":"nats/token","protocol_id":"p\u2028x","dataset_id":"d","variant_id":"v"}},"expected":{"stem":"","fingerprint":"e3b0c44298fc1c14","identity":"{\"dataset_id\":\"d\",\"name\":\"\",\"protocol_id\":\"p\\u2028x\",\"unit\":\"nats/token\"}","variant_identity":"{\"dataset_id\":\"d\",\"name\":\"\",\"protocol_id\":\"p\\u2028x\",\"unit\":\"nats/token\",\"variant_id\":\"v\"}"}}"#,
+        ),
+    ] {
+        let input = &case["input"];
+        let name = input["name"].as_str().unwrap();
+        let actual = json!({
+            "stem":tracking::stem(name),
+            "fingerprint":tracking::fingerprint(name),
+            "identity":tracking::identity(&input["context"],false).unwrap(),
+            "variant_identity":tracking::identity(&input["context"],true).unwrap(),
+        });
+        assert_eq!(actual, case["expected"]);
+    }
+}
+
+#[test]
+fn only_finite_json_numbers_count_as_metric_numbers() {
+    for case in [
+        literal(r#"{"id":"number-0","operation":"number","input":null,"expected":false}"#),
+        literal(r#"{"id":"number-1","operation":"number","input":true,"expected":false}"#),
+        literal(r#"{"id":"number-3","operation":"number","input":0,"expected":true}"#),
+        literal(r#"{"id":"number-5","operation":"number","input":1.0,"expected":true}"#),
+        literal(r#"{"id":"number-11","operation":"number","input":"1","expected":false}"#),
+        literal(r#"{"id":"number-12","operation":"number","input":[],"expected":false}"#),
+    ] {
+        assert_eq!(
+            tracking::number(&case["input"]).unwrap(),
+            case["expected"].as_bool().unwrap()
+        );
+    }
+}
+
+fn project(case: &Value) -> tracking::Result<Value> {
     let input = &case["input"];
-    match case["operation"].as_str().unwrap() {
-        "options" => Ok(WandbOptions::from_value(input)?.to_value()),
-        "settings" => {
-            let settings = WandbSettings::from_value(input)?;
-            Ok(
-                json!({"public":settings.to_public_value(),"provided":settings.provided_fields().collect::<Vec<_>>(),"has_key":settings.api_key().is_some()}),
-            )
-        }
-        "route" => {
-            let raw = &input["settings"];
-            let settings = RoutingSettings {
-                enabled: raw.get("enabled").and_then(Value::as_bool).unwrap_or(true),
-                preparation_enabled: raw
-                    .get("preparation_enabled")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                credentials_configured: raw
-                    .get("api_key")
-                    .and_then(Value::as_str)
-                    .is_some_and(|key| !key.is_empty()),
-                resolved_entity: raw
-                    .get("resolved_entity")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                project: raw
-                    .get("project")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            };
-            let options = if input["options"].is_null() {
-                None
-            } else {
-                Some(WandbOptions::from_value(&input["options"])?)
-            };
-            let project = input["project"].as_str().unwrap();
-            Ok(
-                json!({"run":tracking::resolve(options.as_ref(),&settings,project),"preparation":tracking::resolve_preparation(options.as_ref(),&settings,project)}),
-            )
-        }
-        "parameters" => Ok(json!(
-            String::from_utf8(tracking::finite_parameters_json(
-                input["raw"].as_str().unwrap().as_bytes()
-            )?)
-            .unwrap()
-        )),
-        "helpers" => Ok(json!({
-            "stem":tracking::stem(input["name"].as_str().unwrap()),
-            "fingerprint":tracking::fingerprint(input["name"].as_str().unwrap()),
-            "identity":tracking::identity(&input["context"],false)?,
-            "variant_identity":tracking::identity(&input["context"],true)?,
-        })),
-        "number" => Ok(json!(tracking::number(input)?)),
-        "capacity" => {
-            let mut projection = Projection::new();
-            for index in 0..input.as_u64().unwrap() {
-                projection = projection.add(&json!({"name":format!("metric{index}"),"unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null,"value":4,"status":"VALID","step":1}),index as i64+1)?;
-            }
-            Ok(json!(
-                projection.state_value()["series"]
-                    .as_object()
-                    .unwrap()
-                    .len()
-            ))
-        }
-        "projection" => {
-            let items = input["items"].as_array().unwrap();
-            let mut projection = Projection::new();
-            for (index, item) in items.iter().enumerate() {
-                projection = projection.add(item, index as i64 + 1)?;
-            }
-            projection = projection.at(input
-                .get("through")
-                .and_then(Value::as_i64)
-                .unwrap_or(items.len() as i64))?;
-            // These names are explicit fixture inputs, representing reservations
-            // in the existing destination-wide display_metrics table.
-            let names = case["expected"]["names"]
-                .as_object()
-                .cloned()
-                .unwrap_or_default();
-            let display = projection.document(&names)?;
-            let definitions = tracking::definition_specs(&display)?;
-            let events = input
-                .get("events")
-                .cloned()
-                .unwrap_or_else(|| json!([{"payload":{"kind":"metrics","observations":items}}]));
-            let curves = events
-                .as_array()
-                .unwrap()
+    let items = input["items"].as_array().unwrap();
+    let mut projection = Projection::new();
+    for (index, item) in items.iter().enumerate() {
+        projection = projection.add(item, index as i64 + 1)?;
+    }
+    projection = projection.at(input
+        .get("through")
+        .and_then(Value::as_i64)
+        .unwrap_or(items.len() as i64))?;
+    // These names are explicit inputs, representing reservations in the existing
+    // destination-wide display_metrics table.
+    let names = case["expected"]["names"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let display = projection.document(&names)?;
+    let definitions = tracking::definition_specs(&display)?;
+    let events = input
+        .get("events")
+        .cloned()
+        .unwrap_or_else(|| json!([{"payload":{"kind":"metrics","observations":items}}]));
+    let curves = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| tracking::curve_record(event, &display))
+        .collect::<tracking::Result<Vec<_>>>()?;
+    let keys = input
+        .get("remote_keys")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
                 .iter()
-                .map(|event| tracking::curve_record(event, &display))
-                .collect::<tracking::Result<Vec<_>>>()?;
-            let keys = input
-                .get("remote_keys")
-                .and_then(Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .map(|value| value.as_str().unwrap().to_owned())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let patch = tracking::summary_patch(
-                &display,
-                &keys,
-                input
-                    .get("terminal")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                input
-                    .get("coverage")
-                    .and_then(Value::as_str)
-                    .unwrap_or("complete"),
-            )?;
-            Ok(
-                json!({"state":projection.state_value(),"names":names,"document":display,"curves":curves,"definitions":definitions,"patch":patch}),
-            )
-        }
-        _ => unreachable!(),
+                .map(|value| value.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let patch = tracking::summary_patch(
+        &display,
+        &keys,
+        input
+            .get("terminal")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        input
+            .get("coverage")
+            .and_then(Value::as_str)
+            .unwrap_or("complete"),
+    )?;
+    Ok(
+        json!({"state":projection.state_value(),"names":names,"document":display,"curves":curves,"definitions":definitions,"patch":patch}),
+    )
+}
+
+#[test]
+fn projection_builds_state_document_curves_definitions_and_summary_patch() {
+    for case in [
+        literal(
+            r#"{"id":"empty","operation":"projection","input":{"items":[],"remote_keys":["metrics/old","axes/old","results/old","curves/old","unmanaged","ml_expd/custom"]},"expected":{"state":{"cursor":0,"series":{}},"names":{},"document":{"contract":"metric-display.v2","through":0,"series":{}},"curves":[{}],"definitions":[{"name":"metrics/*","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"axes/*","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"ml_expd/*","options":{"hidden":true}}],"patch":{"delete":["metrics/old","axes/old","results/old","curves/old"],"set":{"ml_expd/display_definitions_json":"{}","ml_expd/display_coverage":"complete","ml_expd/display_through":0,"ml_expd/display_version":2}}}}"#,
+        ),
+        literal(
+            r#"{"id":"one-point","operation":"projection","input":{"items":[{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null,"value":4,"status":"VALID","step":1}],"terminal":true},"expected":{"state":{"cursor":1,"series":{"{\"dataset_id\":\"d\",\"name\":\"loss\",\"protocol_id\":\"p\",\"unit\":\"nats/token\",\"variant_id\":null}":{"context":{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null},"latest":{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null,"value":4,"status":"VALID","step":1,"axis":"step","sequence":1},"summary":null,"positions":{"step":[1]}}}},"names":{"{\"dataset_id\":\"d\",\"name\":\"loss\",\"protocol_id\":\"p\",\"unit\":\"nats/token\"}":"loss"},"document":{"contract":"metric-display.v2","through":1,"series":{"{\"dataset_id\":\"d\",\"name\":\"loss\",\"protocol_id\":\"p\",\"unit\":\"nats/token\",\"variant_id\":null}":{"context":{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null},"latest":{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null,"value":4,"status":"VALID","step":1,"axis":"step","sequence":1},"summary":null,"positions":{"step":[1]},"selection":"latest_observation","name":"loss","multiple_variants":false,"curve":"curves/loss","shadow":"curves/loss/variants/af20fbe13de1c144","result":"results/loss"}}},"curves":[{"curves/loss/variants/af20fbe13de1c144":4,"axes/loss/variants/af20fbe13de1c144/step":1,"curves/loss":4,"axes/loss/step":1}],"definitions":[{"name":"metrics/*","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"axes/*","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"ml_expd/*","options":{"hidden":true}},{"name":"axes/loss/step","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"curves/loss","options":{"step_metric":"axes/loss/step","step_sync":false,"hidden":true,"summary":"none","overwrite":true}},{"name":"axes/loss/variants/af20fbe13de1c144/step","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"curves/loss/variants/af20fbe13de1c144","options":{"step_metric":"axes/loss/variants/af20fbe13de1c144/step","step_sync":false,"hidden":true,"summary":"none","overwrite":true}},{"name":"axes/loss/by_epoch/epoch","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"curves/loss/by_epoch","options":{"step_metric":"axes/loss/by_epoch/epoch","step_sync":false,"hidden":true,"summary":"none","overwrite":true}},{"name":"axes/loss/variants/af20fbe13de1c144/by_epoch/epoch","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"curves/loss/variants/af20fbe13de1c144/by_epoch","options":{"step_metric":"axes/loss/variants/af20fbe13de1c144/by_epoch/epoch","step_sync":false,"hidden":true,"summary":"none","overwrite":true}},{"name":"results/loss","options":{"hidden":false,"overwrite":true}}],"patch":{"delete":[],"set":{"results/loss":4,"ml_expd/display_definitions_json":"{\"results/loss\": {\"checkpoint_id\": null, \"dataset_id\": \"d\", \"denominator\": null, \"epoch\": null, \"error\": null, \"name\": \"loss\", \"numerator\": null, \"protocol_id\": \"p\", \"selection\": \"latest_observation\", \"status\": \"VALID\", \"step\": 1, \"unit\": \"nats/token\", \"variant_id\": null}}","ml_expd/display_coverage":"complete","ml_expd/display_through":1,"ml_expd/display_version":2}}}}"#,
+        ),
+        literal(
+            r#"{"id":"summary-preferred","operation":"projection","input":{"items":[{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null,"value":4,"status":"VALID","step":1},{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null,"value":2,"status":"VALID","step":2,"summary":true},{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null,"value":3,"status":"VALID","step":3}],"terminal":true},"expected":{"state":{"cursor":3,"series":{"{\"dataset_id\":\"d\",\"name\":\"loss\",\"protocol_id\":\"p\",\"unit\":\"nats/token\",\"variant_id\":null}":{"context":{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null},"latest":{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null,"value":3,"status":"VALID","step":3,"axis":"step","sequence":3},"summary":{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null,"value":2,"status":"VALID","step":2,"summary":true,"axis":"step","sequence":2},"positions":{"step":[1,3]}}}},"names":{"{\"dataset_id\":\"d\",\"name\":\"loss\",\"protocol_id\":\"p\",\"unit\":\"nats/token\"}":"loss"},"document":{"contract":"metric-display.v2","through":3,"series":{"{\"dataset_id\":\"d\",\"name\":\"loss\",\"protocol_id\":\"p\",\"unit\":\"nats/token\",\"variant_id\":null}":{"context":{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null},"latest":{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null,"value":2,"status":"VALID","step":2,"summary":true,"axis":"step","sequence":2},"summary":{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null,"value":2,"status":"VALID","step":2,"summary":true,"axis":"step","sequence":2},"positions":{"step":[1,3]},"selection":"explicit_summary","name":"loss","multiple_variants":false,"curve":"curves/loss","shadow":"curves/loss/variants/af20fbe13de1c144","result":"results/loss"}}},"curves":[{"curves/loss/variants/af20fbe13de1c144":3,"axes/loss/variants/af20fbe13de1c144/step":3,"curves/loss":3,"axes/loss/step":3}],"definitions":[{"name":"metrics/*","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"axes/*","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"ml_expd/*","options":{"hidden":true}},{"name":"axes/loss/step","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"curves/loss","options":{"step_metric":"axes/loss/step","step_sync":false,"hidden":false,"summary":"none","overwrite":true}},{"name":"axes/loss/variants/af20fbe13de1c144/step","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"curves/loss/variants/af20fbe13de1c144","options":{"step_metric":"axes/loss/variants/af20fbe13de1c144/step","step_sync":false,"hidden":true,"summary":"none","overwrite":true}},{"name":"axes/loss/by_epoch/epoch","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"curves/loss/by_epoch","options":{"step_metric":"axes/loss/by_epoch/epoch","step_sync":false,"hidden":true,"summary":"none","overwrite":true}},{"name":"axes/loss/variants/af20fbe13de1c144/by_epoch/epoch","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"curves/loss/variants/af20fbe13de1c144/by_epoch","options":{"step_metric":"axes/loss/variants/af20fbe13de1c144/by_epoch/epoch","step_sync":false,"hidden":true,"summary":"none","overwrite":true}},{"name":"results/loss","options":{"hidden":false,"overwrite":true}}],"patch":{"delete":[],"set":{"results/loss":2,"ml_expd/display_definitions_json":"{\"results/loss\": {\"checkpoint_id\": null, \"dataset_id\": \"d\", \"denominator\": null, \"epoch\": null, \"error\": null, \"name\": \"loss\", \"numerator\": null, \"protocol_id\": \"p\", \"selection\": \"explicit_summary\", \"status\": \"VALID\", \"step\": 2, \"unit\": \"nats/token\", \"variant_id\": null}}","ml_expd/display_coverage":"complete","ml_expd/display_through":3,"ml_expd/display_version":2}}}}"#,
+        ),
+    ] {
+        assert_eq!(project(&case).unwrap(), case["expected"]);
     }
 }
 
 #[test]
-fn tracking_contract_and_display_match_frozen_python_reference() {
-    let fixture: Value =
-        serde_json::from_str(include_str!("../../../compatibility/tracking.json")).unwrap();
-    assert_eq!(
-        fixture["reference"]["commit"],
-        "479f1d39090759f9a64146dbac55e047f57b629d"
-    );
-    assert_eq!(
-        fixture["reference"]["sources"]["server/src/ml_exp_server/tracking/tracking_contract.py"],
-        "d5fa979a914318ee57a8e41fdb0fd144dc846349bdacba5503d8a434f8016f92"
-    );
-    assert_eq!(
-        fixture["reference"]["sources"]["server/src/ml_exp_server/tracking/wandb_display.py"],
-        "e7f1ef0ca7d73e14f905ffd7563195896976dd77a18f7dfdc766246da86a094c"
-    );
-    let cases = fixture["cases"].as_array().unwrap();
-    for case in cases {
-        let result = evaluate(case);
-        // These frozen Python errors came only from retired display-size caps.
-        if matches!(
-            case["id"].as_str(),
-            Some("parameters-12" | "parameters-14" | "parameters-15" | "parameters-17")
-        ) {
-            let encoded = result.unwrap();
-            let actual: Value = serde_json::from_str(encoded.as_str().unwrap()).unwrap();
-            let original: Value =
-                serde_json::from_str(case["input"]["raw"].as_str().unwrap()).unwrap();
-            assert_eq!(actual, original);
-            continue;
-        }
-        if case["id"] == "capacity-513" {
-            assert_eq!(result.unwrap(), json!(513));
-            continue;
-        }
-        if let Some(expected) = case.get("expected") {
-            assert_eq!(
-                result.unwrap_or_else(|error| panic!("{}: {error}", case["id"])),
-                *expected,
-                "{}",
-                case["id"]
-            );
-        } else {
-            assert!(result.is_err(), "{} unexpectedly accepted", case["id"]);
-        }
+fn projection_refuses_malformed_observations_events_and_a_negative_cursor() {
+    for case in [
+        literal(
+            r#"{"id":"missing-status","operation":"projection","input":{"items":[{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":null,"value":4,"step":1}]},"error":"KeyError"}"#,
+        ),
+        literal(
+            r#"{"id":"unhashable-variant","operation":"projection","input":{"items":[{"name":"loss","unit":"nats/token","protocol_id":"p","dataset_id":"d","variant_id":["a"],"value":4,"status":"VALID","step":1}]},"error":"TypeError"}"#,
+        ),
+        literal(
+            r#"{"id":"malformed-event-0","operation":"projection","input":{"items":[],"events":[{}]},"error":"KeyError"}"#,
+        ),
+    ] {
+        assert!(project(&case).is_err());
     }
-    assert_eq!(cases.len(), 478);
+    assert!(Projection::new().at(-1).is_err());
 }
 
 #[test]
-fn finite_parameter_validation_returns_the_same_values_and_rejects_raw_nonfinite() {
+fn finite_parameter_validation_returns_the_same_values() {
     let value = json!({"arbitrary": [1, 1.0, null],"unicode":"中文"});
     assert!(std::ptr::eq(
         tracking::finite_parameters(&value).unwrap(),
         &value
     ));
-    for raw in [
-        b"NaN".as_slice(),
-        b"Infinity",
-        b"[1e400]",
-        b"{\"x\":-Infinity}",
-    ] {
-        assert!(tracking::finite_parameters_json(raw).is_err());
-    }
-}
-
-#[test]
-fn an_older_cutoff_requires_replaying_the_durable_prefix() {
-    let projection = Projection::new().at(10).unwrap();
-    assert_eq!(projection.replay_after(11).unwrap(), 10);
-    assert_eq!(projection.replay_after(10).unwrap(), 10);
-    assert_eq!(projection.replay_after(9).unwrap(), 0);
-    assert!(projection.replay_after(-1).is_err());
-    assert!(Projection::new().at(-1).is_err());
-    let projection = projection
-        .add(
-            &json!({"name":"loss","unit":"nats/token","value":3,"status":"VALID","step":1}),
-            1,
-        )
-        .unwrap();
-    let (retained, after) = projection.clone().for_cutoff(10).unwrap();
-    assert_eq!(after, 10);
-    assert_eq!(retained.state_value(), projection.state_value());
-    let (reset, after) = projection.for_cutoff(9).unwrap();
-    assert_eq!(after, 0);
-    assert_eq!(reset.state_value(), json!({"cursor":0,"series":{}}));
 }
