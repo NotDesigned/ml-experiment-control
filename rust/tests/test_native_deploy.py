@@ -14,7 +14,7 @@ import threading
 import unittest
 
 TOOL = Path(__file__).resolve().parents[1] / "deploy/deploy_native.py"
-BINARIES = ("ml-exp", "ml-expd-rs", "ml-exp-worker-rs", "ml-expd-state-audit")
+BINARIES = ("ml-exp", "ml-expd-rs", "ml-exp-worker-rs")
 TARGET = "x86_64-unknown-linux-gnu"
 
 
@@ -192,6 +192,30 @@ class Deploy(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual({path: path.read_text() for path in retired}, before)
         self.assertFalse((self.site / "experiment_control/new.py").exists())
+
+    def test_retired_binary_is_left_alone_and_a_bundle_need_not_carry_it(self):
+        stale = self.root / "bin/ml-expd-state-audit"
+        program(stale, stale.name, "1.0.0", "retired")
+        before = stale.read_bytes()
+        result = self.deploy(self.bundle("1.1.0"), "--apply")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.version(), "1.1.0")
+        self.assertEqual(stale.read_bytes(), before)
+        self.assertFalse((self.root / "previous/bin" / stale.name).exists())
+        self.assertNotIn(stale.name, json.loads((self.root / "DEPLOYED.json").read_text())["sha256"])
+        result = self.run_tool("--rollback")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.version(), "1.0.0")
+        self.assertEqual(stale.read_bytes(), before)
+
+    def test_previous_install_saved_with_the_retired_binary_still_rolls_back(self):
+        self.assertEqual(self.deploy(self.bundle("1.1.0"), "--apply").returncode, 0)
+        retained = self.root / "previous/bin/ml-expd-state-audit"
+        program(retained, retained.name, "1.0.0", "retired")
+        result = self.run_tool("--rollback")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.version(), "1.0.0")
+        self.assertFalse((self.root / "bin" / retained.name).exists())
 
     def test_rollback_without_retained_install_refuses(self):
         result = self.run_tool("--rollback")

@@ -9,10 +9,6 @@ license.workspace = true
 name = "ml-expd-rs"
 path = "src/main.rs"
 
-[[bin]]
-name = "ml-expd-state-audit"
-path = "src/state_audit/main.rs"
-
 [dependencies]
 ml-exp-core.workspace = true
 ml-exp-io.workspace = true

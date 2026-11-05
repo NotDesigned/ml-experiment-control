@@ -15,7 +15,7 @@ real providers is recorded separately in [acceptance status](rust-rewrite.md).
 | `ml-exp-core` | `rust/crates/core/` | none | Pure identities, validation, budgets, state transitions, reconciliation decisions and request plans |
 | `ml-exp-io` | `rust/crates/io/` | none | Confined files, hashing, bounded child processes, framing, archive and observation transport |
 | `ml-exp-client` | `rust/crates/client/` | `ml-exp` | Private settings, packaging, saved recovery identities, observation and verified transfers |
-| `ml-exp-server` | `rust/crates/server/` | `ml-expd-rs`, `ml-expd-state-audit` | Authenticated API, durable ledgers, backend adapters and background observation |
+| `ml-exp-server` | `rust/crates/server/` | `ml-expd-rs` | Authenticated API, durable ledgers, backend adapters and background observation |
 | `ml-exp-worker` | `rust/crates/worker/` | `ml-exp-worker-rs` | In-image supervision, Slurm gateway helper, data verification, checkpoints and result collection |
 | `experiment-redact` | `rust/src/` | `experiment-redact` | Shared credential redaction |
 
@@ -89,7 +89,7 @@ Paths are relative to `rust/crates/`.
 | W&B | `core/src/tracking/`, `server/src/tracking/` (the SDK process runs `server/src/tracking/sdk.py`) |
 | Debug machines | `core/src/cloud/debug.rs`, `server/src/cloud_runs/debug_http.rs`, `server/src/cloud_runs/service/debug.rs`, `client/src/debug.rs` |
 | Administrative maintenance | `core/src/maintenance.rs`, `server/src/administration.rs`, `server/src/deletion.rs`, `worker/src/maintenance.rs` |
-| Historical reads and audit | `server/src/history.rs`, `server/src/readonly.rs`, `server/src/state_audit.rs`, `server/src/state_audit/main.rs` |
+| Historical reads | `server/src/history.rs`, `server/src/readonly.rs` |
 
 Slurm and cloud are separate services behind one API. They share core types and
 Action storage but have distinct adapters and effect stores. Adding a backend requires its

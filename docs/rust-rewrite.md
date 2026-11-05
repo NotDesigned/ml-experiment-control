@@ -228,13 +228,6 @@ or unbounded restart exists. Native debug supports CCI create/stop and DSW
 create/stop/delete. Slurm dataset export is outside the OSS-specific dataset download
 command.
 
-An offline `ml-expd-state-audit` fingerprints existing manifests, checkpoint and
-result receipts, source/runtime/preparation control receipts, tombstones, lifecycle
-records, Action plans and SQLite rows, without initializing a native marker, copying
-a database or reading scientific payloads. Equality is not production cutover
-authority. Historical-state transformation and provider acceptance remain separate
-work.
-
 Historical reads reuse the ordinary read projections with mandatory kernel write
 denial, no effect services, and all mutation/worker-ingress routes rejected. The
 pinned reader can attach to a writable native service: one address routes reads by

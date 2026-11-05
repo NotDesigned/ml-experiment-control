@@ -25,7 +25,9 @@ import urllib.request
 
 RELEASES = "https://github.com/NotDesigned/ml-experiment-control/releases/download"
 TARGET = "x86_64-unknown-linux-gnu"
-BINARIES = ("ml-exp", "ml-expd-rs", "ml-exp-worker-rs", "ml-expd-state-audit")
+# Only these are copied, verified and restored. Any other file in bin/, including
+# a binary from an older release, is left as it is.
+BINARIES = ("ml-exp", "ml-expd-rs", "ml-exp-worker-rs")
 PACKAGES = ("experiment_control", "ml_exp_server", "ml_exp_worker")
 SETTINGS = ("api_unit", "builder_unit", "server_config", "client_config", "cloud_config",
             "builder_state", "python", "python_site_packages", "publisher_locks")

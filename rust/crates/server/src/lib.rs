@@ -26,7 +26,6 @@ mod readonly;
 pub mod records;
 mod renewal;
 pub mod sources;
-pub mod state_audit;
 pub mod storage;
 pub mod submissions;
 pub mod tracking;
