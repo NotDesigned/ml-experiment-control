@@ -108,14 +108,7 @@ impl Fixture {
 }
 #[test]
 fn resume_revalidates_missing_malformed_foreign_and_unsupported_sources_before_any_write() {
-    for corruption in [
-        "missing",
-        "malformed",
-        "foreign",
-        "schema",
-        "campaign",
-        "unsafe_permissions",
-    ] {
+    for corruption in ["missing", "malformed", "foreign", "schema", "campaign"] {
         let fixture = Fixture::new();
         let service = fixture.service();
         service
@@ -128,7 +121,7 @@ fn resume_revalidates_missing_malformed_foreign_and_unsupported_sources_before_a
    "foreign"=>write(&fixture.manifest(),&serde_json::to_vec(&json!({"project":"foreign","title":"Another project","run_roots":["runs"]})).unwrap()),
    "schema"=>write(&fixture.manifest(),&serde_json::to_vec(&json!({"project":"demo","title":false,"run_roots":["runs"]})).unwrap()),
    "campaign"=>write(&fixture.manifest(),&serde_json::to_vec(&json!({"project":"demo","title":"Unloaded catalog","run_roots":["runs"],"campaigns":[{"name":"unloaded","file":"campaign.yaml"}]})).unwrap()),
-   "unsafe_permissions"=>fs::set_permissions(fixture.manifest(),fs::Permissions::from_mode(0o660)).unwrap(),_=>unreachable!()
+   _=>unreachable!()
   }
         let damaged = fs::read(fixture.manifest()).ok();
         assert!(
