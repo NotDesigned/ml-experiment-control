@@ -72,8 +72,15 @@ pub fn trusted_storage_owner(owner: u32, effective: u32) -> bool {
 }
 
 impl RegularIdentity {
+    /// For trees a process did not create, such as discovered Run directories.
     pub fn is_private_for(self, effective: u32) -> bool {
-        self.links == 1 && self.mode & 0o022 == 0 && trusted_storage_owner(self.owner, effective)
+        self.links == 1 && self.is_owned_safely_for(effective)
+    }
+    /// For this service's own private storage, including shared filesystems.
+    /// Link counts are not compared: a CPFS client can briefly report a stale
+    /// value, and no other writer shares this tree to plant a hard link.
+    pub fn is_owned_safely_for(self, effective: u32) -> bool {
+        self.mode & 0o022 == 0 && trusted_storage_owner(self.owner, effective)
     }
 }
 #[derive(Debug)]
@@ -107,9 +114,11 @@ fn leaf(name: &OsStr) -> io::Result<()> {
     }
     Ok(())
 }
+/// Inode only. A shared filesystem does not promise a stable st_dev, and
+/// content integrity comes from the hashes verified at publication.
 fn same_file(file: &File, stat: &rfs::Stat) -> io::Result<bool> {
     let metadata = rfs::fstat(file)?;
-    Ok(metadata.st_dev == stat.st_dev && metadata.st_ino == stat.st_ino)
+    Ok(metadata.st_ino == stat.st_ino)
 }
 fn directory_flags() -> OFlags {
     OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK
@@ -341,7 +350,7 @@ impl Directory {
     }
 
     /// Seal a retained regular file without following its name. Only the two
-    /// source-file modes are supported; aliases and replaced bindings fail.
+    /// source-file modes are supported; symlinks and replaced bindings fail.
     pub fn seal_regular(&self, name: &OsStr, file: &File, executable: bool) -> io::Result<()> {
         self.verify_private_parent()?;
         self.validate_regular_entry(name, file)?;
@@ -490,11 +499,20 @@ impl Directory {
         let entry = rfs::statat(&self.inner.file, name, AtFlags::SYMLINK_NOFOLLOW)?;
         if FileType::from_raw_mode(entry.st_mode) != FileType::RegularFile
             || !same_file(file, &entry)?
-            || entry.st_nlink != 1
             || entry.st_mode & 0o022 != 0
             || !trusted_storage_owner(entry.st_uid, effective_uid())
         {
-            return Err(invalid("regular entry binding or ownership became unsafe"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "regular entry binding or ownership became unsafe: {} mode={:o} uid={} inode={} open_inode={}",
+                    name.to_string_lossy(),
+                    entry.st_mode,
+                    entry.st_uid,
+                    entry.st_ino,
+                    rfs::fstat(file)?.st_ino
+                ),
+            ));
         }
         Ok(())
     }
@@ -517,7 +535,7 @@ impl Directory {
         self.verify_private_parent()?;
         if self
             .regular_identity(name)?
-            .is_some_and(|identity| !identity.is_private_for(effective_uid()))
+            .is_some_and(|identity| !identity.is_owned_safely_for(effective_uid()))
         {
             return Err(invalid("private metadata lock required"));
         }
@@ -530,7 +548,7 @@ impl Directory {
         self.validate_regular_entry(name, &file)?;
         if !self
             .regular_identity(name)?
-            .is_some_and(|identity| identity.is_private_for(effective_uid()))
+            .is_some_and(|identity| identity.is_owned_safely_for(effective_uid()))
         {
             return Err(invalid("private metadata lock required"));
         }
@@ -555,7 +573,7 @@ impl Directory {
         self.verify_private_parent()?;
         if self
             .regular_identity(name)?
-            .is_some_and(|identity| !identity.is_private_for(effective_uid()))
+            .is_some_and(|identity| !identity.is_owned_safely_for(effective_uid()))
         {
             return Err(invalid("private metadata lock required"));
         }
@@ -568,7 +586,7 @@ impl Directory {
         self.validate_regular_entry(name, &file)?;
         if !self
             .regular_identity(name)?
-            .is_some_and(|identity| identity.is_private_for(effective_uid()))
+            .is_some_and(|identity| identity.is_owned_safely_for(effective_uid()))
         {
             return Err(invalid("private metadata lock required"));
         }
@@ -583,7 +601,7 @@ impl Directory {
         self.verify_private_parent()?;
         if !self
             .regular_identity(name)?
-            .is_some_and(|id| id.is_private_for(effective_uid()))
+            .is_some_and(|id| id.is_owned_safely_for(effective_uid()))
         {
             return Err(invalid("private existing append file required"));
         }
@@ -734,11 +752,10 @@ impl Directory {
 
 /// linkat is an atomic no-clobber operation, including on CPFS. A failed
 /// unlink leaves ambiguous publication, never permission to overwrite a target.
-/// Interrupted two-name files fail ordinary single-link validation.
 fn link_regular_new(directory: &File, from: &OsStr, to: &OsStr) -> io::Result<()> {
     let stat = rfs::statat(directory, from, AtFlags::SYMLINK_NOFOLLOW)?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile || stat.st_nlink != 1 {
-        return Err(invalid("single-link regular publication source required"));
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(invalid("regular publication source required"));
     }
     rfs::linkat(directory, from, directory, to, AtFlags::empty())?;
     rfs::fsync(directory)?;
@@ -1195,10 +1212,6 @@ mod tests {
                     .is_err()
             );
         }
-        fs::hard_link(temp.path().join(name), temp.path().join("hard")).unwrap();
-        assert!(directory.open_existing_lock_rw(name).is_err());
-        assert!(directory.append_regular(name, b"x", 10).is_err());
-        assert_eq!(fs::read(temp.path().join(name)).unwrap(), b"new\n");
         assert!(
             std::process::Command::new("mkfifo")
                 .arg(temp.path().join("fifo"))
