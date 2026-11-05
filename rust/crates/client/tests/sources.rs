@@ -473,8 +473,9 @@ fn source_filename_choices_are_allowed_but_aliases_and_size_limits_remain() {
             }
             _ => unreachable!(),
         }
-        // A hard link in the user's own tree packs as ordinary hashed content.
-        if matches!(case, "secret" | "nested-secret" | "hardlink") {
+        // A hard link or a group-writable file in the user's own tree packs as
+        // ordinary hashed content, with its mode normalized in the archive.
+        if matches!(case, "secret" | "nested-secret" | "hardlink" | "writable") {
             assert!(sources::pack_directory(temp.path()).is_ok(), "{case}");
             continue;
         }
