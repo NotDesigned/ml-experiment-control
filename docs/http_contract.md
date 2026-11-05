@@ -61,16 +61,19 @@ idempotent. Those transport rules do not authorize retrying Run or scheduler cre
 
 ## Backend-independent progress
 
-`GET /api/submissions/{id}/progress` reports the exact Run/Attempt for Slurm,
-SenseCore ACP and PAI DLC through the same optional evidence fields:
+`GET /api/submissions/{id}/progress` reports retained evidence for the exact Run and
+Attempt, without contacting a provider. It carries `submission_id`, `project`,
+`run_id`, `attempt_id` and `availability`, which is `AVAILABLE` once a cloud worker has
+reported and `NOT_REPORTED` otherwise, including for all Slurm Submissions.
 
 | Field | Meaning |
 | --- | --- |
-| `scheduler_state`, `queue` | Normalized allocation state and available native blocker, position, observation time and stale flag |
-| `worker_phase` | Last supported worker stage, original timestamp, age, event ID and sequence; a transition is not a heartbeat |
-| `last_metric` | Last received metric observation and journal provenance, retaining unit, protocol, variant and checkpoint context |
-| `input_delivery` | Bounded exact-Attempt data transfer evidence |
-| `result_collection` | Independent training result, publication and verification status |
+| `worker_phase` | Last reported worker stage and its observation time; a transition is not a heartbeat |
+| `input_delivery` | The most informative input record: a failure first, then unfinished work |
+| `inputs` | All retained input delivery records for this Attempt |
+
+`GET /api/experiments/{project}/{run}/submissions` lists the current Attempt's cloud
+Submission for clients without saved state.
 
 Missing fields on older servers and null evidence mean unknown. A scheduler
 terminal state is not overwritten by an earlier worker stage. The last received
@@ -133,10 +136,6 @@ Attempt in the same frozen Run from an explicit checkpoint or `--from-start`; it
 not select a checkpoint or submit. See [recovery](recovery.md).
 
 The native API has no SSE stream. Poll the HTTP resources.
-
-The client also requests `GET /api/submissions/{id}/progress` and tolerates its
-absence. The current server registers no GET handler for that path, so treat the
-field table above as optional evidence that may be unavailable.
 
 Preparation checks actual provider resources and referenced inputs, without estimating worker-package size from dataset inventories. The actual compiled package retains its transport-size bound. A rejected request has no server preparation slot; retrying the exact original POST after correcting the cause preserves the deterministic request identity. GET never creates it.
 

@@ -167,8 +167,9 @@ continue to use the existing low-level protocol-2 endpoints.
 
 ## Data delivery diagnosis
 
-`GET /api/submissions/{id}/progress` includes `input_delivery` from bounded,
-exact-Attempt worker logs. New images with `input-delivery-progress.v1` report
+For a cloud Attempt, `GET /api/submissions/{id}/progress` includes `input_delivery`
+from bounded, exact-Attempt worker logs. When a job failed before any worker report,
+use `ml-exp run diagnose` to read the provider's reason, events and logs. New images with `input-delivery-progress.v1` report
 waiting for the cache lock, downloading, extracting, verifying, publishing,
 mounting and READY/FAILED. Evidence includes HTTP status, received/expected bytes,
 elapsed time, observed throughput, timestamp, failed phase and a safe error code.
