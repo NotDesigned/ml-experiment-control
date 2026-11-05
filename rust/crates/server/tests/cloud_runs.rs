@@ -1396,13 +1396,23 @@ fn check_materializer_diagnostics(
         .unwrap()
     };
     let service = open();
-    assert_eq!(
-        service
-            .materialize_runtime("demo", id, true)
-            .unwrap_err()
-            .code,
-        "OCI_TO_SIF_UNCONFIRMED"
-    );
+    // The build thread that published READY may still hold the metadata lock.
+    let materialize = || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let result = service.materialize_runtime("demo", id, true);
+            match &result {
+                Err(error)
+                    if error.code == "CLOUD_RUN_BUSY"
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                _ => return result,
+            }
+        }
+    };
+    assert_eq!(materialize().unwrap_err().code, "OCI_TO_SIF_UNCONFIRMED");
     let failed = open().runtime_status("demo", id).unwrap();
     assert_eq!(failed["status"], "RECONCILE_REQUIRED");
     assert_eq!(failed["scheduler_submitted"], false);
@@ -1426,7 +1436,7 @@ fn check_materializer_diagnostics(
         b"#!/bin/sh\ncat >/dev/null\ncat materializer-reply.json\n",
     )
     .unwrap();
-    let ready = service.materialize_runtime("demo", id, true).unwrap();
+    let ready = materialize().unwrap();
     assert_eq!(ready["status"], "READY");
     assert!(ready["build_error"].is_null());
 }
