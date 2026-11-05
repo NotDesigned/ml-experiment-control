@@ -262,8 +262,14 @@ impl Service {
             .builds
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
-        if record.worker_sha256 != settings.worker_sha256 {
-            return Err(cloud::Error::evidence());
+        // Only a new build embeds the configured worker. Reads of an earlier
+        // build's logs, progress or late publication stay valid across upgrades.
+        if operation == "build" && record.worker_sha256 != settings.worker_sha256 {
+            return Err(cloud::Error {
+                code: "NATIVE_BUILD_NOT_DISPATCHED".into(),
+                http_status: None,
+                uncertain: false,
+            });
         }
         let mirror = self
             .backends
