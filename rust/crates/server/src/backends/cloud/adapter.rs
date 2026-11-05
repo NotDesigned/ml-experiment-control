@@ -3,7 +3,7 @@
 use super::{Client, Error, Result};
 use ml_exp_core::cloud::{self, Job, JobObservation, Page, Request, pai, sensecore};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::atomic::AtomicBool,
@@ -309,6 +309,46 @@ impl<T: Transport> Adapter<T> {
             logs.push(self.call(p.pod_logs(&handle.job_id, id, 100), cancelled)?);
         }
         Ok(Value::Array(logs))
+    }
+    /// Read-only provider account of one job. A failed logs or events read
+    /// stays beside the job's state instead of hiding it.
+    pub fn pai_provider_diagnostics(
+        &self,
+        job: &Job,
+        handle: &Handle,
+        lines: u32,
+        cancelled: &AtomicBool,
+    ) -> Result<Value> {
+        handle.validate(&self.profile, job)?;
+        let Profile::Pai(p) = &self.profile else {
+            return Err(Error::configuration());
+        };
+        let row = self.raw_job(&handle.job_id, cancelled)?;
+        p.validate_job(&row, job, Some(&handle.job_id))
+            .map_err(|_| Error::evidence())?;
+        let failure = |error: Error| json!({"code":error.code,"http_status":error.http_status});
+        let all = row["Pods"].as_array().cloned().unwrap_or_default();
+        let mut pods = Vec::new();
+        for pod in all.iter().take(4) {
+            let mut view = pai::diagnostic_pod(pod);
+            let id = pod["PodId"].as_str().ok_or_else(Error::evidence)?;
+            match self.call(p.pod_logs(&handle.job_id, id, lines), cancelled) {
+                Ok(value) => {
+                    view["logs"] = json!(pai::diagnostic_tail(&value["Logs"], lines as usize))
+                }
+                Err(error) => view["logs_error"] = failure(error),
+            }
+            pods.push(view);
+        }
+        let mut result = pai::diagnostic_job(&row);
+        result["job_id"] = json!(handle.job_id);
+        result["pods"] = json!(pods);
+        result["pods_total"] = json!(all.len());
+        match self.call(p.job_events(&handle.job_id), cancelled) {
+            Ok(value) => result["events"] = json!(pai::diagnostic_tail(&value["Events"], 100)),
+            Err(error) => result["events_error"] = failure(error),
+        }
+        Ok(experiment_redact::redact_json(result))
     }
     pub fn pai_logs(
         &self,

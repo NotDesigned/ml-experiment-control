@@ -97,6 +97,7 @@ pub fn materialize(package: &Package, cancelled: &AtomicBool) -> managed::Result
                 code: "DATA_CACHE_UNAVAILABLE",
                 http_status: None,
                 errno: None,
+                error_class: None,
             })
             .and_then(|_| {
                 data_import::materialize(config, cancelled, &mut |progress| {
@@ -159,6 +160,7 @@ pub fn materialize(package: &Package, cancelled: &AtomicBool) -> managed::Result
                 record.code = Some(error.code.into());
                 record.http_status = error.http_status.map(f64::from);
                 record.errno = error.errno.map(f64::from);
+                record.error_class = error.error_class.map(str::to_owned);
                 save(&root, &records).map_err(|_| Error::Storage)?;
                 return Err(Error::Storage);
             }

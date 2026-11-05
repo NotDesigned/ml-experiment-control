@@ -297,6 +297,43 @@ impl Read {
 
 /// The only effect shell in this module: bounded authenticated GETs, using the
 /// existing transport's no-redirect/no-retry policy. Metrics/logs stay intact.
+/// An explicit provider read for one Attempt; ordinary status and logs never do this.
+pub fn provider_diagnostics(
+    client: &Client,
+    saved: Option<&Value>,
+    selection: Selection<'_>,
+    lines: u32,
+) -> Result<Value, Error> {
+    if !(1..=2000).contains(&lines) {
+        return Err(fail("diagnose requires 1..2000 lines"));
+    }
+    let mut step = observation::begin(client.base_url(), saved, selection)?;
+    let reference = loop {
+        match step {
+            observation::Step::Complete(reference) => break reference,
+            observation::Step::Read(read) => {
+                let value = client.get(read.path())?;
+                step = read.accept(value)?;
+            }
+        }
+    };
+    let project = observation::segment(&reference.project)?;
+    let run = observation::segment(&reference.run_id)?;
+    let attempt = match reference.attempt_id {
+        Some(attempt) => attempt,
+        None => client.get(&format!("/api/runs/{project}/{run}"))?["current_attempt_id"]
+            .as_str()
+            .ok_or_else(|| fail("this Run has no current Attempt to diagnose"))?
+            .to_owned(),
+    };
+    let attempt = observation::segment(&attempt)?;
+    client.post(
+        &format!(
+            "/api/runs/{project}/{run}/attempts/{attempt}/provider-diagnostics/refresh?lines={lines}"
+        ),
+        &serde_json::json!({}),
+    )
+}
 pub fn observe(
     client: &Client,
     health: &Value,

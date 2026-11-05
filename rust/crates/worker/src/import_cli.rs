@@ -63,6 +63,7 @@ fn run(args: Args) -> Result<(), data_import::Error> {
             code: "SIGNAL_HANDLER_UNAVAILABLE",
             http_status: None,
             errno: None,
+            error_class: None,
         })?;
     }
     let _timer = Timer::start(Arc::clone(&flag), config.timeout_seconds).map_err(|_| {
@@ -70,6 +71,7 @@ fn run(args: Args) -> Result<(), data_import::Error> {
             code: "DEADLINE_HANDLER_UNAVAILABLE",
             http_status: None,
             errno: None,
+            error_class: None,
         }
     })?;
     if let Some(path) = args.bundle_output {
@@ -109,13 +111,15 @@ fn run(args: Args) -> Result<(), data_import::Error> {
         serde_json::to_string(&receipt).map_err(|_| data_import::Error {
             code: "RECEIPT_ENCODING_FAILED",
             http_status: None,
-            errno: None
+            errno: None,
+            error_class: None,
         })?
     )
     .map_err(|_| data_import::Error {
         code: "RECEIPT_OUTPUT_UNAVAILABLE",
         http_status: None,
         errno: None,
+        error_class: None,
     })?;
     Ok(())
 }

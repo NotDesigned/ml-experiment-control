@@ -33,6 +33,13 @@ explicitly. Before an Attempt is bound, only status can inspect preparation.
 | AVAILABLE + SHA256_VERIFIED | Result archive is ready for verified client download |
 | Download ACK accepted | Exact verified local receipt and retention choice were recorded |
 
+`ml-exp run diagnose --state experiment.state.json` is the explicit exception for
+PAI: it asks the provider for the job's `ReasonCode`, `ReasonMessage`, pods, events
+and a bounded log tail (`--lines`, up to 2000). Use it when status and `run logs` are
+empty because the job failed before a worker report, such as during image pull or
+input delivery. It is read-only at the provider and stores nothing; provider logs
+are redacted but remain user text, and a reason does not establish the root cause.
+
 Status/metrics/log reads do not submit, collect, retry or refresh a provider.
 `--state` binds observation to saved dependencies and the original Attempt.
 `status --watch --seconds N` polls that Attempt for a bounded client interval;

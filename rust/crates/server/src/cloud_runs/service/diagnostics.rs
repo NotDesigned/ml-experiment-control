@@ -225,6 +225,49 @@ impl Service {
             "remote_refresh_performed":execute}),
         )
     }
+    /// Ask the provider why one exact Attempt is in its current state. This
+    /// reads and redacts provider evidence; nothing is stored or mutated.
+    pub fn provider_diagnostics(
+        &self,
+        project: &str,
+        run: &str,
+        attempt: &str,
+        lines: u32,
+    ) -> cloud::Result<Value> {
+        self.authority(project, run)?;
+        let prepared = self
+            .saved_attempt(project, run, attempt)?
+            .ok_or_else(missing)?;
+        let backend = self
+            .backends
+            .get(&prepared.execution.backend_id)
+            .ok_or_else(cloud::Error::configuration)?;
+        let mut result = json!({"project":project,"run_id":run,"attempt_id":attempt,
+            "backend":prepared.execution.backend_id,"provider_read":false});
+        if !matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_)) {
+            result["diagnostic"] = json!("PROVIDER_DIAGNOSTICS_UNSUPPORTED");
+            return Ok(result);
+        }
+        let handle = self
+            .outbox
+            .optional_status(&prepared.execution.job)?
+            .map(|status| status["handle"].clone())
+            .filter(Value::is_object);
+        let Some(handle) = handle else {
+            result["diagnostic"] = json!("NO_PROVIDER_JOB_RECORDED");
+            return Ok(result);
+        };
+        let handle = serde_json::from_value(handle).map_err(|_| cloud::Error::evidence())?;
+        let provider = backend.adapter.pai_provider_diagnostics(
+            &prepared.execution.job,
+            &handle,
+            lines,
+            &AtomicBool::new(false),
+        )?;
+        result["provider_read"] = json!(true);
+        result["provider"] = provider;
+        Ok(result)
+    }
     pub fn sync_diagnostic(
         &self,
         action: &str,

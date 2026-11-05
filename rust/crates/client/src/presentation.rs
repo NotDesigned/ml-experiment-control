@@ -394,6 +394,7 @@ fn input_line(value: &Value) -> Result<Option<String>> {
     }
     for field in [
         "code",
+        "error_class",
         "failed_phase",
         "http_status",
         "errno",
@@ -782,4 +783,60 @@ pub fn experiment_summary(
         lines.push("Training has not been authorized by this command. Review the saved preparation before --execute.".into());
     }
     Ok(lines.join("\n"))
+}
+
+/// Provider text is shown as evidence, not as a conclusion about the training code.
+pub fn provider_diagnostics(value: &Value) -> String {
+    let word = |value: &Value| value.as_str().unwrap_or("not reported").to_owned();
+    let mut lines = vec![format!(
+        "Run: {}/{} · {} · {}",
+        word(&value["project"]),
+        word(&value["run_id"]),
+        word(&value["attempt_id"]),
+        word(&value["backend"])
+    )];
+    if !value["diagnostic"].is_null() {
+        lines.push(format!("Provider not read: {}", word(&value["diagnostic"])));
+        return lines.join("\n");
+    }
+    let provider = &value["provider"];
+    lines.push(format!(
+        "Provider job: {} · {}{}",
+        word(&provider["job_id"]),
+        word(&provider["provider_state"]),
+        provider["sub_status"]
+            .as_str()
+            .map(|sub| format!(" ({sub})"))
+            .unwrap_or_default()
+    ));
+    lines.push(format!(
+        "Reason: {} {}",
+        word(&provider["reason_code"]),
+        provider["reason_message"].as_str().unwrap_or_default()
+    ));
+    let list = |value: &Value| value.as_array().cloned().unwrap_or_default();
+    for pod in list(&provider["pods"]) {
+        lines.push(format!(
+            "Pod {} ({}): {}",
+            word(&pod["pod_id"]),
+            word(&pod["type"]),
+            word(&pod["status"])
+        ));
+        if !pod["logs_error"].is_null() {
+            lines.push(format!("  logs unavailable: {}", pod["logs_error"]));
+        }
+        for line in list(&pod["logs"]) {
+            lines.push(format!("  {}", line.as_str().unwrap_or_default()));
+        }
+    }
+    if provider["pods_total"].as_u64().unwrap_or(0) as usize > list(&provider["pods"]).len() {
+        lines.push(format!("Pods shown: first of {}", provider["pods_total"]));
+    }
+    if !provider["events_error"].is_null() {
+        lines.push(format!("Events unavailable: {}", provider["events_error"]));
+    }
+    for event in list(&provider["events"]) {
+        lines.push(format!("Event: {}", event.as_str().unwrap_or_default()));
+    }
+    lines.join("\n")
 }
