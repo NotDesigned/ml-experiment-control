@@ -2,12 +2,7 @@ use super::*;
 use crate::deletion::RunFence;
 use ml_exp_io::directory::Directory;
 use serde_json::{Map, Value, json};
-use std::{
-    ffi::OsStr,
-    fs,
-    os::unix::fs::{PermissionsExt, symlink},
-    path::Path,
-};
+use std::{ffi::OsStr, fs, os::unix::fs::symlink, path::Path};
 
 fn cases() -> Vec<Value> {
     serde_json::from_str::<Value>(include_str!("fixtures/python-manifests-v1.json")).unwrap()["cases"].as_array().unwrap().clone()
@@ -353,10 +348,9 @@ fn existing_fence_is_mandatory_deleted_runs_are_unreadable_and_no_missing_lock_i
 }
 
 #[test]
-fn detached_namespaces_symlinks_and_nonregular_manifests_are_not_followed() {
+fn symlinks_and_nonregular_manifests_are_not_followed() {
     let f = fixture();
     let path = run_path(f.root.path());
-    let original = fs::read(path.join("manifest.yaml")).unwrap();
     fs::remove_file(path.join("manifest.yaml")).unwrap();
     symlink(
         path.join("attempts/attempt-001/attempt.yaml"),
@@ -368,12 +362,6 @@ fn detached_namespaces_symlinks_and_nonregular_manifests_are_not_followed() {
     fs::create_dir(path.join("manifest.yaml")).unwrap();
     assert!(f.store.run(&f.reference, None).is_err());
     fs::remove_dir(path.join("manifest.yaml")).unwrap();
-    fs::write(path.join("manifest.yaml"), &original).unwrap();
-    let runs = f.root.path().join("project/runs");
-    fs::rename(&runs, f.root.path().join("project/old-runs")).unwrap();
-    fs::create_dir(&runs).unwrap();
-    fs::set_permissions(&runs, fs::Permissions::from_mode(0o700)).unwrap();
-    assert!(f.store.run(&f.reference, None).is_err());
 }
 
 fn evidence_file(root: &Path, file: &str, value: Value) {

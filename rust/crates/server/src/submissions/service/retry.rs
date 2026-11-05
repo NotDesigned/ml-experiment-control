@@ -161,7 +161,8 @@ impl Service {
                     .map_err(why!(Error::Uncertain))?;
                 Ok(())
             })();
-            if stage.verify_attached().is_ok() {
+            // A renamed stage is already the published Attempt: never clean it.
+            if stage.still_at_staged_name().unwrap_or(false) {
                 clean_files(&stage, &["attempt.json", "status.json"])?;
                 self.slots
                     .remove_staged_empty_child(&stage)

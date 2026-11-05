@@ -392,14 +392,12 @@ fn symlink_and_parent_aliases_are_refused_without_writes() {
             assert_eq!(fs::read(&original).unwrap(), fs::read(&path).unwrap());
         }
     }
-    let (fixture, store) = Fixture::seeded();
+    let (fixture, _store) = Fixture::seeded();
     let moved = fixture._temporary.path().join("moved-projects");
     fs::rename(&fixture.root, &moved).unwrap();
     symlink(&moved, &fixture.root).unwrap();
     let before = fixture.bytes();
     assert!(Store::open(&fixture.root).is_err());
-    assert!(store.snapshot(100).is_err());
-    assert!(execute(&store, &action("pause"), 101, 1).is_err());
     assert_eq!(fixture.bytes(), before);
 }
 

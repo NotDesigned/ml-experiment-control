@@ -1331,7 +1331,7 @@ fn newly_materialized_image_keeps_its_source_directory_through_the_launch_packag
     assert!(!f.root.path().join("sbatch-calls").exists());
 }
 #[test]
-fn creation_refuses_partial_corrupt_and_replaced_authority_without_repair() {
+fn creation_refuses_partial_and_corrupt_authority_without_repair() {
     let f = Fixture::new();
     let service = f.service("ledger", true).with_run_creation(true).unwrap();
     let mut request = creation_request(&f);
@@ -1356,15 +1356,6 @@ fn creation_refuses_partial_corrupt_and_replaced_authority_without_repair() {
             .is_err()
     );
     assert!(!directory.join("attempts/attempt-001/attempt.json").exists());
-    let root = f.root.path().join("project/runs");
-    fs::rename(&root, f.root.path().join("old-runs")).unwrap();
-    fs::create_dir(&root).unwrap();
-    assert!(
-        service
-            .create_run("demo", creation_request(&f), NOW)
-            .is_err()
-    );
-    assert!(fs::read_dir(root).unwrap().next().is_none());
 }
 #[test]
 fn creation_refuses_reformatted_original_files_without_replacing_them() {

@@ -85,25 +85,6 @@ fn missing_or_detached_storage_is_not_repaired_and_unsafe_sidecars_fail_promptly
 }
 
 #[test]
-fn replacement_during_transaction_is_uncertain_and_does_not_return_success() {
-    let root = tempfile::tempdir().unwrap();
-    let directory = root.path().join("storage");
-    let db = SqliteDatabase::new(directory.join("db.sqlite"));
-    initialize(&db);
-    let result = db.transaction(
-        || Ok::<_, Error>(()),
-        |tx| {
-            tx.execute("UPDATE values_ SET value='updated'", [])?;
-            fs::rename(&directory, root.path().join("detached"))?;
-            fs::create_dir(&directory)?;
-            Ok::<_, Error>(())
-        },
-    );
-    assert!(matches!(result, Err(Error::EffectUncertain)));
-    assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
-}
-
-#[test]
 fn readonly_missing_shm_refuses_repair_and_creation_modes_are_explicit() {
     let temp = tempfile::tempdir().unwrap();
     let db = SqliteDatabase::new(temp.path().join("wal.sqlite")).with_wal();
@@ -135,37 +116,6 @@ fn readonly_missing_shm_refuses_repair_and_creation_modes_are_explicit() {
         "delete"
     );
     assert!(!temp.path().join("delete.sqlite-wal").exists());
-}
-
-#[test]
-fn detached_close_does_not_checkpoint_or_unlink_replacement_namespace() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("live");
-    let db = SqliteDatabase::new(path.join("db.sqlite")).with_wal();
-    initialize(&db);
-    let result = db.read(|connection| {
-        let value: String =
-            connection.query_row("SELECT value FROM values_", [], |row| row.get(0))?;
-        assert_eq!(value, "initial");
-        let detached = root.path().join("detached");
-        fs::rename(&path, &detached)?;
-        fs::create_dir(&path)?;
-        // SQLite's native HAS_MOVED checks only the DB inode. Giving this
-        // replacement directory the same inode defeats that weaker check.
-        fs::hard_link(detached.join("db.sqlite"), path.join("db.sqlite"))?;
-        fs::write(path.join("db.sqlite-wal"), b"replacement-wal")?;
-        fs::write(path.join("db.sqlite-shm"), b"replacement-shm")?;
-        Ok::<_, Error>(())
-    });
-    assert!(matches!(result, Err(Error::Detached)));
-    assert_eq!(
-        fs::read(path.join("db.sqlite-wal")).unwrap(),
-        b"replacement-wal"
-    );
-    assert_eq!(
-        fs::read(path.join("db.sqlite-shm")).unwrap(),
-        b"replacement-shm"
-    );
 }
 
 #[test]

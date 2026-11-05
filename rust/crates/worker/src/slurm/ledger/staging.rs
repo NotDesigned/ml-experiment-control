@@ -35,16 +35,6 @@ pub(super) fn binding(directory: Option<&Directory>) -> Result<Option<StorageBin
 #[serde(deny_unknown_fields)]
 struct Sealed {
     plan: domain::Plan,
-    directory_identities: Vec<(u64, u64)>,
-}
-fn identities(directories: &[Directory]) -> Result<Vec<(u64, u64)>> {
-    directories
-        .iter()
-        .map(|directory| {
-            directory.verify_private_parent()?;
-            Ok(directory.identity()?)
-        })
-        .collect()
 }
 impl Helper {
     fn shared_plan(&self, intent: &FrozenIntent, manifest: &[u8]) -> Result<Option<domain::Plan>> {
@@ -183,10 +173,7 @@ impl Helper {
             }
         }
         let directories = self.shared_directories(&plan, true)?;
-        let sealed = Sealed {
-            plan,
-            directory_identities: identities(&directories)?,
-        };
+        let sealed = Sealed { plan };
         let attempt = &directories[3];
         attempt.publish_new(OsStr::new("attempt.json"), manifest)?;
         if let Some(package) = &sealed.plan.managed {
@@ -200,9 +187,6 @@ impl Helper {
             )?;
         }
         attempt.publish_new(OsStr::new(MARKER), &json(&sealed)?)?;
-        if identities(&directories)? != sealed.directory_identities {
-            return Err(Error::Bootstrap);
-        }
         Ok(())
     }
     pub(super) fn verify_shared(&self, intent: &FrozenIntent, ledger: &Directory) -> Result<()> {
@@ -227,11 +211,7 @@ impl Helper {
         let sealed: Sealed = serde_json::from_slice(
             &attempt.read_regular(OsStr::new(MARKER), helper::MAX_METADATA_BYTES as u64)?,
         )?;
-        if sealed
-            != (Sealed {
-                plan: plan.clone(),
-                directory_identities: identities(&directories)?,
-            })
+        if sealed.plan != plan
             || attempt.read_regular(
                 OsStr::new("attempt.json"),
                 helper::MAX_METADATA_BYTES as u64,

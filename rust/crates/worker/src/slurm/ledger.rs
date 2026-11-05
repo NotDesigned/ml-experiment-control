@@ -279,7 +279,6 @@ impl Helper {
             return Err(Error::Bootstrap);
         }
         self.registry()?;
-        self.root.verify_attached()?;
         Ok(())
     }
     fn registry(&self) -> Result<Registry> {
@@ -293,13 +292,12 @@ impl Helper {
         }
         Ok(registry)
     }
-    fn verify_issued(&self, intent: &FrozenIntent, directory: &Directory) -> Result<()> {
+    fn verify_issued(&self, intent: &FrozenIntent) -> Result<()> {
         self.verify_root()?;
         let registry = self.registry()?;
         if registry.claims.get(&intent.scope.digest()?) != Some(&intent.digest()?) {
             return Err(Error::Bootstrap);
         }
-        directory.verify_attached()?;
         Ok(())
     }
     fn acquire(
@@ -518,12 +516,6 @@ impl Helper {
         }
         let lock = self.lock(cancelled)?;
         let ledger = self.read_ledger(request.intent())?;
-        // Keep the exact directory used by this operation, rather than only
-        // reopening its pathname after a scheduler call may have changed it.
-        let retained = match &ledger {
-            ReadLedger::Found(snapshot) => Some(snapshot.directory.clone()),
-            _ => None,
-        };
         let outcome = match request.operation() {
             OperationTag::PrepareSubmission if matches!(ledger, ReadLedger::Missing) => {
                 return self.prepare(request, lock, cancelled);
@@ -573,14 +565,11 @@ impl Helper {
             outcome,
             ReplyOutcome::Prepared | ReplyOutcome::Submitted { .. }
         ) {
-            let directory = retained.as_ref().ok_or(Error::Bootstrap)?;
-            self.verify_issued(request.intent(), directory)?;
+            self.verify_issued(request.intent())?;
             if Self::observed(&self.read_ledger(request.intent())?) != outcome {
                 return Err(Error::Bootstrap);
             }
-            self.verify_issued(request.intent(), directory)?;
-        } else if let Some(directory) = retained.as_ref() {
-            directory.verify_attached()?;
+            self.verify_issued(request.intent())?;
         }
         Ok(Reply::for_request(request, outcome)?)
     }
@@ -629,7 +618,7 @@ impl Helper {
         drop(lock);
         self.prepare_shared(request.intent(), manifest.as_bytes(), &directory, cancelled)?;
         let _lock = self.lock(cancelled)?;
-        self.verify_issued(request.intent(), &directory)?;
+        self.verify_issued(request.intent())?;
         for (name, expected) in [
             (INTENT, json(request.intent())?),
             (MANIFEST, manifest.as_bytes().to_vec()),
@@ -652,11 +641,10 @@ impl Helper {
             OsStr::new(STATE),
             &json(&LedgerRecord::prepared(request.intent().clone())?)?,
         )?;
-        directory.verify_attached()?;
         if Self::observed(&self.read_ledger(request.intent())?) != ReplyOutcome::Prepared {
             return Err(Error::Bootstrap);
         }
-        self.verify_issued(request.intent(), &directory)?;
+        self.verify_issued(request.intent())?;
         Ok(Reply::for_request(request, ReplyOutcome::Prepared)?)
     }
     fn submit(
@@ -703,7 +691,7 @@ impl Helper {
         snapshot
             .directory
             .replace_regular(OsStr::new(STATE), &json(&snapshot.record)?)?;
-        self.verify_issued(request.intent(), &snapshot.directory)?;
+        self.verify_issued(request.intent())?;
         self.verify_shared(request.intent(), &snapshot.directory)?;
         let argv = vec![
             self.config.sbatch_program.display().to_string(),
@@ -731,7 +719,7 @@ impl Helper {
             drain_grace: Duration::from_millis(100),
             cancelled,
         })?;
-        self.verify_issued(request.intent(), &snapshot.directory)?;
+        self.verify_issued(request.intent())?;
         if local.exit_code != Some(0)
             || local.timed_out
             || local.cancelled

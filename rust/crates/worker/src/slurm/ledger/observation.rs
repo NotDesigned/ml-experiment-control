@@ -73,7 +73,7 @@ impl Helper {
                 code: Rejection::IdentityConflict,
             });
         }
-        self.verify_issued(request.intent(), &snapshot.directory)?;
+        self.verify_issued(request.intent())?;
         let read = || -> Result<Evidence> {
             let (plan, directories) = self
                 .observe_shared(request.intent(), &snapshot.directory, false)?
@@ -139,7 +139,7 @@ impl Helper {
                 reason: UnknownReason::StorageUnavailable,
             },
         };
-        self.verify_issued(request.intent(), &snapshot.directory)?;
+        self.verify_issued(request.intent())?;
         Ok(outcome)
     }
 }

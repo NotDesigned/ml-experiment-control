@@ -89,7 +89,6 @@ impl Store {
     /// Display/test provenance only; repository I/O goes through `Directory`.
     pub fn directory(&self, action_id: &str) -> Result<PathBuf> {
         operations::validate_action_id(action_id)?;
-        self.directory.verify_attached()?;
         Ok(self.root.join(action_id))
     }
     fn action_directory(&self, action_id: &str, create: bool, _lock: &Lock) -> Result<Directory> {

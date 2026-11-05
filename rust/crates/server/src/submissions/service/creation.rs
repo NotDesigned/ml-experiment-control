@@ -213,9 +213,11 @@ impl Service {
             }
             creation_receipt(project, &request, &published, &documents, false)
         })();
-        // A renamed stage fails its old attachment check, so cleanup can never
+        // A renamed stage is no longer at its staged name, so cleanup can never
         // follow the published destination after a post-rename error.
-        if stage.verify_attached().is_ok() && cleanup_stage(&self.slots, &stage).is_err() {
+        if stage.still_at_staged_name().unwrap_or(false)
+            && cleanup_stage(&self.slots, &stage).is_err()
+        {
             return Err(Error::Uncertain);
         }
         result

@@ -1,11 +1,9 @@
 //! Unix directory capabilities. All leaf I/O is relative to retained directory
 //! descriptors; path-based checks are never followed by path-based writes.
 //!
-//! Newly created directory entries and files are fsynced before success. Parent
-//! attachment checks detect a renamed/replaced ancestor and fail closed. The
-//! actual operation still uses retained descriptors, even if a rename races a
-//! check. Regular files can use atomic hard-link publication on filesystems
-//! without no-replace rename. Directory moves require native no-replace rename.
+//! Newly created directory entries and files are fsynced before success. Regular
+//! files can use atomic hard-link publication on filesystems without no-replace
+//! rename. Directory moves require native no-replace rename.
 #![forbid(unsafe_code)]
 
 use rustix::fs::{self as rfs, AtFlags, FileType, Mode, OFlags};
@@ -166,7 +164,7 @@ impl Directory {
     }
 
     /// Walk an explicit absolute path one component at a time, never following
-    /// any symlink. The retained ancestry detects replacement of an old root.
+    /// any symlink.
     pub fn open(path: &Path, create: bool) -> io::Result<Self> {
         if !path.is_absolute() {
             return Err(io::Error::new(
@@ -194,39 +192,36 @@ impl Directory {
                 }
             }
         }
-        directory.verify_attached()?;
         Ok(directory)
     }
 
-    pub fn verify_attached(&self) -> io::Result<()> {
-        if let Some(parent) = &self.inner.parent {
-            parent.verify_attached()?;
-            let entry = rfs::statat(
-                &parent.inner.file,
-                &self.inner.name,
-                AtFlags::SYMLINK_NOFOLLOW,
-            )
-            .map_err(|error| {
-                if error == rustix::io::Errno::NOENT {
-                    invalid("anchored directory was removed")
-                } else {
-                    error.into()
-                }
-            })?;
-            if FileType::from_raw_mode(entry.st_mode) != FileType::Directory
-                || !same_file(&self.inner.file, &entry)?
-            {
-                return Err(invalid("directory was renamed or replaced"));
-            }
+    /// Whether this directory still sits at the name it was created under. A
+    /// rename is what publishes a staged tree, so `false` means it may already
+    /// be published and cleanup must leave it alone. This separates a refused
+    /// rename from an fsync failure after a rename that happened, which an
+    /// error alone cannot. One level only; it says nothing about ancestors.
+    pub fn still_at_staged_name(&self) -> io::Result<bool> {
+        let Some(parent) = &self.inner.parent else {
+            return Ok(false);
+        };
+        match rfs::statat(
+            &parent.inner.file,
+            &self.inner.name,
+            AtFlags::SYMLINK_NOFOLLOW,
+        ) {
+            Ok(entry) => Ok(
+                FileType::from_raw_mode(entry.st_mode) == FileType::Directory
+                    && same_file(&self.inner.file, &entry)?,
+            ),
+            Err(rustix::io::Errno::NOENT) => Ok(false),
+            Err(error) => Err(error.into()),
         }
-        Ok(())
     }
 
     /// The leaf containing a SQLite database must not be writable by another
-    /// group/user. This complements attachment checks; it cannot restrain root
-    /// or another process acting as the same account.
+    /// group/user. It cannot restrain root or another process acting as the
+    /// same account.
     pub fn verify_private_parent(&self) -> io::Result<()> {
-        self.verify_attached()?;
         let stat = rfs::fstat(&self.inner.file)?;
         if stat.st_mode & 0o022 != 0 || !trusted_storage_owner(stat.st_uid, effective_uid()) {
             return Err(invalid(
@@ -240,7 +235,6 @@ impl Directory {
     /// across process restarts. This is not an independently reopened pathname.
     #[allow(clippy::unnecessary_cast)]
     pub fn identity(&self) -> io::Result<(u64, u64)> {
-        self.verify_attached()?;
         let stat = rfs::fstat(&self.inner.file)?;
         Ok((stat.st_dev as u64, stat.st_ino as u64))
     }
@@ -250,29 +244,25 @@ impl Directory {
     #[allow(clippy::unnecessary_cast)] // Stat field widths differ across Unix.
     pub fn regular_identity(&self, name: &OsStr) -> io::Result<Option<RegularIdentity>> {
         leaf(name)?;
-        self.verify_attached()?;
-        let identity = match rfs::statat(&self.inner.file, name, AtFlags::SYMLINK_NOFOLLOW) {
+        match rfs::statat(&self.inner.file, name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) if FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile => {
-                Some(RegularIdentity {
+                Ok(Some(RegularIdentity {
                     device: stat.st_dev as u64,
                     inode: stat.st_ino as u64,
                     links: stat.st_nlink as u64,
                     mode: stat.st_mode as u32,
                     owner: stat.st_uid,
-                })
+                }))
             }
-            Ok(_) => return Err(invalid("regular storage entry required")),
-            Err(rustix::io::Errno::NOENT) => None,
-            Err(error) => return Err(error.into()),
-        };
-        self.verify_attached()?;
-        Ok(identity)
+            Ok(_) => Err(invalid("regular storage entry required")),
+            Err(rustix::io::Errno::NOENT) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Enumerate names from a fresh directory stream tied to this descriptor.
     /// Callers still validate/open each required child using directory methods.
     pub fn entry_names(&self) -> io::Result<Vec<OsString>> {
-        self.verify_attached()?;
         let mut names = Vec::new();
         for entry in rfs::Dir::read_from(&self.inner.file)? {
             let entry = entry?;
@@ -282,14 +272,12 @@ impl Directory {
             }
         }
         names.sort();
-        self.verify_attached()?;
         Ok(names)
     }
 
     /// Read at most `maximum` directory entries, failing before collecting an
     /// unbounded name list. This neither creates nor skips invalid entries.
     pub fn entry_names_limited(&self, maximum: usize) -> io::Result<Vec<OsString>> {
-        self.verify_attached()?;
         let mut names = Vec::new();
         for entry in rfs::Dir::read_from(&self.inner.file)? {
             let entry = entry?;
@@ -302,7 +290,6 @@ impl Directory {
             }
         }
         names.sort();
-        self.verify_attached()?;
         Ok(names)
     }
 
@@ -310,7 +297,6 @@ impl Directory {
     /// directory entry is synced before returning its fixed child descriptor.
     pub fn child(&self, name: &OsStr, create: bool) -> io::Result<Self> {
         leaf(name)?;
-        self.verify_attached()?;
         let created = if create {
             match rfs::mkdirat(&self.inner.file, name, Mode::RWXU) {
                 Ok(()) => {
@@ -323,25 +309,22 @@ impl Directory {
         } else {
             false
         };
-        let file = match rfs::openat(&self.inner.file, name, directory_flags(), Mode::empty()) {
-            Ok(file) => File::from(file),
-            Err(error) => {
-                self.verify_attached()?;
-                return Err(error.into());
-            }
-        };
+        let file = File::from(rfs::openat(
+            &self.inner.file,
+            name,
+            directory_flags(),
+            Mode::empty(),
+        )?);
         if created {
             rfs::fsync(&file)?;
         }
-        let result = Self {
+        Ok(Self {
             inner: Arc::new(Inner {
                 file,
                 parent: Some(self.clone()),
                 name: name.to_owned(),
             }),
-        };
-        result.verify_attached()?;
-        Ok(result)
+        })
     }
 
     /// Explicit fresh namespace allocation. Unlike `child(..., true)`, an
@@ -354,7 +337,6 @@ impl Directory {
         rfs::fsync(&self.inner.file)?;
         let directory = self.child(name, false)?;
         rfs::fsync(&directory.inner.file)?;
-        directory.verify_attached()?;
         Ok(directory)
     }
 
@@ -395,10 +377,7 @@ impl Directory {
     }
 
     pub fn mode(&self) -> io::Result<u32> {
-        self.verify_attached()?;
-        let mode = self.inner.file.metadata()?.permissions().mode();
-        self.verify_attached()?;
-        Ok(mode)
+        Ok(self.inner.file.metadata()?.permissions().mode())
     }
 
     /// Atomically publish this retained child under another retained parent.
@@ -475,29 +454,27 @@ impl Directory {
     }
 
     pub fn capacity(&self) -> io::Result<Capacity> {
-        self.verify_attached()?;
         let stat = rfs::fstatvfs(&self.inner.file)?;
         let available_bytes = stat
             .f_bavail
             .checked_mul(stat.f_frsize)
             .ok_or_else(|| invalid("filesystem capacity overflow"))?;
-        let result = Capacity::reported(available_bytes, stat.f_files, stat.f_favail);
-        self.verify_attached()?;
-        Ok(result)
+        Ok(Capacity::reported(
+            available_bytes,
+            stat.f_files,
+            stat.f_favail,
+        ))
     }
 
     /// Any entry counts, including a directory, dangling symlink or FIFO. This
     /// is deliberately different from opening/validating a regular payload.
     pub fn entry_exists(&self, name: &OsStr) -> io::Result<bool> {
         leaf(name)?;
-        self.verify_attached()?;
-        let result = match rfs::statat(&self.inner.file, name, AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(_) => true,
-            Err(rustix::io::Errno::NOENT) => false,
-            Err(error) => return Err(error.into()),
-        };
-        self.verify_attached()?;
-        Ok(result)
+        match rfs::statat(&self.inner.file, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(_) => Ok(true),
+            Err(rustix::io::Errno::NOENT) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Take an advisory lock on `name` through a fresh description. Contention
@@ -578,7 +555,6 @@ impl Directory {
             .checked_add(1)
             .ok_or_else(|| invalid("invalid read bound"))?;
         leaf(name)?;
-        self.verify_attached()?;
         let file = regular_file(File::from(rfs::openat(
             &self.inner.file,
             name,
@@ -602,7 +578,6 @@ impl Directory {
     /// SQLite's own POSIX locks.
     pub fn open_regular_read(&self, name: &OsStr) -> io::Result<File> {
         leaf(name)?;
-        self.verify_attached()?;
         let file = regular_file(File::from(rfs::openat(
             &self.inner.file,
             name,
@@ -617,14 +592,12 @@ impl Directory {
     /// There is no check-then-replace fallback and no path traversal during I/O.
     pub fn publish_new(&self, name: &OsStr, bytes: &[u8]) -> io::Result<()> {
         leaf(name)?;
-        self.verify_attached()?;
         let (temporary, mut file) = self.temporary()?;
         let result = (|| {
             file.write_all(bytes)?;
             file.sync_all()?;
             rename_regular_new(&self.inner.file, &temporary, name)?;
             rfs::fsync(&self.inner.file)?;
-            self.verify_attached()?;
             Ok(())
         })();
         if result.is_err() {
@@ -1002,20 +975,6 @@ mod tests {
                 .replace_regular(OsStr::new("link"), b"bad")
                 .is_err()
         );
-        fs::rename(&path, temp.path().join("detached")).unwrap();
-        fs::create_dir(&path).unwrap();
-        assert!(
-            directory
-                .replace_regular(OsStr::new("record.json"), b"bad")
-                .is_err()
-        );
-        assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
-        assert!(directory.entry_names().is_err());
-        assert!(
-            directory
-                .regular_identity(OsStr::new("record.json"))
-                .is_err()
-        );
     }
 
     #[test]
@@ -1050,22 +1009,29 @@ mod tests {
     }
 
     #[test]
-    fn renamed_parent_and_replaced_directory_are_detected_without_redirecting_writes() {
+    fn a_published_stage_is_no_longer_at_its_staged_name() {
         let temp = tempfile::tempdir().unwrap();
-        let old = temp.path().join("root");
-        let outside = temp.path().join("outside");
-        fs::create_dir(&outside).unwrap();
-        let root = Directory::open(&old, true).unwrap();
-        let child = root.child(OsStr::new("project"), true).unwrap();
-        fs::rename(old.join("project"), old.join("moved")).unwrap();
-        symlink(&outside, old.join("project")).unwrap();
-        assert!(child.publish_new(OsStr::new("receipt"), b"bad").is_err());
-        assert!(child.entry_exists(OsStr::new("receipt")).is_err());
-        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
-        assert_eq!(fs::read_dir(old.join("moved")).unwrap().count(), 0);
-        fs::rename(&old, temp.path().join("old-root")).unwrap();
-        fs::create_dir(&old).unwrap();
-        assert_eq!(fs::read_dir(&old).unwrap().count(), 0);
+        let slots = Directory::open(&temp.path().join("slots"), true).unwrap();
+        let runs = Directory::open(&temp.path().join("runs"), true).unwrap();
+        let stage = slots.create_new_child(OsStr::new("stage")).unwrap();
+        assert!(stage.still_at_staged_name().unwrap());
+        // A refused rename leaves the stage in place for its owner to clean up.
+        runs.create_new_child(OsStr::new("taken")).unwrap();
+        assert!(stage.publish_directory(&runs, OsStr::new("taken")).is_err());
+        assert!(stage.still_at_staged_name().unwrap());
+        // Whatever follows the rename, cleanup must not touch the published tree.
+        stage
+            .publish_directory(&runs, OsStr::new("published"))
+            .unwrap();
+        assert!(!stage.still_at_staged_name().unwrap());
+        slots.create_new_child(OsStr::new("stage")).unwrap();
+        assert!(!stage.still_at_staged_name().unwrap());
+        assert!(
+            !Directory::open(Path::new("/"), false)
+                .unwrap()
+                .still_at_staged_name()
+                .unwrap()
+        );
     }
 
     #[test]

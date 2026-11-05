@@ -39,7 +39,7 @@ impl Helper {
         {
             return Err(Error::Metadata);
         }
-        self.verify_issued(request.intent(), &snapshot.directory)?;
+        self.verify_issued(request.intent())?;
         let (plan, directories) = self
             .observe_shared(request.intent(), &snapshot.directory, false)?
             .ok_or(Error::Configuration)?;
@@ -166,7 +166,7 @@ impl Helper {
                 )),
             )
             .map_err(|_| Error::Metadata)?;
-        self.verify_issued(request.intent(), &snapshot.directory)?;
+        self.verify_issued(request.intent())?;
         Ok((directory, state))
     }
     pub(super) fn artifact_operation(

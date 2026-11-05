@@ -152,7 +152,6 @@ impl Database {
                 Err(error) => return Err(error.into()),
             }
         }
-        directory.verify_attached()?;
         let _ = self.initialized.set(());
         Ok(())
     }

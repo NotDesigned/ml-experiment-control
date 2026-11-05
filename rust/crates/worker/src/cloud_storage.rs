@@ -21,7 +21,7 @@ fn descendant(anchor: &Directory, mount: &Path, path: &Path) -> Result<()> {
             .verify_private_parent()
             .map_err(|_| Error::Storage)?;
     }
-    directory.verify_attached().map_err(|_| Error::Storage)
+    Ok(())
 }
 
 pub(crate) fn prepare(package: &Package) -> Result<()> {
