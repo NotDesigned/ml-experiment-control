@@ -442,7 +442,7 @@ mod download_tests {
         };
         let definition = Definition {
             sha256: "e".repeat(64),
-            archive_bytes: 1024,
+            archive_bytes: 1024 * 1024,
             files: (0..304)
                 .map(|i| FileReceipt {
                     path: format!("dataset/full-inventory/part-{i:04}.bin"),
