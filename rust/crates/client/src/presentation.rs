@@ -326,22 +326,20 @@ fn worker_lines(worker: &Value) -> Result<Vec<String>> {
     }
     Ok(vec![format!("Worker phase: {}", parts.join("; "))])
 }
-fn training_line(training: &Value, process: bool) -> Result<String> {
-    let mut parts = vec![show(get(training, "status"))];
-    if process {
-        parts.push(format!(
+fn training_line(training: &Value) -> Result<String> {
+    let mut parts = vec![
+        show(get(training, "status")),
+        format!(
             "process {}",
             text(get(training, "process_state"), "not observed")
-        ));
-    }
+        ),
+    ];
     if !get(training, "exit_code").is_null() {
         parts.push(format!("exit {}", show(get(training, "exit_code"))));
     }
-    if process {
-        let observed = observed(training)?;
-        if !observed.is_empty() {
-            parts.push(format!("process evidence: {observed}"));
-        }
+    let observed = observed(training)?;
+    if !observed.is_empty() {
+        parts.push(format!("process evidence: {observed}"));
     }
     Ok(format!("Training: {}", parts.join("; ")))
 }
@@ -352,10 +350,7 @@ fn result_lines(publication: &Value, verification: &Value) -> Vec<String> {
         verification
     };
     let available = get(publication, "status") == "AVAILABLE"
-        && matches!(
-            verified.as_str(),
-            Some("SHA256_VERIFIED" | "HISTORICAL_RECEIPT")
-        )
+        && verified == "SHA256_VERIFIED"
         && get(publication, "download_available") == true;
     vec![
         format!(
@@ -473,7 +468,7 @@ pub fn status_summary(value: &Value) -> Result<String> {
         get(scheduler, "reason"),
         member(get(scheduler, "state"), &["QUEUED", "PENDING"])?,
     )?);
-    lines.push(training_line(training, true)?);
+    lines.push(training_line(training)?);
     lines.extend(worker_lines(worker)?);
     let step = model
         .get("step")
@@ -524,264 +519,6 @@ pub fn status_summary(value: &Value) -> Result<String> {
         }
     }
     lines.extend(next_lines(value));
-    Ok(lines.join("\n"))
-}
-/// A polling update never treats scheduler RUNNING as a training heartbeat.
-pub fn progress_summary(value: &Value) -> Result<String> {
-    root(value)?;
-    let progress = object(value.get("progress").unwrap_or(value));
-    let worker = first(&[
-        object(get(value, "worker_phase")),
-        object(get(progress, "worker_phase")),
-    ]);
-    let mut lines = vec![stage_line(
-        progress
-            .get("phase")
-            .unwrap_or_else(|| get(progress, "status")),
-        worker,
-    )];
-    if truth(get(progress, "message")) {
-        lines.push(show(get(progress, "message")));
-    }
-    lines.extend(queue_lines(
-        first(&[object(get(value, "queue")), object(get(progress, "queue"))]),
-        &Value::Null,
-        member(get(progress, "phase"), &["QUEUED", "PENDING"])?,
-    )?);
-    lines.extend(progress_lines(progress)?);
-    lines.extend(worker_lines(worker)?);
-    if let Some(line) = input_line(object(get(progress, "input_delivery")))? {
-        lines.push(line);
-    }
-    let message = diagnostic(get(progress, "diagnostic"));
-    if !message.is_empty() {
-        lines.push(format!("Diagnostic: {message}"));
-    }
-    let mut collection = first(&[
-        object(get(progress, "result_collection")),
-        object(get(value, "result_collection")),
-    ]);
-    if !truth(collection)
-        && ["training", "verification", "download_available"]
-            .iter()
-            .any(|key| progress.get(*key).is_some())
-    {
-        collection = progress;
-    }
-    if truth(collection) {
-        lines.push(training_line(object(get(collection, "training")), false)?);
-        lines.extend(result_lines(collection, get(collection, "verification")));
-        let diagnostic = diagnostic(get(collection, "diagnostic"));
-        if !diagnostic.is_empty() {
-            lines.push(format!("Diagnostic: {diagnostic}"));
-        }
-    }
-    Ok(lines.join("\n"))
-}
-fn gates(value: &Value) -> Vec<&Value> {
-    get(value, "gates")
-        .as_array()
-        .map(|items| items.iter().filter(|v| v.is_object()).collect())
-        .unwrap_or_default()
-}
-/// Review display only. An argv is shell-quoted, bounded and never executed.
-pub fn operation_summary(value: &Value) -> Result<String> {
-    root(value)?;
-    let action = object(get(value, "action"));
-    let execution = object(get(action, "execution"));
-    let request = object(get(value, "request"));
-    let preflight = object(get(action, "preflight_summary"));
-    let mut lines = vec![
-        format!(
-            "Operation: {} — {}/{}",
-            show(get(value, "operation")),
-            show(get(value, "project")),
-            show(get(value, "run_id"))
-        ),
-        format!(
-            "Attempts: {} → {}",
-            show(get(value, "source_attempt_id")),
-            show(get(action, "attempt_id"))
-        ),
-        format!(
-            "Action: {}; {}",
-            show(get(action, "action_id")),
-            show(get(execution, "status"))
-        ),
-        format!(
-            "Ready: {}",
-            if get(action, "ready") == true {
-                "yes"
-            } else if get(action, "ready") == false {
-                "no"
-            } else {
-                "unknown"
-            }
-        ),
-    ];
-    let cap = get(request, "max_gpu_hours");
-    let requested = get(preflight, "requested_gpu_hours");
-    if number(cap)?.is_some() || number(requested)?.is_some() {
-        lines.push(format!(
-            "GPU hours: requested {}; cap {}",
-            if number(requested)?.is_some() {
-                show(requested)
-            } else {
-                "unknown".into()
-            },
-            if number(cap)?.is_some() {
-                show(cap)
-            } else {
-                "unknown".into()
-            }
-        ));
-    }
-    let gates = gates(action);
-    let notable = gates
-        .iter()
-        .filter(|v| get(v, "status") != "PASS")
-        .copied()
-        .collect::<Vec<_>>();
-    lines.push(format!(
-        "Gates: {}",
-        if gates.is_empty() {
-            "NOT_OBSERVED"
-        } else if notable.is_empty() {
-            "PASS"
-        } else {
-            "inspect"
-        }
-    ));
-    for gate in notable.into_iter().take(6) {
-        lines.push(format!(
-            "  {}: {}{}",
-            show(get(gate, "name")),
-            show(get(gate, "status")),
-            if truth(get(gate, "detail")) {
-                format!(" — {}", show(get(gate, "detail")))
-            } else {
-                String::new()
-            }
-        ));
-    }
-    if truth(get(value, "retry_semantics")) {
-        lines.push(format!("Retry: {}", show(get(value, "retry_semantics"))));
-    }
-    lines.extend(next_lines(value));
-    if !get(value, "execute_argv").is_null() {
-        lines.push(format!(
-            "Execute after review: {}",
-            command(get(value, "execute_argv"))
-                .unwrap_or_else(|| "Command unavailable; inspect JSON details.".into())
-        ));
-    }
-    Ok(lines.join("\n"))
-}
-/// Workflow review with explicit state/config paths; never loads either file.
-pub fn experiment_summary(
-    value: &Value,
-    state_file: &str,
-    executed: bool,
-    client_config: Option<&str>,
-) -> Result<String> {
-    root(value)?;
-    let submission = object(get(value, "submission"));
-    let preflight = object(get(submission, "preflight_summary"));
-    let resources = object(get(preflight, "resources"));
-    let mut lines = vec![
-        format!(
-            "Experiment: {}/{}",
-            show(get(value, "project")),
-            show(get(value, "run_id"))
-        ),
-        format!(
-            "State: {}",
-            text(&Value::String(state_file.into()), "UNKNOWN")
-        ),
-        format!(
-            "Submission: {}",
-            text(get(submission, "status"), "NOT_OBSERVED")
-        ),
-    ];
-    if truth(resources) {
-        lines.push(format!(
-            "Resources: {}",
-            ["gpus", "cpus", "memory_gb", "max_time"]
-                .into_iter()
-                .filter_map(|key| resources.get(key).map(|v| format!("{key}={}", show(v))))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    if !get(preflight, "requested_gpu_hours").is_null() {
-        lines.push(format!(
-            "GPU hours requested: {}",
-            show(get(preflight, "requested_gpu_hours"))
-        ));
-    }
-    for gate in gates(submission)
-        .into_iter()
-        .filter(|v| get(v, "status") != "PASS")
-        .take(6)
-    {
-        lines.push(format!(
-            "{}{}: {}{}",
-            if member(get(gate, "status"), &["FAIL", "BLOCKED"])? {
-                "Blocked: "
-            } else {
-                "Gate: "
-            },
-            show(get(gate, "name")),
-            show(get(gate, "status")),
-            if truth(get(gate, "detail")) {
-                format!(" — {}", show(get(gate, "detail")))
-            } else {
-                String::new()
-            }
-        ));
-    }
-    if truth(get(submission, "attempt_id")) {
-        lines.push(format!("Attempt: {}", show(get(submission, "attempt_id"))));
-    }
-    let result = object(get(value, "result"));
-    if truth(result) {
-        lines.push(format!(
-            "Scheduler: {}",
-            show(get(result, "scheduler_state"))
-        ));
-    }
-    let proof = object(get(value, "download"));
-    if truth(proof) {
-        lines.push(format!(
-            "Results: {}",
-            text(
-                proof
-                    .get("verification")
-                    .unwrap_or_else(|| get(proof, "status")),
-                "downloaded; see verification.json"
-            )
-        ));
-    }
-    let mut argv = vec![Value::String("ml-exp".into())];
-    if let Some(config) = client_config {
-        argv.extend([
-            Value::String("--config".into()),
-            Value::String(config.into()),
-        ]);
-    }
-    argv.extend(
-        ["run", "status", "--state", state_file]
-            .into_iter()
-            .map(|v| Value::String(v.into())),
-    );
-    lines.push(format!(
-        "Inspect: {}",
-        command(&Value::Array(argv))
-            .unwrap_or_else(|| "Command unavailable; inspect JSON details.".into())
-    ));
-    if !executed {
-        lines.push("Training has not been authorized by this command. Review the saved preparation before --execute.".into());
-    }
     Ok(lines.join("\n"))
 }
 

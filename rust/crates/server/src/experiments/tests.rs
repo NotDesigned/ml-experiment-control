@@ -2,7 +2,6 @@ use super::*;
 use crate::deletion::RunFence;
 use ml_exp_io::directory::Directory;
 use serde_json::{Map, Value, json};
-use sha2::Digest;
 use std::{
     ffi::OsStr,
     fs,

@@ -10,7 +10,7 @@ pub use metrics::{
 };
 pub use projection::{
     LiveMetrics, LogQuery, LogStream, attempt_collection, attempt_logs, attempt_metrics,
-    attempt_show, outward_metadata, project_summary, run_attempts, run_detail, run_summary,
+    attempt_show, project_summary, run_attempts, run_detail, run_summary,
 };
 pub(crate) use remote::{project_artifacts, project_worker};
 

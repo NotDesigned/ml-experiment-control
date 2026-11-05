@@ -54,22 +54,21 @@ fn a_tail_that_is_not_a_list_is_refused() {
 }
 
 #[test]
-fn compaction_drops_raw_output_and_the_evidence_digest_is_pinned() {
-    for (input, expected, digest) in [
+fn compaction_drops_raw_output() {
+    for (input, expected) in [
         (
             r#"{"raw_stdout":"secret","stderr_tail":["tail"],"nested":{"startup_script":"hidden","value":1}}"#,
             r#"{"nested":{"value":1}}"#,
-            "sha256:bb776f63f07c8626621df3edc58afc830db7703e9a000b4590f2c693159e25c5",
         ),
         (
             r#"{"nats_per_token":1e-06,"large":1e+20,"zero":-0.0}"#,
             r#"{"nats_per_token":1e-06,"large":1e+20,"zero":-0.0}"#,
-            "sha256:dc8c1b4a1ea9b41168299c0d51463454a17540e270ab92260952e488bd08cb2c",
         ),
     ] {
-        let input = literal(input);
-        assert_eq!(failures::compact_evidence(&input), literal(expected));
-        assert_eq!(failures::evidence_digest(&input).unwrap(), digest);
+        assert_eq!(
+            failures::compact_evidence(&literal(input)),
+            literal(expected)
+        );
     }
 }
 

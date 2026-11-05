@@ -1,6 +1,6 @@
 //! Pure failure evidence assessment. A producer's label alone is diagnostic;
 //! no retry, execution permission or provider fact is inferred from it.
-use crate::{canonical, metrics::python_string};
+use crate::metrics::python_string;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Number, Value, json};
@@ -137,9 +137,6 @@ pub fn compact_evidence(value: &Value) -> Value {
         }
     }
     at(value, 0)
-}
-pub fn evidence_digest(payload: &Value) -> Result<String, canonical::CanonicalError> {
-    canonical::protocol_identity(payload)
 }
 
 /// Numeric timestamps must be finite. Common ISO timestamps are parsed without

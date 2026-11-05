@@ -121,9 +121,6 @@ fn sanitize(value: &Value) -> Value {
         value,
     )))
 }
-pub fn outward_metadata(value: &Value) -> Result<Value> {
-    bounded(sanitize(value))
-}
 fn finish(value: Value) -> Result<Value> {
     bounded(sanitize(&value))
 }
