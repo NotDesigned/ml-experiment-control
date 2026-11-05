@@ -137,8 +137,12 @@ keep it, and neither is needed for basic API or client reads:
 | Image build and copy | `server/src/ml_exp_server/builds/` (`native_image.py`, `native_data.py`, `native_worker.py`), which also imports other modules of that package; it also needs `worker/src/ml_exp_worker/` and `src/experiment_control/` on its import path | Separate process behind a private socket. Rust owns recipes, frozen Runtime identity and durable dispatch intent |
 | W&B publication | `rust/crates/server/src/tracking/sdk.py`, run with the configured interpreter and the official SDK | Effect shell only. Rust compares identities and advances cursors |
 
-The remaining Python in `client/`, `server/`, `worker/` and `src/` is retained
-reference for reading old state and for the bridge. It is not an install path.
+Neither is an install path for the client or API. Two short launchers embedded in
+native jobs also use Python, inside the training image and only when those jobs
+run: `core/src/cloud/materialize.py` (PAI data materialization) and
+`server/src/cloud_runs/service/sync_diagnostic.py` (read-only diagnostics). Release
+and CI scripts and the `deploy_native.py` upgrade tool are operator tooling. Tag
+`v1.5.1` preserves the retired Python service.
 
 ## Compatibility and upgrades
 

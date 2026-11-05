@@ -269,10 +269,13 @@ new token.
 
 ## Inventory and evidence
 
-The Python baseline was 220 platform modules / 41,359 lines, plus 238
-test/tool/example files. Baseline module parity and connected native
-workflows are tracked separately. A zero count of fully accepted Python module
-replacements is not an estimate of how much Rust code is written.
+The baseline module inventory, removed from the tree with the retained Python and
+available in Git history as `rust/compatibility/inventory.json`, recorded every
+baseline Python module and its original hash: 220 platform modules / 41,359 lines,
+plus 238 test/tool/example files. Baseline module parity and connected native
+workflows were tracked separately. A zero count of fully accepted Python module
+replacements is not an estimate of how much Rust code is written, and removing the
+Python code does not establish module parity.
 
 Local/DSW logs live in ignored `.ops` directories and are not release artifacts.
 [The usage guide](../rust/README.md#build-and-verification) lists reproducible
