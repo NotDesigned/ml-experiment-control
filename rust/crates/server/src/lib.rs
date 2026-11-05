@@ -11,7 +11,6 @@ pub mod deletion;
 pub mod deployment;
 pub mod experiments;
 pub mod history;
-pub mod index;
 mod local_http;
 mod native_contract;
 pub mod objects;
@@ -191,6 +190,7 @@ fn health_document(
         capabilities.push("native-submissions.v1");
         capabilities.push("native-slurm-submissions.v1");
         capabilities.push("native-worker-observation.v1");
+        capabilities.push("execution-progress.v1");
         capabilities.push("native-checkpoints.v1");
         capabilities.push("native-artifacts.v1");
         capabilities.push("native-cancellation.v1");
@@ -999,13 +999,14 @@ mod schema_tests {
                     && (path.ends_with("/execute")
                         || path.ends_with("/reconcile")
                         || path.ends_with("/materialize"))
-                || path.ends_with("/submissions")
+                || path.ends_with("/submissions") && !path.starts_with("/api/experiments/")
                 || path.ends_with("/datasets/{executor}/{asset}/complete")
                 || path == "/api/projects/{project}/runs"
                 || path == "/api/projects/{project}/local-runs"
                 || path == "/api/local-runs/{project}/{run}/metrics"
                 || path.starts_with("/api/submissions/")
                     && path != "/api/submissions/{identity}"
+                    && path != "/api/submissions/{identity}/progress"
                     && !path.contains("/artifacts")
                     && path != "/api/submissions/{action}/sync/{request}"
             {

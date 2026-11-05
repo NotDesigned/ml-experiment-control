@@ -83,8 +83,10 @@ facts; see [recovery](docs/recovery.md).
 - `rust/crates/worker`: in-image execution, checkpoints, metrics and result collection.
 - `rust/`: shared credential redaction and workspace configuration.
 
-The optional image-build bridge and W&B effect shell stay in Python, alongside
-release and upgrade tooling. None of these is a client or API installation path.
+Python remains only in the optional image builder bridge (`server/`, `worker/`
+and `src/`), the official W&B SDK process, and release and upgrade tooling. None
+of these is a client or API installation path. Tag `v1.5.1` preserves the retired
+Python service and client.
 
 W&B is an [optional server integration](docs/wandb.md). Platform metrics work
 without it. Temporary [CCI/DSW debug sessions](docs/debug-sessions.md) are separate

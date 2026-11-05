@@ -37,6 +37,15 @@ class NativeBridge(unittest.TestCase):
         with self.assertRaises(ValueError):
             published_image('registry.example/team/runtime', ['team/runtime' + sha])
 
+    def test_pai_transport_builds_its_request_with_the_pinned_sdk(self):
+        from experiment_control.backends.pai_api import PaiAPI
+        api = PaiAPI({'access_key_id': 'fixture-id', 'access_key_secret': 'fixture-secret', 'region': 'ap-northeast-1'})
+        with patch('alibabacloud_tea_openapi.client.Client.call_api', return_value={'body': {'Success': True}}) as call:
+            self.assertEqual(api.request('pai-dsw', 'GetInstance', '/api/v2/instances/dsw-1'), {'Success': True})
+        params, _, runtime = call.call_args.args
+        self.assertEqual((params.action, params.version, params.pathname), ('GetInstance', '2022-01-01', '/api/v2/instances/dsw-1'))
+        self.assertFalse(runtime.autoretry)
+
     def test_docker_hub_login_alias_uses_distribution_host_and_keeps_image_name(self):
         from ml_exp_server.data.registry_transport import Registry
         with tempfile.TemporaryDirectory() as directory:

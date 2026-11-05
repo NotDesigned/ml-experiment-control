@@ -517,3 +517,31 @@ fn readonly_diagnostic_mounts_do_not_change_legacy_job_serialization() {
     sc_readonly.read_only_storage = true;
     assert!(sense().create(&sc_readonly).is_err());
 }
+
+#[test]
+fn provider_diagnostics_select_reason_and_bound_tails_without_private_fields() {
+    let view = pai::diagnostic_job(&json!({"Status":"Failed","ReasonCode":"JobFailed",
+        "ReasonMessage":"pod exited","Settings":{"token":"private"},"UserCommand":"secret","Envs":{"KEY":"secret"}}));
+    assert_eq!(view["provider_state"], "Failed");
+    assert_eq!(view["reason_code"], "JobFailed");
+    assert_eq!(view["reason_message"], "pod exited");
+    assert!(view["sub_status"].is_null());
+    assert!(!view.to_string().contains("secret"));
+    assert!(!view.to_string().contains("private"));
+    let pod = pai::diagnostic_pod(
+        &json!({"PodId":"p1","Type":"Worker","Status":"Failed","Ip":"10.0.0.1"}),
+    );
+    assert_eq!(pod["pod_id"], "p1");
+    assert!(!pod.to_string().contains("10.0.0.1"));
+    assert_eq!(
+        pai::diagnostic_tail(&json!(["a", "b", "c"]), 2),
+        vec!["b".to_owned(), "c".to_owned()]
+    );
+    assert_eq!(pai::diagnostic_tail(&json!("a\nb"), 5).len(), 2);
+    assert!(pai::diagnostic_tail(&Value::Null, 5).is_empty());
+    let long = "x".repeat(10_000);
+    let many = vec![long; 200];
+    let tail = pai::diagnostic_tail(&json!(many), 200);
+    assert!(tail.iter().all(|line| line.len() <= 4096));
+    assert!(tail.iter().map(|line| line.len() + 1).sum::<usize>() <= 256 * 1024);
+}

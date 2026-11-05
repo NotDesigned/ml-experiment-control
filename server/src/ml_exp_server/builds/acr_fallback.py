@@ -110,22 +110,6 @@ def publication(builder, value):
     return image
 
 
-def reconcile(builder, definition):
-    """Recover a late publication without pushing a tag or starting a DSW."""
-    path = journal(builder, definition['bundle_id'])
-    value = json.loads(path.read_text())
-    if any(value['receipt'].get(k) != v for k, v in definition.items()):
-        raise ValueError('ACR fallback frozen receipt differs')
-    image = publication(builder, value)
-    if image is None:
-        return None
-    value.update(phase='PUBLISHED', image=image)
-    atomic_json(path, value)
-    receipt = {**value['receipt'], 'image': image}
-    atomic_json(builder.root / (definition['bundle_id'] + '.json'), receipt)
-    return receipt
-
-
 def publish(builder, context, receipt):
     try:
         return _publish(builder, context, receipt)

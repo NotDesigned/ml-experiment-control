@@ -82,9 +82,9 @@ Paths are relative to `rust/crates/`.
 | Action storage | `server/src/operations/` |
 | Data and capacity | `core/src/datasets/`, `core/src/data_preparation.rs`, `core/src/capacity.rs`, `server/src/objects.rs`, `server/src/capacity_http.rs`, `server/src/data_delivery_http.rs`, `worker/src/cloud_data.rs`, `worker/src/data_import.rs` |
 | Images | `core/src/cloud/build.rs`, `core/src/cloud/materialize.rs`, `server/src/cloud_runs/service/builds.rs`, `worker/src/materialize.rs` |
-| Results and retention | `core/src/artifacts/`, `core/src/result_collection.rs`, `io/src/artifacts.rs`, `server/src/submissions/artifact_http.rs`, `server/src/cloud_runs/service/artifacts.rs`, `worker/src/cloud_artifacts.rs` |
+| Results and retention | `core/src/artifacts/`, `io/src/artifacts.rs`, `server/src/submissions/artifact_http.rs`, `server/src/cloud_runs/service/artifacts.rs`, `worker/src/cloud_artifacts.rs` |
 | Checkpoints | `core/src/checkpoints.rs`, `io/src/checkpoints.rs`, `server/src/checkpoints.rs` |
-| Observation | `core/src/observation.rs`, `core/src/polling.rs`, `io/src/observations.rs`, `server/src/background.rs`, `server/src/read_api.rs`, `server/src/read_model.rs`, `server/src/index/`, `worker/src/cloud_exchange.rs` |
+| Observation | `core/src/observation.rs`, `core/src/polling.rs`, `io/src/observations.rs`, `server/src/background.rs`, `server/src/read_api.rs`, `server/src/read_model.rs`, `worker/src/cloud_exchange.rs` |
 | Platform metrics | `core/src/metrics.rs`, `core/src/records.rs`, `server/src/records/`, `server/src/local_http.rs` |
 | W&B | `core/src/tracking/`, `server/src/tracking/` (the SDK process runs `server/src/tracking/sdk.py`) |
 | Debug machines | `core/src/cloud/debug.rs`, `server/src/cloud_runs/debug_http.rs`, `server/src/cloud_runs/service/debug.rs`, `client/src/debug.rs` |
@@ -137,12 +137,8 @@ keep it, and neither is needed for basic API or client reads:
 | Image build and copy | `server/src/ml_exp_server/builds/` (`native_image.py`, `native_data.py`, `native_worker.py`), which also imports other modules of that package; it also needs `worker/src/ml_exp_worker/` and `src/experiment_control/` on its import path | Separate process behind a private socket. Rust owns recipes, frozen Runtime identity and durable dispatch intent |
 | W&B publication | `rust/crates/server/src/tracking/sdk.py`, run with the configured interpreter and the official SDK | Effect shell only. Rust compares identities and advances cursors |
 
-Neither is an install path for the client or API. Two short launchers embedded in
-native jobs also use Python, inside the training image and only when those jobs
-run: `core/src/cloud/materialize.py` (PAI data materialization) and
-`server/src/cloud_runs/service/sync_diagnostic.py` (read-only diagnostics). Release
-and CI scripts and the `deploy_native.py` upgrade tool are operator tooling. Tag
-`v1.5.1` preserves the retired Python service.
+The remaining Python in `client/`, `server/`, `worker/` and `src/` is retained
+reference for reading old state and for the bridge. It is not an install path.
 
 ## Compatibility and upgrades
 

@@ -595,6 +595,16 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             .unwrap()["submission_id"],
         large_plan["submission_id"]
     );
+    let action = large_plan["submission_id"].as_str().unwrap();
+    let progress = service.submission_progress(action).unwrap().unwrap();
+    assert_eq!(progress["submission_id"], action);
+    assert_eq!(progress["run_id"], "full-inventory");
+    assert_eq!(progress["attempt_id"], "attempt-001");
+    assert_eq!(progress["availability"], "NOT_REPORTED");
+    assert!(progress.get("input_delivery").is_none());
+    let listed = service.run_submissions("demo", "full-inventory").unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["submission_id"], action);
     assert!(
         serde_json::from_slice::<Value>(&fs::read(&cpu_manifest).unwrap()).unwrap()["native_cloud"]
             .get("storage")
@@ -1323,7 +1333,20 @@ fn check_builder_dispatch_evidence(
             "PAI_DSW_BUILD_UNCERTAIN"
         );
     }
-    let ready = service.reconcile_runtime("demo", lost_id).unwrap();
+    // Upgrading the configured worker must not block reading an earlier build.
+    let mut upgraded_config = config.clone();
+    upgraded_config["builds"]["worker_sha256"] = json!(format!("sha256:{}", "9".repeat(64)));
+    let upgraded = Arc::new(
+        Service::open(
+            settings.clone(),
+            Settings::from_slice(&serde_json::to_vec(&upgraded_config).unwrap()).unwrap(),
+            sources.clone(),
+            None,
+            Default::default(),
+        )
+        .unwrap(),
+    );
+    let ready = upgraded.reconcile_runtime("demo", lost_id).unwrap();
     assert_eq!(ready["runtime_id"], lost_id);
     assert_eq!(ready["status"], "PREPARED");
     assert_eq!(ready["retry_safe"], true);
@@ -1333,6 +1356,14 @@ fn check_builder_dispatch_evidence(
         "PAI_DSW_BUILD_UNCERTAIN"
     );
     recovery.join().unwrap();
+    // A new build with the old worker was never sent, so it stays retry-safe
+    // instead of being recorded as an uncertain effect.
+    upgraded
+        .execute_runtime("demo", lost_id, &format!("BUILD {lost_id}"))
+        .unwrap();
+    let stale = wait(lost_id, "PREPARED");
+    assert_eq!(stale["retry_safe"], true);
+    assert_eq!(stale["build_error"]["code"], "NATIVE_BUILD_NOT_DISPATCHED");
 }
 
 fn check_materializer_diagnostics(

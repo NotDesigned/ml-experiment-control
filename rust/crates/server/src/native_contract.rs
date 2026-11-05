@@ -71,6 +71,18 @@ pub(crate) fn extend(document: &mut Value) {
         row[method] = operation(path, description, body);
     };
     insert(
+        "/api/submissions/{identity}/progress",
+        "get",
+        "Read retained worker phase and input delivery evidence for one Submission; no provider query. A Scheduler state or absent report does not prove training started.",
+        None,
+    );
+    insert(
+        "/api/experiments/{project}/{run}/submissions",
+        "get",
+        "List the current Attempt's Submission for clients without saved state; no provider query.",
+        None,
+    );
+    insert(
         "/api/worker-exchange/{project}/{run}/{attempt}/package",
         "get",
         "Read the same frozen launch JSON using its existing exact Attempt capability; no provider query or state mutation.",
@@ -99,6 +111,12 @@ pub(crate) fn extend(document: &mut Value) {
             Some(empty.clone()),
         );
     }
+    insert(
+        "/api/runs/{project}/{run}/attempts/{attempt}/provider-diagnostics/refresh",
+        "post",
+        "Explicitly ask the provider for one Attempt's reason, pods, events and bounded log tail (optional lines=1..2000). Read-only at the provider; nothing is stored.",
+        Some(empty.clone()),
+    );
     insert(
         "/api/submissions/{identity}/renew",
         "post",

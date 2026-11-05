@@ -176,6 +176,23 @@ class Deploy(unittest.TestCase):
         self.assertEqual(self.version(), "1.0.0")
         self.assertEqual(json.loads(self.cloud.read_text())["builds"]["worker_sha256"], "sha256:old")
 
+    def test_smaller_bridge_removes_nested_modules_and_rollback_restores_them(self):
+        retired = [self.site / "experiment_control/backends/slurm.py",
+                   self.site / "ml_exp_server/actions/service.py",
+                   self.site / "ml_exp_worker/managed_worker.py"]
+        for path in retired:
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("retired = 1\n")
+        before = {path: path.read_text() for path in retired}
+        self.assertEqual(self.deploy(self.bundle("1.1.0"), "--apply").returncode, 0)
+        for path in retired:
+            self.assertFalse(path.exists(), path)
+            self.assertTrue((self.root / "previous/python" / path.relative_to(self.site)).is_file())
+        result = self.run_tool("--rollback")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({path: path.read_text() for path in retired}, before)
+        self.assertFalse((self.site / "experiment_control/new.py").exists())
+
     def test_rollback_without_retained_install_refuses(self):
         result = self.run_tool("--rollback")
         self.assertEqual(result.returncode, 1)

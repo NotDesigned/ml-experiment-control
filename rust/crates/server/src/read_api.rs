@@ -547,6 +547,38 @@ impl Api {
     pub fn project_count(&self) -> usize {
         self.projects.len()
     }
+    /// Retained progress evidence for an exact Submission; never contacts a provider.
+    pub fn submission_progress(&self, id: &str, now_unix: f64) -> Result<Value, Error> {
+        let submission = self.submission(id, now_unix)?;
+        if let Some(cloud) = &self.cloud {
+            if let Some(value) = cloud
+                .submission_progress(id)
+                .map_err(crate::cloud_runs::failure)?
+            {
+                return Ok(value);
+            }
+        }
+        Ok(
+            serde_json::json!({"submission_id":submission["submission_id"],"project":submission["project"],
+            "run_id":submission["run_id"],"attempt_id":submission["attempt_id"],
+            "availability":"NOT_REPORTED"}),
+        )
+    }
+    pub fn experiment_submissions(&self, project: &str, run: &str) -> Result<Value, Error> {
+        if ml_exp_core::identity::validate_id(project).is_err()
+            || ml_exp_core::identity::validate_observation_id(run).is_err()
+        {
+            return Err(invalid_query());
+        }
+        self.validate_registry()?;
+        let submissions = match &self.cloud {
+            Some(cloud) => cloud
+                .run_submissions(project, run)
+                .map_err(crate::cloud_runs::failure)?,
+            None => Vec::new(),
+        };
+        Ok(serde_json::json!({"project":project,"run_id":run,"submissions":submissions}))
+    }
     pub fn submission(&self, id: &str, now_unix: f64) -> Result<Value, Error> {
         if ml_exp_core::operations::validate_submission_id(id).is_err() {
             return Err(invalid_query());

@@ -21,6 +21,14 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route("/api/runs/{project}/{run}/attempts", get(attempts))
         .route("/api/submissions/{identity}", get(submission))
         .route(
+            "/api/submissions/{identity}/progress",
+            get(submission_progress),
+        )
+        .route(
+            "/api/experiments/{project}/{run}/submissions",
+            get(experiment_submissions),
+        )
+        .route(
             "/api/runs/{project}/{run}/attempts/{attempt}/files",
             get(historical_files),
         )
@@ -253,6 +261,38 @@ async fn submission(
     }
     execute(state, Access::Read, move |api, now| {
         api.submission(&identity, now)
+    })
+    .await
+}
+async fn submission_progress(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<String>, PathRejection>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let Ok(Path(identity)) = path else {
+        return bad_path();
+    };
+    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+        return failure(error);
+    }
+    execute(state, Access::Read, move |api, now| {
+        api.submission_progress(&identity, now)
+    })
+    .await
+}
+async fn experiment_submissions(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<(String, String)>, PathRejection>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let Ok(Path((project, run))) = path else {
+        return bad_path();
+    };
+    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+        return failure(error);
+    }
+    execute(state, Access::Read, move |api, _| {
+        api.experiment_submissions(&project, &run)
     })
     .await
 }
