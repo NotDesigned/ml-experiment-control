@@ -359,6 +359,17 @@ impl Profile {
             None,
         )
     }
+    pub fn job_events(&self, job_id: &str) -> Result<Request> {
+        component(job_id)?;
+        self.request(
+            Product::PaiDlc,
+            Method::Get,
+            "GetJobEvents",
+            format!("/api/v1/jobs/{job_id}/events"),
+            BTreeMap::new(),
+            None,
+        )
+    }
     pub fn validate_job(
         &self,
         row: &Value,
@@ -425,4 +436,46 @@ pub fn normalize(value: &str) -> RunState {
         "Stopped" => RunState::Cancelled,
         _ => RunState::Unknown,
     }
+}
+
+const DIAGNOSTIC_LINE_CHARS: usize = 4096;
+const DIAGNOSTIC_TAIL_BYTES: usize = 256 * 1024;
+fn clipped(value: &str) -> String {
+    value.chars().take(DIAGNOSTIC_LINE_CHARS).collect()
+}
+fn provider_text(value: &Value) -> Value {
+    value.as_str().map_or(Value::Null, |text| json!(clipped(text)))
+}
+/// The provider's own account of a job, selected field by field so that
+/// environment, credentials and command never leave the provider response.
+pub fn diagnostic_job(row: &Value) -> Value {
+    json!({"provider_state":provider_text(&row["Status"]),"sub_status":provider_text(&row["SubStatus"]),
+        "reason_code":provider_text(&row["ReasonCode"]),"reason_message":provider_text(&row["ReasonMessage"]),
+        "created_at":provider_text(&row["GmtCreateTime"]),"running_at":provider_text(&row["GmtRunningTime"]),
+        "failed_at":provider_text(&row["GmtFailedTime"]),"finished_at":provider_text(&row["GmtFinishTime"])})
+}
+pub fn diagnostic_pod(pod: &Value) -> Value {
+    json!({"pod_id":provider_text(&pod["PodId"]),"type":provider_text(&pod["Type"]),
+        "status":provider_text(&pod["Status"]),"sub_status":provider_text(&pod["SubStatus"]),
+        "started_at":provider_text(&pod["GmtStartTime"]),"finished_at":provider_text(&pod["GmtFinishTime"])})
+}
+/// The last lines of a provider list, bounded by count, line length and bytes.
+pub fn diagnostic_tail(value: &Value, lines: usize) -> Vec<String> {
+    let rows: Vec<String> = match value {
+        Value::Array(rows) => rows.iter().filter_map(Value::as_str).map(clipped).collect(),
+        Value::String(text) => text.lines().map(clipped).collect(),
+        _ => Vec::new(),
+    };
+    let mut bytes = 0;
+    let mut kept: Vec<String> = rows
+        .into_iter()
+        .rev()
+        .take(lines)
+        .take_while(|line| {
+            bytes += line.len() + 1;
+            bytes <= DIAGNOSTIC_TAIL_BYTES
+        })
+        .collect();
+    kept.reverse();
+    kept
 }

@@ -100,6 +100,12 @@ pub(crate) fn extend(document: &mut Value) {
         );
     }
     insert(
+        "/api/runs/{project}/{run}/attempts/{attempt}/provider-diagnostics/refresh",
+        "post",
+        "Explicitly ask the provider for one Attempt's reason, pods, events and bounded log tail (optional lines=1..2000). Read-only at the provider; nothing is stored.",
+        Some(empty.clone()),
+    );
+    insert(
         "/api/submissions/{identity}/renew",
         "post",
         "Explicitly replace an expired never-started gate under one durable request ID. Preserve Run/Attempt, resources, budget and scheduler token; return a PREPARED replacement requiring fresh authorization. Possible prior effects block renewal.",

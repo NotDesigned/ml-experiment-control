@@ -564,6 +564,13 @@ enum Run {
         #[arg(long, default_value_t = 80)]
         lines: i64,
     },
+    /// Ask the provider why this Attempt is in its state: reason, pods, events and log tail.
+    Diagnose {
+        #[command(flatten)]
+        target: Target,
+        #[arg(long, default_value_t = 200)]
+        lines: u32,
+    },
     /// Query arbitrary declared metrics with their original context and units.
     Metrics {
         #[command(flatten)]
@@ -581,6 +588,7 @@ impl Run {
         match self {
             Self::Status { target, .. }
             | Self::Logs { target, .. }
+            | Self::Diagnose { target, .. }
             | Self::Metrics { target, .. } => Some(target),
             _ => None,
         }
@@ -1268,6 +1276,19 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             target.selection(),
                             read::View::Logs { stream, lines },
                         )?),
+                        Run::Diagnose { target, lines } => {
+                            let value = read::provider_diagnostics(
+                                &client,
+                                saved.as_ref(),
+                                target.selection(),
+                                lines,
+                            )?;
+                            if args.json {
+                                Output::Json(value)
+                            } else {
+                                Output::Text(presentation::provider_diagnostics(&value))
+                            }
+                        }
                         Run::Metrics {
                             target,
                             max_points,
