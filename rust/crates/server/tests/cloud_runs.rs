@@ -587,9 +587,27 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         serde_json::to_vec(&json!({"state":partial,"archive_verified":true})).unwrap(),
     )
     .unwrap();
-    assert!(
+    // Reading stays with the frozen Submission; only a first spend looks at the
+    // data delivery state as it is now.
+    assert_eq!(
         service
             .for_run("demo", "full-inventory", "2026-10-29T00:02:00Z")
+            .unwrap()["submission_id"],
+        large_plan["submission_id"]
+    );
+    assert!(
+        service
+            .prepare(
+                "demo",
+                "full-inventory",
+                Approval {
+                    max_gpu_hours: 1.,
+                    reason: String::new(),
+                },
+                "2026-10-29T00:02:00Z",
+                "2026-10-29T01:01:00Z",
+                &"a".repeat(32),
+            )
             .is_err()
     );
     fs::write(&ready_file, ready_bytes).unwrap();
