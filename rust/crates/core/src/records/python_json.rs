@@ -81,15 +81,6 @@ impl PythonValue {
             _ => None,
         }
     }
-    pub(super) fn array(&self) -> Option<Vec<Self>> {
-        match self {
-            Self::Json(Value::Array(values)) => {
-                Some(values.iter().cloned().map(Self::Json).collect())
-            }
-            Self::Array(values) => Some(values.clone()),
-            _ => None,
-        }
-    }
     pub(super) fn has_nonfinite(&self) -> bool {
         !matches!(self, Self::Json(_))
     }

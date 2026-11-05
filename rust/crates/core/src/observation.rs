@@ -1,21 +1,6 @@
 //! Backend-neutral observational projections. Never refresh a provider or grant retries.
 use serde_json::{Map, Value};
 
-fn present(value: &Value) -> bool {
-    match value {
-        Value::Null | Value::Bool(false) => false,
-        Value::String(s) => !s.is_empty(),
-        Value::Array(v) => !v.is_empty(),
-        Value::Object(v) => !v.is_empty(),
-        _ => true,
-    }
-}
-fn truth(value: &Value) -> bool {
-    match value {
-        Value::Number(n) => n.as_f64().is_none_or(|n| n != 0.0),
-        _ => present(value),
-    }
-}
 /// Python JSON equality is deliberately separate from frozen byte identity.
 pub fn python_equal(left: &Value, right: &Value) -> bool {
     match (left, right) {
