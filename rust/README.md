@@ -46,7 +46,8 @@ command is never sufficient proof that a scheduler accepted a job.
 The optional image effect bridge stays in Python:
 `server/src/ml_exp_server/builds/native_image.py` and `native_data.py`. Rust owns
 its recipes, frozen Runtime identity and durable dispatch intent. W&B uses a
-narrow optional official-SDK process. User training code can use any image language.
+narrow optional official-SDK process. User training code can use any image language; see the
+[image contract](../docs/builds.md#dockerfile-contract) for optional `python3` uses.
 
 ## Implemented workflows
 
@@ -410,7 +411,7 @@ release resumes its saved cursor. A deleted result cannot start another collecto
 ## Metrics and W&B
 
 Existing local training can use the official native client to upload canonical
-JSONL without process control. See [local attachment](../docs/local-metrics.md)
+JSONL without process control. See [local attachment](../docs/metrics.md#attach-metrics-from-local-training)
 for upload, watch, restart and explicit completion. Same-ID adoption of an
 external live SDK writer is a separate, unfinished capability.
 

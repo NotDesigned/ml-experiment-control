@@ -50,10 +50,6 @@ image bridge and client tests on Linux ARM64, macOS Intel/Apple Silicon and
 Windows x86_64 are required. The final `test` job fails if a required job is skipped
 or unsuccessful without verified reuse evidence.
 
-`legacy-python-quality` is manual-only for work on retained Python reference
-packages. It preserves their previous tests, coverage gates and package smoke
-checks without running the retired Python service suite on every native change.
-
 `native-release` builds and tests the exact release executables, including a
 static musl worker. A manual run packages candidates without publication. After
 acceptance, an immutable `native-vX.Y.Z` tag publishes the binaries, manifest,

@@ -67,7 +67,7 @@ linux/amd64. The 1 GiB transient transfer buffer and PAI duration maxima were
 explicitly requested. Cache verification still reads and hashes full files;
 its cost scales with dataset size.
 
-Historical Python documentation and compatibility inventories describe retired
-paths for reading old state; they do not enable desktop staging. Existing
+Historical Python documentation at tag `v1.5.1` describes retired paths for reading
+old state; it does not enable desktop staging. Existing
 migration/readiness gaps remain reported separately from configured submission
 capabilities. No new GPU acceptance is implied by this simplification.
