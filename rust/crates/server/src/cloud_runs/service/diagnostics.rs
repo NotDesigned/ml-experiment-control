@@ -244,10 +244,7 @@ impl Service {
             .ok_or_else(cloud::Error::configuration)?;
         let mut result = json!({"project":project,"run_id":run,"attempt_id":attempt,
             "backend":prepared.execution.backend_id,"provider_read":false});
-        if !matches!(
-            backend.adapter.profile,
-            cloud::adapter::Profile::Pai(_)
-        ) {
+        if !matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_)) {
             result["diagnostic"] = json!("PROVIDER_DIAGNOSTICS_UNSUPPORTED");
             return Ok(result);
         }

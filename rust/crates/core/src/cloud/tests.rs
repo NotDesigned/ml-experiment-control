@@ -528,7 +528,9 @@ fn provider_diagnostics_select_reason_and_bound_tails_without_private_fields() {
     assert!(view["sub_status"].is_null());
     assert!(!view.to_string().contains("secret"));
     assert!(!view.to_string().contains("private"));
-    let pod = pai::diagnostic_pod(&json!({"PodId":"p1","Type":"Worker","Status":"Failed","Ip":"10.0.0.1"}));
+    let pod = pai::diagnostic_pod(
+        &json!({"PodId":"p1","Type":"Worker","Status":"Failed","Ip":"10.0.0.1"}),
+    );
     assert_eq!(pod["pod_id"], "p1");
     assert!(!pod.to_string().contains("10.0.0.1"));
     assert_eq!(

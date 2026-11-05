@@ -444,7 +444,9 @@ fn clipped(value: &str) -> String {
     value.chars().take(DIAGNOSTIC_LINE_CHARS).collect()
 }
 fn provider_text(value: &Value) -> Value {
-    value.as_str().map_or(Value::Null, |text| json!(clipped(text)))
+    value
+        .as_str()
+        .map_or(Value::Null, |text| json!(clipped(text)))
 }
 /// The provider's own account of a job, selected field by field so that
 /// environment, credentials and command never leave the provider response.
