@@ -51,7 +51,7 @@ fn fixed_sqlite_and_wal_survive_reopen_without_readonly_namespace_writes() {
 }
 
 #[test]
-fn missing_or_detached_storage_is_not_repaired_and_unsafe_sidecars_fail_promptly() {
+fn missing_storage_is_not_repaired_and_unsafe_sidecars_fail_promptly() {
     let temp = tempfile::tempdir().unwrap();
     let absent = temp.path().join("absent/db.sqlite");
     assert!(
@@ -114,25 +114,6 @@ fn readonly_missing_shm_refuses_repair_and_creation_modes_are_explicit() {
         "delete"
     );
     assert!(!temp.path().join("delete.sqlite-wal").exists());
-}
-
-#[test]
-fn regular_main_or_sidecar_replacement_during_read_never_returns_a_result() {
-    for suffix in ["", "-wal", "-shm"] {
-        let temp = tempfile::tempdir().unwrap();
-        let db = SqliteDatabase::new(temp.path().join("db.sqlite")).with_wal();
-        initialize(&db);
-        let target = temp.path().join(format!("db.sqlite{suffix}"));
-        let result = db.read(|connection| {
-            let value: String =
-                connection.query_row("SELECT value FROM values_", [], |row| row.get(0))?;
-            fs::rename(&target, temp.path().join("detached-leaf"))?;
-            fs::write(&target, b"foreign replacement")?;
-            Ok::<_, Error>(value)
-        });
-        assert!(matches!(result, Err(Error::Detached)), "{suffix}");
-        assert_eq!(fs::read(&target).unwrap(), b"foreign replacement");
-    }
 }
 
 #[test]

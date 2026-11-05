@@ -1,12 +1,10 @@
 //! Linux SQLite pathname boundary, shared by metadata repositories.
 //!
 //! JSON/lock owners use real directory-relative I/O. Native SQLite instead
-//! resolves an ordinary pathname through its own VFS. Retained directory and
-//! stat identities detect ordinary removal/replacement before and after work;
-//! they do NOT prove which inode SQLite opened during a hostile ABA rename.
-//! The directory must be private to the service's trusted account. A same-UID
-//! adversary/root, an uncooperative writer, and arbitrary namespace mutation
-//! are outside this boundary. No fake `/proc/self/fd` anchoring or custom VFS.
+//! resolves an ordinary pathname through its own VFS. One stat at open refuses a
+//! symlink, FIFO, directory or writable file at the database and sidecar names.
+//! Nothing here tracks those names afterwards: no other writer shares this
+//! directory. No fake `/proc/self/fd` anchoring or custom VFS.
 //!
 //! Never open/close additional main/WAL/SHM file descriptors for checking:
 //! POSIX close can discard another SQLite connection's process-level locks.
@@ -15,9 +13,6 @@
 use ml_exp_io::directory::{Directory, RegularIdentity, effective_uid};
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, config::DbConfig};
 use std::{
-    cell::RefCell,
-    collections::BTreeMap,
-    ffi::OsString,
     io,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
@@ -35,8 +30,6 @@ pub enum Error {
     Missing,
     #[error("invalid SQLite storage: {0}")]
     Invalid(&'static str),
-    #[error("SQLite pathname binding changed; operation unavailable")]
-    Detached,
     #[error("SQLite storage may have changed; reconcile durable state before retry")]
     EffectUncertain,
 }
@@ -50,7 +43,9 @@ impl Error {
 #[derive(Debug, Default)]
 struct Anchors {
     parent: OnceLock<Directory>,
-    main: OnceLock<RegularIdentity>,
+    /// Set once this handle has seen the database. A database that later goes
+    /// missing is then reported, never recreated empty.
+    opened: OnceLock<()>,
 }
 
 #[derive(Clone, Debug)]
@@ -60,16 +55,9 @@ pub struct SqliteDatabase {
     wal: bool,
 }
 
-struct Binding {
-    parent: Directory,
-    name: OsString,
-    main: RegularIdentity,
-    sidecars: RefCell<BTreeMap<OsString, Option<RegularIdentity>>>,
-}
-
 fn allowed(identity: RegularIdentity) -> Result<RegularIdentity, Error> {
     if !identity.is_private_for(effective_uid()) {
-        return Err(Error::Invalid("private single-link regular file required"));
+        return Err(Error::Invalid("private regular file required"));
     }
     Ok(identity)
 }
@@ -85,42 +73,6 @@ fn uri_path(path: &Path) -> String {
         }
     }
     encoded
-}
-
-impl Binding {
-    fn validate(&self, effects: bool) -> Result<(), Error> {
-        let checked = (|| {
-            if self.parent.regular_identity(&self.name)? != Some(self.main) {
-                return Err(Error::Detached);
-            }
-            for (name, previous) in self.sidecars.borrow_mut().iter_mut() {
-                let current = self
-                    .parent
-                    .regular_identity(name)?
-                    .map(allowed)
-                    .transpose()?;
-                // DELETE-mode repositories legitimately remove this journal
-                // at commit. Still reject symlinks, FIFOs and writable aliases.
-                if name.as_bytes().ends_with(b"-journal") {
-                    *previous = current;
-                    continue;
-                }
-                match (*previous, current) {
-                    (Some(old), Some(current)) if old == current => {}
-                    (None, current) => *previous = current,
-                    _ => return Err(Error::Detached),
-                }
-            }
-            Ok(())
-        })();
-        checked.map_err(why!({
-            if effects {
-                Error::EffectUncertain
-            } else {
-                Error::Detached
-            }
-        }))
-    }
 }
 
 impl SqliteDatabase {
@@ -162,12 +114,10 @@ impl SqliteDatabase {
             .parent()
             .ok_or(Error::Invalid("absolute database path required"))?;
         let candidate = Directory::open(path, create)?;
-        let _ = self.anchors.parent.set(candidate);
-        let parent = self.anchors.parent.get().ok_or(Error::Detached)?.clone();
-        Ok(parent)
+        Ok(self.anchors.parent.get_or_init(|| candidate).clone())
     }
 
-    fn open(&self, create: bool, read_only: bool) -> Result<(Connection, Binding), Error> {
+    fn open(&self, create: bool, read_only: bool) -> Result<Connection, Error> {
         // The bundled WAL-reset fix is a persistence requirement, not merely a
         // test dependency preference. 3.51.3 == 3_051_003.
         if rusqlite::version_number() < 3_051_003 {
@@ -180,23 +130,14 @@ impl SqliteDatabase {
             .ok_or(Error::Invalid("database leaf required"))?
             .to_owned();
         let before = parent.regular_identity(&name)?.map(allowed).transpose()?;
-        if before.is_none() && (!create || self.anchors.main.get().is_some()) {
+        if before.is_none() && (!create || self.anchors.opened.get().is_some()) {
             return Err(Error::Missing);
         }
-        if let Some(expected) = self.anchors.main.get() {
-            if before != Some(*expected) {
-                return Err(Error::Detached);
-            }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let mut leaf = name.clone();
+            leaf.push(suffix);
+            parent.regular_identity(&leaf)?.map(allowed).transpose()?;
         }
-        let sidecars = ["-wal", "-shm", "-journal"]
-            .into_iter()
-            .map(|suffix| {
-                let mut leaf = name.clone();
-                leaf.push(suffix);
-                let identity = parent.regular_identity(&leaf)?.map(allowed).transpose()?;
-                Ok((leaf, identity))
-            })
-            .collect::<Result<BTreeMap<_, _>, Error>>()?;
         let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_NOFOLLOW;
         flags |= if read_only {
             OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -220,7 +161,7 @@ impl SqliteDatabase {
                 .regular_identity(leaf)?
                 .map(allowed)
                 .transpose()?
-                .ok_or(Error::Detached)?;
+                .ok_or(Error::Missing)?;
             if identity.mode & 0o777 != 0o600 {
                 return Err(Error::Invalid("private SQLite creation template required"));
             }
@@ -242,61 +183,41 @@ impl SqliteDatabase {
         } else {
             Connection::open_with_flags(&self.path, flags)?
         };
-        // Disable close-time checkpoint/deletion before any SQL. Otherwise Drop
-        // might unlink names under a detached parent after the final check.
+        // Disable close-time checkpoint/deletion before any SQL, so that WAL and
+        // SHM stay with the database and an observer never changes the namespace.
         connection.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
-        let after = parent
-            .regular_identity(&name)?
-            .map(allowed)
-            .transpose()?
-            .ok_or(Error::Detached)?;
-        if before.is_none() && after.mode & 0o777 != 0o600 {
-            return Err(Error::Invalid(
-                "SQLite created database with unsafe permissions",
-            ));
+        if before.is_none() {
+            let created = parent
+                .regular_identity(&name)?
+                .map(allowed)
+                .transpose()?
+                .ok_or(Error::Missing)?;
+            if created.mode & 0o777 != 0o600 {
+                return Err(Error::Invalid(
+                    "SQLite created database with unsafe permissions",
+                ));
+            }
         }
-        if before.is_some_and(|before| before != after) {
-            return Err(Error::Detached);
-        }
-        let _ = self.anchors.main.set(after);
-        if self.anchors.main.get() != Some(&after) {
-            return Err(Error::Detached);
-        }
-        let binding = Binding {
-            parent,
-            name,
-            main: after,
-            sidecars: RefCell::new(sidecars),
-        };
-        binding.validate(false)?;
+        let _ = self.anchors.opened.set(());
         connection.busy_timeout(Duration::from_secs(30))?;
         if !read_only {
             connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")?;
         }
-        binding.validate(false)?;
-        Ok((connection, binding))
+        Ok(connection)
     }
 
     fn finish<T, E: From<Error>>(
         connection: Connection,
-        binding: &Binding,
         result: Result<T, E>,
         effects: bool,
     ) -> Result<T, E> {
-        let before = binding.validate(effects);
-        let closed = connection
-            .close()
-            .map_err(|(_, error)| Error::Sqlite(error));
-        let after = binding.validate(effects);
-        before.map_err(E::from)?;
-        if let Err(error) = closed {
+        if let Err((_, error)) = connection.close() {
             return Err(E::from(if effects {
                 Error::EffectUncertain
             } else {
-                error
+                Error::Sqlite(error)
             }));
         }
-        after.map_err(E::from)?;
         result
     }
 
@@ -307,9 +228,9 @@ impl SqliteDatabase {
         &self,
         operation: impl FnOnce(&Connection) -> Result<T, E>,
     ) -> Result<T, E> {
-        let (connection, binding) = self.open(false, true).map_err(E::from)?;
+        let connection = self.open(false, true).map_err(E::from)?;
         let result = operation(&connection);
-        Self::finish(connection, &binding, result, false)
+        Self::finish(connection, result, false)
     }
 
     /// Existing read/write storage without schema initialization.
@@ -317,9 +238,9 @@ impl SqliteDatabase {
         &self,
         operation: impl FnOnce(&Connection) -> Result<T, E>,
     ) -> Result<T, E> {
-        let (connection, binding) = self.open(false, false).map_err(E::from)?;
+        let connection = self.open(false, false).map_err(E::from)?;
         let result = operation(&connection);
-        Self::finish(connection, &binding, result, false)
+        Self::finish(connection, result, false)
     }
 
     pub fn initialize<T, E: From<Error>>(
@@ -345,7 +266,7 @@ impl SqliteDatabase {
         operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
     ) -> Result<T, E> {
         validate()?;
-        let (mut connection, binding) = self.open(create, false).map_err(E::from)?;
+        let mut connection = self.open(create, false).map_err(E::from)?;
         let result = (|| {
             validate()?;
             if create && self.wal {
@@ -353,7 +274,6 @@ impl SqliteDatabase {
                     .execute_batch("PRAGMA journal_mode=WAL;")
                     .map_err(Error::from)
                     .map_err(E::from)?;
-                binding.validate(true).map_err(E::from)?;
                 if validate().is_err() {
                     return Err(E::from(Error::EffectUncertain));
                 }
@@ -362,23 +282,20 @@ impl SqliteDatabase {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(Error::from)
                 .map_err(E::from)?;
-            binding.validate(false).map_err(E::from)?;
             validate()?;
             let value = operation(&transaction)?;
-            binding.validate(true).map_err(E::from)?;
             if validate().is_err() {
                 return Err(E::from(Error::EffectUncertain));
             }
             transaction
                 .commit()
                 .map_err(why!(E::from(Error::EffectUncertain)))?;
-            binding.validate(true).map_err(E::from)?;
             if validate().is_err() {
                 return Err(E::from(Error::EffectUncertain));
             }
             Ok(value)
         })();
-        let result = Self::finish(connection, &binding, result, true);
+        let result = Self::finish(connection, result, true);
         if validate().is_err() {
             return Err(E::from(Error::EffectUncertain));
         }

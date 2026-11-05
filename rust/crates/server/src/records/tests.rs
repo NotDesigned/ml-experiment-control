@@ -669,35 +669,6 @@ fn historical_import_freezes_schema_and_never_enables_publication() {
 
 #[cfg(unix)]
 #[test]
-fn journal_namespace_replacement_is_not_treated_as_a_fresh_empty_store() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path(), SEED).unwrap();
-    let scope = bound(&store, "run-a", enabled(), json!({}));
-    let guard = store.guard("demo", "run-a").unwrap();
-    store
-        .append(&guard, &scope, &[event("m1", metric(1.0, 1))])
-        .unwrap();
-    let old = temp.path().join("detached.sqlite");
-    fs::rename(store.path(), &old).unwrap();
-    fs::copy(&old, store.path()).unwrap();
-    assert!(store.events(&guard, &scope, 0, 128).is_err());
-    assert!(
-        store
-            .append(&guard, &scope, &[event("m2", metric(2.0, 2))])
-            .is_err()
-    );
-    let connection = Connection::open(store.path()).unwrap();
-    assert_eq!(
-        connection
-            .query_row("SELECT COUNT(*) FROM events", [], |row| row
-                .get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
-}
-
-#[cfg(unix)]
-#[test]
 fn new_journal_is_private_and_retains_original_delete_journal_mode() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
