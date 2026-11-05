@@ -12,7 +12,7 @@ does not enable DSW, allocate public compute, or create storage or IAM roles.
 
 ## DLC executor
 
-Use [executors/pai-dlc.yaml](../server/examples/executors/pai-dlc.yaml) as one
+Use [executors/pai-dlc.yaml](https://github.com/NotDesigned/ml-experiment-control/blob/v1.5.1/server/examples/executors/pai-dlc.yaml) as one
 entry in the operator's executor catalogue. Set its region, workspace, quota,
 verified single-node capacity, GPU type and approved persistent storage. The
 adapter supports one worker with 1–8 GPUs. CPU and memory are requested per Run
@@ -21,7 +21,7 @@ implement multi-node distributed training.
 
 The server includes the signed OpenAPI dependencies. Core-library-only users
 need its `pai` extra. Store credentials using
-[pai.json](../server/examples/pai.json), selected by `EXPERIMENTCTL_PAI_CONFIG`:
+[pai.json](https://github.com/NotDesigned/ml-experiment-control/blob/v1.5.1/server/examples/pai.json), selected by `EXPERIMENTCTL_PAI_CONFIG`:
 
 | Setting | Purpose |
 | --- | --- |

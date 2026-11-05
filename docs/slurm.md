@@ -12,7 +12,7 @@ current implementation supports one node, with a typed `gpu:MODEL:COUNT` GRES.
 
 ## Executor and credentials
 
-Use [executors/slurm.yaml](../server/examples/executors/slurm.yaml) as the entire
+Use [executors/slurm.yaml](https://github.com/NotDesigned/ml-experiment-control/blob/v1.5.1/server/examples/executors/slurm.yaml) as the entire
 `container_execution.profiles_file`, or copy its entry into a combined executor
 file. Change the ID/title, SSH alias, partition, account, QOS and GPU model to
 values assigned by your cluster administrator.
@@ -46,7 +46,7 @@ and compute nodes must see the same `storage_root`. Remote paths are not paths
 on the API server.
 
 Private images use `container_execution.registry_pull_file`; prefer a scoped
-[Docker auth file](../server/examples/registry-auth.json). Slurm converts the
+[Docker auth file](https://github.com/NotDesigned/ml-experiment-control/blob/v1.5.1/server/examples/registry-auth.json). Slurm converts the
 digest-pinned OCI image to SIF before scheduling. Conversion and source staging
 have their own timeouts and receipts; CPU/GPU resources and walltime are then
 passed to Slurm. See [builds](builds.md) and [preparation diagnostics](recovery.md).

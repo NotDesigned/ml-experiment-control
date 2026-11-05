@@ -93,7 +93,7 @@ mutation is performed by this GET.
 
 ### SenseCore cluster list
 
-Retained Python reference: the native API has no such route. Native pool selection
+Retired Python route, described at tag `v1.5.1`: the native API has no such route. Native pool selection
 uses the operator's `spot_clusters` allowlist.
 
 `GET /api/backends/sensecore/clusters` reuses the existing workspace-binding
@@ -167,8 +167,9 @@ continue to use the existing low-level protocol-2 endpoints.
 
 ## Data delivery diagnosis
 
-`GET /api/submissions/{id}/progress` includes `input_delivery` from bounded,
-exact-Attempt worker logs. New images with `input-delivery-progress.v1` report
+For a cloud Attempt, `GET /api/submissions/{id}/progress` includes `input_delivery`
+from bounded, exact-Attempt worker logs. When a job failed before any worker report,
+use `ml-exp run diagnose` to read the provider's reason, events and logs. New images with `input-delivery-progress.v1` report
 waiting for the cache lock, downloading, extracting, verifying, publishing,
 mounting and READY/FAILED. Evidence includes HTTP status, received/expected bytes,
 elapsed time, observed throughput, timestamp, failed phase and a safe error code.
@@ -201,7 +202,7 @@ worker download behavior; upload data to a configured backend for new Runs.
 Configure `backend.api_relay` on Slurm executors whose workers must use a connected
 private-network gateway. The gateway uses systemd's existing
 `systemd-socket-proxyd` with one fixed API destination; example user units are in
-`server/examples/slurm-api-relay/`. Bind the socket to the gateway's private IP,
+`server/examples/slurm-api-relay/` at tag `v1.5.1`. Bind the socket to the gateway's private IP,
 install both units in its `~/.config/systemd/user/`, and enable the socket:
 `systemctl --user enable --now ml-expd-api-relay.socket`. The user manager must
 remain running after SSH disconnect (linger).
