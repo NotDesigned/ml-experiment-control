@@ -292,6 +292,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_fifo_in_a_generation_rather_than_reading_it_as_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Directory::open(temp.path(), false).unwrap();
+        let checkpoints_dir = root.child(OsStr::new("checkpoints"), true).unwrap();
+        checkpoints_dir
+            .child(OsStr::new("step-0004"), true)
+            .unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(temp.path().join("checkpoints/step-0004/model.bin"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(matches!(
+            verify(&root, &checkpoints::manifest(&ready()).unwrap(), false),
+            Err(Error::Io(_))
+        ));
+    }
+
+    #[test]
     fn rejects_a_stable_file_with_the_wrong_digest_or_size() {
         let temp = tempfile::tempdir().unwrap();
         let root = Directory::open(temp.path(), false).unwrap();

@@ -123,6 +123,14 @@ fn same_file(file: &File, stat: &rfs::Stat) -> io::Result<bool> {
     let metadata = rfs::fstat(file)?;
     Ok(metadata.st_ino == stat.st_ino)
 }
+/// O_RDONLY|O_NONBLOCK opens a FIFO, which would then read as empty, and opens
+/// a directory too. Every opener of an existing leaf therefore checks the type.
+fn regular_file(file: File) -> io::Result<File> {
+    if FileType::from_raw_mode(rfs::fstat(&file)?.st_mode) != FileType::RegularFile {
+        return Err(invalid("regular file required"));
+    }
+    Ok(file)
+}
 fn directory_flags() -> OFlags {
     OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK
 }
@@ -585,12 +593,12 @@ impl Directory {
         {
             return Err(invalid("private existing append file required"));
         }
-        let mut file = File::from(rfs::openat(
+        let mut file = regular_file(File::from(rfs::openat(
             &self.inner.file,
             name,
             OFlags::WRONLY | OFlags::APPEND | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::empty(),
-        )?);
+        )?))?;
         self.validate_regular_entry(name, &file)?;
         if file
             .metadata()?
@@ -612,12 +620,12 @@ impl Directory {
             .ok_or_else(|| invalid("invalid read bound"))?;
         leaf(name)?;
         self.verify_attached()?;
-        let file = File::from(rfs::openat(
+        let file = regular_file(File::from(rfs::openat(
             &self.inner.file,
             name,
             OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::empty(),
-        )?);
+        )?))?;
         self.validate_regular_entry(name, &file)?;
         if file.metadata()?.len() > maximum {
             return Err(invalid("regular file exceeds limit"));
@@ -638,12 +646,12 @@ impl Directory {
     pub fn open_regular_read(&self, name: &OsStr) -> io::Result<File> {
         leaf(name)?;
         self.verify_attached()?;
-        let file = File::from(rfs::openat(
+        let file = regular_file(File::from(rfs::openat(
             &self.inner.file,
             name,
             OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::empty(),
-        )?);
+        )?))?;
         self.validate_regular_entry(name, &file)?;
         Ok(file)
     }
@@ -1100,8 +1108,11 @@ mod tests {
         assert!(directory.lock(OsStr::new("fifo"), create).is_err());
         assert!(directory.create_lock_file(OsStr::new("fifo")).is_err());
         assert!(directory.read_regular(OsStr::new("fifo"), 10).is_err());
+        assert!(directory.open_regular_read(OsStr::new("fifo")).is_err());
         fs::create_dir(temp.path().join("folder")).unwrap();
         assert!(directory.lock(OsStr::new("folder"), create).is_err());
+        assert!(directory.read_regular(OsStr::new("folder"), 10).is_err());
+        assert!(directory.open_regular_read(OsStr::new("folder")).is_err());
         assert!(directory.entry_exists(OsStr::new("fifo")).unwrap());
     }
 

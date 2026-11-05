@@ -508,6 +508,21 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
     #[test]
+    fn a_fifo_in_a_packed_tree_is_refused_rather_than_read_as_empty() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = Directory::open(root.path(), false).unwrap();
+        std::fs::create_dir(root.path().join("nested")).unwrap();
+        std::fs::write(root.path().join("nested/train.bin"), b"training bytes").unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(root.path().join("nested/pipe"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(pack_data(&directory, &mut tempfile::tempfile().unwrap()).is_err());
+    }
+    #[test]
     fn imported_data_discovers_files_and_rejects_wrong_or_truncated_bytes() {
         let root = tempfile::tempdir().unwrap();
         let directory = Directory::open(root.path(), false).unwrap();
