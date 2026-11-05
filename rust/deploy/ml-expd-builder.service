@@ -1,0 +1,22 @@
+[Unit]
+Description=ML-Expd image builder bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ml-expd
+Group=ml-expd
+UMask=0077
+ExecStart=/opt/ml-expd/image-effects/bin/python -m ml_exp_server.image_builder --config /opt/ml-expd/state/builder.json
+WorkingDirectory=/opt/ml-expd
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/ml-expd/state
+
+[Install]
+WantedBy=multi-user.target
