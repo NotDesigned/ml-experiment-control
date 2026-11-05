@@ -66,8 +66,7 @@ impl Helper {
             let before = file.metadata()?;
             let start = request.history_cursor();
             let offset = start.map(|v| v.offset_bytes).unwrap_or(0);
-            if before.len() > history::MAX_FILE_BYTES
-                || offset > before.len()
+            if offset > before.len()
                 || start.is_some_and(|c| c.device != before.dev() || c.inode != before.ino())
             {
                 return Err(Error::Metadata);

@@ -87,8 +87,7 @@ pub fn history(
     let mut file = directory.open_regular_read(OsStr::new("metrics.jsonl"))?;
     let before = file.metadata()?;
     let offset = start.map_or(0, |c| c.offset_bytes);
-    if before.len() > history::MAX_FILE_BYTES
-        || offset > before.len()
+    if offset > before.len()
         || start.is_some_and(|c| c.device != before.dev() || c.inode != before.ino())
     {
         return Err(io::Error::other("metrics file identity changed"));
