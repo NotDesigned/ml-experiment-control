@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-PREFIX = "ML_EXPD_SYNC_DIAGNOSTIC="
+PREFIX = "ML_EXPD_DIAGNOSTIC="
 CONTRACT = "sync-diagnostic.v1"
 
 
@@ -53,7 +53,8 @@ def inspect(root, path, limit=None, lock=False):
         if not stat.S_ISREG(before.st_mode):
             row["status"] = "NOT_REGULAR"
             return row, None
-        row.update(status="PRESENT", size=before.st_size, mode=oct(stat.S_IMODE(before.st_mode)))
+        row.update(status="PRESENT", size=before.st_size, mode=oct(stat.S_IMODE(before.st_mode)),
+                   uid=before.st_uid, gid=before.st_gid)
         if lock:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -76,14 +77,18 @@ def inspect(root, path, limit=None, lock=False):
                 row["status"] = "CHANGED_DURING_READ"
                 return row, None
             row["sha256"] = hashlib.sha256(data).hexdigest()
-    except FileNotFoundError:
+    except FileNotFoundError as error:
         row["status"] = "MISSING"
-    except PermissionError:
+        row["errno"] = error.errno
+    except PermissionError as error:
         row["status"] = "PERMISSION_DENIED"
+        row["errno"] = error.errno
     except (ValueError, OSError) as error:
         row["status"] = "UNSAFE_PATH" if isinstance(error, ValueError) or error.errno in (
             errno.ELOOP, errno.ENOTDIR
         ) else "STORAGE_ERROR"
+        if isinstance(error, OSError):
+            row["errno"] = error.errno
     finally:
         if fd is not None:
             os.close(fd)
@@ -123,7 +128,7 @@ def transport(channel):
             if type(sequence) is int and sequence >= 0:
                 result["exchange"]["sequence"] = sequence
             phase = value.get("exchange", {}).get("phase")
-            if phase in ("PREPARED", "RUNNING", "FINISHED", "FAILED", "CANCELLED"):
+            if phase in ("PREPARED", "STARTED", "RUNNING", "FINISHED", "FAILED", "CANCELLED"):
                 result["exchange"]["phase"] = phase
             for field in ("prepared", "published", "released"):
                 if type(value.get("artifacts", {}).get(field)) is bool:
@@ -148,6 +153,8 @@ def transport(channel):
 
 
 def diagnose(config):
+    if config.get("contract") == "data-diagnostic.v1":
+        return diagnose_data(config)
     if config.get("contract") != CONTRACT or not re.fullmatch("action-[0-9a-f]{16}", config["action"]):
         raise ValueError()
     if not re.fullmatch("[0-9a-f]{32}", config["request_id"]):
@@ -199,18 +206,98 @@ def diagnose(config):
     return report
 
 
+def diagnose_data(config):
+    if not re.fullmatch("[0-9a-f]{32}", config["request_id"]):
+        raise ValueError()
+    if not re.fullmatch("asset\\.[0-9a-f]{64}", config["asset_id"]):
+        raise ValueError()
+    if len(components(config["project"])) != 1:
+        raise ValueError()
+    report = {"contract": "data-diagnostic.v1", "project": config["project"],
+              "asset_id": config["asset_id"], "request_id": config["request_id"], "checks": []}
+    root = open_directory(components(config["root"], True))
+    try:
+        space = os.fstatvfs(root)
+        root_stat = os.fstat(root)
+        report["root"] = {"mode": oct(stat.S_IMODE(root_stat.st_mode)),
+                          "uid": root_stat.st_uid, "gid": root_stat.st_gid}
+        report["capacity"] = {"available_bytes": space.f_bavail * space.f_frsize,
+                              "available_inodes": space.f_favail,
+                              "user_quota_observed": False}
+        slot = config["project"] + "/" + config["asset_id"] + "/"
+        metadata = {}
+        for path, limit, lock in [(".native-data.json", 4096, False),
+                                  (".native-data.lock", None, True),
+                                  (slot + "state.json", 8 * 1024 * 1024, False)]:
+            row, raw = inspect(root, path, limit, lock)
+            report["checks"].append(row)
+            if raw is not None:
+                metadata[path] = raw
+        for row in report["checks"]:
+            raw = metadata.get(row["path"])
+            if raw is None:
+                continue
+            try:
+                saved = json.loads(raw)
+                if row["path"] == ".native-data.json":
+                    device, inode = saved["identity"]
+                    row["inode_matches"] = inode == root_stat.st_ino
+                    row["device_matches"] = device == root_stat.st_dev
+                    matches = (saved.get("contract") == "native-dataset.v1" and
+                               saved.get("target") == config["target"] and row["inode_matches"])
+                else:
+                    matches = (saved.get("contract") == "native-dataset.v1" and
+                               saved.get("project") == config["project"] and
+                               saved.get("asset_id") == config["asset_id"] and
+                               saved.get("target") == config["target"] and
+                               saved.get("definition") == config["definition"])
+                    report["recorded_parts"] = len(saved.get("parts", {}))
+                    report["ready_recorded"] = saved.get("ready") is not None
+                row["identity"] = "MATCH" if matches else "MISMATCH"
+            except (ValueError, TypeError, KeyError):
+                row["identity"] = "INVALID_METADATA"
+        count = (config["definition"]["archive_bytes"] + 16777215) // 16777216
+        # Inspect sizes only, including a last-written but not yet committed part.
+        report["parts"] = []
+        report["total_parts"] = count
+        report["parts_truncated"] = count > 128
+        for number in range(min(count, 128)):
+            row, _ = inspect(root, slot + "parts/" + str(number))
+            row.pop("path")
+            report["parts"].append({"number": number, **row})
+    finally:
+        os.close(root)
+    return report
+
+
 def main():
     start = time.monotonic()
     signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError()))
     signal.alarm(270)
+    config = {}
     try:
-        report = diagnose(json.loads(sys.argv[1]))
-    except Exception:
+        config = json.loads(sys.argv[1])
+        report = diagnose(config)
+    except Exception as error:
         report = {"contract": CONTRACT, "error": "DIAGNOSTIC_UNAVAILABLE"}
+        if isinstance(config, dict):
+            if config.get("contract") in (CONTRACT, "data-diagnostic.v1"):
+                report["contract"] = config["contract"]
+            for key, pattern in [("request_id", "[0-9a-f]{32}"),
+                                 ("action", "action-[0-9a-f]{16}"),
+                                 ("asset_id", "asset\\.[0-9a-f]{64}"),
+                                 ("project", "[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")]:
+                value = config.get(key)
+                if isinstance(value, str) and re.fullmatch(pattern, value):
+                    report[key] = value
+        if isinstance(error, OSError):
+            report["errno"] = error.errno
     report["elapsed_ms"] = round((time.monotonic() - start) * 1000)
     line = json.dumps(report, separators=(",", ":"), ensure_ascii=True)
     if len(line.encode()) > 32768:
-        line = json.dumps({"contract": CONTRACT, "error": "REPORT_TOO_LARGE"})
+        small = {key: report[key] for key in ("contract", "action", "project", "asset_id", "request_id") if key in report}
+        small["error"] = "REPORT_TOO_LARGE"
+        line = json.dumps(small)
     print(PREFIX + line, flush=True)
 
 

@@ -796,6 +796,60 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         assert_eq!(status, 200, "{ack}");
         assert_eq!(ack["packet_sha256"], packet.sha256().unwrap());
     }
+    // The diagnostic capability reads only its exact Attempt, without a global
+    // API token or a mutation packet. It grants no ordinary API access.
+    let status_path = format!("{path}/status");
+    let get_status = |token: &str, path: &str, protocol: &str| {
+        http.get(format!("http://{address}{path}"))
+            .bearer_auth(token)
+            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, protocol)
+            .send()
+            .unwrap()
+    };
+    for _ in 0..2 {
+        let response = get_status(&channel.token, &status_path, "2");
+        assert_eq!(response.status().as_u16(), 200);
+        let value: Value = serde_json::from_slice(&response.bytes().unwrap()).unwrap();
+        assert_eq!(value["contract"], "sync-diagnostic-status.v1");
+        assert_eq!(value["exchange"]["sequence"], 1);
+        assert_eq!(value["artifacts"]["prepared"], false);
+        assert!(value.get("package").is_none());
+        assert!(!value.to_string().contains(&channel.token));
+    }
+    assert_eq!(
+        get_status("wrong-worker-token", &status_path, "2")
+            .status()
+            .as_u16(),
+        401
+    );
+    assert_eq!(
+        get_status(&channel.token, &status_path, "1")
+            .status()
+            .as_u16(),
+        426
+    );
+    assert_eq!(
+        get_status(
+            &channel.token,
+            "/api/worker-exchange/demo/train/attempt-002/status",
+            "2"
+        )
+        .status()
+        .as_u16(),
+        401
+    );
+    assert_eq!(
+        get_status(&channel.token, "/api/health", "2")
+            .status()
+            .as_u16(),
+        401
+    );
+    assert_eq!(
+        get_status(&channel.token, &format!("{status_path}?refresh=true"), "2")
+            .status()
+            .as_u16(),
+        422
+    );
     assert!(
         ml_exp_client::Client::new(&format!("http://{address}"), channel.token.clone())
             .unwrap()

@@ -94,6 +94,20 @@ enum Command {
 }
 #[derive(Subcommand)]
 enum Data {
+    /// Inspect an existing PAI data copy with one read-only, zero-GPU diagnostic.
+    Diagnose {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        executor: String,
+        #[arg(long)]
+        asset: String,
+        #[arg(long)]
+        request_id: String,
+        /// Read retained diagnostic evidence only; no provider query or creation.
+        #[arg(long)]
+        status: bool,
+    },
     /// Import a complete plain tar already in an approved OSS dataset prefix.
     ImportOss {
         #[arg(long)]
@@ -397,6 +411,9 @@ enum Run {
         /// One CPU retry under the same request, bound to this exact FAILED job.
         #[arg(long)]
         retry_failed_job: Option<String>,
+        /// Create or observe one read-only CPU diagnostic; no worker replay.
+        #[arg(long, conflicts_with = "retry_failed_job")]
+        diagnose: bool,
     },
     /// Show the frozen W&B route and local publication cursors/errors; no cloud request.
     Tracking {
@@ -576,8 +593,15 @@ impl Run {
                 confirmation,
                 status,
                 retry_failed_job,
+                diagnose,
             } => {
-                if *status {
+                if *diagnose {
+                    submissions::Command::SyncDiagnostic {
+                        submission,
+                        request_id,
+                        status: *status,
+                    }
+                } else if *status {
                     submissions::Command::SyncStatus {
                         submission,
                         request_id,
@@ -708,6 +732,16 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     };
     if let Command::Data { command } = &args.command {
         match command {
+            Data::Diagnose {
+                project,
+                executor,
+                asset,
+                request_id,
+                ..
+            } => {
+                datasets::validate(project, executor, Some(asset))?;
+                ml_exp_core::submission::validate_submission_token(request_id)?;
+            }
             Data::ImportOss {
                 project,
                 executor,
@@ -988,6 +1022,11 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Command::Data { command } => {
                     let health = client.negotiate()?;
                     Output::Json(match command {
+                        Data::Diagnose { project,executor,asset,request_id,status } => {
+                            let path=format!("/api/projects/{project}/datasets/{executor}/{asset}/publications/{request_id}/diagnostic");
+                            let value=if status { client.get(&path)? } else { client.post(&path,&serde_json::json!({}))? };
+                            ml_exp_client::submissions::diagnostic_response(value,&serde_json::json!({"project":project,"executor":executor,"asset_id":asset,"request_id":request_id}))?
+                        },
                         Data::ImportOss { project, executor, object_key, sha256, archive_bytes } => datasets::import_oss(&client, &project, &executor,
                             ml_exp_core::datasets::oss::Import { object_key, sha256, archive_bytes }, &health)?,
                         Data::List{project,executor}=>datasets::list(&client,&project,&executor,&health)?,

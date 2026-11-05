@@ -529,6 +529,21 @@ pub(crate) fn failure(error: cloud::Error) -> read_api::Error {
                 "SYNC_RETRY_NOT_ELIGIBLE",
                 "CPU recovery requires the exact failed synchronization job and terminal training evidence",
             ),
+            ("DIAGNOSTIC_PARENT_NOT_TERMINAL", _) => (
+                409,
+                "DIAGNOSTIC_PARENT_NOT_TERMINAL",
+                "the original CPU job has not been confirmed terminal; no diagnostic was submitted",
+            ),
+            ("READONLY_DIAGNOSTIC_UNSUPPORTED", _) => (
+                422,
+                "READONLY_DIAGNOSTIC_UNSUPPORTED",
+                "read-only CPU diagnostics currently require PAI with personal CPFS",
+            ),
+            ("READONLY_DIAGNOSTIC_STORAGE_REQUIRED", _) => (
+                422,
+                "READONLY_DIAGNOSTIC_STORAGE_REQUIRED",
+                "configure personal CPFS before creating this read-only diagnostic",
+            ),
             ("DATA_COPY_IDENTITY_CONFLICT", _) => (
                 409,
                 "DATA_COPY_IDENTITY_CONFLICT",
@@ -593,6 +608,7 @@ mod artifacts;
 mod authority;
 mod authorship;
 pub(super) mod builds;
+mod diagnostics;
 mod exchange;
 mod observation;
 mod retry;

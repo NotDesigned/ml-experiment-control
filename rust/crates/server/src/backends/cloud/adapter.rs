@@ -289,6 +289,27 @@ impl<T: Transport> Adapter<T> {
         }
         Ok(quota.clone())
     }
+    pub fn pai_diagnostic_logs(
+        &self,
+        job: &Job,
+        handle: &Handle,
+        cancelled: &AtomicBool,
+    ) -> Result<Value> {
+        handle.validate(&self.profile, job)?;
+        let Profile::Pai(p) = &self.profile else {
+            return Err(Error::configuration());
+        };
+        let value = self.raw_job(&handle.job_id, cancelled)?;
+        p.validate_job(&value, job, Some(&handle.job_id))
+            .map_err(|_| Error::evidence())?;
+        let pods = value["Pods"].as_array().ok_or_else(Error::evidence)?;
+        let mut logs = Vec::new();
+        for pod in pods {
+            let id = pod["PodId"].as_str().ok_or_else(Error::evidence)?;
+            logs.push(self.call(p.pod_logs(&handle.job_id, id, 100), cancelled)?);
+        }
+        Ok(Value::Array(logs))
+    }
     pub fn pai_logs(
         &self,
         job: &Job,

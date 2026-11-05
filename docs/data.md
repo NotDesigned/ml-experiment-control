@@ -1,207 +1,52 @@
 # Data inputs and transfers
 
-Keep four things separate: source/Dockerfile, input datasets, persistent recovery
-state and exported results. Uploading source is not a dataset channel. Result
-ACKs do not delete datasets or persistent checkpoints.
+Datasets, source code, persistent checkpoints and exported results have separate
+identities and lifecycles. Downloading results does not remove datasets or
+checkpoint state. The API stores transfer metadata and bounded part buffers;
+large dataset payloads live on backend storage or the configured object store.
 
-## Upload once, select backend storage
+## Upload and reuse
 
-Create the project through source import or experiment preparation, then select
-an executor from `/api/executors`:
+Select an executor from `ml-exp backend`, then upload regular files:
 
 ```bash
-ml-exp data upload --project study --executor slurm-gpu \
-  --directory ./data --state data.state.json
-ml-exp data upload --project study --executor slurm-gpu \
-  --directory ./data --state data.state.json --resume
-ml-exp data list --project study
+ml-exp data upload --project study --executor pai-h200 --directory ./data
+ml-exp data list --project study --executor pai-h200
+ml-exp data show --project study --executor pai-h200 --asset asset.ACTUAL_HASH
 ```
 
-The client builds a deterministic tar.gz in a temporary file; it needs local
-space for that archive. Resume requires unchanged bytes and the same state file.
-The saved session retains its original storage target. Bind its asset ID:
+The native client creates a deterministic plain tar in a temporary local file,
+then sends 16 MiB parts. It needs client-side space for that archive. Repeating
+an upload of unchanged bytes queries the same asset and skips accepted parts;
+there are no `--state` or `--resume` options on `data upload`. Keep the returned
+asset ID when a response is lost. A changed file creates a different identity.
+
+Run inputs use the ordinary native `data` field:
 
 ```json
-{"inputs":[{"asset_id":"asset.ACTUAL_HASH","mount_path":"/inputs/data"}]}
+{"data":[{"name":"training","asset_id":"asset.ACTUAL_HASH"}]}
 ```
 
-The one-config `experiment` workflow can upload an `inputs[].directory` and
-prepare delivery itself. Assets identify bytes; they do not imply that every
-backend shares the same files or authorize access to another storage namespace.
+The worker supplies `DATASETS_JSON`, mapping each input name to its verified
+shared-storage directory. Training code reads the named directory from this map.
 
-## Backend delivery
+`ARCHIVED` means the uploaded archive passed verification. `READY` additionally
+means the selected backend has a verified shared-storage tree. These states are
+not interchangeable.
 
-| Backend | New asset path | Before training |
-| --- | --- | --- |
-| Slurm | Client → bounded API part buffer → SSH receiver → shared storage | Gateway verifies archive/files; compute reuses verified shared data |
-| SenseCore | Client → bounded API part buffer → CCR data-image layer → debug CPU ACP → NAS | CPU receipt must establish NAS readiness; training rehashes cached files |
-| PAI DLC | Client → bounded API part buffer → approved personal OSS archive → CPFS cache | Reuse a READY Runtime in a zero-GPU CPU job, or fill inside the training job |
-
-The API's global **1 GiB buffer** accounts for in-flight multipart bytes,
-sidecars and filesystem blocks. It seals a part and removes it only after a
-matching durable destination ACK. Lost ACKs retain resumable bytes. Full capacity
-returns `503 TRANSFER_BUFFER_BUSY` with `Retry-After`. A complete new dataset is
-not retained on the API host. This limit does not cap source snapshots,
-result storage, recovery scratch, databases or total server disk.
-
-Slurm's `storage_root` must be shared with its compute nodes. Only the SSH gateway
-needs external access; see [offline nodes](#slurm-without-compute-node-internet).
-SenseCore streams fixed data layers through registry REST, without a Docker builder. It requires an operator-provisioned Python/glibc/Bash base in
-the same CCR repository. The data Runtime is separate from the training Runtime.
-The copy uses a verified RESERVED 2CPU/4GiB/0GPU debug profile. GPU placement
-excludes debug clusters. A published CCR image (`verification=PENDING_BACKEND`)
-is not proof that the dataset is available on NAS.
-
-Slurm/SenseCore target-backed datasets expose metadata and backend references;
-their direct API archive/download returns `404 DIRECT_DOWNLOAD_UNAVAILABLE`.
-OSS datasets support direct download below. Historical object-store assets retain their read paths. Desktop staging and
-its archive RPC have been removed; new uploads select backend storage. If a configured finite local-payload lifetime expires historical
-local data, it returns `410 ASSET_EXPIRED` while retaining its identity. Backend
-shared storage, NAS, CCR and durable OSS originals have separate lifetimes.
-
-### Delivery identity and reconciliation
-
-```text
-POST /api/projects/P/assets/ASSET_ID/deliveries/prepare  {"executor":"ID"}
-POST /api/projects/P/data-deliveries/DELIVERY_ID/execute {"confirmation":"returned value"}
-GET  /api/projects/P/data-deliveries/DELIVERY_ID
-POST /api/projects/P/data-deliveries/DELIVERY_ID/reconcile
-```
-
-Asset publication and backend delivery READY are different. Reconciliation
-observes the original publication/job and never repeats an uncertain create.
-`nas-data-ready-reuse.v1` allows a sealed receipt for identical project, bytes,
-file inventory and NAS workspace/mount/path to establish readiness. Workers
-rehash actual files; receipt reuse is not an independent server read of NAS.
-
-An older uncertain delivery can expose effective `status=READY`, `reused_from`
-and `ready_delivery` while preserving its own `operation_status` and history.
-This means another receipt proves data readiness, not that the original copy
-succeeded. New Runs bind the canonical receipt. Different scopes or corrupt,
-unsealed receipts cannot be reused. Permission sealing (0444/0555) is not a
-kernel read-only mount or protection against privileged code.
-
-## Download data on the backend instead
-
-Include the downloader in frozen source:
-
-```json
-{"data_preparation":{"script":"download_data.py","interpreter":"python3","arguments":["--dataset","version-1"],"timeout_seconds":1200}}
-```
-
-It writes datasets beneath `DATA_DIR`, separate from `OUTPUT_DIR`. Successful
-exit and verified regular-file SHA256 inventory are required before training.
-The preparation identity binds script/source, image, arguments, environment and
-inputs. An exclusive cache lock and atomic sealed receipt permit rehash-and-reuse;
-partial/corrupt data fails without silently running the downloader again.
-`data-preparation.json` is exported even with custom output patterns.
-
-| Backend | Download script placement |
+| Backend | Delivery before training |
 | --- | --- |
-| Relay-configured Slurm | Connected SSH gateway, in the same SIF, before GPU submission |
-| SenseCore with configured CPU preparation | RESERVED debug CPU ACP before GPU submission |
-| PAI DLC | Inside the allocated job and CPFS workspace; consumes runtime/GPU budget |
+| Slurm | Client → bounded API buffer → connected SSH gateway → shared storage. Offline compute nodes read the shared cache. |
+| SenseCore | Client → bounded API buffer → CCR data image → debug CPU ACP → NAS. A CPU receipt establishes readiness. |
+| PAI | Client → bounded API buffer → personal OSS objects → CPU preparation → personal CPFS. Training reads the verified cache. |
 
-Check the executor's declared `data.download_script` and preparation phase.
-Internet reachability is not guaranteed by the existence of a downloader.
-SenseCore uses an exact-job capability callback: it revalidates the sealed NAS
-receipt and requires the confirmed original CPU UID, independently of log
-indexing. A callback received before the create response stays pending. The
-capability is removed before user code. A valid receipt can prove readiness even
-if a later acknowledgement fails; the original CPU failure is still retained.
-Historical inside-job/stdout modes remain frozen. Receipt bounds are 20,000 files
-and 8 MiB; configured timeout, backend quota and Runtime capabilities also apply.
+A cache is scoped to its executor/storage identity. An asset's presence on one
+backend does not prove readiness on another. Partial trees and hash mismatches
+are not accepted as ready data. Dataset directories remain outside results.
 
-## Multipart HTTP contract
+## PAI preparation using an existing image
 
-Data sessions live at `/api/projects/P/asset-uploads`:
-
-1. POST the archive `sha256`, `bytes`, and `target: {"executor":"ID"}`. Supply
-   `files: [{"path":"train.bin","bytes":N,"sha256":"HASH"}]` and
-   `transport_sha256` for SenseCore. The official client computes these identities.
-2. Save `upload_id`, `part_bytes`, `part_count`, confirmed `parts` and expiry.
-   GET the same session before resuming or after losing a response.
-3. PUT `/{upload_id}/parts/{number}?sha256=PART_HASH` with exact raw bytes.
-4. POST `/{upload_id}/complete` to validate and publish; DELETE the session to
-   abort unfinished staging, never published data.
-
-Part numbering starts at **0**. Identical duplicates are idempotent; different
-bytes cannot replace a confirmed part. Only the final part may be shorter.
-Typical errors are 400 for bad hashes/bytes, 409 for conflicts/missing parts,
-410 for expiry, 413 for configured limits, 507 for storage admission and typed
-503 for buffer saturation or unconfirmed backend transport. Keep sanitized error
-bodies and IDs; do not create a replacement upload after an uncertain completion.
-
-Workers use `/api/attempt-uploads/P/R/A/{artifacts|checkpoint}` with the same
-multipart lifecycle and narrow Attempt credentials. Old images keep their frozen
-uploader. A COMPLETE published receipt is required for archive download.
-Persistent checkpoint registration sends metadata rather than these state bytes.
-
-## Limits and storage lifecycle
-
-`/api/storage-limits` reports configured byte limits, part policy, inventory
-bounds, session TTL and capacity. There is no fixed 4 GiB default. Null means no
-configured cap, not infinite destination space. Compatibility integer fields can
-be large; consult `configured_byte_limits` for actual policy.
-
-The general default is 16 MiB parts, at most 65,536 parts, 20,000 files and a
-24-hour unfinished-session TTL. SenseCore defaults to 1 MiB parts when
-`upload_part_bytes` is absent. Negotiate rather than hardcode: 65,536 parts give
-1 TiB at 16 MiB or 64 GiB at 1 MiB. Expanded bytes, individual files and source
-archives have their own limits. OSS has the lower 10,000-part bound below.
-
-Verified result-download ACK with release enabled makes that archive eligible
-for the next maintenance cycle; a GET alone does not. Local result expiry and
-required durable archival may also affect release. KEEP, unconfirmed downloads,
-backend datasets and checkpoint state have distinct policies. Physical object-store
-garbage collection can lag logical release. Metrics and receipts remain.
-See [result retention](recovery.md#download-confirmation-and-server-storage).
-
-## Slurm without compute-node Internet
-
-Only the configured gateway must reach the API/registry and external dataset
-sources. Uploaded datasets are verified on shared storage before GPU submission.
-Relay-configured download scripts run there in the Runtime SIF; training reuses
-the sealed cache and refuses to redownload missing data on an offline node.
-
-The configured TLS-preserving TCP gateway relay carries launch requests, metrics,
-checkpoint registration and results for offline compute. It is not a general
-Internet proxy. Existing frozen low-level Runs retain their old transport paths;
-an API upgrade cannot change those manifests. See [Slurm configuration](slurm.md).
-
-## Personal OSS dataset originals and DLC caches
-
-When `oss-datasets.v1` is enabled for the executor:
-
-```bash
-ml-exp data upload --project study --executor pai-h200 --directory ./data --state data.state.json
-ml-exp data import-oss --project study --executor pai-h200 \
-  --object-key users/USER/datasets/version-1.tar.gz --sha256 ARCHIVE_SHA256 --bytes ARCHIVE_BYTES
-ml-exp data download --project study --id asset.SHA256 --out ./downloaded-data
-```
-
-Import uses `POST /api/projects/P/assets/import-oss` with `executor`, `object_key`,
-`sha256`, `bytes`. Bucket, region and user are server configuration. Reads are
-limited to approved personal `users/USER/datasets/` and public `public/datasets/`
-prefixes; uploads write beneath `users/USER/datasets/ml-expd/PROJECT/` with distinct
-keys. No role, Bucket ACL/Policy, public access or lifecycle policy is changed.
-
-Completion/import streams the object through the API once to verify full archive
-and file SHA256, using bounded memory rather than local payload storage. It is
-not zero-copy registration. Upload snapshots remain observable during validation;
-repeat completion reconciles the same object. Changed external objects fail hash
-checks. Unknown initiations/completions require inspection, never blind overwrite.
-
-DLC mounts approved personal CPFS at `/mnt/workspace`. A first cache fill inside
-training uses the authenticated exact-Attempt API endpoint for bounded OSS chunks.
-The explicit CPU preparation below avoids consuming the training allocation for
-this work and makes the verified cache reusable before the Run is frozen.
-Dataset files remain outside outputs. Registration returns an ordinary ML-Expd
-asset ID; it does not create a native PAI Dataset or mount OSS as a filesystem.
-**Native OSS filesystem mounts remain disabled.**
-
-For native PAI, prepare the shared cache before training with an existing READY
-Runtime. Preserve one request ID locally before the first call:
+Save one request ID before the first call and reuse a READY Runtime:
 
 ```bash
 ml-exp data publish --project study --executor pai-h200 --asset asset.ACTUAL_HASH \
@@ -210,31 +55,81 @@ ml-exp data publish --project study --executor pai-h200 --asset asset.ACTUAL_HAS
 ml-exp data show --project study --executor pai-h200 --asset asset.ACTUAL_HASH
 ```
 
-This runs 0 GPUs, 2 CPUs and 4 GiB for at most 3600 seconds. The immutable
-Runtime supplies its existing worker; no image build or training runs. For
-worker17 compatibility a small Python launcher invokes `data-import
---bundle-output` to verify the OSS parts in the CPU container, then `data-copy`
-to extract and verify the personal CPFS tree. Its temporary archive and private
-configuration are removed on exit; dataset bytes never stage on the API disk.
-Failure logs contain stage codes, not signed URLs or scoped credentials.
+This uses 0 GPUs, 2 CPUs and 4 GiB, with a 3600-second running limit. It creates
+no training Run or image build. Worker17 images first run `data-import
+--bundle-output` into the CPU container's temporary archive, then `data-copy`
+from that local file into CPFS. The temporary archive/configuration is removed
+on exit. During the second phase, copying parts does not fetch signed URLs.
 
-The complete CPU command, channels, Runtime and request are persisted before
-provider effects. Repeat the same publish call to observe the same CPU job,
-including after an API restart or URL/launcher change. An uncertain or failed
-copy is not automatically replaced. `data show` is a local read. Only an exact
-complete READY receipt removes redundant dataset imports from later training
-packages; the full file inventory and worker hash checks remain. Experiment
-preparation uses the same CPU path when a PAI collector is configured.
+The complete command, channels, Runtime and request are retained before any
+provider effect. Repeating the same call observes the same CPU job, including
+after an API restart or launcher/URL change. Failed or uncertain jobs are not
+automatically replaced. `data show` reads cached evidence without querying the
+provider. Only a complete verified READY receipt allows later training to reuse
+the cache without another download.
 
-`GET /api/projects/P/assets/ASSET/download` returns a private five-minute OSS GET
-ticket. The client downloads directly, checks archive/file hashes and saves
-`data/` and `verification.json`. It sends no result ACK and never deletes the
-OSS original. Durable datasets are outside local expiry and Run deletion.
+## Read-only diagnostics (native 0.1.27+)
 
-OSS allows at most 10,000 parts. Default `oss_dataset_part_bytes` is 16 MiB:
-up to 156.25 GiB per archive, subject to smaller configured limits and capacity.
-Non-final parts must be at least 100 KiB. `/api/storage-limits` is authoritative.
-Personal storage budgets are soft accounting unless separately enforced.
-The operator configures `oss_datasets.bucket`, `region`, `user` and
-`credentials_file`; credentials never reach clients or training code. Public
-CPFS models/datasets remain read-only.
+For an existing terminal PAI copy, retain its asset and publication request:
+
+```bash
+ml-exp data diagnose --project study --executor pai-h200 \
+  --asset asset.ACTUAL_HASH --request-id ORIGINAL_REQUEST
+# Read the retained diagnostic without contacting the provider:
+ml-exp data diagnose --project study --executor pai-h200 \
+  --asset asset.ACTUAL_HASH --request-id ORIGINAL_REQUEST --status
+```
+
+The first command creates or observes one deterministic diagnostic under that
+original publication. Its complete intent is saved before submission; repeated
+calls and response loss do not create another job. The diagnostic uses the
+original image, 0 GPUs, 2 CPUs and 4 GiB, and a 300-second running limit. CPFS is
+mounted read-only. It does not run data-copy, unpack files, publish READY, remove
+parts or retry the original copy.
+
+The report contains current available bytes/inodes, marker/state identity and
+metadata hashes, modes/ownership, recorded part counts, part sizes, and an
+existing-lock nonblocking check. Part contents are not read. Up to 128 part
+entries are included with an explicit truncation flag. A missing lock is never
+created. `statvfs` does not prove user-quota availability, and current diagnostics
+cannot reconstruct an errno discarded by a historical worker. Missing offline
+logs stay `AWAITING_OFFLINE_LOGS`; a later explicit observation can retrieve them.
+
+## Existing OSS dataset objects
+
+When the executor enables native OSS import, register a complete plain tar in
+an approved personal or public dataset prefix:
+
+```bash
+ml-exp data import-oss --project study --executor pai-h200 \
+  --object-key users/USER/datasets/version-1.tar \
+  --sha256 ARCHIVE_SHA256 --archive-bytes ARCHIVE_BYTES
+ml-exp data download --project study --executor pai-h200 \
+  --asset asset.ACTUAL_HASH --output ./downloaded-data
+```
+
+Import streams and verifies the archive and member inventory; it is not a claim
+that CPFS is ready. Use the preparation command above before GPU training.
+Downloads obtain object-part tickets, verify the archive and every file, and
+publish into a new local directory. Dataset downloads send no result ACK and
+never delete the OSS original. Bucket, endpoint, prefix and credentials are
+operator configuration; credentials are not sent to clients. Native OSS
+filesystem mounts remain disabled; CPFS supplies the training filesystem.
+
+## Native HTTP endpoints
+
+- `GET/POST /api/projects/P/datasets/E`: list assets or begin a definition.
+- `GET /api/projects/P/datasets/E/A`: retained state.
+- `PUT /api/projects/P/datasets/E/A/parts/NUMBER/SHA256`: exact raw part bytes.
+- `POST /api/projects/P/datasets/E/A/complete`: verify the uploaded archive.
+- `POST /api/projects/P/datasets/E/A/publish`: explicit backend preparation.
+- `GET/POST /api/projects/P/datasets/E/A/publications/REQUEST/diagnostic`:
+  retained diagnostic or explicit create/observe.
+- `POST /api/projects/P/datasets/E/import-oss`: object key, SHA256 and archive bytes.
+- `POST /api/projects/P/datasets/E/A/download-ticket`: one part's private ticket.
+
+Part numbers start at zero. Identical parts are idempotent; changed bytes cannot
+replace an accepted part. The native policy uses 16 MiB parts and at most 65,536
+parts, subject to file-inventory bounds and actual destination capacity. No
+4 GiB total-size limit or desktop staging is required. Metadata, hashes and
+backend-specific readiness remain separate from payload retention.

@@ -8,12 +8,16 @@ use axum::{
     extract::{DefaultBodyLimit, Path, RawQuery, State},
     http::HeaderMap,
     response::Response,
-    routing::post,
+    routing::{get, post},
 };
 use ml_exp_core::cloud::exchange::{MAX_BYTES, Packet};
 use std::sync::Arc;
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route(
+            "/api/worker-exchange/{project}/{run}/{attempt}/status",
+            get(diagnostic_status),
+        )
         .route(
             "/api/worker-exchange/{project}/{run}/{attempt}/datasets/{asset}/{part}",
             post(dataset),
@@ -27,6 +31,48 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             "/api/worker-exchange/{project}/{run}/{attempt}/artifacts",
             post(artifact).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
         )
+}
+async fn diagnostic_status(
+    State(state): State<Arc<AppState>>,
+    Path((project, run, attempt)): Path<(String, String, String)>,
+    RawQuery(raw): RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    if read_api::no_parameters(raw.as_deref()).is_err() {
+        return read_http::failure(read_api::Error {
+            status: 422,
+            code: "INVALID_WORKER_EXCHANGE",
+            detail: "worker status takes no query parameters",
+        });
+    }
+    let values: Vec<_> = headers.get_all("authorization").iter().collect();
+    let token = if values.len() == 1 {
+        values[0]
+            .to_str()
+            .ok()
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    let Some(token) = token else {
+        return read_http::failure(read_api::Error {
+            status: 401,
+            code: "WORKER_AUTH_REQUIRED",
+            detail: "Attempt worker authentication required",
+        });
+    };
+    read_http::execute(state, Access::Read, move |api, _| {
+        api.cloud()
+            .ok_or(read_api::Error {
+                status: 501,
+                code: "WORKER_EXCHANGE_NOT_CONFIGURED",
+                detail: "cloud worker exchange is not configured",
+            })?
+            .worker_diagnostic_status(&project, &run, &attempt, &token)
+            .map_err(super::failure)
+    })
+    .await
 }
 async fn artifact(
     State(state): State<Arc<AppState>>,

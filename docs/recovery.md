@@ -269,3 +269,28 @@ is required. Missing best-effort reports prove no particular cause. Exit 78 can
 be launcher setup, filesystem failure or a child result. For errno 28, check the
 actual mounted path, inode/file-count and quota; freeing API archives is not
 proof that NAS or CPFS writes work.
+
+
+## Read-only collector diagnostics (native 0.1.27+)
+
+For an existing terminal PAI synchronization job:
+
+```bash
+ml-exp run sync ACTION --request-id ORIGINAL_REQUEST --diagnose
+ml-exp run sync ACTION --request-id ORIGINAL_REQUEST --diagnose --status
+```
+
+The first command creates or observes one deterministic 0GPU/2CPU/4GiB/300s
+job under the original synchronization lineage. It keeps the original image,
+mounts personal CPFS read-only, and never runs the worker, trains, packages,
+uploads, removes a file or creates a missing lock. It reads bounded Attempt
+metadata, checks required output file sizes without reading weights, probes
+existing locks without blocking, and performs only a scoped GET of accepted
+exchange/artifact stages. Authentication contents and raw exception text are
+not returned. The original failed collector and any explicit retry remain intact.
+
+The `--status` form reads retained evidence only. Offline logs may arrive later;
+repeat the first command to observe the same diagnostic handle. A pending or
+failed observation does not start another diagnostic or collector. The scoped
+worker GET endpoint cannot authenticate ordinary client or administrative calls.
+See [dataset diagnostics](data.md) for failed PAI cache preparation.
