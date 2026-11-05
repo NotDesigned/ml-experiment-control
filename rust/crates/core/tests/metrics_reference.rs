@@ -124,6 +124,76 @@ fn metric_results_classify_complete_and_failed_contexts_and_refuse_malformed_nor
 }
 
 #[test]
+fn a_metric_outside_a_declared_schema_is_undeclared_and_never_complete() {
+    let schema = json!({"definitions":{"declared":{"unit":"nats/token"}}});
+    let record = json!({"name":"other","value":2.5,"unit":"nats/token","step":4});
+    let normalized = observations(&record, &schema, None, None).unwrap();
+    assert_eq!(normalized[0]["status"], "UNDECLARED");
+    assert_eq!(normalized[0]["error"], "METRIC_NOT_DECLARED");
+    assert_eq!(normalized[0]["errors"], json!(["METRIC_NOT_DECLARED"]));
+    assert_eq!(normalized[0]["value"], 2.5);
+    let result = metric_result(&[record], Some(&schema), None, None, false).unwrap();
+    assert_eq!(result["state"], "PARTIAL");
+    // An empty schema declares nothing, so it refuses nothing.
+    let record = json!({"name":"other","value":2.5,"unit":"nats/token","step":4});
+    let open = metric_result(&[record], None, None, None, false).unwrap();
+    assert_eq!(open["records"][0]["status"], "VALID");
+    assert_eq!(open["state"], "COMPLETE");
+}
+
+#[test]
+fn units_or_values_that_disagree_in_one_context_conflict_and_lose_their_value() {
+    let metric = |value: f64, unit: &str, step: i64| json!({"name":"loss","value":value,"unit":unit,"step":step});
+    let units = metric_result(
+        &[metric(2.5, "nats", 4), metric(2.5, "bits", 4)],
+        None,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    assert_eq!(units["state"], "FAILED");
+    let records = units["records"].as_array().unwrap();
+    assert_eq!(records.len(), 2);
+    for record in records {
+        assert_eq!(record["status"], "CONFLICTING");
+        assert_eq!(record["error"], "CONFLICTING_UNITS");
+        assert_eq!(record["value"], Value::Null);
+    }
+    let values = metric_result(
+        &[metric(2.5, "nats", 4), metric(3.0, "nats", 4)],
+        None,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    assert_eq!(values["state"], "FAILED");
+    let records = values["records"].as_array().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["status"], "CONFLICTING");
+    assert_eq!(records[0]["error"], "CONFLICTING_OBSERVATIONS");
+    assert_eq!(records[0]["value"], Value::Null);
+    // Neither a repeat nor another position is a conflict.
+    let separate = metric_result(
+        &[
+            metric(2.5, "nats", 4),
+            metric(2.5, "nats", 4),
+            metric(2.0, "bits", 5),
+        ],
+        None,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    assert_eq!(separate["state"], "COMPLETE");
+    let records = separate["records"].as_array().unwrap();
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|record| record["status"] == "VALID"));
+}
+
+#[test]
 fn protocol_identity_digests_stay_pinned() {
     for case in [
         literal(

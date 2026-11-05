@@ -147,11 +147,7 @@ fn health_document(
 ) -> serde_json::Value {
     let mut capabilities = vec!["bearer-auth.v1", "deployment-readiness.v1"];
     if reads {
-        capabilities.extend([
-            "metric-records.v1",
-            "result-collection-read.v1",
-            "checkpoint-record-read.v1",
-        ]);
+        capabilities.extend(["metric-records.v1", "result-collection-read.v1"]);
     }
     if lifecycle {
         capabilities.push("project-lifecycle.v1");
@@ -165,6 +161,7 @@ fn health_document(
         capabilities.push("native-worker-observation.v1");
         capabilities.push("execution-progress.v1");
         capabilities.push("native-checkpoints.v1");
+        capabilities.push("checkpoint-record-read.v1");
         capabilities.push("native-artifacts.v1");
         capabilities.push("native-cancellation.v1");
         capabilities.push("native-metric-history.v1");
@@ -250,6 +247,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
                     "native-submissions.v1",
                     "native-cancellation.v1",
                     "native-scheduler-observation.v1",
+                    "checkpoint-record-read.v1",
                 ] {
                     if !values.iter().any(|v| v == capability) {
                         values.push(json!(capability));
@@ -1022,6 +1020,14 @@ mod schema_tests {
                 .unwrap()
                 .iter()
                 .any(|v| v == "project-lifecycle.v1")
+        );
+        // Checkpoint GETs need a submission or cloud service behind them.
+        assert!(
+            !health["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "checkpoint-record-read.v1")
         );
         let lifecycle = super::health_document(1, "isolated", true, true, None, None);
         assert!(

@@ -115,6 +115,50 @@ fn a_failed_read_keeps_its_http_status() {
 }
 
 #[test]
+fn a_reply_for_another_run_or_attempt_is_refused() {
+    let listing = json!({"project":"p","run_id":"r","current_attempt_id":"attempt-001",
+        "attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001"}]});
+    let mut foreign = listing.clone();
+    foreign["run_id"] = json!("other");
+    let mut absent = listing.clone();
+    absent["attempts"] = json!([{"attempt_id":"attempt-002","identity":"r::attempt-002"}]);
+    for (attempts, logs, count, error) in [
+        (
+            foreign,
+            Value::Null,
+            1,
+            "Attempt listing differs from the requested Run",
+        ),
+        (
+            absent,
+            Value::Null,
+            1,
+            "current Attempt is absent from the Run listing",
+        ),
+        (
+            listing.clone(),
+            json!({"project":"p","run_id":"r","attempt_id":"attempt-002","stdout":["another Attempt"]}),
+            2,
+            "read response differs from the requested exact Run/Attempt",
+        ),
+        (
+            listing.clone(),
+            json!({"project":"p","run_id":"other","attempt_id":"attempt-001","stdout":["another Run"]}),
+            2,
+            "read response differs from the requested exact Run/Attempt",
+        ),
+    ] {
+        let case = json!({"health":{"capabilities":["metric-records.v1"]},
+            "view":{"view":"logs","stream":"both","lines":80},
+            "responses":{"/api/runs/p/r/attempts":attempts,
+                "/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80":logs}});
+        let (result, requests) = drive(&case);
+        assert_eq!(result.unwrap_err().to_string(), error);
+        assert_eq!(requests.len(), count);
+    }
+}
+
+#[test]
 fn duplicate_current_attempts_are_rejected_and_a_resolved_attempt_stays_pinned() {
     let current = || {
         read::begin(

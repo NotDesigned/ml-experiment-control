@@ -12,6 +12,10 @@ fn literal(text: &str) -> Value {
 fn text_redacts_credentials_assignments_urls_and_control_characters() {
     for (input, expected) in [
         ("plain failure", "plain failure"),
+        (
+            "hello synthetic-credential-ZZZ tail",
+            "hello [REDACTED] tail",
+        ),
         ("secret=synthetic-credential-ZZZ", "secret=[REDACTED]"),
         ("Bearer synthetic-credential-ZZZ", "Bearer [REDACTED]"),
         ("api_key=\"a long quoted secret\"", "api_key=[REDACTED]"),
@@ -48,6 +52,10 @@ fn json_redacts_sensitive_keys_truncates_depth_and_keeps_scientific_fields() {
         (
             r#"{"detail":"credential=synthetic-credential-ZZZ"}"#,
             r#"{"detail":"credential=[REDACTED]"}"#,
+        ),
+        (
+            r#"{"detail":"hello synthetic-credential-ZZZ tail"}"#,
+            r#"{"detail":"hello [REDACTED] tail"}"#,
         ),
     ] {
         assert_eq!(
@@ -100,6 +108,13 @@ fn http_failures_keep_status_and_safe_code_and_drop_unparseable_bodies() {
             None,
             "{\"detail\":\"disk full\"}",
             r#"{"status":507,"retryable":false,"error_code":"API_ERROR","retry_after":null,"details":"disk full","response_body":{"detail":"disk full"},"body_truncated":false}"#,
+        ),
+        (
+            409,
+            None,
+            None,
+            "{\"detail\":\"hello synthetic-credential-ZZZ tail\"}",
+            r#"{"status":409,"retryable":false,"error_code":"API_ERROR","retry_after":null,"details":"hello [REDACTED] tail","response_body":{"detail":"hello [REDACTED] tail"},"body_truncated":false}"#,
         ),
         (
             502,

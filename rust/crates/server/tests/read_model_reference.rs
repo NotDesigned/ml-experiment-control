@@ -42,6 +42,61 @@ fn metric_payload_reports_records_and_the_legacy_shape_with_coverage() {
 }
 
 #[test]
+fn downsampling_keeps_both_ends_and_reports_that_it_sampled() {
+    let records: Vec<Value> = (0..5)
+        .map(|step| json!({"step":step,"loss":step}))
+        .collect();
+    for (format, rows) in [("records", "records"), ("legacy", "points")] {
+        for (max_points, steps, downsampled) in [
+            (1, json!([4]), true),
+            (2, json!([0, 4]), true),
+            (3, json!([0, 2, 4]), true),
+            (5, json!([0, 1, 2, 3, 4]), false),
+            (9, json!([0, 1, 2, 3, 4]), false),
+        ] {
+            let payload = metric_payload(&json!({"records":records,"keys":null,
+                "max_points":max_points,"contract":{},"format":format}))
+            .unwrap();
+            let actual: Vec<Value> = payload[rows]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["step"].clone())
+                .collect();
+            assert_eq!(Value::Array(actual), steps);
+            assert_eq!(payload["downsampled"], downsampled);
+            assert_eq!(payload["total_records"], 5);
+            assert_eq!(payload["validation"]["total_records"], 5);
+        }
+    }
+}
+
+#[test]
+fn filters_report_the_names_and_keys_they_did_not_find() {
+    let records = json!([{"step":0,"loss":1,"accuracy":2},{"step":1,"loss":3,"accuracy":4}]);
+    let payload = metric_payload(&json!({"records":records,"keys":null,"max_points":10,
+        "contract":{},"format":"records","names":["loss","absent"]}))
+    .unwrap();
+    assert_eq!(payload["missing_names"], json!(["absent"]));
+    assert_eq!(payload["total_records"], 2);
+    assert_eq!(payload["validation"]["total_records"], 4);
+    let rows = payload["records"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["name"] == "loss"));
+    let payload = metric_payload(
+        &json!({"records":records,"keys":"loss, absent","max_points":10,
+        "contract":{},"format":"legacy"}),
+    )
+    .unwrap();
+    assert_eq!(payload["keys"], json!(["loss", "absent"]));
+    assert_eq!(payload["missing_keys"], json!(["absent"]));
+    assert_eq!(
+        payload["points"],
+        json!([{"step":0,"timestamp":null,"loss":1},{"step":1,"timestamp":null,"loss":3}])
+    );
+}
+
+#[test]
 fn metric_payload_refuses_invalid_queries_with_a_stable_code() {
     for case in [
         literal(

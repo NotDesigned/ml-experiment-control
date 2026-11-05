@@ -64,11 +64,11 @@ fn route(input: &Value) -> Value {
     } else {
         Some(WandbOptions::from_value(&input["options"]).unwrap())
     };
-    tracking::resolve(
-        options.as_ref(),
-        &settings,
-        input["project"].as_str().unwrap(),
-    )
+    let project = input["project"].as_str().unwrap();
+    json!({
+        "run": tracking::resolve(options.as_ref(), &settings, project),
+        "preparation": tracking::resolve_preparation(options.as_ref(), &settings, project),
+    })
 }
 
 #[test]
@@ -87,7 +87,33 @@ fn run_routes_follow_credentials_server_settings_and_the_requested_entity() {
             r#"{"id":"route-24","operation":"route","input":{"settings":{"api_key":"synthetic-key"},"options":{"entity":"requested-team"},"project":"fallback-project"},"expected":{"run":{"requested":true,"enabled":true,"reason":null,"entity":"requested-team","project":"fallback-project"},"preparation":{"requested":false,"enabled":false,"reason":"DISABLED_BY_REQUEST","entity":"requested-team","project":"fallback-project"}}}"#,
         ),
     ] {
-        assert_eq!(route(&case["input"]), case["expected"]["run"]);
+        assert_eq!(route(&case["input"]), case["expected"]);
+    }
+}
+
+#[test]
+fn opt_out_missing_entity_and_server_defaults_decide_the_route() {
+    for case in [
+        literal(
+            r#"{"id":"route-2","operation":"route","input":{"settings":{},"options":{"enabled":false},"project":"fallback-project"},"expected":{"run":{"requested":false,"enabled":false,"reason":"DISABLED_BY_REQUEST","entity":null,"project":"fallback-project"},"preparation":{"requested":false,"enabled":false,"reason":"DISABLED_BY_REQUEST","entity":null,"project":"fallback-project"}}}"#,
+        ),
+        literal(
+            r#"{"id":"opt-out-beats-a-usable-route","operation":"route","input":{"settings":{"api_key":"synthetic-key","resolved_entity":"default-team"},"options":{"enabled":false},"project":"fallback-project"},"expected":{"run":{"requested":false,"enabled":false,"reason":"DISABLED_BY_REQUEST","entity":"default-team","project":"fallback-project"},"preparation":{"requested":false,"enabled":false,"reason":"DISABLED_BY_REQUEST","entity":"default-team","project":"fallback-project"}}}"#,
+        ),
+        literal(
+            r#"{"id":"route-18","operation":"route","input":{"settings":{"api_key":"synthetic-key"},"options":null,"project":"fallback-project"},"expected":{"run":{"requested":true,"enabled":false,"reason":"DEFAULT_ENTITY_UNAVAILABLE","entity":null,"project":"fallback-project"},"preparation":{"requested":false,"enabled":false,"reason":"DISABLED_BY_REQUEST","entity":null,"project":"fallback-project"}}}"#,
+        ),
+        literal(
+            r#"{"id":"route-27","operation":"route","input":{"settings":{"api_key":"synthetic-key","resolved_entity":"default-team"},"options":null,"project":"fallback-project"},"expected":{"run":{"requested":true,"enabled":true,"reason":null,"entity":"default-team","project":"fallback-project"},"preparation":{"requested":false,"enabled":false,"reason":"DISABLED_BY_REQUEST","entity":"default-team","project":"fallback-project"}}}"#,
+        ),
+        literal(
+            r#"{"id":"route-26","operation":"route","input":{"settings":{"api_key":"synthetic-key"},"options":{"entity":"requested-team","project":"requested-project","preparation_enabled":true},"project":"fallback-project"},"expected":{"run":{"requested":true,"enabled":true,"reason":null,"entity":"requested-team","project":"requested-project"},"preparation":{"requested":true,"enabled":true,"reason":null,"entity":"requested-team","project":"requested-project"}}}"#,
+        ),
+        literal(
+            r#"{"id":"route-36","operation":"route","input":{"settings":{"api_key":"synthetic-key","resolved_entity":"default-team","project":"default-project","preparation_enabled":true},"options":null,"project":"fallback-project"},"expected":{"run":{"requested":true,"enabled":true,"reason":null,"entity":"default-team","project":"default-project"},"preparation":{"requested":true,"enabled":true,"reason":null,"entity":"default-team","project":"default-project"}}}"#,
+        ),
+    ] {
+        assert_eq!(route(&case["input"]), case["expected"], "{}", case["id"]);
     }
 }
 

@@ -196,3 +196,85 @@ fn effect_shell_follows_only_the_original_preparation_and_submission_over_get() 
         thread.join().unwrap();
     }
 }
+
+fn retry_state() -> Value {
+    let digest = |hex: &str| format!("sha256:{}", hex.repeat(64));
+    json!({"contract":"training-operation.v1","server":BASE,"project":"p","run_id":"r",
+        "operation":"retry","source_attempt_id":"attempt-001",
+        "plan":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r",
+            "attempt_id":"attempt-002",
+            "scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},
+            "execution":{"status":"PREPARED"},"intent_digest":digest("c"),
+            "gate_bundle_digest":digest("d")},
+        "request":{"new_attempt_id":"attempt-002"}})
+}
+
+#[test]
+fn an_action_reply_with_another_identity_is_refused() {
+    let path = "/api/actions/action-aaaaaaaaaaaaaaaa";
+    let saved = retry_state();
+    let (result, requests) = follow(
+        Some(&saved),
+        run_selection(),
+        &json!({"/api/actions/action-aaaaaaaaaaaaaaaa":saved["plan"]}),
+    );
+    assert_eq!(result.unwrap()["action"], saved["plan"]);
+    assert_eq!(requests, [path]);
+    for (key, value) in [
+        ("intent_digest", json!(format!("sha256:{}", "e".repeat(64)))),
+        (
+            "gate_bundle_digest",
+            json!(format!("sha256:{}", "e".repeat(64))),
+        ),
+        ("operation", json!("CANCEL_RUN")),
+        ("attempt_id", json!("attempt-003")),
+        ("run_id", json!("other")),
+    ] {
+        let mut action = saved["plan"].clone();
+        action[key] = value;
+        let (result, requests) = follow(
+            Some(&saved),
+            run_selection(),
+            &json!({"/api/actions/action-aaaaaaaaaaaaaaaa":action}),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "Action identity differs from the saved exact training operation"
+        );
+        assert_eq!(requests, [path]);
+    }
+}
+
+#[test]
+fn a_saved_retry_target_that_differs_from_its_plan_is_refused_without_a_read() {
+    let mut saved = retry_state();
+    saved["request"]["new_attempt_id"] = json!("attempt-003");
+    let (result, requests) = follow(Some(&saved), run_selection(), &json!({}));
+    assert_eq!(
+        result.unwrap_err(),
+        "Action target differs from the saved retry request"
+    );
+    assert!(requests.is_empty());
+}
+
+#[test]
+fn a_prepared_submission_for_another_attempt_is_refused() {
+    let preparation = format!("preparation-{}", "b".repeat(32));
+    let path = format!("/api/projects/p/experiment-preparations/{preparation}");
+    let saved = json!({"server":BASE,"project":"p","run_id":"r","config_sha256":"x",
+        "preparation":{"preparation_id":preparation}});
+    let mut responses = json!({});
+    responses[path.as_str()] = json!({"project":"p","run_id":"r","preparation_id":preparation,
+        "submission":{"project":"p","run_id":"r","attempt_id":"attempt-002",
+            "submission_id":"action-aaaaaaaaaaaaaaaa"}});
+    let selected = Selection {
+        attempt: Some("attempt-001"),
+        ..run_selection()
+    };
+    let (result, requests) = follow(Some(&saved), selected, &responses);
+    assert_eq!(
+        result.unwrap_err(),
+        "prepared Submission differs from the saved exact Run/Attempt"
+    );
+    assert_eq!(requests, [path]);
+}

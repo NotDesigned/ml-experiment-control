@@ -142,6 +142,9 @@ fn status_layers_stay_independent_across_saved_current_and_capability_paths() {
 fn foreign_evidence_and_invalid_listings_are_refused() {
     for case in [
         literal(
+            r#"{"health":{},"saved":{"server":"https://example.test/ml-expd","project":"p","run_id":"r","config_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}},"details":false,"requests":["/api/submissions/action-aaaaaaaaaaaaaaaa","/api/runs/p/r","/api/runs/p/r/attempts"],"responses":{"/api/submissions/action-aaaaaaaaaaaaaaaa":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"},"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-002","attempts":[{"attempt_id":"attempt-002","identity":"r::attempt-002","state":"RUNNING"}]}},"error":"requested exact Attempt is absent from the Run listing"}"#,
+        ),
+        literal(
             r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"details":false,"requests":["/api/runs/p/r"],"responses":{"/api/runs/p/r":{"project":"foreign","run_id":"r","evidence":{}}},"error":"status response differs from the requested exact Run/Attempt"}"#,
         ),
         literal(

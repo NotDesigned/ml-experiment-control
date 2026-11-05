@@ -385,6 +385,25 @@ fn one_post_is_sent_and_lost_or_foreign_response_never_replays_it() {
     }
 }
 #[test]
+fn a_reads_only_daemon_refuses_checkpoint_reads_before_connecting() {
+    let client = Client::new("http://127.0.0.1:1", "synthetic-token".into()).unwrap();
+    let plan = submissions::plan(Command::Checkpoints {
+        project: "demo",
+        run: "train",
+        attempt: "attempt-001",
+        checkpoint: None,
+    })
+    .unwrap();
+    let mut reads_only = health();
+    reads_only["capabilities"] = json!(["metric-records.v1", "result-collection-read.v1"]);
+    assert!(matches!(
+        submissions::execute(&client, &plan, &reads_only),
+        Err(Error::Observation(
+            "daemon has not enabled this native submission operation; no request sent"
+        ))
+    ));
+}
+#[test]
 fn disabled_or_missing_capability_prevents_mutation_before_connecting() {
     let client = Client::new("http://127.0.0.1:1", "synthetic-token".into()).unwrap();
     let plan = submissions::plan(Command::Execute {

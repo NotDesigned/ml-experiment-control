@@ -159,3 +159,126 @@ fn stable_display_history_definitions_and_final_results_are_pinned() {
     let patch = tracking::summary_patch(&display, &[], true, "fixture").unwrap();
     assert_eq!(patch.set, case["summary"].as_object().unwrap().clone());
 }
+
+fn varied(key: &str, value: Value) -> Value {
+    let mut item = point("p", "loss", Value::Null, 1);
+    item[key] = value;
+    item
+}
+fn without_axis(value: f64, checkpoint: &str) -> Value {
+    let mut item = varied("value", json!(value));
+    item["checkpoint_id"] = json!(checkpoint);
+    item.as_object_mut().unwrap().remove("step");
+    item
+}
+fn client_display(items: &[Value]) -> Value {
+    let mut projection = Projection::new();
+    for (index, item) in items.iter().enumerate() {
+        projection = projection.add(item, index as i64 + 1).unwrap();
+    }
+    projection.client_document().unwrap()
+}
+
+#[test]
+fn a_changed_observation_at_one_position_conflicts_and_publishes_no_value() {
+    let same_position = "CONFLICTING_LATEST_OBSERVATIONS";
+    for (items, error) in [
+        (
+            [varied("value", json!(4.0)), varied("value", json!(3.0))],
+            same_position,
+        ),
+        (
+            [
+                varied("status", json!("VALID")),
+                varied("status", json!("PARTIAL")),
+            ],
+            same_position,
+        ),
+        (
+            [
+                varied("checkpoint_id", json!("a")),
+                varied("checkpoint_id", json!("b")),
+            ],
+            same_position,
+        ),
+        (
+            [varied("numerator", json!(4)), varied("numerator", json!(8))],
+            same_position,
+        ),
+        (
+            [
+                varied("denominator", json!(1)),
+                varied("denominator", json!(2)),
+            ],
+            same_position,
+        ),
+        (
+            [without_axis(4.0, "a"), without_axis(3.0, "a")],
+            same_position,
+        ),
+        (
+            [without_axis(4.0, "a"), without_axis(4.0, "b")],
+            "UNORDERED_CHECKPOINTS",
+        ),
+    ] {
+        let display = client_display(&items);
+        let latest = &row(&display)["latest"];
+        assert_eq!(latest["status"], "CONFLICTING");
+        assert_eq!(latest["value"], Value::Null);
+        assert_eq!(latest["error"], error);
+        let patch =
+            tracking::summary_patch(&display, &["loss".to_owned()], true, "fixture").unwrap();
+        assert!(!patch.set.contains_key("loss"));
+        assert_eq!(patch.delete, ["loss"]);
+    }
+}
+
+#[test]
+fn a_changed_explicit_summary_at_one_position_also_conflicts() {
+    let summary = |value: f64| {
+        let mut item = varied("value", json!(value));
+        item["summary"] = json!(true);
+        item
+    };
+    let display = client_display(&[summary(4.0), summary(3.0)]);
+    assert_eq!(row(&display)["selection"], "explicit_summary");
+    assert_eq!(row(&display)["latest"]["status"], "CONFLICTING");
+    assert_eq!(row(&display)["latest"]["value"], Value::Null);
+    let patch = tracking::summary_patch(&display, &[], true, "fixture").unwrap();
+    assert!(!patch.set.contains_key("loss"));
+}
+
+#[test]
+fn identical_repeats_stay_valid() {
+    for items in [
+        [
+            point("p", "loss", Value::Null, 1),
+            point("p", "loss", Value::Null, 1),
+        ],
+        [without_axis(4.0, "a"), without_axis(4.0, "a")],
+    ] {
+        let display = client_display(&items);
+        assert_eq!(row(&display)["latest"]["status"], "VALID");
+        assert_eq!(row(&display)["latest"]["sequence"], 2);
+        let patch = tracking::summary_patch(&display, &[], true, "fixture").unwrap();
+        assert_eq!(patch.set["loss"], 4.0);
+    }
+}
+
+#[test]
+fn a_late_lower_step_never_replaces_the_latest_value() {
+    let at = |step: i64, value: f64| {
+        let mut item = point("p", "loss", Value::Null, step);
+        item["value"] = json!(value);
+        item
+    };
+    let display = client_display(&[at(3, 2.0), at(1, 4.0), at(2, 3.0)]);
+    let latest = &row(&display)["latest"];
+    assert_eq!(latest["status"], "VALID");
+    assert_eq!(latest["value"], 2.0);
+    assert_eq!(latest["step"], 3);
+    assert_eq!(latest["sequence"], 1);
+    assert_eq!(row(&display)["positions"]["step"], json!([3, 1]));
+    let patch = tracking::summary_patch(&display, &[], true, "fixture").unwrap();
+    assert_eq!(patch.set["loss"], 2.0);
+}

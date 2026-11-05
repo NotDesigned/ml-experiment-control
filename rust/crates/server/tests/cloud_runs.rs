@@ -779,6 +779,13 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             .iter()
             .any(|v| v == "native-cloud-submissions.v1")
     );
+    assert!(
+        health["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "checkpoint-record-read.v1")
+    );
     let plan = ml_exp_client::submissions::plan(ml_exp_client::submissions::Command::Create {
         project: "demo",
         request: &request,
