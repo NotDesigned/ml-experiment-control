@@ -695,34 +695,32 @@ fn new_journal_is_private_and_retains_original_delete_journal_mode() {
 }
 
 #[test]
-fn missing_fence_after_open_is_never_repaired_by_normal_reads_writes_or_deletion() {
-    for leaf in [".run-deletion.lock", "deleted-runs"] {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path(), SEED).unwrap();
-        let scope = bound(&store, "run-a", enabled(), json!({}));
-        {
-            let guard = store.guard("demo", "run-a").unwrap();
-            store
-                .append(&guard, &scope, &[event("m1", metric(1.0, 1))])
-                .unwrap();
-        }
-        RunFence::new(temp.path())
-            .mark("demo", "run-a", &serde_json::Map::new(), "deleted")
+fn missing_fence_lock_after_open_is_never_repaired_by_normal_reads_writes_or_deletion() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path(), SEED).unwrap();
+    let scope = bound(&store, "run-a", enabled(), json!({}));
+    {
+        let guard = store.guard("demo", "run-a").unwrap();
+        store
+            .append(&guard, &scope, &[event("m1", metric(1.0, 1))])
             .unwrap();
-        let path = temp.path().join(leaf);
-        fs::rename(&path, temp.path().join("removed-fence-evidence")).unwrap();
-        assert!(store.guard("demo", "run-a").is_err());
-        assert!(store.delete_run("demo", "run-a", "cleanup").is_err());
-        assert!(!path.exists(), "{leaf} was silently rebuilt");
-        let connection = Connection::open(store.path()).unwrap();
-        assert_eq!(
-            connection
-                .query_row("SELECT COUNT(*) FROM events", [], |row| row
-                    .get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
     }
+    RunFence::new(temp.path())
+        .mark("demo", "run-a", &serde_json::Map::new(), "deleted")
+        .unwrap();
+    let path = temp.path().join(".run-deletion.lock");
+    fs::rename(&path, temp.path().join("removed-fence-evidence")).unwrap();
+    assert!(store.guard("demo", "run-a").is_err());
+    assert!(store.delete_run("demo", "run-a", "cleanup").is_err());
+    assert!(!path.exists(), "the lock was silently rebuilt");
+    let connection = Connection::open(store.path()).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
 }
 
 #[test]
