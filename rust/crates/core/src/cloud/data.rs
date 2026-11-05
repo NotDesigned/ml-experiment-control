@@ -186,9 +186,9 @@ mod tests {
                 .iter()
                 .any(|s| s == "cloud-launch" || s == "--sync")
         );
-        assert_eq!(
-            job,
-            materialization_job(&runtime, &config, &channel, &storage, &"3".repeat(32)).unwrap()
+        assert!(
+            job == materialization_job(&runtime, &config, &channel, &storage, &"3".repeat(32))
+                .unwrap()
         );
         assert_ne!(
             job.submission_token,

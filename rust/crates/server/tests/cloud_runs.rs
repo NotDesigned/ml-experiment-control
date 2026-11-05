@@ -458,7 +458,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             "/api/projects/demo/experiment-preparations/preparation-{}",
             "9".repeat(32)
         )),
-        Err(ml_exp_client::Error::Http { status: 404, .. })
+        Err(ml_exp_client::Error::Http(error)) if error.status == 404
     ));
     assert_eq!(datasets["datasets"][0]["asset_id"], dataset.asset_id);
     assert_eq!(listing(), before);

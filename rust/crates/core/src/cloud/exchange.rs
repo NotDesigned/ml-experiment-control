@@ -141,7 +141,7 @@ mod sync_retry_tests {
             confirmation: format!("RETRY SYNC {action} {id} dlc-original"),
         };
         let child = request.job(action, &id, &parent).unwrap();
-        assert_eq!(child, request.job(action, &id, &parent).unwrap());
+        assert!(child == request.job(action, &id, &parent).unwrap());
         let original = Sync {
             request_id: id.clone(),
             confirmation: format!("SYNC {action}"),
