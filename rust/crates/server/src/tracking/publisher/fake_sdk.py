@@ -1,7 +1,6 @@
 """Offline test double for SDK transport; never contacts W&B."""
 import json
 import os
-from collections.abc import MutableMapping
 
 
 def read():
@@ -19,7 +18,7 @@ class Settings:
         pass
 
 
-class Summary(MutableMapping):
+class Summary:
     def __init__(self, identity):
         self.identity = identity
 
@@ -36,11 +35,11 @@ class Summary(MutableMapping):
         del data["runs"][self.identity]["summary"][key]
         write(data)
 
-    def __iter__(self):
-        return iter(read()["runs"][self.identity]["summary"])
+    def get(self, key, default=None):
+        return read()["runs"][self.identity]["summary"].get(key, default)
 
-    def __len__(self):
-        return len(read()["runs"][self.identity]["summary"])
+    def keys(self):
+        return read()["runs"][self.identity]["summary"].keys()
 
 
 class Handle:
@@ -73,15 +72,23 @@ class Handle:
         run = read()["runs"][self.id]
         return max((row["_step"] for row in run['history'] + run['pending']), default=-1) + 1
 
-    def scan_history(self, keys, min_step, max_step=None, **kwargs):
+    def scan_history(self, min_step, keys=None, max_step=None, **kwargs):
         data = read()
         run = data["runs"][self.id]
         if not data["hidden"]:
             run["history"].extend(run["pending"])
             run["pending"] = []
             write(data)
-        return [{key: row[key] for key in keys} for row in run["history"]
-                if min_step <= row["_step"] and (max_step is None or row["_step"] < max_step)]
+        rows = [({key: row[key] for key in keys} if keys else row.copy())
+                for row in run["history"] if min_step <= row["_step"]
+                and (max_step is None or row["_step"] < max_step)]
+        if data.get("repeat_pages"):
+            rows += [row.copy() for row in rows]
+        if data.get("conflicting_page") and rows:
+            rows += [{**rows[0], "curves/loss": -9}]
+        if data.get("duplicate_sequence") and rows:
+            rows += [{**rows[0], "_step": self.lastHistoryStep + 1}]
+        return rows
 
     def define_metric(self, name, **options):
         data = read()
