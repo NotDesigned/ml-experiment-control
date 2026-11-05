@@ -3,7 +3,8 @@
 A client uploads code/data and describes a Run. The server matches an executor,
 prepares its immutable Runtime and required backend data, freezes the Run and
 prepares submission checks. The client needs no Docker, SSH or cloud credentials.
-GPU execution still requires explicit `--execute` and a GPU-hour budget.
+GPU execution still requires an explicit submission operation. A GPU-hour budget
+can be supplied when preparing a submission.
 
 ## What executors declare
 
@@ -29,7 +30,8 @@ separately: old images do not gain new behavior from a server upgrade.
 PAI DLC is an opt-in single-node adapter; see [PAI configuration and limits](pai.md).
 It supports quota queries, approved persistent Dataset mounts and worker
 transfers. Uploaded assets require configured personal OSS storage plus CPFS
-caching; CPU result recovery remains unavailable. Native OSS filesystem mounts
+caching; an optional CPU collector supports data preparation and result sync.
+Native OSS filesystem mounts
 are provider-blocked and stay disabled.
 
 The existing adapters declare:
@@ -38,7 +40,7 @@ The existing adapters declare:
 |---|---|---|---|
 | Runtime | OCI → Apptainer SIF | OCI | OCI |
 | Allocation | Flexible, bounded by configured capacity | Exact GPU count of fixed worker spec | Flexible within configured quota/capacity; single node, 1–8 GPUs |
-| Uploaded input | Parts over SSH to shared storage | CCR data image → zero-GPU debug ACP → NAS | Approved OSS asset → inside-job CPFS cache |
+| Uploaded input | Parts over SSH to shared storage | CCR data image → zero-GPU debug ACP → NAS | Approved OSS asset → zero-GPU CPU preparation or inside-job CPFS cache |
 | Script download | Gateway before allocation when relay is configured | Zero-GPU debug ACP before training when CPU preparation is configured | Inside allocated job |
 | Queue/exit/preemption reasons | Supported | Not declared as reliable structured fields | Queue blockers when available; exit/preemption not guaranteed |
 | Walltime | Scheduler and worker | Worker | Scheduler and worker; 24-hour cap |
@@ -52,6 +54,12 @@ archive transfer. This server operation does not require the generic adapter
 `outputs.offline_export` hook. Query or start it with `ml-exp run collect`; see
 [result recovery](recovery.md). It preserves the original scheduler outcome and
 does not rerun training or prepare input data.
+
+Native cloud Runs use `ml-exp run sync` with the original Submission and a saved
+request ID to deliver retained logs, metrics, checkpoints and results. The
+optional PAI collector reads the same personal CPFS outputs with no GPUs. An
+explicit, bounded retry can recover a confirmed failed CPU sync without running
+training; see [CPU sync recovery](recovery.md#native-cpu-sync-recovery).
 
 A separate resource endpoint may expose backend quota/catalogue data. That is
 not an admission guarantee. Queue ETA remains null without reliable backend data.

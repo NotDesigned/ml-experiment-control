@@ -35,7 +35,7 @@ backend shares the same files or authorize access to another storage namespace.
 | --- | --- | --- |
 | Slurm | Client → bounded API part buffer → SSH receiver → shared storage | Gateway verifies archive/files; compute reuses verified shared data |
 | SenseCore | Client → bounded API part buffer → CCR data-image layer → debug CPU ACP → NAS | CPU receipt must establish NAS readiness; training rehashes cached files |
-| PAI DLC | Client → bounded API part buffer → approved personal OSS archive → CPFS cache | First fill and verification run inside the allocated DLC job |
+| PAI DLC | Client → bounded API part buffer → approved personal OSS archive → CPFS cache | Reuse a READY Runtime in a zero-GPU CPU job, or fill inside the training job |
 
 The API's global **1 GiB buffer** accounts for in-flight multipart bytes,
 sidecars and filesystem blocks. It seals a part and removes it only after a
@@ -192,12 +192,39 @@ not zero-copy registration. Upload snapshots remain observable during validation
 repeat completion reconciles the same object. Changed external objects fail hash
 checks. Unknown initiations/completions require inspection, never blind overwrite.
 
-DLC mounts approved personal CPFS at `/mnt/workspace`. Its first cache fill uses
-the authenticated exact-Attempt API endpoint to relay bounded OSS chunks into a
-verified CPFS cache. This is inside the allocated DLC job, not a pre-job CPU copy.
+DLC mounts approved personal CPFS at `/mnt/workspace`. A first cache fill inside
+training uses the authenticated exact-Attempt API endpoint for bounded OSS chunks.
+The explicit CPU preparation below avoids consuming the training allocation for
+this work and makes the verified cache reusable before the Run is frozen.
 Dataset files remain outside outputs. Registration returns an ordinary ML-Expd
 asset ID; it does not create a native PAI Dataset or mount OSS as a filesystem.
 **Native OSS filesystem mounts remain disabled.**
+
+For native PAI, prepare the shared cache before training with an existing READY
+Runtime. Preserve one request ID locally before the first call:
+
+```bash
+ml-exp data publish --project study --executor pai-h200 --asset asset.ACTUAL_HASH \
+  --runtime runtime.ACTUAL_HASH --request-id YOUR_32_HEX_REQUEST \
+  --confirmation 'PUBLISH asset.ACTUAL_HASH'
+ml-exp data show --project study --executor pai-h200 --asset asset.ACTUAL_HASH
+```
+
+This runs 0 GPUs, 2 CPUs and 4 GiB for at most 3600 seconds. The immutable
+Runtime supplies its existing worker; no image build or training runs. For
+worker17 compatibility a small Python launcher invokes `data-import
+--bundle-output` to verify the OSS parts in the CPU container, then `data-copy`
+to extract and verify the personal CPFS tree. Its temporary archive and private
+configuration are removed on exit; dataset bytes never stage on the API disk.
+Failure logs contain stage codes, not signed URLs or scoped credentials.
+
+The complete CPU command, channels, Runtime and request are persisted before
+provider effects. Repeat the same publish call to observe the same CPU job,
+including after an API restart or URL/launcher change. An uncertain or failed
+copy is not automatically replaced. `data show` is a local read. Only an exact
+complete READY receipt removes redundant dataset imports from later training
+packages; the full file inventory and worker hash checks remain. Experiment
+preparation uses the same CPU path when a PAI collector is configured.
 
 `GET /api/projects/P/assets/ASSET/download` returns a private five-minute OSS GET
 ticket. The client downloads directly, checks archive/file hashes and saves

@@ -27,6 +27,7 @@ fn service(api: &read_api::Api) -> Result<Arc<crate::cloud_runs::Service>, read_
 }
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/api/runs/{project}/{run}/preparation", get(discover))
         .route(
             "/api/projects/{project}/experiment-preparations",
             post(prepare),
@@ -40,6 +41,44 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             post(advance),
         )
         .layer(DefaultBodyLimit::max(128 * 1024))
+}
+async fn discover(
+    State(state): State<Arc<AppState>>,
+    Path((project, run)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    if read_api::no_parameters(query.as_deref()).is_err() {
+        return read_http::failure(invalid());
+    }
+    read_http::execute(state, Access::Read, move |api, now| {
+        if let Some(cloud) = api.cloud() {
+            if let Some(value) = cloud
+                .experiment_for_run(&project, &run)
+                .map_err(crate::cloud_runs::failure)?
+            {
+                return Ok(value);
+            }
+            if cloud
+                .handles_run(&project, &run)
+                .map_err(crate::cloud_runs::failure)?
+            {
+                return cloud
+                    .for_run(&project, &run, &timestamp(now)?)
+                    .map_err(crate::cloud_runs::failure);
+            }
+        }
+        api.submissions()
+            .ok_or_else(invalid)?
+            .for_run(&project, &run, &timestamp(now)?)
+            .map_err(crate::submissions::http::failure)
+    })
+    .await
+}
+fn timestamp(now: f64) -> Result<String, read_api::Error> {
+    time::OffsetDateTime::from_unix_timestamp(now as i64)
+        .map_err(|_| invalid())?
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|_| invalid())
 }
 async fn prepare(
     State(state): State<Arc<AppState>>,

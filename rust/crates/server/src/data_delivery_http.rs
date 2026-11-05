@@ -137,6 +137,8 @@ async fn publish(
     struct Request {
         request_id: String,
         confirmation: String,
+        #[serde(default)]
+        runtime_id: Option<String>,
     }
     if read_api::no_parameters(query.as_deref()).is_err() {
         return read_http::failure(invalid());
@@ -154,7 +156,13 @@ async fn publish(
     read_http::execute(state, Access::Write, move |api, _| {
         api.cloud()
             .ok_or_else(invalid)?
-            .publish_dataset(&project, &executor, &asset, &request.request_id)
+            .publish_dataset(
+                &project,
+                &executor,
+                &asset,
+                &request.request_id,
+                request.runtime_id.as_deref(),
+            )
             .map_err(crate::cloud_runs::failure)
     })
     .await

@@ -141,7 +141,11 @@ impl Service {
         Ok(())
     }
     fn setup_load(&self, project: &str, id: &str) -> cloud::Result<Saved> {
-        let saved: Saved = serde_json::from_value(read(&self.slots, &name(id)?)?)
+        let slot = name(id)?;
+        if !self.slots.entry_exists(OsStr::new(&slot)).map_err(io)? {
+            return Err(missing());
+        }
+        let saved: Saved = serde_json::from_value(read(&self.slots, &slot)?)
             .map_err(|_| cloud::Error::evidence())?;
         if saved.project != project
             || saved
@@ -253,6 +257,32 @@ impl Service {
     pub fn experiment_status(&self, project: &str, id: &str) -> cloud::Result<Value> {
         self.setup_view(&self.setup_load(project, id)?)
     }
+    /// Discover retained preparation slots before a Run or Action exists.
+    pub fn experiment_for_run(&self, project: &str, run: &str) -> cloud::Result<Option<Value>> {
+        ml_exp_core::identity::validate_id(project)
+            .and_then(|_| ml_exp_core::identity::validate_id(run))
+            .map_err(|_| cloud::Error::configuration())?;
+        self.project_hash(project)?;
+        let mut found = None;
+        for slot in self.slots.entry_names_limited(32768).map_err(io)? {
+            let Some(id) = slot.to_str().and_then(|s| s.strip_suffix(".setup.json")) else {
+                continue;
+            };
+            let value = read(&self.slots, &name(id)?)?;
+            if value["project"] != project || value["request"]["run"]["run_id"] != run {
+                continue;
+            }
+            if found.is_some() {
+                return Err(cloud::Error {
+                    code: "PREPARATION_ID_REQUIRED".into(),
+                    http_status: Some(409),
+                    uncertain: false,
+                });
+            }
+            found = Some(self.experiment_status(project, id)?);
+        }
+        Ok(found)
+    }
     pub fn experiment_continue(
         self: &Arc<Self>,
         project: &str,
@@ -308,20 +338,25 @@ impl Service {
             }
         }
         let submission = if self.accepts(&run.executor) {
-            if self.backends[&run.executor].data_copier.is_some() {
+            let backend = &self.backends[&run.executor];
+            let pai = matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_));
+            if backend.data_copier.is_some() || pai && backend.collector.is_some() {
                 for input in &run.data {
-                    if self
+                    if let Some(data_saved) = self
                         .data_saved(project, &run.executor, &input.asset_id)?
-                        .is_some_and(|s| s.state.ready.is_none())
+                        .filter(|s| s.state.ready.is_none())
                     {
-                        let request_id = canonical::digest(&json!([id, &input.asset_id]))
-                            .map_err(|_| cloud::Error::evidence())?[..32]
-                            .to_owned();
+                        let request_id = data_saved.copy_request_id.unwrap_or(
+                            canonical::digest(&json!([id, &input.asset_id]))
+                                .map_err(|_| cloud::Error::evidence())?[..32]
+                                .to_owned(),
+                        );
                         let data = self.publish_dataset(
                             project,
                             &run.executor,
                             &input.asset_id,
                             &request_id,
+                            pai.then_some(run.runtime_id.as_str()),
                         )?;
                         if data["ready"].is_null() {
                             let mut view = self.setup_view(&saved)?;

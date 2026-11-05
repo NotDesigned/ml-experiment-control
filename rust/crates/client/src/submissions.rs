@@ -15,6 +15,19 @@ pub enum Command<'a> {
         request_id: &'a str,
         confirmation: &'a str,
     },
+    SyncStatus {
+        submission: &'a str,
+        request_id: &'a str,
+    },
+    SyncRetry {
+        submission: &'a str,
+        request_id: &'a str,
+        request: ml_exp_core::cloud::exchange::SyncRetry,
+    },
+    Discovery {
+        project: &'a str,
+        run: &'a str,
+    },
     Tracking {
         project: &'a str,
         run: &'a str,
@@ -72,6 +85,15 @@ pub enum Command<'a> {
     },
 }
 enum Expected {
+    Discovery {
+        project: String,
+        run: String,
+    },
+    Synchronization {
+        submission: String,
+        request_id: String,
+        failed_job: Option<String>,
+    },
     Renewal {
         original: String,
         request_id: String,
@@ -135,6 +157,65 @@ fn reason(value: &str) -> Result<(), Error> {
     }
 }
 pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
+    if let Command::Discovery { project, run } = &command {
+        identity::validate_id(project)
+            .and_then(|_| identity::validate_id(run))
+            .map_err(|_| invalid())?;
+        return Ok(Plan {
+            path: format!("/api/runs/{project}/{run}/preparation"),
+            body: None,
+            expected: Expected::Discovery {
+                project: (*project).into(),
+                run: (*run).into(),
+            },
+            executes: false,
+            refreshes: false,
+            checkpoint: false,
+        });
+    }
+    if let Command::SyncStatus {
+        submission,
+        request_id,
+    }
+    | Command::SyncRetry {
+        submission,
+        request_id,
+        ..
+    } = &command
+    {
+        ml_exp_core::cloud::exchange::Sync {
+            request_id: (*request_id).into(),
+            confirmation: format!("SYNC {submission}"),
+        }
+        .validate(submission)
+        .map_err(|_| invalid())?;
+        let retry = match &command {
+            Command::SyncRetry { request, .. } => {
+                request
+                    .validate(submission, request_id)
+                    .map_err(|_| invalid())?;
+                Some(request)
+            }
+            _ => None,
+        };
+        return Ok(Plan {
+            path: format!(
+                "/api/submissions/{submission}/sync/{request_id}{}",
+                if retry.is_some() { "/retry" } else { "" }
+            ),
+            body: retry
+                .map(|r| serde_json::to_vec(r).map_err(|_| invalid()))
+                .transpose()?,
+            expected: Expected::Synchronization {
+                submission: (*submission).into(),
+                request_id: (*request_id).into(),
+                failed_job: retry.map(|r| r.expected_failed_job_id.clone()),
+            },
+            executes: retry.is_some(),
+            refreshes: false,
+            checkpoint: false,
+        });
+    }
     if let Command::Renew {
         submission,
         request_id,
@@ -363,6 +444,46 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
     })
 }
 pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
+    if let Expected::Discovery { project, run } = &plan.expected {
+        if !value["preparation_id"].is_null() {
+            let id = value["preparation_id"].as_str().ok_or(Error::Response)?;
+            if value["project"] != *project
+                || value["run_id"] != *run
+                || !id.strip_prefix("preparation-").is_some_and(|s| {
+                    s.len() == 32
+                        && s.bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                })
+                || value["confirmation"] != format!("PREPARE {id}")
+                || value["training_authorized"] != false
+                || value["scheduler_submitted"] != false
+            {
+                return Err(Error::Response);
+            }
+            return Ok(value);
+        }
+    }
+    if let Expected::Synchronization {
+        submission,
+        request_id,
+        failed_job,
+    } = &plan.expected
+    {
+        let sync = &value["synchronization"];
+        if value["submission_id"] != *submission
+            || sync["request_id"] != *request_id
+            || sync["resources"] != json!({"gpus":0,"cpus":2,"memory_gb":4})
+            || sync["max_time_seconds"] != 600
+            || sync["training_replayed"] != false
+            || sync["retry_limit"] != 1
+            || failed_job
+                .as_ref()
+                .is_some_and(|id| sync["retry"]["expected_failed_job_id"] != *id)
+        {
+            return Err(Error::Response);
+        }
+        return Ok(value);
+    }
     if let Expected::Tracking { project, run } = &plan.expected {
         if value["project"] != *project
             || value["run_id"] != *run
@@ -567,6 +688,10 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
         Expected::Run {
             project: expected,
             run: expected_run,
+        }
+        | Expected::Discovery {
+            project: expected,
+            run: expected_run,
         } if project != expected || run != expected_run => return Err(Error::Response),
         Expected::Submission(expected) if id != expected => return Err(Error::Response),
         _ => {}
@@ -605,7 +730,9 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
         } else {
             "native-tracking-status.v1"
         }
-    } else if plan.path.ends_with("/sync") {
+    } else if plan.path.ends_with("/sync")
+        || matches!(plan.expected, Expected::Synchronization { .. })
+    {
         "native-cloud-sync.v1"
     } else if plan.path.ends_with("/history") {
         "native-metric-history.v1"

@@ -178,12 +178,33 @@ pub(crate) fn extend(document: &mut Value) {
         )),
     );
     insert(
+        "/api/runs/{project}/{run}/preparation",
+        "get",
+        "Discover the retained experiment preparation before a Run exists; fall back to an existing submission. Multiple preparations require the saved exact ID. No provider or write operation.",
+        None,
+    );
+    insert(
+        "/api/submissions/{action}/sync/{request}",
+        "get",
+        "Read retained original/recovery CPU synchronization evidence only; no job creation, refresh or replay.",
+        None,
+    );
+    insert(
+        "/api/submissions/{action}/sync/{request}/retry",
+        "post",
+        "One explicit deterministic CPU recovery child under the original sync request; requires exact FAILED original job and terminal training evidence, retains all original ledgers. Repeated or uncertain replies observe the same child.",
+        Some(object(
+            &["expected_failed_job_id", "confirmation"],
+            json!({"expected_failed_job_id":{"type":"string"},"confirmation":{"type":"string"}}),
+        )),
+    );
+    insert(
         "/api/projects/{project}/datasets/{executor}/{asset}/publish",
         "post",
-        "Build/reconcile one data image and copy on a configured debug CPU pool before training",
+        "Prepare data on backend storage before training. PAI uses an existing READY runtime_id, 0GPU/2CPU/4GiB/3600s, verified OSS parts and personal CPFS; SenseCore retains its data-image/debug CPU copy. Never reports READY without a full verified receipt.",
         Some(object(
             &["request_id", "confirmation"],
-            json!({"request_id":{"type":"string"},"confirmation":{"type":"string"}}),
+            json!({"request_id":{"type":"string"},"confirmation":{"type":"string"},"runtime_id":{"type":["string","null"]}}),
         )),
     );
     insert(

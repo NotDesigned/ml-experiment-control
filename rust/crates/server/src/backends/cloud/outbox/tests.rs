@@ -84,6 +84,109 @@ fn setup() -> (Job, Profile, Value) {
     (job, Profile::Pai(profile), row)
 }
 #[test]
+fn sync_recovery_lost_reply_keeps_failed_parent_and_cannot_create_a_second_child() {
+    let temp = tempfile::tempdir().unwrap();
+    Outbox::initialize(temp.path()).unwrap();
+    let outbox = Outbox::open(temp.path()).unwrap();
+    let (parent, profile, mut row) = setup();
+    let allocation = Allocation::Guaranteed;
+    let flag = AtomicBool::new(false);
+    let request_id = "a".repeat(32);
+    let action = "action-0123456789abcdef";
+    let original = ml_exp_core::cloud::exchange::Sync {
+        request_id: request_id.clone(),
+        confirmation: format!("SYNC {action}"),
+    }
+    .job(&parent)
+    .unwrap();
+    outbox
+        .prepare(&profile, &original, allocation, &|| Ok(()))
+        .unwrap();
+    let lock = outbox.lock().unwrap();
+    let mut entry = outbox.load(&Outbox::slot(&original).unwrap()).unwrap();
+    entry.started = true;
+    entry.handle = Some(Handle {
+        profile_sha256: profile.digest().unwrap(),
+        request_sha256: job_digest(&original).unwrap(),
+        job_id: "dlc-failed".into(),
+        provider_uid: None,
+    });
+    entry.observation = Some(JobObservation {
+        job_id: "dlc-failed".into(),
+        provider_state: "Failed".into(),
+        state: ml_exp_core::state::RunState::Failed,
+        queue: None,
+    });
+    outbox.save(&entry, &lock).unwrap();
+    drop(lock);
+    let before = outbox
+        .directory
+        .read_regular(
+            OsStr::new(&Outbox::slot(&original).unwrap()),
+            2 * 1024 * 1024,
+        )
+        .unwrap();
+    let retry = ml_exp_core::cloud::exchange::SyncRetry {
+        expected_failed_job_id: "dlc-failed".into(),
+        confirmation: format!("RETRY SYNC {action} {request_id} dlc-failed"),
+    };
+    let child = retry.job(action, &request_id, &parent).unwrap();
+    let Profile::Pai(p) = &profile else { panic!() };
+    row["DisplayName"] = json!(child.name().unwrap());
+    row["Settings"]["Tags"] = json!(child.tags(&p.scope().unwrap()).unwrap());
+    let state = Arc::new(Mutex::new(State::default()));
+    let adapter = Adapter::new(
+        profile.clone(),
+        Fake {
+            state: state.clone(),
+            row,
+        },
+    )
+    .unwrap();
+    for _ in 0..2 {
+        let prepared = outbox
+            .prepare(&profile, &child, allocation, &|| Ok(()))
+            .unwrap();
+        outbox
+            .execute(
+                &adapter,
+                &child,
+                allocation,
+                prepared["confirmation"].as_str().unwrap(),
+                &|| Ok(()),
+                &flag,
+            )
+            .unwrap();
+    }
+    assert_eq!(state.lock().unwrap().creates, 1);
+    drop(outbox);
+    let outbox = Outbox::open(temp.path()).unwrap();
+    assert_eq!(
+        outbox
+            .reconcile(&adapter, &child, allocation, &|| Ok(()), &flag)
+            .unwrap()["phase"],
+        "RECONCILE_REQUIRED"
+    );
+    state.lock().unwrap().visible = true;
+    assert_eq!(
+        outbox
+            .reconcile(&adapter, &child, allocation, &|| Ok(()), &flag)
+            .unwrap()["phase"],
+        "OWNED"
+    );
+    assert_eq!(state.lock().unwrap().creates, 1);
+    assert_eq!(
+        outbox
+            .directory
+            .read_regular(
+                OsStr::new(&Outbox::slot(&original).unwrap()),
+                2 * 1024 * 1024
+            )
+            .unwrap(),
+        before
+    );
+}
+#[test]
 fn lost_create_and_stop_replies_restart_absence_and_foreign_identity_never_replay() {
     let temp = tempfile::tempdir().unwrap();
     Outbox::initialize(temp.path()).unwrap();

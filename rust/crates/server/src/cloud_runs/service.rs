@@ -524,6 +524,26 @@ pub(crate) fn failure(error: cloud::Error) -> read_api::Error {
                 "ARTIFACT_NOT_PUBLISHED",
                 "the submission exists but its result archive has not been published",
             ),
+            ("SYNC_RETRY_NOT_ELIGIBLE", _) => (
+                409,
+                "SYNC_RETRY_NOT_ELIGIBLE",
+                "CPU recovery requires the exact failed synchronization job and terminal training evidence",
+            ),
+            ("DATA_COPY_IDENTITY_CONFLICT", _) => (
+                409,
+                "DATA_COPY_IDENTITY_CONFLICT",
+                "observe the original dataset copy request and Runtime; another copy was not created",
+            ),
+            ("DATA_COPY_RUNTIME_REQUIRED", _) => (
+                422,
+                "DATA_COPY_RUNTIME_REQUIRED",
+                "PAI data publication requires an existing READY Runtime",
+            ),
+            ("PREPARATION_ID_REQUIRED", _) => (
+                409,
+                "PREPARATION_ID_REQUIRED",
+                "multiple preparations refer to this Run; query the exact saved preparation identity",
+            ),
             (_, Some(422)) => (
                 422,
                 "INVALID_CLOUD_REQUEST",
@@ -576,6 +596,7 @@ pub(super) mod builds;
 mod exchange;
 mod observation;
 mod retry;
+mod synchronization;
 
 mod datasets;
 mod oss_import;
@@ -585,6 +606,7 @@ pub(super) mod debug;
 mod capacity;
 mod data_delivery;
 mod maintenance;
+mod materialization;
 mod preparations;
 mod renewal;
 mod script_preparation;

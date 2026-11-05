@@ -9,7 +9,7 @@ use ml_exp_core::{
     },
 };
 impl Service {
-    fn data_channel(
+    pub(super) fn data_channel(
         &self,
         project: &str,
         executor: &str,
@@ -78,7 +78,9 @@ impl Service {
         receipt
             .bind(project, &definition.target()?, &definition.data_root()?)
             .map_err(|_| cloud::Error::evidence())?;
-        if !saved.image_started || saved.image.is_none() || saved.copy_request_id.is_none() {
+        if saved.copy_request_id.is_none()
+            || saved.copy_runtime.is_none() && (!saved.image_started || saved.image.is_none())
+        {
             return Err(cloud::Error::evidence());
         }
         saved.state = saved
@@ -225,6 +227,7 @@ impl Service {
         executor: &str,
         asset: &str,
         request_id: &str,
+        runtime_id: Option<&str>,
     ) -> cloud::Result<Value> {
         let effect = self
             .slots
@@ -243,10 +246,6 @@ impl Service {
             .backends
             .get(executor)
             .ok_or_else(cloud::Error::configuration)?;
-        let copier = backend
-            .data_copier
-            .as_ref()
-            .ok_or_else(cloud::Error::configuration)?;
         let mut saved = self
             .data_saved(project, executor, asset)?
             .filter(|s| s.archive_verified)
@@ -254,6 +253,16 @@ impl Service {
         if saved.state.ready.is_some() {
             return Ok(Self::data_view(saved));
         }
+        if matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_)) {
+            return self.materialize_pai(project, executor, asset, request_id, runtime_id);
+        }
+        if runtime_id.is_some() {
+            return Err(cloud::Error::configuration());
+        }
+        let copier = backend
+            .data_copier
+            .as_ref()
+            .ok_or_else(cloud::Error::configuration)?;
         if saved.image_recipe.is_none() {
             let builds = self
                 .builds
