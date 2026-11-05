@@ -6,8 +6,7 @@ pub fn repair(
     runtime: Runtime,
     scope: &str,
 ) -> Result<serde_json::Value> {
-    let leader = service.publisher_leader()?;
-    service.validate_publisher_leader(&leader)?;
+    let _leader = service.publisher_leader()?;
     let parsed = Scope::parse(scope).map_err(why!(Error::Identity))?;
     let store = service.tracking_journal(&parsed.project, &parsed.run)?;
     let guard = store
@@ -105,7 +104,6 @@ pub fn repair(
         remote_confirmed: false,
     });
     let (at, _) = crate::projects::transition_context().map_err(why!(Error::Storage))?;
-    service.validate_publisher_leader(&leader)?;
     save(
         &store,
         &guard,

@@ -15,7 +15,7 @@ impl Service {
                 uncertain: false,
             });
         }
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let root = self.authority(project, &request.run_id)?;
         let exists = root.entry_exists(OsStr::new(&request.run_id)).map_err(io)?;
         let route = if exists {
@@ -89,7 +89,6 @@ impl Service {
         write(&attempt, "attempt.json", &docs.attempt)?;
         write(&attempt, "status.json", &docs.status)?;
         self.authority(project, &request.run_id)?;
-        lock.validate()?;
         let current = self.documents(project, &request, &route, now, selected.as_ref())?;
         if current.run != docs.run || current.attempt != docs.attempt {
             return Err(cloud::Error::evidence());

@@ -68,7 +68,7 @@ impl Service {
             definition
         };
         {
-            let lock = self.lock()?;
+            let _lock = self.lock()?;
             let mut saved = self
                 .data_saved(project, executor, &asset)?
                 .ok_or_else(missing)?;
@@ -81,7 +81,6 @@ impl Service {
                 return Err(cloud::Error::evidence());
             }
             saved.import_source = Some(request.clone());
-            lock.validate()?;
             self.slots
                 .replace_regular(
                     OsStr::new(&Self::data_name(project, executor, &asset)?),

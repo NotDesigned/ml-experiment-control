@@ -8,15 +8,6 @@ impl Service {
         if workspace != self.workspace {
             return Err(Error::Authority);
         }
-        self.directory
-            .verify_private_parent()
-            .map_err(|_| Error::Authority)?;
-        self.slots
-            .verify_private_parent()
-            .map_err(|_| Error::Authority)?;
-        self.directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.lock_anchor)
-            .map_err(|_| Error::Authority)?;
         self.fence
             .existing_observation_guard(project, run)
             .map_err(why!(Error::Authority))?;

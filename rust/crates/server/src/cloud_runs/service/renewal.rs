@@ -9,7 +9,7 @@ impl Service {
         request
             .validate(action)
             .map_err(why!(cloud::Error::configuration()))?;
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let original = self.load(action)?;
         let b = &original.execution.binding;
         let latest = self
@@ -86,7 +86,6 @@ impl Service {
             .map_err(op)?;
         crate::renewal::link(&self.slots, action, id, &request).map_err(io)?;
         if latest.plan["action_id"] == action {
-            lock.validate()?;
             self.slots
                 .replace_regular(
                     OsStr::new(&Self::attempt_slot(&b.project, &b.run_id, &b.attempt_id)?),

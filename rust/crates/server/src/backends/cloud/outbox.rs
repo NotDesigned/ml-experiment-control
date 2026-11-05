@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     ffi::OsStr,
-    fs::File,
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -54,27 +53,9 @@ impl From<&Error> for ErrorDocument {
 }
 pub struct Outbox {
     directory: Directory,
-    anchor: File,
 }
-struct Guard<'a> {
-    outbox: &'a Outbox,
-    file: FileLock,
-}
-impl Guard<'_> {
-    fn validate(&self) -> Result<()> {
-        self.outbox
-            .directory
-            .verify_private_parent()
-            .map_err(|_| Error::evidence())?;
-        for file in [&*self.file, &self.outbox.anchor] {
-            self.outbox
-                .directory
-                .validate_regular_entry(OsStr::new(LOCK), file)
-                .map_err(|_| Error::evidence())?;
-        }
-        Ok(())
-    }
-}
+/// Proof that the caller holds `.cloud-effects.lock`.
+type Guard = FileLock;
 impl Outbox {
     pub fn initialize(path: &Path) -> Result<()> {
         let directory = Directory::open(path, false).map_err(why!(Error::configuration()))?;
@@ -88,7 +69,7 @@ impl Outbox {
         {
             return Err(Error::configuration());
         }
-        let lock = directory
+        let _lock = directory
             .lock(
                 OsStr::new(LOCK),
                 LockOptions {
@@ -98,9 +79,6 @@ impl Outbox {
                 },
             )
             .map_err(why!(Error::configuration()))?;
-        directory
-            .validate_regular_entry(OsStr::new(LOCK), &lock)
-            .map_err(|_| Error::configuration())?;
         directory
             .publish_new(
                 OsStr::new(MARKER),
@@ -123,20 +101,13 @@ impl Outbox {
         {
             return Err(Error::configuration());
         }
-        let anchor = directory
+        directory
             .open_regular_read(OsStr::new(LOCK))
             .map_err(why!(Error::configuration()))?;
-        directory
-            .validate_regular_entry(OsStr::new(LOCK), &anchor)
-            .map_err(|_| Error::configuration())?;
-        Ok(Self { directory, anchor })
+        Ok(Self { directory })
     }
-    fn lock(&self) -> Result<Guard<'_>> {
+    fn lock(&self) -> Result<Guard> {
         self.directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.anchor)
-            .map_err(|_| Error::evidence())?;
-        let file = self
-            .directory
             .lock(OsStr::new(LOCK), LockOptions::default())
             .map_err(why_lock!(
                 Error {
@@ -145,10 +116,7 @@ impl Outbox {
                     uncertain: false,
                 },
                 Error::evidence()
-            ))?;
-        let guard = Guard { outbox: self, file };
-        guard.validate()?;
-        Ok(guard)
+            ))
     }
     pub fn slot(job: &Job) -> Result<String> {
         job.validate().map_err(why!(Error::configuration()))?;
@@ -201,8 +169,7 @@ impl Outbox {
         }
         Ok(())
     }
-    fn save(&self, entry: &Entry, lock: &Guard<'_>) -> Result<()> {
-        lock.validate()?;
+    fn save(&self, entry: &Entry, _lock: &Guard) -> Result<()> {
         self.directory
             .replace_regular(
                 OsStr::new(&Self::slot(&entry.job)?),
@@ -218,7 +185,7 @@ impl Outbox {
         guard: &dyn Fn() -> Result<()>,
     ) -> Result<Value> {
         guard()?;
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         profile.validate()?;
         job.validate().map_err(why!(Error::configuration()))?;
         match profile {
@@ -262,7 +229,6 @@ impl Outbox {
                 diagnostic: None,
             };
             guard()?;
-            lock.validate()?;
             self.directory
                 .publish_new(
                     OsStr::new(&slot),
@@ -272,20 +238,18 @@ impl Outbox {
             entry
         };
         guard()?;
-        lock.validate()?;
         self.view(&entry)
     }
     pub fn status(&self, job: &Job) -> Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let entry = self.load(&Self::slot(job)?)?;
         if entry.job != *job {
             return Err(Error::evidence());
         }
-        lock.validate()?;
         self.view(&entry)
     }
     pub fn optional_status(&self, job: &Job) -> Result<Option<Value>> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let name = Self::slot(job)?;
         if !self
             .directory
@@ -298,7 +262,6 @@ impl Outbox {
         if entry.job != *job {
             return Err(Error::evidence());
         }
-        lock.validate()?;
         self.view(&entry).map(Some)
     }
     fn view(&self, entry: &Entry) -> Result<Value> {
@@ -339,10 +302,7 @@ impl Outbox {
         self.save(&entry, &lock)?;
         // From this durable point, failure or interruption is reconciliation,
         // even if the HTTP request may not actually have reached the provider.
-        match guard().and_then(|_| {
-            lock.validate()?;
-            adapter.create(job, allocation, cancelled)
-        }) {
+        match guard().and_then(|_| adapter.create(job, allocation, cancelled)) {
             Ok(handle) => {
                 entry.handle = Some(handle);
                 entry.diagnostic = None;
@@ -433,10 +393,7 @@ impl Outbox {
         guard()?;
         entry.cancellation_started = true;
         self.save(&entry, &lock)?;
-        match guard().and_then(|_| {
-            lock.validate()?;
-            adapter.stop(job, &handle, cancelled)
-        }) {
+        match guard().and_then(|_| adapter.stop(job, &handle, cancelled)) {
             Ok(observation) => {
                 entry.termination_verified = observation.state.is_terminal();
                 entry.observation = Some(observation);

@@ -70,7 +70,7 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
     root.verify_private_parent()?;
     // The phase ledger: it is never created here, because a recreated ledger
     // reads as unstarted and could re-run training.
-    let lock = worker.lock(
+    let _lock = worker.lock(
         OsStr::new(".managed-launch.lock"),
         LockOptions {
             write: true,
@@ -197,6 +197,5 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
     }
     saved.complete = true;
     store.replace_regular(OsStr::new(&name), &serde_json::to_vec(&saved)?)?;
-    worker.validate_regular_entry(OsStr::new(".managed-launch.lock"), &lock)?;
     plan.receipt().map_err(|_| invalid())
 }

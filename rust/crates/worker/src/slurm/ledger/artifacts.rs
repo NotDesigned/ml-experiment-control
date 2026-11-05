@@ -174,10 +174,9 @@ impl Helper {
         &self,
         request: &Request,
         snapshot: &Snapshot,
-        lock: &Lock,
+        _lock: &Lock,
         cancelled: &AtomicBool,
     ) -> Result<ReplyOutcome> {
-        lock.validate()?;
         let result = || -> Result<State> {
             let command = request.artifact_command().ok_or(Error::Metadata)?;
             let (directory, mut state) =
@@ -235,7 +234,6 @@ impl Helper {
                 reason: UnknownReason::StorageUnavailable,
             },
         };
-        lock.validate()?;
         Ok(outcome)
     }
     /// A retained immutable file descriptor outlives the metadata lock. A slow
@@ -250,7 +248,7 @@ impl Helper {
         else {
             return Err(Error::Metadata);
         };
-        let lock = self.lock(cancelled)?;
+        let _lock = self.lock(cancelled)?;
         let ReadLedger::Found(snapshot) = self.read_ledger(request.intent())? else {
             return Err(Error::Metadata);
         };
@@ -265,7 +263,6 @@ impl Helper {
         if file.metadata()?.len() != state.bundle.archive.bytes {
             return Err(Error::Metadata);
         }
-        lock.validate()?;
         Ok((
             Reply::for_request(
                 request,

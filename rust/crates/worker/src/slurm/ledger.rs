@@ -191,17 +191,8 @@ struct Receipt {
     job_id: String,
 }
 
-struct Lock {
-    directory: Directory,
-    file: FileLock,
-}
-impl Lock {
-    fn validate(&self) -> Result<()> {
-        Ok(self
-            .directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.file)?)
-    }
-}
+/// Proof that the caller holds `.slurm-helper.lock`.
+type Lock = FileLock;
 
 struct Snapshot {
     directory: Directory,
@@ -257,7 +248,6 @@ impl Helper {
                 claims: BTreeMap::new(),
             })?,
         )?;
-        lock.validate()?;
         drop(lock);
         Ok(Self {
             config,
@@ -277,7 +267,6 @@ impl Helper {
         };
         let lock = result.lock(&AtomicBool::new(false))?;
         result.verify_root()?;
-        lock.validate()?;
         drop(lock);
         Ok(result)
     }
@@ -319,7 +308,7 @@ impl Helper {
         timeout: Duration,
         cancelled: &AtomicBool,
     ) -> Result<Lock> {
-        let file = directory
+        Ok(directory
             .lock(
                 OsStr::new(LOCK),
                 LockOptions {
@@ -340,18 +329,11 @@ impl Helper {
                 } else {
                     error
                 }
-            })?;
-        let lock = Lock {
-            directory: directory.clone(),
-            file,
-        };
-        lock.validate()?;
-        Ok(lock)
+            })?)
     }
     fn lock(&self, cancelled: &AtomicBool) -> Result<Lock> {
         let lock = Self::acquire(&self.root, false, self.config.lock_timeout, cancelled)?;
         self.verify_root()?;
-        lock.validate()?;
         Ok(lock)
     }
     fn run(&self, intent: &FrozenIntent, create: bool) -> Result<Directory> {
@@ -600,7 +582,6 @@ impl Helper {
         } else if let Some(directory) = retained.as_ref() {
             directory.verify_attached()?;
         }
-        lock.validate()?;
         Ok(Reply::for_request(request, outcome)?)
     }
     fn prepare(&self, request: &Request, lock: Lock, cancelled: &AtomicBool) -> Result<Reply> {
@@ -625,10 +606,8 @@ impl Helper {
                 },
             )?);
         }
-        lock.validate()?;
         self.root
             .replace_regular(OsStr::new(REGISTRY), &registry_bytes)?;
-        lock.validate()?;
         let run = self.run(request.intent(), true)?;
         let name = Self::claim_name(request.intent());
         // Never repair an empty old claim or race another marker's creator.
@@ -641,17 +620,15 @@ impl Helper {
             )?);
         }
         let directory = run.child(OsStr::new(&name), true)?;
-        lock.validate()?;
         directory.publish_new(OsStr::new(INTENT), &json(request.intent())?)?;
         directory.publish_new(OsStr::new(MANIFEST), manifest.as_bytes())?;
         directory.publish_new(OsStr::new(SCRIPT), script.as_bytes())?;
         // The durable claim prevents replay while a download is running. Do
         // not hold the global metadata lock across that potentially long job:
         // observations and cancellation of other Runs must remain available.
-        lock.validate()?;
         drop(lock);
         self.prepare_shared(request.intent(), manifest.as_bytes(), &directory, cancelled)?;
-        let lock = self.lock(cancelled)?;
+        let _lock = self.lock(cancelled)?;
         self.verify_issued(request.intent(), &directory)?;
         for (name, expected) in [
             (INTENT, json(request.intent())?),
@@ -680,14 +657,13 @@ impl Helper {
             return Err(Error::Bootstrap);
         }
         self.verify_issued(request.intent(), &directory)?;
-        lock.validate()?;
         Ok(Reply::for_request(request, ReplyOutcome::Prepared)?)
     }
     fn submit(
         &self,
         request: &Request,
         mut snapshot: Snapshot,
-        lock: &Lock,
+        _lock: &Lock,
         cancelled: &AtomicBool,
     ) -> Result<ReplyOutcome> {
         if let Some(receipt) = &snapshot.receipt {
@@ -716,7 +692,6 @@ impl Helper {
                 reason: UnknownReason::MalformedLedger,
             });
         }
-        lock.validate()?;
         snapshot.directory.publish_new(
             OsStr::new(START),
             &json(&Started {
@@ -730,7 +705,6 @@ impl Helper {
             .replace_regular(OsStr::new(STATE), &json(&snapshot.record)?)?;
         self.verify_issued(request.intent(), &snapshot.directory)?;
         self.verify_shared(request.intent(), &snapshot.directory)?;
-        lock.validate()?;
         let argv = vec![
             self.config.sbatch_program.display().to_string(),
             "--parsable".into(),
@@ -757,7 +731,6 @@ impl Helper {
             drain_grace: Duration::from_millis(100),
             cancelled,
         })?;
-        lock.validate()?;
         self.verify_issued(request.intent(), &snapshot.directory)?;
         if local.exit_code != Some(0)
             || local.timed_out
@@ -796,7 +769,6 @@ impl Helper {
         snapshot
             .directory
             .replace_regular(OsStr::new(STATE), &json(&snapshot.record)?)?;
-        lock.validate()?;
         Ok(ReplyOutcome::Submitted {
             job_id: job.as_str().into(),
         })

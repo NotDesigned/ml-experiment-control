@@ -24,7 +24,6 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
-    fs::File,
     path::Path,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
@@ -49,7 +48,6 @@ pub struct Service {
     workspace: String,
     pub(super) directory: Directory,
     pub(super) slots: Directory,
-    anchor: File,
     pub(super) actions: operations::Store,
     pub(super) outbox: Outbox,
     sync_outbox: Outbox,
@@ -66,25 +64,6 @@ pub struct Service {
     active_builds: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     debug: Option<debug::Runtime>,
     pub(super) polling: ml_exp_core::polling::Policy,
-}
-struct Lock<'a> {
-    service: &'a Service,
-    file: FileLock,
-}
-impl Lock<'_> {
-    fn validate(&self) -> cloud::Result<()> {
-        self.service
-            .directory
-            .verify_private_parent()
-            .map_err(|_| cloud::Error::evidence())?;
-        for file in [&*self.file, &self.service.anchor] {
-            self.service
-                .directory
-                .validate_regular_entry(OsStr::new(LOCK), file)
-                .map_err(|_| cloud::Error::evidence())?;
-        }
-        Ok(())
-    }
 }
 pub(super) fn op(error: operations::Error) -> cloud::Error {
     if matches!(error, operations::Error::NotFound) {
@@ -182,7 +161,7 @@ impl Service {
         let directory = root.child(OsStr::new(NAME), false).map_err(io)?;
         directory.verify_private_parent().map_err(io)?;
         let slots = directory.child(OsStr::new("slots"), false).map_err(io)?;
-        let anchor = directory.open_regular_read(OsStr::new(LOCK)).map_err(io)?;
+        directory.open_regular_read(OsStr::new(LOCK)).map_err(io)?;
         let mut backends = BTreeMap::new();
         for definition in config.backends {
             definition.validate()?;
@@ -263,7 +242,6 @@ impl Service {
             workspace,
             directory,
             slots,
-            anchor,
             actions,
             outbox,
             sync_outbox,
@@ -307,12 +285,8 @@ impl Service {
     pub fn has_collectors(&self) -> bool {
         self.exchange.is_some() && self.backends.values().any(|b| b.collector.is_some())
     }
-    fn lock(&self) -> cloud::Result<Lock<'_>> {
+    fn lock(&self) -> cloud::Result<FileLock> {
         self.directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.anchor)
-            .map_err(io)?;
-        let file = self
-            .directory
             .lock(OsStr::new(LOCK), LockOptions::default())
             .map_err(why_lock!(
                 cloud::Error {
@@ -321,13 +295,7 @@ impl Service {
                     uncertain: false,
                 },
                 cloud::Error::evidence()
-            ))?;
-        let lock = Lock {
-            service: self,
-            file,
-        };
-        lock.validate()?;
-        Ok(lock)
+            ))
     }
     fn attempt_slot(project: &str, run: &str, attempt: &str) -> cloud::Result<String> {
         Ok(format!(

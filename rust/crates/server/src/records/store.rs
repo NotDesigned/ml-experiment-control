@@ -87,10 +87,9 @@ impl Store {
         };
         let bootstrap = store.fence.shared()?;
         store.database.initialize(
-            || bootstrap.validate().map_err(Error::from),
+            || Ok(()),
             |transaction| initialize_schema(transaction, workspace_seed),
         )?;
-        bootstrap.validate()?;
         drop(bootstrap);
         Ok(store)
     }
@@ -140,7 +139,6 @@ impl Store {
         for name in &names {
             held.require_observed_live(project, name)?;
         }
-        held.validate()?;
         Ok(RecordGuard {
             store: self,
             held,
@@ -150,14 +148,12 @@ impl Store {
         })
     }
     fn require_guard(&self, guard: &RecordGuard<'_>) -> Result<()> {
-        guard.held.validate()?;
         if !std::ptr::eq(self, guard.store) {
             return Err(Error::Guard);
         }
         for name in &guard.names {
             guard.held.require_observed_live(&guard.project, name)?;
         }
-        guard.held.validate()?;
         Ok(())
     }
     fn require_scope(&self, guard: &RecordGuard<'_>, scope: &str) -> Result<()> {
@@ -170,7 +166,6 @@ impl Store {
         if !bound {
             return Err(Error::Scope);
         }
-        guard.held.validate()?;
         Ok(())
     }
     pub fn bind(&self, guard: &RecordGuard<'_>, route: &Value, config: &Value) -> Result<()> {
@@ -545,11 +540,9 @@ impl Store {
                 at,
             )?;
         }
-        exclusive.validate()?;
         self.database.transaction(
-            || exclusive.validate().map_err(Error::from),
+            || Ok(()),
             |tx| {
-                exclusive.validate()?;
                 let mut scopes = Vec::new();
                 for name in &names {
                     let mut statement =
@@ -575,7 +568,6 @@ impl Store {
                         params![project, name],
                     )?;
                 }
-                exclusive.validate()?;
                 if !exclusive.is_deleted(project, run)? {
                     return Err(Error::DeletionNotStarted);
                 }

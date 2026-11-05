@@ -9,7 +9,7 @@ impl Service {
         request
             .validate(action)
             .map_err(why!(Error::Configuration))?;
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let original = self.load(action)?;
         let b = &original.binding;
         let latest = self
@@ -80,7 +80,6 @@ impl Service {
         self.actions.bind_slurm_request(id, &candidate.request)?;
         crate::renewal::link(&self.slots, action, id, &request).map_err(why!(Error::Authority))?;
         if latest.plan["action_id"] == action {
-            lock.validate()?;
             self.slots
                 .replace_regular(
                     OsStr::new(&Self::slot_name(&b.project, &b.run_id, &b.attempt_id)?),

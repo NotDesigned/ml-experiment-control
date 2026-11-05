@@ -292,7 +292,6 @@ impl Service {
             provider_message: None,
             last_error: None,
         };
-        lock.validate()?;
         self.debug_save(&record)?;
         drop(lock);
         self.debug_refresh(&record.recipe.identity, now)
@@ -408,7 +407,7 @@ impl Service {
         result.map(Some)
     }
     pub fn debug_refresh(&self, id: &str, now: &str) -> cloud::Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let mut saved = self.debug_load(id)?;
         if saved.deleted {
             return Ok(Self::debug_view(&saved));
@@ -635,7 +634,6 @@ impl Service {
         })();
         saved.observed_at = Some(now.into());
         saved.diagnostic = result.err().map(|e| e.code);
-        lock.validate()?;
         self.debug_save(&saved)?;
         Ok(Self::debug_view(&saved))
     }
@@ -702,7 +700,6 @@ impl Service {
         }
         saved.stop_requested = true;
         saved.delete_requested |= delete;
-        lock.validate()?;
         self.debug_save(&saved)?;
         drop(lock);
         self.debug_refresh(id, now)

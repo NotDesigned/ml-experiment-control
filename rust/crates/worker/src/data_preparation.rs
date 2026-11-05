@@ -70,7 +70,7 @@ pub fn prepare(plan: &Plan, allow_download: bool, cancelled: &AtomicBool) -> Res
         .child(OsStr::new("script-preparations"), true)
         .map_err(|e| failure("CACHE_ROOT", e))?;
     let id = plan.id().map_err(|_| Error::Configuration)?;
-    let lock = cache
+    let _lock = cache
         .lock(
             OsStr::new(&format!("{id}.lock")),
             LockOptions {
@@ -230,9 +230,6 @@ pub fn prepare(plan: &Plan, allow_download: bool, cancelled: &AtomicBool) -> Res
     }
     slot.publish_new(OsStr::new("receipt.json"), &bytes)
         .map_err(|e| failure("DATA_RECEIPT", e))?;
-    cache
-        .validate_regular_entry(OsStr::new(&format!("{id}.lock")), &lock)
-        .map_err(|e| failure("CACHE_LOCK", e))?;
     println!("ML_EXPD_DATA_PREPARATION=READY {id} reused=false");
     plan.tree().map_err(|_| Error::Configuration)
 }

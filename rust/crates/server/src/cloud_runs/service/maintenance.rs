@@ -141,7 +141,7 @@ impl Service {
         plan: &Plan,
         cursor: u64,
     ) -> cloud::Result<(bool, u64)> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.maintenance_original(action, plan)?;
         let Some(mut saved) = self.artifact_saved(&prepared)? else {
             return Ok((true, 0));
@@ -169,7 +169,6 @@ impl Service {
             .release(&saved.bundle.archive, saved.released_parts)
             .map_err(io)?;
         saved.released_parts += 1;
-        lock.validate()?;
         self.artifact_save(&prepared, &saved)?;
         Ok((saved.released_parts == count, saved.released_parts))
     }

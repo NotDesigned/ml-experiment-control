@@ -65,7 +65,7 @@ impl Service {
         cancelled: &AtomicBool,
         limit: Option<std::time::Duration>,
     ) -> Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.load(action)?;
         let guard = self
             .fence
@@ -188,7 +188,6 @@ impl Service {
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Authority))?;
         self.check(&prepared)?;
-        lock.validate()?;
         let mut importer = saved.importer.ok_or(Error::Authority)?;
         let mut counts = saved.counts;
         for chunk in page.bytes.chunks(JsonlImporter::INPUT_BOUND) {
@@ -236,7 +235,6 @@ impl Service {
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Uncertain))?;
-        lock.validate()?;
         self.slots
             .replace_regular(OsStr::new(&name), &bytes)
             .map_err(why!(Error::Uncertain))?;

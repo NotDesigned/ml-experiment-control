@@ -74,7 +74,6 @@ pub struct Publisher {
 /// a particular scheduler or a worker's ability to reach W&B directly.
 pub trait Source: Send + Sync {
     fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock>;
-    fn validate_publisher_leader(&self, file: &std::fs::File) -> Result<()>;
     fn publisher_store(&self) -> Result<Store>;
     fn tracking_journal(&self, project: &str, run: &str) -> Result<Store>;
     fn publication_scopes(&self, store: &Store) -> Result<BTreeSet<String>> {
@@ -84,10 +83,6 @@ pub trait Source: Send + Sync {
 impl Source for crate::submissions::Service {
     fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock> {
         self.publisher_leader().map_err(why!(Error::Storage))
-    }
-    fn validate_publisher_leader(&self, file: &std::fs::File) -> Result<()> {
-        self.validate_publisher_leader(file)
-            .map_err(why!(Error::Storage))
     }
     fn publisher_store(&self) -> Result<Store> {
         self.publisher_store().map_err(why!(Error::Storage))
@@ -105,15 +100,6 @@ impl Source for crate::read_api::Api {
             Source::publisher_leader(&*service)
         } else {
             self.local_publisher_leader()
-        }
-    }
-    fn validate_publisher_leader(&self, file: &std::fs::File) -> Result<()> {
-        if let Some(service) = self.submissions() {
-            Source::validate_publisher_leader(&*service, file)
-        } else if let Some(service) = self.cloud() {
-            Source::validate_publisher_leader(&*service, file)
-        } else {
-            self.validate_local_publisher_leader(file)
         }
     }
     fn publisher_store(&self) -> Result<Store> {
@@ -159,6 +145,8 @@ impl Publisher {
         let handle = thread::Builder::new()
             .name("native-wandb".into())
             .spawn(move || {
+                // Moved in by name: the flock must live as long as this thread.
+                let _leader = leader;
                 let start = Instant::now();
                 let policy = ml_exp_core::polling::Policy {
                     enabled: true,
@@ -169,9 +157,6 @@ impl Publisher {
                 let mut candidates = BTreeSet::new();
                 let mut discover_at = 0;
                 while !flag.load(Ordering::Relaxed) {
-                    if service.validate_publisher_leader(&leader).is_err() {
-                        break;
-                    }
                     let elapsed = start.elapsed().as_secs();
                     if elapsed >= discover_at {
                         if let Ok(scopes) = service.publication_scopes(&store) {
@@ -182,9 +167,8 @@ impl Publisher {
                     let (next, selected) = schedule.select(&candidates, elapsed, &policy);
                     schedule = next;
                     if let Some((scope, _)) = selected {
-                        let outcome = publish_scope(
-                            &*service, &store, &runtime, &mut sdk, &scope, &flag, &leader,
-                        );
+                        let outcome =
+                            publish_scope(&*service, &store, &runtime, &mut sdk, &scope, &flag);
                         schedule = schedule.outcome(
                             &scope,
                             start.elapsed().as_secs(),
@@ -285,17 +269,12 @@ fn publish_scope(
     sdk: &mut Option<Sdk>,
     scope: &str,
     cancelled: &AtomicBool,
-    leader: &std::fs::File,
 ) -> Result<()> {
     let parsed = Scope::parse(scope).map_err(why!(Error::Identity))?;
     let _authority = service
         .tracking_journal(&parsed.project, &parsed.run)
         .map_err(why!(Error::Publication("JOURNAL_AUTHORITY_UNAVAILABLE")))?;
-    publish_bound(store, runtime, sdk, scope, cancelled, &|| {
-        service
-            .validate_publisher_leader(leader)
-            .map_err(why!(Error::Identity))
-    })
+    publish_bound(store, runtime, sdk, scope, cancelled)
 }
 fn publish_bound(
     store: &Store,
@@ -303,9 +282,7 @@ fn publish_bound(
     sdk: &mut Option<Sdk>,
     scope: &str,
     cancelled: &AtomicBool,
-    validate: &dyn Fn() -> Result<()>,
 ) -> Result<()> {
-    validate()?;
     let parsed = Scope::parse(scope).map_err(why!(Error::Identity))?;
     let guard = store
         .guard(&parsed.project, &parsed.run)
@@ -379,7 +356,6 @@ fn publish_bound(
         .as_mut()
         .ok_or(Error::Transport)?
         .call(&job, cancelled)?;
-    validate()?;
     if remote["wandb_id"] != status["wandb_id"] || remote["route"] != binding["route"] {
         return Err(Error::Publication("REMOTE_RUN_IDENTITY_MISMATCH"));
     }
@@ -485,7 +461,6 @@ fn publish_bound(
         _ => ("ACK_PENDING", Some("REMOTE_ACK_PENDING")),
     };
     if plan.actions.is_empty() {
-        validate()?;
         return save(store, &guard, scope, &saved, phase, error, &at);
     }
     let display = store
@@ -522,9 +497,7 @@ fn publish_bound(
     if cancelled.load(Ordering::Relaxed) {
         return Err(Error::Transport);
     }
-    validate()?;
     save(store, &guard, scope, &saved, phase, error, &at)?;
-    validate()?;
     let applied = sdk
         .as_mut()
         .ok_or(Error::Transport)?

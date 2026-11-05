@@ -223,7 +223,7 @@ impl Service {
         if let Some(definition) = &request.runtime {
             self.prepare_runtime(project, definition.clone())?;
         }
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         if self
             .slots
             .entry_exists(OsStr::new(&name(&id)?))
@@ -242,7 +242,6 @@ impl Service {
             started: false,
             submission: None,
         };
-        lock.validate()?;
         write(&self.slots, &name(&id)?, &saved)?;
         self.setup_view(&saved)
     }
@@ -292,13 +291,12 @@ impl Service {
             return Err(cloud::Error::configuration());
         }
         let mut saved = {
-            let lock = self.lock()?;
+            let _lock = self.lock()?;
             let mut saved = self.setup_load(project, id)?;
             if saved.submission.is_some() {
                 return self.setup_view(&saved);
             }
             saved.started = true;
-            lock.validate()?;
             self.slots
                 .replace_regular(OsStr::new(&name(id)?), &encode(&saved)?)
                 .map_err(io)?;
@@ -389,7 +387,7 @@ impl Service {
                 )
                 .map_err(why!(cloud::Error::evidence()))?
         };
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         saved = self.setup_load(project, id)?;
         if saved
             .submission
@@ -399,7 +397,6 @@ impl Service {
             return Err(cloud::Error::evidence());
         }
         saved.submission = Some(submission);
-        lock.validate()?;
         self.slots
             .replace_regular(OsStr::new(&name(id)?), &encode(&saved)?)
             .map_err(io)?;

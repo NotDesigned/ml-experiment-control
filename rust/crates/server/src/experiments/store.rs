@@ -217,7 +217,6 @@ impl Store {
             anchor.project(&binding.project)?;
             projects.insert(binding.project, anchor);
         }
-        guard.validate()?;
         drop(guard);
         Ok(Self { fence, projects })
     }
@@ -226,13 +225,12 @@ impl Store {
         self.projects.get(project).ok_or(Error::UnknownProject)
     }
     pub fn project(&self, project: &str, expected_raw_sha256: Option<&str>) -> Result<Document> {
-        let guard = self.fence.shared_existing()?;
+        let _guard = self.fence.shared_existing()?;
         let anchor = self.project_anchor(project)?;
         let document = anchor.project(project)?;
         check_sha(&document, expected_raw_sha256)?;
         same(&document, &anchor.project(project)?)?;
         anchor.validate()?;
-        guard.validate()?;
         Ok(document)
     }
     pub fn run(&self, reference: &RunRef, expected_raw_sha256: Option<&str>) -> Result<Document> {

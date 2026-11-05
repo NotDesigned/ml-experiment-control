@@ -62,7 +62,7 @@ impl Helper {
         &self,
         request: &Request,
         snapshot: &Snapshot,
-        lock: &Lock,
+        _lock: &Lock,
     ) -> Result<ReplyOutcome> {
         let Some(receipt) = &snapshot.receipt else {
             return Ok(ReplyOutcome::Unknown {
@@ -75,7 +75,6 @@ impl Helper {
             });
         }
         self.verify_issued(request.intent(), &snapshot.directory)?;
-        lock.validate()?;
         let read = || -> Result<Evidence> {
             let (plan, directories) = self
                 .observe_shared(request.intent(), &snapshot.directory, false)?
@@ -142,7 +141,6 @@ impl Helper {
             },
         };
         self.verify_issued(request.intent(), &snapshot.directory)?;
-        lock.validate()?;
         Ok(outcome)
     }
 }

@@ -19,7 +19,6 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
-    fs::File,
     sync::{Arc, atomic::AtomicBool},
 };
 
@@ -98,7 +97,6 @@ pub struct Service {
     workspace: String,
     directory: Directory,
     slots: Directory,
-    lock_anchor: Arc<File>,
     evidence: experiments::Store,
     fence: RunFence,
     actions: operations::Store,
@@ -315,11 +313,9 @@ impl Service {
         let slots = directory
             .child(OsStr::new("slots"), false)
             .map_err(why!(Error::Configuration))?;
-        let lock_anchor = Arc::new(
-            directory
-                .open_regular_read(OsStr::new(LOCK))
-                .map_err(why!(Error::Configuration))?,
-        );
+        directory
+            .open_regular_read(OsStr::new(LOCK))
+            .map_err(why!(Error::Configuration))?;
         let actions = operations::Store::open_existing(settings.registry_root.join("actions"))?;
         let fence = RunFence::new(&settings.registry_root);
         let evidence = experiments::Store::open(settings.bindings(), fence.clone())
@@ -329,7 +325,6 @@ impl Service {
             workspace,
             directory,
             slots,
-            lock_anchor,
             evidence,
             fence,
             actions,

@@ -21,7 +21,7 @@ impl Service {
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
         let saved = {
-            let lock = self.lock()?;
+            let _lock = self.lock()?;
             let mut saved = self
                 .data_saved(project, executor, asset)?
                 .filter(|s| s.archive_verified)
@@ -72,7 +72,6 @@ impl Service {
                 saved.copy_request_id = Some(request_id.into());
                 saved.copy_storage = Some(storage);
                 // Both identity and resource intent precede outbox/provider effects.
-                lock.validate()?;
                 self.slots
                     .replace_regular(
                         OsStr::new(&Self::data_name(project, executor, asset)?),
@@ -106,12 +105,11 @@ impl Service {
                 &AtomicBool::new(false),
             )?
         };
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let mut saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
         saved.copy_status = Some(status);
-        lock.validate()?;
         self.slots
             .replace_regular(
                 OsStr::new(&Self::data_name(project, executor, asset)?),

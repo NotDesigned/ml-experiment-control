@@ -341,7 +341,7 @@ impl Service {
         }
         .validate(action)
         .map_err(why!(cloud::Error::configuration()))?;
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.load(action)?;
         self.check(&prepared)?;
         let collector = self.backends[&prepared.execution.backend_id]
@@ -363,7 +363,6 @@ impl Service {
             .existing_observation_guard(&parent.project, &prepared.execution.job.run_id)
             .map_err(why!(cloud::Error::evidence()))?;
         let check = || {
-            lock.validate()?;
             guard
                 .require_observed_live(&parent.project, &prepared.execution.job.run_id)
                 .map_err(why!(cloud::Error::evidence()))?;
@@ -382,7 +381,7 @@ impl Service {
     ) -> cloud::Result<Value> {
         ml_exp_core::submission::validate_submission_token(request)
             .map_err(why!(cloud::Error::configuration()))?;
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
@@ -402,7 +401,6 @@ impl Service {
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
         let check = || {
-            lock.validate()?;
             self.data_saved(project, executor, asset)?
                 .ok_or_else(missing)
                 .map(|_| ())

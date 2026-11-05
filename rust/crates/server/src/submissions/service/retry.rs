@@ -17,7 +17,7 @@ impl Service {
         let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
             .map_err(why!(Error::Authority))?;
         request.validate(action)?;
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let parent = self.load(action)?;
         let project = &parent.binding.project;
         let run = &parent.binding.run_id;
@@ -141,7 +141,6 @@ impl Service {
                 .require_observed_live(project, run)
                 .map_err(why!(Error::Authority))?;
             self.check(&parent)?;
-            lock.validate()?;
             let mut random = [0u8; 16];
             getrandom::fill(&mut random).map_err(why!(Error::Configuration))?;
             let stage = self
@@ -172,7 +171,6 @@ impl Service {
             result?;
             attempt
         };
-        lock.validate()?;
         self.check(&parent)?;
         guard
             .require_observed_live(project, run)

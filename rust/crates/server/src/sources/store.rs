@@ -57,20 +57,6 @@ pub struct Store {
     policy: Policy,
 }
 
-struct Guard<'a> {
-    store: &'a Store,
-    file: FileLock,
-}
-impl Guard<'_> {
-    fn check(&self) -> Result<()> {
-        self.store.namespace.verify_private_parent()?;
-        self.store
-            .namespace
-            .validate_regular_entry(OsStr::new(LOCK), &self.file)?;
-        Ok(())
-    }
-}
-
 fn encode(value: &Value) -> Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec(value).map_err(why!(Error::Identity))?;
     bytes.push(b'\n');
@@ -129,9 +115,8 @@ impl Store {
         })
     }
 
-    fn lock(&self) -> Result<Guard<'_>> {
-        let file = self
-            .namespace
+    fn lock(&self) -> Result<FileLock> {
+        self.namespace
             .lock(
                 OsStr::new(LOCK),
                 LockOptions {
@@ -148,10 +133,7 @@ impl Store {
                 } else {
                     Error::Io(error)
                 }
-            })?;
-        let guard = Guard { store: self, file };
-        guard.check()?;
-        Ok(guard)
+            })
     }
 
     fn read_metadata(

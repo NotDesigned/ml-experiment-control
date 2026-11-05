@@ -170,7 +170,7 @@ impl Service {
         request: ArtifactRequest,
         now: &str,
     ) -> cloud::Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.worker_authority(project, run, attempt, token)?;
         let objects = self
             .objects
@@ -245,7 +245,6 @@ impl Service {
             ArtifactOperation::Complete => {
                 if !published {
                     objects.verify(&saved.bundle.archive).map_err(io)?;
-                    lock.validate()?;
                     self.check(&prepared)?;
                     saved.state = Some(
                         State::new(saved.bundle.clone()).map_err(why!(cloud::Error::evidence()))?,
@@ -364,7 +363,6 @@ impl Service {
             // cursor, including after a lost response or process restart.
             let end = total.min(saved.released_parts.saturating_add(64));
             while saved.released_parts < end {
-                lock.validate()?;
                 self.check(&prepared)?;
                 self.objects
                     .as_ref()

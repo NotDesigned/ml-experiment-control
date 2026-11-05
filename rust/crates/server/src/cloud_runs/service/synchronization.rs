@@ -156,7 +156,6 @@ impl Service {
             )
             .map_err(why!(cloud::Error::evidence()))?;
         let check = || {
-            lock.validate()?;
             guard
                 .require_observed_live(
                     &prepared.execution.job.project,

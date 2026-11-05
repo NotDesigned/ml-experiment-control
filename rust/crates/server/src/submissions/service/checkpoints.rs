@@ -49,7 +49,7 @@ impl Service {
         now: &str,
         cancelled: &AtomicBool,
     ) -> Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.load(action)?;
         let guard = self
             .fence
@@ -76,7 +76,6 @@ impl Service {
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Authority))?;
         self.check(&prepared)?;
-        lock.validate()?;
         let CallOutcome::Receipt { reply, .. } = outcome else {
             return Err(Error::CheckpointUnavailable);
         };

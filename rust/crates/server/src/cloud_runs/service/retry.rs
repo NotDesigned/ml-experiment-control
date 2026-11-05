@@ -22,7 +22,7 @@ impl Service {
                 uncertain: false,
             });
         }
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let parent = self.load(action)?;
         let binding = &parent.execution.binding;
         if request
@@ -73,10 +73,7 @@ impl Service {
                 &adapter,
                 &parent.execution.job,
                 parent.execution.allocation,
-                &|| {
-                    lock.validate()?;
-                    self.check(&parent)
-                },
+                &|| self.check(&parent),
                 cancelled,
             )?;
             let termination: ml_exp_core::cloud::JobObservation =
@@ -128,7 +125,6 @@ impl Service {
             guard
                 .require_observed_live(project, run)
                 .map_err(why!(cloud::Error::evidence()))?;
-            lock.validate()?;
             stage
                 .publish_directory(&attempts, OsStr::new(&next))
                 .map_err(why!(cloud::Error {
@@ -143,7 +139,6 @@ impl Service {
         next_binding.attempt_sha256 = helper::sha256_bytes(&encode(&attempt)?);
         retry::validate_attempt(&manifest, &attempt, &next_binding)
             .map_err(why!(cloud::Error::evidence()))?;
-        lock.validate()?;
         self.check(&parent)?;
         if self.current_attempt(project, run)? == binding.attempt_id {
             directory.replace_regular(OsStr::new("status.json"),&encode(&json!({"project":project,"run_id":run,"attempt_id":next,"state":"NOT_SUBMITTED","updated_at":attempt["attempt_created_at"]}))?).map_err(why!(cloud::Error{code:"CLOUD_RETRY_UNCERTAIN".into(),http_status:None,uncertain:true}))?;

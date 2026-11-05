@@ -211,7 +211,7 @@ impl Service {
         record.runtime.ok_or_else(cloud::Error::evidence)
     }
     pub fn prepare_runtime(&self, project: &str, definition: Definition) -> cloud::Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let settings = self
             .builds
             .as_ref()
@@ -250,7 +250,6 @@ impl Service {
             runtime: None,
             diagnostic: None,
         };
-        lock.validate()?;
         write(&self.slots, &name(&record.runtime_id)?, &record)?;
         Ok(self.build_view(&record))
     }
@@ -389,7 +388,6 @@ impl Service {
         self.slots
             .replace_regular(OsStr::new(&name(id)?), &encode(&record)?)
             .map_err(io)?;
-        lock.validate()?;
         drop(lock);
         let response = json!({"project":record.project,"runtime_id":record.runtime_id,"status":"EXECUTING","scheduler_submitted":false,"retry_safe":false});
         let service = Arc::clone(self);
@@ -463,7 +461,7 @@ impl Service {
         if record.runtime.is_none() && record.started {
             let observed = encode(&record)?;
             let (status, value) = self.builder_call(&record, "reconcile")?;
-            let lock = self.lock()?;
+            let _lock = self.lock()?;
             record = self.build_record(project, id)?;
             if encode(&record)? != observed
                 || self.active_builds.lock().is_ok_and(|s| s.contains(id))
@@ -471,7 +469,6 @@ impl Service {
                 return Ok(self.build_view(&record));
             }
             self.accept_build(&mut record, status, value)?;
-            lock.validate()?;
         }
         if self
             .builds
@@ -566,13 +563,12 @@ impl Service {
             || !result.stdout.complete
             || result.stdout.truncated
         {
-            let lock = self.lock()?;
+            let _lock = self.lock()?;
             let mut current = self.build_record(project, id)?;
             if current.slurm_runtime.is_none() {
                 current.diagnostic = Some(json!({"code":"OCI_TO_SIF_UNCONFIRMED",
                     "phase":"OCI_TO_SIF","scheduler_submitted":false,
                     "process":result.diagnostic()}));
-                lock.validate()?;
                 self.slots
                     .replace_regular(OsStr::new(&name(id)?), &encode(&current)?)
                     .map_err(io)?;
@@ -606,7 +602,7 @@ impl Service {
         {
             return Err(cloud::Error::evidence());
         }
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let mut current = self.build_record(project, id)?;
         if current
             .slurm_runtime
@@ -617,7 +613,6 @@ impl Service {
         }
         current.slurm_runtime = Some(runtime);
         current.diagnostic = None;
-        lock.validate()?;
         self.slots
             .replace_regular(OsStr::new(&name(id)?), &encode(&current)?)
             .map_err(io)?;

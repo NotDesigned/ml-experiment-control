@@ -45,8 +45,7 @@ pub struct RunFence {
 }
 pub struct Guard<'a> {
     fence: &'a RunFence,
-    directory: Directory,
-    file: FileLock,
+    _file: FileLock,
     exclusive: bool,
 }
 
@@ -137,7 +136,6 @@ impl RunFence {
         );
         match result {
             Ok(file) => {
-                directory.validate_regular_entry(OsStr::new(LOCK), &file)?;
                 // Writable initialization pins/creates the metadata root. A
                 // read-only observer must never repair missing filesystem state.
                 if initialize {
@@ -145,8 +143,7 @@ impl RunFence {
                 }
                 Ok(Guard {
                     fence: self,
-                    directory,
-                    file,
+                    _file: file,
                     exclusive,
                 })
             }
@@ -211,17 +208,7 @@ impl RunFence {
 }
 
 impl Guard<'_> {
-    /// Revalidate the retained directory ancestry and exact lock-file binding.
-    /// Store owners must call this after blocking acquisition, before commit,
-    /// and before returning a read or mutation result; acquiring the guard once
-    /// cannot make later external filesystem replacement safe.
-    pub fn validate(&self) -> Result<()> {
-        Ok(self
-            .directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.file)?)
-    }
     pub fn require_observed_live(&self, project: &str, run: &str) -> Result<()> {
-        self.validate()?;
         if self.fence.is_deleted(project, run)? {
             Err(Error::Deleted)
         } else {
@@ -233,7 +220,6 @@ impl Guard<'_> {
         self.require_observed_live(project, run)
     }
     pub fn is_deleted(&self, project: &str, run: &str) -> Result<bool> {
-        self.validate()?;
         self.fence.is_deleted(project, run)
     }
     pub fn mark(
@@ -246,7 +232,6 @@ impl Guard<'_> {
         if !self.exclusive {
             return Err(Error::ExclusiveRequired);
         }
-        self.validate()?;
         let name = self.fence.leaf(project, run)?;
         let directory = self
             .fence
@@ -255,7 +240,6 @@ impl Guard<'_> {
         if directory.entry_exists(OsStr::new(&name))? {
             let value = read_existing(&directory, OsStr::new(&name)).unwrap_or(json!({}));
             directory.verify_attached()?;
-            self.validate()?;
             return Ok(value);
         }
         let mut record = metadata.clone();
@@ -266,14 +250,10 @@ impl Guard<'_> {
         let value = Value::Object(record);
         let bytes = serde_json::to_vec(&value).map_err(io::Error::other)?;
         match directory.publish_new(OsStr::new(&name), &bytes) {
-            Ok(()) => {
-                self.validate()?;
-                Ok(value)
-            }
+            Ok(()) => Ok(value),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 let previous = read_existing(&directory, OsStr::new(&name)).unwrap_or(json!({}));
                 directory.verify_attached()?;
-                self.validate()?;
                 Ok(previous)
             }
             Err(error) => Err(error.into()),
@@ -475,18 +455,6 @@ mod tests {
     }
 
     #[test]
-    fn replacing_a_lock_entry_invalidates_an_existing_guard() {
-        let temp = tempfile::tempdir().unwrap();
-        let fence = RunFence::new(temp.path());
-        let guard = fence.exclusive(false).unwrap();
-        fs::rename(temp.path().join(LOCK), temp.path().join("old-lock")).unwrap();
-        fs::write(temp.path().join(LOCK), b"").unwrap();
-        assert!(guard.require_live("p", "r").is_err());
-        assert!(guard.mark("p", "r", &Map::new(), "now").is_err());
-        assert!(!fence.path("p", "r").unwrap().exists());
-    }
-
-    #[test]
     fn existing_guards_never_create_missing_roots_locks_or_metadata() {
         let temp = tempfile::tempdir().unwrap();
         let absent = temp.path().join("missing-root");
@@ -507,7 +475,6 @@ mod tests {
             .modified()
             .unwrap();
         let guard = fence.existing_observation_guard("p", "r").unwrap();
-        guard.validate().unwrap();
         assert!(!guard.is_deleted("p", "r").unwrap());
         drop(guard);
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
@@ -536,7 +503,6 @@ mod tests {
         assert!(matches!(fence.exclusive_existing(false), Err(Error::Busy)));
         drop(shared);
         let exclusive = fence.exclusive_existing(true).unwrap();
-        exclusive.validate().unwrap();
         assert!(!temp.path().join("deleted-runs").exists());
         assert_eq!(fs::read(temp.path().join(LOCK)).unwrap(), b"unchanged");
         drop(exclusive);
@@ -547,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_guards_reject_symlink_fifo_and_replaced_lock_without_repair() {
+    fn existing_guards_reject_symlink_and_fifo_without_repair() {
         use std::os::unix::fs::symlink;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("workspace");
@@ -569,14 +535,6 @@ mod tests {
         );
         assert!(fence.existing_observation_guard("p", "r").is_err());
         assert!(!root.join("deleted-runs").exists());
-        fs::remove_file(root.join(LOCK)).unwrap();
-        fs::write(root.join(LOCK), b"").unwrap();
-        let guard = fence.shared_existing().unwrap();
-        fs::rename(root.join(LOCK), root.join("old-lock")).unwrap();
-        fs::write(root.join(LOCK), b"replacement").unwrap();
-        assert!(guard.validate().is_err());
-        assert_eq!(fs::read(root.join(LOCK)).unwrap(), b"replacement");
-        assert!(!root.join("deleted-runs").exists());
     }
 
     #[test]
@@ -592,11 +550,7 @@ mod tests {
             reader.existing_observation_guard("p", "r"),
             Err(Error::Deleted)
         ));
-        reader
-            .existing_observation_guard("p", "other")
-            .unwrap()
-            .validate()
-            .unwrap();
+        assert!(reader.existing_observation_guard("p", "other").is_ok());
         assert_eq!(fs::read(&path).unwrap(), original);
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
     }

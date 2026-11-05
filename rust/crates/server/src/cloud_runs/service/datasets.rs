@@ -339,7 +339,7 @@ impl Service {
                         payload,
                     )
                     .map_err(io)?;
-                let lock = self.lock()?;
+                let _lock = self.lock()?;
                 saved = self
                     .data_saved(project, executor, &asset)?
                     .ok_or_else(missing)?;
@@ -347,7 +347,6 @@ impl Service {
                     .state
                     .record_part(number, record)
                     .map_err(why!(cloud::Error::evidence()))?;
-                lock.validate()?;
                 self.slots
                     .replace_regular(OsStr::new(&name), &encode(&saved)?)
                     .map_err(io)?;
@@ -371,7 +370,7 @@ impl Service {
                         .ok_or_else(cloud::Error::configuration)?
                         .verify_data(project, executor, &saved.state.definition)
                         .map_err(io)?;
-                    let lock = self.lock()?;
+                    let _lock = self.lock()?;
                     let current = self
                         .data_saved(project, executor, &asset)?
                         .ok_or_else(missing)?;
@@ -379,7 +378,6 @@ impl Service {
                         return Err(cloud::Error::evidence());
                     }
                     saved.archive_verified = true;
-                    lock.validate()?;
                     self.slots
                         .replace_regular(OsStr::new(&name), &encode(&saved)?)
                         .map_err(io)?;
@@ -391,7 +389,6 @@ impl Service {
         if !payload.is_empty() {
             return Err(cloud::Error::configuration());
         }
-        lock.validate()?;
         self.slots
             .replace_regular(OsStr::new(&name), &encode(&saved)?)
             .map_err(io)?;

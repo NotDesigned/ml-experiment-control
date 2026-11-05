@@ -323,7 +323,7 @@ impl Store {
                 }
             }
         }
-        let lock = self
+        let _lock = self
             .root
             .lock(
                 OsStr::new(LOCK),
@@ -343,7 +343,6 @@ impl Store {
                 }
             })?;
         self.verify()?;
-        self.root.validate_regular_entry(OsStr::new(LOCK), &lock)?;
         if cancelled.load(Ordering::Relaxed) {
             return Err(invalid());
         }
@@ -357,7 +356,6 @@ impl Store {
             _ => state,
         };
         self.verify()?;
-        self.root.validate_regular_entry(OsStr::new(LOCK), &lock)?;
         let reply = Reply {
             version: 1,
             request_sha256: request.digest().map_err(|_| invalid())?,

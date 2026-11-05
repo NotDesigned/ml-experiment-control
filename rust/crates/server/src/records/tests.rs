@@ -1,9 +1,4 @@
-use std::{
-    fs,
-    path::Path,
-    sync::{Arc, mpsc},
-    time::Duration,
-};
+use std::fs;
 
 use ml_exp_core::records::{Event, JsonlImporter, Scope, normalized_metric};
 use rusqlite::{Connection, params};
@@ -471,65 +466,6 @@ fn archive_import_batches_long_histories_and_replay_never_duplicates_records() {
         store.metric_records(&guard, "attempt-001").unwrap().len(),
         65
     );
-}
-
-#[cfg(unix)]
-fn replace_lock(root: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    fs::rename(
-        root.join(".run-deletion.lock"),
-        root.join("old-run-deletion.lock"),
-    )
-    .unwrap();
-    fs::write(root.join(".run-deletion.lock"), b"").unwrap();
-    fs::set_permissions(
-        root.join(".run-deletion.lock"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
-}
-#[cfg(unix)]
-#[test]
-fn replaced_fence_lock_blocks_both_reads_and_queued_sqlite_writes() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Arc::new(Store::open(temp.path(), SEED).unwrap());
-    let scope = bound(&store, "run-a", enabled(), json!({}));
-    let blocker = Connection::open(store.path()).unwrap();
-    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let (send, receive) = mpsc::channel();
-    let cloned = Arc::clone(&store);
-    let worker_scope = scope.clone();
-    let worker = std::thread::spawn(move || {
-        let guard = cloned.guard("demo", "run-a").unwrap();
-        send.send(()).unwrap();
-        cloned.append(&guard, &worker_scope, &[event("late", metric(1.0, 1))])
-    });
-    receive.recv_timeout(Duration::from_secs(5)).unwrap();
-    std::thread::sleep(Duration::from_millis(50));
-    assert!(!worker.is_finished());
-    replace_lock(temp.path());
-    RunFence::new(temp.path())
-        .mark(
-            "demo",
-            "run-a",
-            &serde_json::Map::new(),
-            "fenced-on-new-lock",
-        )
-        .unwrap();
-    blocker.execute_batch("ROLLBACK").unwrap();
-    assert!(worker.join().unwrap().is_err());
-    assert_eq!(
-        blocker
-            .query_row("SELECT COUNT(*) FROM events", [], |row| row
-                .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    let other = Store::open(temp.path().join("other").as_path(), SEED).unwrap();
-    let other_scope = bound(&other, "live", enabled(), json!({}));
-    let guard = other.guard("demo", "live").unwrap();
-    replace_lock(&temp.path().join("other"));
-    assert!(other.events(&guard, &other_scope, 0, 128).is_err());
 }
 
 fn reference() -> Value {

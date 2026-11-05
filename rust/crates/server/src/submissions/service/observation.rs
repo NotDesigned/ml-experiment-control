@@ -105,7 +105,7 @@ impl Service {
     ) -> Result<Value> {
         time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
             .map_err(why!(Error::Configuration))?;
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.load(action)?;
         let guard = self
             .fence
@@ -159,7 +159,6 @@ impl Service {
             return Err(Error::Authority);
         }
         let name = Self::observation_name(&prepared)?;
-        lock.validate()?;
         if self
             .slots
             .entry_exists(OsStr::new(&name))
@@ -176,7 +175,6 @@ impl Service {
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Authority))?;
-        lock.validate()?;
         self.journal_lifecycle(
             &prepared,
             json!({"phase":saved.evidence.worker.phase,"state":match saved.evidence.worker.phase {

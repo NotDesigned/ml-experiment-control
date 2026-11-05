@@ -202,25 +202,14 @@ impl Held {
                     Error::Storage
                 }
             })?;
-        let held = Self {
+        Ok(Self {
             root,
             file: lock.try_clone().map_err(|_| Error::Storage)?,
             _lock: Some(lock),
             binding: config.digest()?,
-        };
-        held.validate()?;
-        Ok(held)
-    }
-    fn validate(&self) -> Result<()> {
-        self.root
-            .verify_private_parent()
-            .map_err(|_| Error::Storage)?;
-        self.root
-            .validate_regular_entry(OsStr::new(LOCK), &self.file)
-            .map_err(|_| Error::Storage)
+        })
     }
     fn state(&mut self) -> Result<Record> {
-        self.validate()?;
         self.file
             .seek(SeekFrom::Start(0))
             .map_err(|_| Error::Storage)?;
@@ -229,7 +218,6 @@ impl Held {
             .take(LEDGER_BYTES + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| Error::Storage)?;
-        self.validate()?;
         if bytes.len() as u64 > LEDGER_BYTES || !bytes.ends_with(b"\n") {
             return Err(Error::Uncertain);
         }
@@ -272,7 +260,6 @@ impl Held {
         receipt: Option<String>,
         runtime_sha256: Option<String>,
     ) -> Result<()> {
-        self.validate()?;
         let record = Record {
             contract: CONTRACT.into(),
             phase,
@@ -284,8 +271,7 @@ impl Held {
         bytes.push(b'\n');
         self.root
             .append_regular(OsStr::new(LOCK), &bytes, LEDGER_BYTES)
-            .map_err(|_| Error::Storage)?;
-        self.validate()
+            .map_err(|_| Error::Storage)
     }
     fn runtime(&mut self, config: &Config) -> Result<BTreeMap<String, String>> {
         let record = self.state()?;
@@ -344,7 +330,6 @@ impl Held {
         } else {
             None
         };
-        self.validate()?;
         Ok(Observation {
             contract: CONTRACT.into(),
             identity: target.identity,
@@ -536,7 +521,6 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         &environment,
     )
     .map_err(|_| Error::Uncertain)?;
-    held.validate().map_err(|_| Error::Uncertain)?;
     output_parent
         .verify_private_parent()
         .map_err(|_| Error::Uncertain)?;
@@ -567,5 +551,10 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         initial.runtime_environment_sha256,
     )
     .map_err(|_| Error::Uncertain)?;
-    held.observe(config)
+    // The FINISHED line must read back from the ledger this run has held.
+    let finished = held.observe(config)?;
+    if finished.phase != Phase::Finished {
+        return Err(Error::Uncertain);
+    }
+    Ok(finished)
 }

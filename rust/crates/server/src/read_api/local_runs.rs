@@ -182,14 +182,6 @@ impl Api {
             )
             .map_err(why_lock!(crate::tracking::Error::Storage))
     }
-    pub fn validate_local_publisher_leader(
-        &self,
-        f: &std::fs::File,
-    ) -> Result<(), crate::tracking::Error> {
-        self.registry
-            .validate_regular_entry(OsStr::new(".local-publisher.lock"), f)
-            .map_err(|_| crate::tracking::Error::Storage)
-    }
     pub fn local_publisher_store(&self) -> Result<crate::records::Store, crate::tracking::Error> {
         crate::records::Store::open(
             &self.registry_root,
@@ -399,7 +391,7 @@ impl Api {
                 "local execution differs",
             ));
         }
-        let lock = dir
+        let _lock = dir
             .lock(OsStr::new(".local-ingress.lock"), LockOptions::default())
             .map_err(why_lock!(
                 error(
@@ -409,8 +401,6 @@ impl Api {
                 ),
                 invalid()
             ))?;
-        dir.validate_regular_entry(OsStr::new(".local-ingress.lock"), &lock)
-            .map_err(io)?;
         let ingress = dir.child(OsStr::new("local-ingress"), false).map_err(io)?;
         let receipts = ingress.child(OsStr::new("packets"), false).map_err(io)?;
         let binding =

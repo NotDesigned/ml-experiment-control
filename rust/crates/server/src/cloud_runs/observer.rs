@@ -36,19 +36,14 @@ impl Observer {
         let handle = thread::Builder::new()
             .name("native-cloud-observer".into())
             .spawn(move || {
+                // Moved in by name: the flock must live as long as this thread.
+                let _leader = leader;
                 let start = Instant::now();
                 let mut schedule = ml_exp_core::polling::Schedule::default();
                 let policy = service.polling.clone();
                 let mut candidates = BTreeSet::new();
                 let mut discover_at = 0;
                 while !flag.load(Ordering::Relaxed) {
-                    if service
-                        .directory
-                        .validate_regular_entry(OsStr::new(".observer.lock"), &leader)
-                        .is_err()
-                    {
-                        break;
-                    }
                     let elapsed = start.elapsed().as_secs();
                     if elapsed >= discover_at {
                         if let Ok(found) = service.observer_candidates() {

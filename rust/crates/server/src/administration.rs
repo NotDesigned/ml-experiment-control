@@ -28,7 +28,7 @@ fn admission(root: &Path, exclusive: bool) -> Result<Option<Admission>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(invalid()),
     };
-    let file = directory
+    directory
         .lock(
             OsStr::new(".admission.lock"),
             LockOptions {
@@ -36,11 +36,8 @@ fn admission(root: &Path, exclusive: bool) -> Result<Option<Admission>> {
                 ..Default::default()
             },
         )
-        .map_err(why_lock!(invalid()))?;
-    directory
-        .validate_regular_entry(OsStr::new(".admission.lock"), &file)
-        .map_err(|_| invalid())?;
-    Ok(Some(file))
+        .map(Some)
+        .map_err(why_lock!(invalid()))
 }
 pub(crate) fn authorship_guard(root: &Path) -> Result<Option<Admission>> {
     admission(root, false)

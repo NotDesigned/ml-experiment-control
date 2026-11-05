@@ -10,9 +10,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
-    fs::File,
     path::{Path, PathBuf},
-    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -79,27 +77,12 @@ struct Loaded {
     normalized_journal: Option<Vec<u8>>,
     missing: Option<Value>,
 }
-struct Lock<'a> {
-    store: &'a Store,
-    file: FileLock,
-}
-impl Lock<'_> {
-    fn validate(&self) -> Result<(), Error> {
-        self.store.directory.verify_private_parent()?;
-        self.store
-            .directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.store.anchor)?;
-        self.store
-            .directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.file)?;
-        Ok(())
-    }
-}
+/// Proof that the caller holds `.registry.lock`.
+type Lock = FileLock;
 
 #[derive(Clone)]
 pub struct Store {
     directory: Directory,
-    anchor: Arc<File>,
 }
 
 /// Stored native paths were already resolved by trusted configuration. Reading
@@ -234,17 +217,15 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self, Error> {
         let directory = Directory::open(path, false)?;
         directory.verify_private_parent()?;
-        let anchor = Arc::new(directory.open_regular_read(OsStr::new(LOCK))?);
-        let store = Self { directory, anchor };
+        let store = Self { directory };
         {
             let lock = store.lock(false)?;
             store.load(&lock)?;
         }
         Ok(store)
     }
-    fn lock(&self, exclusive: bool) -> Result<Lock<'_>, Error> {
-        let file = self
-            .directory
+    fn lock(&self, exclusive: bool) -> Result<Lock, Error> {
+        self.directory
             .lock(
                 OsStr::new(LOCK),
                 LockOptions {
@@ -262,13 +243,9 @@ impl Store {
                 } else {
                     Error::from(e)
                 }
-            })?;
-        let lock = Lock { store: self, file };
-        lock.validate()?;
-        Ok(lock)
+            })
     }
-    fn load(&self, lock: &Lock<'_>) -> Result<Loaded, Error> {
-        lock.validate()?;
+    fn load(&self, _lock: &Lock) -> Result<Loaded, Error> {
         let head = self.directory.read_regular(OsStr::new(HEAD), MAX_HEAD)?;
         let state = durable::Snapshot::from_value(&decode(&head)?)?;
         let registry = registry(&state.value)?;
@@ -281,7 +258,6 @@ impl Store {
         if self.directory.read_regular(OsStr::new(HEAD), MAX_HEAD)? != head {
             return Err(Error::Invalid);
         }
-        lock.validate()?;
         Ok(Loaded {
             state,
             registry,
@@ -300,14 +276,12 @@ impl Store {
             revision: loaded.state.revision,
             journal_pending: loaded.missing.is_some() || loaded.normalized_journal.is_some(),
         };
-        lock.validate()?;
         Ok(result)
     }
-    fn repair(&self, lock: &Lock<'_>, loaded: Loaded) -> Result<Loaded, Error> {
+    fn repair(&self, lock: &Lock, loaded: Loaded) -> Result<Loaded, Error> {
         if loaded.normalized_journal.is_none() && loaded.missing.is_none() {
             return Ok(loaded);
         }
-        lock.validate()?;
         let result = (|| {
             if let Some(bytes) = loaded.normalized_journal {
                 self.directory.replace_regular(OsStr::new(EVENTS), &bytes)?;
@@ -329,7 +303,7 @@ impl Store {
     }
     fn persist(
         &self,
-        lock: &Lock<'_>,
+        lock: &Lock,
         loaded: Loaded,
         change: projects::Commit,
         expected: Option<u64>,
@@ -370,7 +344,6 @@ impl Store {
         {
             return Err(Error::Invalid);
         }
-        lock.validate()?;
         (|| {
             let repaired = self.repair(lock, loaded)?;
             if repaired.state.revision + 1 != plan.revision {
@@ -386,7 +359,7 @@ impl Store {
             if final_state.state.revision != plan.revision || final_state.missing.is_some() {
                 return Err(Error::Invalid);
             }
-            lock.validate()
+            Ok(())
         })()
         .map_err(|_: Error| Error::EffectUncertain)
     }
@@ -414,15 +387,11 @@ impl Store {
             return Err(Error::Invalid);
         }
         let (result, change) = plan(&loaded.registry, operation, now)?;
-        let effects =
-            change.is_some() || loaded.missing.is_some() || loaded.normalized_journal.is_some();
         if let Some(change) = change {
             self.persist(&lock, loaded, change, expected_revision, identity)?;
         } else {
             self.repair(&lock, loaded)?;
         }
-        lock.validate()
-            .map_err(|e| if effects { Error::EffectUncertain } else { e })?;
         Ok(result)
     }
 }

@@ -371,7 +371,6 @@ pub(super) fn scan(
     for root in roots {
         root.verify_private_parent()?;
     }
-    guard.validate()?;
     // IDs are unique; order is only stable output, never current selection.
     runs.sort_by(|left, right| left.reference.run_id.cmp(&right.reference.run_id));
     deleted.sort_by(|left, right| left.reference.run_id.cmp(&right.reference.run_id));

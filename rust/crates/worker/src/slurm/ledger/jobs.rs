@@ -158,10 +158,9 @@ impl Helper {
         &self,
         request: &Request,
         snapshot: &Snapshot,
-        lock: &Lock,
+        _lock: &Lock,
     ) -> Result<()> {
         self.verify_issued(request.intent(), &snapshot.directory)?;
-        lock.validate()?;
         match self.read_ledger(request.intent())? {
             ReadLedger::Found(current)
                 if current

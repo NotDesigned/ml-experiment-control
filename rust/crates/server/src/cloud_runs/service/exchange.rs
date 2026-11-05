@@ -134,7 +134,7 @@ impl Service {
         if let Some(retry) = self.sync_recovery_request(action, &request.request_id)? {
             return self.retry_sync(action, &request.request_id, &retry, now, cancelled);
         }
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.load(action)?;
         if self.actions.observe(action).map_err(op)?["execution"]["status"] != "VERIFIED" {
             return Err(cloud::Error::evidence());
@@ -152,7 +152,6 @@ impl Service {
             .job(&execution.job)
             .map_err(why!(cloud::Error::configuration()))?;
         let check = || {
-            lock.validate()?;
             guard
                 .require_observed_live(&execution.job.project, &execution.job.run_id)
                 .map_err(why!(cloud::Error::evidence()))?;
@@ -346,7 +345,7 @@ impl Service {
             uncertain: false,
         };
         // Authentication precedes journal creation, packet processing and any write.
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self
             .saved_attempt(project, run, attempt)?
             .ok_or_else(denied)?;
@@ -534,7 +533,6 @@ impl Service {
             .require_observed_live(project, run)
             .map_err(why!(cloud::Error::evidence()))?;
         self.check(&prepared)?;
-        lock.validate()?;
         let bytes = encode(&saved)?;
         if bytes.len() > 4 * 1024 * 1024 {
             return Err(cloud::Error::evidence());
@@ -648,8 +646,7 @@ impl Service {
 }
 impl crate::tracking::Source for Service {
     fn publisher_leader(&self) -> Result<FileLock, crate::tracking::Error> {
-        let file = self
-            .directory
+        self.directory
             .lock(
                 OsStr::new(".publisher.lock"),
                 LockOptions {
@@ -657,16 +654,7 @@ impl crate::tracking::Source for Service {
                     ..Default::default()
                 },
             )
-            .map_err(why_lock!(crate::tracking::Error::Storage))?;
-        self.directory
-            .validate_regular_entry(OsStr::new(".publisher.lock"), &file)
-            .map_err(|_| crate::tracking::Error::Storage)?;
-        Ok(file)
-    }
-    fn validate_publisher_leader(&self, file: &File) -> Result<(), crate::tracking::Error> {
-        self.directory
-            .validate_regular_entry(OsStr::new(".publisher.lock"), file)
-            .map_err(|_| crate::tracking::Error::Storage)
+            .map_err(why_lock!(crate::tracking::Error::Storage))
     }
     fn publisher_store(&self) -> Result<crate::records::Store, crate::tracking::Error> {
         crate::records::Store::open(

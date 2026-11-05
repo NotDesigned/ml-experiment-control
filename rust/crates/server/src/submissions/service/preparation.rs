@@ -1,37 +1,11 @@
 //! Bounded immutable preparation slots and at-most-once admission publication.
 use super::*;
 
-pub(super) struct PreparationLock<'a> {
-    service: &'a Service,
-    file: FileLock,
-}
-impl PreparationLock<'_> {
-    pub(super) fn validate(&self) -> Result<()> {
-        self.service
-            .directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.service.lock_anchor)
-            .map_err(|_| Error::Authority)?;
-        self.service
-            .directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.file)
-            .map_err(|_| Error::Authority)
-    }
-}
 impl Service {
-    pub(super) fn lock(&self) -> Result<PreparationLock<'_>> {
+    pub(super) fn lock(&self) -> Result<FileLock> {
         self.directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.lock_anchor)
-            .map_err(|_| Error::Authority)?;
-        let file = self
-            .directory
             .lock(OsStr::new(LOCK), LockOptions::default())
-            .map_err(why_lock!(Error::Busy, Error::Authority))?;
-        let lock = PreparationLock {
-            service: self,
-            file,
-        };
-        lock.validate()?;
-        Ok(lock)
+            .map_err(why_lock!(Error::Busy, Error::Authority))
     }
     pub(super) fn slot_name(project: &str, run: &str, attempt: &str) -> Result<String> {
         Ok(format!(
@@ -107,7 +81,7 @@ impl Service {
             .fence
             .existing_observation_guard(project, run)
             .map_err(why!(Error::Authority))?;
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let facts = self.facts(project, run)?;
         let backend = &self.backends[&facts.backend];
         let definition = native::definition(
@@ -154,7 +128,6 @@ impl Service {
                 context.now,
                 context.expires,
             )?;
-            lock.validate()?;
             let bytes = serde_json::to_vec(&prepared).map_err(why!(Error::Configuration))?;
             if bytes.len() as u64 > MAX_SLOT_BYTES {
                 return Err(Error::Configuration);
@@ -175,7 +148,6 @@ impl Service {
             snapshot["action_id"].as_str().ok_or(Error::Authority)?,
             &prepared.request,
         )?;
-        lock.validate().map_err(|_| Error::Uncertain)?;
         self.check(&prepared).map_err(|_| Error::Uncertain)?;
         let mut view = self.public(snapshot, context.now)?;
         view["reused"] = json!(reused);

@@ -234,7 +234,7 @@ pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
     let channel = package.channel.as_ref().ok_or(Error::Configuration)?;
     let root = Directory::open(&package.config.attempt_root, false).map_err(|_| Error::Storage)?;
     root.verify_private_parent().map_err(|_| Error::Storage)?;
-    let lock = root
+    let _lock = root
         .lock(
             OsStr::new(".cloud-exchange.lock"),
             LockOptions {
@@ -305,9 +305,6 @@ pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
     state.sequence = ack.sequence;
     state.packet_sha256 = Some(ack.packet_sha256);
     state.pending = None;
-    root.validate_regular_entry(OsStr::new(".cloud-exchange.lock"), &lock)
-        .map_err(|_| Error::Storage)?;
-    root.verify_private_parent().map_err(|_| Error::Storage)?;
     save(&root, &state)?;
     Ok(state.complete)
 }

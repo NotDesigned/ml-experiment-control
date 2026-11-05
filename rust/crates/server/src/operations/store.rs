@@ -8,14 +8,7 @@ use ml_exp_core::{
 use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait, effective_uid};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{
-    cell::RefCell,
-    collections::BTreeMap,
-    ffi::OsStr,
-    fs::File,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::{ffi::OsStr, path::PathBuf};
 
 #[derive(Clone, Copy, Debug)]
 pub enum CommandPhase {
@@ -43,25 +36,8 @@ pub struct ClaimContext<'a> {
     pub pid: u32,
 }
 
-struct Lock {
-    file: FileLock,
-    anchor: Arc<File>,
-    directory: Directory,
-    observed: RefCell<BTreeMap<PathBuf, Directory>>,
-}
-impl Lock {
-    fn validate(&self) -> Result<()> {
-        self.directory.verify_private_parent()?;
-        self.directory
-            .validate_regular_entry(OsStr::new(".actions.lock"), &self.anchor)?;
-        self.directory
-            .validate_regular_entry(OsStr::new(".actions.lock"), &self.file)?;
-        for directory in self.observed.borrow().values() {
-            directory.verify_private_parent()?;
-        }
-        Ok(())
-    }
-}
+/// Proof that the caller holds `.actions.lock`.
+type Lock = FileLock;
 
 /// The filesystem lock covers immutable plan/command writes and their database
 /// publication. SQLite itself owns execution CAS and state+audit atomicity.
@@ -69,8 +45,6 @@ impl Lock {
 pub struct Store {
     root: PathBuf,
     directory: Directory,
-    lock_anchor: Arc<File>,
-    directories: Arc<Mutex<BTreeMap<String, Directory>>>,
     database: Database,
 }
 impl Store {
@@ -80,14 +54,11 @@ impl Store {
         let root = root.into();
         let directory = Directory::open(&root, false)?;
         directory.verify_private_parent()?;
-        let file = directory.open_regular_read(OsStr::new(".actions.lock"))?;
-        directory.validate_regular_entry(OsStr::new(".actions.lock"), &file)?;
+        directory.open_regular_read(OsStr::new(".actions.lock"))?;
         Ok(Self {
             database: Database::in_directory(directory.clone())?,
             root,
             directory,
-            lock_anchor: Arc::new(file),
-            directories: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
@@ -95,89 +66,43 @@ impl Store {
         let directory = Directory::open(&root, true)?;
         directory.verify_private_parent()?;
         // Only a completely fresh dedicated root may bootstrap its lock.
-        // Existing plans/SQLite/marker without it require explicit offline
-        // recovery; ordinary reopen/read must not create a second lock domain.
-        let lock_name = OsStr::new(".actions.lock");
-        let options = |create| LockOptions {
-            create,
-            wait: Wait::Block,
-            ..Default::default()
-        };
-        let lock = match directory.lock(lock_name, options(false)) {
-            Ok(lock) => lock,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let entries = directory.entry_names()?;
-                if entries.is_empty() {
-                    directory.lock(lock_name, options(true))?
-                } else if entries.iter().any(|name| name == lock_name) {
-                    directory.lock(lock_name, options(false))?
-                } else {
-                    return Err(Error::Invalid(
-                        "existing Action storage is missing its lock; offline recovery required",
-                    ));
-                }
-            }
-            Err(error) => return Err(error.into()),
-        };
-        directory.validate_regular_entry(lock_name, &lock)?;
-        // The anchor only pins the inode: dropping `lock` releases the flock on
-        // the description the clone shares.
-        let file = lock.try_clone()?;
-        drop(lock);
+        // Existing storage without it requires explicit offline recovery;
+        // ordinary reopen/read must not create a second lock domain.
+        let create = directory.entry_names()?.is_empty();
+        drop(directory.lock(
+            OsStr::new(".actions.lock"),
+            LockOptions {
+                create,
+                wait: Wait::Block,
+                ..Default::default()
+            },
+        )?);
         Ok(Self {
             database: Database::in_directory(directory.clone())?,
             root,
             directory,
-            lock_anchor: Arc::new(file),
-            directories: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
     pub fn database(&self) -> &Database {
         &self.database
     }
-    /// Display/test provenance only; repository I/O uses retained directories.
+    /// Display/test provenance only; repository I/O goes through `Directory`.
     pub fn directory(&self, action_id: &str) -> Result<PathBuf> {
         operations::validate_action_id(action_id)?;
         self.directory.verify_attached()?;
         Ok(self.root.join(action_id))
     }
-    fn action_directory(&self, action_id: &str, create: bool, lock: &Lock) -> Result<Directory> {
+    fn action_directory(&self, action_id: &str, create: bool, _lock: &Lock) -> Result<Directory> {
         operations::validate_action_id(action_id)?;
-        let directory = self
-            .fixed_directory(action_id, || {
-                self.directory.child(OsStr::new(action_id), create)
-            })
+        self.directory
+            .child(OsStr::new(action_id), create)
             .map_err(|error| {
                 if !create && error.kind() == std::io::ErrorKind::NotFound {
                     Error::NotFound
                 } else {
                     error.into()
                 }
-            })?;
-        lock.observed
-            .borrow_mut()
-            .insert(directory.path(), directory.clone());
-        Ok(directory)
-    }
-    fn fixed_directory(
-        &self,
-        key: &str,
-        open: impl FnOnce() -> std::io::Result<Directory>,
-    ) -> std::io::Result<Directory> {
-        let mut directories = self
-            .directories
-            .lock()
-            .map_err(|_| std::io::Error::other("Action directory anchor lock poisoned"))?;
-        let directory = match directories.get(key) {
-            Some(directory) => directory.clone(),
-            None => {
-                let directory = open()?;
-                directories.insert(key.into(), directory.clone());
-                directory
-            }
-        };
-        directory.verify_private_parent()?;
-        Ok(directory)
+            })
     }
     fn subdirectory(
         &self,
@@ -187,40 +112,20 @@ impl Store {
         lock: &Lock,
     ) -> Result<Directory> {
         let action = self.action_directory(action_id, false, lock)?;
-        let directory = self.fixed_directory(&format!("{action_id}/{name}"), || {
-            action.child(OsStr::new(name), create)
-        })?;
-        lock.observed
-            .borrow_mut()
-            .insert(directory.path(), directory.clone());
-        Ok(directory)
+        Ok(action.child(OsStr::new(name), create)?)
     }
     fn lock(&self) -> Result<Lock> {
-        self.directory
-            .validate_regular_entry(OsStr::new(".actions.lock"), &self.lock_anchor)?;
-        let file = self.directory.lock(
+        Ok(self.directory.lock(
             OsStr::new(".actions.lock"),
             LockOptions {
                 wait: Wait::Block,
                 ..Default::default()
             },
-        )?;
-        let lock = Lock {
-            file,
-            anchor: self.lock_anchor.clone(),
-            directory: self.directory.clone(),
-            observed: RefCell::new(BTreeMap::new()),
-        };
-        lock.validate()?;
-        Ok(lock)
+        )?)
     }
     fn locked<T>(&self, operation: impl FnOnce(&Lock) -> Result<T>) -> Result<T> {
         let lock = self.lock()?;
-        let result = operation(&lock);
-        if lock.validate().is_err() {
-            return Err(crate::storage::Error::EffectUncertain.into());
-        }
-        result
+        operation(&lock)
     }
     fn read_json(directory: &Directory, name: &OsStr) -> Result<Option<Value>> {
         match directory.regular_identity(name)? {
@@ -252,13 +157,13 @@ impl Store {
         plan: &Value,
         now: &str,
         transition_id: &str,
-        lock: &Lock,
+        _lock: &Lock,
     ) -> Result<Value> {
-        let execution = self.database.read(&|| lock.validate(), action_id)?;
+        let execution = self.database.read(action_id)?;
         if execution.as_object().is_some_and(|v| !v.is_empty()) {
             return Ok(execution);
         }
-        self.database.commit(&||lock.validate(),action_id,&operations::initial_execution(plan),&json!({"timestamp":now,"event":"action_prepared","payload":{"ready":plan.get("ready"),"operation":plan.get("operation")}}),None,transition_id)
+        self.database.commit(action_id,&operations::initial_execution(plan),&json!({"timestamp":now,"event":"action_prepared","payload":{"ready":plan.get("ready"),"operation":plan.get("operation")}}),None,transition_id)
     }
     fn snapshot_unlocked(
         &self,
@@ -269,7 +174,7 @@ impl Store {
     ) -> Result<Value> {
         let plan = self.plan(action_id, lock)?;
         let execution = self.execution(action_id, &plan, now, transition_id, lock)?;
-        let journal = self.database.journal(&|| lock.validate(), action_id, 100)?;
+        let journal = self.database.journal(action_id, 100)?;
         let mut snapshot = plan.as_object().cloned().ok_or(Error::Invalid("plan"))?;
         snapshot.insert("execution".into(), execution);
         snapshot.insert("journal".into(), json!(journal));
@@ -286,7 +191,7 @@ impl Store {
             if plan.get("action_id").and_then(Value::as_str) != Some(action_id) {
                 return Err(Error::Invalid("plan Action identity mismatch"));
             }
-            let execution = self.database.observe(&|| lock.validate(), action_id)?;
+            let execution = self.database.observe(action_id)?;
             let mut value = plan.as_object().cloned().ok_or(Error::Invalid("plan"))?;
             value.insert("execution".into(), execution);
             Ok(Value::Object(value))
@@ -314,7 +219,7 @@ impl Store {
                     return Err(Error::IdempotencyConflict);
                 }
             } else {
-                let execution = self.database.observe(&|| lock.validate(), action_id)?;
+                let execution = self.database.observe(action_id)?;
                 if !matches!(
                     execution["status"].as_str(),
                     Some("PREPARED" | "AUTHORIZED")
@@ -373,7 +278,7 @@ impl Store {
                     return Err(Error::IdempotencyConflict);
                 }
             } else {
-                let execution = self.database.observe(&|| lock.validate(), action_id)?;
+                let execution = self.database.observe(action_id)?;
                 if !matches!(
                     execution["status"].as_str(),
                     Some("PREPARED" | "AUTHORIZED")
@@ -433,10 +338,9 @@ impl Store {
         action_id: &str,
         transition: &Transition,
         transition_id: &str,
-        lock: &Lock,
+        _lock: &Lock,
     ) -> Result<()> {
         self.database.commit(
-            &|| lock.validate(),
             action_id,
             &transition.execution,
             &transition.event,
@@ -606,7 +510,7 @@ impl Store {
     /// removed its plan directory. Called only by explicit native admission.
     pub fn has_scope_history(&self, scope: &Scope) -> Result<bool> {
         self.locked(|lock| {
-            let committed = self.database.admission_action_ids(&|| lock.validate())?;
+            let committed = self.database.admission_action_ids()?;
             let mut ids = std::collections::BTreeSet::from_iter(committed.iter().cloned());
             for name in self.directory.entry_names_limited(8192)? {
                 if let Some(id) = name
@@ -655,9 +559,8 @@ impl Store {
         event_id: &str,
         now: &str,
     ) -> Result<()> {
-        self.locked(|lock| {
+        self.locked(|_lock| {
             self.database.append_event(
-                &|| lock.validate(),
                 action_id,
                 &json!({"timestamp":now,"event":event,"payload":payload}),
                 event_id,
@@ -718,8 +621,7 @@ impl Store {
                 "event": format!("{}_command_recorded", phase.name()),
                 "payload": {},
             });
-            self.database
-                .append_event(&|| lock.validate(), action_id, &event, &event_id)?;
+            self.database.append_event(action_id, &event, &event_id)?;
             Ok(record)
         })
     }

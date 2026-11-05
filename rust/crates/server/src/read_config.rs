@@ -185,9 +185,7 @@ pub fn initialize(path: &Path) -> Result<String, Error> {
     )
     .map_err(why!(Error))?;
     let fence = RunFence::new(path);
-    let guard = fence.shared().map_err(why!(Error))?;
-    guard.validate().map_err(|_| Error)?;
-    root.verify_private_parent().map_err(|_| Error)?;
+    let _guard = fence.shared().map_err(why!(Error))?;
     Ok(workspace_id)
 }
 
@@ -213,9 +211,7 @@ pub fn workspace(path: &Path) -> Result<(Directory, String), Error> {
         return Err(Error);
     }
     let fence = RunFence::new(path);
-    let guard = fence.shared_existing().map_err(why!(Error))?;
-    guard.validate().map_err(|_| Error)?;
-    root.verify_private_parent().map_err(|_| Error)?;
+    let _guard = fence.shared_existing().map_err(why!(Error))?;
     Ok((root, marker.workspace_id))
 }
 

@@ -150,7 +150,7 @@ impl Service {
         command: Command,
         cancelled: &AtomicBool,
     ) -> Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.load(action)?;
         let guard = self
             .fence
@@ -181,7 +181,6 @@ impl Service {
         let helper::ReplyOutcome::Artifacts { publication: state } = reply.outcome else {
             return Err(Error::ArtifactsUnavailable);
         };
-        lock.validate()?;
         self.check(&prepared)?;
         self.artifact_save(&prepared, &state)?;
         self.artifacts(action)

@@ -101,8 +101,7 @@ impl Service {
         self.journal(&self.saved(project, run)?.ok_or(Error::Missing)?)
     }
     pub fn publisher_leader(&self) -> Result<FileLock> {
-        let file = self
-            .directory
+        self.directory
             .lock(
                 OsStr::new(".publisher.lock"),
                 LockOptions {
@@ -110,16 +109,7 @@ impl Service {
                     ..Default::default()
                 },
             )
-            .map_err(why_lock!(Error::Busy, Error::Authority))?;
-        self.directory
-            .validate_regular_entry(OsStr::new(".publisher.lock"), &file)
-            .map_err(|_| Error::Authority)?;
-        Ok(file)
-    }
-    pub fn validate_publisher_leader(&self, file: &File) -> Result<()> {
-        self.directory
-            .validate_regular_entry(OsStr::new(".publisher.lock"), file)
-            .map_err(|_| Error::Authority)
+            .map_err(why_lock!(Error::Busy, Error::Authority))
     }
     pub(super) fn journal(&self, prepared: &Prepared) -> Result<crate::records::Store> {
         let seed = self

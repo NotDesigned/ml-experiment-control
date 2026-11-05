@@ -22,8 +22,7 @@ struct Sample {
 
 impl Service {
     pub fn background_leader(&self) -> Result<FileLock> {
-        let file = self
-            .directory
+        self.directory
             .lock(
                 OsStr::new(".observer.lock"),
                 LockOptions {
@@ -31,16 +30,7 @@ impl Service {
                     ..Default::default()
                 },
             )
-            .map_err(why_lock!(Error::Busy, Error::Authority))?;
-        self.directory
-            .validate_regular_entry(OsStr::new(".observer.lock"), &file)
-            .map_err(|_| Error::Authority)?;
-        Ok(file)
-    }
-    pub fn validate_background_leader(&self, file: &File) -> Result<()> {
-        self.directory
-            .validate_regular_entry(OsStr::new(".observer.lock"), file)
-            .map_err(|_| Error::Authority)
+            .map_err(why_lock!(Error::Busy, Error::Authority))
     }
     pub fn background_report(
         &self,

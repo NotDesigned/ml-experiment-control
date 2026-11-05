@@ -68,7 +68,7 @@ impl Service {
         token: &str,
         receipt: Receipt,
     ) -> cloud::Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let mut saved = self.data_auth(project, executor, asset, token, "ready")?;
         let definition = &self
             .backends
@@ -88,7 +88,6 @@ impl Service {
             .publish(receipt)
             .map_err(why!(cloud::Error::evidence()))?;
         saved.diagnostic = None;
-        lock.validate()?;
         self.slots
             .replace_regular(
                 OsStr::new(&Self::data_name(project, executor, asset)?),
@@ -151,7 +150,7 @@ impl Service {
         status: u16,
         value: Value,
     ) -> cloud::Result<()> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let mut saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
@@ -217,7 +216,6 @@ impl Service {
             saved.diagnostic =
                 Some(json!({"code":"DATA_IMAGE_PUBLICATION_UNCONFIRMED","http_status":status}));
         }
-        lock.validate()?;
         self.slots
             .replace_regular(
                 OsStr::new(&Self::data_name(project, executor, asset)?),
@@ -290,13 +288,12 @@ impl Service {
             recipe
                 .validate()
                 .map_err(why!(cloud::Error::configuration()))?;
-            let lock = self.lock()?;
+            let _lock = self.lock()?;
             saved = self
                 .data_saved(project, executor, asset)?
                 .ok_or_else(missing)?;
             if saved.image_recipe.is_none() {
                 saved.image_recipe = Some(recipe);
-                lock.validate()?;
                 self.slots
                     .replace_regular(
                         OsStr::new(&Self::data_name(project, executor, asset)?),
@@ -312,7 +309,6 @@ impl Service {
                 .ok_or_else(missing)?;
             let dispatch = !saved.image_started;
             saved.image_started = true;
-            lock.validate()?;
             self.slots
                 .replace_regular(
                     OsStr::new(&Self::data_name(project, executor, asset)?),
@@ -426,12 +422,11 @@ impl Service {
         }
         let job = job_for(request_id)?;
         {
-            let lock = self.lock()?;
+            let _lock = self.lock()?;
             saved = self
                 .data_saved(project, executor, asset)?
                 .ok_or_else(missing)?;
             saved.copy_request_id = Some(request_id.into());
-            lock.validate()?;
             self.slots
                 .replace_regular(
                     OsStr::new(&Self::data_name(project, executor, asset)?),
@@ -465,12 +460,11 @@ impl Service {
                 &AtomicBool::new(false),
             )?
         };
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
         saved.copy_status = Some(status);
-        lock.validate()?;
         self.slots
             .replace_regular(
                 OsStr::new(&Self::data_name(project, executor, asset)?),
