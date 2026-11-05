@@ -21,6 +21,7 @@ pub mod directory;
 #[cfg(windows)]
 #[path = "directory_windows.rs"]
 pub mod directory;
+mod file_lock;
 #[cfg(target_os = "linux")]
 pub mod framing;
 #[cfg(target_os = "linux")]

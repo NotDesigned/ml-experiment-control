@@ -3,10 +3,9 @@
 //! Trusted private configuration fixes the launch digest, identity and paths.
 //! There is no manifest fetch, remote command RPC, provider call or upload in
 //! this slice. Unsupported managed I/O is refused before the durable start.
-use fs2::FileExt;
 pub use ml_exp_core::managed::Config;
 use ml_exp_core::{launch, managed::absolute};
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -177,38 +176,36 @@ fn verified(
 struct Held {
     root: Directory,
     file: File,
+    /// None for `sample`, which observes the ledger without taking the lock.
+    _lock: Option<FileLock>,
     binding: String,
-}
-impl Drop for Held {
-    fn drop(&mut self) {
-        // A concurrent Command fork can briefly inherit this open description
-        // before CLOEXEC closes it. Closing only our FD would retain the lock
-        // in that child; explicit unlock releases the owner's completed guard.
-        let _ = FileExt::unlock(&self.file);
-    }
 }
 impl Held {
     fn open(config: &Config, exclusive: bool) -> Result<Self> {
         config.validate()?;
         let root = Directory::open(&config.attempt_root, false).map_err(|_| Error::Storage)?;
-        let file = root
-            .open_existing_lock_rw(OsStr::new(LOCK))
-            .map_err(|_| Error::Storage)?;
-        let result = if exclusive {
-            FileExt::try_lock_exclusive(&file)
-        } else {
-            FileExt::try_lock_shared(&file)
-        };
-        result.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::WouldBlock {
-                Error::Busy
-            } else {
-                Error::Storage
-            }
-        })?;
+        // The phase ledger: it is never created here, because a recreated
+        // ledger reads as unstarted and could re-run training.
+        let lock = root
+            .lock(
+                OsStr::new(LOCK),
+                LockOptions {
+                    shared: !exclusive,
+                    write: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    Error::Busy
+                } else {
+                    Error::Storage
+                }
+            })?;
         let held = Self {
             root,
-            file,
+            file: lock.try_clone().map_err(|_| Error::Storage)?,
+            _lock: Some(lock),
             binding: config.digest()?,
         };
         held.validate()?;
@@ -395,13 +392,25 @@ pub fn initialize_with_environment(
         .map_err(|_| Error::Storage)?;
     root.publish_new(OsStr::new(MANIFEST), &bytes)
         .map_err(|_| Error::Storage)?;
-    let file = root
-        .open_lock(OsStr::new(LOCK))
-        .map_err(|_| Error::Storage)?;
-    FileExt::try_lock_exclusive(&file).map_err(|_| Error::Busy)?;
+    let lock = root
+        .lock(
+            OsStr::new(LOCK),
+            LockOptions {
+                create: true,
+                ..Default::default()
+            },
+        )
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                Error::Busy
+            } else {
+                Error::Storage
+            }
+        })?;
     let mut held = Held {
         root,
-        file,
+        file: lock.try_clone().map_err(|_| Error::Storage)?,
+        _lock: Some(lock),
         binding: config.digest()?,
     };
     let runtime_sha256 = if config.runtime_environment.is_empty() {
@@ -438,6 +447,7 @@ pub fn sample(config: &Config) -> Result<Observation> {
     let mut held = Held {
         root,
         file,
+        _lock: None,
         binding: config.digest()?,
     };
     let before = held.state()?;
@@ -558,29 +568,4 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
     )
     .map_err(|_| Error::Uncertain)?;
     held.observe(config)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn completed_guard_unlocks_even_when_an_inherited_description_remains_open() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = Directory::open(temp.path(), false).unwrap();
-        let file = root.open_lock(OsStr::new(LOCK)).unwrap();
-        FileExt::try_lock_exclusive(&file).unwrap();
-        // try_clone shares the kernel open-file-description, as fork does.
-        let inherited = file.try_clone().unwrap();
-        let held = Held {
-            root: root.clone(),
-            file,
-            binding: "synthetic".into(),
-        };
-        drop(held);
-        let next = root.open_existing_lock_rw(OsStr::new(LOCK)).unwrap();
-        FileExt::try_lock_exclusive(&next).unwrap();
-        FileExt::unlock(&next).unwrap();
-        drop(inherited);
-    }
 }

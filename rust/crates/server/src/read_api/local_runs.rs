@@ -1,10 +1,10 @@
 //! Local execution ingress shares the journal and publisher, never cloud launch.
 use super::*;
-use fs2::FileExt;
 use ml_exp_core::{
     local::{Cursor, FORMAT, Packet, Registration},
     records::Event,
 };
+use ml_exp_io::directory::{FileLock, LockOptions};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 
@@ -171,14 +171,16 @@ impl Api {
         self.local_store(project, run, &manifest, &sha, true)
             .map(Some)
     }
-    pub fn local_publisher_leader(&self) -> Result<std::fs::File, crate::tracking::Error> {
-        let f = self
-            .registry
-            .open_lock(OsStr::new(".local-publisher.lock"))
-            .map_err(why!(crate::tracking::Error::Storage))?;
-        f.try_lock_exclusive()
-            .map_err(|_| crate::tracking::Error::Storage)?;
-        Ok(f)
+    pub fn local_publisher_leader(&self) -> Result<FileLock, crate::tracking::Error> {
+        self.registry
+            .lock(
+                OsStr::new(".local-publisher.lock"),
+                LockOptions {
+                    create: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(why_lock!(crate::tracking::Error::Storage))
     }
     pub fn validate_local_publisher_leader(
         &self,
@@ -218,13 +220,19 @@ impl Api {
             .existing_observation_guard(project, &request.run_id)
             .map_err(why!(invalid()))?;
         let root = self.local_root(project, &request.run_id)?;
-        let registration_lock = self
+        let _registration_lock = self
             .registry
-            .open_lock(OsStr::new(".local-registration.lock"))
-            .map_err(io)?;
-        registration_lock
-            .try_lock_exclusive()
-            .map_err(|_| error(503, "LOCAL_INGRESS_BUSY", "local registration is busy"))?;
+            .lock(
+                OsStr::new(".local-registration.lock"),
+                LockOptions {
+                    create: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(why_lock!(
+                error(503, "LOCAL_INGRESS_BUSY", "local registration is busy"),
+                invalid()
+            ))?;
         if root.entry_exists(OsStr::new(&request.run_id)).map_err(io)? {
             let Some((dir, _, _)) = self.local_document(project, &request.run_id)? else {
                 return Err(invalid());
@@ -290,7 +298,7 @@ impl Api {
                 },
             )?;
             staging
-                .open_lock(OsStr::new(".local-ingress.lock"))
+                .create_lock_file(OsStr::new(".local-ingress.lock"))
                 .map_err(io)?;
             fence
                 .require_observed_live(project, &request.run_id)
@@ -318,11 +326,11 @@ impl Api {
                 .map_err(record)?;
         }
         let _ingress = dir
-            .open_existing_lock(OsStr::new(".local-ingress.lock"))
-            .map_err(io)?;
-        _ingress
-            .try_lock_exclusive()
-            .map_err(|_| error(503, "LOCAL_INGRESS_BUSY", "local stream is busy"))?;
+            .lock(OsStr::new(".local-ingress.lock"), LockOptions::default())
+            .map_err(why_lock!(
+                error(503, "LOCAL_INGRESS_BUSY", "local stream is busy"),
+                invalid()
+            ))?;
         let guard = store.guard(project, &request.run_id).map_err(record)?;
         let scope = store.scope(&guard, "attempt-001").map_err(record)?;
         store.append(&guard,&scope,&[Event{event_id:format!("local-attached.{}",request.execution_id),payload:json!({"kind":"lifecycle","data":{"phase":"LOCAL_ATTACHED","state":"RUNNING"}})}]).map_err(record)?;
@@ -392,15 +400,15 @@ impl Api {
             ));
         }
         let lock = dir
-            .open_existing_lock(OsStr::new(".local-ingress.lock"))
-            .map_err(io)?;
-        lock.try_lock_exclusive().map_err(|_| {
-            error(
-                503,
-                "LOCAL_INGRESS_BUSY",
-                "local stream is busy; repeat the same packet",
-            )
-        })?;
+            .lock(OsStr::new(".local-ingress.lock"), LockOptions::default())
+            .map_err(why_lock!(
+                error(
+                    503,
+                    "LOCAL_INGRESS_BUSY",
+                    "local stream is busy; repeat the same packet",
+                ),
+                invalid()
+            ))?;
         dir.validate_regular_entry(OsStr::new(".local-ingress.lock"), &lock)
             .map_err(io)?;
         let ingress = dir.child(OsStr::new("local-ingress"), false).map_err(io)?;

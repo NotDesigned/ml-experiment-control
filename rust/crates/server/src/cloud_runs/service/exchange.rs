@@ -647,13 +647,17 @@ impl Service {
     }
 }
 impl crate::tracking::Source for Service {
-    fn publisher_leader(&self) -> Result<File, crate::tracking::Error> {
+    fn publisher_leader(&self) -> Result<FileLock, crate::tracking::Error> {
         let file = self
             .directory
-            .open_lock(OsStr::new(".publisher.lock"))
-            .map_err(why!(crate::tracking::Error::Storage))?;
-        file.try_lock_exclusive()
-            .map_err(|_| crate::tracking::Error::Storage)?;
+            .lock(
+                OsStr::new(".publisher.lock"),
+                LockOptions {
+                    create: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(why_lock!(crate::tracking::Error::Storage))?;
         self.directory
             .validate_regular_entry(OsStr::new(".publisher.lock"), &file)
             .map_err(|_| crate::tracking::Error::Storage)?;

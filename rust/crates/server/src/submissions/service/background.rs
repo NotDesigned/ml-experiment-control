@@ -21,12 +21,17 @@ struct Sample {
 }
 
 impl Service {
-    pub fn background_leader(&self) -> Result<File> {
+    pub fn background_leader(&self) -> Result<FileLock> {
         let file = self
             .directory
-            .open_lock(OsStr::new(".observer.lock"))
-            .map_err(why!(Error::Authority))?;
-        file.try_lock_exclusive().map_err(|_| Error::Busy)?;
+            .lock(
+                OsStr::new(".observer.lock"),
+                LockOptions {
+                    create: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(why_lock!(Error::Busy, Error::Authority))?;
         self.directory
             .validate_regular_entry(OsStr::new(".observer.lock"), &file)
             .map_err(|_| Error::Authority)?;

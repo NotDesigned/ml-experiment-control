@@ -124,7 +124,7 @@ impl Store {
         {
             return Err(Error::Identity);
         }
-        let anchor = namespace.open_existing_lock(OsStr::new(LOCK))?;
+        let anchor = namespace.open_regular_read(OsStr::new(LOCK))?;
         let sources_dir = namespace.child(OsStr::new(SOURCES), false)?;
         let imports = namespace.child(OsStr::new(IMPORTS), false)?;
         let staging = namespace.child(OsStr::new(STAGING), false)?;

@@ -4,14 +4,12 @@
 #![cfg(unix)]
 #![forbid(unsafe_code)]
 
-use fs2::FileExt;
 use ml_exp_core::identity::{validate_id, validate_observation_id};
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait};
 use serde_json::{Map, Value, json};
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
-    fs::File,
     io,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
@@ -48,7 +46,7 @@ pub struct RunFence {
 pub struct Guard<'a> {
     fence: &'a RunFence,
     directory: Directory,
-    file: File,
+    file: FileLock,
     exclusive: bool,
 }
 
@@ -128,19 +126,17 @@ impl RunFence {
     }
     fn lock(&self, exclusive: bool, blocking: bool, initialize: bool) -> Result<Guard<'_>> {
         let directory = self.directory(initialize)?;
-        let file = if initialize {
-            directory.open_lock(OsStr::new(LOCK))?
-        } else {
-            directory.open_existing_lock(OsStr::new(LOCK))?
-        };
-        let result = match (exclusive, blocking) {
-            (true, true) => FileExt::lock_exclusive(&file),
-            (true, false) => FileExt::try_lock_exclusive(&file),
-            (false, true) => FileExt::lock_shared(&file),
-            (false, false) => FileExt::try_lock_shared(&file),
-        };
+        let result = directory.lock(
+            OsStr::new(LOCK),
+            LockOptions {
+                create: initialize,
+                shared: !exclusive,
+                write: false,
+                wait: if blocking { Wait::Block } else { Wait::Try },
+            },
+        );
         match result {
-            Ok(()) => {
+            Ok(file) => {
                 directory.validate_regular_entry(OsStr::new(LOCK), &file)?;
                 // Writable initialization pins/creates the metadata root. A
                 // read-only observer must never repair missing filesystem state.
@@ -282,11 +278,6 @@ impl Guard<'_> {
             }
             Err(error) => Err(error.into()),
         }
-    }
-}
-impl Drop for Guard<'_> {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
     }
 }
 fn read_existing(directory: &Directory, name: &OsStr) -> io::Result<Value> {

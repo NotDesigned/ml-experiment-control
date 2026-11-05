@@ -8,7 +8,6 @@ use crate::{
     operations::{self, ClaimContext, Execute},
     projects, read_api, read_config, sources,
 };
-use fs2::FileExt;
 use ml_exp_core::{
     canonical,
     cloud::{
@@ -19,7 +18,7 @@ use ml_exp_core::{
     operations::{FrozenFiles, Policy},
     slurm::helper,
 };
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -70,7 +69,7 @@ pub struct Service {
 }
 struct Lock<'a> {
     service: &'a Service,
-    file: File,
+    file: FileLock,
 }
 impl Lock<'_> {
     fn validate(&self) -> cloud::Result<()> {
@@ -78,18 +77,13 @@ impl Lock<'_> {
             .directory
             .verify_private_parent()
             .map_err(|_| cloud::Error::evidence())?;
-        for file in [&self.file, &self.service.anchor] {
+        for file in [&*self.file, &self.service.anchor] {
             self.service
                 .directory
                 .validate_regular_entry(OsStr::new(LOCK), file)
                 .map_err(|_| cloud::Error::evidence())?;
         }
         Ok(())
-    }
-}
-impl Drop for Lock<'_> {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
     }
 }
 pub(super) fn op(error: operations::Error) -> cloud::Error {
@@ -188,7 +182,7 @@ impl Service {
         let directory = root.child(OsStr::new(NAME), false).map_err(io)?;
         directory.verify_private_parent().map_err(io)?;
         let slots = directory.child(OsStr::new("slots"), false).map_err(io)?;
-        let anchor = directory.open_existing_lock(OsStr::new(LOCK)).map_err(io)?;
+        let anchor = directory.open_regular_read(OsStr::new(LOCK)).map_err(io)?;
         let mut backends = BTreeMap::new();
         for definition in config.backends {
             definition.validate()?;
@@ -319,13 +313,15 @@ impl Service {
             .map_err(io)?;
         let file = self
             .directory
-            .open_existing_lock(OsStr::new(LOCK))
-            .map_err(io)?;
-        file.try_lock_exclusive().map_err(|_| cloud::Error {
-            code: "CLOUD_RUN_BUSY".into(),
-            http_status: Some(503),
-            uncertain: false,
-        })?;
+            .lock(OsStr::new(LOCK), LockOptions::default())
+            .map_err(why_lock!(
+                cloud::Error {
+                    code: "CLOUD_RUN_BUSY".into(),
+                    http_status: Some(503),
+                    uncertain: false,
+                },
+                cloud::Error::evidence()
+            ))?;
         let lock = Lock {
             service: self,
             file,

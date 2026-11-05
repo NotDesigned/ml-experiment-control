@@ -5,7 +5,6 @@ mod history;
 mod jobs;
 mod observation;
 mod staging;
-use fs2::FileExt;
 use ml_exp_core::identity::submission_marker;
 use ml_exp_core::slurm::{
     helper::{
@@ -14,7 +13,10 @@ use ml_exp_core::slurm::{
     },
     parse_submit_response,
 };
-use ml_exp_io::{directory::Directory, process};
+use ml_exp_io::{
+    directory::{Directory, FileLock, LockOptions, Wait},
+    process,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -191,18 +193,13 @@ struct Receipt {
 
 struct Lock {
     directory: Directory,
-    file: File,
+    file: FileLock,
 }
 impl Lock {
     fn validate(&self) -> Result<()> {
         Ok(self
             .directory
             .validate_regular_entry(OsStr::new(LOCK), &self.file)?)
-    }
-}
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
     }
 }
 
@@ -240,8 +237,7 @@ impl Helper {
         if !root.entry_names()?.is_empty() {
             return Err(Error::Bootstrap);
         }
-        let file = root.open_lock(OsStr::new(LOCK))?;
-        let lock = Self::acquire(&root, file, config.lock_timeout, &AtomicBool::new(false))?;
+        let lock = Self::acquire(&root, true, config.lock_timeout, &AtomicBool::new(false))?;
         let names = root.entry_names()?;
         if names != [std::ffi::OsString::from(LOCK)] {
             return Err(Error::Bootstrap);
@@ -319,38 +315,41 @@ impl Helper {
     }
     fn acquire(
         directory: &Directory,
-        file: File,
+        create: bool,
         timeout: Duration,
         cancelled: &AtomicBool,
     ) -> Result<Lock> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            match FileExt::try_lock_exclusive(&file) {
-                Ok(()) => {
-                    let lock = Lock {
-                        directory: directory.clone(),
-                        file,
-                    };
-                    lock.validate()?;
-                    return Ok(lock);
+        let file = directory
+            .lock(
+                OsStr::new(LOCK),
+                LockOptions {
+                    create,
+                    wait: Wait::Until {
+                        deadline: Instant::now() + timeout,
+                        cancelled: Some(cancelled),
+                    },
+                    ..Default::default()
+                },
+            )
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::WouldBlock {
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "helper metadata lock unavailable",
+                    )
+                } else {
+                    error
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
-                            "helper metadata lock unavailable",
-                        )
-                        .into());
-                    }
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
+            })?;
+        let lock = Lock {
+            directory: directory.clone(),
+            file,
+        };
+        lock.validate()?;
+        Ok(lock)
     }
     fn lock(&self, cancelled: &AtomicBool) -> Result<Lock> {
-        let file = self.root.open_existing_lock(OsStr::new(LOCK))?;
-        let lock = Self::acquire(&self.root, file, self.config.lock_timeout, cancelled)?;
+        let lock = Self::acquire(&self.root, false, self.config.lock_timeout, cancelled)?;
         self.verify_root()?;
         lock.validate()?;
         Ok(lock)

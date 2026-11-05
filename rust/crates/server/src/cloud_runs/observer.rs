@@ -1,7 +1,7 @@
 //! One bounded read-only scheduler poll at a time. Discovery reads original
 //! Actions; neither polling nor restart ever submits a missing cloud job.
 use super::{Service, service::Prepared};
-use fs2::FileExt;
+use ml_exp_io::directory::LockOptions;
 use std::{
     collections::BTreeSet,
     ffi::OsStr,
@@ -21,11 +21,14 @@ impl Observer {
     pub fn start(service: Arc<Service>) -> crate::backends::cloud::Result<Self> {
         let leader = service
             .directory
-            .open_lock(OsStr::new(".observer.lock"))
-            .map_err(super::service::io)?;
-        leader
-            .try_lock_exclusive()
-            .map_err(|_| crate::backends::cloud::Error::evidence())?;
+            .lock(
+                OsStr::new(".observer.lock"),
+                LockOptions {
+                    create: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(why_lock!(crate::backends::cloud::Error::evidence()))?;
         let stop = Arc::new(AtomicBool::new(false));
         let wake = Arc::new((Mutex::new(()), Condvar::new()));
         let flag = stop.clone();

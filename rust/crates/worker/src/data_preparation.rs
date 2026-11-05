@@ -2,7 +2,12 @@
 //! training output; incomplete or failed executions are never silently replayed.
 use crate::managed::{Error, Result};
 use ml_exp_core::{artifacts::FileReceipt, data_preparation::Plan};
-use ml_exp_io::{artifacts, datasets::inventory, directory::Directory, process};
+use ml_exp_io::{
+    artifacts,
+    datasets::inventory,
+    directory::{Directory, LockOptions},
+    process,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -66,9 +71,20 @@ pub fn prepare(plan: &Plan, allow_download: bool, cancelled: &AtomicBool) -> Res
         .map_err(|e| failure("CACHE_ROOT", e))?;
     let id = plan.id().map_err(|_| Error::Configuration)?;
     let lock = cache
-        .open_lock(OsStr::new(&format!("{id}.lock")))
-        .map_err(|e| failure("CACHE_LOCK", e))?;
-    fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| Error::Busy)?;
+        .lock(
+            OsStr::new(&format!("{id}.lock")),
+            LockOptions {
+                create: true,
+                ..Default::default()
+            },
+        )
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                Error::Busy
+            } else {
+                failure("CACHE_LOCK", e)
+            }
+        })?;
     let existing = cache
         .entry_exists(OsStr::new(&id))
         .map_err(|e| failure("CACHE_LOOKUP", e))?;

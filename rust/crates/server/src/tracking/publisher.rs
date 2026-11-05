@@ -73,7 +73,7 @@ pub struct Publisher {
 /// Publication depends on frozen Run authority and a local journal, never on
 /// a particular scheduler or a worker's ability to reach W&B directly.
 pub trait Source: Send + Sync {
-    fn publisher_leader(&self) -> Result<std::fs::File>;
+    fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock>;
     fn validate_publisher_leader(&self, file: &std::fs::File) -> Result<()>;
     fn publisher_store(&self) -> Result<Store>;
     fn tracking_journal(&self, project: &str, run: &str) -> Result<Store>;
@@ -82,7 +82,7 @@ pub trait Source: Send + Sync {
     }
 }
 impl Source for crate::submissions::Service {
-    fn publisher_leader(&self) -> Result<std::fs::File> {
+    fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock> {
         self.publisher_leader().map_err(why!(Error::Storage))
     }
     fn validate_publisher_leader(&self, file: &std::fs::File) -> Result<()> {
@@ -98,7 +98,7 @@ impl Source for crate::submissions::Service {
     }
 }
 impl Source for crate::read_api::Api {
-    fn publisher_leader(&self) -> Result<std::fs::File> {
+    fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock> {
         if let Some(service) = self.submissions() {
             Source::publisher_leader(&*service)
         } else if let Some(service) = self.cloud() {

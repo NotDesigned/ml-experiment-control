@@ -185,9 +185,21 @@ pub fn attach(
     let state = parent.join(name);
     let mut lock_name = OsString::from(name);
     lock_name.push(".lock");
-    let lock = directory.open_lock(&lock_name).map_err(|_| invalid())?;
-    fs2::FileExt::try_lock_exclusive(&lock)
-        .map_err(|_| Error::Observation("another uploader holds this attachment state"))?;
+    let _lock = directory
+        .lock(
+            &lock_name,
+            ml_exp_io::directory::LockOptions {
+                create: true,
+                ..Default::default()
+            },
+        )
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                Error::Observation("another uploader holds this attachment state")
+            } else {
+                invalid()
+            }
+        })?;
     let mut saved = if state.exists() {
         let value: Saved = serde_json::from_slice(
             &ml_exp_io::read_private(&state, 1024 * 1024, true).map_err(|_| invalid())?,

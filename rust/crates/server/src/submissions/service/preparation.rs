@@ -3,7 +3,7 @@ use super::*;
 
 pub(super) struct PreparationLock<'a> {
     service: &'a Service,
-    file: File,
+    file: FileLock,
 }
 impl PreparationLock<'_> {
     pub(super) fn validate(&self) -> Result<()> {
@@ -17,11 +17,6 @@ impl PreparationLock<'_> {
             .map_err(|_| Error::Authority)
     }
 }
-impl Drop for PreparationLock<'_> {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
-    }
-}
 impl Service {
     pub(super) fn lock(&self) -> Result<PreparationLock<'_>> {
         self.directory
@@ -29,15 +24,8 @@ impl Service {
             .map_err(|_| Error::Authority)?;
         let file = self
             .directory
-            .open_existing_lock(OsStr::new(LOCK))
-            .map_err(why!(Error::Authority))?;
-        file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
-                Error::Busy
-            } else {
-                Error::Authority
-            }
-        })?;
+            .lock(OsStr::new(LOCK), LockOptions::default())
+            .map_err(why_lock!(Error::Busy, Error::Authority))?;
         let lock = PreparationLock {
             service: self,
             file,

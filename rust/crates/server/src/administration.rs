@@ -6,7 +6,7 @@ use ml_exp_core::{
     checkpoints::{self},
     maintenance::{Plan, Selection},
 };
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{ffi::OsStr, path::Path, sync::Arc};
@@ -20,12 +20,7 @@ fn invalid() -> crate::read_api::Error {
 type Result<T> = std::result::Result<T, crate::read_api::Error>;
 /// Run authorship and retirement share this admission lock. This is separate
 /// from the read-only Run fence so dependency scans can retain normal guards.
-pub(crate) struct Admission(std::fs::File);
-impl Drop for Admission {
-    fn drop(&mut self) {
-        let _ = fs2::FileExt::unlock(&self.0);
-    }
-}
+pub(crate) type Admission = FileLock;
 fn admission(root: &Path, exclusive: bool) -> Result<Option<Admission>> {
     let root = Directory::open(root, false).map_err(why!(invalid()))?;
     let directory = match root.child(OsStr::new("administration"), false) {
@@ -34,18 +29,18 @@ fn admission(root: &Path, exclusive: bool) -> Result<Option<Admission>> {
         Err(_) => return Err(invalid()),
     };
     let file = directory
-        .open_existing_lock(OsStr::new(".admission.lock"))
-        .map_err(why!(invalid()))?;
-    if exclusive {
-        fs2::FileExt::try_lock_exclusive(&file)
-    } else {
-        fs2::FileExt::try_lock_shared(&file)
-    }
-    .map_err(|_| invalid())?;
+        .lock(
+            OsStr::new(".admission.lock"),
+            LockOptions {
+                shared: !exclusive,
+                ..Default::default()
+            },
+        )
+        .map_err(why_lock!(invalid()))?;
     directory
         .validate_regular_entry(OsStr::new(".admission.lock"), &file)
         .map_err(|_| invalid())?;
-    Ok(Some(Admission(file)))
+    Ok(Some(file))
 }
 pub(crate) fn authorship_guard(root: &Path) -> Result<Option<Admission>> {
     admission(root, false)
@@ -88,10 +83,10 @@ impl Service {
             .create_new_child(OsStr::new("administration"))
             .map_err(why!(invalid()))?;
         directory
-            .open_lock(OsStr::new(".lock"))
+            .create_lock_file(OsStr::new(".lock"))
             .map_err(why!(invalid()))?;
         directory
-            .open_lock(OsStr::new(".admission.lock"))
+            .create_lock_file(OsStr::new(".admission.lock"))
             .map_err(why!(invalid()))?;
         Ok(())
     }
@@ -106,7 +101,7 @@ impl Service {
             .map_err(why!(invalid()))?;
         directory.verify_private_parent().map_err(|_| invalid())?;
         directory
-            .open_existing_lock(OsStr::new(".lock"))
+            .open_regular_read(OsStr::new(".lock"))
             .map_err(why!(invalid()))?;
         Ok(Self {
             settings,
@@ -118,13 +113,10 @@ impl Service {
     pub fn matches(&self, root: &Path) -> bool {
         self.settings.registry_root == root
     }
-    fn lock(&self) -> Result<std::fs::File> {
-        let file = self
-            .directory
-            .open_existing_lock(OsStr::new(".lock"))
-            .map_err(why!(invalid()))?;
-        fs2::FileExt::try_lock_exclusive(&file).map_err(|_| invalid())?;
-        Ok(file)
+    fn lock(&self) -> Result<FileLock> {
+        self.directory
+            .lock(OsStr::new(".lock"), LockOptions::default())
+            .map_err(why_lock!(invalid()))
     }
     fn name(id: &str) -> Result<String> {
         if ml_exp_core::sources::validate_archive_digest(id).is_err() {

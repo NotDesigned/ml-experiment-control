@@ -3,11 +3,10 @@
 //! Authentication, worker capability tokens and provider storage remain
 //! outside this module. The registry owns only exact identity binding,
 //! generation uniqueness, immutable JSON receipts and safe reads.
-use fs2::FileExt;
 use ml_exp_core::checkpoints::{self, Context};
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions};
 use serde_json::Value;
-use std::{ffi::OsStr, fs::File, path::Path};
+use std::{ffi::OsStr, path::Path};
 
 const NAMESPACE: &str = "persistent-checkpoints";
 const LOCK: &str = ".checkpoints.lock";
@@ -26,15 +25,6 @@ pub enum Error {
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
-struct Guard {
-    file: File,
-}
-impl Drop for Guard {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
-    }
-}
-
 pub struct Store {
     namespace: Directory,
 }
@@ -43,7 +33,7 @@ impl Store {
     pub fn open(registry_root: &Path) -> Result<Self> {
         let root = Directory::open(registry_root, true)?;
         let namespace = root.child(OsStr::new(NAMESPACE), true)?;
-        namespace.open_lock(OsStr::new(LOCK))?;
+        namespace.create_lock_file(OsStr::new(LOCK))?;
         Ok(Self { namespace })
     }
 
@@ -51,20 +41,20 @@ impl Store {
         let root = Directory::open(registry_root, false)?;
         let namespace = root.child(OsStr::new(NAMESPACE), false)?;
         namespace.verify_private_parent()?;
-        namespace.open_existing_lock(OsStr::new(LOCK))?;
+        namespace.open_regular_read(OsStr::new(LOCK))?;
         Ok(Self { namespace })
     }
 
-    fn lock(&self) -> Result<Guard> {
-        let file = self.namespace.open_existing_lock(OsStr::new(LOCK))?;
-        file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
-                Error::Busy
-            } else {
-                Error::Io(error)
-            }
-        })?;
-        Ok(Guard { file })
+    fn lock(&self) -> Result<FileLock> {
+        self.namespace
+            .lock(OsStr::new(LOCK), LockOptions::default())
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::WouldBlock {
+                    Error::Busy
+                } else {
+                    Error::Io(error)
+                }
+            })
     }
 
     fn attempt_directory(&self, context: &Context, create: bool) -> Result<Option<Directory>> {

@@ -1,12 +1,11 @@
 use super::{Database, Error, Result};
-use fs2::FileExt;
 use ml_exp_core::{
     canonical::python_json_bytes,
     operations::{
         self, Claim, Dispatch, Evidence, FrozenFiles, Policy, Reconcile, Scope, Transition,
     },
 };
-use ml_exp_io::directory::{Directory, effective_uid};
+use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait, effective_uid};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -45,7 +44,7 @@ pub struct ClaimContext<'a> {
 }
 
 struct Lock {
-    file: File,
+    file: FileLock,
     anchor: Arc<File>,
     directory: Directory,
     observed: RefCell<BTreeMap<PathBuf, Directory>>,
@@ -61,11 +60,6 @@ impl Lock {
             directory.verify_private_parent()?;
         }
         Ok(())
-    }
-}
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
     }
 }
 
@@ -86,7 +80,7 @@ impl Store {
         let root = root.into();
         let directory = Directory::open(&root, false)?;
         directory.verify_private_parent()?;
-        let file = directory.open_existing_lock(OsStr::new(".actions.lock"))?;
+        let file = directory.open_regular_read(OsStr::new(".actions.lock"))?;
         directory.validate_regular_entry(OsStr::new(".actions.lock"), &file)?;
         Ok(Self {
             database: Database::in_directory(directory.clone())?,
@@ -104,14 +98,19 @@ impl Store {
         // Existing plans/SQLite/marker without it require explicit offline
         // recovery; ordinary reopen/read must not create a second lock domain.
         let lock_name = OsStr::new(".actions.lock");
-        let file = match directory.open_existing_lock(lock_name) {
-            Ok(file) => file,
+        let options = |create| LockOptions {
+            create,
+            wait: Wait::Block,
+            ..Default::default()
+        };
+        let lock = match directory.lock(lock_name, options(false)) {
+            Ok(lock) => lock,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let entries = directory.entry_names()?;
                 if entries.is_empty() {
-                    directory.open_lock(lock_name)?
+                    directory.lock(lock_name, options(true))?
                 } else if entries.iter().any(|name| name == lock_name) {
-                    directory.open_existing_lock(lock_name)?
+                    directory.lock(lock_name, options(false))?
                 } else {
                     return Err(Error::Invalid(
                         "existing Action storage is missing its lock; offline recovery required",
@@ -120,9 +119,11 @@ impl Store {
             }
             Err(error) => return Err(error.into()),
         };
-        file.lock_exclusive()?;
-        directory.validate_regular_entry(lock_name, &file)?;
-        FileExt::unlock(&file)?;
+        directory.validate_regular_entry(lock_name, &lock)?;
+        // The anchor only pins the inode: dropping `lock` releases the flock on
+        // the description the clone shares.
+        let file = lock.try_clone()?;
+        drop(lock);
         Ok(Self {
             database: Database::in_directory(directory.clone())?,
             root,
@@ -197,10 +198,13 @@ impl Store {
     fn lock(&self) -> Result<Lock> {
         self.directory
             .validate_regular_entry(OsStr::new(".actions.lock"), &self.lock_anchor)?;
-        let file = self
-            .directory
-            .open_existing_lock(OsStr::new(".actions.lock"))?;
-        file.lock_exclusive()?;
+        let file = self.directory.lock(
+            OsStr::new(".actions.lock"),
+            LockOptions {
+                wait: Wait::Block,
+                ..Default::default()
+            },
+        )?;
         let lock = Lock {
             file,
             anchor: self.lock_anchor.clone(),

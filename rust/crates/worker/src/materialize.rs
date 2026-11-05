@@ -1,7 +1,7 @@
 //! Gateway-only OCI conversion. No API-host image layers, no scheduler calls.
 use ml_exp_core::{cloud::materialize::Request, first_submission::native::Runtime, slurm::managed};
 use ml_exp_io::{
-    directory::Directory,
+    directory::{Directory, LockOptions},
     process::{self, Capture, Environment, Input},
 };
 use serde::{Deserialize, Serialize};
@@ -53,8 +53,13 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
     }
     let root = Directory::open(&config.root, false)?;
     root.verify_private_parent()?;
-    let lock = root.open_lock(OsStr::new(".materializer.lock"))?;
-    fs2::FileExt::try_lock_exclusive(&lock)?;
+    let _lock = root.lock(
+        OsStr::new(".materializer.lock"),
+        LockOptions {
+            create: true,
+            ..Default::default()
+        },
+    )?;
     let name = OsStr::new(&request.runtime.runtime_id);
     let directory = if root.entry_exists(name)? {
         root.child(name, false)?

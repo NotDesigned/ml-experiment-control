@@ -14,12 +14,17 @@ impl Service {
         let backend = self.backends.get(executor).ok_or(Error::Configuration)?;
         let name = format!("capacity-{executor}.json");
         let _effect = if refresh {
-            let file = self
-                .slots
-                .open_lock(OsStr::new(&format!("capacity-{executor}.lock")))
-                .map_err(why!(Error::Authority))?;
-            fs2::FileExt::try_lock_exclusive(&file).map_err(|_| Error::Authority)?;
-            Some(file)
+            Some(
+                self.slots
+                    .lock(
+                        OsStr::new(&format!("capacity-{executor}.lock")),
+                        LockOptions {
+                            create: true,
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(why_lock!(Error::Authority))?,
+            )
         } else {
             None
         };

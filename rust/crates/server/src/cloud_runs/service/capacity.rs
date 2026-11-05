@@ -18,12 +18,17 @@ impl Service {
             .ok_or_else(cloud::Error::configuration)?;
         let name = format!("capacity-{executor}.json");
         let _effect = if refresh {
-            let file = self
-                .slots
-                .open_lock(OsStr::new(&format!("capacity-{executor}.lock")))
-                .map_err(io)?;
-            fs2::FileExt::try_lock_exclusive(&file).map_err(io)?;
-            Some(file)
+            Some(
+                self.slots
+                    .lock(
+                        OsStr::new(&format!("capacity-{executor}.lock")),
+                        LockOptions {
+                            create: true,
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(io)?,
+            )
         } else {
             None
         };

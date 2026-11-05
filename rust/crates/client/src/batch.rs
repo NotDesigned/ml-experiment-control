@@ -137,10 +137,15 @@ pub fn dispatch(
     };
     let directory_cap =
         ml_exp_io::directory::Directory::open(&root, false).map_err(|_| invalid())?;
-    let lock = directory_cap
-        .open_lock(std::ffi::OsStr::new(".dispatch.lock"))
+    let _lock = directory_cap
+        .lock(
+            std::ffi::OsStr::new(".dispatch.lock"),
+            ml_exp_io::directory::LockOptions {
+                create: true,
+                ..Default::default()
+            },
+        )
         .map_err(|_| invalid())?;
-    fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| invalid())?;
     let value = Value::Object(
         ml_exp_core::json::mapping(
             &directory_cap

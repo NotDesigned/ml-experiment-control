@@ -5,12 +5,11 @@ use super::{
     Error, Result,
     adapter::{Adapter, Handle, Profile, Transport, job_digest},
 };
-use fs2::FileExt;
 use ml_exp_core::{
     canonical,
     cloud::{Job, JobObservation, pai::Allocation},
 };
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -59,7 +58,7 @@ pub struct Outbox {
 }
 struct Guard<'a> {
     outbox: &'a Outbox,
-    file: File,
+    file: FileLock,
 }
 impl Guard<'_> {
     fn validate(&self) -> Result<()> {
@@ -67,18 +66,13 @@ impl Guard<'_> {
             .directory
             .verify_private_parent()
             .map_err(|_| Error::evidence())?;
-        for file in [&self.file, &self.outbox.anchor] {
+        for file in [&*self.file, &self.outbox.anchor] {
             self.outbox
                 .directory
                 .validate_regular_entry(OsStr::new(LOCK), file)
                 .map_err(|_| Error::evidence())?;
         }
         Ok(())
-    }
-}
-impl Drop for Guard<'_> {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
     }
 }
 impl Outbox {
@@ -95,9 +89,14 @@ impl Outbox {
             return Err(Error::configuration());
         }
         let lock = directory
-            .open_lock(OsStr::new(LOCK))
-            .map_err(why!(Error::configuration()))?;
-        lock.lock_exclusive()
+            .lock(
+                OsStr::new(LOCK),
+                LockOptions {
+                    create: true,
+                    wait: Wait::Block,
+                    ..Default::default()
+                },
+            )
             .map_err(why!(Error::configuration()))?;
         directory
             .validate_regular_entry(OsStr::new(LOCK), &lock)
@@ -125,7 +124,7 @@ impl Outbox {
             return Err(Error::configuration());
         }
         let anchor = directory
-            .open_existing_lock(OsStr::new(LOCK))
+            .open_regular_read(OsStr::new(LOCK))
             .map_err(why!(Error::configuration()))?;
         directory
             .validate_regular_entry(OsStr::new(LOCK), &anchor)
@@ -138,13 +137,15 @@ impl Outbox {
             .map_err(|_| Error::evidence())?;
         let file = self
             .directory
-            .open_existing_lock(OsStr::new(LOCK))
-            .map_err(why!(Error::evidence()))?;
-        file.try_lock_exclusive().map_err(|_| Error {
-            code: "CLOUD_EFFECT_BUSY".into(),
-            http_status: Some(503),
-            uncertain: false,
-        })?;
+            .lock(OsStr::new(LOCK), LockOptions::default())
+            .map_err(why_lock!(
+                Error {
+                    code: "CLOUD_EFFECT_BUSY".into(),
+                    http_status: Some(503),
+                    uncertain: false,
+                },
+                Error::evidence()
+            ))?;
         let guard = Guard { outbox: self, file };
         guard.validate()?;
         Ok(guard)

@@ -1,7 +1,6 @@
 //! Metadata transport is independent from training. Persist one exact pending
 //! packet before sending; acknowledge it before advancing the history cursor.
 use crate::managed::{self, Error, Result};
-use fs2::FileExt;
 use ml_exp_core::{
     cloud::{
         exchange::{self, Ack, Packet},
@@ -13,7 +12,10 @@ use ml_exp_core::{
         remote::{Evidence, OBSERVATION_CONTRACT, Problem},
     },
 };
-use ml_exp_io::{directory::Directory, observations};
+use ml_exp_io::{
+    directory::{Directory, LockOptions},
+    observations,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsStr,
@@ -233,9 +235,20 @@ pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
     let root = Directory::open(&package.config.attempt_root, false).map_err(|_| Error::Storage)?;
     root.verify_private_parent().map_err(|_| Error::Storage)?;
     let lock = root
-        .open_lock(OsStr::new(".cloud-exchange.lock"))
-        .map_err(|_| Error::Storage)?;
-    lock.try_lock_exclusive().map_err(|_| Error::Busy)?;
+        .lock(
+            OsStr::new(".cloud-exchange.lock"),
+            LockOptions {
+                create: true,
+                ..Default::default()
+            },
+        )
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                Error::Busy
+            } else {
+                Error::Storage
+            }
+        })?;
     let sha = crate::cloud::package_sha(package)?;
     let mut state: State = if root
         .entry_exists(OsStr::new(STATE))

@@ -44,6 +44,24 @@ macro_rules! why {
     };
 }
 
+/// For lock acquisition, where contention is routine and not worth a line:
+/// `WouldBlock` maps to `busy` unlogged, and anything else is logged as `why!`.
+macro_rules! why_lock {
+    ($busy:expr, $value:expr $(,)?) => {
+        |cause: std::io::Error| {
+            if cause.kind() == std::io::ErrorKind::WouldBlock {
+                $busy
+            } else {
+                $crate::why::record(file!(), line!(), &cause);
+                $value
+            }
+        }
+    };
+    ($value:expr $(,)?) => {
+        why_lock!($value, $value)
+    };
+}
+
 macro_rules! why_chain {
     ($value:expr $(,)?) => {
         |cause| {
@@ -251,5 +269,11 @@ mod tests {
         })
         .map_err(why_chain!(3));
         assert_eq!(chained, Err(3));
+        let contended = std::io::Error::from(std::io::ErrorKind::WouldBlock);
+        let busy: Result<(), u8> = Err(contended).map_err(why_lock!(4, 5));
+        assert_eq!(busy, Err(4));
+        let failed = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let other: Result<(), u8> = Err(failed).map_err(why_lock!(4, 5));
+        assert_eq!(other, Err(5));
     }
 }

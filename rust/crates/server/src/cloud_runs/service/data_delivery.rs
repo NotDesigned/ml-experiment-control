@@ -233,14 +233,19 @@ impl Service {
         request_id: &str,
         runtime_id: Option<&str>,
     ) -> cloud::Result<Value> {
-        let effect = self
+        let _effect = self
             .slots
-            .open_lock(OsStr::new(&format!(
-                "{}.delivery.lock",
-                Self::data_name(project, executor, asset)?
-            )))
-            .map_err(io)?;
-        fs2::FileExt::try_lock_exclusive(&effect).map_err(|_| cloud::Error::evidence())?;
+            .lock(
+                OsStr::new(&format!(
+                    "{}.delivery.lock",
+                    Self::data_name(project, executor, asset)?
+                )),
+                LockOptions {
+                    create: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(why_lock!(cloud::Error::evidence()))?;
         ml_exp_core::submission::validate_submission_token(request_id)
             .map_err(why!(cloud::Error::configuration()))?;
         if !self.enabled {

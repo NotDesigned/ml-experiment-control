@@ -1,11 +1,10 @@
 use crate::experiments::{Format, parse_mapping};
-use fs2::FileExt;
 use ml_exp_core::{
     canonical::python_json_bytes,
     durable,
     projects::{self, LifecycleRecord, PathEvidence, RegistrationSource, Registry, Seed},
 };
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
@@ -82,7 +81,7 @@ struct Loaded {
 }
 struct Lock<'a> {
     store: &'a Store,
-    file: File,
+    file: FileLock,
 }
 impl Lock<'_> {
     fn validate(&self) -> Result<(), Error> {
@@ -94,11 +93,6 @@ impl Lock<'_> {
             .directory
             .validate_regular_entry(OsStr::new(LOCK), &self.file)?;
         Ok(())
-    }
-}
-impl Drop for Lock<'_> {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
     }
 }
 
@@ -240,7 +234,7 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self, Error> {
         let directory = Directory::open(path, false)?;
         directory.verify_private_parent()?;
-        let anchor = Arc::new(directory.open_existing_lock(OsStr::new(LOCK))?);
+        let anchor = Arc::new(directory.open_regular_read(OsStr::new(LOCK))?);
         let store = Self { directory, anchor };
         {
             let lock = store.lock(false)?;
@@ -249,23 +243,26 @@ impl Store {
         Ok(store)
     }
     fn lock(&self, exclusive: bool) -> Result<Lock<'_>, Error> {
-        let file = self.directory.open_existing_lock(OsStr::new(LOCK))?;
-        let end = Instant::now() + Duration::from_secs(5);
-        loop {
-            let result = if exclusive {
-                FileExt::try_lock_exclusive(&file)
-            } else {
-                FileExt::try_lock_shared(&file)
-            };
-            match result {
-                Ok(()) => break,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < end => {
-                    std::thread::sleep(Duration::from_millis(5))
+        let file = self
+            .directory
+            .lock(
+                OsStr::new(LOCK),
+                LockOptions {
+                    shared: !exclusive,
+                    wait: Wait::Until {
+                        deadline: Instant::now() + Duration::from_secs(5),
+                        cancelled: None,
+                    },
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    Error::Busy
+                } else {
+                    Error::from(e)
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Err(Error::Busy),
-                Err(e) => return Err(e.into()),
-            }
-        }
+            })?;
         let lock = Lock { store: self, file };
         lock.validate()?;
         Ok(lock)

@@ -12,7 +12,7 @@ use ml_exp_core::{
     },
     slurm::helper,
 };
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, LockOptions};
 use serde_json::{Value, json};
 use std::{
     ffi::OsStr,
@@ -112,10 +112,21 @@ pub fn publish(package: &Package) -> Result<()> {
         dir.publish_new(OsStr::new("owner"), package_sha.as_bytes())
             .map_err(|_| Error::Storage)?;
     }
-    let lock = dir
-        .open_lock(OsStr::new(".lock"))
-        .map_err(|_| Error::Storage)?;
-    fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| Error::Uncertain)?;
+    let _lock = dir
+        .lock(
+            OsStr::new(".lock"),
+            LockOptions {
+                create: true,
+                ..Default::default()
+            },
+        )
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                Error::Uncertain
+            } else {
+                Error::Storage
+            }
+        })?;
     let bundle: Bundle = if dir
         .entry_exists(OsStr::new("bundle.json"))
         .map_err(|_| Error::Storage)?

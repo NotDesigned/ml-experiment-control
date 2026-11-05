@@ -8,14 +8,13 @@ use crate::{
     operations::{self, ClaimContext},
     projects, read_config, sources,
 };
-use fs2::FileExt;
 use ml_exp_core::{
     canonical,
     first_submission::native::{self, Approval, Binding, Prepared, Profile, Runtime},
     operations::{FrozenFiles, Policy},
     slurm::helper,
 };
-use ml_exp_io::directory::{Directory, effective_uid};
+use ml_exp_io::directory::{Directory, FileLock, LockOptions, effective_uid};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -318,7 +317,7 @@ impl Service {
             .map_err(why!(Error::Configuration))?;
         let lock_anchor = Arc::new(
             directory
-                .open_existing_lock(OsStr::new(LOCK))
+                .open_regular_read(OsStr::new(LOCK))
                 .map_err(why!(Error::Configuration))?,
         );
         let actions = operations::Store::open_existing(settings.registry_root.join("actions"))?;

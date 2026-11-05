@@ -1,8 +1,10 @@
 //! Gateway effects for one explicitly initialized dataset root. No scheduler,
 //! credentials or arbitrary executable can be selected by a dataset request.
-use fs2::FileExt;
 use ml_exp_core::datasets::{self, Command, Receipt, Reply, Request, State};
-use ml_exp_io::{datasets as tree, directory::Directory};
+use ml_exp_io::{
+    datasets as tree,
+    directory::{Directory, LockOptions, Wait},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsStr,
@@ -66,7 +68,7 @@ impl Store {
         if !store.root.entry_names_limited(1)?.is_empty() {
             return Err(invalid());
         }
-        store.root.open_lock(OsStr::new(LOCK))?;
+        store.root.create_lock_file(OsStr::new(LOCK))?;
         store
             .root
             .publish_new(OsStr::new(MARKER), &json(&store.marker()?)?)?;
@@ -321,20 +323,25 @@ impl Store {
                 }
             }
         }
-        let lock = self.root.open_existing_lock(OsStr::new(LOCK))?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            match lock.try_lock_exclusive() {
-                Ok(()) => break,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    if cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline {
-                        return Err(invalid());
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
+        let lock = self
+            .root
+            .lock(
+                OsStr::new(LOCK),
+                LockOptions {
+                    wait: Wait::Until {
+                        deadline: Instant::now() + Duration::from_secs(10),
+                        cancelled: Some(cancelled),
+                    },
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| {
+                if e.kind() == io::ErrorKind::WouldBlock {
+                    invalid()
+                } else {
+                    e
                 }
-                Err(e) => return Err(e),
-            }
-        }
+            })?;
         self.verify()?;
         self.root.validate_regular_entry(OsStr::new(LOCK), &lock)?;
         if cancelled.load(Ordering::Relaxed) {

@@ -12,6 +12,10 @@ use std::{
     sync::Arc,
 };
 use windows_sys::Win32::Storage::FileSystem::*;
+
+use crate::file_lock::acquire;
+pub use crate::file_lock::{FileLock, LockOptions, Wait};
+
 #[derive(Clone, Debug)]
 pub struct Directory {
     inner: Arc<Inner>,
@@ -182,31 +186,36 @@ impl Directory {
         }
         self.verify_private_parent()
     }
-    /// Multiple processes may open this stable leaf; fs2 owns the advisory lock.
-    /// Retaining the handle still prevents deletion or replacement of the leaf.
-    pub fn open_lock(&self, name: &OsStr) -> io::Result<File> {
+    /// Take an advisory lock on `name` through a fresh handle. Contention is
+    /// returned as `WouldBlock`, which the caller maps to its own busy error.
+    pub fn lock(&self, name: &OsStr, options: LockOptions<'_>) -> io::Result<FileLock> {
         leaf(name)?;
-        self.verify_private_parent()?;
         let path = self.inner.path.join(name);
-        let mut options = OpenOptions::new();
-        options
+        let mut opener = OpenOptions::new();
+        opener
             .read(true)
-            .write(true)
+            .write(options.create || options.write)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-        let file = match options.create_new(true).open(&path) {
-            Ok(file) => {
-                crate::windows_private::protect(&path)?;
-                file
+        let file = if options.create {
+            match opener.create_new(true).open(&path) {
+                Ok(file) => {
+                    crate::windows_private::protect(&path)?;
+                    file
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    opener.create_new(false).open(&path)?
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                options.create_new(false).open(&path)?
-            }
-            Err(e) => return Err(e),
+        } else {
+            opener.open(&path)?
         };
-        self.validate_regular_entry(name, &file)?;
-        crate::windows_private::validate(&file, true)?;
-        Ok(file)
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(invalid());
+        }
+        acquire(file, options.shared, options.wait)
     }
     pub fn entry_exists(&self, name: &OsStr) -> io::Result<bool> {
         leaf(name)?;
@@ -263,14 +272,19 @@ mod tests {
     fn independent_lock_handles_preserve_exclusion_and_leaf_identity() {
         let temp = tempfile::tempdir().unwrap();
         let dir = Directory::open(temp.path(), false).unwrap();
-        let first = dir.open_lock(OsStr::new(".dispatch.lock")).unwrap();
-        let second = dir.open_lock(OsStr::new(".dispatch.lock")).unwrap();
-        fs2::FileExt::try_lock_exclusive(&first).unwrap();
-        assert!(fs2::FileExt::try_lock_exclusive(&second).is_err());
+        let name = OsStr::new(".dispatch.lock");
+        let options = LockOptions {
+            create: true,
+            ..Default::default()
+        };
+        let first = dir.lock(name, options).unwrap();
+        assert_eq!(
+            dir.lock(name, options).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
         assert!(fs::rename(temp.path().join(".dispatch.lock"), temp.path().join("old")).is_err());
-        dir.validate_regular_entry(OsStr::new(".dispatch.lock"), &first)
-            .unwrap();
-        fs2::FileExt::unlock(&first).unwrap();
-        fs2::FileExt::try_lock_exclusive(&second).unwrap();
+        dir.validate_regular_entry(name, &first).unwrap();
+        drop(first);
+        assert!(dir.lock(name, options).is_ok());
     }
 }

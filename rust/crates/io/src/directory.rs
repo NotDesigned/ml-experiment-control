@@ -22,6 +22,9 @@ use std::{
     sync::Arc,
 };
 
+use crate::file_lock::acquire;
+pub use crate::file_lock::{FileLock, LockOptions, Wait};
+
 #[derive(Clone, Debug)]
 pub struct Directory {
     inner: Arc<Inner>,
@@ -528,67 +531,44 @@ impl Directory {
         Ok(())
     }
 
-    /// A stable, non-truncating lock leaf. The caller must also validate its
-    /// binding after acquiring its advisory lock and before guarded effects.
-    pub fn open_lock(&self, name: &OsStr) -> io::Result<File> {
+    /// Take an advisory lock on `name` through a fresh description. Contention
+    /// is returned as `WouldBlock`, which the caller maps to its own busy error.
+    pub fn lock(&self, name: &OsStr, options: LockOptions<'_>) -> io::Result<FileLock> {
+        let file = self.lock_leaf(name, options.create, options.write)?;
+        acquire(file, options.shared, options.wait)
+    }
+
+    /// Bootstrap a lock leaf without taking the lock, so that it cannot lose to
+    /// whoever holds the lock at that moment.
+    pub fn create_lock_file(&self, name: &OsStr) -> io::Result<()> {
+        self.lock_leaf(name, true, true)?;
+        Ok(())
+    }
+
+    fn lock_leaf(&self, name: &OsStr, create: bool, write: bool) -> io::Result<File> {
         leaf(name)?;
-        self.verify_private_parent()?;
-        if self
-            .regular_identity(name)?
-            .is_some_and(|identity| !identity.is_owned_safely_for(effective_uid()))
-        {
-            return Err(invalid("private metadata lock required"));
-        }
+        let access = if create || write {
+            OFlags::RDWR
+        } else {
+            OFlags::RDONLY
+        };
+        let (creation, mode) = if create {
+            (OFlags::CREATE, Mode::RUSR | Mode::WUSR)
+        } else {
+            (OFlags::empty(), Mode::empty())
+        };
+        // NONBLOCK keeps a FIFO left at this name from hanging the open.
         let file = File::from(rfs::openat(
             &self.inner.file,
             name,
-            OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-            Mode::RUSR | Mode::WUSR,
+            access | creation | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            mode,
         )?);
-        self.validate_regular_entry(name, &file)?;
-        if !self
-            .regular_identity(name)?
-            .is_some_and(|identity| identity.is_owned_safely_for(effective_uid()))
-        {
-            return Err(invalid("private metadata lock required"));
+        if FileType::from_raw_mode(rfs::fstat(&file)?.st_mode) != FileType::RegularFile {
+            return Err(invalid("regular lock file required"));
         }
-        rfs::fsync(&self.inner.file)?;
-        Ok(file)
-    }
-
-    /// Open a pre-existing lock for shared observation, without creating a leaf,
-    /// directory, temporary or journal. Missing or invalid entries are errors.
-    pub fn open_existing_lock(&self, name: &OsStr) -> io::Result<File> {
-        self.existing_lock(name, OFlags::RDONLY)
-    }
-
-    /// An existing mutable lock/ledger. Never creates or replaces the inode;
-    /// callers serialize, revalidate and fsync their finite state writes.
-    pub fn open_existing_lock_rw(&self, name: &OsStr) -> io::Result<File> {
-        self.existing_lock(name, OFlags::RDWR)
-    }
-
-    fn existing_lock(&self, name: &OsStr, access: OFlags) -> io::Result<File> {
-        leaf(name)?;
-        self.verify_private_parent()?;
-        if self
-            .regular_identity(name)?
-            .is_some_and(|identity| !identity.is_owned_safely_for(effective_uid()))
-        {
-            return Err(invalid("private metadata lock required"));
-        }
-        let file = File::from(rfs::openat(
-            &self.inner.file,
-            name,
-            access | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-            Mode::empty(),
-        )?);
-        self.validate_regular_entry(name, &file)?;
-        if !self
-            .regular_identity(name)?
-            .is_some_and(|identity| identity.is_owned_safely_for(effective_uid()))
-        {
-            return Err(invalid("private metadata lock required"));
+        if create {
+            rfs::fsync(&self.inner.file)?;
         }
         Ok(file)
     }
@@ -1098,7 +1078,6 @@ mod tests {
         assert_eq!(fs::read_dir(old.join("moved")).unwrap().count(), 0);
         fs::rename(&old, temp.path().join("old-root")).unwrap();
         fs::create_dir(&old).unwrap();
-        assert!(root.open_lock(OsStr::new("lock")).is_err());
         assert_eq!(fs::read_dir(&old).unwrap().count(), 0);
     }
 
@@ -1114,10 +1093,15 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        assert!(directory.open_lock(OsStr::new("fifo")).is_err());
+        let create = LockOptions {
+            create: true,
+            ..Default::default()
+        };
+        assert!(directory.lock(OsStr::new("fifo"), create).is_err());
+        assert!(directory.create_lock_file(OsStr::new("fifo")).is_err());
         assert!(directory.read_regular(OsStr::new("fifo"), 10).is_err());
         fs::create_dir(temp.path().join("folder")).unwrap();
-        assert!(directory.open_lock(OsStr::new("folder")).is_err());
+        assert!(directory.lock(OsStr::new("folder"), create).is_err());
         assert!(directory.entry_exists(OsStr::new("fifo")).unwrap());
     }
 
@@ -1157,23 +1141,24 @@ mod tests {
     }
 
     #[test]
-    fn existing_lock_open_never_creates_or_repairs_a_leaf() {
+    fn locking_without_create_never_creates_or_repairs_a_leaf() {
         let temp = tempfile::tempdir().unwrap();
         let directory = Directory::open(temp.path(), false).unwrap();
+        let options = LockOptions::default();
         assert_eq!(
             directory
-                .open_existing_lock(OsStr::new("missing"))
+                .lock(OsStr::new("missing"), options)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::NotFound
         );
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
         fs::write(temp.path().join("lock"), b"original").unwrap();
-        let file = directory.open_existing_lock(OsStr::new("lock")).unwrap();
+        let file = directory.lock(OsStr::new("lock"), options).unwrap();
         assert_eq!(file.metadata().unwrap().len(), 8);
         assert_eq!(fs::read(temp.path().join("lock")).unwrap(), b"original");
         symlink(temp.path().join("lock"), temp.path().join("alias")).unwrap();
-        assert!(directory.open_existing_lock(OsStr::new("alias")).is_err());
+        assert!(directory.lock(OsStr::new("alias"), options).is_err());
         assert!(
             std::process::Command::new("mkfifo")
                 .arg(temp.path().join("fifo"))
@@ -1181,21 +1166,25 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        assert!(directory.open_existing_lock(OsStr::new("fifo")).is_err());
+        assert!(directory.lock(OsStr::new("fifo"), options).is_err());
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
     }
 
     #[test]
-    fn mutable_existing_lock_and_append_preserve_inode_and_bound_writes() {
+    fn mutable_lock_and_append_preserve_inode_and_bound_writes() {
         let temp = tempfile::tempdir().unwrap();
         let directory = Directory::open(temp.path(), false).unwrap();
         let name = OsStr::new("ledger");
-        assert!(directory.open_existing_lock_rw(name).is_err());
+        let options = LockOptions {
+            write: true,
+            ..Default::default()
+        };
+        assert!(directory.lock(name, options).is_err());
         assert!(directory.append_regular(name, b"x", 10).is_err());
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
         directory.publish_new(name, b"old").unwrap();
         let before = directory.regular_identity(name).unwrap();
-        let mut lock = directory.open_existing_lock_rw(name).unwrap();
+        let mut lock = directory.lock(name, options).unwrap();
         lock.write_all(b"new").unwrap();
         lock.sync_all().unwrap();
         directory.append_regular(name, b"\n", 4).unwrap();
@@ -1205,7 +1194,7 @@ mod tests {
         assert_eq!(fs::read(temp.path().join(name)).unwrap(), b"new\n");
         symlink("ledger", temp.path().join("symbolic")).unwrap();
         for alias in ["symbolic", "missing"] {
-            assert!(directory.open_existing_lock_rw(OsStr::new(alias)).is_err());
+            assert!(directory.lock(OsStr::new(alias), options).is_err());
             assert!(
                 directory
                     .append_regular(OsStr::new(alias), b"x", 10)
@@ -1219,11 +1208,129 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        assert!(directory.open_existing_lock_rw(OsStr::new("fifo")).is_err());
+        assert!(directory.lock(OsStr::new("fifo"), options).is_err());
         assert!(
             directory
                 .append_regular(OsStr::new("fifo"), b"x", 10)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn two_locks_in_one_process_exclude_each_other() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = Directory::open(temp.path(), false).unwrap();
+        let name = OsStr::new("lock");
+        let exclusive = LockOptions {
+            create: true,
+            ..Default::default()
+        };
+        let shared = LockOptions {
+            shared: true,
+            ..Default::default()
+        };
+        let first = directory.lock(name, exclusive).unwrap();
+        for options in [exclusive, shared] {
+            assert_eq!(
+                directory.lock(name, options).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+        }
+        drop(first);
+        let reader = directory.lock(name, shared).unwrap();
+        let other = directory.lock(name, shared).unwrap();
+        assert_eq!(
+            directory.lock(name, exclusive).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(reader);
+        drop(other);
+        assert!(directory.lock(name, exclusive).is_ok());
+    }
+
+    #[test]
+    fn dropping_a_lock_releases_it_while_an_inherited_description_remains_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = Directory::open(temp.path(), false).unwrap();
+        let name = OsStr::new("lock");
+        let options = LockOptions {
+            create: true,
+            ..Default::default()
+        };
+        let lock = directory.lock(name, options).unwrap();
+        // try_clone shares the kernel open file description, as fork does.
+        let inherited = lock.try_clone().unwrap();
+        drop(lock);
+        assert!(directory.lock(name, options).is_ok());
+        drop(inherited);
+    }
+
+    #[test]
+    fn waits_end_at_the_deadline_or_on_cancellation_and_succeed_after_release() {
+        use std::{
+            sync::atomic::AtomicBool,
+            time::{Duration, Instant},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let directory = Directory::open(temp.path(), false).unwrap();
+        let name = OsStr::new("lock");
+        let first = directory
+            .lock(
+                name,
+                LockOptions {
+                    create: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let until = |deadline, cancelled| LockOptions {
+            wait: Wait::Until {
+                deadline,
+                cancelled,
+            },
+            ..Default::default()
+        };
+        let start = Instant::now();
+        let wait = Duration::from_millis(30);
+        assert_eq!(
+            directory
+                .lock(name, until(start + wait, None))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(start.elapsed() >= wait);
+        let cancelled = AtomicBool::new(true);
+        let far = Instant::now() + Duration::from_secs(60);
+        assert_eq!(
+            directory
+                .lock(name, until(far, Some(&cancelled)))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(start.elapsed() < Duration::from_secs(30));
+        std::thread::scope(|scope| {
+            let blocked = scope.spawn(|| {
+                directory
+                    .lock(
+                        name,
+                        LockOptions {
+                            wait: Wait::Block,
+                            ..Default::default()
+                        },
+                    )
+                    .is_ok()
+            });
+            let polling = scope.spawn(|| {
+                directory
+                    .lock(name, until(Instant::now() + Duration::from_secs(30), None))
+                    .is_ok()
+            });
+            std::thread::sleep(Duration::from_millis(20));
+            drop(first);
+            assert!(blocked.join().unwrap());
+            assert!(polling.join().unwrap());
+        });
     }
 }

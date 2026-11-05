@@ -28,8 +28,19 @@ fn uncertain_repair_is_observed_without_resending_or_clearing_original_reservati
 fn exercise_gap_repair(uncertain: bool, missing_sequence: i64, version: i64) {
     struct FixtureSource(std::path::PathBuf);
     impl Source for FixtureSource {
-        fn publisher_leader(&self) -> Result<std::fs::File> {
-            fs::File::create(self.0.join("leader")).map_err(|_| Error::Storage)
+        fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock> {
+            ml_exp_io::directory::Directory::open(&self.0, false)
+                .and_then(|directory| {
+                    directory.lock(
+                        std::ffi::OsStr::new("leader"),
+                        ml_exp_io::directory::LockOptions {
+                            create: true,
+                            shared: true,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .map_err(|_| Error::Storage)
         }
         fn validate_publisher_leader(&self, _: &std::fs::File) -> Result<()> {
             Ok(())
