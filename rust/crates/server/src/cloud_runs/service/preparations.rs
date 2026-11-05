@@ -351,7 +351,7 @@ impl Service {
                                 .map_err(|_| cloud::Error::evidence())?[..32]
                                 .to_owned(),
                         );
-                        let data = self.materialize_dataset(
+                        let data = self.publish_dataset(
                             project,
                             &run.executor,
                             &input.asset_id,

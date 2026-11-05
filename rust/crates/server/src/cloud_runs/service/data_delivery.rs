@@ -227,15 +227,6 @@ impl Service {
         executor: &str,
         asset: &str,
         request_id: &str,
-    ) -> cloud::Result<Value> {
-        self.materialize_dataset(project, executor, asset, request_id, None)
-    }
-    pub fn materialize_dataset(
-        self: &Arc<Self>,
-        project: &str,
-        executor: &str,
-        asset: &str,
-        request_id: &str,
         runtime_id: Option<&str>,
     ) -> cloud::Result<Value> {
         let effect = self

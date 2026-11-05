@@ -46,12 +46,7 @@ impl Service {
                     uncertain: false,
                 })?;
                 let runtime = self.runtime(project, executor, id)?;
-                if !runtime.worker_features.contains("storage-layout.v1") {
-                    return Err(cloud::Error::configuration());
-                }
-                saved.copy_runtime = Some(runtime);
-                saved.copy_request_id = Some(request_id.into());
-                saved.copy_storage = Some(backend.definition.storage_layout()?);
+                let storage = backend.definition.storage_layout()?;
                 let config = Config {
                     root: backend.definition.data_root()?,
                     target: backend.definition.target()?,
@@ -69,20 +64,13 @@ impl Service {
                     .dataset_channel(&self.workspace, project, executor, asset, "ready")?;
                 saved.copy_intent = Some(
                     ml_exp_core::cloud::data::materialization_job(
-                        saved
-                            .copy_runtime
-                            .as_ref()
-                            .ok_or_else(cloud::Error::evidence)?,
-                        &config,
-                        &channel,
-                        saved
-                            .copy_storage
-                            .as_ref()
-                            .ok_or_else(cloud::Error::evidence)?,
-                        request_id,
+                        &runtime, &config, &channel, &storage, request_id,
                     )
                     .map_err(|_| cloud::Error::evidence())?,
                 );
+                saved.copy_runtime = Some(runtime);
+                saved.copy_request_id = Some(request_id.into());
+                saved.copy_storage = Some(storage);
                 // Both identity and resource intent precede outbox/provider effects.
                 lock.validate()?;
                 self.slots

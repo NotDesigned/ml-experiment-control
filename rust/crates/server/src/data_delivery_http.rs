@@ -156,7 +156,7 @@ async fn publish(
     read_http::execute(state, Access::Write, move |api, _| {
         api.cloud()
             .ok_or_else(invalid)?
-            .materialize_dataset(
+            .publish_dataset(
                 &project,
                 &executor,
                 &asset,
