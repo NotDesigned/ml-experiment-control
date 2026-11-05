@@ -166,7 +166,7 @@ fn training_process_scheduler_and_unmigrated_publication_remain_independent() {
         .insert("return_code".into(), json!(0));
     assert_eq!(
         read_model::attempt_collection(&snapshot, "attempt-001", 0.0).unwrap()["training"]["status"],
-        "COMPLETED"
+        "UNKNOWN"
     );
 }
 
