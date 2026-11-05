@@ -3,15 +3,13 @@
 //! This is an isolated preview store. It never imports a Project implicitly,
 //! executes repository code, or retries a publication whose effect is unclear.
 use super::archive;
-use fs2::FileExt;
 use ml_exp_core::sources::{self, Metadata, Policy, TreeDigest, TreeEntry, TreeKind, TreePlan};
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
-    fs::File,
     io::{Read, Seek, SeekFrom, Write},
     os::unix::fs::MetadataExt,
     path::Path,
@@ -56,26 +54,20 @@ pub struct Store {
     sources: Directory,
     imports: Directory,
     staging: Directory,
-    anchor: File,
     policy: Policy,
 }
 
 struct Guard<'a> {
     store: &'a Store,
-    file: &'a File,
+    file: FileLock,
 }
 impl Guard<'_> {
     fn check(&self) -> Result<()> {
         self.store.namespace.verify_private_parent()?;
         self.store
             .namespace
-            .validate_regular_entry(OsStr::new(LOCK), self.file)?;
+            .validate_regular_entry(OsStr::new(LOCK), &self.file)?;
         Ok(())
-    }
-}
-impl Drop for Guard<'_> {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(self.file);
     }
 }
 
@@ -124,7 +116,7 @@ impl Store {
         {
             return Err(Error::Identity);
         }
-        let anchor = namespace.open_regular_read(OsStr::new(LOCK))?;
+        namespace.open_regular_read(OsStr::new(LOCK))?;
         let sources_dir = namespace.child(OsStr::new(SOURCES), false)?;
         let imports = namespace.child(OsStr::new(IMPORTS), false)?;
         let staging = namespace.child(OsStr::new(STAGING), false)?;
@@ -133,32 +125,31 @@ impl Store {
             sources: sources_dir,
             imports,
             staging,
-            anchor,
             policy,
         })
     }
 
     fn lock(&self) -> Result<Guard<'_>> {
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            match self.anchor.try_lock_exclusive() {
-                Ok(()) => break,
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && std::time::Instant::now() < end =>
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
+        let file = self
+            .namespace
+            .lock(
+                OsStr::new(LOCK),
+                LockOptions {
+                    wait: Wait::Until {
+                        deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
+                        cancelled: None,
+                    },
+                    ..Default::default()
+                },
+            )
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::WouldBlock {
+                    Error::Busy
+                } else {
+                    Error::Io(error)
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    return Err(Error::Busy);
-                }
-                Err(error) => return Err(Error::Io(error)),
-            }
-        }
-        let guard = Guard {
-            store: self,
-            file: &self.anchor,
-        };
+            })?;
+        let guard = Guard { store: self, file };
         guard.check()?;
         Ok(guard)
     }
@@ -258,7 +249,9 @@ impl Store {
     pub fn read(&self, project: &str, source_id: &str) -> Result<Metadata> {
         ml_exp_core::identity::validate_id(project).map_err(why!(Error::Identity))?;
         sources::validate_source_id(source_id).map_err(why!(Error::Identity))?;
-        let _guard = self.lock()?;
+        // No lock: a source appears by one atomic rename of a tree already sealed
+        // and is never changed or removed afterwards. Receipts do need the lock,
+        // because publish_new and seal_regular are two steps.
         let project_sources = self.sources.child(OsStr::new(project), false)?;
         let source = project_sources.child(OsStr::new(source_id), false)?;
         self.verify_tree(project, source_id, &source)
@@ -273,10 +266,11 @@ impl Store {
     ) -> Result<Metadata> {
         ml_exp_core::identity::validate_id(project).map_err(why!(Error::Identity))?;
         sources::validate_archive_digest(expected_sha).map_err(why!(Error::Identity))?;
-        let _guard = self.lock()?;
-        if let Some((_, metadata)) = self.receipt(project, expected_sha)? {
+        if let Some(metadata) = self.find_archive(project, expected_sha)? {
             return Ok(metadata);
         }
+        // Stream and stage without the lock: a slow upload must not turn other
+        // requests into Busy, and each import owns a randomly named stage.
         stream.seek(SeekFrom::Start(0))?;
         let mut archive_sha = Sha256::new();
         let mut size = 0u64;
@@ -341,6 +335,11 @@ impl Store {
             stage.seal_regular(OsStr::new(METADATA), &metadata_file, false)?;
             seal_tree(&tree)?;
             let source_id = metadata.source_id().to_owned();
+            let _guard = self.lock()?;
+            // An import that lost the race discards its stage below.
+            if let Some((_, existing)) = self.receipt(project, expected_sha)? {
+                return Ok(existing);
+            }
             let project_sources = self.sources.child(OsStr::new(project), true)?;
             if project_sources.entry_exists(OsStr::new(&source_id))? {
                 let existing = project_sources.child(OsStr::new(&source_id), false)?;

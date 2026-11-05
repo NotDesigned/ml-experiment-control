@@ -1,9 +1,9 @@
 //! Filesystem acceptance for the native immutable source store.
 use flate2::{Compression, write::GzEncoder};
 use ml_exp_core::sources::Policy;
-use ml_exp_server::sources::Store;
+use ml_exp_server::sources::{Error, Store};
 use sha2::{Digest, Sha256};
-use std::{fs, io::Cursor, os::unix::fs::PermissionsExt, path::Path};
+use std::{fs, io::Cursor, os::unix::fs::PermissionsExt, path::Path, sync::Barrier, thread};
 use tar::{Builder, Header};
 
 fn archive(include_secret: bool) -> (Vec<u8>, String) {
@@ -109,6 +109,67 @@ fn publish_read_reuse_and_archive_receipt_are_durable() {
             .to_value(),
         metadata.to_value()
     );
+}
+
+#[test]
+fn concurrent_imports_of_one_archive_publish_once_and_leave_no_stage() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    Store::initialize(temp.path(), Policy::default()).unwrap();
+    let store = Store::open(temp.path(), Policy::default()).unwrap();
+    let (bytes, digest) = archive(false);
+    let start = Barrier::new(8);
+    let identities: Vec<String> = thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut stream = Cursor::new(bytes.clone());
+                    start.wait();
+                    store
+                        .import_archive("demo", &mut stream, &digest, "2026-10-28T00:00:00Z")
+                        .unwrap()
+                        .source_id()
+                        .to_owned()
+                })
+            })
+            .collect();
+        workers.into_iter().map(|w| w.join().unwrap()).collect()
+    });
+    assert!(identities.iter().all(|identity| identity == &identities[0]));
+    let published = fs::read_dir(temp.path().join("source-revisions/sources/demo")).unwrap();
+    assert_eq!(published.count(), 1);
+    let staged = fs::read_dir(temp.path().join("source-revisions/staging")).unwrap();
+    assert_eq!(staged.count(), 0);
+    let found = store.find_archive("demo", &digest).unwrap().unwrap();
+    assert_eq!(found.source_id(), identities[0]);
+}
+
+#[test]
+fn only_receipts_and_publication_wait_for_the_source_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    Store::initialize(temp.path(), Policy::default()).unwrap();
+    let store = Store::open(temp.path(), Policy::default()).unwrap();
+    let (bytes, digest) = archive(false);
+    let source_id = store
+        .import_archive(
+            "demo",
+            &mut Cursor::new(bytes),
+            &digest,
+            "2026-10-28T00:00:00Z",
+        )
+        .unwrap()
+        .source_id()
+        .to_owned();
+    let held = fs::File::open(temp.path().join("source-revisions/.sources.lock")).unwrap();
+    fs2::FileExt::lock_exclusive(&held).unwrap();
+    assert!(store.read("demo", &source_id).is_ok());
+    assert!(matches!(
+        store.find_archive("demo", &digest),
+        Err(Error::Busy)
+    ));
+    fs2::FileExt::unlock(&held).unwrap();
+    assert!(store.find_archive("demo", &digest).unwrap().is_some());
 }
 
 #[test]
