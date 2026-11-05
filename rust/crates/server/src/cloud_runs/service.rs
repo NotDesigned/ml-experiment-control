@@ -83,8 +83,9 @@ fn encode(value: &impl Serialize) -> cloud::Result<Vec<u8>> {
 }
 pub(super) fn read(dir: &Directory, name: &str) -> cloud::Result<Value> {
     let bytes = dir.read_whole(OsStr::new(name)).map_err(io)?;
-    let value =
-        Value::Object(ml_exp_core::json::mapping(&bytes).map_err(why!(cloud::Error::evidence()))?);
+    let value = Value::Object(
+        ml_exp_core::json::own_mapping(&bytes).map_err(why!(cloud::Error::evidence()))?,
+    );
     if encode(&value)? != bytes {
         return Err(cloud::Error::evidence());
     }

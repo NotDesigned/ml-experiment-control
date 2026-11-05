@@ -245,7 +245,7 @@ impl Client {
                     http_status: Some(status.as_u16()),
                     uncertain: mutation,
                 },
-                "provider credentials are not one mapping"
+                "provider response is not one JSON mapping"
             ))?)
         };
         let provider_error = match request.endpoint {

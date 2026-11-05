@@ -126,7 +126,7 @@ impl Service {
             .read_whole(OsStr::new(&Self::name(id)?))
             .map_err(why!(invalid()))?;
         let saved: Saved = serde_json::from_value(Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(why!(invalid()))?,
+            ml_exp_core::json::own_mapping(&bytes).map_err(why!(invalid()))?,
         ))
         .map_err(why!(invalid()))?;
         if saved.plan.id().map_err(why!(invalid()))? != id

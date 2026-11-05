@@ -38,7 +38,7 @@ impl Service {
             .read_whole(OsStr::new(&name))
             .map_err(why!(Error::Authority))?;
         let saved: Saved = serde_json::from_value(Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?,
+            ml_exp_core::json::own_mapping(&bytes).map_err(why!(Error::Authority))?,
         ))
         .map_err(why!(Error::Authority))?;
         if saved.request_sha256

@@ -17,7 +17,7 @@ pub(crate) fn read<T: DeserializeOwned>(slots: &Directory, name: &str) -> io::Re
         return Ok(None);
     }
     let bytes = slots.read_whole(OsStr::new(name))?;
-    let value = ml_exp_core::json::mapping(&bytes).map_err(why!(invalid()))?;
+    let value = ml_exp_core::json::own_mapping(&bytes).map_err(why!(invalid()))?;
     serde_json::from_value(serde_json::Value::Object(value))
         .map(Some)
         .map_err(why!(invalid()))

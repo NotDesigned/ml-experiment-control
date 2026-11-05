@@ -75,7 +75,7 @@ pub enum DocumentError {
     Malformed,
     #[error("metadata uses unsupported YAML references, tags or ambiguous plain scalars")]
     UnsupportedYaml,
-    #[error("metadata exceeds the nesting limit")]
+    #[error("metadata exceeds the nesting or node limit")]
     Complexity,
     #[error("metadata contains duplicate or non-string mapping keys")]
     MappingKey,

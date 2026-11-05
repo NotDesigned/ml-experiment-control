@@ -464,9 +464,9 @@ impl Service {
     }
     /// The first-spend gate: the Attempt about to be spent still matches its frozen
     /// Run, source and profile. It runs before reuse, authorization and the claim,
-    /// never afterwards. A running Attempt stays readable and cancellable after an
-    /// edit; a drifted one that has not started stays unspendable, and the remedy is
-    /// a new Run.
+    /// never afterwards, and before a retry publishes the Attempt that would be spent
+    /// next. A running Attempt stays readable and cancellable after an edit; a drifted
+    /// one that has not started stays unspendable, and the remedy is a new Run.
     pub(super) fn check(&self, prepared: &Prepared) -> cloud::Result<()> {
         let mut current = self.current_execution(
             &prepared.execution.job.project,

@@ -1,4 +1,3 @@
-use crate::experiments::{Format, parse_mapping};
 use ml_exp_core::{
     canonical::python_json_bytes,
     durable,
@@ -106,7 +105,7 @@ pub fn canonical_path(path: &str) -> Result<PathEvidence, Error> {
     })
 }
 fn decode(bytes: &[u8]) -> Result<Value, Error> {
-    parse_mapping(bytes, Format::Json)
+    ml_exp_core::json::own_mapping(bytes)
         .map(Value::Object)
         .map_err(why!(Error::Invalid))
 }

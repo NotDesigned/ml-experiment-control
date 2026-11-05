@@ -115,7 +115,7 @@ impl Service {
             .read_whole(OsStr::new(&name))
             .map_err(why!(Error::Authority))?;
         let samples: Samples = serde_json::from_value(Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?,
+            ml_exp_core::json::own_mapping(&bytes).map_err(why!(Error::Authority))?,
         ))
         .map_err(why!(Error::Authority))?;
         if samples.request_sha256 != request_sha256
@@ -146,7 +146,7 @@ impl Service {
             .read_whole(name)
             .map_err(why!(Error::Authority))?;
         Ok(Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?,
+            ml_exp_core::json::own_mapping(&bytes).map_err(why!(Error::Authority))?,
         ))
     }
     pub fn background_candidates(&self) -> Result<BTreeSet<String>> {

@@ -1179,6 +1179,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             &"c".repeat(32),
         )
         .unwrap();
+    let original_project = fs::read(temp.path().join("project.json")).unwrap();
     // Editing the project file is ordinary work while an Attempt is running.
     ml_exp_io::write_atomic(
         &temp.path().join("project.json"),
@@ -1243,6 +1244,8 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         &execution,
         &channel.token,
         &packet,
+        temp.path(),
+        &original_project,
     );
     let mut changed = request;
     changed.seed = 43;
@@ -1327,6 +1330,8 @@ fn check_running_attempt_after_project_edit(
     execution: &ml_exp_core::cloud::action::Execution,
     token: &str,
     packet: &ml_exp_core::cloud::exchange::Packet,
+    root: &std::path::Path,
+    original_project: &[u8],
 ) {
     use std::sync::atomic::AtomicBool;
     let now = "2026-10-29T01:03:00Z";
@@ -1444,6 +1449,59 @@ fn check_running_attempt_after_project_edit(
         cancelling["cloud_observation"]["termination_verified"],
         true
     );
+
+    // The parent is terminal with no diagnostic, so only the project edit stands
+    // between it and a retry. A retry publishes nothing a later prepare must refuse.
+    outbox
+        .reconcile(
+            &provider,
+            job,
+            execution.allocation,
+            &unguarded,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert!(outbox.status(job).unwrap()["diagnostic"].is_null());
+    let retry = ml_exp_core::first_submission::native::retry::Request {
+        confirmation: String::new(),
+        resume_from: None,
+        restart_from: Some(ml_exp_core::first_submission::native::retry::StartFrom {
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+            sync_request_id: String::new(),
+        }),
+        max_gpu_hours: 1.,
+        reason: String::new(),
+    };
+    let run = root.join("runs/train");
+    let status = fs::read(run.join("status.json")).unwrap();
+    assert_eq!(
+        service
+            .retry(action, retry.clone(), now, &AtomicBool::new(true))
+            .unwrap_err()
+            .code,
+        "CLOUD_EVIDENCE_INVALID"
+    );
+    assert!(!run.join("attempts/attempt-002").exists());
+    assert_eq!(fs::read(run.join("status.json")).unwrap(), status);
+    assert_eq!(
+        service.for_run("demo", "train", now).unwrap()["submission_id"],
+        action
+    );
+    // The refusal came before any provider read, and came from the edit: with the
+    // project restored the same retry reaches the provider client, which records
+    // the set cancellation flag as a diagnostic.
+    assert!(outbox.status(job).unwrap()["diagnostic"].is_null());
+    let edited = fs::read(root.join("project.json")).unwrap();
+    ml_exp_io::write_atomic(&root.join("project.json"), original_project, false).unwrap();
+    assert!(
+        service
+            .retry(action, retry, now, &AtomicBool::new(true))
+            .is_err()
+    );
+    assert!(!outbox.status(job).unwrap()["diagnostic"].is_null());
+    assert!(!run.join("attempts/attempt-002").exists());
+    ml_exp_io::write_atomic(&root.join("project.json"), &edited, false).unwrap();
 }
 
 fn check_builder_dispatch_evidence(

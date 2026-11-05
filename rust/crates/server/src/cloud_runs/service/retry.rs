@@ -68,6 +68,9 @@ impl Service {
             if self.current_attempt(project, run)? != binding.attempt_id {
                 return Err(cloud::Error::evidence());
             }
+            // Prepare refuses an Attempt whose Run no longer matches the project, so
+            // publishing one here would leave the Run pointing at it unspendable.
+            self.check(&parent)?;
             let adapter = self.execution_adapter(&parent.execution)?;
             let state = self.outbox.reconcile(
                 &adapter,

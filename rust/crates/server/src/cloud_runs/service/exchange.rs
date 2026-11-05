@@ -263,7 +263,7 @@ impl Service {
         }
         let bytes = self.slots.read_whole(OsStr::new(&name)).map_err(io)?;
         let saved: Saved = serde_json::from_value(Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(why!(cloud::Error::evidence()))?,
+            ml_exp_core::json::own_mapping(&bytes).map_err(why!(cloud::Error::evidence()))?,
         ))
         .map_err(why!(cloud::Error::evidence()))?;
         if saved.sequence == 0

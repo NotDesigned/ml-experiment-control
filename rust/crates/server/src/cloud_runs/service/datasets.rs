@@ -43,7 +43,8 @@ impl Service {
                 continue;
             };
             let raw = self.slots.read_whole(OsStr::new(name)).map_err(io)?;
-            let value = ml_exp_core::json::mapping(&raw).map_err(why!(cloud::Error::evidence()))?;
+            let value =
+                ml_exp_core::json::own_mapping(&raw).map_err(why!(cloud::Error::evidence()))?;
             let state = &value["state"];
             if state["project"] != project || state["target"]["backend_id"] != executor {
                 continue;

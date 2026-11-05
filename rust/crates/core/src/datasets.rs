@@ -235,6 +235,9 @@ impl State {
                 return Err(Error);
             }
         }
+        if serde_json::to_vec(self).map_err(|_| Error)?.len() > MAX_METADATA - 4096 {
+            return Err(Error);
+        }
         Ok(())
     }
     pub fn record_part(&self, number: u64, part: multipart::PartRecord) -> Result<Self> {
@@ -572,6 +575,72 @@ mod tests {
         assert_eq!(d.part_count().unwrap(), 320);
         assert_eq!(d.part_size(319).unwrap(), PART_BYTES);
         assert!(d.part_size(320).is_err());
+    }
+    /// As many nodes per byte as a valid State can hold: the most files, in their
+    /// shortest unique paths, and the rest of the room in parts.
+    fn dense(parts: u64) -> (State, Receipt) {
+        let definition = Definition {
+            sha256: "1".repeat(64),
+            archive_bytes: parts * PART_BYTES,
+            files: (0..crate::artifacts::MAX_FILES)
+                .map(|i| FileReceipt {
+                    path: format!("{i:04x}"),
+                    sha256: "2".repeat(64),
+                    bytes: 0,
+                })
+                .collect(),
+        };
+        let asset_id = definition.asset_id();
+        let receipt = Receipt {
+            contract: CONTRACT.into(),
+            project: "demo".into(),
+            target: target(),
+            asset_id: asset_id.clone(),
+            definition: definition.clone(),
+            root: format!("/data/demo/{asset_id}/tree"),
+        };
+        let state = State {
+            contract: CONTRACT.into(),
+            project: "demo".into(),
+            target: target(),
+            asset_id,
+            definition,
+            parts: (0..parts)
+                .map(|number| {
+                    let part = multipart::PartRecord {
+                        sha256: "5".repeat(64),
+                        bytes: PART_BYTES,
+                    };
+                    (number, part)
+                })
+                .collect(),
+            ready: None,
+        };
+        (state, receipt)
+    }
+    fn ready(state: &State, receipt: &Receipt) -> State {
+        let mut next = state.clone();
+        next.ready = Some(receipt.clone());
+        next
+    }
+    /// Cleanup deletes the parts once READY is saved, so a State must be refused at
+    /// admission unless the frame and the parse can still carry it afterwards.
+    #[test]
+    fn every_admitted_state_still_reads_back_and_a_larger_one_is_refused_before_publish() {
+        let (one, receipt) = dense(1);
+        let empty = serde_json::to_vec(&ready(&one, &receipt)).unwrap().len();
+        // No part record serializes to more than 103 bytes below 100,000 parts.
+        let fits = (MAX_METADATA - 4096 - empty) as u64 / 103;
+        let (state, receipt) = dense(fits);
+        let admitted = state.publish(receipt).unwrap();
+        assert_eq!(
+            decode::<State>(&encode(&admitted).unwrap()).unwrap(),
+            admitted
+        );
+
+        let (state, receipt) = dense(fits + 1000);
+        state.validate().unwrap();
+        assert!(state.publish(receipt).is_err());
     }
     #[test]
     fn durable_parts_cannot_disappear_or_change_and_incomplete_data_is_not_ready() {

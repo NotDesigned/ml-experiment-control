@@ -42,7 +42,7 @@ impl Service {
             .slots
             .read_whole(OsStr::new(&name))
             .map_err(why!(Error::Authority))?;
-        let mapping = ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?;
+        let mapping = ml_exp_core::json::own_mapping(&bytes).map_err(why!(Error::Authority))?;
         let value: State =
             serde_json::from_value(Value::Object(mapping)).map_err(why!(Error::Authority))?;
         value

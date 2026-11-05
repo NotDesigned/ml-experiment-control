@@ -24,7 +24,7 @@ impl Service {
                 .read_whole(OsStr::new(name))
                 .map_err(why!(Error::DatasetUnavailable))?;
             let value =
-                ml_exp_core::json::mapping(&raw).map_err(why!(Error::DatasetUnavailable))?;
+                ml_exp_core::json::own_mapping(&raw).map_err(why!(Error::DatasetUnavailable))?;
             if value["project"] != project || value["target"]["backend_id"] != executor {
                 continue;
             }
@@ -84,7 +84,7 @@ impl Service {
             .read_whole(OsStr::new(&name))
             .map_err(why!(Error::DatasetUnavailable))?;
         let mapping =
-            ml_exp_core::json::mapping(&bytes).map_err(why!(Error::DatasetUnavailable))?;
+            ml_exp_core::json::own_mapping(&bytes).map_err(why!(Error::DatasetUnavailable))?;
         let state: State = serde_json::from_value(Value::Object(mapping))
             .map_err(why!(Error::DatasetUnavailable))?;
         state.validate().map_err(why!(Error::DatasetUnavailable))?;

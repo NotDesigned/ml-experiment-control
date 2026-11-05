@@ -231,7 +231,7 @@ pub(super) fn read_json(directory: &Directory, name: &str) -> Result<Value> {
     let bytes = directory
         .read_whole(OsStr::new(name))
         .map_err(why!(Error::Authority))?;
-    let value = experiments::parse_mapping(&bytes, experiments::Format::Json)
+    let value = ml_exp_core::json::own_mapping(&bytes)
         .map(Value::Object)
         .map_err(why!(Error::Authority))?;
     // These files are our immutable publications. A semantic JSON match alone
