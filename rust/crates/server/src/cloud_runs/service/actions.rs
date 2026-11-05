@@ -83,7 +83,6 @@ impl Service {
             )?;
             prepared
         };
-        self.check(&prepared)?;
         let snapshot = self
             .actions
             .save_plan(&prepared.plan, now, transition)
@@ -165,12 +164,8 @@ impl Service {
             .fence
             .existing_observation_guard(&execution.job.project, &execution.job.run_id)
             .map_err(why!(cloud::Error::evidence()))?;
-        let check = || {
-            guard
-                .require_observed_live(&execution.job.project, &execution.job.run_id)
-                .map_err(why!(cloud::Error::evidence()))?;
-            self.check(&prepared)
-        };
+        self.check(&prepared)?;
+        let check = || self.still_live(&guard, &execution.job.project, &execution.job.run_id);
         let policy = Policy {
             allow_scheduler_mutations: true,
             ..Default::default()
@@ -222,7 +217,12 @@ impl Service {
                 .map_err(op)?;
         }
         let adapter = self.execution_adapter(&prepared.execution)?;
-        let check = || self.check(&prepared);
+        let job = &prepared.execution.job;
+        let guard = self
+            .fence
+            .existing_observation_guard(&job.project, &job.run_id)
+            .map_err(why!(cloud::Error::evidence()))?;
+        let check = || self.still_live(&guard, &job.project, &job.run_id);
         let snapshot = Runner {
             actions: &self.actions,
             adapter: &adapter,
@@ -250,12 +250,7 @@ impl Service {
             &self.execution_adapter(execution)?,
             &execution.job,
             execution.allocation,
-            &|| {
-                guard
-                    .require_observed_live(&execution.job.project, &execution.job.run_id)
-                    .map_err(why!(cloud::Error::evidence()))?;
-                self.check(&prepared)
-            },
+            &|| self.still_live(&guard, &execution.job.project, &execution.job.run_id),
             cancelled,
         )?;
         self.get(action, now)
@@ -276,7 +271,11 @@ impl Service {
         if self.actions.observe(action).map_err(op)?["execution"]["status"] != "VERIFIED" {
             return Err(cloud::Error::evidence());
         }
-        let check = || self.check(&prepared);
+        let guard = self
+            .fence
+            .existing_observation_guard(&execution.job.project, &execution.job.run_id)
+            .map_err(why!(cloud::Error::evidence()))?;
+        let check = || self.still_live(&guard, &execution.job.project, &execution.job.run_id);
         let current = self.outbox.status(&execution.job)?;
         if current["cancellation_started"] == true {
             self.outbox.reconcile(

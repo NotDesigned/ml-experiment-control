@@ -65,7 +65,6 @@ impl Service {
         }
         let _lock = self.lock()?;
         let prepared = self.load(action)?;
-        self.check(&prepared)?;
         let guard = self
             .fence
             .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
@@ -93,13 +92,11 @@ impl Service {
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Authority))?;
-        self.check(&prepared)?;
         let outcome =
             call(&backend.control_ssh(), &request, cancelled).map_err(why!(Error::Uncertain))?;
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Uncertain))?;
-        self.check(&prepared).map_err(|_| Error::Uncertain)?;
         if let CallOutcome::Receipt { reply, .. } = outcome {
             let next = state
                 .observed(&request, &reply)

@@ -370,7 +370,12 @@ impl Service {
         if prepared.plan["action_id"] != action {
             return Err(cloud::Error::evidence());
         }
-        self.check(&prepared)?;
+        self.require_live(
+            &prepared.execution.job.project,
+            &prepared.execution.job.run_id,
+        )?;
+        action::validate(&prepared.plan, &prepared.execution)
+            .map_err(why!(cloud::Error::evidence()))?;
         Ok(prepared)
     }
 }

@@ -52,7 +52,6 @@ impl Service {
         if candidate.execution != original.execution || candidate.approval != original.approval {
             return Err(cloud::Error::evidence());
         }
-        self.check(&candidate)?;
         let id = candidate.plan["action_id"]
             .as_str()
             .ok_or_else(cloud::Error::evidence)?;

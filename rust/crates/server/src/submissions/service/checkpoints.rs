@@ -26,7 +26,7 @@ impl Service {
         let prepared = self
             .saved_attempt(project, run, attempt)?
             .ok_or(Error::Missing)?;
-        self.check(&prepared)?;
+        self.require_live(project, run)?;
         if prepared.binding.attempt_id != attempt {
             return Err(Error::CheckpointMissing);
         }
@@ -75,7 +75,6 @@ impl Service {
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Authority))?;
-        self.check(&prepared)?;
         let CallOutcome::Receipt { reply, .. } = outcome else {
             return Err(Error::CheckpointUnavailable);
         };

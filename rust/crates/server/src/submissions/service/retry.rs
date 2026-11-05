@@ -140,7 +140,6 @@ impl Service {
             guard
                 .require_observed_live(project, run)
                 .map_err(why!(Error::Authority))?;
-            self.check(&parent)?;
             let mut random = [0u8; 16];
             getrandom::fill(&mut random).map_err(why!(Error::Configuration))?;
             let stage = self
@@ -171,7 +170,6 @@ impl Service {
             result?;
             attempt
         };
-        self.check(&parent)?;
         guard
             .require_observed_live(project, run)
             .map_err(why!(Error::Uncertain))?;

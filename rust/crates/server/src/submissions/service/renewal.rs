@@ -73,7 +73,6 @@ impl Service {
             },
         )
         .map_err(why!(Error::Authority))?;
-        self.check(&candidate)?;
         let snapshot =
             self.actions
                 .save_plan(&candidate.plan, context.now, context.transition_id)?;

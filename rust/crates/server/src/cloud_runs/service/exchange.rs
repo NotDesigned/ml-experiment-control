@@ -151,12 +151,7 @@ impl Service {
         let job = request
             .job(&execution.job)
             .map_err(why!(cloud::Error::configuration()))?;
-        let check = || {
-            guard
-                .require_observed_live(&execution.job.project, &execution.job.run_id)
-                .map_err(why!(cloud::Error::evidence()))?;
-            self.check(&prepared)
-        };
+        let check = || self.still_live(&guard, &execution.job.project, &execution.job.run_id);
         self.sync_outbox.prepare(
             &collector.profile,
             &job,
@@ -208,7 +203,6 @@ impl Service {
             .authority(project, &reference.run_id)?
             .child(OsStr::new(&reference.run_id), false)
             .map_err(io)?;
-        self.check(&prepared)?;
         if helper::sha256_bytes(&encode(&read(&root, "manifest.json")?)?) != b.run_sha256 {
             return Err(cloud::Error::evidence());
         }
@@ -242,7 +236,7 @@ impl Service {
         if !bool::from(expected.token.as_bytes().ct_eq(token.as_bytes())) {
             return Err(denied());
         }
-        self.check(&prepared)?;
+        self.require_live(project, run)?;
         let package = prepared
             .execution
             .package()
@@ -360,7 +354,7 @@ impl Service {
         if !bool::from(expected.token.as_bytes().ct_eq(token.as_bytes())) {
             return Err(denied());
         }
-        self.check(&prepared)?;
+        self.require_live(project, run)?;
         if self
             .actions
             .observe(
@@ -532,7 +526,6 @@ impl Service {
         guard
             .require_observed_live(project, run)
             .map_err(why!(cloud::Error::evidence()))?;
-        self.check(&prepared)?;
         let bytes = encode(&saved)?;
         if bytes.len() > 4 * 1024 * 1024 {
             return Err(cloud::Error::evidence());
@@ -556,7 +549,7 @@ impl Service {
         let prepared = self
             .saved_attempt(project, run, attempt)?
             .ok_or_else(missing)?;
-        self.check(&prepared)?;
+        self.require_live(project, run)?;
         if prepared.execution.job.attempt_id != attempt {
             return Err(missing());
         }
@@ -575,7 +568,6 @@ impl Service {
     }
     pub fn tracking_status(&self, project: &str, run: &str) -> cloud::Result<Value> {
         let prepared = self.saved(project, run)?.ok_or_else(missing)?;
-        self.check(&prepared)?;
         let records = self.exchange_records(&prepared)?;
         let guard = records
             .guard(project, run)
@@ -674,8 +666,6 @@ impl crate::tracking::Source for Service {
             .saved(project, run)
             .map_err(why!(crate::tracking::Error::Identity))?
             .ok_or(crate::tracking::Error::Identity)?;
-        self.check(&prepared)
-            .map_err(|_| crate::tracking::Error::Identity)?;
         self.exchange_records(&prepared)
             .map_err(why!(crate::tracking::Error::Identity))
     }

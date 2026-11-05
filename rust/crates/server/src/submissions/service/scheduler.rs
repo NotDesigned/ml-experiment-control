@@ -80,7 +80,6 @@ impl Service {
             .fence
             .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Authority))?;
-        self.check(&prepared)?;
         let snapshot = self.actions.observe(action)?;
         if snapshot["execution"]["status"] != "VERIFIED" {
             return Err(Error::Conflict);
@@ -122,7 +121,6 @@ impl Service {
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Authority))?;
-        self.check(&prepared)?;
         let saved = Saved {
             request_sha256: prepared
                 .request

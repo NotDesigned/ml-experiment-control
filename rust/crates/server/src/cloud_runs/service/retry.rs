@@ -73,7 +73,7 @@ impl Service {
                 &adapter,
                 &parent.execution.job,
                 parent.execution.allocation,
-                &|| self.check(&parent),
+                &|| self.still_live(&guard, project, run),
                 cancelled,
             )?;
             let termination: ml_exp_core::cloud::JobObservation =
@@ -121,7 +121,6 @@ impl Service {
                 "status.json",
                 &json!({"project":project,"run_id":run,"attempt_id":next,"state":"NOT_SUBMITTED","updated_at":now}),
             )?;
-            self.check(&parent)?;
             guard
                 .require_observed_live(project, run)
                 .map_err(why!(cloud::Error::evidence()))?;
@@ -139,7 +138,6 @@ impl Service {
         next_binding.attempt_sha256 = helper::sha256_bytes(&encode(&attempt)?);
         retry::validate_attempt(&manifest, &attempt, &next_binding)
             .map_err(why!(cloud::Error::evidence()))?;
-        self.check(&parent)?;
         if self.current_attempt(project, run)? == binding.attempt_id {
             directory.replace_regular(OsStr::new("status.json"),&encode(&json!({"project":project,"run_id":run,"attempt_id":next,"state":"NOT_SUBMITTED","updated_at":attempt["attempt_created_at"]}))?).map_err(why!(cloud::Error{code:"CLOUD_RETRY_UNCERTAIN".into(),http_status:None,uncertain:true}))?;
         }

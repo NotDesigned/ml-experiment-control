@@ -131,7 +131,6 @@ impl Service {
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Authority))?;
-        self.check(&prepared)?;
         let CallOutcome::Receipt { reply, .. } = outcome else {
             return Err(Error::ObservationUnavailable);
         };

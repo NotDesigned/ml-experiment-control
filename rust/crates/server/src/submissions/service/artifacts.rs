@@ -90,7 +90,6 @@ impl Service {
         prepared: &Prepared,
         command: Command,
     ) -> Result<(helper::Request, SshConfig)> {
-        self.check(prepared)?;
         let action = prepared.plan["action_id"]
             .as_str()
             .ok_or(Error::Authority)?;
@@ -113,7 +112,6 @@ impl Service {
     }
     pub fn artifacts(&self, action: &str) -> Result<Value> {
         let prepared = self.load(action)?;
-        self.check(&prepared)?;
         let state = self
             .artifact_saved(&prepared)?
             .ok_or(Error::ArtifactsUnavailable)?;
@@ -181,7 +179,6 @@ impl Service {
         let helper::ReplyOutcome::Artifacts { publication: state } = reply.outcome else {
             return Err(Error::ArtifactsUnavailable);
         };
-        self.check(&prepared)?;
         self.artifact_save(&prepared, &state)?;
         self.artifacts(action)
     }
@@ -191,7 +188,6 @@ impl Service {
         sha256: &str,
     ) -> Result<crate::backends::slurm::artifact_stream::Download> {
         let prepared = self.load(action)?;
-        self.check(&prepared)?;
         let guard = self
             .fence
             .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
@@ -223,7 +219,6 @@ impl Service {
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Authority))?;
-        self.check(&prepared)?;
         Ok(stream)
     }
     pub(crate) fn apply_artifacts(

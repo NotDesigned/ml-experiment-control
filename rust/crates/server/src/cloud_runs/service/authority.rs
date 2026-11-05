@@ -87,6 +87,38 @@ impl Service {
         }
         backend.adapter.with_profile(profile)
     }
+    /// The project lifecycle gate. An archived project takes no further effect.
+    fn require_active(&self, project: &str) -> cloud::Result<()> {
+        if self
+            .lifecycle
+            .as_ref()
+            .is_some_and(|l| !l.active_projects().is_ok_and(|p| p.contains(project)))
+        {
+            return Err(cloud::Error::evidence());
+        }
+        Ok(())
+    }
+    /// Fence and lifecycle at acquisition: the Run has no tombstone and its project
+    /// is active. These stay enforced on every operation, unlike `check`.
+    pub(super) fn require_live(&self, project: &str, run: &str) -> cloud::Result<()> {
+        let _guard = self
+            .fence
+            .existing_observation_guard(project, run)
+            .map_err(why!(cloud::Error::evidence()))?;
+        self.require_active(project)
+    }
+    /// The same two gates under a guard already held across an effect.
+    pub(super) fn still_live(
+        &self,
+        guard: &crate::deletion::Guard<'_>,
+        project: &str,
+        run: &str,
+    ) -> cloud::Result<()> {
+        guard
+            .require_observed_live(project, run)
+            .map_err(why!(cloud::Error::evidence()))?;
+        self.require_active(project)
+    }
     pub(super) fn authority(&self, project: &str, run: &str) -> cloud::Result<Directory> {
         ml_exp_core::identity::validate_id(project)
             .and_then(|_| ml_exp_core::identity::validate_id(run))
@@ -96,16 +128,7 @@ impl Service {
         if workspace != self.workspace {
             return Err(cloud::Error::evidence());
         }
-        self.fence
-            .existing_observation_guard(project, run)
-            .map_err(why!(cloud::Error::evidence()))?;
-        if self
-            .lifecycle
-            .as_ref()
-            .is_some_and(|l| !l.active_projects().is_ok_and(|p| p.contains(project)))
-        {
-            return Err(cloud::Error::evidence());
-        }
+        self.require_live(project, run)?;
         let project = self
             .settings
             .projects
@@ -441,7 +464,12 @@ impl Service {
         }
         Ok(execution)
     }
-    pub(in crate::cloud_runs) fn check(&self, prepared: &Prepared) -> cloud::Result<()> {
+    /// The first-spend gate: the Attempt about to be spent still matches its frozen
+    /// Run, source and profile. It runs before reuse, authorization and the claim,
+    /// never afterwards. A running Attempt stays readable and cancellable after an
+    /// edit; a drifted one that has not started stays unspendable, and the remedy is
+    /// a new Run.
+    pub(super) fn check(&self, prepared: &Prepared) -> cloud::Result<()> {
         let mut current = self.current_execution(
             &prepared.execution.job.project,
             &prepared.execution.job.run_id,

@@ -8,9 +8,10 @@ impl Service {
         if workspace != self.workspace {
             return Err(Error::Authority);
         }
-        self.fence
-            .existing_observation_guard(project, run)
-            .map_err(why!(Error::Authority))?;
+        self.require_live(project, run)
+    }
+    /// The project lifecycle gate. An archived project takes no further effect.
+    fn require_active(&self, project: &str) -> Result<()> {
         if let Some(lifecycle) = &self.lifecycle {
             if !lifecycle
                 .active_projects()
@@ -21,6 +22,27 @@ impl Service {
             }
         }
         Ok(())
+    }
+    /// Fence and lifecycle at acquisition: the Run has no tombstone and its project
+    /// is active. These stay enforced on every operation, unlike `check`.
+    pub(super) fn require_live(&self, project: &str, run: &str) -> Result<()> {
+        let _guard = self
+            .fence
+            .existing_observation_guard(project, run)
+            .map_err(why!(Error::Authority))?;
+        self.require_active(project)
+    }
+    /// The same two gates under a guard already held across an effect.
+    pub(super) fn still_live(
+        &self,
+        guard: &crate::deletion::Guard<'_>,
+        project: &str,
+        run: &str,
+    ) -> Result<()> {
+        guard
+            .require_observed_live(project, run)
+            .map_err(why!(Error::Authority))?;
+        self.require_active(project)
     }
     pub(super) fn resolve(&self, project: &str, run: &str) -> Result<RunRef> {
         let approved = self
@@ -155,6 +177,11 @@ impl Service {
         }
         Ok(facts)
     }
+    /// The first-spend gate: the Attempt about to be spent still matches its frozen
+    /// Run, source and profile. It runs before reuse, authorization and the claim,
+    /// never afterwards. A running Attempt stays readable and cancellable after an
+    /// edit; a drifted one that has not started stays unspendable, and the remedy is
+    /// a new Run.
     pub(super) fn check(&self, prepared: &Prepared) -> Result<()> {
         prepared.validate()?;
         let facts = self.facts_for(
@@ -240,7 +267,8 @@ impl Service {
         if prepared.plan["action_id"] != action {
             return Err(Error::Authority);
         }
-        self.check(&prepared)?;
+        self.require_live(&prepared.binding.project, &prepared.binding.run_id)?;
+        prepared.validate()?;
         Ok(prepared)
     }
 }

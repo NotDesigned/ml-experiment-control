@@ -187,7 +187,6 @@ impl Service {
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Authority))?;
-        self.check(&prepared)?;
         let mut importer = saved.importer.ok_or(Error::Authority)?;
         let mut counts = saved.counts;
         for chunk in page.bytes.chunks(JsonlImporter::INPUT_BOUND) {

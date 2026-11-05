@@ -345,7 +345,6 @@ impl Service {
     pub fn get(&self, action: &str, now: &str) -> Result<Value> {
         let prepared = self.load(action)?;
         let snapshot = self.actions.observe(action)?;
-        self.check(&prepared)?;
         let mut result = self.public(snapshot, now)?;
         if let Some(state) = self.cancellation_state(&prepared)? {
             result["cancellation"] = json!(state);
@@ -373,7 +372,6 @@ impl Service {
         let snapshot =
             self.actions
                 .authorize(action, actor, note, context.now, context.transition_id)?;
-        self.check(&prepared).map_err(|_| Error::Uncertain)?;
         self.public(snapshot, context.now)
     }
     pub fn execute(
@@ -417,12 +415,10 @@ impl Service {
             execution_manifest_sha256: Some(prepared.request.intent().manifest_sha256.clone()),
             ..Default::default()
         };
+        self.check(&prepared)?;
         let check = || {
-            guard
-                .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
-                .map_err(why!(crate::backends::slurm::action::Error::Guard))?;
-            self.check(&prepared)
-                .map_err(|_| crate::backends::slurm::action::Error::Guard)
+            self.still_live(&guard, &prepared.binding.project, &prepared.binding.run_id)
+                .map_err(why!(crate::backends::slurm::action::Error::Guard))
         };
         let snapshot = Runner {
             actions: &self.actions,
@@ -469,11 +465,8 @@ impl Service {
             .find(|b| b.profile.target == prepared.request.intent().target)
             .ok_or(Error::Authority)?;
         let check = || {
-            guard
-                .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
-                .map_err(why!(crate::backends::slurm::action::Error::Guard))?;
-            self.check(&prepared)
-                .map_err(|_| crate::backends::slurm::action::Error::Guard)
+            self.still_live(&guard, &prepared.binding.project, &prepared.binding.run_id)
+                .map_err(why!(crate::backends::slurm::action::Error::Guard))
         };
         let ssh = backend.control_ssh();
         let snapshot = Runner {
@@ -492,7 +485,7 @@ impl Service {
         now: &str,
         transition_id: &str,
     ) -> Result<Value> {
-        let prepared = self.load(action)?;
+        self.load(action)?;
         let snapshot = self.actions.observe(action)?;
         if let Some(transition) = ml_exp_core::operations::interrupted(&snapshot["execution"], now)
             .map_err(operations::Error::from)?
@@ -500,7 +493,6 @@ impl Service {
             self.actions
                 .commit(action, &transition, transition_id, now)?;
         }
-        self.check(&prepared)?;
         self.public(self.actions.observe(action)?, now)
     }
 }

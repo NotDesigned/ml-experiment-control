@@ -148,7 +148,6 @@ impl Service {
             snapshot["action_id"].as_str().ok_or(Error::Authority)?,
             &prepared.request,
         )?;
-        self.check(&prepared).map_err(|_| Error::Uncertain)?;
         let mut view = self.public(snapshot, context.now)?;
         view["reused"] = json!(reused);
         Ok(view)

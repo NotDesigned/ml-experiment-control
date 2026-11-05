@@ -123,7 +123,6 @@ impl Service {
             let action = prepared.plan["action_id"]
                 .as_str()
                 .ok_or_else(crate::backends::cloud::Error::evidence)?;
-            self.check(&prepared)?;
             if self.actions.observe(action).map_err(super::service::op)?["execution"]["status"]
                 != "VERIFIED"
             {

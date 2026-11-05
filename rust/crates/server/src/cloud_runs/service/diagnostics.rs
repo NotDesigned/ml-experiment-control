@@ -343,7 +343,6 @@ impl Service {
         .map_err(why!(cloud::Error::configuration()))?;
         let _lock = self.lock()?;
         let prepared = self.load(action)?;
-        self.check(&prepared)?;
         let collector = self.backends[&prepared.execution.backend_id]
             .collector
             .as_ref()
@@ -362,12 +361,7 @@ impl Service {
             .fence
             .existing_observation_guard(&parent.project, &prepared.execution.job.run_id)
             .map_err(why!(cloud::Error::evidence()))?;
-        let check = || {
-            guard
-                .require_observed_live(&parent.project, &prepared.execution.job.run_id)
-                .map_err(why!(cloud::Error::evidence()))?;
-            self.check(&prepared)
-        };
+        let check = || self.still_live(&guard, &parent.project, &prepared.execution.job.run_id);
         self.diagnostic(collector, &parent, lineage, config, execute, now, &check)
     }
     pub fn data_diagnostic(

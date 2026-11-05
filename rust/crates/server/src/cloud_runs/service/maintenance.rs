@@ -53,7 +53,7 @@ impl Service {
         {
             return Err(cloud::Error::evidence());
         }
-        self.check(&prepared)?;
+        self.require_live(&scope.project, &scope.run_id)?;
         Ok(prepared)
     }
     pub fn maintenance_execute(&self, action: &str, plan: &Plan) -> cloud::Result<Value> {

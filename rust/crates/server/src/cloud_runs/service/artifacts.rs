@@ -34,7 +34,6 @@ impl Service {
             else {
                 continue;
             };
-            self.check(&prepared)?;
             let Some(saved) = self.artifact_saved(&prepared)? else {
                 continue;
             };
@@ -114,7 +113,6 @@ impl Service {
         Ok(Some(saved))
     }
     pub(super) fn artifact_save(&self, prepared: &Prepared, saved: &Saved) -> cloud::Result<()> {
-        self.check(prepared)?;
         self.slots
             .replace_regular(OsStr::new(&Self::artifact_name(prepared)?), &encode(saved)?)
             .map_err(why!(cloud::Error {
@@ -146,7 +144,7 @@ impl Service {
         if !bool::from(channel.token.as_bytes().ct_eq(token.as_bytes())) {
             return Err(denied());
         }
-        self.check(&prepared)?;
+        self.require_live(project, run)?;
         if self
             .actions
             .observe(
@@ -245,7 +243,6 @@ impl Service {
             ArtifactOperation::Complete => {
                 if !published {
                     objects.verify(&saved.bundle.archive).map_err(io)?;
-                    self.check(&prepared)?;
                     saved.state = Some(
                         State::new(saved.bundle.clone()).map_err(why!(cloud::Error::evidence()))?,
                     );
@@ -363,7 +360,6 @@ impl Service {
             // cursor, including after a lost response or process restart.
             let end = total.min(saved.released_parts.saturating_add(64));
             while saved.released_parts < end {
-                self.check(&prepared)?;
                 self.objects
                     .as_ref()
                     .ok_or_else(cloud::Error::configuration)?

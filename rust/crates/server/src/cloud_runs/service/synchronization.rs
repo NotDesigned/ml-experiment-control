@@ -97,7 +97,6 @@ impl Service {
     pub fn sync_status(&self, action: &str, request_id: &str, now: &str) -> cloud::Result<Value> {
         let _lock = self.lock()?;
         let prepared = self.load(action)?;
-        self.check(&prepared)?;
         let request = Sync {
             request_id: request_id.into(),
             confirmation: format!("SYNC {action}"),
@@ -156,13 +155,11 @@ impl Service {
             )
             .map_err(why!(cloud::Error::evidence()))?;
         let check = || {
-            guard
-                .require_observed_live(
-                    &prepared.execution.job.project,
-                    &prepared.execution.job.run_id,
-                )
-                .map_err(why!(cloud::Error::evidence()))?;
-            self.check(&prepared)
+            self.still_live(
+                &guard,
+                &prepared.execution.job.project,
+                &prepared.execution.job.run_id,
+            )
         };
         let allocation = ml_exp_core::cloud::pai::Allocation::Guaranteed;
         let job = request
