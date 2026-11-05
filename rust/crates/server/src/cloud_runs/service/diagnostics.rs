@@ -279,7 +279,8 @@ impl Service {
             if diagnostic.lineage != lineage {
                 return Err(cloud::Error::evidence());
             }
-            result["read_only_diagnostic"] = self.provider_read(collector, &diagnostic.job, lines)?;
+            result["read_only_diagnostic"] =
+                self.provider_read(collector, &diagnostic.job, lines)?;
         }
         result["provider_read"] = json!(true);
         Ok(result)
