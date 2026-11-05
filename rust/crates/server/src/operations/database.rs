@@ -208,17 +208,14 @@ impl Database {
     /// and retain every committed Action identity, including orphaned plans.
     pub(super) fn admission_action_ids(&self) -> Result<Vec<String>> {
         self.transaction(|connection| {
-            let mut statement = connection
-                .prepare("SELECT action_id FROM executions ORDER BY action_id LIMIT 4097")?;
+            let mut statement =
+                connection.prepare("SELECT action_id FROM executions ORDER BY action_id")?;
             let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
             let mut ids = Vec::new();
             for row in rows {
                 let id = row?;
                 operations::validate_action_id(&id)?;
                 ids.push(id);
-            }
-            if ids.len() > 4096 {
-                return Err(Error::Invalid("Action admission inventory exceeds limit"));
             }
             Ok(ids)
         })

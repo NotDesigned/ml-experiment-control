@@ -509,16 +509,13 @@ impl Store {
         self.locked(|lock| {
             let committed = self.database.admission_action_ids()?;
             let mut ids = std::collections::BTreeSet::from_iter(committed.iter().cloned());
-            for name in self.directory.entry_names_limited(8192)? {
+            for name in self.directory.entry_names()? {
                 if let Some(id) = name
                     .to_str()
                     .filter(|id| operations::validate_action_id(id).is_ok())
                 {
                     ids.insert(id.to_owned());
                 }
-            }
-            if ids.len() > 4096 {
-                return Err(Error::Invalid("Action admission inventory exceeds limit"));
             }
             let expected = serde_json::to_value(scope)?;
             let mut found = false;
