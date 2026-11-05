@@ -5,6 +5,8 @@ measurements with units and context, validates their declared schema and exposes
 them through the API. Optional W&B publication uses the same accepted records.
 There is no required accuracy, perplexity or project-specific metric vocabulary.
 
+For existing local training, see [local attachment](local-metrics.md).
+
 ## Record and query
 
 `ml-exp init source` includes the stdlib-only `ml_exp_metrics.py` helper. Use it

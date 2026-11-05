@@ -132,7 +132,7 @@ pub fn historical_binding(manifest: &Value) -> Result<Value> {
 pub fn native_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
     if !matches!(
         run["native_creation"]["format"].as_str(),
-        Some("native-run-creation.v1" | "native-cloud-run.v1")
+        Some("native-run-creation.v1" | "native-cloud-run.v1" | "native-local-run.v1")
     ) || !crate::slurm::helper::valid_digest(raw_sha256)
     {
         return Err(Error::Invalid("native journal Run authority"));
@@ -151,7 +151,7 @@ pub fn native_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
 pub fn observed_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
     if matches!(
         run["native_creation"]["format"].as_str(),
-        Some("native-run-creation.v1" | "native-cloud-run.v1")
+        Some("native-run-creation.v1" | "native-cloud-run.v1" | "native-local-run.v1")
     ) {
         return native_binding(run, raw_sha256);
     }
@@ -195,6 +195,7 @@ fn frozen_binding(run: &Value, raw_sha256: &str, route: Value) -> Result<Value> 
         "resume_from",
         "seed",
         "native_datasets",
+        "local_execution",
     ]
     .iter()
     .filter_map(|k| original.get(*k).map(|v| ((*k).into(), v.clone())))
@@ -232,6 +233,13 @@ pub fn normalized_metric_typed(
     record: &metrics::ObservationInput,
     config: &Value,
 ) -> Result<Value> {
+    normalized_metric_source(record, config, "exact-attempt-worker")
+}
+fn normalized_metric_source(
+    record: &metrics::ObservationInput,
+    config: &Value,
+    source: &str,
+) -> Result<Value> {
     let empty_contract = Map::new();
     let contract = evaluation(config)?.unwrap_or(&empty_contract);
     let empty = json!({});
@@ -242,7 +250,7 @@ pub fn normalized_metric_typed(
         _ => return Err(Error::Invalid("protocol ID string")),
     };
     Ok(
-        json!({"kind":"metrics","observations":metrics::observations_typed(record,schema,protocol,Some("exact-attempt-worker"))?}),
+        json!({"kind":"metrics","observations":metrics::observations_typed(record,schema,protocol,Some(source))?}),
     )
 }
 fn evaluation(config: &Value) -> Result<Option<&Map<String, Value>>> {
@@ -413,6 +421,8 @@ pub struct JsonlImporter {
     chunk: Vec<u8>,
     oversized: bool,
     counts: ImportCounts,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    canonical_only: bool,
 }
 impl JsonlImporter {
     pub const INPUT_BOUND: usize = 4096;
@@ -428,6 +438,16 @@ impl JsonlImporter {
             chunk: Vec::new(),
             oversized: false,
             counts: ImportCounts::default(),
+            canonical_only: false,
+        })
+    }
+    /// Local attachment takes explicit named observations. Wide legacy logs
+    /// need a caller-authored mapping; never guess units or turn global_step
+    /// into a scientific result.
+    pub fn canonical_metrics(config: Value) -> Result<Self> {
+        Ok(Self {
+            canonical_only: true,
+            ..Self::new("metrics.jsonl", config)?
         })
     }
     /// Validate a private continuation against the original frozen schema.
@@ -436,6 +456,18 @@ impl JsonlImporter {
     }
     fn line(&mut self, bytes: &[u8], oversized: bool) -> Result<Event> {
         self.number += 1;
+        if self.canonical_only && !oversized {
+            if let Some(parsed) = python_json::parse(bytes) {
+                if ["name", "value", "unit"]
+                    .iter()
+                    .any(|key| parsed.get(key).is_none())
+                {
+                    return Err(Error::Invalid(
+                        "local JSONL requires explicit name, value and unit",
+                    ));
+                }
+            }
+        }
         let record = if oversized {
             None
         } else {
@@ -443,7 +475,15 @@ impl JsonlImporter {
         };
         if let Some(record) = record {
             self.counts.records += 1;
-            let payload = normalized_metric_typed(&record, &self.config)?;
+            let payload = normalized_metric_source(
+                &record,
+                &self.config,
+                if self.canonical_only {
+                    "local-jsonl"
+                } else {
+                    "exact-attempt-worker"
+                },
+            )?;
             Ok(Event {
                 event_id: format!("archive.{}", digest(&payload)?),
                 payload,

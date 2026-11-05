@@ -107,7 +107,7 @@ impl Source for crate::read_api::Api {
         } else if let Some(service) = self.cloud() {
             Source::publisher_leader(&*service)
         } else {
-            Err(Error::Configuration)
+            self.local_publisher_leader()
         }
     }
     fn validate_publisher_leader(&self, file: &std::fs::File) -> Result<()> {
@@ -116,7 +116,7 @@ impl Source for crate::read_api::Api {
         } else if let Some(service) = self.cloud() {
             Source::validate_publisher_leader(&*service, file)
         } else {
-            Err(Error::Configuration)
+            self.validate_local_publisher_leader(file)
         }
     }
     fn publisher_store(&self) -> Result<Store> {
@@ -125,7 +125,7 @@ impl Source for crate::read_api::Api {
         } else if let Some(service) = self.cloud() {
             Source::publisher_store(&*service)
         } else {
-            Err(Error::Configuration)
+            self.local_publisher_store()
         }
     }
     fn tracking_journal(&self, project: &str, run: &str) -> Result<Store> {
@@ -136,6 +136,12 @@ impl Source for crate::read_api::Api {
             {
                 return Source::tracking_journal(&*service, project, run);
             }
+        }
+        if let Some(store) = self
+            .local_journal(project, run)
+            .map_err(|_| Error::Identity)?
+        {
+            return Ok(store);
         }
         self.submissions()
             .ok_or(Error::Configuration)

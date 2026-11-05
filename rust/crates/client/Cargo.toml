@@ -24,6 +24,7 @@ flate2.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 fs2.workspace = true
+getrandom.workspace = true
 
 [dev-dependencies]
 

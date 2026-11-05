@@ -5,6 +5,7 @@ pub mod batch;
 pub mod config;
 pub mod credentials;
 pub mod datasets;
+pub mod local;
 pub mod observation;
 pub mod preparations;
 pub mod presentation;

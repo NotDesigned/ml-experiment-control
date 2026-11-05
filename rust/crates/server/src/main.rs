@@ -526,7 +526,8 @@ fn open_api(
     } else {
         None
     };
-    let mut api = ml_exp_server::read_api::Api::open(settings.clone())?;
+    let mut api = ml_exp_server::read_api::Api::open(settings.clone())?
+        .with_local_tracking(tracking.clone().unwrap_or_default());
     if let Some(path) = history_config {
         api = api.with_history(ml_exp_server::history::Bridge::open(
             ml_exp_server::history::Settings::load(path)?,

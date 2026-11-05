@@ -12,6 +12,7 @@ pub mod deployment;
 pub mod experiments;
 pub mod history;
 pub mod index;
+mod local_http;
 mod native_contract;
 pub mod objects;
 pub mod operations;
@@ -368,6 +369,21 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
             document["run_writes"] =
                 json!(cloud.can_create_runs() || document["run_writes"] == true);
         }
+        if api.local_enabled() {
+            for field in ["capabilities", "supported_capabilities"] {
+                let values = document[field].as_array_mut().expect("capabilities");
+                for capability in [
+                    "native-local-metrics.v1",
+                    "native-metric-history.v1",
+                    "native-tracking-status.v1",
+                ] {
+                    if !values.iter().any(|value| value == capability) {
+                        values.push(json!(capability));
+                    }
+                }
+            }
+            document["local_run_creation"] = json!(true);
+        }
         Ok(document)
     })
     .await
@@ -502,6 +518,42 @@ fn schema_document() -> serde_json::Value {
     let paths = document["paths"]
         .as_object_mut()
         .expect("static OpenAPI paths object");
+    let mut register_local = post(
+        "Register an explicit local execution; identical definition reuses the Run, no process or scheduler effects",
+        json!({"type":"object","additionalProperties":false,"required":["run_id","execution_id"],"properties":{
+            "run_id":{"type":"string"},"execution_id":{"type":"string","pattern":"^[0-9a-f]{32}$"},
+            "metrics_schema":{"type":"object"},"evaluation":{"type":"object"},"parameters":{"type":"object"},
+            "seed":{"type":"integer","minimum":0},"wandb":{"type":["object","null"]}}}),
+        vec![parameter("protocol"), parameter("project")],
+    );
+    register_local["post"]["requestBody"]["description"] =
+        json!("Strict local definition, normalized at most 64 KiB; HTTP body at most 128 KiB");
+    paths.insert("/api/projects/{project}/local-runs".into(), register_local);
+    paths.insert(
+        "/api/local-runs/{project}/{run}".into(),
+        operation(
+            "Read durable local cursor and W&B progress, process liveness remains unknown",
+            run(),
+        ),
+    );
+    let mut local_metrics = post(
+        "Append the next canonical JSONL packet; exact replay returns the original receipt without duplicate events",
+        json!({"type":"object","additionalProperties":false,"required":["execution_id","offset","previous_chain_sha256","bytes"],"properties":{
+            "execution_id":{"type":"string","pattern":"^[0-9a-f]{32}$"},"offset":{"type":"integer","minimum":0},
+            "previous_chain_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+            "bytes":{"type":"array","maxItems":65536,"items":{"type":"integer","minimum":0,"maximum":255}},
+            "finish":{"enum":[null,"SUCCEEDED","FAILED","CANCELLED"]}}}),
+        run(),
+    );
+    local_metrics["post"]["requestBody"]["description"] =
+        json!("At most 64 KiB of raw JSONL input; encoded HTTP body at most 512 KiB");
+    local_metrics["post"]["responses"]["413"] =
+        json!({"description":"Encoded request body exceeds 512 KiB"});
+    paths.insert(
+        "/api/local-runs/{project}/{run}/metrics".into(),
+        local_metrics,
+    );
+
     let checkpoint_parameters = vec![
         parameter("protocol"),
         parameter("project"),
@@ -743,6 +795,7 @@ pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
         .merge(cloud_runs::debug_routes())
         .merge(administration_http::routes())
         .merge(preparation_http::routes())
+        .merge(local_http::routes())
         .merge(capacity_http::routes())
         .merge(data_delivery_http::routes())
         .method_not_allowed_fallback(|| async {

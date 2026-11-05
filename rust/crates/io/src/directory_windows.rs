@@ -51,7 +51,7 @@ fn info(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
     }
     Ok(unsafe { value.assume_init() })
 }
-fn same(a: &File, b: &File) -> io::Result<bool> {
+pub(crate) fn same(a: &File, b: &File) -> io::Result<bool> {
     let a = info(a)?;
     let b = info(b)?;
     Ok(a.dwVolumeSerialNumber == b.dwVolumeSerialNumber

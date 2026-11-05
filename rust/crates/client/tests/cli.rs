@@ -630,3 +630,37 @@ fn create_run_rejects_bad_request_before_configuration_or_credentials() {
     );
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
 }
+
+#[test]
+fn local_attachment_has_official_help_and_watch_finish_are_exclusive() {
+    let temp = tempfile::tempdir().unwrap();
+    let help = command(temp.path())
+        .args(["run", "attach", "--help"])
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    let text = String::from_utf8(help.stdout).unwrap();
+    for option in ["--metrics", "--state", "--watch", "--finish"] {
+        assert!(text.contains(option));
+    }
+    let conflict = command(temp.path())
+        .args([
+            "run",
+            "attach",
+            "--project",
+            "demo",
+            "--file",
+            "local.json",
+            "--metrics",
+            "metrics.jsonl",
+            "--state",
+            "attach.json",
+            "--watch",
+            "--finish",
+            "succeeded",
+        ])
+        .output()
+        .unwrap();
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("cannot be used"));
+}

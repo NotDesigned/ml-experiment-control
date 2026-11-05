@@ -1,5 +1,19 @@
 //! Shared filesystem boundary. No domain decisions, HTTP, provider calls or hidden configuration.
 //! Durable writes and bounded private reads never silently replace an immutable record.
+/// Compare open file handles without imposing private-file permissions on data.
+pub fn same_file(a: &std::fs::File, b: &std::fs::File) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let a = a.metadata()?;
+        let b = b.metadata()?;
+        Ok(a.dev() == b.dev() && a.ino() == b.ino())
+    }
+    #[cfg(windows)]
+    {
+        directory::same(a, b)
+    }
+}
 #[cfg(target_os = "linux")]
 pub mod checkpoints;
 #[cfg(unix)]
