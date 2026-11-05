@@ -385,8 +385,11 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     let ready_bytes = fs::read(&ready_file).unwrap();
     // Simulate a stop after the complete copy intent was saved but before its
     // outbox entry. A later API URL or launcher must not rebuild this command.
-    let storage: ml_exp_core::cloud::launch::StorageLayout =
-        serde_json::from_value(frozen["native_cloud"]["storage"].clone()).unwrap();
+    let storage = Settings::from_slice(&serde_json::to_vec(&config).unwrap())
+        .unwrap()
+        .backends[0]
+        .storage_layout()
+        .unwrap();
     let channel = ml_exp_core::datasets::import::DataChannel {
         url: format!(
             "https://previous.example/api/dataset-exchange/demo/pai-h200/{}",
