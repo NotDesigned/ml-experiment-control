@@ -1,15 +1,14 @@
 # Project registration and lifecycle
 
 This is the operator registry for indexing and polling, not a prerequisite
-research workflow. Normal API users create managed projects through source import.
-The daemon's workspace-local registry selects projects to index and poll. Each
-record binds a stable identity to an absolute `research_project.yaml`, lifecycle,
-source, timestamps and operator reason. The filename is historical: a research
-question is not required or loaded. Source imports create managed projects;
-registered external projects can use their own reviewed controller.
+research workflow. The daemon's workspace-local registry selects projects to index
+and poll. Each record binds a stable identity to an absolute Project file on the
+daemon host (see the [example](../rust/deploy/project.example.json)), lifecycle,
+source, timestamps and operator reason. A research question is not required or
+loaded. Use `ml-exp project` to register and change state; `project register` takes
+a daemon-host path and uploads nothing. Source import uploads to an approved Project.
 
-The authored file owns title, Run roots, controller and optional Campaign
-catalogue. Registry removal does not delete that file, source, Runs, Attempts,
+The authored file owns title, Run roots and optional Campaign catalogue. Registry removal does not delete that file, source, Runs, Attempts,
 datasets or artifacts, and never stops scheduler jobs.
 
 ## States
@@ -45,8 +44,7 @@ These operations are separately policy-gated. Unregister only changes registry
 membership; it is not asset cleanup. Registration checks configured allowed
 roots, regular files and protected paths. Project imports and reviewed writes
 have their own durable transaction/recovery rules; do not edit managed immutable
-Run files to bypass them. Registration/preview must not execute unreviewed
-project controller code.
+Run files to bypass them. Registration executes no project code.
 
 See [source API](source-api.md) for managed imports and
 [deployment](operator-guide.md) for writable roots, policy and backups.

@@ -7,10 +7,16 @@ commands do not require SSH, Docker or cloud credentials.
 | Group | Purpose |
 | --- | --- |
 | `config` | Save or inspect the API connection |
-| `check`, `status` | Check API capabilities and backend status |
+| `check` | Validate the protocol handshake and read API capabilities |
+| `backend` | List executors, read cached capacity or request a refresh |
+| `source` | Upload immutable source or inspect its identity |
+| `project` | Register and manage Project tracking |
 | `run` | Prepare, submit, observe, cancel or recover an experiment |
 | `env` | Prepare and reconcile an immutable Runtime |
 | `data` | Upload, inspect, publish or download dataset assets |
+| `debug` | Create, inspect and stop a leased SSH debug machine |
+| `admin` | Plan and execute administrative removal or Run retirement |
+| `contract` | Run a pure contract validator without credentials or HTTP |
 | `update` | Discover and install the latest stable native client |
 | `get` | Read a supported exact API resource |
 

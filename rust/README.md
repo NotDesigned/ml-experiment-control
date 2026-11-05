@@ -1,7 +1,8 @@
 # Native ML-Expd
 
-The native implementation lives on `main`. Production uses the native service;
-the workspace version is `0.1.17`, published separately from the retired Python service.
+The native implementation lives on `main`. Production uses the native service,
+published separately from the retired Python service. See the
+[latest release](https://github.com/NotDesigned/ml-experiment-control/releases/latest) for the current version.
 The production endpoint is `https://ml-exp.adscn.dev`; previous endpoints have been removed.
 Code implementation, automated verification, provider acceptance and production
 cutover are separate milestones. See [the migration status](../docs/rust-rewrite.md).
@@ -85,11 +86,13 @@ flowchart LR
 
 ## Client configuration
 
-The client command is `ml-exp`. Release 0.1.17 provides Linux x86_64/ARM64,
+The client command is `ml-exp`. Releases provide Linux x86_64/ARM64,
 macOS Intel/Apple Silicon and Windows x86_64 executables. The ARM64 Linux client
 is statically linked with musl; the API/worker bundle remains Linux x86_64.
-Use `install-native.sh --version 0.1.17` on Linux/macOS or
-`./install-native.ps1 -Version 0.1.17` in Windows PowerShell. The Windows installer
+Download the installer from the [latest release](https://github.com/NotDesigned/ml-experiment-control/releases/latest), then use
+`install-native.sh --version X.Y.Z` on Linux/macOS or
+`./install-native.ps1 -Version X.Y.Z` in Windows PowerShell, with that release's
+exact version. The Windows installer
 adds its per-user directory to PATH; open a new terminal if needed.
 
 For clients through 0.1.15, use the new installer once: their old update manifest
@@ -343,8 +346,8 @@ has its own smaller source-only policy and is not a way to upload datasets.
 
 PAI workers can download approved OSS objects through signed part URLs into their
 personal CPFS cache. This native path does not activate provider OSS filesystem
-mounts. SenseCore data goes through a CPU DSW-built data image, Tokyo ACR, a
-same-digest CCR mirror and a debug CPU ACP copy into NAS. Download capabilities
+mounts. SenseCore data goes through a CPU DSW-built data image, the configured
+registry, a same-digest CCR mirror and a debug CPU ACP copy into NAS. Download capabilities
 stay outside Docker contexts. Training waits for a verified READY receipt.
 
 `DATA_DIR` / `DATASETS_JSON`, `STATE_DIR`, `OUTPUT_DIR`, and `METRICS_PATH` are
@@ -436,13 +439,12 @@ Bash, curl and GNU coreutils; it checks exact release hashes and binary version
 before replacing the client. It installs no service and reads no API key.
 
 ```sh
-bash install-native.sh --version 0.1.11 --prefix "$HOME/.local/bin"
+bash install-native.sh --version X.Y.Z --prefix "$HOME/.local/bin"
 ml-exp update --check
 ml-exp update
 ```
 
-These commands use the published
-[`native-v0.1.11` release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.11).
+Take the installer and `X.Y.Z` from the [latest release](https://github.com/NotDesigned/ml-experiment-control/releases/latest).
 Existing Python release assets are separate. Native backend and migration
 acceptance limits are described in the [implementation status](../docs/rust-rewrite.md).
 

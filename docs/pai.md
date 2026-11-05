@@ -1,5 +1,11 @@
 # Alibaba PAI: DLC training and DSW debugging/builds
 
+> **Configuration names on this page are partly retained Python reference**
+> (`container_execution`, `server/examples`, `EXPERIMENTCTL_*`, YAML executors). The
+> provider behavior still applies. Configure a native PAI backend from the
+> [native deployment guide](../rust/README.md#deploying-a-native-service) and
+> [its example](../rust/deploy/pai.example.json).
+
 DLC runs experiments. DSW supplies optional temporary debug machines and CPU
 image builders. These are independent configurations: enabling a DLC executor
 does not enable DSW, allocate public compute, or create storage or IAM roles.
@@ -76,7 +82,7 @@ guarantee admission, or enable Spot. Borrowed resources can be reclaimed.
 
 ### Resource and queue evidence
 
-`GET /api/executors/{id}/status` returns the bound quota's `ActualMinQuota` and
+`GET /api/backends/{executor}/capacity` returns the bound quota's `ActualMinQuota` and
 `AllocatedQuota` as GPU, CPU and memory-byte totals. It checks region/workspace
 binding and uses the shared 25-second OBSERVED/STALE/UNKNOWN cache. Arithmetic
 unallocated quota is not physical GPU utilization or an admission guarantee.
@@ -142,7 +148,7 @@ storage ID is configuration, not proof that the remote mount works.
 
 ### Data and recovery limits
 
-Configure [OSS dataset assets](data.md#personal-oss-dataset-originals-and-dlc-caches)
+Configure [OSS dataset assets](data.md#pai-preparation-using-an-existing-image)
 for versioned originals, upload/import and signed downloads. DLC first delivery
 uses the exact-Attempt API transfer into a verified personal CPFS cache. This
 happens inside the allocated job and consumes its time/GPU budget; subsequent
@@ -182,12 +188,13 @@ latter path can create duplicate mounts. Public mounts stay read-only. Registry
 secrets and build controls use the owned temporary directory; a persistent CPFS
 workspace is not a persistent Docker layer cache.
 
-### Tokyo registry and native build fallback
+### Shared registry and native build fallback
 
-A shared private registry can serve all backends. One supported configuration is
-DSW → Tokyo ACR, with Git-triggered ACR construction as fallback, PAI/Slurm direct
-pulls, and digest-preserving on-demand CCR delivery for SenseCore. These are
-operator choices, not requirements for an unrelated Slurm installation.
+A shared private registry can serve all backends. The default publisher pushes
+from a CPU DSW to the configured registry, such as Docker Hub. An optional ACR
+repository can add Git-triggered construction as fallback. PAI/Slurm pull directly;
+SenseCore uses digest-preserving on-demand CCR delivery. These are operator
+choices, not requirements for an unrelated Slurm installation.
 Follow [build publication and fallback](builds.md#pai-dsw-and-acr-fallback);
 existing Runtime/Run image references are never rewritten when defaults change.
 

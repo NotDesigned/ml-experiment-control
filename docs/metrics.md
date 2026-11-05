@@ -9,32 +9,37 @@ For existing local training, see [local attachment](local-metrics.md).
 
 ## Record and query
 
-`ml-exp init source` includes the stdlib-only `ml_exp_metrics.py` helper. Use it
-inside your training/evaluation program:
+Write one JSON record per line to the file named by `METRICS_PATH`, which is
+separate from `STATE_DIR`. Any language works; this example uses only the Python
+standard library:
 
 ```python
-from ml_exp_metrics import MetricWriter
+import json, os
 
-metrics = MetricWriter()  # OUTPUT_DIR/metrics.jsonl; separate from STATE_DIR
-metrics.log("train_loss", loss.item(), unit="nats/token", step=step,
-            dataset_id="training-v1")
-metrics.log("validation_loss", total_nll / target_tokens, unit="nats/token",
-            step=step, dataset_id="validation-v1",
-            numerator=total_nll, denominator=target_tokens)
+metrics = open(os.environ["METRICS_PATH"], "a")
+
+def write(**record):
+    metrics.write(json.dumps(record) + "\n")
+    metrics.flush()
+
+write(name="train_loss", value=loss.item(), unit="nats/token", step=step,
+      dataset_id="training-v1")
+write(name="validation_loss", value=total_nll / target_tokens, unit="nats/token",
+      step=step, dataset_id="validation-v1",
+      numerator=total_nll, denominator=target_tokens)
 
 # Your code selects and evaluates the checkpoint to report:
-metrics.summary("validation_loss", selected_loss, unit="nats/token",
-                step=selected_step, dataset_id="validation-v1",
-                checkpoint_id=selected_checkpoint,
-                numerator=selected_nll, denominator=selected_target_tokens)
+write(name="validation_loss", value=selected_loss, unit="nats/token",
+      step=selected_step, dataset_id="validation-v1",
+      checkpoint_id=selected_checkpoint,
+      numerator=selected_nll, denominator=selected_target_tokens, summary=True)
 ```
 
-`log()` appends a history point. `summary()` appends an explicit comparison
-result with `summary:true`; it neither chooses a checkpoint nor adds a curve
-point. Both use one append-only JSONL file. Do not replace it during final export.
-Each call writes and flushes a complete line. The image needs no client package,
-API token, W&B SDK/key or direct W&B connection. An installed client also exports
-`from ml_exp_client import MetricWriter`.
+A record without `summary` is a history point. `summary:true` declares an explicit
+comparison result; it neither chooses a checkpoint nor adds a curve point. Both use
+one append-only JSONL file. Do not replace it during final export. Write and flush
+complete lines. The image needs no client package, API token, W&B SDK/key or direct
+W&B connection.
 
 Query an exact Attempt, repeating `--name` to select more metrics:
 
@@ -53,7 +58,7 @@ One line is one JSON object, for example:
 
 | Fields | Contract |
 |---|---|
-| `name`, `value`, `unit` | Metric name, Python `int`/`float` or null, explicit unit; booleans are not values |
+| `name`, `value`, `unit` | Metric name, JSON number or null, explicit unit; booleans are not values |
 | `step`, `epoch`, `timestamp` | Optional measurement position/time |
 | `dataset_id`, `variant_id`, `checkpoint_id` | Optional context; separate variants never overwrite one another |
 | `protocol_id` | Inherits the frozen protocol if omitted; explicit mismatch fails |
@@ -70,8 +75,7 @@ verification is a separate registration contract.
 
 ## Declare units and required contexts
 
-Set `metrics_schema` and `evaluation` in the experiment JSON. A project can also
-set future defaults through `GET/PUT /api/projects/P/metrics-schema`.
+Set `metrics_schema` and `evaluation` in the experiment file's `run` object.
 
 ```json
 {
@@ -140,7 +144,7 @@ GET /api/attempts/P/R::attempt-001/metrics?format=records&name=validation_loss&m
 ```
 
 Repeat `name` for multiple exact metric names; a comma is part of a name, not a
-separator. The Run-level `/api/runs/P/R/metrics` route supports the same query,
+separator. The retired Run-level `/api/runs/P/R/metrics` route, which is not native, supported the same query,
 resolving the current Attempt. Responses contain identity fields, `protocol_id`,
 `records`, `validation`, `total_records`, `downsampled`, `missing_names` and
 `source_attempt_id`. They omit legacy duplicate projections and server paths.

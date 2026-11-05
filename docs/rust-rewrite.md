@@ -2,8 +2,8 @@
 
 Default implementation: native Rust on `main`. Python reference baseline:
 `e725faec689fb8395e692e27d00a8896fa7fe5a5` (1.5.1). Production runs the native
-service on Tokyo; Python API/builder services on Seoul are retired. The native
-workspace release is `native-v0.1.22`. Direct HTTPS uses
+service on Tokyo; Python API/builder services on Seoul are retired. See the
+[latest release](https://github.com/NotDesigned/ml-experiment-control/releases/latest) for the current version. Direct HTTPS uses
 `https://ml-exp.adscn.dev`; the old API domain and temporary port have been removed.
 Historical metadata is attached read-only,
 with separate native write namespaces. Slurm connects through the direct
@@ -43,7 +43,7 @@ flowchart TD
     HTTP --> PAI[PAI REST: DLC / DSW]
     HTTP --> SC[SenseCore REST: ACP / CCI]
     HTTP --> BUILD[Optional Python image effects]
-    BUILD --> ACR[Tokyo ACR; same-digest CCR mirror]
+    BUILD --> REGISTRY[CPU PAI DSW publishes to the configured registry; same-digest CCR mirror for SenseCore]
     SLURM --> WORKER[Native worker]
     PAI --> WORKER
     SC --> WORKER
@@ -98,6 +98,11 @@ Research code may use Python/PyTorch or another image language.
 Paths in the table are relative to `rust/crates`, except the two image bridge
 paths under `server/src/ml_exp_server`. See [the native usage guide](../rust/README.md)
 for commands and configuration shapes.
+
+The build and SIF rows above and the historical sections below record tests that
+published through Tokyo ACR. Builds now default to a CPU PAI DSW publishing to a
+configured registry such as Docker Hub (see [builds](builds.md)); those records
+are not acceptance of any other registry.
 
 SenseCore can select the compatible cluster with the highest SPOT allowance
 from an operator allowlist when creating a new Run. The selected profile is then
@@ -244,7 +249,7 @@ The release worker is built with static musl linkage for training images;
 server and client binaries retain the documented glibc baseline.
 The release workflow tests the exact binaries before packaging. A manual run
 produces artifacts only; a stable native tag enables public publication.
-The [native release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.16)
+The [native release](https://github.com/NotDesigned/ml-experiment-control/releases/latest)
 is separate from Python release assets. Production now runs on Tokyo; the
 acceptance history below records the earlier isolated tests.
 

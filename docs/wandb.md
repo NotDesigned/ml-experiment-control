@@ -7,27 +7,21 @@ and queryable in ML-Expd without W&B.
 
 ## Enable the integration
 
-The operator installs the server's optional `wandb` extra, or a reviewed full
-server bundle whose manifest includes `extras: ["wandb"]`. The client and worker
-packages do not need it. See [installation](operator-guide.md#install-a-reviewed-release).
+The operator points `tracking_config` in the deployment file at a private JSON file:
 
-Configure the server's shared W&B defaults through the authorized client. Keep
-the W&B key in a private file outside uploaded code/data:
-
-```bash
-chmod 600 /private/path/wandb.key
-ml-exp tracking config --key-file /private/path/wandb.key
-ml-exp tracking config
+```json
+{
+  "schema_version": 1,
+  "python": "/absolute/path/to/interpreter-with-wandb-sdk",
+  "api_key_file": "/etc/ml-expd/native/wandb.key"
+}
 ```
 
-This sends the key to the server; it is not a training-process environment
-variable. Settings responses never return it. Entity is optional: the server
-resolves the key's default entity. Add `--entity TEAM` to select a team and
-`--project PROJECT` for a server default project. Omitted fields retain previous
-settings. `--disable` pauses publishing, `--enable` resumes it, and
-`--clear-credentials` removes the key. The API is `GET/PUT /api/tracking/wandb`.
-API `entity:null` repeats default resolution; `project:null` restores the
-ML-Expd project-name fallback.
+Optional `entity` and `project` set server defaults, and `enabled: false` pauses
+publishing. The client and worker do not need the SDK, and the key is not a
+training-process environment variable. See the
+[operator guide](operator-guide.md#optional-wb). The native client has no command
+that changes these settings.
 
 ## Choose publication per experiment
 
@@ -54,8 +48,7 @@ In an experiment JSON or `POST /api/projects/P/runs` request:
 | Entity omitted | Use configured/resolved default entity |
 
 Training and preparation switches are independent, subject to the same server
-master switch and credentials. `ml-exp tracking config --preparation` / `--no-preparation`
-changes the default for future preparations. The per-experiment option requires
+master switch and credentials. The per-experiment option requires
 `wandb-preparation-sync.v1`.
 
 Without credentials, a usable entity, or an enabled server, the effective route
@@ -81,8 +74,8 @@ does not change command arguments or define scientific success.
 Enabling W&B does not extract loss automatically. Training/evaluation code must
 write [metric records](metrics.md#record-and-query) to `OUTPUT_DIR/metrics.jsonl`:
 
-- `MetricWriter.log()` writes history points. Multiple measured steps/epochs form a curve.
-- `MetricWriter.summary()` declares the result selected by experiment code. It does not add a curve point or select the best checkpoint.
+- Records without `summary` are history points. Multiple measured steps/epochs form a curve.
+- `summary:true` declares the result selected by experiment code. It does not add a curve point or select the best checkpoint.
 
 Each Attempt has a stable W&B run grouped by ML-Expd project/Run.
 For new publications (native 0.1.25+), **the client owns metric names**:
@@ -138,13 +131,11 @@ and historical Runs are not automatically opted in.
 ## Inspect and recover publication
 
 ```bash
-ml-exp tracking status --project my-study --run trial-001
-ml-exp tracking status --project my-study --run trial-001 --retry
+ml-exp run tracking --project my-study --run trial-001
 ```
 
 The status API returns the frozen route, W&B URLs, confirmed/pending counts,
-timestamps and a fixed diagnostic. Retry clears publication backoff; it does not
-submit training. SDK enqueue is not confirmation: the publisher advances only
+timestamps and a fixed diagnostic. It makes no cloud request. SDK enqueue is not confirmation: the publisher advances only
 after observing matching remote event identities. History and derived display
 have separate confirmation states:
 
@@ -161,20 +152,9 @@ latency; error backoff reaches five minutes. W&B's green session indicator track
 the server publisher session and can lag during outages; it is not direct proof
 that GPU training is alive. Use platform state, logs and steps together.
 
-To opt a historical/disabled Run into publication of its saved evidence:
-
-```http
-POST /api/runs/P/R/tracking/backfill
-Content-Type: application/json
-
-{"project":"historical-study"}
-```
-
-Use normal API auth/protocol headers. Backfill creates a separate immutable
-publication binding, reuses it on repeats and does not alter Run/Attempt history.
-It cannot recreate observations that were never saved. Operators should back up
-`project_registry_root/tracking/` with service state: it contains private settings
-and the canonical journal. Do not restore an old journal over active records.
+The native API has no backfill route for historical or disabled Runs, and
+publication cannot recreate observations that were never saved. Publication cursors
+live in the registry's `tracking/` directory; keep it with service state.
 
 
 ## Reserved history gaps (native 0.1.21+)

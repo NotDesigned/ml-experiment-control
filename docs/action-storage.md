@@ -1,5 +1,10 @@
 # Action storage and backup
 
+> **Retained Python reference for migration.** The `python -m ml_exp_server...`
+> commands below belong to the retained Python package; the native client and
+> service do not use them. See the [operator guide](operator-guide.md) for
+> native maintenance.
+
 `ACTION_ROOT/actions.sqlite3` is authoritative for Action execution state and
 audit events, committed in one transaction. Plans, reviewed artifacts and
 private command inputs keep their immutable directory layout. SQLite uses WAL,

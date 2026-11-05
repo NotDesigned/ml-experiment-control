@@ -66,7 +66,8 @@ not an admission guarantee. Queue ETA remains null without reliable backend data
 
 ### Slurm allocation status
 
-`GET /api/executors/{id}/status` reports a read-only partition snapshot for Slurm.
+`GET /api/backends/{executor}/capacity` reports a cached partition snapshot for Slurm;
+`POST .../capacity/refresh` updates it.
 `resources` contains `gpus`, `cpus`, and `memory_bytes`, each with `total`,
 `allocated`, and `unallocated`. Memory uses Slurm MiB converted to bytes.
 `nodes` includes each unique node's state and allocation; normal/debug partitions
@@ -92,6 +93,9 @@ mutation is performed by this GET.
 
 ### SenseCore cluster list
 
+Retained Python reference: the native API has no such route. Native pool selection
+uses the operator's `spot_clusters` allowlist.
+
 `GET /api/backends/sensecore/clusters` reuses the existing workspace-binding
 REST query. Optionally pass `executor_id` to choose a configured SenseCore
 executor's workspace; by default the first SenseCore executor in sorted ID order
@@ -114,20 +118,9 @@ does not create/stop a workload, change pool selection or refresh a frozen Run.
 
 ## Matching
 
-Use either an explicit `executor`, or an `executor_selector`:
-
-```json
-{
-  "executor_selector": {"backend": "slurm", "candidates": ["slurm-large", "slurm-gpu"]},
-  "requirements": {"persistent_checkpoints": true, "exit_code": true}
-}
-```
-
-Candidate order is preference. With only a backend, matching chooses the smallest
-configured allocation that fits, then a stable ID. It never silently switches
-clouds or ranks unknown free capacity. `POST /api/executors/match` validates before
-uploads/builds and returns selected/compatible executors, rejection fields and
-`live_availability_checked=false`. Unsupported requirements fail before work.
+The experiment file names an explicit `executor` from `ml-exp backend`. The native
+API has no selector or matching route. It never silently switches clouds or ranks
+unknown free capacity.
 
 ## Server-owned preparation
 
@@ -135,12 +128,13 @@ uploads/builds and returns selected/compatible executors, rejection fields and
 
 ```json
 {
-  "runtime": {"source_id": "source.64_HEX", "dockerfile": "Dockerfile", "entrypoint": ["python3", "train.py"]},
+  "request_id": "32_HEX_REQUEST_ID",
+  "runtime": {"source_id": "source.64_HEX", "executor": "slurm-gpu", "base_image": "registry.example/base@sha256:64_HEX", "dockerfile": "Dockerfile"},
   "run": {
-    "run_id": "trial-001", "executor": "slurm-gpu",
-    "resources": {"gpus": 1, "cpus": 8, "memory_gb": 32, "max_time": "00:10:00"}
+    "run_id": "trial-001", "executor": "slurm-gpu", "command": ["python3", "train.py"],
+    "resources": {"gpus": 1, "cpus": 8, "memory_gb": 32}, "walltime_seconds": 600, "seed": 42
   },
-  "max_gpu_hours": 0.2
+  "approval": {"max_gpu_hours": 0.2, "reason": "bounded validation"}
 }
 ```
 
@@ -164,7 +158,7 @@ POST to `/experiment-preparations/{id}/continue` can advance the original reques
 It retains all effect markers and never retries an uncertain effect. Client:
 
 ```bash
-ml-exp run submit experiment.json --state trial.state.json --resume --continue-preparation
+ml-exp run continue PREPARATION_ID --project my-study --confirmation 'PREPARE PREPARATION_ID'
 ```
 
 Low-level source, Runtime, Run and submission APIs remain available. The new

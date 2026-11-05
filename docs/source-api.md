@@ -15,18 +15,19 @@ requests. `GET /api/health` is the protocol-discovery exception; see the
 | Method/path | Resource or purpose |
 |---|---|
 | `GET /api/health` | Installed version, protocol, capabilities and policy |
+| `GET /api/readiness` | Per-backend submission availability and evidence; no provider request |
 | `GET /api/executors` | Configured resource/backend choices |
-| `GET /api/executors/EXECUTOR_ID/status` | Read-only resource evidence when supported |
-| `GET /api/environments` | Approved digest-pinned base images |
-| `GET /api/storage-limits` | Transfer/part/storage limits |
-| `POST /api/source-imports/archive?project=P&sha256=HASH` | Raw source archive |
-| `POST /api/source-imports/git` | HTTPS repository and exact commit |
+| `GET /api/backends/EXECUTOR_ID/capacity` | Cached capacity with its original observation time |
+| `POST /api/backends/EXECUTOR_ID/capacity/refresh` | Read provider evidence into the cache |
+| `GET /api/projects` | Registered projects |
+| `POST /api/source-imports/archive` | Raw source archive |
+| `GET /api/projects/P/source-imports/ARCHIVE_SHA256` | Reconcile a lost publication response |
 | `GET /api/projects/P/sources/SOURCE_ID` | Immutable source identity |
-| `POST /api/projects/P/runtimes/prepare` | Freeze source, Dockerfile and entrypoint |
-| `POST /api/projects/P/runtimes/RUNTIME_ID/execute` | Build using returned confirmation |
+| `POST /api/projects/P/runtimes` / `GET` | Freeze source and Dockerfile; list Runtimes |
 | `GET /api/projects/P/runtimes/RUNTIME_ID` | Runtime state/receipt |
+| `POST …/runtimes/RUNTIME_ID/execute` | Build using returned confirmation |
 | `GET …/runtimes/RUNTIME_ID/logs` / `/progress` | Build diagnostics |
-| `POST …/runtimes/RUNTIME_ID/reconcile` | Observe publication without rebuilding |
+| `POST …/runtimes/RUNTIME_ID/reconcile` / `/materialize` | Observe publication without rebuilding; produce a Slurm SIF |
 
 New builds use Dockerfile only, with pinned external bases. Old READY images
 retain their workers; an obsolete unbuilt recipe requires new preparation.
@@ -37,33 +38,35 @@ it is not proof that file contents contain no secrets. See [builds](builds.md).
 
 | Method/path | Resource or purpose |
 |---|---|
-| `POST /api/projects/P/asset-uploads` | Target executor, archive hash/size and inventory |
-| `GET /api/projects/P/asset-uploads/UPLOAD_ID` | Saved upload session |
-| `GET /api/projects/P/assets/ASSET_ID` | Verified asset metadata |
+| `GET /api/projects/P/datasets/E` | Retained dataset identities and readiness |
+| `POST /api/projects/P/datasets/E` | Begin one target-backed upload |
+| `GET /api/projects/P/datasets/E/A` | Read one asset's status |
+| `POST /api/projects/P/datasets/E/import-oss` | Import an approved plain tar from OSS |
 | `POST /api/projects/P/experiment-preparations` | Combined Runtime/data/Run/Submission preparation |
 | `GET /api/projects/P/experiment-preparations/PREPARATION_ID` | Dependencies, phase and next action |
 | `POST …/experiment-preparations/PREPARATION_ID/continue` | Explicitly advance inspected dependencies |
 
-Use the exact [multipart paths and resume rules](data.md#multipart-http-contract),
+Use the exact [multipart paths and resume rules](data.md#native-http-endpoints),
 including zero-based part numbers. Completion establishes destination durability,
 not GPU training. SenseCore data-image publication and NAS delivery are distinct.
 Slurm/SenseCore target-backed assets do not provide client archive downloads;
 approved OSS datasets have a separate signed-download route. Do not use output
-routes to retrieve datasets. Legacy `POST /api/assets/archive` is removed.
+routes to retrieve datasets.
 
 ## Freeze, review and submit
 
 | Method/path | Resource or purpose |
 |---|---|
 | `POST /api/projects/P/runs` | Freeze a Run referencing a READY Runtime |
-| `POST /api/experiments/P/R/submissions/prepare` | Preflight and GPU-hour budget review |
-| `GET /api/experiments/P/R/submissions` | Find the original Submission after a lost reply |
+| `POST /api/runs/P/R/submissions` | Preflight and GPU-hour budget review |
+| `GET /api/runs/P/R/preparation` | Find the original preparation after a lost reply |
+| `GET /api/runs/P/R/submission` | Find the original Submission after a lost reply |
 | `POST /api/submissions/S/authorize` | Authorize current prepared gates |
 | `POST /api/submissions/S/execute` | Submit using returned confirmation |
-| `GET /api/submissions/S` / `/progress` | Durable state and next action |
+| `GET /api/submissions/S` | Durable state and next action |
 | `POST /api/submissions/S/reconcile` | Resolve an uncertain original submission |
-| `GET /api/operations` | Available generic operations and parameter schema |
-| `POST /api/operations/direct` | Prepare a reviewed cancel/retry or other Action |
+| `POST /api/submissions/S/refresh` / `/history` | Sample evidence; ingest the next metrics page |
+| `POST /api/submissions/S/cancel` / `/retry` / `/renew` | Explicit cancel, new Attempt or replacement gate |
 
 Prepare/build/execute may return HTTP 202: poll the returned identity. An expired
 review requires reprepare, not bypassing gates. Unknown effects require
@@ -77,15 +80,14 @@ changing source, parameters or restore reference requires a new Run.
 | `GET /api/runs/P/R` / `/attempts` | Run evidence and exact executions |
 | `GET /api/attempts/P/R::A/logs` | Stored bounded stdout/stderr |
 | `GET /api/attempts/P/R::A/metrics?format=records&name=loss` | Compact normalized [metrics](metrics.md); repeat `name` |
-| `GET /api/runs/P/R/attempts/A/diagnostics` | Persisted provider evidence; `refresh=true` requests observation |
-| `GET …/attempts/A/checkpoints` / `/checkpoints/CHECKPOINT_ID` | Registered checkpoint metadata |
-| `GET …/attempts/A/collection` | Training, collection and verification states |
-| `POST …/attempts/A/collection` | Explicit recovery; backend may use a bounded zero-GPU job |
-| `GET …/attempts/A/files` | File inventory |
-| `GET …/attempts/A/artifacts/download` | Signed archive ticket and verified inventory |
-| `GET …/attempts/A/artifacts/archive` | Authenticated proxy archive stream |
-| `POST …/attempts/A/artifacts/ack` | Confirm verified local files and choose archive retention |
-| `GET …/attempts/A/files/outputs/PATH` | Exact file, with ranges and ETags |
+| `GET /api/runs/P/R/attempts/A/checkpoints` / `/checkpoints/CHECKPOINT_ID` | Registered checkpoint metadata |
+| `POST /api/submissions/S/checkpoint` | Verify and register a complete backend checkpoint |
+| `GET /api/runs/P/R/attempts/A/collection` | Training, collection and verification states |
+| `POST /api/submissions/S/collect` / `/sync` | Explicit collection; a cloud sync may use a zero-GPU job |
+| `GET /api/submissions/S/artifacts` / `/artifacts/SHA256` | Result bundle metadata and download |
+| `POST /api/submissions/S/download-ticket` | Short-lived signed part URL |
+| `POST /api/submissions/S/acknowledge` | Confirm verified local files and release |
+| `GET /api/runs/P/R/attempts/A/files` / `/artifacts/download` | Historical archive inventory and ticket |
 | `GET /api/runs/P/R/tracking` | Frozen [W&B](wandb.md) destination and publication status |
 
 The signed object GET carries no API token. Validate archive and file hashes,

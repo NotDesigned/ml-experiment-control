@@ -5,89 +5,96 @@ and returns verified results. Experiment code defines the scientific computation
 metrics, checkpoint contents and model selection. The platform does not interpret
 weights, choose hyperparameters or decide whether a scientific result is correct.
 
-## Four packages
+The default implementation is the Rust workspace in `rust/`. What has passed on
+real providers is recorded separately in [acceptance status](rust-rewrite.md).
 
-| Distribution | Source | Responsibility and dependencies |
-| --- | --- | --- |
-| `ml-experiment-client` | `client/src/ml_exp_client/` | HTTP SDK, `ml-exp`, packaging, saved operation state and verified downloads; no runtime dependencies |
-| `ml-experiment-worker` | `worker/src/ml_exp_worker/` | 13 standard-library execution programs copied into backend jobs; no server/core/cloud SDK dependencies |
-| `ml-experiment-control` | `src/experiment_control/` | Scheduler adapters, immutable manifests, submission identity and command runner; includes the Rust `experiment-redact` executable |
-| `ml-experiment-server` | `server/src/ml_exp_server/` | API, preparation, storage, observation, checked mutations and optional publication; depends on core and worker |
+## Crates
 
-The root `pyproject.toml` defines the core package and uv workspace. Client,
-server and worker have separate package metadata. Client machines need only the
-client. Training images receive fixed worker scripts, not the server environment.
-The server's optional `[wandb]` extra publishes accepted records; metrics storage
-and queries work without it. See [development](development.md) for installation
-and independent coverage checks.
+| Crate | Source | Executables | Responsibility |
+| --- | --- | --- | --- |
+| `ml-exp-core` | `rust/crates/core/` | none | Pure identities, validation, budgets, state transitions, reconciliation decisions and request plans |
+| `ml-exp-io` | `rust/crates/io/` | none | Confined files, hashing, bounded child processes, framing, archive and observation transport |
+| `ml-exp-client` | `rust/crates/client/` | `ml-exp` | Private settings, packaging, saved recovery identities, observation and verified transfers |
+| `ml-exp-server` | `rust/crates/server/` | `ml-expd-rs`, `ml-expd-state-audit` | Authenticated API, durable ledgers, backend adapters and background observation |
+| `ml-exp-worker` | `rust/crates/worker/` | `ml-exp-worker-rs` | In-image supervision, Slurm gateway helper, data verification, checkpoints and result collection |
+| `experiment-redact` | `rust/src/` | `experiment-redact` | Shared credential redaction |
+
+Core functions receive values and return decisions; they read no environment,
+clock, files or network. Filesystem, network, clock, randomness and subprocess
+effects belong to the outer crates, which return explicit receipts to the core.
+The client has no Python dependency and needs no Docker, SSH or backend credentials.
+Training images receive the static release worker, not the server environment.
+User training code can use any language its image provides.
 
 ## Execution flow
 
 ```mermaid
 flowchart TD
-    Client[Client: code and experiment configuration] --> API[Authenticated API]
+    Client[ml-exp: source, data and experiment file] --> API[Authenticated ml-expd-rs API]
     API --> Prepare[Preparation: freeze executor, build Runtime, verify data]
-    Prepare --> Review[Submission: review gates and explicit authorization]
-    Review --> Core[Core backend adapter]
-    Core --> Slurm[SSH Slurm and Apptainer]
-    Core --> ACP[SenseCore ACP]
-    Core --> DLC[PAI DLC]
-    Slurm --> Worker[Managed worker and user entrypoint]
+    Prepare --> Review[Submission: prepared gates and explicit authorization]
+    Review --> Dispatch[Backend adapter]
+    Dispatch --> Slurm[SSH Slurm gateway and Apptainer]
+    Dispatch --> ACP[SenseCore ACP over REST]
+    Dispatch --> DLC[PAI DLC over REST]
+    Slurm --> Worker[ml-exp-worker-rs and user command]
     ACP --> Worker
     DLC --> Worker
     Worker --> State[Persistent checkpoint on backend storage]
-    Worker --> Records[Canonical API metric and lifecycle journal]
+    Worker --> Records[Canonical API metric and event journal]
     Records --> Query[Client API queries]
-    Records --> WandB[Optional W&B publisher]
+    Records --> WandB[Optional official W&B SDK process]
     Worker --> Results[Declared outputs: archive and verify]
     Results --> Download[Client downloads and verifies]
-    Download --> Ack[Explicit verified ACK and archive retention]
+    Download --> Ack[Explicit verified ACK and release]
 ```
 
 The API freezes and orchestrates work; backend schedulers allocate resources.
-A private image builder executes Docker publication locally, through PAI DSW,
-or in an optional PAI CPU DSW. DSW also supports temporary debugging; **DLC is
+Image builds run in a separate private builder (see
+[the Python bridge](#python-bridge-boundary)), by default on a CPU PAI DSW that
+publishes to a configured registry. DSW also supports temporary debugging; **DLC is
 PAI's training backend**. SenseCore uses ACP for training and bounded data/result
 copy jobs; CCI is a separate temporary debug-machine feature.
+
+Cloud workers report process evidence, input progress, history pages and
+checkpoint metadata over a scoped HTTPS exchange. Slurm collects equivalent
+evidence through its gateway, so compute nodes need no internet.
 
 A scheduler RUNNING state does not prove training has started. Process exit,
 checkpoint registration, archive publication, client verification and W&B remote
 confirmation remain separate evidence. Read-only status never starts a job or
-repairs an uncertain operation automatically.
+repairs an uncertain operation automatically. Missing evidence remains unknown.
 
-## Module map and actual entries
+## Module map
 
-| Concern | Canonical implementation |
+Paths are relative to `rust/crates/`.
+
+| Concern | Implementation |
 | --- | --- |
-| Client transport and workflows | `client/api.py`, `workflow.py`, `operations.py`, `artifacts.py`, `state.py`; `cli.py` parses and prints |
-| HTTP and daemon lifetime | `server/api/app.py`, `boundary.py`, `lifecycle.py`; `runtime.py` composes shared services |
-| Projects and immutable source | `server/projects/` |
-| Preparation and submission | `server/runs/experiment_preparation.py`, `first_submission.py`, `submissions.py`; `actions/` owns review, claims and reconciliation |
-| Managed dispatch | `server/container_controller.py` calls core `backends/`; `controller_gateway.py` isolates reviewed external project controllers |
-| Data and capacity | `server/data/`, including the server-only SSH `data_receiver.py`; `storage_capacity.py` provides shared admission |
-| Images | `server/image_builder.py`, `dockerfile_build.py`, `worker_contract.py`, `builds/` |
-| Results and retention | `server/results/`, `storage_service.py`, `local_retention.py` |
-| Observation | `server/collectord.py`, `ingest/`, `runs/queries.py` and progress/evidence modules |
-| Platform metrics | `server/records/contract.py`, `ingest.py`, `store.py`; `api/record_routes.py` accepts exact-Attempt uploads |
-| W&B | `server/tracking/` and isolated `wandb_exporter.py` consume the accepted journal |
-| Debug machines | `server/debug/`: models, lifecycle and CCI/DSW adapters |
-| Administrative deletion | `server/runs/deletion.py`, `results/admin_deletion.py`, `backends/run_deletion.py` |
+| Client commands and transport | `client/src/main.rs` parses; `client/src/transport.rs`, `config.rs`, `credentials.rs`, `session.rs` connect |
+| Client workflows | `client/src/preparations.rs`, `batch.rs`, `submissions.rs`, `runtime.rs`, `sources.rs`, `datasets.rs`, `artifacts.rs`, `debug.rs`, `administration.rs`, `update.rs` |
+| Client observation | `client/src/observation.rs`, `status.rs`, `watch.rs`, `read.rs`, `presentation.rs`, `local.rs` |
+| HTTP and daemon lifetime | `server/src/main.rs`, `lib.rs`, `deployment.rs`, `read_config.rs`, `readiness.rs`, `native_contract.rs` |
+| Projects and immutable source | `core/src/projects.rs`, `core/src/sources.rs`, `server/src/projects/`, `server/src/sources/` |
+| Preparation | `core/src/preparation.rs`, `core/src/first_submission/`, `server/src/preparation_http.rs`, `server/src/cloud_runs/service/preparations.rs`, `server/src/submissions/service/preparation.rs` |
+| Slurm dispatch and control | `core/src/slurm/`, `server/src/backends/slurm/`, `server/src/submissions/`, `worker/src/slurm/` |
+| Cloud dispatch and control | `core/src/cloud/`, `server/src/backends/cloud/`, `server/src/cloud_runs/` |
+| Action storage | `server/src/operations/` |
+| Data and capacity | `core/src/datasets/`, `core/src/data_preparation.rs`, `core/src/capacity.rs`, `server/src/objects.rs`, `server/src/capacity_http.rs`, `server/src/data_delivery_http.rs`, `worker/src/cloud_data.rs`, `worker/src/data_import.rs` |
+| Images | `core/src/cloud/build.rs`, `core/src/cloud/materialize.rs`, `server/src/cloud_runs/service/builds.rs`, `worker/src/materialize.rs` |
+| Results and retention | `core/src/artifacts/`, `core/src/result_collection.rs`, `io/src/artifacts.rs`, `server/src/submissions/artifact_http.rs`, `server/src/cloud_runs/service/artifacts.rs`, `worker/src/cloud_artifacts.rs` |
+| Checkpoints | `core/src/checkpoints.rs`, `io/src/checkpoints.rs`, `server/src/checkpoints.rs` |
+| Observation | `core/src/observation.rs`, `core/src/polling.rs`, `io/src/observations.rs`, `server/src/background.rs`, `server/src/read_api.rs`, `server/src/read_model.rs`, `server/src/index/`, `worker/src/cloud_exchange.rs` |
+| Platform metrics | `core/src/metrics.rs`, `core/src/records.rs`, `server/src/records/`, `server/src/local_http.rs` |
+| W&B | `core/src/tracking/`, `server/src/tracking/` (the SDK process runs `server/src/tracking/sdk.py`) |
+| Debug machines | `core/src/cloud/debug.rs`, `server/src/cloud_runs/debug_http.rs`, `server/src/cloud_runs/service/debug.rs`, `client/src/debug.rs` |
+| Administrative maintenance | `core/src/maintenance.rs`, `server/src/administration.rs`, `server/src/deletion.rs`, `worker/src/maintenance.rs` |
+| Historical reads and audit | `server/src/history.rs`, `server/src/readonly.rs`, `server/src/state_audit.rs`, `server/src/state_audit/main.rs` |
 
-Paths in this table are relative to each package's `src/ml_exp_*` directory,
-except the explicitly named client files. Core implementations live under
-`src/experiment_control/`.
-
-User and operator entries are `ml-exp`, `python -m ml_exp_client`, `ml-expd`, and
-`ml-expd --config CONFIG doctor`. Service/frozen-controller entries also include
-`python -m ml_exp_server.image_builder`, `container_controller` and
-`wandb_exporter`. These are specific process boundaries, not interchangeable
-public workflows. The generated [redactor CLI](cli_reference.md) is separate.
-
-Core `backends/` owns availability, preflight, staging, submit/status/logs/cancel.
-Server `backends/` owns shared-storage data preparation and result recovery.
-They are different responsibilities. A small explicit mapping wires installed
-providers; adding a backend requires its capability declaration, adapter and
-server storage operations. There is no dynamic plugin loader or second scheduler.
+Slurm and cloud are separate services behind one API. They share core types and
+Action storage but have distinct adapters and effect stores. Adding a backend requires its
+capability declaration, adapter and storage operations; there is no dynamic
+plugin loader or second scheduler.
 
 ## Identities and storage
 
@@ -103,43 +110,58 @@ server storage operations. There is no dynamic plugin loader or second scheduler
 | Checkpoint | Complete generation, file hashes and backend storage scope |
 | Result receipt | Published archive and file hashes; download ACK is a separate record |
 
-Actions use transactional [SQLite storage](action-storage.md). File-backed
-resources use cross-process locks, revision checks and atomic transitions.
-The canonical records journal retains the historical `tracking/outbox.sqlite`
-location; optional W&B cursors do not create another copy of experiment history.
+One registry root holds a daemon's control state. It carries a native marker
+(`.rust-preview-workspace.json`), so a native daemon cannot adopt an existing
+Python registry and ordinary startup never creates one. Actions use transactional
+SQLite under `actions/` ([storage notes](action-storage.md)). The canonical
+records journal is `tracking/outbox.sqlite`; optional W&B cursors do not create
+another copy of experiment history. File-backed resources use cross-process
+locks, revision checks and atomic transitions.
 
-Input transfers share a bounded 1 GiB part buffer, not a 1 GiB total-disk limit.
-Slurm assets reside on shared storage; SenseCore uses CCR delivery to NAS; DLC
-can retain originals in personal OSS and verified caches on CPFS. Source,
-outputs, database recovery backups and journals have separate lifetimes.
-See [data](data.md), [checkpoints](persistent-checkpoints.md) and
+The API keeps source, control metadata and receipts, not full dataset or weight
+archives. Transfers use 16 MiB parts numbered from zero. Slurm payloads go to
+shared storage through the gateway. SenseCore uses a CCR data image and a CPU copy
+to NAS. PAI datasets stay in approved OSS and are verified into a personal CPFS
+cache. Recovery state stays on backend persistent storage. Source, outputs,
+checkpoints and journals have separate lifetimes. See [data](data.md),
+[checkpoints](persistent-checkpoints.md) and
 [retention](recovery.md#download-confirmation-and-server-storage).
+
+## Python bridge boundary
+
+The client, API, worker and state machines need no Python. Two optional effects
+keep it, and neither is needed for basic API or client reads:
+
+| Effect | Code | Boundary |
+| --- | --- | --- |
+| Image build and copy | `server/src/ml_exp_server/builds/` (`native_image.py`, `native_data.py`, `native_worker.py`), which also imports other modules of that package; it also needs `worker/src/ml_exp_worker/` and `src/experiment_control/` on its import path | Separate process behind a private socket. Rust owns recipes, frozen Runtime identity and durable dispatch intent |
+| W&B publication | `rust/crates/server/src/tracking/sdk.py`, run with the configured interpreter and the official SDK | Effect shell only. Rust compares identities and advances cursors |
+
+The remaining Python in `client/`, `server/`, `worker/` and `src/` is retained
+reference for reading old state and for the bridge. It is not an install path.
+The [Python module inventory](../rust/compatibility/inventory.json) keeps the
+baseline hashes.
 
 ## Compatibility and upgrades
 
 Existing Run/Attempt/source identities, routes, immutable image references,
 review digests, publication routes and saved client operation IDs remain frozen.
-Legacy project parsing and historical object-store assets retain their
-read paths. Desktop staging has been removed. Generic Slurm replaces site-specific names for new configuration;
-old storage records remain readable. Historical compatibility is not permission
-to create another job or rewrite a manifest.
+Historical metadata is attached read-only, with separate native write roots: old
+Actions never become native execution authority, and historical compatibility is
+not permission to create another job or rewrite a manifest. Unknown submissions
+and uncertain W&B sends stay reserved and are reconciled under their original
+identity, never replayed.
 
-The worker package split preserves all 13 program files byte for byte, their
-container destinations and the existing worker fingerprints. The resource helper
-is not injected. Build recipes have their own fingerprint: moving imports can
-change **new** bundle identities without changing the worker program bytes.
-READY Runtime receipts keep their published identity. A not-yet-published Runtime
-whose frozen recipe differs from the installed builder may require fresh Runtime
-preparation; inspect its diagnostics and reconcile effects first. Do not mutate
-that old record, reuse an old confirmation or replay an uncertain build.
+Capabilities are both server- and image-specific. A Runtime receipt freezes the
+exact worker's declared features, so updating the API cannot add features to an
+immutable old image. New builds obtain current workers; old Attempts keep their
+original dispatch behavior and command contract. READY Runtime receipts keep
+their published identity. A not-yet-published Runtime whose frozen recipe differs
+from the installed builder may need fresh preparation; inspect diagnostics and
+reconcile effects first. Do not mutate that record, reuse an old confirmation or
+replay an uncertain build.
 
-Capabilities are both server- and image-specific. Updating the API cannot add
-telemetry, launcher or checkpoint features to an immutable old image. New builds
-obtain current workers; old Attempts keep their original dispatch behavior.
-The HTTP protocol remains independently negotiated; see [HTTP contract](http_contract.md).
-
-Upgrade acceptance preserves live state and private configuration. After acceptance,
-remove inactive previous/candidate environments and disposable installation
-copies; keep version/digest/CI reports and needed database recovery backups.
-Never remove an environment still referenced by a process. An upgrade does not
-imply database restoration, automatic rollback, resource cleanup or a GPU run.
+The HTTP protocol is negotiated independently of the package version; see the
+[HTTP contract](http_contract.md). An upgrade does not imply database restoration,
+automatic rollback, resource cleanup or a GPU run. Operators follow the
+[operator guide](operator-guide.md).

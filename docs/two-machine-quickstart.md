@@ -1,5 +1,9 @@
 # Deploy a basic API and a separate client
 
+> **Retained Python reference.** This installs the retired Python service. For a
+> new deployment use the [operator guide](operator-guide.md) and the
+> [native deployment guide](../rust/README.md#deploying-a-native-service).
+
 This example installs a basic API on one Linux machine and the standalone client
 on another. Both can be CPU DSW instances in an approved VPC. It imports source
 without Docker, a builder, S3, backend credentials or a training executor. It does

@@ -1,5 +1,11 @@
 # SSH Slurm and Apptainer
 
+> **Configuration names on this page are partly retained Python reference**
+> (`container_execution`, `server/examples`, `EXPERIMENTCTL_*`, YAML executors). The
+> provider behavior still applies. Configure a native Slurm backend from the
+> [native deployment guide](../rust/README.md#deploying-a-native-service) and
+> [its example](../rust/deploy/slurm.example.json).
+
 This backend connects to an existing Slurm cluster through an operator-configured
 SSH alias. The adapter has no site name or fixed shared filesystem path. The
 current implementation supports one node, with a typed `gpu:MODEL:COUNT` GRES.
