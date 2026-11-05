@@ -88,6 +88,46 @@ impl Service {
         let prepared = self.load(action)?;
         self.view(&prepared, self.actions.observe(action).map_err(op)?, now)
     }
+    /// Worker-reported evidence retained for one Submission. No provider request.
+    /// `None` means the Action belongs to another backend service.
+    pub fn submission_progress(&self, action: &str) -> cloud::Result<Option<Value>> {
+        let snapshot = self.actions.observe(action).map_err(op)?;
+        if snapshot["native_cloud"]["format"] != "native-cloud-action.v1" {
+            return Ok(None);
+        }
+        let prepared = self.load(action)?;
+        let binding = &prepared.execution.binding;
+        let mut value = json!({"submission_id":action,"project":binding.project,
+            "run_id":binding.run_id,"attempt_id":binding.attempt_id,"availability":"NOT_REPORTED"});
+        if let Some(saved) = self.exchange_saved(&prepared)? {
+            let inputs: Vec<Value> = saved.inputs.iter().map(|record| json!(record)).collect();
+            // A failure outranks later progress; READY rows are the least informative.
+            let selected = inputs
+                .iter()
+                .find(|row| row["phase"] == "FAILED")
+                .or_else(|| inputs.iter().find(|row| row["phase"] != "READY"))
+                .or_else(|| inputs.first());
+            value["availability"] = json!("AVAILABLE");
+            value["worker_phase"] =
+                json!({"phase":saved.evidence.worker.phase,"observed_at":saved.observed_at});
+            value["input_delivery"] = selected.cloned().unwrap_or(Value::Null);
+            value["inputs"] = Value::Array(inputs);
+        }
+        Ok(Some(value))
+    }
+    /// The current Attempt's Submission, as a listing for clients without saved state.
+    pub fn run_submissions(&self, project: &str, run: &str) -> cloud::Result<Vec<Value>> {
+        self.authority(project, run)?;
+        Ok(self
+            .saved(project, run)?
+            .into_iter()
+            .map(|prepared| {
+                json!({"project":project,"run_id":run,
+                    "attempt_id":prepared.execution.binding.attempt_id,
+                    "submission_id":prepared.plan["action_id"]})
+            })
+            .collect())
+    }
     pub fn for_run(&self, project: &str, run: &str, now: &str) -> cloud::Result<Value> {
         self.authority(project, run)?;
         let prepared = self.saved(project, run)?.ok_or_else(missing)?;
