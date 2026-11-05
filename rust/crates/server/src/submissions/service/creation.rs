@@ -82,7 +82,7 @@ impl Service {
             .transpose()?;
         let discovery = self
             .evidence
-            .discover(project, &experiments::DiscoveryLimits::default())
+            .discover(project)
             .map_err(why!(Error::Authority))?;
         let existing = discovery
             .runs

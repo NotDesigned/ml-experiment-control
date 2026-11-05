@@ -57,7 +57,7 @@ impl Fixture {
         );
     }
     fn discover(&self) -> Result<Discovery, DiscoveryError> {
-        self.store.discover("demo", &DiscoveryLimits::default())
+        self.store.discover("demo")
     }
 }
 
@@ -103,7 +103,7 @@ fn canonical_and_instance_scoped_runs_are_unique_and_payloads_are_not_scanned() 
         b"project: demo\nrun_id: mirror-copy\n",
     );
     symlink("/never-follow-training-data", scoped.join("dataset-link")).unwrap();
-    let found = store.discover("elf", &DiscoveryLimits::default()).unwrap();
+    let found = store.discover("elf").unwrap();
     assert_eq!(found.runs.len(), 2);
     assert!(found.deleted.is_empty());
     let legacy_id = legacy["metadata"]["run_id"].as_str().unwrap();
@@ -148,7 +148,7 @@ fn duplicate_run_ids_are_rejected_even_for_identical_bytes_and_across_roots() {
     write(&second.join("other/manifest.json"), &native("same"));
     let store = Fixture::store(&fixture.temp, &fixture.fence, vec![fixture.runs(), second]);
     assert!(matches!(
-        store.discover("demo", &DiscoveryLimits::default()),
+        store.discover("demo"),
         Err(DiscoveryError::DuplicateRun)
     ));
 }
@@ -235,53 +235,19 @@ fn discovery_preserves_deleted_identity_and_never_bootstraps_or_repairs_fences()
     assert!(matches!(fixture.discover(), Err(DiscoveryError::Fence(_))));
     assert!(!missing.exists());
     assert!(matches!(
-        fixture
-            .store
-            .discover("foreign", &DiscoveryLimits::default()),
+        fixture.store.discover("foreign"),
         Err(DiscoveryError::UnknownProject)
     ));
 }
 
 #[test]
-fn traversal_metadata_and_pending_directory_budgets_are_enforced_without_partial_catalogs() {
-    for case in ["depth", "directories", "entries", "runs", "metadata"] {
-        let fixture = Fixture::new();
-        fixture.add("group/first", "first");
-        fixture.add("second", "second");
-        write(&fixture.runs().join("note"), b"not a manifest");
-        let mut limits = DiscoveryLimits::default();
-        match case {
-            "depth" => limits.max_depth = 1,
-            "directories" => limits.max_directories = 2,
-            "entries" => limits.max_entries = 2,
-            "runs" => limits.max_runs = 1,
-            "metadata" => limits.max_metadata_bytes = 4,
-            _ => unreachable!(),
-        }
-        assert!(
-            matches!(
-                fixture.store.discover("demo", &limits),
-                Err(DiscoveryError::Budget)
-            ),
-            "{case}"
-        );
-    }
-    assert!(
-        DiscoveryLimits {
-            max_depth: 0,
-            ..DiscoveryLimits::default()
-        }
-        .validate()
-        .is_err()
-    );
-    assert!(
-        DiscoveryLimits {
-            max_depth: 33,
-            ..DiscoveryLimits::default()
-        }
-        .validate()
-        .is_err()
-    );
+fn discovery_reaches_as_deep_as_a_run_reference_can_name_and_no_further() {
+    let fixture = Fixture::new();
+    fixture.add(&vec!["d"; MAX_DEPTH].join("/"), "deepest");
+    let found = fixture.discover().unwrap();
+    assert_eq!(found.runs[0].reference.relative_components.len(), MAX_DEPTH);
+    fixture.add(&vec!["e"; MAX_DEPTH + 1].join("/"), "too-deep");
+    assert!(matches!(fixture.discover(), Err(DiscoveryError::Depth)));
 }
 
 #[test]
@@ -296,7 +262,7 @@ fn duplicate_and_overlapping_approved_roots_are_rejected_before_traversal() {
         fs::create_dir_all(&second).unwrap();
         let store = Fixture::store(&fixture.temp, &fixture.fence, vec![fixture.runs(), second]);
         assert!(matches!(
-            store.discover("demo", &DiscoveryLimits::default()),
+            store.discover("demo"),
             Err(DiscoveryError::OverlappingRoots)
         ));
     }

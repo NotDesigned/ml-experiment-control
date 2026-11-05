@@ -54,7 +54,7 @@ impl Service {
         if approved.discovery_enabled() {
             let discovery = self
                 .evidence
-                .discover(project, &experiments::DiscoveryLimits::default())
+                .discover(project)
                 .map_err(why!(Error::Authority))?;
             discovery
                 .runs

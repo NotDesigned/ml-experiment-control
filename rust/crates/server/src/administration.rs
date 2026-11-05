@@ -299,9 +299,7 @@ impl Service {
         )
         .map_err(why!(invalid()))?;
         for project in &self.settings.projects {
-            let discovered = store
-                .discover(&project.project, &experiments::DiscoveryLimits::default())
-                .map_err(why!(invalid()))?;
+            let discovered = store.discover(&project.project).map_err(why!(invalid()))?;
             for entry in discovered.runs {
                 let snapshot = store
                     .snapshot_metadata(&entry.reference)
@@ -443,9 +441,7 @@ impl Service {
         let fence = RunFence::new(&self.settings.registry_root);
         let store = experiments::Store::open(self.settings.bindings(), fence.clone())
             .map_err(why!(invalid()))?;
-        let discovered = store
-            .discover(project, &experiments::DiscoveryLimits::default())
-            .map_err(why!(invalid()))?;
+        let discovered = store.discover(project).map_err(why!(invalid()))?;
         let reference = &discovered
             .runs
             .iter()

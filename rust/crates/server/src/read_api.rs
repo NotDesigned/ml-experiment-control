@@ -71,10 +71,10 @@ impl From<experiments::DiscoveryError> for Error {
     fn from(value: experiments::DiscoveryError) -> Self {
         use experiments::DiscoveryError as E;
         match value {
-            E::Budget => error(
+            E::Depth => error(
                 413,
                 "EXPERIMENT_DISCOVERY_LIMIT",
-                "canonical Run discovery exceeds its traversal or metadata budget",
+                "canonical Run discovery exceeds its depth",
             ),
             E::UnknownProject => error(
                 404,
@@ -595,7 +595,7 @@ impl Api {
     fn locate_run(&self, project: &str, run: &str) -> Result<RunRef, Error> {
         let reference = if self.discovery_projects.contains(project) {
             self.store
-                .discover(project, &experiments::DiscoveryLimits::default())?
+                .discover(project)?
                 .runs
                 .into_iter()
                 .find(|entry| entry.reference.run_id == run)
@@ -632,10 +632,7 @@ impl Api {
                 .and_then(Value::as_str)
                 .unwrap_or(project);
             let discovery = if self.discovery_projects.contains(project) {
-                Some(
-                    self.store
-                        .discover(project, &experiments::DiscoveryLimits::default())?,
-                )
+                Some(self.store.discover(project)?)
             } else {
                 None
             };

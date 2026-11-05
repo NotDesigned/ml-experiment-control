@@ -1843,7 +1843,7 @@ fn exact_worker_refresh_survives_restart_and_never_changes_submission_or_retrain
     )
     .unwrap();
     let reference = evidence
-        .discover("demo", &crate::experiments::DiscoveryLimits::default())
+        .discover("demo")
         .unwrap()
         .runs
         .into_iter()

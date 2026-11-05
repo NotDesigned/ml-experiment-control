@@ -164,7 +164,7 @@ impl Service {
             }
             let discovery = self
                 .evidence
-                .discover(&project.project, &experiments::DiscoveryLimits::default())
+                .discover(&project.project)
                 .map_err(why!(Error::Authority))?;
             for run in discovery.runs {
                 let snapshot = self

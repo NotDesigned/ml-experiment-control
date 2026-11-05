@@ -157,7 +157,6 @@ impl Store {
     pub fn discover(
         &self,
         project: &str,
-        limits: &super::scanner::DiscoveryLimits,
     ) -> std::result::Result<super::scanner::Discovery, super::scanner::DiscoveryError> {
         let anchor = self
             .projects
@@ -169,7 +168,6 @@ impl Store {
             &anchor.filename,
             &anchor.roots,
             &self.fence,
-            limits,
             RUN_SOURCES,
         )
     }
