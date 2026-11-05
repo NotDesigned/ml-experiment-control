@@ -18,7 +18,10 @@ Create `local.json`:
   "parameters": {"lr": 0.001},
   "evaluation": {"protocol_id": "validation-v1"},
   "metrics_schema": {
-    "train/loss": {"unit": "nats/token"}
+    "schema_version": 1,
+    "definitions": {
+      "train/loss": {"unit": "nats/token"}
+    }
   },
   "wandb": {"enabled": true, "project": "experiments"}
 }
@@ -29,6 +32,29 @@ omitted, the client generates it once and saves it before registration. Keep the
 same definition and private upload state when resuming. The effective W&B route
 and scientific definition are frozen on registration. Missing server W&B
 credentials disable publication with a reason; journal ingestion still works.
+
+`run_id` names the ML-Expd record and `execution_id` identifies this local
+execution. The first Attempt is `attempt-001`; omit an Attempt or scheduler ID
+from the definition. `metrics_schema`, `evaluation`, `parameters`, `seed` and
+`wandb` are optional. Units can be supplied on each observation without a schema.
+
+For an existing experiment, keep its source ID, initial-config SHA256 and data
+fingerprints in `parameters`, and its scoring protocol in `evaluation`. These
+are caller-provided provenance: registration preserves them without uploading
+source, datasets or weights. For example, the following fields can be added to
+`parameters`, replacing each placeholder with the original recorded value:
+
+```json
+{
+  "source_id": "source.<original source digest>",
+  "config_initial_sha256": "<original config.initial.json SHA256>",
+  "data_fingerprints": {
+    "train": "<original train fingerprint>",
+    "validation": "<original validation fingerprint>",
+    "canary": "<original canary fingerprint>"
+  }
+}
+```
 
 Write one explicit observation per JSONL line:
 
@@ -79,6 +105,13 @@ While following, it detects a replaced file or an observed truncation. The input
 must remain append-only: this is not a watcher for arbitrary in-place edits.
 One uploader holds the state lock. Keep the state file after finishing; do not
 start a second uploader with a fresh state for the same execution.
+
+The saved state binds the API URL, project, complete registration definition,
+execution ID, accepted byte offset, accepted-prefix SHA256 and packet chain.
+It also retains any packet whose acknowledgement was lost. Resume with the same
+`--state`, `--file` definition and append-only metrics content. A new pathname
+with the same accepted prefix can resume after restarting the uploader; changing
+the accepted bytes or replacing the file while it is being followed is refused.
 
 ## Existing direct W&B SDK writers
 
