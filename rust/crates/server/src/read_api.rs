@@ -558,9 +558,11 @@ impl Api {
                 return Ok(value);
             }
         }
-        Ok(serde_json::json!({"submission_id":submission["submission_id"],"project":submission["project"],
+        Ok(
+            serde_json::json!({"submission_id":submission["submission_id"],"project":submission["project"],
             "run_id":submission["run_id"],"attempt_id":submission["attempt_id"],
-            "availability":"NOT_REPORTED"}))
+            "availability":"NOT_REPORTED"}),
+        )
     }
     pub fn experiment_submissions(&self, project: &str, run: &str) -> Result<Value, Error> {
         if ml_exp_core::identity::validate_id(project).is_err()
