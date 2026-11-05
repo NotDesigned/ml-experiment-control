@@ -206,3 +206,8 @@ A saved repair adds `history_repair` to publication state. Older servers cannot
 read that field; after a repair use a forward fix rather than a program downgrade
 or a database restore. This operation does not restart training or recover
 records that are missing from the canonical journal.
+
+Remote SDK pages may repeat the same physical row. Native 0.1.22 compares the
+complete row (including values and axes) before collapsing such page repeats;
+conflicting content or the same sequence at different physical rows is rejected.
+This does not resubmit history or relax the exact-prefix acknowledgement.

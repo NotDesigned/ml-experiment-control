@@ -109,24 +109,32 @@ def dispatch(job):
                 identity, route["entity"], route["project"]):
             raise ValueError("remote identity differs")
         def history_rows():
-            history, maximum = [], 0
-            # Physical W&B rows may contain an appended repair of an earlier
-            # sequence. Training axes and canonical identity are independent.
+            history, maximum = {}, 0
+            # SDK pages may repeat the live tail. Collapse only an identical
+            # complete physical row; distinct rows remain distinct evidence.
             for row in remote.scan_history(
-                    keys=["ml_expd/sequence", "ml_expd/event_id"],
                     min_step=max(0, job["confirmed"] - 1),
                     page_size=128, use_cache=False):
-                sequence = row["ml_expd/sequence"]
-                if type(sequence) is not int:
-                    raise ValueError("history sequence")
+                if "ml_expd/sequence" not in row:
+                    continue
+                sequence, physical = row["ml_expd/sequence"], row["_step"]
+                if type(sequence) is not int or type(physical) is not int:
+                    raise ValueError("history sequence or physical step")
                 maximum = max(maximum, sequence)
                 if sequence < max(1, job["confirmed"]) or sequence > job["through"]:
                     continue
+                if physical in history:
+                    if history[physical] != row:
+                        raise ValueError("conflicting physical history row")
+                    continue
                 if len(history) >= 257:
                     raise ValueError("history bound")
-                history.append({"sequence": sequence,
-                                "event_id": row["ml_expd/event_id"]})
-            return history, maximum
+                history[physical] = row
+            ordered = sorted(history.values(), key=lambda row: row["ml_expd/sequence"])
+            if len({row["ml_expd/sequence"] for row in ordered}) != len(ordered):
+                raise ValueError("distinct physical rows repeat a sequence")
+            return [{"sequence": row["ml_expd/sequence"],
+                     "event_id": row["ml_expd/event_id"]} for row in ordered], maximum
         history, maximum = request('HISTORY_READ', history_rows)
         summary_keys = list(remote.summary.keys())
         if len(summary_keys) > 8192:
@@ -151,7 +159,7 @@ def dispatch(job):
                 step += 1
             elif effect["operation"] == "display":
                 for key in effect["patch"]["delete"]:
-                    if key in handle.summary:
+                    if key in handle.summary.keys():
                         del handle.summary[key]
                 for key, value in effect["patch"]["set"].items():
                     handle.summary[key] = value

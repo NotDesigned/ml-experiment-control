@@ -449,6 +449,16 @@ fn publish_bound(
     }
     saved.ever_opened = true;
     saved.state = plan.state;
+    if let Some(repair) = saved.history_repair.as_mut() {
+        if repair.attempted
+            && repair
+                .events
+                .keys()
+                .all(|seq| *seq <= saved.state.confirmed)
+        {
+            repair.remote_confirmed = true;
+        }
+    }
     let finish = plan
         .actions
         .iter()

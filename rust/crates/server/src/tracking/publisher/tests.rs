@@ -86,6 +86,7 @@ fn exercise_gap_repair(uncertain: bool) {
     let mut data: Value = serde_json::from_slice(&fs::read(&cloud).unwrap()).unwrap();
     assert_eq!(data["runs"][&id]["pending"], json!([]));
     assert_eq!(data["runs"][&id]["history"].as_array().unwrap().len(), 4);
+    data["repeat_pages"] = json!(true);
     let rows = data["runs"][&id]["history"].take();
     data["runs"][&id]["history"] = json!(
         rows.as_array()
@@ -396,6 +397,11 @@ fn exercise_delayed_publication(legacy: bool) {
             .any(|k| k.starts_with("results/")),
         "active losses are curves, not final comparison values"
     );
+    // Official Summary is not a Mapping: membership falls back to integer
+    // indexing and fails. Exercise deletion of actual legacy auto-summary keys.
+    let mut stale_summary = read_cloud();
+    stale_summary["runs"][&id]["summary"]["curves/legacy"] = json!(123.0);
+    fs::write(&cloud, stale_summary.to_string()).unwrap();
     store.append(&guard,&scope,&[Event{event_id:"terminal".into(),payload:json!({"kind":"lifecycle","data":{"phase":"METRICS_DRAINED","state":"SUCCEEDED"}})}]).unwrap();
     for _ in 0..4 {
         cycle(&mut sdk).unwrap();
@@ -404,6 +410,11 @@ fn exercise_delayed_publication(legacy: bool) {
     assert_eq!(status["confirmed"], 5);
     assert_eq!(status["status"], "FINISHED");
     assert_eq!(read_cloud()["finishes"], 1);
+    assert!(
+        read_cloud()["runs"][&id]["summary"]
+            .get("curves/legacy")
+            .is_none()
+    );
     assert_eq!(
         read_cloud()["inits"],
         2,
@@ -508,5 +519,42 @@ fn stable_projection_ignores_destination_reservations_and_reports_ambiguous_name
             2,
             "display errors preserve the accepted journal"
         );
+    }
+}
+
+#[test]
+fn sdk_repeated_pages_require_identical_full_rows_and_reject_distinct_duplicate_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let cloud = root.path().join("cloud.json");
+    fs::write(root.path().join("fake_sdk.py"), include_str!("fake_sdk.py")).unwrap();
+    let wrapper = root.path().join("python");
+    fs::write(&wrapper,format!("#!/usr/bin/python3\nimport sys,os\nsys.path.insert(0,{root:?})\nos.environ['TEST_CLOUD']={cloud:?}\nimport fake_sdk\nsys.modules['wandb']=fake_sdk\nexec(compile(sys.argv[4],'<sdk>','exec'),{{'__name__':'__main__'}})\n",root=root.path().to_str().unwrap(),cloud=cloud.to_str().unwrap())).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+    let base = json!({"hidden":false,"inits":0,"logs":0,"finishes":0,"runs":{"original":{
+        "entity":"fixture","project":"science","state":"running","config":{},"summary":{},"pending":[],
+        "history":[{"_step":700,"ml_expd/sequence":2,"ml_expd/event_id":"m2","curves/loss":0.5,"axes/loss/step":10}]}}});
+    let job = json!({"operation":"observe","api_key":"never-print",
+        "route":{"entity":"fixture","project":"science"},"wandb_id":"original",
+        "scope":{},"config":{},"confirmed":0,"through":2,"open_session":false,"resume":"must"});
+    let mut sdk = Sdk::open(&wrapper).unwrap();
+    for flag in ["repeat_pages", "conflicting_page", "duplicate_sequence"] {
+        let mut data = base.clone();
+        data[flag] = json!(true);
+        fs::write(&cloud, data.to_string()).unwrap();
+        let observed = sdk.call(&job, &AtomicBool::new(false));
+        if flag == "repeat_pages" {
+            assert_eq!(
+                observed.unwrap()["evidence"]["history"],
+                json!([{"sequence":2,"event_id":"m2"}])
+            );
+        } else {
+            assert!(matches!(
+                observed,
+                Err(Error::SdkRequest("WANDB_HISTORY_READ_FAILED"))
+            ));
+        }
+        let data: Value = serde_json::from_slice(&fs::read(&cloud).unwrap()).unwrap();
+        assert_eq!(data["logs"], 0);
+        assert_eq!(data["inits"], 0);
     }
 }
