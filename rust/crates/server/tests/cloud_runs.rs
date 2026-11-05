@@ -1180,10 +1180,15 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         )
         .unwrap();
     // Editing the project file is ordinary work while an Attempt is running.
-    private(
+    ml_exp_io::write_atomic(
         &temp.path().join("project.json"),
-        &json!({"schema_version":1,"project":"demo","title":"Edited after submission","run_roots":["runs"]}),
-    );
+        &serde_json::to_vec(
+            &json!({"schema_version":1,"project":"demo","title":"Edited after submission","run_roots":["runs"]}),
+        )
+        .unwrap(),
+        false,
+    )
+    .unwrap();
     let now = "2026-10-29T01:02:00Z";
     let refused = "CLOUD_EVIDENCE_INVALID";
     assert_eq!(
