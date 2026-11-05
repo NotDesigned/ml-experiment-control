@@ -82,9 +82,9 @@ Paths are relative to `rust/crates/`.
 | Action storage | `server/src/operations/` |
 | Data and capacity | `core/src/datasets/`, `core/src/data_preparation.rs`, `core/src/capacity.rs`, `server/src/objects.rs`, `server/src/capacity_http.rs`, `server/src/data_delivery_http.rs`, `worker/src/cloud_data.rs`, `worker/src/data_import.rs` |
 | Images | `core/src/cloud/build.rs`, `core/src/cloud/materialize.rs`, `server/src/cloud_runs/service/builds.rs`, `worker/src/materialize.rs` |
-| Results and retention | `core/src/artifacts/`, `core/src/result_collection.rs`, `io/src/artifacts.rs`, `server/src/submissions/artifact_http.rs`, `server/src/cloud_runs/service/artifacts.rs`, `worker/src/cloud_artifacts.rs` |
+| Results and retention | `core/src/artifacts/`, `io/src/artifacts.rs`, `server/src/submissions/artifact_http.rs`, `server/src/cloud_runs/service/artifacts.rs`, `worker/src/cloud_artifacts.rs` |
 | Checkpoints | `core/src/checkpoints.rs`, `io/src/checkpoints.rs`, `server/src/checkpoints.rs` |
-| Observation | `core/src/observation.rs`, `core/src/polling.rs`, `io/src/observations.rs`, `server/src/background.rs`, `server/src/read_api.rs`, `server/src/read_model.rs`, `server/src/index/`, `worker/src/cloud_exchange.rs` |
+| Observation | `core/src/observation.rs`, `core/src/polling.rs`, `io/src/observations.rs`, `server/src/background.rs`, `server/src/read_api.rs`, `server/src/read_model.rs`, `worker/src/cloud_exchange.rs` |
 | Platform metrics | `core/src/metrics.rs`, `core/src/records.rs`, `server/src/records/`, `server/src/local_http.rs` |
 | W&B | `core/src/tracking/`, `server/src/tracking/` (the SDK process runs `server/src/tracking/sdk.py`) |
 | Debug machines | `core/src/cloud/debug.rs`, `server/src/cloud_runs/debug_http.rs`, `server/src/cloud_runs/service/debug.rs`, `client/src/debug.rs` |
@@ -139,8 +139,6 @@ keep it, and neither is needed for basic API or client reads:
 
 The remaining Python in `client/`, `server/`, `worker/` and `src/` is retained
 reference for reading old state and for the bridge. It is not an install path.
-The [Python module inventory](../rust/compatibility/inventory.json) keeps the
-baseline hashes.
 
 ## Compatibility and upgrades
 
